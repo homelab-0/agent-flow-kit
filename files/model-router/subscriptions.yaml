@@ -1,0 +1,162 @@
+# subscriptions.yaml — the routing registry.
+# This file is the single source of truth for WHAT you can route to.
+# The model-router skill reads it at planning time; dispatch.sh reads it at run time.
+# When you add/drop a subscription or a model ships, edit HERE — nothing else changes.
+
+providers:
+
+  claude:
+    cli: claude
+    subscription: "Claude Max 20x"
+    billing: plan          # plan = draws subscription limits; metered = costs money per token
+    pool: "one weekly pool shared by ALL machines logged into this account"
+    notes: >
+      -p / headless draws normal plan limits (verified Aug 2026; Anthropic paused the
+      SDK-credit change June 15). Keep ANTHROPIC_API_KEY out of server envs and never
+      use --bare in dispatch scripts, or auth silently shifts to metered API billing.
+    models:
+      # When dispatching via Orca orchestration, worker-start --model passes these
+      # through verbatim ("opaque provider model IDs") — prefer full IDs your CLI
+      # lists, and confirm via launch.requested/launch.effective in the start receipt.
+      fable-5:
+        tier: frontier
+        caps: "included on Max but limited to 50% of the weekly pool; burns pool fastest"
+        use_for: [epic-planning, architecture-decisions, escalated-review]
+      opus:
+        tier: strong
+        use_for: [code-review, hard-implementation, ambiguous-debugging]
+      sonnet:
+        tier: standard
+        use_for: [implementation, refactors, test-writing, integration-work]
+      haiku:
+        tier: fast
+        no_effort_control: true   # effort slider not supported on Haiku
+        use_for: [bulk-mechanical, docs, scaffolding, renames]
+    effort_levels: [low, medium, high, xhigh]   # per-spawn via --effort; max/ultracode are session-only
+
+  openai:
+    cli: codex
+    subscription: "ChatGPT Plus ($20/mo)"
+    billing: plan
+    pool: >
+      separate weekly/5h Codex limits, independent of the Claude pool — but Plus is
+      the SMALLEST paid pool we own. Role: review diversity + rate-limit fallback +
+      second opinions, NOT bulk implementation; volume work goes to claude fast tier
+      or devin free models first.
+    notes: >
+      MODEL NAMES MOVE FAST. Before first dispatch, run `codex` interactively, check
+      /model (or ~/.codex/config.toml), and replace the placeholder names below with
+      what your CLI actually offers. Effort analog is model_reasoning_effort
+      (low|medium|high) set per-run via --config.
+    models:
+      # IDs verified 2026-08-15 from this host's codex models_cache.json (codex-cli 0.145.0).
+      # Also available: gpt-5.6-terra (balanced everyday tier), gpt-5.5, gpt-5.4, gpt-5.4-mini.
+      gpt-5.6-sol:          # "Latest frontier agentic coding model"
+        tier: strong
+        use_for: [implementation, cross-provider-review, refactors]
+      gpt-5.6-luna:         # "Fast and affordable agentic coding model"
+        tier: fast
+        use_for: [bulk-mechanical, docs]
+
+  devin:
+    cli: devin
+    subscription: "Devin Teams $144/yr (legacy Windsurf annual; renews 2027-08-09; org Homelab.0)"
+    billing: plan          # daily+weekly token quota shared with Devin Desktop; FREE models bypass quota entirely
+    pool: >
+      shared daily/weekly token quota (visible w/ reset timers at
+      app.devin.ai/org/homelab-0/settings/usage); free-tagged models cost nothing.
+      Overage = prepaid on-demand balance ONLY ($10 loaded, $5/message cap,
+      auto-reload should stay OFF) — bounded blast radius, no open-ended metering.
+    notes: >
+      Two cost classes. FREE models (swe-1-7*, swe-1-6, glm-5-2 — tagged Free in
+      `devin models list`) consume NO quota — route freely, even as fallbacks.
+      PREMIUM models (everything with $/MTok) draw the shared daily/weekly quota —
+      explicit routing only; its Claude/GPT premiums duplicate the plan-billed
+      claude/codex CLIs, so premium use is for third-opinion diversity (Gemini).
+      Headless: `devin -p "<prompt>" --model <id>`. Effort is baked into the model
+      ID suffix, so route.effort is ignored. Full catalog: `devin models list`
+      (40 families, 189 allowed). Remaining quota: windsurf.com/subscription/manage-plan.
+    models:
+      # IDs verified 2026-08-16 via `devin models list` (devin 3000.4.25).
+      swe-1-7:
+        tier: standard
+        cost: free           # Cognition's own coding model, 262K context, zero quota
+        use_for: [implementation, refactors, bulk-mechanical, free-first-drafts]
+      swe-1-7-medium:
+        tier: fast
+        cost: free
+        use_for: [bulk-mechanical, docs, cheap-triage]
+      gemini-3-7-flash-high:
+        tier: standard       # premium: draws shared quota
+        use_for: [cross-provider-review, third-opinion]
+      kimi-k3-high:
+        tier: strong         # premium: 1M context, $3/$15 quota rate — cheapest strong-tier third opinion
+        use_for: [cross-provider-review, huge-context-review, third-opinion]
+      deepseek-v4-flash-high:
+        tier: fast           # premium but nearly free: 1M context, $0.14/$0.28 quota rate
+        use_for: [bulk-mechanical, large-codebase-sweeps]
+
+  # --- fourth subscription slot ------------------------------------------
+  # Uncomment and fill when you buy it. The skill and dispatch.sh pick it up
+  # automatically; no other file changes.
+  #
+  # <provider-key>:
+  #   cli: <binary>            # gemini | cursor-agent | opencode | ...
+  #   subscription: "<plan name>"
+  #   billing: plan
+  #   pool: "<what limits look like>"
+  #   models:
+  #     <model-id>:
+  #       tier: strong | standard | fast | frontier
+  #       use_for: [ ... ]
+  # ------------------------------------------------------------------------
+
+# Subcontractors are NOT routing targets — never put them in a route: block or
+# fallback chain. They are tools a routed dev may use mid-story. dispatch.sh
+# ignores this section entirely.
+subcontractors:
+  local-qwen36-27b:
+    what: "self-hosted qwen36-27b on the homelab GPU via LiteLLM — free, fully local"
+    tool: "~/.claude/local-model/delegate.sh --dir <worktree> --task-file <brief> --verify '<cmd>'"
+    protocol: "junior-dev protocol in ~/.claude/CLAUDE.md — drafts only, NEVER ships unreviewed"
+    constraints: >
+      GREEN-profile tasks only (unit tests for pure code, pinned bug fixes,
+      mechanical refactors, boilerplate); hard 65K context — name exact small
+      files, forbid exploration; RED for safety-critical paths. Only claude-cli
+      drivers know the protocol (it lives in the Claude CLAUDE.md), so GPU
+      delegation only happens inside claude routes. The PM stamps a
+      local_gpu: green|yellow|red pre-assessment in story frontmatter; green =
+      standing approval for the headless dev to delegate without asking.
+    overlap_note: >
+      devin/swe-1-7 covers a similar free-drafts niche with 262K context and no
+      babysitting; prefer the GPU when privacy/locality matters or the Devin
+      quota story changes, prefer swe-1-7 when the brief won't fit 65K.
+
+routing:
+  default_provider: claude
+
+  # Reviewer should not share the author's blind spots: when both providers can
+  # handle the tier, review runs on the OTHER provider from the one that wrote the code.
+  review_diversity: prefer-cross-provider
+
+  # Where dispatch.sh retries when a route hits rate limits / pool exhaustion.
+  # Format: provider/model
+  fallbacks:
+    claude/sonnet: [openai/gpt-5.6-sol]
+    claude/opus: [openai/gpt-5.6-sol]
+    claude/haiku: [openai/gpt-5.6-luna, devin/swe-1-7-medium]
+    openai/gpt-5.6-sol: [claude/sonnet]
+    openai/gpt-5.6-luna: [claude/haiku]
+
+  budget_rules:
+    - "fable-5 only for epic planning, architecture calls, and reviews escalated after a failed cycle"
+    - "keep roughly 30% of the weekly Claude pool free for your own interactive sessions"
+    - "volume work (>5 similar stories) goes to the fast tier by default"
+    - "devin FREE models (swe-1-7*, glm-5-2) cost nothing — legal anywhere, including fallbacks; devin PREMIUM models draw the shared Windsurf quota — explicit routes only (third opinions), never fallback targets"
+
+  # Provider strengths — THESE ARE YOUR OBSERVATIONS, NOT FACTS. Seed them from
+  # experience and edit as you learn; the skill cites this table when explaining a pick.
+  strengths:
+    claude: [long-agentic-refactors, tool-heavy-work, careful-multi-file-edits]
+    openai: [second-opinion-reviews, tasks-where-claude-pool-is-hot]
+    devin: [gemini-access, cross-provider-third-opinion]
