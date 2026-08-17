@@ -38,14 +38,16 @@ fi
 # TUI /status, zero network. --probe-codex forces a fresh snapshot via one tiny
 # luna call (costs a sliver of the Plus pool — use sparingly).
 codex_home="${CODEX_HOME:-}"
-[[ -z "$codex_home" ]] && codex_home="$(ls -d "$HOME"/.config/orca/codex-accounts/*/home 2>/dev/null | head -1)"
+[[ -z "$codex_home" ]] && codex_home="$(ls -d "$HOME"/.config/orca/codex-accounts/*/home "$HOME/Library/Application Support/orca/codex-accounts/"*/home 2>/dev/null | head -1)"
 [[ -z "$codex_home" ]] && codex_home="$HOME/.codex"
 
 if [[ "${1:-}" == "--probe-codex" ]]; then
   (cd /tmp && timeout 120 codex exec --skip-git-repo-check -m gpt-5.6-luna "Reply with only: ok" >/dev/null 2>&1) || true
 fi
 
-newest_session="$(find "$codex_home/sessions" "$HOME/.codex/sessions" -name 'rollout-*.jsonl' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)"
+# portable (BSD find has no -printf): rollout basenames embed the timestamp, so
+# sorting by basename is chronological
+newest_session="$(find "$codex_home/sessions" "$HOME/.codex/sessions" -name 'rollout-*.jsonl' 2>/dev/null | awk -F/ '{print $NF" "$0}' | sort | tail -1 | cut -d' ' -f2-)"
 if [[ -n "$newest_session" ]]; then
   # schema note (verified 2026-08-16, codex 0.145/plus): windows are labeled by
   # window_minutes (~300 = 5h, ~10080 = weekly); on Plus, primary IS the weekly
