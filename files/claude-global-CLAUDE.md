@@ -222,6 +222,25 @@ wave to clean, never merge past it, and never line-triage it itself:
    and Sentry findings are dispositioned does the merge decision happen (or the
    protected-path escalation to Josh, with a "PR is clean" note attached).
 
+**PR language law (added 2026-08-17) — applies to ALL public-facing text:**
+PR titles, PR bodies, PR/issue comments, commit messages, review replies —
+anything a maintainer or contributor will read on GitHub:
+- **No AI attribution, ever.** No "Generated with", no Co-Authored-By bots, no
+  "as an AI", no tool banners — mirroring the contributor-guide hook. Emojis only
+  if the repo's conventions use them.
+- **No BMAD vocabulary.** BMAD is internal machinery: never mention BMAD, epics,
+  stories, story files, personas, dev agents, gates, cycles, or dispatch in
+  public text. Translate to plain engineering language ("this change", "the
+  contract foundation work", "follow-up"). Linear references (GLY-123, project
+  names) are FINE — the maintainer team shares that vocabulary.
+- **Humanizer pass required.** Before posting any PR body or public comment, run
+  the text through the `humanizer` skill (installed at ~/.agents/skills/humanizer)
+  — strip AI-writing tells while keeping facts and meaning. Workers without skill
+  access apply its core rules manually: no inflated claims, no stock AI phrasing,
+  no bullet-point essays where two sentences do, active voice, concrete specifics.
+- The post-PR triage worker checks these on every PR it touches and fixes
+  violations (edit the PR body/comment) as part of its round.
+
 **PR discipline: platform health + size (added 2026-08-17)**
 
 *GitHub health gate.* Before creating a PR, merging, or starting any story whose
