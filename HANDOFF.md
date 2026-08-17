@@ -141,7 +141,17 @@ no re-registration needed.
    web app → Playwright MCP against the running stack; mobile → simulator/emulator
    (Orca's emulator surface if present); CLI/library → its real integration
    harness. Validation stories' ACs must name exact flows, never "test the feature".
-4. Do NOT create tracker artifacts, orchestration Runs, or dispatch real stories
+4. **Merge-consequence check (required per repo):** determine what a merge to the
+   default/sync branch actually DOES. Plain code repo → integration branch,
+   deploys gated elsewhere → standard merge authority applies. **GitOps/IaC repo
+   (Flux/Argo/Terraform auto-apply): merging IS deploying** — do not enable PM
+   merge authority as-is; flag to the owner and record their choice in the repo's
+   CLAUDE.md (options: merges always human; or PM merges only paths outside the
+   auto-sync scope; or merges target a staging overlay/branch with promotion to
+   the prod overlay kept human). Gates for such repos are schema/dry-run tools
+   (kubeconform, kustomize build, helm template, `flux diff`/`terraform plan`),
+   and validation stories verify against a staging/kind environment, never prod.
+5. Do NOT create tracker artifacts, orchestration Runs, or dispatch real stories
    during setup.
 
 ## Phase 9 — smoke tests
