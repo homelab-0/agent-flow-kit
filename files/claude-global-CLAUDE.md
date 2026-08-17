@@ -221,3 +221,31 @@ wave to clean, never merge past it, and never line-triage it itself:
 4. Only when ALL checks are green, every CodeRabbit thread is replied-to/resolved,
    and Sentry findings are dispositioned does the merge decision happen (or the
    protected-path escalation to Josh, with a "PR is clean" note attached).
+
+**PR discipline: platform health + size (added 2026-08-17)**
+
+*GitHub health gate.* Before creating a PR, merging, or starting any story whose
+branch must fork from a not-yet-merged develop update, run
+`~/.agents/skills/model-router/scripts/github-health.sh` (public status API, no
+auth). Non-zero exit → HOLD all GitHub-side operations: park finished work on its
+own story branch/worktree, poll roughly every 15 minutes, resume when operational.
+An outage NEVER changes PR boundaries — do not keep implementing dependent stories
+onto unmerged branches "to keep moving" unless explicitly opening a stacked-PR
+chain (below). Batching multiple stories into one branch/PR because GitHub was
+down is the failure mode this gate exists to prevent. Note the check judges the
+overall indicator, not just the named components — a degraded component unrelated
+to git/PR/Actions (e.g. Copilot) may be waived with a one-line note.
+
+*PR sizing.* One PR = one story, always; squash-merge preserves that mapping.
+Size budget for the REVIEWABLE diff — excluding generated files (committed
+contracts, generated types, lockfiles), which must be called out as generated in
+the PR body: beyond roughly **800 added+changed lines or 25 files**, do not ship
+one PR. Split into a **stacked-PR chain** (GitHub stacked PRs / `gh stack`,
+public preview) with each layer independently human-reviewable and ordered so
+lower layers make sense alone; verify the gh stack tooling is available first and
+fall back to sequential small PRs if not. A PR too large for a human to actually
+review is UNACCEPTABLE regardless of tooling — if stacking can't restore
+reviewability, the story was mis-scoped: stop and re-plan it with Josh instead of
+shipping the blob. The PM estimates diff size at planning (oversized story =
+split the story, not the PR after the fact); workers report final diff size in
+the story's Dev Agent Record; the post-PR triage worker flags budget violations.
