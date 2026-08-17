@@ -195,7 +195,8 @@ Opening the PR starts a second review wave — CI, CodeRabbit's PR-level review
 (broader context than its CLI), GitGuardian, Sentry checks. The PM must work this
 wave to clean, never merge past it, and never line-triage it itself:
 1. After PR creation, WAIT for all checks to complete (`gh pr checks --watch` or
-   poll) and for CodeRabbit's PR review to post. No merge decision on pending checks.
+   poll) and for the PR-review bots to post — CodeRabbit AND Devin Review
+   (`devin-ai-integration` bot). No merge decision on pending checks or reviews.
 2. If anything is red or has findings, dispatch ONE **PR-triage worker** per round
    (BMAD `dev` persona, claude route — it needs gh + the MCP toolchain; fresh
    session, not the PM). Its brief: evaluate every failure/finding and either fix
@@ -216,6 +217,14 @@ wave to clean, never merge past it, and never line-triage it itself:
      true hit without rotation.
    - **Sentry PR findings**: real → fix; and give thumbs-up/down feedback on each
      finding — Sentry learns from it exactly like CodeRabbit learns from replies.
+   - **Devin Review findings** (inline comments from `devin-ai-integration`, typed
+     🟡 BUG vs 🔍 ANALYSIS, with a based_on_repo_rules flag): evaluate each; real →
+     fix on the branch; ANALYSIS-class items may be dispositioned with a short
+     reply when no change is warranted. Its feedback mechanism is REACTIONS on
+     each inline comment — 👍 if the finding was real/helpful, 👎 if wrong or
+     noise (`gh api repos/{owner}/{repo}/pulls/comments/{comment_id}/reactions
+     -f content='+1'|'-1'`). React on EVERY Devin finding, every round — it
+     learns repo rules from this exactly like CodeRabbit learns from replies.
 3. Worker pushes fixes → checks re-run → repeat from step 1. Max 3 triage rounds,
    then escalate to Josh with a per-finding summary.
 4. Only when ALL checks are green, every CodeRabbit thread is replied-to/resolved,
