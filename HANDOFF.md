@@ -15,34 +15,65 @@ difference in the final report.
 - Never set or export `ANTHROPIC_API_KEY`; never use `--bare` when spawning claude.
   Either silently moves plan billing to metered API.
 - GUI or interactive-login steps: do NOT attempt; collect for the report.
-- Design intent, so adaptations stay on-mission: PM plans epics → stamps `route:`
-  frontmatter per story via the model-router skill → dispatch.sh spawns
-  persona-injected workers (claude/codex/devin) → deterministic gates → review
-  gates → PR → post-PR triage loop → PM merges under guardrails. Humans decide:
-  protected paths, promotions, bypasses, true secrets.
+- Design intent, so adaptations stay on-mission: PM plans epics → describes each
+  story to the central router (`POST /v1/route`) → a human accepts or
+  deliberately overrides the recommendation → the decision is frozen into an
+  immutable execution stamp → dispatch.sh places (when required), validates the
+  stamp fail-closed, and launches a persona-injected worker in a visible Orca
+  worktree/terminal → deterministic gates → review gates → PR → post-PR triage
+  loop → PM merges under guardrails. Humans decide: protected paths, promotions,
+  bypasses, true secrets, and every route.
+- The router is the SOLE routing authority. There is no local routing table, no
+  tier lookup and no runtime fallback chain any more. Re-routing means a new
+  `/v1/route` call and a new stamp, made by a planning session with a human in
+  the loop — never a decision dispatch makes on its own.
 
 ## Phase 0 — preflight (report, fix nothing except yq)
 
-1. `command -v yq jq claude codex devin orca op bunx uvx` — note missing. yq must
-   be mikefarah v4+ (installing yq to a PATH dir IS yours to do if absent).
-2. Login state: `claude auth status`; `codex doctor` (auth section); `devin auth
-   status`. Missing logins → needs-owner (interactive).
+1. `command -v yq jq curl claude codex orca agent-stamp-validate op bunx uvx` —
+   note missing. yq must be mikefarah v4+ (installing yq to a PATH dir IS yours
+   to do if absent). `agent-stamp-validate` is built from the control-plane repo
+   (`services/agent-router`); without it dispatch cannot validate a stamp and
+   will refuse every launch, which is the correct behaviour, not a workaround
+   to route around.
+2. Auth MODE — **not liveness.** `claude auth status` (expect `authMethod:
+   claude.ai`, `apiProvider: firstParty`); `codex doctor` (auth section).
+   These report what kind of credential record EXISTS. They do NOT prove it
+   still works: on the validated host `codex login status` reported "Logged in
+   using ChatGPT" (exit 0) for two stores that both failed on the first real
+   turn with a spent refresh token. **Never gate a launch on a status command** —
+   it will wave a dead session straight into a run. The honest options are a
+   real trivial turn, or accepting the auth failure at launch. Missing or
+   API-key-mode logins → needs-owner (interactive; login is never automated,
+   never scripted, and OAuth material is never copied between stores or hosts).
 3. `env | grep -c OP_SERVICE_ACCOUNT_TOKEN` — a 1Password service-account token
    machine-wide makes `op read`/`op run` promptless (this is what makes secret-
    dependent gates autonomous). If absent: needs-owner — "export the existing
    service-account token via an untracked env file sourced by the shell rc"
    (reference: `~/.op-agent-env` + one rc line; on nix-managed hosts the rc line
    goes in the flake, the env file stays untracked).
-4. `env | grep -i ANTHROPIC_API_KEY` must be empty.
-5. `orca status --json` if orca exists. Orca enables visible dispatch (worktree
-   cards + terminals) and simulator/emulator surfaces; the flow degrades to
-   headless dispatch without it.
+4. `env | grep -i ANTHROPIC_API_KEY` must be empty. Same for `CLAUDE_CONFIG_DIR`:
+   dispatch fails closed on a non-default value, because only Claude's DEFAULT
+   store under the approved HOME is a validated launch path.
+5. `orca status --json`. **Orca is required, not optional.** Dispatch refuses to
+   launch from anywhere that is not an Orca-managed worktree: a worker with no
+   worktree card and no terminal tab is invisible, and an invisible worker is
+   not a supervised one. There is no headless degradation mode.
+6. Router reachability: `curl -sS -o /dev/null -w '%{http_code}\n' \
+   -H "Authorization: Bearer $AGENT_ROUTER_TOKEN" <router>/v1/status`.
+   The caller token comes from the owner's secret store and is NEVER written
+   into any file in this kit — `subscriptions.yaml` names the environment
+   variable, never its value.
 
 ## Phase 1 — install the model-router kit
 
     cp -r files/model-router ~/.agents/skills/model-router
     ln -s ~/.agents/skills/model-router ~/.claude/skills/model-router   # if absent
     chmod +x ~/.agents/skills/model-router/scripts/*.sh
+
+Scripts shipped: `dispatch.sh` (validate → place → Orca-visible launch → gates →
+thin result), `make-stamp.sh` (accepted `/v1/route` decision → immutable stamp),
+`usage-check.sh` (observability only), `github-health.sh`.
 
 `~/.agents/skills` is the universal-skills home (codex reads it too); `~/.claude/
 skills` entries are symlinks by convention. If a copy already exists, diff first —
@@ -60,24 +91,30 @@ the owner's local edits win; flag conflicts.
     orca skills install --skill orca-cli --skill orchestration
     orca skills get orchestration --full   # verify
 
-## Phase 4 — truth up the registry + usage-check for THIS machine
+## Phase 4 — point the launcher at the control plane
 
-`files/model-router/subscriptions.yaml` describes the OWNER's subscriptions —
-account-level facts carry across machines; machine-level paths may not:
+`files/model-router/subscriptions.yaml` is no longer a routing registry. It is
+LAUNCHER CONFIGURATION: where the router lives, which env var carries the caller
+token, which trusted catalog the stamp validator loads, and which local binary
+implements each harness. Nothing in it names a harness, a model or an effort for
+a task, and nothing may be added that does.
 
-1. Codex model IDs: find this machine's codex models cache (`codex doctor` prints
-   CODEX_HOME; Orca-managed homes live under `~/.config/orca/codex-accounts/*/home`
-   on Linux, `~/Library/Application Support/orca/codex-accounts/*/home` on macOS —
-   usage-check.sh already globs both). Confirm the registry's IDs still exist.
-2. `devin models list` — confirm registered IDs (free-tier models especially).
-3. usage-check.sh is BSD/GNU portable; the claude collector needs `bunx` +
-   the owner's statusline usage package. Run it; if a collector degrades, that is
+1. `launcher.router_endpoint` — confirm it resolves from this machine.
+2. `launcher.caller_token_env` — confirm the named variable is populated in the
+   owner's shell (same untracked-env-file pattern as the 1Password token). NEVER
+   write the token itself into the file.
+3. `launcher.catalog_path` — the trusted catalog DOCUMENT (not the ConfigMap
+   wrapper) that `agent-stamp-validate` loads. This is trusted policy material
+   and is always installer configuration: it is never accepted from a stamp or
+   from stdin, because a workload must not choose its own policy authority.
+   `AGENT_STAMP_VALIDATE_CATALOG_PATH` overrides it.
+4. `launcher.harness_binaries` — confirm each named binary exists on PATH.
+   Model IDs are NOT configured here any more; the physical model behind a
+   profile comes from the catalog, and moves by catalog PR underneath a stable
+   profile name.
+5. Run `scripts/usage-check.sh` and include output in the report. It is
+   observability only and emits no routing guidance; a degraded collector is
    graceful and expected — report, don't hack.
-4. Local-model subcontractors (registry `subcontractors:` block): verify whether
-   the referenced tooling exists on this host; if not, append a one-line
-   "not installed on this host" note to its constraints. Free cloud models cover
-   the free-drafts role where no local GPU exists.
-5. Run `scripts/usage-check.sh` and include output in the report.
 
 ## Phase 5 — merge the global policies into ~/.claude/CLAUDE.md
 
@@ -122,21 +159,37 @@ no re-registration needed.
        # linear: the tracker issue this work implements. EMPTY = local-only epic:
        # the PM must NOT create or sync anything in the tracker for it.
        linear:
-       # agent = BMAD persona injected at dispatch: dev (default) | qa (validation
-       # stories — claude route only, needs MCP) | tech-writer | quick-flow-solo-dev
-       route: {provider: , cli: , model: , effort: , agent: dev, fallback: []}
-       # local_gpu: subcontractor pre-assessment (green|yellow|red); red if no
-       # local delegate tooling on this host
-       local_gpu:
-       gates: []
+       # stamp: path to the immutable ExecutionStamp written by make-stamp.sh from
+       # an accepted POST /v1/route decision. Defaults to <story>.md.stamp.json.
+       # The stamp's property set is CLOSED — persona, gates and cycle policy have
+       # no home in it and live out here as siblings.
+       stamp:
+       # persona = BMAD persona injected at dispatch: dev (default) | qa
+       # (validation stories) | tech-writer | quick-flow-solo-dev | analyst.
+       # The named file MUST exist under the launcher's agent_dir or dispatch
+       # refuses — persona injection never silently no-ops.
+       persona: dev
+       # gates: the exact commands that define done. An EMPTY list is INVALID:
+       # it cannot tell done from claimed-done, and dispatch refuses to run.
+       gates:
+         - "<real command>"
        max_cycles: 3
        ---
 
-2. Personas: dispatch.sh injects `$AGENT_DIR/<agent>.md` (default
-   `_bmad/bmm/agents`). If the repo uses the skills layout, create
-   `_bmad/bmm/agents/` with symlinks to the installed `bmad-agent-*` SKILL.md
-   files. Verify at least `dev.md` resolves. Missing personas (e.g. qa) →
-   needs-owner; validation stories run the dev persona meanwhile.
+   There is no `route:` block and no `local_gpu:` pre-assessment. Routing lives
+   in the stamp; dispatch REFUSES a story that still carries a `route:` block
+   rather than ignoring it, because a stale local route block that looks
+   authoritative is worse than none. Local-GPU work is expressed as the
+   catalog's local profiles plus `placement_policy`, resolved late by
+   `/v1/place` — not as a human-stamped hint.
+
+2. Personas: dispatch.sh injects `<launcher.agent_dir>/<persona>.md` (default
+   `_bmad/bmm/agents` — the same path this phase creates; a mismatch here used
+   to make persona injection a silent no-op). If the repo uses the skills
+   layout, create `_bmad/bmm/agents/` with symlinks to the installed
+   `bmad-agent-*` SKILL.md files. Verify at least `dev.md` resolves. Missing
+   personas (e.g. qa) → needs-owner: dispatch will fail loudly rather than run
+   the wrong persona and report success.
 3. Validation surface — match the project, don't copy another project's choice:
    web app → Playwright MCP against the running stack; mobile → simulator/emulator
    (Orca's emulator surface if present); CLI/library → its real integration
@@ -156,14 +209,25 @@ no re-registration needed.
 
 ## Phase 9 — smoke tests
 
-1. Dispatch smoke: /tmp/router-smoke.md with
-   `route: {provider: claude, cli: claude, model: haiku, agent: dev}`,
-   `gates: ["true"]`, `max_cycles: 1`, body "Reply with the word ok." Run FROM the
-   directory containing it (dispatch.sh refuses stories outside $PWD — worker
-   sandboxes root at cwd). Expect exit 0, result.json status "done".
-2. Free-model smoke (zero quota): `devin -p "Reply with only the word ok" --model
-   swe-1-7-medium --respect-workspace-trust false`
-3. `scripts/usage-check.sh` and `scripts/github-health.sh` full runs.
+1. **Kit self-tests (no network, no harness launch):** `tests/run-tests.sh` from
+   the kit checkout. It shellchecks every script, asserts the generated harness
+   commands against both frozen launch contracts, and drives dispatch.sh through
+   every refusal path with stubbed orca/validator/router binaries. All green is
+   the bar; investigate any failure before installing.
+2. **Router round-trip (read-only):** POST a throwaway RouteRequest and inspect
+   the recommendation without stamping it:
+   `curl -sS -X POST "$ROUTER/v1/route" -H "Authorization: Bearer $AGENT_ROUTER_TOKEN"
+    -H 'Content-Type: application/json' -d '{"story_id":"SMOKE-1","title":"smoke",
+    "ambiguity":"low","blast_radius":"low","tags":["docs"]}' | jq .`
+   Expect an ExecutionProfile with harness/model_profile/effort/expires_at.
+3. **Stamp round-trip:** run the same request through
+   `scripts/make-stamp.sh --request <f> --out /tmp/smoke.stamp.json --check`.
+   Expect a closed stamp whose `expires_at` is byte-identical to the response's,
+   and an advisory validator verdict.
+4. **Dispatch smoke:** only inside a real Orca worktree, with a real stamp and a
+   real gate. Do NOT invent a story with `gates: []` — dispatch refuses it by
+   design, and that refusal is itself worth observing once.
+5. `scripts/usage-check.sh` and `scripts/github-health.sh` full runs.
 
 ## Final report (always produce)
 
