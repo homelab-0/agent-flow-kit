@@ -33,10 +33,21 @@ If OMEGA is unavailable, use basic coordination:
 
 ## Local GPU delegation (junior-dev protocol)
 
-A self-hosted qwen36-27b (homelab GPU, LiteLLM) is available for offloading scoped coding
+A self-hosted qwen36-27b (homelab GPU) is available for offloading scoped coding
 work to save cloud tokens. Treat it as a **junior dev**: it drafts, it never ships.
 Evaluation + recommendation matrix: `_bmad-output/planning-artifacts/qwen36-local-model-evaluation-2026-07-10.md`
 (GlycemicGPT repo). Delegation tool: `~/.claude/local-model/delegate.sh`.
+
+**This is SUBCONTRACTING, not routing — the two are now different things.** The old
+`local_gpu: green|yellow|red` frontmatter pre-assessment is RETIRED: it was a static,
+human-stamped competitor to the router's own `placement_policy` /
+`placement_required` fields, and it went stale the moment capacity moved. Local
+execution is now expressed the same way every other execution is: the router selects
+a local model profile, the stamp carries the placement policy, and `/v1/place`
+resolves the physical GPU late — per attempt, against measured capacity, with a TTL.
+What survives here is the junior-dev protocol below, which is about a routed session
+choosing to subcontract a draft mid-story. It is never a dispatch target and never
+appears in a stamp.
 
 ### When to consider delegating (assess at task pickup)
 - GREEN: unit tests for existing pure code; bug fixes pinned by a failing test/error output;
@@ -80,23 +91,51 @@ Evaluation + recommendation matrix: `_bmad-output/planning-artifacts/qwen36-loca
 
 ## Model & effort routing (BMAD flow)
 
-Guidance for choosing which model/effort a session should run under, and what the BMAD PM
-should recommend in dev handoffs. Cost order: local GPU (free) < Sonnet < Opus < Fable 5;
-ultracode multiplies whatever model it runs on.
+**Dispatched story work is routed by the central control plane, not from this file.**
+`POST /v1/route` decides the harness, model profile and effort; a human accepts or
+deliberately overrides; the decision is frozen into an immutable execution stamp. The
+guidance below covers only what the router does not own: the altitude your OWN
+interactive session runs at, and how the PM writes a handoff.
 
-### Dev-session model, by story profile
-- **Sonnet 5** — clear spec + contained blast radius: boilerplate-heavy stories, test
-  authoring, mechanical refactors, single-module features with named files, doc updates.
-  The dev-loop gates (adversarial review, CodeRabbit, CI) are the safety net.
-- **Opus 4.8** — the default for standard senior work: multi-file features, debugging,
-  integrations, moderately ambiguous specs. Fast mode (/fast) is Opus at faster output —
-  good for long mechanical sessions.
-- **Fable 5** — when a plausible-but-wrong answer is expensive: safety-critical paths
-  (dosing, alert floor, ingestion mappers, safety_validation.py), architecture decisions,
-  subtle concurrency (BLE, wear sync, coroutines), gnarly cross-cutting debugging,
+### The routing sequence (dispatched work)
+
+```
+four-axis classification (ambiguity, blast_radius, context_size, volume_hint)
+  → POST /v1/route                        the router recommends
+  → human accepts, or overrides with a recorded actor + reason
+  → make-stamp.sh                         immutable stamp; expires_at verbatim
+  → dispatch.sh
+       → POST /v1/place                   ONLY when placement_required
+       → agent-stamp-validate              fail-closed, immediately before launch
+       → Orca worktree + terminal          the worker is visible or it does not run
+       → deterministic gates               re-run independently; exit 0 ≠ success
+       → <story>.result.json
+```
+
+Rules that do not bend:
+- **Never assert a route from memory or from a local table.** There is no tier table
+  here any more, and re-deriving one is how three competing routing authorities
+  happened the first time.
+- **Never edit a stamp, and never reuse one across stories.** `task.story_id` and
+  `task.tags` are re-checked at validation; a borrowed stamp is a stamp for a
+  different task.
+- **A hot pool is not a re-route.** dispatch has no fallback chain. Pool pressure is a
+  planning conversation that ends in a new `/v1/route` call and a new stamp.
+- **Tag honestly.** `security`, `iam`, `secrets`, `prod-iac` and `destructive-tools`
+  are HARD EXCLUSIONS in the catalog, and no human override can bypass them. `iac` is
+  not `prod-iac`.
+- **`allow_metered` defaults to false and the default is the whole control.** Setting
+  it authorizes nothing; setting it automatically after a denial removes the control
+  while leaving the paperwork in place.
+
+### Your own session altitude (not routed — this is about YOU)
+- **Sonnet 5** — clear spec + contained blast radius: boilerplate-heavy work, test
+  authoring, mechanical refactors, doc updates.
+- **Opus** — the default for standard senior work: multi-file features, debugging,
+  integrations, moderately ambiguous specs.
+- **Fable 5** — when a plausible-but-wrong answer is expensive: safety-critical paths,
+  architecture decisions, subtle concurrency, gnarly cross-cutting debugging,
   promotion-gate work, security-sensitive changes.
-- **Local qwen36-27b** — never the driver; GREEN-profile subcontracted drafts under any
-  cloud driver per the delegation protocol above.
 
 ### Ultracode / effort
 - Ultracode = multi-agent orchestration; its value is INDEPENDENT VERIFICATION and
@@ -120,14 +159,20 @@ ultracode multiplies whatever model it runs on.
   Ultracode-worthy PM turns: epic-level alignment audits across many merged stories,
   promotion-readiness reviews, independent validation of safety-critical work. Routine
   turns (story writing, handoffs, status tracking) never warrant it — don't ask.
-- PM DEV-HANDOFF TEMPLATE — every dev handoff prompt must end with a routing block:
+- PM DEV-HANDOFF TEMPLATE — every dev handoff prompt must end with a routing block.
+  The PM records the ACCEPTED ROUTER DECISION; it does not choose one:
   ```
   ## Routing
-  - Dev model: <sonnet|opus|fable5> — <one-line why>
-  - Effort: <standard|high|ultracode> — <one-line why, default standard>
-  - Local-GPU pre-assessment: <🟢|🟡|🔴> — <one-line why>
+  - Stamp: <path to the immutable stamp>  (digest sha256:…)
+  - Router decision: <harness> / <model_profile> / <effort>  — accepted | overridden
+  - Override: <none | actor + reason>     (provenance only; grants no bypass)
+  - Placement: <not required | policy, resolved late by /v1/place per attempt>
+  - Persona: <dev|qa|tech-writer|…>       (sibling key; file must exist)
+  - Gates: <the exact commands; NEVER empty>
   - Post-dev validation: <what the PM will check on return>
   ```
+  If the PM finds itself filling in a model name it picked rather than one the router
+  returned, it has skipped the only step that makes the rest of this meaningful.
 - SEPARATE REVIEWER HANDOFF (three-role flow) — the PM must NOT line-review code
   itself. For stories that meet ANY of: safety-critical paths touched, large/multi-module
   diff, promotion-bound, or the dev session self-reported difficulties — the PM produces
