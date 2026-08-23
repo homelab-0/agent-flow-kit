@@ -1,162 +1,101 @@
-# subscriptions.yaml — the routing registry.
-# This file is the single source of truth for WHAT you can route to.
-# The model-router skill reads it at planning time; dispatch.sh reads it at run time.
-# When you add/drop a subscription or a model ships, edit HERE — nothing else changes.
+# subscriptions.yaml — LAUNCHER CONFIGURATION. Not a routing authority.
+#
+# This file used to be "the single source of truth for WHAT you can route to":
+# tiers, per-model use_for tables, fallback chains, budget rules and provider
+# strengths. All of that has moved to the central control plane. POST /v1/route
+# is now the sole routing authority on this path, and the catalog behind it is
+# the only place a harness/profile/effort combination is declared legal.
+#
+# What is left here is the small set of facts the LAUNCHER needs and the router
+# cannot supply: where the router lives, which environment variable carries the
+# caller token, which trusted catalog document the stamp validator loads, and
+# which local binary implements each harness.
+#
+# Two rules that are not negotiable:
+#   1. NOTHING in this file may name a harness, a model profile or an effort for
+#      a task. Choosing those is /v1/route's job. If you find yourself adding a
+#      routing table here, you are rebuilding the thing this file was demoted to
+#      stop being.
+#   2. NO SECRET LIVES HERE. `caller_token_env` names an environment variable;
+#      it never holds its value. Native harness credentials are owned by the
+#      harnesses and by Orca, and no field here can express one.
 
-providers:
+launcher:
+  # The central control plane. dispatch.sh calls POST /v1/place against it when
+  # a stamp says placement_required; make-stamp.sh calls POST /v1/route.
+  router_endpoint: https://gateway.example.com
 
-  claude:
-    cli: claude
-    subscription: "Claude Max 20x"
-    billing: plan          # plan = draws subscription limits; metered = costs money per token
-    pool: "one weekly pool shared by ALL machines logged into this account"
-    notes: >
-      -p / headless draws normal plan limits (verified Aug 2026; Anthropic paused the
-      SDK-credit change June 15). Keep ANTHROPIC_API_KEY out of server envs and never
-      use --bare in dispatch scripts, or auth silently shifts to metered API billing.
-    models:
-      # When dispatching via Orca orchestration, worker-start --model passes these
-      # through verbatim ("opaque provider model IDs") — prefer full IDs your CLI
-      # lists, and confirm via launch.requested/launch.effective in the start receipt.
-      fable-5:
-        tier: frontier
-        caps: "included on Max but limited to 50% of the weekly pool; burns pool fastest"
-        use_for: [epic-planning, architecture-decisions, escalated-review]
-      opus:
-        tier: strong
-        use_for: [code-review, hard-implementation, ambiguous-debugging]
-      sonnet:
-        tier: standard
-        use_for: [implementation, refactors, test-writing, integration-work]
-      haiku:
-        tier: fast
-        no_effort_control: true   # effort slider not supported on Haiku
-        use_for: [bulk-mechanical, docs, scaffolding, renames]
-    effort_levels: [low, medium, high, xhigh]   # per-spawn via --effort; max/ultracode are session-only
+  # NAME of the environment variable holding the caller bearer token. The value
+  # is provisioned outside this repo (1Password / the cluster secret) and is
+  # never written here.
+  caller_token_env: AGENT_ROUTER_TOKEN
 
-  openai:
-    cli: codex
-    subscription: "ChatGPT Plus ($20/mo)"
-    billing: plan
-    pool: >
-      separate weekly/5h Codex limits, independent of the Claude pool — but Plus is
-      the SMALLEST paid pool we own. Role: review diversity + rate-limit fallback +
-      second opinions, NOT bulk implementation; volume work goes to claude fast tier
-      or devin free models first.
-    notes: >
-      MODEL NAMES MOVE FAST. Before first dispatch, run `codex` interactively, check
-      /model (or ~/.codex/config.toml), and replace the placeholder names below with
-      what your CLI actually offers. Effort analog is model_reasoning_effort
-      (low|medium|high) set per-run via --config.
-    models:
-      # IDs verified 2026-08-15 from this host's codex models_cache.json (codex-cli 0.145.0).
-      # Also available: gpt-5.6-terra (balanced everyday tier), gpt-5.5, gpt-5.4, gpt-5.4-mini.
-      gpt-5.6-sol:          # "Latest frontier agentic coding model"
-        tier: strong
-        use_for: [implementation, cross-provider-review, refactors]
-      gpt-5.6-luna:         # "Fast and affordable agentic coding model"
-        tier: fast
-        use_for: [bulk-mechanical, docs]
+  # The trusted catalog document agent-stamp-validate loads. This is TRUSTED
+  # POLICY MATERIAL and is always launcher/installer configuration — it is never
+  # accepted from a stamp or from stdin, because a workload must not be able to
+  # choose its own policy authority. Equivalent to setting
+  # AGENT_STAMP_VALIDATE_CATALOG_PATH, which takes precedence when set.
+  # Point it at the catalog DOCUMENT itself, never at the ConfigMap wrapper.
+  catalog_path: ""
 
-  devin:
-    cli: devin
-    subscription: "Devin Teams $144/yr (legacy Windsurf annual; renews 2027-08-09; org Homelab.0)"
-    billing: plan          # daily+weekly token quota shared with Devin Desktop; FREE models bypass quota entirely
-    pool: >
-      shared daily/weekly token quota (visible w/ reset timers at
-      app.devin.ai/org/homelab-0/settings/usage); free-tagged models cost nothing.
-      Overage = prepaid on-demand balance ONLY ($10 loaded, $5/message cap,
-      auto-reload should stay OFF) — bounded blast radius, no open-ended metering.
-    notes: >
-      Two cost classes. FREE models (swe-1-7*, swe-1-6, glm-5-2 — tagged Free in
-      `devin models list`) consume NO quota — route freely, even as fallbacks.
-      PREMIUM models (everything with $/MTok) draw the shared daily/weekly quota —
-      explicit routing only; its Claude/GPT premiums duplicate the plan-billed
-      claude/codex CLIs, so premium use is for third-opinion diversity (Gemini).
-      Headless: `devin -p "<prompt>" --model <id>`. Effort is baked into the model
-      ID suffix, so route.effort is ignored. Full catalog: `devin models list`
-      (40 families, 189 allowed). Remaining quota: windsurf.com/subscription/manage-plan.
-    models:
-      # IDs verified 2026-08-16 via `devin models list` (devin 3000.4.25).
-      swe-1-7:
-        tier: standard
-        cost: free           # Cognition's own coding model, 262K context, zero quota
-        use_for: [implementation, refactors, bulk-mechanical, free-first-drafts]
-      swe-1-7-medium:
-        tier: fast
-        cost: free
-        use_for: [bulk-mechanical, docs, cheap-triage]
-      gemini-3-7-flash-high:
-        tier: standard       # premium: draws shared quota
-        use_for: [cross-provider-review, third-opinion]
-      kimi-k3-high:
-        tier: strong         # premium: 1M context, $3/$15 quota rate — cheapest strong-tier third opinion
-        use_for: [cross-provider-review, huge-context-review, third-opinion]
-      deepseek-v4-flash-high:
-        tier: fast           # premium but nearly free: 1M context, $0.14/$0.28 quota rate
-        use_for: [bulk-mechanical, large-codebase-sweeps]
+  # The pre-execution stamp validator. Fail-closed, run immediately before every
+  # launch; its 0/1/2 exits are remapped into dispatch.sh's 4/5 band.
+  stamp_validator: agent-stamp-validate
 
-  # --- fourth subscription slot ------------------------------------------
-  # Uncomment and fill when you buy it. The skill and dispatch.sh pick it up
-  # automatically; no other file changes.
-  #
-  # <provider-key>:
-  #   cli: <binary>            # gemini | cursor-agent | opencode | ...
-  #   subscription: "<plan name>"
-  #   billing: plan
-  #   pool: "<what limits look like>"
-  #   models:
-  #     <model-id>:
-  #       tier: strong | standard | fast | frontier
-  #       use_for: [ ... ]
-  # ------------------------------------------------------------------------
+  # Where BMAD persona files live. dispatch.sh injects $agent_dir/<persona>.md
+  # for the persona named by the story's `persona:` key, and FAILS LOUDLY when
+  # that file is missing — persona injection must never silently no-op.
+  agent_dir: _bmad/bmm/agents
 
-# Subcontractors are NOT routing targets — never put them in a route: block or
-# fallback chain. They are tools a routed dev may use mid-story. dispatch.sh
-# ignores this section entirely.
-subcontractors:
-  local-qwen36-27b:
-    what: "self-hosted qwen36-27b on the homelab GPU via LiteLLM — free, fully local"
-    tool: "~/.claude/local-model/delegate.sh --dir <worktree> --task-file <brief> --verify '<cmd>'"
-    protocol: "junior-dev protocol in ~/.claude/CLAUDE.md — drafts only, NEVER ships unreviewed"
-    constraints: >
-      GREEN-profile tasks only (unit tests for pure code, pinned bug fixes,
-      mechanical refactors, boilerplate); hard 65K context — name exact small
-      files, forbid exploration; RED for safety-critical paths. Only claude-cli
-      drivers know the protocol (it lives in the Claude CLAUDE.md), so GPU
-      delegation only happens inside claude routes. The PM stamps a
-      local_gpu: green|yellow|red pre-assessment in story frontmatter; green =
-      standing approval for the headless dev to delegate without asking.
-    overlap_note: >
-      devin/swe-1-7 covers a similar free-drafts niche with 262K context and no
-      babysitting; prefer the GPU when privacy/locality matters or the Devin
-      quota story changes, prefer swe-1-7 when the brief won't fit 65K.
+  # The operator's explicitly approved HOME for the claude launch. Empty means
+  # "resolve it from the passwd database and validate it", which is the normal
+  # case. It is never the ambient $HOME passed through blind, and never a
+  # hard-coded path. Only Claude's DEFAULT store under this HOME is supported:
+  # a non-default CLAUDE_CONFIG_DIR or an Orca-managed Claude store fails the
+  # launch closed.
+  approved_home: ""
 
-routing:
-  default_provider: claude
+  # PATH admitted into the sanitized child environment. Empty derives it from
+  # the harness binary's own location plus the system directories.
+  approved_path: ""
 
-  # Reviewer should not share the author's blind spots: when both providers can
-  # handle the tier, review runs on the OTHER provider from the one that wrote the code.
-  review_diversity: prefer-cross-provider
+  # How long to wait for the harness to print its in-band exit line before
+  # giving up. `orca terminal wait --for exit` does not fire (the terminal
+  # outlives its command), so the "<HARNESS>_EXIT=" line is the only reliable
+  # completion signal and this timeout is the only bound on waiting for it.
+  launch_timeout_seconds: 5400
 
-  # Where dispatch.sh retries when a route hits rate limits / pool exhaustion.
-  # Format: provider/model
-  fallbacks:
-    claude/sonnet: [openai/gpt-5.6-sol]
-    claude/opus: [openai/gpt-5.6-sol]
-    claude/haiku: [openai/gpt-5.6-luna, devin/swe-1-7-medium]
-    openai/gpt-5.6-sol: [claude/sonnet]
-    openai/gpt-5.6-luna: [claude/haiku]
+  # Local binary implementing each harness name from the catalog's harness axis.
+  # This maps a NAME to an EXECUTABLE. It does not decide which harness runs.
+  harness_binaries:
+    claude: claude
+    codex: codex
 
-  budget_rules:
-    - "fable-5 only for epic planning, architecture calls, and reviews escalated after a failed cycle"
-    - "keep roughly 30% of the weekly Claude pool free for your own interactive sessions"
-    - "volume work (>5 similar stories) goes to the fast tier by default"
-    - "devin FREE models (swe-1-7*, glm-5-2) cost nothing — legal anywhere, including fallbacks; devin PREMIUM models draw the shared Windsurf quota — explicit routes only (third opinions), never fallback targets"
-
-  # Provider strengths — THESE ARE YOUR OBSERVATIONS, NOT FACTS. Seed them from
-  # experience and edit as you learn; the skill cites this table when explaining a pick.
-  strengths:
-    claude: [long-agentic-refactors, tool-heavy-work, careful-multi-file-edits]
-    openai: [second-opinion-reviews, tasks-where-claude-pool-is-hot]
-    devin: [gemini-access, cross-provider-third-opinion]
+# ---------------------------------------------------------------------------
+# Subscriptions, for humans only.
+#
+# Recorded so an operator knows which accounts the native harnesses are signed
+# into and what a rate limit will feel like. NOTHING reads this block. It is not
+# a routing input, and adding a tier or a use_for list to it will not change any
+# decision — /v1/route already knows the entitlement picture from the catalog's
+# entitlement_pools.
+# ---------------------------------------------------------------------------
+subscriptions_note:
+  claude: >-
+    Claude Max 20x. One weekly pool shared by every machine signed into the
+    account. `claude -p` draws normal plan limits. Never export ANTHROPIC_API_KEY
+    and never pass --bare: either silently moves the session to metered API
+    billing, and --bare disables the subscription path by construction.
+  openai: >-
+    ChatGPT Plus. Separate weekly/5h Codex limits, independent of the Claude
+    pool, and the smallest paid pool here. An authenticated run transports over
+    the ChatGPT subscription endpoint; an unauthenticated one falls through to
+    api.openai.com and is refused, which is the signal that a run used the
+    subscription rather than API billing.
+  exhaustion: >-
+    A rate-limited pool is NOT handled by a local fallback any more. dispatch.sh
+    has no fallback chain: re-routing is a NEW /v1/route call and a NEW stamp,
+    made by the planning session with the human in the loop. A silent local
+    re-route was a routing decision made after acceptance, with no stamp, no
+    expiry and no validation — which is exactly what the control plane exists to
+    prevent.
