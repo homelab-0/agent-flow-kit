@@ -218,8 +218,13 @@ no re-registration needed.
    the recommendation without stamping it:
    `curl -sS -X POST "$ROUTER/v1/route" -H "Authorization: Bearer $AGENT_ROUTER_TOKEN"
     -H 'Content-Type: application/json' -d '{"story_id":"SMOKE-1","title":"smoke",
-    "ambiguity":"low","blast_radius":"low","tags":["docs"]}' | jq .`
+    "ambiguity":"low","blast_radius":"low","context_size":12000,"volume_hint":"low",
+    "tags":["docs"]}' | jq .`
    Expect an ExecutionProfile with harness/model_profile/effort/expires_at.
+   All four classification axes are shown deliberately: `ambiguity` and
+   `blast_radius` are required, `context_size` and `volume_hint` are optional,
+   and a smoke test that exercises only the required pair leaves the two signals
+   most likely to be mis-filled untested.
 3. **Stamp round-trip:** run the same request through
    `scripts/make-stamp.sh --request <f> --out /tmp/smoke.stamp.json --check`.
    Expect a closed stamp whose `expires_at` is byte-identical to the response's,
