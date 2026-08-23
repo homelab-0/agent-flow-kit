@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
-# usage-check.sh — pool temperature across all subscriptions, for the router's
-# pre-routing check. Run once at the START of a planning session, not per story.
+# usage-check.sh — OBSERVABILITY ONLY. Pool temperature across the subscriptions
+# the native harnesses are signed into, for a human to read.
+#
+# This script emits NO ROUTING GUIDANCE and is not a routing input. Routing is
+# decided by POST /v1/route against the central catalog, which already knows the
+# entitlement picture; a second, local, threshold-based opinion about which pool
+# to prefer was one of three competing routing authorities and has been retired.
+# Read this to understand what you are seeing, or to decide whether to have a
+# conversation about re-routing — the re-route itself is a new /v1/route call.
 #
 # Honest coverage (as of 2026-08):
 #   claude — real numbers via ccstatusline-usage (same source as Josh's statusline)
 #   codex  — NO headless usage surface (TUI /status only) → reported unknown
-#   devin  — NO CLI usage surface (website only) → reported unknown; free models
-#            (swe-1-7*, swe-1-6, glm-5-2) never draw quota regardless
-# Unknown pools are covered reactively by dispatch.sh's rate-limit fallback chains.
+#   devin  — NO CLI usage surface (website only) → reported unknown
+# An unknown pool is simply unknown. There is no longer a runtime fallback chain
+# covering it reactively: dispatch.sh never re-routes.
 
 set -uo pipefail
 
@@ -38,6 +45,9 @@ fi
 # TUI /status, zero network. --probe-codex forces a fresh snapshot via one tiny
 # luna call (costs a sliver of the Plus pool — use sparingly).
 codex_home="${CODEX_HOME:-}"
+# shellcheck disable=SC2012  # deliberate: -d on a glob of KNOWN Orca-managed
+# account dirs (uuid-named, never exotic). `find` here would need two -path
+# expressions and BSD/GNU divergence for no gain; this form is portable as-is.
 [[ -z "$codex_home" ]] && codex_home="$(ls -d "$HOME"/.config/orca/codex-accounts/*/home "$HOME/Library/Application Support/orca/codex-accounts/"*/home 2>/dev/null | head -1)"
 [[ -z "$codex_home" ]] && codex_home="$HOME/.codex"
 
@@ -92,15 +102,12 @@ wkey="$(grep '^windsurf_api_key' "$HOME/.local/share/devin/credentials.toml" 2>/
 if [[ -n "$wkey" ]]; then
   bst="$(timeout 30 curl -sf "https://app.devin.ai/api/$DEVIN_ORG/billing/status" -H "Authorization: Bearer $wkey" 2>/dev/null)"
   overage="$(jq -r '.overage_credits // "?"' <<<"$bst" 2>/dev/null)"
-  recharge="$(jq -r '.auto_recharge // .has_failed_auto_recharge // empty' <<<"$bst" 2>/dev/null)"
   ar_flag="$(jq -r 'if .auto_recharge_enabled == true then " | WARNING: AUTO-RECHARGE IS ON" else "" end' <<<"$bst" 2>/dev/null)"
   echo "devin:   cycle consumption ${acus} ACU | on-demand pot \$${overage}${ar_flag}   (quota %: browser-only, see settings/usage; free models never draw quota)"
 else
   echo "devin:   cycle consumption ${acus} ACU | billing status unavailable (no CLI credentials)   (quota %: browser-only; free models never draw quota)"
 fi
 echo ""
-echo "routing guidance by claude weekly %:"
-echo "  <50%   route normally (claude default)"
-echo "  50-70% shift standard-tier bulk toward openai + devin-free; claude keeps strong/frontier + MCP-bound stories"
-echo "  70-85% claude ONLY where claude-unique (qa/MCP stories, safety-critical); everything else openai/devin-free"
-echo "  >85%   flag pool pressure to Josh before dispatching anything non-urgent"
+echo "These are observations, not routing guidance. Routing comes from POST /v1/route."
+echo "A hot pool is a reason to talk about re-routing with the human, which means a NEW"
+echo "/v1/route call and a NEW stamp — never a local re-route at dispatch time."
