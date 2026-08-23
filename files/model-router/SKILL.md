@@ -1,160 +1,267 @@
 ---
 name: model-router
 description: >
-  Subscription-aware model, provider, and effort routing for agent work. Use this
+  Routing and dispatch for agent work through the central control plane. Use this
   skill whenever planning epics or stories with BMAD, writing hand-off prompts,
-  creating or updating story files, or whenever the question "which model / provider /
-  effort should run this task" comes up — even implicitly. Also use it when the user
-  says route, dispatch, hand off, spawn a dev, or asks what a task should run on.
-  Always consult subscriptions.yaml (in this skill folder, or the path in
-  $SUBSCRIPTIONS_FILE) before recommending; never route from memory.
+  creating or updating story files, or whenever the question "which harness /
+  model / effort should run this task" comes up — even implicitly. Also use it
+  when the user says route, dispatch, hand off, spawn a dev, or asks what a task
+  should run on. The decision comes from POST /v1/route; never route from memory,
+  and never re-derive a route from a local table.
 ---
 
 # Model Router
 
-You are deciding, per task, which provider + model + effort should execute it — at
-planning time, with the human in the loop. The decision gets stamped into the story's
-frontmatter so dispatch is mechanical later. Runtime improvisation is a bug.
+You are preparing, per task, the SIGNALS that let the central router decide which
+harness, model profile and effort should execute it — then accepting that
+decision with the human in the loop, and freezing it into an immutable execution
+stamp so dispatch is mechanical later.
+
+**You no longer choose the route.** `POST /v1/route` does. Your job is to
+describe the task honestly, accept or deliberately override the recommendation,
+and stamp it. Runtime improvisation was always a bug; local routing tables are
+now one too.
+
+## The chain
+
+```
+four-axis classification
+  → POST /v1/route              (the router recommends)
+  → human accepts, or deliberately overrides with a recorded reason
+  → make-stamp.sh               (immutable stamp; expires_at copied verbatim)
+  → dispatch.sh
+      → POST /v1/place          (only when placement_required)
+      → agent-stamp-validate    (fail-closed, immediately before launch)
+      → Orca worktree + terminal, harness launched under the stamped decision
+      → deterministic gates
+      → <story>.result.json     (thin artifact the PM reads)
+```
+
+Every link is load-bearing. There is no shortcut past any of them, and adding one
+is how this flow stops meaning anything.
 
 ## Workflow
 
-0. **Pool temperature check.** At the START of each planning session (once per epic,
-   not per story), run `scripts/usage-check.sh` and factor the printed guidance into
-   provider picks. Claude reports real session/weekly numbers; codex and devin have
-   no headless usage surface — their exhaustion is handled reactively by dispatch.sh
-   fallbacks. If claude weekly is hot, shift per the thresholds the script prints.
+### 1. Classify the task on four axes
 
-1. **Read the registry.** Load `subscriptions.yaml`. The providers listed there are
-   the ONLY legal routing targets. If a task would genuinely benefit from a provider
-   that is not in the registry, say so in one sentence of prose — never put an
-   unowned provider in a `route:` block.
+These are the same four axes as before. What changed is where they go: they are
+now ROUTER INPUTS, not lookups into a tier table you own.
 
-2. **Classify the task on four axes:**
-   - **Ambiguity** — is the spec airtight, or will the agent make judgment calls?
-   - **Blast radius** — how bad is a wrong-but-plausible result? (touches auth/data
-     model/public API = high)
-   - **Context size** — how much code must be held in mind at once?
-   - **Volume** — is this one task or one of many near-identical ones?
+| Axis | RouteRequest field | Values |
+|---|---|---|
+| Ambiguity — is the spec airtight, or will the agent make judgment calls? | `ambiguity` | `low` \| `medium` \| `high` |
+| Blast radius — how bad is a wrong-but-plausible result? | `blast_radius` | `low` \| `medium` \| `high` \| `critical` |
+| Context size — how much must be held in mind at once? | `context_size` | integer tokens |
+| Volume — one task, or one of many near-identical ones? | `volume_hint` | `low` \| `medium` \| `high` |
 
-3. **Map to a tier:**
+Corroborate blast radius with `touched_paths`. A story claiming low risk while
+naming an auth directory is claiming something its paths do not support, and the
+router reads both.
 
-   | Signal | Tier |
-   |---|---|
-   | High ambiguity OR high blast radius OR cross-cutting architecture | `frontier` / `strong` |
-   | Clear spec, normal implementation, moderate context | `standard` |
-   | Mechanical, repetitive, low blast radius, high volume | `fast` |
-   | Review of a completed story | `strong` (see review rules) |
+### 2. Tag the task — five tags are load-bearing
 
-4. **Pick provider within the tier:**
-   - Start from `routing.default_provider`.
-   - Apply `routing.strengths` if a listed strength matches the task.
-   - Apply `routing.budget_rules` (Fable guard, pool headroom, volume-to-fast-tier).
-   - **Reviews:** honor `review_diversity` — if both providers cover the tier, the
-     reviewer runs on the other provider from the author, and always in a fresh
-     session. Never assign review to the session that wrote the code.
-   - When torn between two options, pick the cheaper tier and note the upgrade
-     trigger ("bump to opus if cycle 1 fails gates").
+`tags` are mostly descriptive, but five are HARD EXCLUSIONS that appear in a
+profile's catalog `forbidden_for` list: **`security`, `iam`, `secrets`,
+`prod-iac`, `destructive-tools`**. A match excludes a profile no matter how well
+it otherwise fits, and no human override can bypass it.
 
-5. **Pick effort** (Claude: `low|medium|high|xhigh`; codex analog is
-   `model_reasoning_effort`):
-   - `fast` tier → low/medium (Haiku ignores effort entirely)
-   - `standard` implementation → high
-   - `strong/frontier` planning and review → xhigh
-   - Prefer raising effort over raising model when the failure mode was "skipped a
-     file / didn't run the tests"; prefer raising model when it "had everything and
-     still got it wrong".
+**The trap: `iac` is not `prod-iac`.** Tag production infrastructure work
+`prod-iac` if you mean the exclusion to fire. `docs`, `tests`, `iac` are
+ordinary signals.
 
-6. **Emit the route block** into the story frontmatter, plus a one-line rationale in
-   the story body (rationale is for Josh, not for the dev agent):
+Tags are also stamped into `task.tags` and re-checked at dispatch, so a stamp
+cannot quietly describe a tamer task than the one that was routed.
+
+### 3. Call the router
+
+```bash
+cat > /tmp/route-req.json <<'JSON'
+{
+  "story_id": "STORY-041-3",
+  "title": "Add the missing LAN DNS record for the gateway hostname",
+  "summary": "One manifest, one test. The hostname does not resolve without a --resolve override.",
+  "touched_paths": ["kubernetes/apps/network/"],
+  "ambiguity": "low",
+  "blast_radius": "low",
+  "context_size": 12000,
+  "volume_hint": "low",
+  "tags": ["iac"],
+  "repo": "prox-ops",
+  "requester": "bmad-pm"
+}
+JSON
+
+scripts/make-stamp.sh --request /tmp/route-req.json \
+  --out .../STORY-041-3.md.stamp.json --check
+```
+
+`make-stamp.sh` POSTs the request, shows you the recommendation, and writes the
+stamp. `--check` runs the validator once as an ADVISORY early warning — it is not
+the final validation, and dispatch re-validates immediately before every launch.
+
+Notes on the request shape:
+
+- The shape is CLOSED. There is no field for a caller-named `harness` or
+  `model_profile`, and there is not going to be one: a caller cannot use this
+  endpoint to tell the router what answer to return.
+- `allow_metered` defaults to false and **the default is the whole control.**
+  Setting it does not authorize anything; it asks the router to consider a
+  billable candidate, and only an authenticated caller that independently holds
+  spend authority gets one. Setting it automatically after a `metered_denied` is
+  removing the control while leaving the paperwork in place. Do not.
+- `placement_policy` is optional; omitted means the catalog default. The router
+  may not widen it — asking for `cluster-only` gets `cluster-only` or an explicit
+  failure, never a workstation.
+
+### 4. Accept, or override deliberately
+
+The response is a RECOMMENDATION, not an instruction. Accept it and stamp it, or
+override it — but an override is a human decision that gets written down:
+
+```bash
+scripts/make-stamp.sh --request /tmp/route-req.json --out <stamp> \
+  --override-harness codex --override-profile openai/strong \
+  --override-actor josh --override-reason "cross-provider review of a claude-authored diff"
+```
+
+An override may bypass ROUTER SCORING ONLY. It never bypasses `forbidden_for`,
+entitlement and billing restrictions, metered-spend authorization, or capability
+and placement constraints. The override record is audit provenance; the final
+stamped fields are validated on their own merits, and an override that produces a
+combination the router itself could never have emitted fails validation exactly
+as if the router had proposed it.
+
+Ask the human before stamping when blast radius is `critical` (auth, data
+migrations, anything irreversible). Otherwise decide, stamp, and show the
+rationale in one line.
+
+### 5. Write the story frontmatter
+
+The stamp is a separate, immutable JSON document. Frontmatter carries only what
+lives OUTSIDE the closed stamp — the stamp's property set is closed and has no
+home for persona, gates or cycle policy, and must not grow one:
 
 ```yaml
-route:
-  provider: claude
-  cli: claude
-  model: sonnet
-  effort: high
-  agent: bmad-dev
-  fallback: [openai/gpt-codex]
+---
+linear:
+# path to the immutable ExecutionStamp; defaults to <story>.md.stamp.json
+stamp: STORY-041-3.md.stamp.json
+# BMAD persona injected at dispatch. Named file must exist under the launcher's
+# agent_dir or dispatch REFUSES — persona injection never silently no-ops.
+persona: dev
+# The exact commands that define done. Copy them from the acceptance criteria,
+# never invent them. An EMPTY gate list is invalid: it cannot distinguish done
+# from claimed-done, and dispatch refuses to run without one.
 gates:
   - "pnpm test"
   - "pnpm lint"
 max_cycles: 3
+---
 ```
 
-`cli` must match the provider's `cli:` in the registry. `fallback` comes from
-`routing.fallbacks` for the chosen provider/model. `gates` are the exact commands
-that define done — copy them from the story's acceptance criteria, never invent them.
+There is no `route:` block any more, and no `local_gpu:` pre-assessment.
+dispatch.sh refuses a story that still carries a `route:` block rather than
+silently ignoring it, because a stale local route block that looks authoritative
+is worse than none.
 
-**Visible dispatch (default):** never run dispatch.sh as a bare background Bash
-command — that makes the worker invisible to Orca. Instead: create the story's
-worktree with `orca worktree create` (not raw `git worktree add`), open a terminal in
-it with `orca terminal create`, `orca terminal rename` it to the story ID + route
-(e.g. "GLY-180 dev sonnet"), then `orca terminal send` the dispatch.sh command and
-`orca terminal wait` for exit. Josh watches the worktree card + terminal tab from the
-app or mobile; the terminal streams the dispatch lifecycle (route, cycles, fallbacks,
-gate results, result JSON). For full turn-by-turn agent visibility use the
-orchestration path below instead.
+Placement is not stamped by you either. `placement_policy` and
+`placement_required` come from the router inside the stamp; the physical
+placement is resolved late, per attempt, by dispatch.
 
-**Dispatching through Orca orchestration:** this block maps 1:1 onto
-`orca orchestration worker-start` — `route.cli` → `--agent`, `route.model` →
-`--model`, `route.effort` → `--effort` (requires `--model`; Claude/Codex/Cursor
-only, and not combinable with `--terminal`). On a failed dispatch that smells like
-rate limiting, retry with `worker-start --retry-of <dispatchId>` using the next
-entry in `route.fallback`. Load `orca skills get orchestration --full` before
-mutating any orchestration state.
+### 6. Dispatch — visibly, through Orca
 
-## Capability truth (is the other provider's model actually better?)
+Orca owns worktrees, terminals, processes and native harness auth. The kit owns
+delegation and control flow. The router owns recommendation and placement, and
+never credentials or sessions.
 
-The `strengths` table is observations, not doctrine, and model quality shifts monthly.
-When a routing decision is consequential AND contested (e.g. sol vs opus for a hard
-implementation, picking a review model for a big diff), spend one web check on current
-independent leaderboards — SWE-bench Verified, Aider polyglot, LiveBench, LMArena —
-for the specific task family, then record what you learned as a DATED entry in the
-registry's `strengths` table so the next session inherits it. Rules: never per-story
-lookups for routine work; leaderboards inform the pick within a tier, they never
-override budget rules or the claude-unique constraints (MCP/qa stories, safety-critical
-paths stay claude regardless of leaderboard deltas).
+```bash
+orca worktree create --repo id:<repoId> --name <story> --parent-worktree worktree:<caller> --json
+# mirror the story + its stamp into the new worktree (the sandboxed worker's
+# root is its cwd; a story outside it is unreadable to the worker)
+cd <worktreePath>
+scripts/dispatch.sh <story>.md 1
+```
 
-## Persona selection (`agent` is a routing decision too)
+dispatch.sh takes it from there and does the rest in code: it checks the repo
+setup policy, fetches placement when the stamp requires it, runs the validator
+fail-closed, creates and titles the Orca terminal running the frozen harness
+command, harvests the in-band `CLAUDE_EXIT=`/`CODEX_EXIT=` line, re-runs the
+gates independently, and writes the thin result.
 
-BMAD ships specialized personas (`_bmad/bmm/agents/` in this repo; dispatch injects
-the file named by `route.agent`). Stamp the persona per story type — `dev` is the
-default, not the only answer:
+Two things worth knowing about that path:
 
-| Story type | agent | Notes |
+- **`orca terminal wait --for exit` does not fire.** The terminal outlives its
+  command, so the in-band exit line is the only reliable completion signal. This
+  was measured on both harnesses, not assumed.
+- **A zero exit means the turn completed, not that the task succeeded.** The
+  gates are the arbiter, always, and they are re-run independently of anything
+  the worker claims.
+
+Never run dispatch.sh as a bare background Bash command: that makes the worker
+invisible to Orca, and dispatch refuses to launch from a directory that is not an
+Orca-managed worktree for exactly that reason.
+
+## Persona selection (still yours — it is not a routing decision)
+
+Persona is a BMAD concern, not a router concern: the closed ExecutionStamp has no
+field for it, and it travels as a sibling `persona:` key.
+
+| Story type | persona | Notes |
 |---|---|---|
 | Implementation, refactor, bug fix | `dev` | the default |
-| Validation / physical testing story | `qa` | claude route ONLY (needs MCP — see below) |
-| Docs, READMEs, user guides | `tech-writer` | pairs well with fast/free tiers |
+| Validation / physical testing story | `qa` | needs the MCP toolchain — see below |
+| Docs, READMEs, user guides | `tech-writer` | |
 | Tiny self-contained fix (1 file, clear AC) | `quick-flow-solo-dev` | |
 | Research/analysis spike (no code ships) | `analyst` | |
-| Design/architecture spike | `architect` | usually stays interactive with Josh, not dispatched |
+| Design/architecture spike | `architect` | usually stays interactive, not dispatched |
 | UX specification | `ux-designer` | |
 
 `pm` and `sm` are planning-altitude personas — never dispatch targets.
+
+The persona file must exist at `<agent_dir>/<persona>.md`. If it does not,
+dispatch fails loudly rather than launching a worker with no persona and
+reporting success; a silent no-op here produced workers that looked routed and
+were not.
 
 ## Validation stories (physical testing is its own dispatch)
 
 Any story whose change has a physical surface — web UI, API runtime behavior, a
 device/pairing flow — gets a **separate trailing validation story** in the epic:
 
-- `agent: qa`, and **provider MUST be claude**: physical driving needs the MCP
-  toolchain (Playwright browser driving, docker stack, Sentry) that only claude
-  workers load. Emulator-driven mobile validation lives in the android repo's flow.
-- The validating session is NEVER the implementing session (or its resume) — fresh
-  context, different eyes; cross-check `review_diversity` where it applies.
+- `persona: qa`. Physical driving needs the MCP toolchain, which constrains which
+  harness can do it; describe that constraint in the story `summary` and let the
+  router account for it rather than hard-coding a harness yourself.
+- The validating session is NEVER the implementing session (or its resume).
 - Its ACs name the exact flows to drive (pages, clicks, expected states), not
   "test the feature". Its gates are the real commands where scriptable.
-- Findings do not get fixed in the validation story — they cycle back as re-dispatch
-  of the implementing story (or a fix story), then validation re-runs.
-- A story is not epic-done until its validation story is done. Unit tests in the
-  implementing story do not substitute for the validation story on physical surfaces.
+- Findings do not get fixed in the validation story — they cycle back as a
+  re-dispatch of the implementing story (or a fix story), then validation re-runs.
+- A story is not epic-done until its validation story is done.
+
+## Cycles, retries and rate limits
+
+- Each retry cycle re-validates the **same** stamp. Expiry is real: a stamp that
+  has aged out fails `not_expired` and the launch is refused. That is the
+  intended behaviour, not a bug to work around.
+- A NEW stamp — meaning a fresh `/v1/route` call — is required when the stamp has
+  expired, or when the human genuinely wants a different route.
+- **A rate-limited pool is not a local decision any more.** The old fallback
+  chain re-routed at runtime with no stamp, no expiry and no validation, and
+  detected exhaustion by grepping the model's own output, which a worker could
+  simply say. If a pool is hot, that is a planning-session conversation ending in
+  a new `/v1/route` call — not something dispatch does behind your back.
 
 ## Hard rules
 
-- Never route to a provider absent from `subscriptions.yaml`.
-- Never exceed the Fable budget rule; if a task deserves frontier and the budget rule
-  blocks it, route `strong` and flag the tension to Josh in one line.
-- Ask Josh before stamping the route ONLY when blast radius is critical (auth, data
-  migrations, anything irreversible) — otherwise decide, stamp, and show the rationale.
-- If the registry file is missing or unparsable, stop and say so. Do not route blind.
+- Never assert a route from memory, from a local table, or from a previous
+  story's stamp. Call `/v1/route`.
+- Never edit a stamp. Re-stamp from a new route decision instead.
+- Never copy a stamp between stories: `task.story_id` and `task.tags` are
+  re-checked at validation, and a borrowed stamp is a stamp for a different task.
+- Never widen the harness launch posture to make a task pass. If a task cannot
+  complete under the frozen sandbox and tool set, that is a blocker to report.
+- Never treat `claude auth status` or `codex login status` as liveness. They
+  confirm what kind of credential record exists, not that it still works, and a
+  preflight that gates on them will wave a dead session into a run.
+- If the router is unreachable, stop and say so. Do not route blind, and do not
+  fall back to a local table — there is no longer one to fall back to.
