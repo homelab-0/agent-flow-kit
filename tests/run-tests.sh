@@ -710,6 +710,121 @@ else
   ok "metered/cost_class dual-key mismatch is refused"
 fi
 
+# ---------------------------------------------------------------------------
+# null-laundering: `jq -r .field` prints the STRING "null" for a missing or
+# explicitly-null field, and that string then passes every downstream non-empty
+# check as an ordinary value. A stamp whose task.story_id is the four-character
+# string "null" is a stamp for nothing, and it would sail through validation:
+# task.story_id is re-checked at dispatch, but only for being a non-empty
+# string, which "null" is. Absent identity must fail CLOSED at creation.
+# ---------------------------------------------------------------------------
+
+# A stub router so the --request path can be exercised without the network. It
+# always answers with the same known-good ExecutionProfile.
+mkdir -p "$WORK/nullbin"
+cat > "$WORK/nullbin/curl" <<'STUB'
+#!/usr/bin/env bash
+out=""; prev=""
+for a in "$@"; do [[ "$prev" == "-o" ]] && out="$a"; prev="$a"; done
+if [[ -n "$out" ]]; then cat "$STUB_ROUTE_RESPONSE" > "$out"; fi
+printf '200'
+STUB
+chmod +x "$WORK/nullbin/curl"
+
+assert_story_id_refused() { # <case-name> <request-json>
+  local case_name="$1" req_json="$2"
+  local req="$WORK/nullreq.json" out="$WORK/null.stamp.json" err rc
+  printf '%s' "$req_json" > "$req"
+  rm -f "$out"
+  # NOTE for future test authors: section 1 sources dispatch.sh, which carries
+  # `set -euo pipefail`, so this shell runs under `set -e` from that point on.
+  # A BARE assignment from a command that exits non-zero would kill the whole
+  # suite silently. Capturing inside an `if` keeps it in condition context.
+  if err="$( PATH="$WORK/nullbin:$PATH" \
+             STUB_ROUTE_RESPONSE="$WORK/route-response.json" \
+             AGENT_FLOW_CONFIG="$WORK/nonexistent.yaml" SUBSCRIPTIONS_FILE="" \
+             AGENT_ROUTER_URL="https://router.invalid" AGENT_ROUTER_TOKEN=t \
+             bash "$MAKE_STAMP" --request "$req" --out "$out" 2>&1 )"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  if (( rc == 0 )); then
+    bad "story_id $case_name: refused" "make-stamp exited 0"
+  else
+    ok "story_id $case_name: refused"
+  fi
+  assert_no_file  "story_id $case_name: NO stamp file produced" "$out"
+  assert_contains "story_id $case_name: error names story_id"   "$err" "story_id"
+  assert_contains "story_id $case_name: error explains why"     "$err" "task identity"
+}
+
+assert_story_id_refused "omitted" \
+  '{"title":"t","ambiguity":"low","blast_radius":"low","tags":["docs"]}'
+assert_story_id_refused "explicitly null" \
+  '{"story_id":null,"title":"t","ambiguity":"low","blast_radius":"low","tags":["docs"]}'
+assert_story_id_refused "empty string" \
+  '{"story_id":"","title":"t","ambiguity":"low","blast_radius":"low","tags":["docs"]}'
+
+# The control: a well-formed request on the SAME path still succeeds, so the
+# three refusals above are the guard firing and not the stub being broken.
+printf '%s' '{"story_id":"STORY-OK-1","title":"t","ambiguity":"low","blast_radius":"low","tags":["docs"]}' \
+  > "$WORK/goodreq.json"
+rm -f "$WORK/good.stamp.json"
+if PATH="$WORK/nullbin:$PATH" STUB_ROUTE_RESPONSE="$WORK/route-response.json" \
+   AGENT_FLOW_CONFIG="$WORK/nonexistent.yaml" SUBSCRIPTIONS_FILE="" \
+   AGENT_ROUTER_URL="https://router.invalid" AGENT_ROUTER_TOKEN=t \
+   bash "$MAKE_STAMP" --request "$WORK/goodreq.json" --out "$WORK/good.stamp.json" >/dev/null 2>&1; then
+  ok "story_id present: --request path still stamps"
+  assert_eq "story_id present: carried verbatim" \
+    "$(jq -r .task.story_id "$WORK/good.stamp.json")" "STORY-OK-1"
+  assert_absent "no field was laundered into the string \"null\"" \
+    "$(jq -c . "$WORK/good.stamp.json")" '"null"'
+else
+  bad "story_id present: --request path still stamps"
+fi
+
+# A null ELEMENT inside tags is the same hazard one level down: it must not be
+# stamped as the literal tag "null" and checked against forbidden_for as one.
+printf '%s' '{"story_id":"STORY-OK-2","title":"t","ambiguity":"low","blast_radius":"low","tags":["docs",null,"iac"]}' \
+  > "$WORK/nulltag.json"
+rm -f "$WORK/nulltag.stamp.json"
+if PATH="$WORK/nullbin:$PATH" STUB_ROUTE_RESPONSE="$WORK/route-response.json" \
+   AGENT_FLOW_CONFIG="$WORK/nonexistent.yaml" SUBSCRIPTIONS_FILE="" \
+   AGENT_ROUTER_URL="https://router.invalid" AGENT_ROUTER_TOKEN=t \
+   bash "$MAKE_STAMP" --request "$WORK/nulltag.json" --out "$WORK/nulltag.stamp.json" >/dev/null 2>&1; then
+  assert_eq "null tag element dropped, real tags kept" \
+    "$(jq -c .task.tags "$WORK/nulltag.stamp.json")" '["docs","iac"]'
+else
+  bad "null tag element dropped, real tags kept" "make-stamp refused a valid request"
+fi
+
+# The response side has the same hazard: has() is true for an explicitly-null
+# field, so a null harness would reach jq -r and be stamped as "null".
+for f in harness model_profile effort catalog_version expires_at; do
+  jq --arg f "$f" '.[$f] = null' "$WORK/route-response.json" > "$WORK/nullfield.json"
+  if bash "$MAKE_STAMP" --response "$WORK/nullfield.json" --story-id X \
+       --out "$WORK/nullfield.stamp.json" >/dev/null 2>&1; then
+    bad "null response field '$f' is refused"
+  else
+    ok "null response field '$f' is refused"
+  fi
+  assert_no_file "null response field '$f': no stamp produced" "$WORK/nullfield.stamp.json"
+done
+
+# entitlement_pool is the deliberate exception: null is a LEGITIMATE value there
+# (local execution draws on no pool), so it must still stamp.
+jq '.entitlement_pool = null' "$WORK/route-response.json" > "$WORK/nullpool.json"
+rm -f "$WORK/nullpool.stamp.json"
+if bash "$MAKE_STAMP" --response "$WORK/nullpool.json" --story-id X \
+     --out "$WORK/nullpool.stamp.json" >/dev/null 2>&1; then
+  ok "null entitlement_pool is ACCEPTED (local execution draws on no pool)"
+  assert_eq "null entitlement_pool stays JSON null, not \"null\"" \
+    "$(jq -r '.entitlement_pool | type' "$WORK/nullpool.stamp.json")" "null"
+else
+  bad "null entitlement_pool is ACCEPTED (local execution draws on no pool)"
+fi
+
 # ===========================================================================
 head1 "5. Live control-plane chain (opt-in, read-only, launches nothing)"
 # ===========================================================================

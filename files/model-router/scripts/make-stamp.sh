@@ -102,10 +102,22 @@ if [[ -n "$REQUEST" ]]; then
   # Task identity comes from the request that produced this decision, so the
   # stamp can never claim different tags than the ones forbidden_for was
   # evaluated against.
-  STORY_ID="$(jq -r '.story_id' "$REQUEST")"
+  #
+  # Every extraction below is `// ""`-guarded ON PURPOSE. Bare `jq -r .field`
+  # prints the four-character string "null" for a missing OR explicitly-null
+  # field, and that string then passes every downstream non-empty check as a
+  # perfectly ordinary value. It LAUNDERS absent data into a valid-looking
+  # identity before any validation can see it, which is the opposite of failing
+  # closed. `// ""` collapses both null cases to empty, and empty is checked.
+  STORY_ID="$(jq -r '.story_id // ""' "$REQUEST")"
   TITLE="$(jq -r '.title // ""' "$REQUEST")"
   CONTEXT_SIZE="$(jq -r '.context_size // ""' "$REQUEST")"
-  mapfile -t TAGS < <(jq -r '.tags[]?' "$REQUEST")
+  # A null ELEMENT inside tags is the same hazard one level down: it would
+  # stamp the literal tag "null" and be checked against forbidden_for as one.
+  mapfile -t TAGS < <(jq -r '.tags[]? | select(. != null)' "$REQUEST")
+
+  [[ -n "$STORY_ID" ]] \
+    || die "route request has no story_id — refusing to stamp an attempt with no task identity. task.story_id is re-checked at validation, so a stamp without one is a stamp for nothing."
 elif [[ -n "$RESPONSE" ]]; then
   if [[ "$RESPONSE" == "-" ]]; then cat > "$PROFILE"; else cp "$RESPONSE" "$PROFILE"; fi
   jq -e . "$PROFILE" >/dev/null || die "route response is not valid JSON"
@@ -116,14 +128,24 @@ fi
 
 # ---- accept, or deliberately override, then freeze ------------------------
 
+# `has(f)` alone is NOT a presence check: it is true for an explicitly-null
+# field, which is what let a null harness reach `jq -r` and become the string
+# "null" below. Require the key to exist AND carry a value. entitlement_pool is
+# deliberately absent from this list — null is a LEGITIMATE value there (local
+# execution draws on no pool), so it is checked for presence only.
 for f in harness model_profile effort cost_class placement_policy placement_required \
          metered catalog_version expires_at; do
-  jq -e "has(\"$f\")" "$PROFILE" >/dev/null \
-    || die "route response is missing required field '$f' — not an ExecutionProfile"
+  jq -e "has(\"$f\") and (.[\"$f\"] != null)" "$PROFILE" >/dev/null 2>&1 \
+    || die "route response is missing required field '$f', or has it set to null — not an ExecutionProfile"
 done
+jq -e 'has("entitlement_pool")' "$PROFILE" >/dev/null 2>&1 \
+  || die "route response is missing required field 'entitlement_pool' — not an ExecutionProfile"
 
-FINAL_HARNESS="$(jq -r '.harness' "$PROFILE")"
-FINAL_PROFILE="$(jq -r '.model_profile' "$PROFILE")"
+# `// ""`-guarded for the same reason as the request fields above.
+FINAL_HARNESS="$(jq -r '.harness // ""' "$PROFILE")"
+FINAL_PROFILE="$(jq -r '.model_profile // ""' "$PROFILE")"
+[[ -n "$FINAL_HARNESS" && -n "$FINAL_PROFILE" ]] \
+  || die "route response carries no usable harness/model_profile — refusing to stamp"
 OVERRIDE='null'
 
 if [[ -n "$OV_HARNESS$OV_PROFILE" ]]; then
