@@ -26,10 +26,17 @@ jobs:
           sudo chmod +x /usr/local/bin/yq
       - name: Install macOS test dependencies
         if: runner.os == 'macOS'
-        run: brew install jq shellcheck yq
+        run: |
+          brew install bash coreutils jq shellcheck yq
+          echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix coreutils)/libexec/gnubin" >> "$GITHUB_PATH"
+      - name: Confirm supported Bash runtime
+        run: |
+          bash --version | head -1
+          (( BASH_VERSINFO[0] >= 4 ))
       - name: Shellcheck lifecycle scripts
         run: shellcheck -x -S warning -s bash bin/agent-flow-kit lib/*.sh tests/lifecycle-tests.sh
       - name: Frozen orchestration tests
-        run: tests/run-tests.sh
+        run: bash tests/run-tests.sh
       - name: Fleet lifecycle tests
-        run: tests/lifecycle-tests.sh
+        run: bash tests/lifecycle-tests.sh
