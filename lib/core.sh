@@ -15,7 +15,7 @@ hash_tree(){
   local dir="$1" exclude="${2:-}"
   [[ -d "$dir" ]] || { printf 'MISSING'; return; }
   (
-    cd "$dir"
+    cd "$dir" || exit 1
     find . \( -type f -o -type l \) -print | LC_ALL=C sort | while IFS= read -r rel; do
       [[ -n "$exclude" && "$rel" == "$exclude" ]] && continue
       if [[ -L "$rel" ]]; then
