@@ -7,8 +7,8 @@ TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 PASS=0 FAIL=0
 ok(){ printf 'PASS %s\n' "$1"; PASS=$((PASS+1)); }
 bad(){ printf 'FAIL %s%s\n' "$1" "${2:+ — $2}"; FAIL=$((FAIL+1)); }
-assert_contains(){ [[ "$2" == *"$3"* ]] && ok "$1" || bad "$1" "missing: $3"; }
-assert_eq(){ [[ "$2" == "$3" ]] && ok "$1" || bad "$1" "expected=$3 got=$2"; }
+assert_contains(){ if [[ "$2" == *"$3"* ]]; then ok "$1"; else bad "$1" "missing: $3"; fi; }
+assert_eq(){ if [[ "$2" == "$3" ]]; then ok "$1"; else bad "$1" "expected=$3 got=$2"; fi; }
 hash_file(){
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
   else shasum -a 256 "$1" | awk '{print $1}'; fi
@@ -90,7 +90,7 @@ mkdir -p "$KIT" "$HOME1"; make_fixture "$KIT"; make_target "$TARGET1"
 out="$(HOME="$HOME1" "$KIT/bin/agent-flow-kit" adopt --target "$TARGET1")" || bad "clean adoption exits zero"
 assert_contains "clean adoption reports adopted" "$out" "ADOPTED"
 assert_contains "target wiring detected" "$out" "CURRENT target"
-[[ -f "$HOME1/.local/state/agent-flow-kit/state.json" ]] && ok "state manifest created" || bad "state manifest created"
+if [[ -f "$HOME1/.local/state/agent-flow-kit/state.json" ]]; then ok "state manifest created"; else bad "state manifest created"; fi
 assert_eq "machine-local ownership recorded" "$(jq -r '.machine_local["model-router-launcher"].mode' "$HOME1/.local/state/agent-flow-kit/state.json")" "machine_local_config"
 assert_eq "target ownership recorded separately" "$(jq -r '.targets[0].mode' "$HOME1/.local/state/agent-flow-kit/state.json")" "target_repo_wiring"
 
@@ -115,6 +115,9 @@ git -C "$KIT" add files && git -C "$KIT" commit -qm v2
 set +e; out="$(HOME="$HOME1" "$KIT/bin/agent-flow-kit" status 2>&1)"; rc=$?; set -e
 assert_eq "update available status exits nonzero" "$rc" "1"
 assert_contains "update available is visible" "$out" "UPDATE_AVAILABLE"
+set +e; out="$(HOME="$HOME1" "$KIT/bin/agent-flow-kit" verify --offline 2>&1)"; rc=$?; set -e
+if [[ "$rc" -ne 0 ]]; then ok "verify refuses unapplied checkout"; else bad "verify refuses unapplied checkout"; fi
+assert_contains "verify explains unapplied checkout" "$out" "UPDATE_AVAILABLE applied="
 HOME="$HOME1" "$KIT/bin/agent-flow-kit" update >/dev/null
 assert_eq "managed copy updated" "$(cat "$HOME1/.agents/skills/model-router/SKILL.md")" "router-v2"
 assert_contains "machine-local config preserved" "$(cat "$HOME1/.agents/skills/model-router/subscriptions.yaml")" "local_override: keep-me"
@@ -128,7 +131,7 @@ printf '\n# harmless drift fixture\n' >> "$HOME1/.agents/skills/model-router/SKI
 printf 'router-v3\n' > "$KIT/files/model-router/SKILL.md"; git -C "$KIT" add files/model-router/SKILL.md; git -C "$KIT" commit -qm v3
 old_state="$(jq -r '.kit.last_applied_revision' "$HOME1/.local/state/agent-flow-kit/state.json")"
 set +e; out="$(HOME="$HOME1" "$KIT/bin/agent-flow-kit" update 2>&1)"; rc=$?; set -e
-[[ "$rc" -ne 0 ]] && ok "local drift update refuses" || bad "local drift update refuses"
+if [[ "$rc" -ne 0 ]]; then ok "local drift update refuses"; else bad "local drift update refuses"; fi
 assert_contains "local drift evidence names component" "$out" "LOCAL_DRIFT model-router-core"
 assert_contains "local drift fixture survives refusal" "$(cat "$HOME1/.agents/skills/model-router/SKILL.md")" "harmless drift fixture"
 assert_eq "failed update does not advance manifest" "$(jq -r '.kit.last_applied_revision' "$HOME1/.local/state/agent-flow-kit/state.json")" "$old_state"
@@ -150,11 +153,12 @@ assert_contains "legacy Claude unrelated trailer preserved" "$(cat "$HOME2/.clau
 
 # 6 unknown legacy local modification is not auto-claimed
 HOME3="$TMP/home3"; cp -R "$HOME2" "$HOME3"; rm -rf "$HOME3/.local/state/agent-flow-kit"
+# links copied by cp -R still point at HOME2, so remove before testing content provenance
 rm -f "$HOME3/.claude/skills/model-router" "$HOME3/.claude/skills/humanizer"
 ln -s "$HOME3/.agents/skills/model-router" "$HOME3/.claude/skills/model-router"; ln -s "$HOME3/.agents/skills/humanizer" "$HOME3/.claude/skills/humanizer"
 printf '\nmanual unknown edit\n' >> "$HOME3/.agents/skills/humanizer/SKILL.md"
 set +e; out="$(HOME="$HOME3" "$KIT/bin/agent-flow-kit" adopt 2>&1)"; rc=$?; set -e
-[[ "$rc" -ne 0 ]] && ok "unknown legacy modification refuses" || bad "unknown legacy modification refuses"
+if [[ "$rc" -ne 0 ]]; then ok "unknown legacy modification refuses"; else bad "unknown legacy modification refuses"; fi
 assert_contains "unknown legacy refusal is actionable" "$out" "LOCAL_DRIFT humanizer"
 
 # 7 missing validator/client dependency is visible during verify
@@ -177,13 +181,13 @@ for x in orca claude codex; do printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/$
 chmod +x "$STUB/yq"; printf 'catalog\n' > /tmp/agent-flow-kit-test-catalog.yaml
 set +e; out="$(PATH="$STUB:$PATH" TEST_TOKEN=x HOME="$HOME2" "$KIT/bin/agent-flow-kit" verify --offline 2>&1)"; rc=$?; set -e
 rm -f /tmp/agent-flow-kit-test-catalog.yaml
-[[ "$rc" -ne 0 ]] && ok "missing validator makes verify fail" || bad "missing validator makes verify fail"
+if [[ "$rc" -ne 0 ]]; then ok "missing validator makes verify fail"; else bad "missing validator makes verify fail"; fi
 assert_contains "missing validator is explicitly reported" "$out" "validator/client dependency missing"
 
 # 8 target wiring failure is visible
 BADTARGET="$TMP/badtarget"; mkdir -p "$BADTARGET"
 set +e; out="$(HOME="$HOME2" "$KIT/bin/agent-flow-kit" status --target "$BADTARGET" 2>&1)"; rc=$?; set -e
-[[ "$rc" -ne 0 ]] && ok "bad target status nonzero" || bad "bad target status nonzero"
+if [[ "$rc" -ne 0 ]]; then ok "bad target status nonzero"; else bad "bad target status nonzero"; fi
 assert_contains "bad target names missing BMAD template" "$out" "BMAD create-story template not found"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
