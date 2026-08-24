@@ -37,6 +37,6 @@ jobs:
       - name: Shellcheck lifecycle scripts
         run: shellcheck -x -S warning -s bash bin/agent-flow-kit lib/*.sh tests/lifecycle-tests.sh
       - name: Frozen orchestration tests
-        run: bash tests/run-tests.sh
+        run: TMPDIR="$RUNNER_TEMP" bash tests/run-tests.sh
       - name: Fleet lifecycle tests
-        run: bash tests/lifecycle-tests.sh
+        run: TMPDIR="$RUNNER_TEMP" bash tests/lifecycle-tests.sh
