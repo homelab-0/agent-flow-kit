@@ -1,0 +1,35 @@
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  offline:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux test dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          sudo curl -fsSL https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64 -o /usr/local/bin/yq
+          sudo chmod +x /usr/local/bin/yq
+      - name: Install macOS test dependencies
+        if: runner.os == 'macOS'
+        run: brew install jq shellcheck yq
+      - name: Shellcheck lifecycle scripts
+        run: shellcheck -s bash bin/agent-flow-kit tests/lifecycle-tests.sh
+      - name: Frozen orchestration tests
+        run: tests/run-tests.sh
+      - name: Fleet lifecycle tests
+        run: tests/lifecycle-tests.sh
