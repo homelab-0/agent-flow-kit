@@ -70,7 +70,7 @@ cmd_verify(){
   verify_installation || bad=1
   while IFS= read -r path; do [[ -n "$path" ]] || continue; ts="$(target_status "$path")"; say "${ts%%|*} target $path — ${ts#*|}"; [[ "${ts%%|*}" == CURRENT ]] || bad=1; done < <(jq -r '.targets[]?.path' "$STATE_FILE" 2>/dev/null || true)
   [[ -n "$TARGET" ]] && { ts="$(target_status "$TARGET")"; say "${ts%%|*} target $TARGET — ${ts#*|}"; [[ "${ts%%|*}" == CURRENT ]] || bad=1; }
-  (( bad == 0 )) && say "READY/CURRENT $(canonical_revision)" || { err "verify failed; see NEEDS_OWNER/BROKEN evidence above"; return 1; }
+  if (( bad == 0 )); then say "READY/CURRENT $(canonical_revision)"; else err "verify failed; see NEEDS_OWNER/BROKEN evidence above"; return 1; fi
 }
 
 [[ $# -gt 0 ]] || { usage; exit 2; }
