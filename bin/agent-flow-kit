@@ -41,13 +41,13 @@ The canonical Git checkout is the distribution authority. Run git pull before up
 USAGE
 }
 
-# shellcheck source=../lib/core.sh
+# shellcheck source=lib/core.sh
 source "$KIT_ROOT/lib/core.sh"
-# shellcheck source=../lib/legacy.sh
+# shellcheck source=lib/legacy.sh
 source "$KIT_ROOT/lib/legacy.sh"
-# shellcheck source=../lib/install.sh
+# shellcheck source=lib/install.sh
 source "$KIT_ROOT/lib/install.sh"
-# shellcheck source=../lib/status.sh
+# shellcheck source=lib/status.sh
 source "$KIT_ROOT/lib/status.sh"
 
 cmd_status(){ preflight_common; print_status; }
