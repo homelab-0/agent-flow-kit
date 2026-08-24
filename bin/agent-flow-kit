@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+KIT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+STATE_DIR="${AGENT_FLOW_KIT_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/agent-flow-kit}"
+STATE_FILE="$STATE_DIR/state.json"
+MODEL_DST="$HOME/.agents/skills/model-router"
+HUMANIZER_DST="$HOME/.agents/skills/humanizer"
+CLAUDE_POLICY_DST="$HOME/.claude/CLAUDE.md"
+CODEX_POLICY_DST="$HOME/.codex/AGENTS.md"
+CLAUDE_MODEL_LINK="$HOME/.claude/skills/model-router"
+CLAUDE_HUMANIZER_LINK="$HOME/.claude/skills/humanizer"
+CLAUDE_BEGIN='<!-- AGENT-FLOW-KIT:CLAUDE-POLICY:BEGIN -->'
+CLAUDE_END='<!-- AGENT-FLOW-KIT:CLAUDE-POLICY:END -->'
+CODEX_BEGIN='<!-- AGENT-FLOW-KIT:CODEX-POLICY:BEGIN -->'
+CODEX_END='<!-- AGENT-FLOW-KIT:CODEX-POLICY:END -->'
+
+TARGET=""
+OFFLINE=0
+FETCH=0
+QUIET=0
+
+say(){ (( QUIET )) || printf '%s\n' "$*"; }
+err(){ printf 'agent-flow-kit: %s\n' "$*" >&2; }
+die(){ err "$*"; exit 2; }
+
+usage(){ cat <<'USAGE'
+Usage:
+  ./bin/agent-flow-kit status [--fetch] [--target PATH]
+  ./bin/agent-flow-kit adopt [--target PATH]
+  ./bin/agent-flow-kit update [--target PATH]
+  ./bin/agent-flow-kit verify [--offline] [--target PATH]
+
+Lifecycle:
+  status  inspect checkout, installed state, drift, dependencies, and target wiring
+  adopt   safely claim/install this checkout; historical canonical installs may be upgraded
+  update  converge an already-adopted machine to this checkout; refuses unexplained drift
+  verify  prove installation readiness; --offline skips router reachability
+
+The canonical Git checkout is the distribution authority. Run git pull before update.
+USAGE
+}
+
+# shellcheck source=../lib/core.sh
+source "$KIT_ROOT/lib/core.sh"
+# shellcheck source=../lib/legacy.sh
+source "$KIT_ROOT/lib/legacy.sh"
+# shellcheck source=../lib/install.sh
+source "$KIT_ROOT/lib/install.sh"
+# shellcheck source=../lib/status.sh
+source "$KIT_ROOT/lib/status.sh"
+
+cmd_status(){ preflight_common; print_status; }
+cmd_adopt(){
+  preflight_mutation
+  if [[ -f "$STATE_FILE" ]]; then say "State exists; adopt converges via update."; preflight_update || exit 1; apply_update
+  else
+    preflight_adopt || exit 1
+    apply_adopt
+    say "ADOPTED $(canonical_revision)"
+  fi
+  [[ -n "$TARGET" ]] && { local ts; ts="$(target_status "$TARGET")"; say "${ts%%|*} target $TARGET — ${ts#*|}"; [[ "${ts%%|*}" == CURRENT ]] || return 1; }
+  return 0
+}
+cmd_update(){ preflight_mutation; preflight_update || exit 1; apply_update; [[ -n "$TARGET" ]] && { local ts; ts="$(target_status "$TARGET")"; say "${ts%%|*} target $TARGET — ${ts#*|}"; [[ "${ts%%|*}" == CURRENT ]] || return 1; }; return 0; }
+cmd_verify(){
+  preflight_common
+  local bad=0 ts path
+  checkout_clean || { err "LOCAL_DRIFT canonical checkout has tracked modifications"; bad=1; }
+  verify_installation || bad=1
+  while IFS= read -r path; do [[ -n "$path" ]] || continue; ts="$(target_status "$path")"; say "${ts%%|*} target $path — ${ts#*|}"; [[ "${ts%%|*}" == CURRENT ]] || bad=1; done < <(jq -r '.targets[]?.path' "$STATE_FILE" 2>/dev/null || true)
+  [[ -n "$TARGET" ]] && { ts="$(target_status "$TARGET")"; say "${ts%%|*} target $TARGET — ${ts#*|}"; [[ "${ts%%|*}" == CURRENT ]] || bad=1; }
+  (( bad == 0 )) && say "READY/CURRENT $(canonical_revision)" || { err "verify failed; see NEEDS_OWNER/BROKEN evidence above"; return 1; }
+}
+
+[[ $# -gt 0 ]] || { usage; exit 2; }
+CMD="$1"; shift
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --target) [[ $# -ge 2 ]] || die "--target requires PATH"; TARGET="$(cd "$2" 2>/dev/null && pwd || printf '%s' "$2")"; shift 2;;
+    --offline) OFFLINE=1; shift;;
+    --fetch) FETCH=1; shift;;
+    --quiet) QUIET=1; shift;;
+    -h|--help) usage; exit 0;;
+    *) die "unknown option: $1";;
+  esac
+done
+
+case "$CMD" in
+  status) cmd_status;;
+  adopt) cmd_adopt;;
+  update) cmd_update;;
+  verify) cmd_verify;;
+  help|-h|--help) usage;;
+  *) usage >&2; die "unknown command: $CMD";;
+esac
