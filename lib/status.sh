@@ -46,8 +46,10 @@ print_status(){
 }
 
 verify_installation(){
-  local bad=0 cfg validator catalog token_env router b
+  local bad=0 cfg validator catalog token_env router b applied current
   preflight_update || return 1
+  applied="$(state_get '.kit.last_applied_revision')"; current="$(canonical_revision)"
+  if [[ "$applied" != "$current" ]]; then err "UPDATE_AVAILABLE applied=$applied checkout=$current; run update before verify"; bad=1; fi
   for b in jq yq curl orca; do command -v "$b" >/dev/null 2>&1 || { err "NEEDS_OWNER dependency missing: $b"; bad=1; }; done
   cfg="$MODEL_DST/subscriptions.yaml"
   if command -v yq >/dev/null 2>&1; then
