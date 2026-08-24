@@ -28,7 +28,7 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install jq shellcheck yq
       - name: Shellcheck lifecycle scripts
-        run: shellcheck -s bash bin/agent-flow-kit tests/lifecycle-tests.sh
+        run: shellcheck -x -s bash bin/agent-flow-kit lib/*.sh tests/lifecycle-tests.sh
       - name: Frozen orchestration tests
         run: tests/run-tests.sh
       - name: Fleet lifecycle tests
