@@ -36,7 +36,9 @@ jobs:
           (( BASH_VERSINFO[0] >= 4 ))
       - name: Shellcheck lifecycle scripts
         run: shellcheck -x -S warning -s bash bin/agent-flow-kit lib/*.sh tests/lifecycle-tests.sh
+      - name: Prepare hermetic frozen-suite home
+        run: mkdir -p "$HOME/.claude"
       - name: Frozen orchestration tests
-        run: TMPDIR="$RUNNER_TEMP" bash tests/run-tests.sh
+        run: SHELLCHECK_OPTS="-S warning" TMPDIR="$RUNNER_TEMP" bash tests/run-tests.sh
       - name: Fleet lifecycle tests
         run: TMPDIR="$RUNNER_TEMP" bash tests/lifecycle-tests.sh
