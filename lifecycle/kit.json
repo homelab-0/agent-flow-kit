@@ -1,0 +1,13 @@
+{
+  "kit_id": "agent-flow-kit",
+  "lifecycle_schema_version": "1.0",
+  "state_schema_version": "1.0",
+  "result_schema_version": "1.0",
+  "default_branch": "master",
+  "managed_inputs": [
+    "bin",
+    "lib",
+    "lifecycle",
+    "files"
+  ]
+}
