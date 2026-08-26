@@ -1,0 +1,24 @@
+{
+  "harness": "claude",
+  "model_profile": "claude/strong",
+  "effort": "high",
+  "cost_class": "subscription",
+  "entitlement_pool": "anthropic-max",
+  "placement_policy": "prefer-warm-local",
+  "placement_required": false,
+  "fallbacks": [
+    {
+      "harness": "codex",
+      "model_profile": "openai/strong",
+      "cost_class": "subscription",
+      "entitlement_pool": "openai-plus",
+      "placement_required": false
+    }
+  ],
+  "metered": false,
+  "rationale": "Routed to band \"strong\". Primary is claude/claude/strong (subscription, funded by anthropic-max). The profile is vendor-hosted and resolved by the harness itself, so placement_policy is carried but inert and no /v1/place call is needed. Fallbacks, most preferred first: codex/openai/strong (subscription).",
+  "catalog_version": "sha256:9b7ba27e367f8cfa0caeed4057fe0fab1cd4138b11f9f65f906822276bfa5e20",
+  "catalog_document_version": "1.4.0",
+  "expires_at": "2026-08-26T02:41:55Z"
+}
+

@@ -1,0 +1,7 @@
+observations=3000
+   2957 NONE|
+     30 UNKNOWN|the lock carries no owner record
+     12 LIVE|pid N
+      1 UNKNOWN|the lock owner record could not be parsed
+--- records ever written that are NOT valid JSON: ---
+(none can be: afk_state_file_write is tmp + atomic mv -f in the same directory)

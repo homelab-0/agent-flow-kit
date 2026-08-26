@@ -1,0 +1,13 @@
+===== case 1: reclaim() alone =====
+stale_inc=inc-123882-c74181f49fe24175843e507ce0d0f407
+judged=DEAD|pid 123882 is no longer running
+competitor_marker_rc=0
+[interleave] marker vanished between claim and judge
+reclaim_rc=2 owner_detail=a reclamation of this lock was started by a process that cannot be judged
+
+===== case 2: full afk_lock_acquire, same interleaving =====
+stale_inc=inc-124130-b99ac3bc0c8044e79e50db142976d670
+[interleave] marker vanished between claim and judge
+acquire_rc=3 owner_state=DEAD owner_detail=a reclamation of this lock was started by a process that cannot be judged
+EMITTED=OPERATION_LOCK_OWNER_UNVERIFIABLE / 'remove /tmp/afkrev.WBrujp/a4c/st/lock by hand'  <-- UNSAFE if a successor holds it
+lock_present_after=yes

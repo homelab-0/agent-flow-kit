@@ -1,0 +1,18 @@
+{
+  "story_id": "AFK-PORT-1.2-F6-R11-FIX",
+  "title": "Trap the remaining reachable terminating signals so the lock is never freed under a live writer",
+  "summary": "Authorized single bounded cycle: fix the confirmed F6-R11 blocker - SIGHUP is untrapped and bash runs the EXIT trap immediately on an untrapped fatal signal, so a pid-only HUP frees the operation lock mid-write and a second update can acquire alongside the pending writer. Apply the reviewer-verified remedy (trap HUP into the established disarm-and-exit handler, rc 129), decide USR1/USR2/ALRM/PIPE explicitly per the measured signal matrix, deliberately do not trap QUIT (availability regression), correct the two contract sentences the R10 fix made false, and add a pid-only SIGHUP regression in the existing section-11 style with anti-vacuity proven against the R10-fixed-but-HUP-untrapped baseline. Register the five out-of-scope findings in the hardening backlog without fixing them. Surface is bin/agent-flow-kit, the contract document, the mutation test suite, and story records only; any need to touch lib is an explicit stop condition. Run all Story 1.2 gates including loaded mutation runs and git diff --check.",
+  "touched_paths": [
+    "bin/agent-flow-kit",
+    "docs/LIFECYCLE-CONTRACT.md",
+    "tests/lifecycle-mutation-tests.sh",
+    "_bmad-output/implementation-artifacts/AFK-PORT-1.2.md",
+    "_bmad-output/implementation-artifacts/traceability.md"
+  ],
+  "ambiguity": "low",
+  "blast_radius": "high",
+  "volume_hint": "low",
+  "tags": ["security", "tests"],
+  "repo": "agent-flow-kit",
+  "requester": "bmad-pm"
+}

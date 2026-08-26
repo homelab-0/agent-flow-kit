@@ -1,0 +1,26 @@
+absent                       judge=UNKNOWN|the lock carries no owner record|                  acq_rc=3 state=UNKNOWN waits=120
+                             acq_detail=the lock carries no owner record and none appeared while it was waited on
+empty                        judge=UNKNOWN|the lock carries no owner record|                  acq_rc=3 state=UNKNOWN waits=120
+                             acq_detail=the lock carries no owner record and none appeared while it was waited on
+garbage                      judge=UNKNOWN|the lock owner record could not be parsed|         acq_rc=3 state=UNKNOWN waits=0
+                             acq_detail=the lock owner record could not be parsed
+trunc                        judge=UNKNOWN|the lock owner record could not be parsed|         acq_rc=3 state=UNKNOWN waits=0
+                             acq_detail=the lock owner record could not be parsed
+ws                           judge=UNKNOWN|the lock owner record could not be parsed|         acq_rc=3 state=UNKNOWN waits=0
+                             acq_detail=the lock owner record could not be parsed
+null                         judge=UNKNOWN|the lock owner record is written in a schema this version does not know| acq_rc=3 state=UNKNOWN waits=0
+                             acq_detail=the lock owner record is written in a schema this version does not know
+jq: error (at <stdin>:0): Cannot index array with string "lock_schema_version"
+jq: error (at <stdin>:0): Cannot index array with string "lock_schema_version"
+array                        judge=UNKNOWN|the lock owner record is written in a schema this version does not know| acq_rc=3 state=UNKNOWN waits=0
+                             acq_detail=the lock owner record is written in a schema this version does not know
+dir                          judge=UNKNOWN|the lock carries no owner record|                  acq_rc=3 state=UNKNOWN waits=120
+                             acq_detail=the lock carries no owner record and none appeared while it was waited on
+fifo                         judge=UNKNOWN|the lock carries no owner record|                  acq_rc=3 state=UNKNOWN waits=120
+                             acq_detail=the lock carries no owner record and none appeared while it was waited on
+symlink                      judge=UNKNOWN|the lock carries no owner record|                  acq_rc=3 state=UNKNOWN waits=120
+                             acq_detail=the lock carries no owner record and none appeared while it was waited on
+dangling                     judge=UNKNOWN|the lock carries no owner record|                  acq_rc=3 state=UNKNOWN waits=120
+                             acq_detail=the lock carries no owner record and none appeared while it was waited on
+unread                       judge=UNKNOWN|the lock carries no owner record|                  acq_rc=3 state=UNKNOWN waits=120
+                             acq_detail=the lock carries no owner record and none appeared while it was waited on

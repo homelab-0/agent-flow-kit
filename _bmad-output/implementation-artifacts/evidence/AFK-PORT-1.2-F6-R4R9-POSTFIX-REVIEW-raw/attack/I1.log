@@ -1,0 +1,6 @@
+rounds=30 procs=6 churn=on
+  abandoned locks stranded          : 30
+  reclamation reports emitted       : 0
+  acquisitions that took the lock   : 18
+  peak simultaneous holders in a rnd: 3   (mutual exclusion: BROKEN)
+  false 'could not be parsed'       : 0
