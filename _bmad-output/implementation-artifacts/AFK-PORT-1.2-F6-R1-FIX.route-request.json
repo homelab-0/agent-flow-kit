@@ -1,0 +1,24 @@
+{
+  "story_id": "AFK-PORT-1.2-F6-R1-FIX",
+  "title": "Fix transient live-lock publication misclassification in Story 1.2",
+  "summary": "Implement the confirmed F6-R1 correction in the Story 1.2 mutation lock. A contender observing the short interval after atomic lock-directory acquisition but before owner.json publication must not immediately emit OPERATION_LOCK_OWNER_UNVERIFIABLE with guidance to delete a lock that may be live. Preserve fail-closed behavior, mutual exclusion, atomic stale reclamation, exact-incarnation release, and bounded acquisition. Add genuine clean-lock-path concurrent CLI and library regressions proving contenders either acquire once or receive truthful concurrent-operation classification after bounded transient retry, while genuinely incomplete or permanently unverifiable metadata still fails closed. Use the retained independent review and reproduction evidence as input. Modify only Story 1.2 implementation, tests, contract documentation, and traceability artifacts. Run all Story 1.2 gates and git diff --check.",
+  "touched_paths": [
+    "lib/afk-mutate.sh",
+    "lib/afk-commands.sh",
+    "docs/LIFECYCLE-CONTRACT.md",
+    "tests/lifecycle-concurrency-tests.sh",
+    "tests/lockctl-helper.sh",
+    "tests/lifecycle-mutation-tests.sh",
+    "tests/lifecycle-tests.sh",
+    "tests/run-tests.sh",
+    "_bmad-output/implementation-artifacts/AFK-PORT-1.2.md",
+    "_bmad-output/implementation-artifacts/traceability.md",
+    "_bmad-output/implementation-artifacts/evidence/AFK-PORT-1.2-F6-INDEPENDENT-REVIEW.md"
+  ],
+  "ambiguity": "medium",
+  "blast_radius": "high",
+  "volume_hint": "low",
+  "tags": ["security", "tests"],
+  "repo": "agent-flow-kit",
+  "requester": "bmad-pm"
+}

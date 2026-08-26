@@ -1,0 +1,34 @@
+== B1 former owner releases AFTER a successor acquired ==
+  old=inc-426192-6f5b55cb975e4b3e810a92ce3e42da3e.. new=inc-426281-bc985498985d4d188bfd054dd1ab5575.. former-owner-release: rc=1 released=false lock_inc_after=inc-426281-bc985498985d4d188bfd054dd1ab5575 
+  lock_inc_still=inc-426281-bc985498985d4d188bfd054dd1ab5575 same_as_successor=yes
+== B2 release claiming a bogus incarnation ==
+  rc=1 released=false lock_inc_after=inc-426839-a4d4688f5a944238bc35efacf3ba44cf 
+  lock_intact=yes
+== B3 repeated reclaim of the same incarnation ==
+  attempt1: rc=0 inc=inc-427083-e235fbc83612460abe8a47a271e63007 lock_inc_after=inc-427083-e235fbc83612460abe8a47a271e63007 
+  attempt2: rc=3 inc= lock_inc_after=inc-427083-e235fbc83612460abe8a47a271e63007 
+  attempt3: rc=3 inc= lock_inc_after=inc-427083-e235fbc83612460abe8a47a271e63007 
+== B4 owner SIGKILLed while holding the lock ==
+  next acquire: rc=0 reclaimed=true inc=inc-428013-ce1f4d1ff472405d9705ffe1e44e110c owner_state=DEAD owner_detail=pid 427881 is no longer running publish_waits=0 released=true 
+  residue=[]
+== B5 reclaimer SIGKILLed holding the arbitration marker ==
+  marker_present=yes
+  next acquire: rc=0 reclaimed=true inc=inc-428702-e1ddbc30920c403594b12b78d00a741c owner_state=DEAD owner_detail=pid 428507 is no longer running publish_waits=0 released=true 
+  residue=[]
+== B6/B7 identity changes: pid reuse shape, boot mismatch, host mismatch ==
+bash: line 1: afk_host_identity: command not found
+bash: line 1: afk_boot_identity: command not found
+  pid-reuse-shape: state=UNKNOWN detail=the lock owner record is incomplete inc= 
+  boot-mismatch:   state=UNKNOWN detail=the lock owner record is incomplete inc= 
+  host-mismatch:   state=UNKNOWN detail=the lock owner record is incomplete inc= 
+  host-mismatch acquire: rc=3 reclaimed=false inc= owner_state=UNKNOWN owner_detail=the lock owner record is incomplete publish_waits=0 
+  foreign lock still present=yes
+== B8 lock path is a symlink / a regular file ==
+  symlink: rc=3 reclaimed=false inc= owner_state=UNKNOWN owner_detail=the lock path is not a directory publish_waits=0 
+  /etc intact=yes link_present=yes
+  regular: rc=3 reclaimed=false inc= owner_state=UNKNOWN owner_detail=the lock path is not a directory publish_waits=0 
+  file_present=yes
+== B9 contender SIGKILLed while inside the bounded publication wait ==
+  contender killed mid-wait; lock dir still ownerless=yes
+  winner published inc=inc-430194-d9d51220c
+  after winner released: residue=[]

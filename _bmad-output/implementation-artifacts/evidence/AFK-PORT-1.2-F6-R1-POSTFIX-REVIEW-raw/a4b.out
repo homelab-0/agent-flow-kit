@@ -1,0 +1,97 @@
+total_acquisitions=480
+--- rc tally ---
+     45 rc=0
+    414 rc=1
+     21 rc=3
+--- owner_detail tally ---
+      2 owner_detail=
+     14 owner_detail=an abandoned lock is already being reclaimed by pid 132196
+     14 owner_detail=an abandoned lock is already being reclaimed by pid 134430
+     15 owner_detail=an abandoned lock is already being reclaimed by pid 136593
+     14 owner_detail=an abandoned lock is already being reclaimed by pid 138781
+     14 owner_detail=an abandoned lock is already being reclaimed by pid 140981
+     13 owner_detail=an abandoned lock is already being reclaimed by pid 143163
+     11 owner_detail=an abandoned lock is already being reclaimed by pid 145376
+     15 owner_detail=an abandoned lock is already being reclaimed by pid 147774
+     15 owner_detail=an abandoned lock is already being reclaimed by pid 149952
+     13 owner_detail=an abandoned lock is already being reclaimed by pid 152129
+     15 owner_detail=an abandoned lock is already being reclaimed by pid 154357
+     14 owner_detail=an abandoned lock is already being reclaimed by pid 156648
+     13 owner_detail=an abandoned lock is already being reclaimed by pid 158815
+     12 owner_detail=an abandoned lock is already being reclaimed by pid 161046
+     14 owner_detail=an abandoned lock is already being reclaimed by pid 163278
+     13 owner_detail=an abandoned lock is already being reclaimed by pid 165443
+     15 owner_detail=an abandoned lock is already being reclaimed by pid 167808
+     15 owner_detail=an abandoned lock is already being reclaimed by pid 170005
+     13 owner_detail=an abandoned lock is already being reclaimed by pid 172220
+     13 owner_detail=an abandoned lock is already being reclaimed by pid 174437
+     14 owner_detail=an abandoned lock is already being reclaimed by pid 176659
+     15 owner_detail=an abandoned lock is already being reclaimed by pid 178836
+     12 owner_detail=an abandoned lock is already being reclaimed by pid 181013
+     13 owner_detail=an abandoned lock is already being reclaimed by pid 183196
+     14 owner_detail=an abandoned lock is already being reclaimed by pid 185524
+     15 owner_detail=an abandoned lock is already being reclaimed by pid 187900
+     14 owner_detail=an abandoned lock is already being reclaimed by pid 190085
+     12 owner_detail=an abandoned lock is already being reclaimed by pid 192236
+     15 owner_detail=an abandoned lock is already being reclaimed by pid 194434
+     15 owner_detail=an abandoned lock is already being reclaimed by pid 196624
+     14 owner_detail=a reclamation of this lock was started by a process that cannot be judged
+      1 owner_detail=pid 132138 is no longer running
+      1 owner_detail=pid 134377 is no longer running
+      1 owner_detail=pid 136527 is no longer running
+      1 owner_detail=pid 138722 is no longer running
+      1 owner_detail=pid 140907 is no longer running
+      2 owner_detail=pid 143082 is no longer running
+      1 owner_detail=pid 145319 is no longer running
+      1 owner_detail=pid 145376 is no longer running
+      1 owner_detail=pid 147708 is no longer running
+      1 owner_detail=pid 149897 is no longer running
+      2 owner_detail=pid 152073 is no longer running
+      1 owner_detail=pid 154299 is no longer running
+      1 owner_detail=pid 156592 is no longer running
+      2 owner_detail=pid 158760 is no longer running
+      2 owner_detail=pid 160988 is no longer running
+      1 owner_detail=pid 163222 is no longer running
+      2 owner_detail=pid 165384 is no longer running
+      1 owner_detail=pid 165443 is no longer running
+      1 owner_detail=pid 167748 is no longer running
+      1 owner_detail=pid 169947 is no longer running
+      2 owner_detail=pid 172154 is no longer running
+      2 owner_detail=pid 174382 is no longer running
+      1 owner_detail=pid 176606 is no longer running
+      1 owner_detail=pid 178769 is no longer running
+      2 owner_detail=pid 180962 is no longer running
+      1 owner_detail=pid 183135 is no longer running
+      1 owner_detail=pid 183196 is no longer running
+      1 owner_detail=pid 185470 is no longer running
+      1 owner_detail=pid 185524 is no longer running
+      1 owner_detail=pid 187847 is no longer running
+      1 owner_detail=pid 190029 is no longer running
+      2 owner_detail=pid 192176 is no longer running
+      1 owner_detail=pid 194379 is no longer running
+      1 owner_detail=pid 196564 is no longer running
+      7 owner_detail=the lock owner record could not be parsed
+--- rc=3 records in full ---
+[/tmp/afkrev.WBrujp/a4b/o.10.15] rc=3 reclaimed=false inc= owner_state=DEAD owner_detail=a reclamation of this lock was started by a process that cannot be judged publish_waits=0 
+[/tmp/afkrev.WBrujp/a4b/o.1.16] rc=3 reclaimed=false inc= owner_state=DEAD owner_detail=a reclamation of this lock was started by a process that cannot be judged publish_waits=0 
+[/tmp/afkrev.WBrujp/a4b/o.12.16] rc=3 reclaimed=false inc= owner_state=DEAD owner_detail=a reclamation of this lock was started by a process that cannot be judged publish_waits=0 
+[/tmp/afkrev.WBrujp/a4b/o.13.16] rc=3 reclaimed=false inc= owner_state=UNKNOWN owner_detail=the lock owner record could not be parsed publish_waits=1 
+[/tmp/afkrev.WBrujp/a4b/o.14.13] rc=3 reclaimed=false inc= owner_state=DEAD owner_detail=a reclamation of this lock was started by a process that cannot be judged publish_waits=0 
+[/tmp/afkrev.WBrujp/a4b/o.15.16] rc=3 reclaimed=false inc= owner_state=DEAD owner_detail=a reclamation of this lock was started by a process that cannot be judged publish_waits=0 
+[/tmp/afkrev.WBrujp/a4b/o.19.13] rc=3 reclaimed=false inc= owner_state=UNKNOWN owner_detail=the lock owner record could not be parsed publish_waits=1 
+[/tmp/afkrev.WBrujp/a4b/o.20.13] rc=3 reclaimed=false inc= owner_state=UNKNOWN owner_detail=the lock owner record could not be parsed publish_waits=1 
+[/tmp/afkrev.WBrujp/a4b/o.21.15] rc=3 reclaimed=false inc= owner_state=DEAD owner_detail=a reclamation of this lock was started by a process that cannot be judged publish_waits=0 
+[/tmp/afkrev.WBrujp/a4b/o.2.16] rc=3 reclaimed=false inc= owner_state=UNKNOWN owner_detail=the lock owner record could not be parsed publish_waits=1 
+[/tmp/afkrev.WBrujp/a4b/o.23.10] rc=3 reclaimed=false inc= owner_state=DEAD owner_detail=a reclamation of this lock was started by a process that cannot be judged publish_waits=0 
+[/tmp/afkrev.WBrujp/a4b/o.23.16] rc=3 reclaimed=false inc= owner_state=UNKNOWN owner_detail=the lock owner record could not be parsed publish_waits=1 
+[/tmp/afkrev.WBrujp/a4b/o.24.16] rc=3 reclaimed=false inc= owner_state=UNKNOWN owner_detail=the lock owner record could not be parsed publish_waits=1 
+[/tmp/afkrev.WBrujp/a4b/o.27.16] rc=3 reclaimed=false inc= owner_state=DEAD owner_detail=a reclamation of this lock was started by a process that cannot be judged publish_waits=0 
+[/tmp/afkrev.WBrujp/a4b/o.28.14] rc=3 reclaimed=false inc= owner_state=DEAD owner_detail=a reclamation of this lock was started by a process that cannot be judged publish_waits=0 
+[/tmp/afkrev.WBrujp/a4b/o.28.15] rc=3 reclaimed=false inc= owner_state=DEAD owner_detail=a reclamation of this lock was started by a process that cannot be judged publish_waits=0 
+[/tmp/afkrev.WBrujp/a4b/o.4.15] rc=3 reclaimed=false inc= owner_state=DEAD owner_detail=a reclamation of this lock was started by a process that cannot be judged publish_waits=0 
+[/tmp/afkrev.WBrujp/a4b/o.5.16] rc=3 reclaimed=false inc= owner_state=DEAD owner_detail=a reclamation of this lock was started by a process that cannot be judged publish_waits=0 
+[/tmp/afkrev.WBrujp/a4b/o.6.15] rc=3 reclaimed=false inc= owner_state=UNKNOWN owner_detail=the lock owner record could not be parsed publish_waits=1 
+[/tmp/afkrev.WBrujp/a4b/o.7.13] rc=3 reclaimed=false inc= owner_state=DEAD owner_detail=a reclamation of this lock was started by a process that cannot be judged publish_waits=0 
+[/tmp/afkrev.WBrujp/a4b/o.7.14] rc=3 reclaimed=false inc= owner_state=DEAD owner_detail=a reclamation of this lock was started by a process that cannot be judged publish_waits=0 
+--- rc=2 records in full ---
+residue: 

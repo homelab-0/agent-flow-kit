@@ -1,0 +1,5 @@
+== C1 the no-fractional-sleep fallback: still bounded, still long enough? ==
+  (control, real sleep) ms=3200 rc=3 reclaimed=false inc= owner_state=UNKNOWN owner_detail=the lock carries no owner record and none appeared while it was waited on publish_waits=120 
+  (fraction-refusing sleep) ms=4661 rc=3 reclaimed=false inc= owner_state=UNKNOWN owner_detail=the lock carries no owner record and none appeared while it was waited on publish_waits=120 
+== C2 does the fallback still cover a real publication window? ==
+  contender_still_waiting_after_150ms=yes result: rc=1 reclaimed=false inc= owner_state=LIVE owner_detail=pid 608161 publish_waits=4 

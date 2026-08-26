@@ -1,0 +1,24 @@
+{
+  "story_id": "AFK-PORT-1.2-F6-R10-POSTFIX-REVIEW",
+  "title": "Independent adversarial review of the F6-R10 signal-handling fix gating the Story 1.2 re-freeze",
+  "summary": "Perform a fresh read-only adversarial review of the F6-R10 correction in which the operation lock's release moved to the EXIT trap alone while INT and TERM handlers disarm and exit, so a signalled run can never continue writing after freeing the lock. Independently attack every signal-landing case including double signals, signals inside the release itself, signals during rollback and recovery, interactions with the publication-window wait and vanished-record handling, and the untrapped SIGHUP shape. Evaluate the five documented residual risks, verify the 61 new regressions are genuine and anti-vacuous against a pre-fix reconstruction, re-verify all prior F6-R1 through F6-R9 semantics survived, then rerun every Story 1.2 gate including loaded mutation runs and git diff --check. This review gates the story re-freeze and the resumption of the held merge stack. Report findings only; do not modify repository files.",
+  "touched_paths": [
+    "bin/agent-flow-kit",
+    "lib/afk-mutate.sh",
+    "lib/afk-commands.sh",
+    "docs/LIFECYCLE-CONTRACT.md",
+    "tests/lifecycle-mutation-tests.sh",
+    "tests/lifecycle-concurrency-tests.sh",
+    "tests/lifecycle-tests.sh",
+    "tests/run-tests.sh",
+    "_bmad-output/implementation-artifacts/AFK-PORT-1.2.md",
+    "_bmad-output/implementation-artifacts/traceability.md",
+    "_bmad-output/implementation-artifacts/evidence/AFK-PORT-1.2-F6-R10-FIX.worker-done.md"
+  ],
+  "ambiguity": "high",
+  "blast_radius": "high",
+  "volume_hint": "low",
+  "tags": ["security", "tests"],
+  "repo": "agent-flow-kit",
+  "requester": "bmad-pm"
+}

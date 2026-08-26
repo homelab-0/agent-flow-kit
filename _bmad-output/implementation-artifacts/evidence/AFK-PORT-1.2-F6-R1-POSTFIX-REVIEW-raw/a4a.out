@@ -1,0 +1,6 @@
+--- tally over 25 rounds x 10 contenders ---
+rc=1 count=225
+rc=0 count=25
+peak_gt_1_observations=0 residue_rounds=0
+--- distinct owner_detail values on rc=3 ---
+--- distinct owner_detail values on rc=2 ---

@@ -1,0 +1,26 @@
+{
+  "story_id": "AFK-PORT-1.2-F6-R4R9-POSTFIX-REVIEW",
+  "title": "Independent adversarial review of the F6-R4/F6-R9 fixes gating the Story 1.2 freeze",
+  "summary": "Perform a fresh read-only adversarial review of the Story 1.2 mutation-lock protocol after the F6-R4 and F6-R9 corrections: the owner-record judge now reads the record once and judges those bytes instead of taking a raceable second observation, and reclamation reporting moved to the destruction itself so a reclaimer that loses the subsequent take still reports what it removed, alongside a fail-closed shellcheck sub-gate and rewritten contract passages. Independently attack the single-read judge, the exactly-once reclamation reporting under every reclaim outcome, their interaction with the F6-R1 publication-window wait and the F6-R2/R3 vanished-record handling, stale reclaim, N-way contention, owner and reclaimer interleavings, process death, identity changes, and all prior F6 scenarios. Evaluate the documented residual risks including the pre-read hazard guard and the reclaiming-refusals finding, verify the new regressions are genuine and anti-vacuous, sweep for remaining members of the observe-then-act defect class, then rerun every Story 1.2 gate including repeated loaded mutation-gate runs and git diff --check. This review gates the story freeze decision. Report findings only; do not modify repository files.",
+  "touched_paths": [
+    "lib/afk-mutate.sh",
+    "lib/afk-common.sh",
+    "lib/afk-commands.sh",
+    "docs/LIFECYCLE-CONTRACT.md",
+    "tests/lifecycle-concurrency-tests.sh",
+    "tests/lockctl-helper.sh",
+    "tests/lifecycle-mutation-tests.sh",
+    "tests/lifecycle-tests.sh",
+    "tests/run-tests.sh",
+    "_bmad-output/implementation-artifacts/AFK-PORT-1.2.md",
+    "_bmad-output/implementation-artifacts/traceability.md",
+    "_bmad-output/implementation-artifacts/evidence/AFK-PORT-1.2-F6-R4R9-FIX.worker-done.md",
+    "_bmad-output/implementation-artifacts/evidence/AFK-PORT-1.2-F6-R2R3-POSTFIX-REVIEW.md"
+  ],
+  "ambiguity": "high",
+  "blast_radius": "high",
+  "volume_hint": "low",
+  "tags": ["security", "tests"],
+  "repo": "agent-flow-kit",
+  "requester": "bmad-pm"
+}

@@ -1,0 +1,25 @@
+{
+  "story_id": "AFK-PORT-1.2-F6-FIX",
+  "title": "Make Story 1.2 mutation locking single-winner and ownership-safe",
+  "summary": "Correct the remaining F6 concurrency defect. Implement an atomic single-winner mutation-lock acquisition and stale-reclamation protocol, bind release to the exact acquired lock incarnation, fail closed on incomplete or ambiguous metadata, and add genuine barrier-synchronized multiprocess regressions for stale contention, N contenders, successor-safe release, PID-reuse-shaped identity, reboot/host mismatch, incomplete metadata, active owners, and repeated stale reclaim. Preserve all other frozen Story 1.2 transaction semantics and rerun the complete deterministic gate set.",
+  "touched_paths": [
+    "lib/afk-common.sh",
+    "lib/afk-mutate.sh",
+    "lib/afk-commands.sh",
+    "docs/LIFECYCLE-CONTRACT.md",
+    "tests/lifecycle-mutation-tests.sh",
+    "tests/lifecycle-tests.sh",
+    "tests/run-tests.sh",
+    "_bmad-output/implementation-artifacts/AFK-PORT-1.2.md",
+    "_bmad-output/implementation-artifacts/traceability.md"
+  ],
+  "ambiguity": "medium",
+  "blast_radius": "high",
+  "volume_hint": "low",
+  "tags": [
+    "security",
+    "tests"
+  ],
+  "repo": "agent-flow-kit",
+  "requester": "bmad-pm"
+}

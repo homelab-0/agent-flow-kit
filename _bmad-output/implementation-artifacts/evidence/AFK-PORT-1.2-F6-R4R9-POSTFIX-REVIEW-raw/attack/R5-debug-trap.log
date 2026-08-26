@@ -1,0 +1,7 @@
+a real lock is held, incarnation inc-3542216-ec9ed51c52634724b91fc8925d5d273d
+trap fired between the two tests: YES
+state=UNKNOWN
+detail=the lock path is not a directory
+==> F6-R5 REPRODUCED DETERMINISTICALLY: a lock legitimately handed over
+    between the two builtins is reported as a malformed lock path
+    (UNKNOWN -> 'remove the lock directory by hand').

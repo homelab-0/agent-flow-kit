@@ -1,0 +1,16 @@
+round=1 rc=2 waits=6 ms=462
+round=2 rc=0 waits=9 ms=629
+round=3 rc=0 waits=1 ms=276
+round=4 rc=0 waits=0 ms=163
+round=5 rc=0 waits=0 ms=171
+round=6 rc=2 waits=5 ms=508
+round=7 rc=0 waits=1 ms=275
+round=8 rc=0 waits=0 ms=146
+round=9 rc=0 waits=1 ms=263
+round=10 rc=0 waits=5 ms=380
+round=11 rc=0 waits=7 ms=480
+round=12 rc=0 waits=1 ms=243
+MAX_ELAPSED_MS=629 MAX_WAITS=9 BUDGET=120
+=== A3b: can the budget be raised from the environment? ===
+env_override elapsed_ms=3596
+rc=3 reclaimed=false inc= owner_state=UNKNOWN owner_detail=the lock carries no owner record and none appeared while it was waited on publish_waits=120 
