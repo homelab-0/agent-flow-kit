@@ -1,0 +1,14 @@
+ M README.md
+ M tests/run-tests.sh
+?? .agents/
+?? .claude/
+?? _bmad-output/
+?? _bmad/
+?? bin/
+?? docs/
+?? lib/
+?? lifecycle/
+?? tests/lifecycle-concurrency-tests.sh
+?? tests/lifecycle-mutation-tests.sh
+?? tests/lifecycle-tests.sh
+?? tests/lockctl-helper.sh

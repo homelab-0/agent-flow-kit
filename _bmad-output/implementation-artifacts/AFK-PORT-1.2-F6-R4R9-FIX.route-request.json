@@ -1,0 +1,25 @@
+{
+  "story_id": "AFK-PORT-1.2-F6-R4R9-FIX",
+  "title": "Fix the raced discriminator and silent reclamation in the Story 1.2 lock protocol",
+  "summary": "Implement the two confirmed blockers from the F6-R2R3 post-fix review. F6-R4: the F6-R3 repair decides gone-versus-unparseable with a second stat taken after the failed read, so the discriminator itself can be raced into reporting a live successor's lock as unparseable and telling the operator to remove it; repair by reading the record once and judging those bytes, eliminating the second observation. F6-R9: afk_lock_reclaim can rename an abandoned lock aside, remove it, then lose the take to a contender and return 3 without ever emitting OPERATION_LOCK_RECLAIMED, because the reclaimed flag is only set on rc 0 — a silent destruction that contradicts the contract's reclamation-is-never-silent guarantee and makes the mutation gate fail 2 in 5 runs under load. Also restore gate integrity where the run-tests shellcheck sub-gate prints PASS from empty stdout when shellcheck fails to start, and align the two contract sentences the review falsified. Optionally, within the same established design: the cheap same-class repair for the evaluate existence/directory pair and the constructible CLI-level F6-R2 regression the review demonstrated. Preserve mutual exclusion, single-winner reclaim, exact-incarnation release, bounded acquisition, and all F6-R1/R2/R3 semantics. Add deterministic anti-vacuous regressions for each fix. Run all Story 1.2 gates including repeated mutation-gate runs under load, and git diff --check.",
+  "touched_paths": [
+    "lib/afk-mutate.sh",
+    "lib/afk-common.sh",
+    "lib/afk-commands.sh",
+    "docs/LIFECYCLE-CONTRACT.md",
+    "tests/lifecycle-concurrency-tests.sh",
+    "tests/lockctl-helper.sh",
+    "tests/lifecycle-mutation-tests.sh",
+    "tests/lifecycle-tests.sh",
+    "tests/run-tests.sh",
+    "_bmad-output/implementation-artifacts/AFK-PORT-1.2.md",
+    "_bmad-output/implementation-artifacts/traceability.md",
+    "_bmad-output/implementation-artifacts/evidence/AFK-PORT-1.2-F6-R2R3-POSTFIX-REVIEW.md"
+  ],
+  "ambiguity": "medium",
+  "blast_radius": "high",
+  "volume_hint": "low",
+  "tags": ["security", "tests"],
+  "repo": "agent-flow-kit",
+  "requester": "bmad-pm"
+}

@@ -1,0 +1,29 @@
+{
+  "story_id": "AFK-PORT-1.2-F6-R1-POSTFIX-REVIEW",
+  "title": "Independent adversarial review of the F6-R1 publication-window fix in Story 1.2",
+  "summary": "Perform a fresh read-only adversarial review of the Story 1.2 mutation-lock protocol after the F6-R1 correction, in which afk_lock_acquire now waits out the transient post-mkdir pre-owner.json publication window inside a bounded observation budget instead of classifying it OPERATION_LOCK_OWNER_UNVERIFIABLE and advising removal of a possibly live lock. Independently attack the publication window itself, stale reclamation, N-way contention on clean and contended lock paths, owner/reclaimer interleavings, former-owner release after successor acquisition, process death during acquire/reclaim/release, identity changes between observation and action, and every prior F6 scenario. Specifically evaluate the implementer's self-reported residual risk: a lost arbitration marker vanishing between its existence check and its judge makes reclaim return 2, so a loser can still be told to remove a lock a successor may hold — judge whether that is a Story 1.2-owned blocker. Construct and run hostile multiprocess interleavings, inspect for asymmetric or bypass paths, verify the new forced-window and clean-lock regressions are genuine and anti-vacuous, and independently rerun every Story 1.2 deterministic gate including git diff --check. Report findings only; do not modify repository files.",
+  "touched_paths": [
+    "lib/afk-mutate.sh",
+    "lib/afk-common.sh",
+    "lib/afk-commands.sh",
+    "docs/LIFECYCLE-CONTRACT.md",
+    "tests/lifecycle-concurrency-tests.sh",
+    "tests/lockctl-helper.sh",
+    "tests/lifecycle-mutation-tests.sh",
+    "tests/lifecycle-tests.sh",
+    "tests/run-tests.sh",
+    "_bmad-output/implementation-artifacts/AFK-PORT-1.2.md",
+    "_bmad-output/implementation-artifacts/traceability.md",
+    "_bmad-output/implementation-artifacts/evidence/AFK-PORT-1.2-F6-INDEPENDENT-REVIEW.md",
+    "_bmad-output/implementation-artifacts/evidence/AFK-PORT-1.2-F6-R1-FIX.worker-done.md"
+  ],
+  "ambiguity": "high",
+  "blast_radius": "high",
+  "volume_hint": "low",
+  "tags": [
+    "security",
+    "tests"
+  ],
+  "repo": "agent-flow-kit",
+  "requester": "bmad-pm"
+}

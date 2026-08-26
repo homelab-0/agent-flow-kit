@@ -1,0 +1,25 @@
+{
+  "story_id": "AFK-PORT-1.2-F6-R2R3-FIX",
+  "title": "Fix the two remaining vanished-record mis-refusals in the Story 1.2 lock protocol",
+  "summary": "Implement the confirmed F6-R2 and F6-R3 corrections in the Story 1.2 mutation lock, both in the same defect class the F6-R1 cycle already fixed for the publication window: a record observed to exist and then found gone must be treated as a transient moment to re-observe inside the established bounded budget, never as a permanent diagnosis carrying remove-by-hand guidance. F6-R2: a lost arbitration marker vanishing between afk_lock_marker_claim's existence check and afk_lock_reclaim's judge makes reclaim return 2 and acquire return 3, emitting OPERATION_LOCK_OWNER_UNVERIFIABLE with guidance to remove a lock a successor may hold; reproduced at 4.7 percent of real contended CLI update runs. F6-R3: the owner record vanishing between the file-existence test and the jq read in afk_lock_judge_record is mis-diagnosed as an unparseable owner record and refused instantly with the same remove guidance, although the atomic tmp-plus-rename writer makes a genuinely torn record impossible. Preserve fail-closed behavior for permanently unjudgeable records, mutual exclusion, atomic stale reclamation, exact-incarnation release, bounded acquisition, and the F6-R1 bounded-wait semantics. Add genuine anti-vacuous regressions for both defects proving pre-fix failure and post-fix truthful classification. Align LIFECYCLE-CONTRACT.md where it still lists unparseable among remove-by-hand conditions reachable by a vanished record. Use the retained post-fix review and its raw reproductions as input. Modify only Story 1.2 implementation, tests, contract documentation, and story/traceability artifacts. Run all Story 1.2 gates and git diff --check.",
+  "touched_paths": [
+    "lib/afk-mutate.sh",
+    "lib/afk-common.sh",
+    "lib/afk-commands.sh",
+    "docs/LIFECYCLE-CONTRACT.md",
+    "tests/lifecycle-concurrency-tests.sh",
+    "tests/lockctl-helper.sh",
+    "tests/lifecycle-mutation-tests.sh",
+    "tests/lifecycle-tests.sh",
+    "tests/run-tests.sh",
+    "_bmad-output/implementation-artifacts/AFK-PORT-1.2.md",
+    "_bmad-output/implementation-artifacts/traceability.md",
+    "_bmad-output/implementation-artifacts/evidence/AFK-PORT-1.2-F6-R1-POSTFIX-REVIEW.md"
+  ],
+  "ambiguity": "medium",
+  "blast_radius": "high",
+  "volume_hint": "low",
+  "tags": ["security", "tests"],
+  "repo": "agent-flow-kit",
+  "requester": "bmad-pm"
+}

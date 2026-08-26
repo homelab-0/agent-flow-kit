@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+echo "error: experimental Nix feature 'nix-command' is disabled" >&2; exit 1

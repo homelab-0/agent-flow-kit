@@ -1,0 +1,13 @@
+bin/agent-flow-kit rc=0 CLEAN
+lib/afk-common.sh rc=0 CLEAN
+lib/afk-source.sh rc=0 CLEAN
+lib/afk-inventory.sh rc=0 CLEAN
+lib/afk-commands.sh rc=0 CLEAN
+lib/afk-plan.sh rc=0 CLEAN
+lib/afk-mutate.sh rc=0 CLEAN
+tests/lockctl-helper.sh rc=0 CLEAN
+tests/lifecycle-concurrency-tests.sh rc=0 CLEAN
+tests/lifecycle-mutation-tests.sh rc=1 FINDINGS
+tests/lifecycle-tests.sh rc=1 FINDINGS
+tests/lockctl-helper.sh rc=1 FINDINGS
+tests/run-tests.sh rc=0 CLEAN
