@@ -1,0 +1,7 @@
+rounds=12 procs=5  (abandoned lock + record churn on every round)
+  abandoned locks stranded            : 12
+  acquisitions that took the lock     : 1
+  acquisitions reporting a reclamation: 1
+  PEAK SIMULTANEOUS PUBLISHED OWNERS  : 1   -> mutual exclusion INTACT
+  false 'could not be parsed'         : 0
+  F6-R5 'not a directory' verdicts    : 0

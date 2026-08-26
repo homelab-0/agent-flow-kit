@@ -1,0 +1,27 @@
+{
+  "story_id": "AFK-PORT-1.2-F6-POSTFIX-REVIEW",
+  "title": "Independent adversarial review of the corrected Story 1.2 lock protocol",
+  "summary": "Perform a fresh read-only adversarial review of the corrected Story 1.2 mutation-lock acquisition, stale reclamation, incarnation-bound release, and transaction serialization. Actively construct and run hostile multiprocess interleavings for simultaneous and N-way stale reclaim, owner/reclaimer races, former-owner release after successor acquisition, partial metadata, PID-reuse-shaped identity, boot/host mismatch, repeated reclaim, process death during acquire/reclaim/release, and identity changes between observation and action. Inspect for asymmetric or bypass paths and independently rerun every Story 1.2 deterministic gate. Report findings only; do not modify repository files.",
+  "touched_paths": [
+    "lib/afk-mutate.sh",
+    "lib/afk-common.sh",
+    "lib/afk-commands.sh",
+    "docs/LIFECYCLE-CONTRACT.md",
+    "tests/lifecycle-concurrency-tests.sh",
+    "tests/lockctl-helper.sh",
+    "tests/lifecycle-mutation-tests.sh",
+    "tests/lifecycle-tests.sh",
+    "tests/run-tests.sh",
+    "_bmad-output/implementation-artifacts/AFK-PORT-1.2.md",
+    "_bmad-output/implementation-artifacts/traceability.md"
+  ],
+  "ambiguity": "high",
+  "blast_radius": "high",
+  "volume_hint": "low",
+  "tags": [
+    "security",
+    "tests"
+  ],
+  "repo": "agent-flow-kit",
+  "requester": "bmad-pm"
+}

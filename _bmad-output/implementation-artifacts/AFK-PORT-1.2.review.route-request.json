@@ -1,0 +1,24 @@
+{
+  "story_id": "AFK-PORT-1.2-REVIEW",
+  "title": "Adversarial review of Story 1.2 safe convergence and recovery",
+  "summary": "Adversarially review the implemented Story 1.2 transaction core against its frozen contract: deterministic planning, adoption/update safety, TOCTOU and stale-plan protection, immutable approval binding, locking, recovery journals and backups, rollback and interruption recovery, applied-revision atomicity, idempotence, and secret-safe mutation evidence. Report findings only; do not modify files.",
+  "touched_paths": [
+    "bin/agent-flow-kit",
+    "lib/afk-common.sh",
+    "lib/afk-commands.sh",
+    "lib/afk-plan.sh",
+    "lib/afk-mutate.sh",
+    "docs/LIFECYCLE-CONTRACT.md",
+    "tests/lifecycle-tests.sh",
+    "tests/lifecycle-mutation-tests.sh",
+    "tests/run-tests.sh",
+    "README.md",
+    "_bmad-output/implementation-artifacts/AFK-PORT-1.2.md"
+  ],
+  "ambiguity": "medium",
+  "blast_radius": "high",
+  "volume_hint": "medium",
+  "tags": ["security", "tests"],
+  "repo": "agent-flow-kit",
+  "requester": "bmad-pm"
+}

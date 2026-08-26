@@ -1,0 +1,240 @@
+
+[1m1. PROTOCOL — at most one owner, under a barrier[0m
+  [32mPASS[0m two contenders on one abandoned lock: exactly one acquires
+  [32mPASS[0m and exactly one reports the reclamation
+  [32mPASS[0m and never more than one owner exists at a time
+  [32mPASS[0m the lock is gone once the winner released it
+  [32mPASS[0m the winner released the incarnation it installed
+  [32mPASS[0m eight contenders: never more than one owner at a time
+  [32mPASS[0m and at most one reclamation of the one abandoned lock
+  [32mPASS[0m every loser refused for a reason the lock has a name for
+  [32mPASS[0m and the crowd did not leave the lock unacquirable
+  [32mPASS[0m no reclamation residue survives the crowd
+
+[1m2. PROTOCOL — a stale observation never grants ownership[0m
+  [32mPASS[0m the observer judged the abandoned lock abandoned
+  [32mPASS[0m and recorded the exact incarnation it judged
+  [32mPASS[0m a successor holds the lock now
+  [32mPASS[0m and it is not the incarnation observed
+  [32mPASS[0m acting on the stale observation does not acquire
+  [32mPASS[0m and leaves the successor's lock exactly where it was
+  [32mPASS[0m the successor still holds the lock on disk
+  [32mPASS[0m and the successor's own release still succeeds
+  [32mPASS[0m leaving no lock behind
+  [32mPASS[0m and no reclamation residue
+  [32mPASS[0m the first reclamation of an abandoned lock succeeds
+  [32mPASS[0m and installs a different incarnation
+  [32mPASS[0m reclaiming the same incarnation again does not acquire
+  [32mPASS[0m and does not disturb what is there now
+  [32mPASS[0m the lock on disk is untouched
+
+[1m3. PROTOCOL — a former owner releases only what it installed[0m
+  [32mPASS[0m the abandoned lock is reclaimed by a successor
+  [32mPASS[0m and the successor's incarnation is its own
+  [32mPASS[0m the former owner's release does not report success
+  [32mPASS[0m and removes nothing
+  [32mPASS[0m the successor's lock survives its predecessor's release
+  [32mPASS[0m byte for byte the same owner
+  [32mPASS[0m a release quoting a malformed incarnation reports success
+  [32mPASS[0m and removes nothing
+  [32mPASS[0m the exact incarnation on disk releases
+  [32mPASS[0m and the lock is gone
+
+[1m4. PROTOCOL — an owner that is alive is never reclaimed[0m
+  [32mPASS[0m a live owner holds the lock
+  [32mPASS[0m a second process judges that owner alive
+  [32mPASS[0m and refuses rather than reclaiming
+  [32mPASS[0m reporting no reclamation
+  [32mPASS[0m a reclamation aimed straight at a live owner does not acquire
+  [32mPASS[0m and the live owner is still on disk
+  [32mPASS[0m the live owner released normally
+  [32mPASS[0m and the lock is gone
+
+[1m5. RECORD — a pid that was recycled is not its own former owner[0m
+  [32mPASS[0m a live pid with a different start identity is not the owner
+  [32mPASS[0m and the diagnosis says so
+  [32mPASS[0m so the lock is reclaimable
+  [32mPASS[0m and the reclamation is reported
+  [32mPASS[0m an exact pid AND start identity match is a live owner
+
+[1m6. RECORD — a reboot is decidable, another host is not[0m
+  [32mPASS[0m a lock from an earlier boot of this host is abandoned
+  [32mPASS[0m with the reboot named as the reason
+  [32mPASS[0m so it is reclaimed rather than waited on
+  [32mPASS[0m a lock taken on another host is foreign
+  [32mPASS[0m and fails closed rather than reclaiming
+  [32mPASS[0m leaving the foreign lock exactly where it was
+  [32mPASS[0m with its record unchanged
+
+[1m7. RECORD — missing, partial or unreadable metadata fails closed[0m
+  [32mPASS[0m a record with no incarnation: the owner cannot be judged
+  [32mPASS[0m a record with no incarnation: acquisition fails closed
+  [32mPASS[0m a record with no incarnation: and the lock is left untouched
+  [32mPASS[0m a record with no incarnation: refused at once, with no wait spent on a decided answer
+  [32mPASS[0m a record with no pid: the owner cannot be judged
+  [32mPASS[0m a record with no pid: acquisition fails closed
+  [32mPASS[0m a record with no pid: and the lock is left untouched
+  [32mPASS[0m a record with no pid: refused at once, with no wait spent on a decided answer
+  [32mPASS[0m a record with no start identity: the owner cannot be judged
+  [32mPASS[0m a record with no start identity: acquisition fails closed
+  [32mPASS[0m a record with no start identity: and the lock is left untouched
+  [32mPASS[0m a record with no start identity: refused at once, with no wait spent on a decided answer
+  [32mPASS[0m a record with no boot identity: the owner cannot be judged
+  [32mPASS[0m a record with no boot identity: acquisition fails closed
+  [32mPASS[0m a record with no boot identity: and the lock is left untouched
+  [32mPASS[0m a record with no boot identity: refused at once, with no wait spent on a decided answer
+  [32mPASS[0m a record not marked complete: the owner cannot be judged
+  [32mPASS[0m a record not marked complete: acquisition fails closed
+  [32mPASS[0m a record not marked complete: and the lock is left untouched
+  [32mPASS[0m a record not marked complete: refused at once, with no wait spent on a decided answer
+  [32mPASS[0m a record in an older lock schema: the owner cannot be judged
+  [32mPASS[0m a record in an older lock schema: acquisition fails closed
+  [32mPASS[0m a record in an older lock schema: and the lock is left untouched
+  [32mPASS[0m a record in an older lock schema: refused at once, with no wait spent on a decided answer
+  [32mPASS[0m a record in a future lock schema: the owner cannot be judged
+  [32mPASS[0m a record in a future lock schema: acquisition fails closed
+  [32mPASS[0m a record in a future lock schema: and the lock is left untouched
+  [32mPASS[0m a record in a future lock schema: refused at once, with no wait spent on a decided answer
+  [32mPASS[0m an incarnation shaped like a path: the owner cannot be judged
+  [32mPASS[0m an incarnation shaped like a path: acquisition fails closed
+  [32mPASS[0m an incarnation shaped like a path: and the lock is left untouched
+  [32mPASS[0m an incarnation shaped like a path: refused at once, with no wait spent on a decided answer
+  [32mPASS[0m an incarnation with no entropy: the owner cannot be judged
+  [32mPASS[0m an incarnation with no entropy: acquisition fails closed
+  [32mPASS[0m an incarnation with no entropy: and the lock is left untouched
+  [32mPASS[0m an incarnation with no entropy: refused at once, with no wait spent on a decided answer
+  [32mPASS[0m a lock with no owner record: the owner cannot be judged
+  [32mPASS[0m a lock with no owner record: acquisition fails closed
+  [32mPASS[0m a lock with no owner record: and the lock is left untouched
+  [32mPASS[0m a lock with no owner record: refused only after the wait for a record was spent
+  [32mPASS[0m a lock whose record is not JSON: the owner cannot be judged
+  [32mPASS[0m a lock whose record is not JSON: acquisition fails closed
+  [32mPASS[0m a lock whose record is not JSON: and the lock is left untouched
+  [32mPASS[0m a lock whose record is not JSON: refused at once, with no wait spent on a decided answer
+  [32mPASS[0m a lock path that is not a directory: the owner cannot be judged
+  [32mPASS[0m a lock path that is not a directory: acquisition fails closed
+  [32mPASS[0m a lock path that is not a directory: and the lock is left untouched
+  [32mPASS[0m a lock path that is not a directory: refused at once, with no wait spent on a decided answer
+
+[1m8. PROTOCOL — a reclaimer killed mid-reclamation does not brick the lock[0m
+  [32mPASS[0m a reclaimer can claim the marker for an exact incarnation
+  [32mPASS[0m and the marker is on disk, fully formed
+  [32mPASS[0m carrying a complete owner record of its own
+  [32mPASS[0m an abandoned marker is recovered rather than obeyed forever
+  [32mPASS[0m and the reclamation is still reported
+  [32mPASS[0m with no marker residue
+  [32mPASS[0m this host can state its own start identity
+  [32mPASS[0m a reclamation already in progress is waited on, not raced
+  [32mPASS[0m and the refusal says what is happening
+  [32mPASS[0m the abandoned lock is left for the live reclaimer
+  [32mPASS[0m still carrying the incarnation it did
+
+[1m9. RECORD — the incarnation this kit writes is unique and well shaped[0m
+  [32mPASS[0m an incarnation is produced
+  [32mPASS[0m two incarnations never collide
+  [32mPASS[0m and each is shaped the way the reader demands
+  [32mPASS[0m a process can acquire, release and acquire again
+  [32mPASS[0m and the two acquisitions carry different incarnations
+
+[1m10. PROTOCOL — a lock caught mid-publication is waited on, not condemned[0m
+  [32mPASS[0m the window is open: the lock directory exists
+  [32mPASS[0m and no owner record has been published into it
+  [32mPASS[0m the record alone cannot say who owns a lock mid-publication
+  [32mPASS[0m which is the state the old refusal was built on
+  [32mPASS[0m a contender that observed the window waits it out rather than refusing
+  [32mPASS[0m and reports the live owner it was waiting for
+  [32mPASS[0m having actually spent wait budget on the window
+  [32mPASS[0m so nothing it says can be read as 'this lock has no owner'
+  [32mPASS[0m and the winner's lock is untouched
+  [32mPASS[0m still carrying the incarnation the winner published
+  [32mPASS[0m the winner still releases its own incarnation cleanly
+  [32mPASS[0m leaving no lock behind
+  [32mPASS[0m and no residue
+  [32mPASS[0m a window nobody is publishing into still fails closed
+  [32mPASS[0m only after the wait for a record was actually spent
+  [32mPASS[0m and the refusal says the record never appeared
+  [32mPASS[0m the lock is left exactly where it was, for its owner to remove
+  [32mPASS[0m and nothing was reclaimed on the way to refusing
+  [32mPASS[0m a fully published live owner blocks a contender
+  [32mPASS[0m and no publication wait is spent doing it
+  [32mPASS[0m twelve contenders on a clean lock path: never more than one owner
+  [32mPASS[0m and not one of them is told the lock has no owner
+  [32mPASS[0m every outcome is either ownership or a live owner to wait for
+  [32mPASS[0m at least one of them acquired
+  [32mPASS[0m and the rest were blocked by an owner, not by an unjudgeable lock
+  [32mPASS[0m no lock survives the clean-path crowd
+  [32mPASS[0m and no residue survives it either
+
+[1m11. PROTOCOL — a record seen and then found gone is a moment, not a verdict[0m
+  [32mPASS[0m another reclaimer wins the marker for the abandoned incarnation
+  [32mPASS[0m so a later arrival must lose the claim
+  [32mPASS[0m the loser is held between its claim and that judge
+  [32mPASS[0m a loser whose marker was carried off by the winner observes again
+  [32mPASS[0m and says nothing about a reclaimer it could not judge
+  [32mPASS[0m an acquisition that lost the marker to a successor is told to wait
+  [32mPASS[0m naming the live owner that now holds the lock
+  [32mPASS[0m so no operator is ever told to remove a lock a live owner holds
+  [32mPASS[0m and it reclaimed nothing on the way to waiting
+  [32mPASS[0m the successor's lock still carries the incarnation it published
+  [32mPASS[0m which it then releases cleanly
+  [32mPASS[0m leaving no lock behind
+  [32mPASS[0m and no residue
+  [32mPASS[0m a marker that is present and unreadable still fails closed
+  [32mPASS[0m saying the reclaimer could not be judged
+  [32mPASS[0m with no wait spent on a decided answer
+  [32mPASS[0m and the lock left exactly where it was
+  [32mPASS[0m this host has a real jq to hand the fixture
+  [32mPASS[0m this host has a real cat to hand the fixture
+  [32mPASS[0m the record the judge is about to read is valid JSON the library wrote
+  [32mPASS[0m the release lands underneath the read
+  [32mPASS[0m a record released mid-read is reported as a record that is not there
+  [32mPASS[0m never as a record that could not be parsed
+  [32mPASS[0m an acquisition whose lock was released mid-read takes the free path
+  [32mPASS[0m having reclaimed nothing to get there
+  [32mPASS[0m and never called the vanished record unparseable
+  [32mPASS[0m it releases its own incarnation cleanly afterwards
+  [32mPASS[0m leaving no lock behind
+  [32mPASS[0m and no residue
+
+[1m12. PROTOCOL — one observation, one verdict (the discriminator)[0m
+  [32mPASS[0m a live successor published into the freed name before the judge decided
+  [31mFAIL[0m a record read once and found gone is reported as a record that is not there
+        expected 'the lock carries no owner record', got 'the lock owner record could not be parsed'
+  [31mFAIL[0m never as a record that could not be parsed, whatever arrived afterwards
+        expected '0', got '1'
+  [32mPASS[0m and the successor's lock is released cleanly afterwards
+  [32mPASS[0m leaving no residue
+  [31mFAIL[0m an acquisition that read a vanished record while a successor published waits
+        expected '1', got '3'
+  [31mFAIL[0m naming the live owner that now holds the lock
+        expected 'LIVE', got 'UNKNOWN'
+  [31mFAIL[0m and never calls the successor's valid record unparseable
+        expected '0', got '1'
+  [32mPASS[0m so no operator is ever told to remove a lock a live successor holds
+  [32mPASS[0m and it reclaimed nothing on the way to waiting
+  [32mPASS[0m the successor's lock still carries the incarnation it published
+  [32mPASS[0m which it then releases cleanly
+  [32mPASS[0m leaving no lock behind
+  [32mPASS[0m and no residue
+  [32mPASS[0m bytes that were read and do not parse are still a diagnosis
+  [32mPASS[0m saying the record could not be parsed
+  [32mPASS[0m with no wait spent on a decided answer
+  [32mPASS[0m and the lock left exactly where it was
+
+[1m13. PROTOCOL — a reclamation is never silent[0m
+  [32mPASS[0m a reclaimer that loses the take it earned says observe again
+  [32mPASS[0m the contender really did take the lock path first
+  [32mPASS[0m the abandoned incarnation's record is gone: it was destroyed
+  [32mPASS[0m and the destruction is reported even though the take was lost
+  [32mPASS[0m exactly once, for the one lock that was destroyed
+  [32mPASS[0m naming the owner it proved was gone
+  [32mPASS[0m and no reclamation residue survives it
+  [32mPASS[0m a reclaimer that wins the take acquires
+  [32mPASS[0m and reports the reclamation
+  [32mPASS[0m releasing its own incarnation afterwards
+  [32mPASS[0m leaving no lock behind
+  [32mPASS[0m and no residue
+  [32mPASS[0m an acquisition of a free lock path acquires
+  [32mPASS[0m and reports no reclamation, because it destroyed nothing
+
+[1m202 passed, 5 failed[0m

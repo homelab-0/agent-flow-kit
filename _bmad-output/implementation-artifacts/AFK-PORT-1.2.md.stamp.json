@@ -1,0 +1,23 @@
+{
+  "harness": "claude",
+  "model_profile": "claude/strong",
+  "effort": "high",
+  "cost_class": "subscription",
+  "entitlement_pool": "anthropic-max",
+  "metered": false,
+  "placement_policy": "prefer-warm-local",
+  "placement_required": false,
+  "catalog_version": "sha256:2fd681e0e988bf6be94b8923b1485a0aa174a4e66aec580a2d383c764b60e229",
+  "expires_at": "2026-08-25T15:43:12Z",
+  "task": {
+    "story_id": "AFK-PORT-1.2",
+    "tags": [
+      "security",
+      "tests"
+    ],
+    "title": "Converge managed state without losing local work"
+  },
+  "override": null,
+  "created_at": "2026-08-24T15:43:12Z",
+  "catalog_document_version": "1.3.0"
+}

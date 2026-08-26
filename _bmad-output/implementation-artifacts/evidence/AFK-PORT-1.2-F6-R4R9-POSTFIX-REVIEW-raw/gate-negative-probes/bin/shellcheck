@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+if [[ "$1" == "--version" ]]; then printf 'totally-not-a-linter 1.0\n'; exit 0; fi
+exit 0
