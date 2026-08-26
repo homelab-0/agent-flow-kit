@@ -735,3 +735,63 @@ So that portability is proven by the actual fleet rather than inferred from fixt
 **And** otherwise returns `AGENT-FLOW-KIT PORTABILITY BLOCKED — <specific evidence-backed reason>` without a partial-green substitute.
 
 **Requirements covered:** AC-1–33; verification of all FR-1–95 and NFR-1–12; no new lifecycle, transaction, compatibility, routing, placement, or orchestration semantics beyond minimum frozen evidence hooks.
+
+## Post-Baseline Additions (Stories 1.5–1.7) — NOT part of the frozen baseline
+
+Everything above this heading is the frozen 95 FR / 33 AC / 12 NFR portability baseline and is unchanged. The stories below are post-baseline additions: they do not enter the `AGENT-FLOW-KIT PORTABILITY GREEN` verdict, add no requirement to Stories 1.1–1.4, and take their requirement authority from the PRD addendum `prds/prd-agent-flow-kit-2026-08-24/prd-addendum-1.5-1.6.md` (FR-96–126 and the cross-cutting harness-agnosticism NFR-13–15, numbering continued from the frozen FR-95/NFR-12). Stories 1.5 and 1.6 are sequenced strictly after Story 1.4; Story 1.7 is an evidence-only spike that may run in parallel with Story 1.3 and must complete before any subdelegation promotion. Threshold and budget defaults were owner-accepted 2026-08-26 as declared policy. **Stories 1.5, 1.6, 1.7 and PRD addendum FR-96–126 / NFR-13–15 FROZEN — owner-approved 2026-08-26. Sequenced after Story 1.4; 1.7 may run in parallel with 1.3. Outside the `AGENT-FLOW-KIT PORTABILITY GREEN` verdict.**
+
+### Post-Baseline FR Coverage
+
+FR-96–105, FR-121–126: Story 1.5 - Context Budgeting and Continuation
+FR-106–117: Story 1.6 - Worker Feedback and PM Course-Correction Envelope
+FR-118–120: Story 1.7 (Spike) - Persona Payload Viability on Local Profiles
+
+### Story 1.5: Context Budgeting and Continuation
+
+As an agent-flow-kit fleet operator,
+I want every dispatched worker to run inside a declared context budget with checkpointing and supervised continuation,
+So that a worker never silently exhausts its context window and over-sized stories surface as planning findings instead of degraded work.
+
+Summary of scope (full acceptance criteria in `_bmad-output/implementation-artifacts/AFK-PORT-1.5.md`):
+
+- The execution stamp carries the routed profile's context window exactly as the router catalog declares it; the kit never derives or substitutes a window, and a missing catalog window reports `NOT_EVALUATED`. No new router authority.
+- The kit computes a deterministic pre-dispatch sizing estimate of the worker payload against the stamped window as advisory policy; the estimate is never sent to `/route` as a hard `context_size` minimum and never alters route selection. Accepted defaults: an estimate at or above the continuation threshold (85%) refuses dispatch fail-closed with a story-sizing finding — a payload already past the continuation point cannot complete work; ≥ 60% records a sizing-risk finding. The same sizing applies to continuation dispatches, with the continuation artifact counted in the payload.
+- Usage thresholds with actions (accepted defaults): ≥ 70% of window requires a durable secret-free checkpoint artifact; ≥ 85% requires continuation — the worker stops at the next safe point (declared phase boundary), produces a compact continuation artifact, and returns a continuation-required thin result.
+- Continuation runs as a fresh supervised Orca-visible worker for the same story under the same accepted stamp through the canonical dispatch path with the frozen prelaunch revalidation unchanged; expired stamps refresh via central `/route`. Continuation workers settle under the frozen Story 1.3 completion-watch and cleanup contracts without modification. Accepted cap: 2 continuations, then explicit PM decision.
+- Usage comes from the harness/Orca as provided observations — no terminal scraping; unobservable usage reports `NOT_EVALUATED` with deterministic phase-boundary checkpoint fallback.
+- Normalized orchestration state gains a bounded context-budget field (`OK`/`CHECKPOINT_DUE`/`CONTINUATION_REQUIRED`/`NOT_EVALUATED`) introduced by this story, with loud `NEEDS_HUMAN` when continuation cannot proceed. Repeated high usage is reported to the PM as a story-sizing finding.
+- The coordinator's own context is in scope: the same model applies to the ORCH PM, sourcing its window by hierarchy — stamp if the PM session was routed, else the harness adapter's reported window, else `NOT_EVALUATED` with phase-boundary checkpoint fallback (the ORCH PM is human-started in Orca and not necessarily stamped). The PM consumes only thin results and watcher events (pointers to transcripts/gate logs/evidence bodies — reading a body is a defect); watchers deliver without a live PM turn under the frozen 1.3 completion-monitoring contract; at checkpoint the PM writes a compact epic-level continuation artifact; at continuation it stops dispatching, leaves in-flight workers under their watchers, and raises loud `NEEDS_HUMAN` with a ready-to-use resume instruction — the human starts the successor ORCH PM in Orca, which reconciles via the frozen 1.3 restart/reconnect contract; the kit never launches PM sessions (automatic successor launch is an explicit non-goal); in-flight workers are never orphaned because completion authority is Orca's; PM continuation count is part of the 1.6 epic budget.
+
+**Requirements covered:** FR-96–105, FR-121–126 (PRD addendum); depends on frozen Story 1.3 contracts without modifying them.
+
+### Story 1.6: Worker Feedback and PM Course-Correction Envelope
+
+As an agent-flow-kit fleet operator,
+I want workers to escalate structured findings in thin results and the PM to course-correct only inside an explicit recorded authority envelope with hard budgets,
+So that discovered ambiguity, hidden scope, and conflicts pivot the plan instead of stalling or overreaching, while human design authority stays intact.
+
+Summary of scope (full acceptance criteria in `_bmad-output/implementation-artifacts/AFK-PORT-1.6.md`):
+
+- Thin results carry a structured escalation vocabulary from a documented stable-code registry — starting set `AC_AMBIGUOUS`, `SCOPE_LARGER`, `DEPENDENCY_FOUND`, `SPEC_CONFLICTS_CODE`, `NEEDS_DECISION` — with bounded evidence; the registry also carries the Story 1.5 context signals and follows the frozen FR-72–77 stable-code discipline.
+- PM envelope — actions the PM may take alone: clarify an AC without changing intent, split a story preserving total approved scope, reorder/defer within the epic, re-route/retry/add a helper within budget, spend within budget. Actions that always require loud `NEEDS_HUMAN`: change epic goal or approved scope, change architecture/invariant, drop or rewrite an AC, exceed any budget. `NEEDS_DECISION` routes through the same envelope test; envelope ambiguity fails closed to `NEEDS_HUMAN`.
+- Explicit machine-readable budgets per story/epic: fix/review cycles, cost class, wall time (accepted story defaults: 3 cycles, 2 continuations, 24h active wall time; cost class = stamped funding class, no upgrade); the epic budget includes PM continuation count. Exceeding any budget stops and escalates — no auto-cycling.
+- Convergence policy for fix/review loops, bound to the cycle budget: a finding blocks a cycle only if it violates a frozen requirement AND is reproduced AND is reachable by one ordinary operator action; where review policy requires review, the first review is a full adversarial sweep and subsequent reviews are diff-scoped; same-class narrower findings go to a residual registry with recorded reason (presented at freeze — deferred, never dismissed); a fix introducing a NEW blocker stops the loop and escalates as a design fault; exit = clean full sweep OR clean diff-scoped review OR budget exhausted with only below-bar residuals; review requirement may vary by route class as declared policy. Helper workers are PM-dispatched through the normal route/stamp path — never worker-originated subdelegation.
+- Every envelope action is recorded in the story record with triggering code, action, rationale, and budget state; an unrecorded action is a defect. The PM refines within approved scope, never redefines it.
+
+**Requirements covered:** FR-106–117 (PRD addendum); consumes frozen Story 1.3 thin-result and `NEEDS_HUMAN` contracts and Story 1.5 signals without modifying frozen requirements.
+
+### Story 1.7 (Spike): Persona Payload Viability on Local Profiles
+
+As an agent-flow-kit fleet operator,
+I want benchmark evidence of whether each selectable local profile can carry the full BMAD persona payload, a compact role contract, or no persona,
+So that persona representation on constrained local resources becomes a deliberate, evidence-backed compatibility decision instead of a launcher shortcut or an unexamined prohibition.
+
+Summary of scope (full acceptance criteria in `_bmad-output/implementation-artifacts/AFK-PORT-1.7.md`):
+
+- Bounded evidence-only spike: no production code, no kit behavior change, no new routes/profiles/catalog entries; every benchmark run is an explicit spike-class, centrally routed evaluation with bounded spend — no local substitution, no metered fallback.
+- Matrix: every selectable local profile in the router catalog × {full installed BMAD persona payload, compact role contract, no persona}, plus a vendor-profile baseline. Per cell: payload tokens vs declared context window, remaining work-context headroom, and canary task quality against deterministic gates declared before any run.
+- Output: per-profile recommendation (`full` | `compact` | `unsuitable`) plus a machine-readable threshold rule the kit can apply — an input to Story 1.5 sizing policy and prerequisite evidence for subdelegation promotion.
+- Records no prohibition: the persona-independence contract in `follow-on-worker-subdelegation.md` stands unchanged; product adoption of a compact representation remains a separate explicit reconciliation.
+- Sequencing: may run in parallel with Story 1.3; before the subdelegation follow-on; Story 1.5 consumes its output when available but does not block on it.
+
+**Requirements covered:** FR-118–120 (PRD addendum); consumes the router catalog and central routing as read-only authority and the persona-independence contract without modifying it.
