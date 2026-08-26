@@ -24,6 +24,8 @@ BMAD PM · ORCH
 
 The worker proposes the task. The router selects the execution resource. A worker never selects or invents a provider, model, physical GPU, entitlement, placement, or metered fallback.
 
+Framing (added 2026-08-26 at Story 1.5/1.6 refinement): subdelegation is primarily a context-relief mechanism — the parent offloads summarization, bulk mechanical work, and triage so its own context budget is spent on the judgment work it was routed for — and it therefore depends on Story 1.5 (context budgeting and continuation), whose window, usage, and threshold signals are what would tell a parent that relief is warranted and bound what a child may consume. This framing changes nothing else in this document: the scope, authority contract, exclusions, and promotion gate above stand as written, and this item remains unscheduled backlog.
+
 ## Initial authority contract
 
 - Child authority is a strict subset of or equal to the parent authority: `child authority <= parent authority`.
