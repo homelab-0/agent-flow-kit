@@ -1,0 +1,377 @@
+#!/usr/bin/env bash
+# agent-flow-kit — the one lifecycle entry point (FR-22).
+#
+# Read-only:  status, adopt --inspect, verify, schema, and any --plan.
+# Mutating:   adopt, update.
+#
+# Git fetching, pulling, branch switching, route selection, orchestration
+# activation and every external authority remain outside this executable
+# (FR-28, FR-34). Live readiness probes belong to Story 1.3; everything here is
+# deterministic and offline.
+
+set -uo pipefail
+
+AFK_SELF="${BASH_SOURCE[0]}"
+AFK_BIN_DIR="$(cd -P -- "$(dirname -- "$AFK_SELF")" && pwd -P)"
+if [[ -z "$AFK_BIN_DIR" ]]; then
+  printf 'agent-flow-kit: internal error: this executable could not resolve its own location\n' >&2
+  exit 1
+fi
+AFK_INSTALL_ROOT="$(cd -P -- "$AFK_BIN_DIR/.." && pwd -P)"
+AFK_LIB_DIR="${AFK_LIB_DIR:-$AFK_INSTALL_ROOT/lib}"
+
+# A missing or unreadable library is an internal failure with a stable message
+# and the usage exit code — never a partially loaded lifecycle that answers
+# questions with whichever functions happened to load.
+for _afk_lib in afk-common afk-source afk-inventory afk-commands afk-plan afk-mutate; do
+  if [[ ! -r "$AFK_LIB_DIR/$_afk_lib.sh" ]]; then
+    printf 'agent-flow-kit: internal error: required library %s.sh is missing or unreadable under %s\n' \
+      "$_afk_lib" "$AFK_LIB_DIR" >&2
+    exit 1
+  fi
+done
+unset _afk_lib
+
+# shellcheck source=lib/afk-common.sh
+# shellcheck disable=SC1090,SC1091
+. "$AFK_LIB_DIR/afk-common.sh"
+# shellcheck source=lib/afk-source.sh
+# shellcheck disable=SC1090,SC1091
+. "$AFK_LIB_DIR/afk-source.sh"
+# shellcheck source=lib/afk-inventory.sh
+# shellcheck disable=SC1090,SC1091
+. "$AFK_LIB_DIR/afk-inventory.sh"
+# shellcheck source=lib/afk-commands.sh
+# shellcheck disable=SC1090,SC1091
+. "$AFK_LIB_DIR/afk-commands.sh"
+# shellcheck source=lib/afk-plan.sh
+# shellcheck disable=SC1090,SC1091
+. "$AFK_LIB_DIR/afk-plan.sh"
+# shellcheck source=lib/afk-mutate.sh
+# shellcheck disable=SC1090,SC1091
+. "$AFK_LIB_DIR/afk-mutate.sh"
+
+if ! declare -F afk_cmd_status >/dev/null 2>&1 \
+   || ! declare -F afk_render_human >/dev/null 2>&1 \
+   || ! declare -F afk_transaction_execute >/dev/null 2>&1 \
+   || ! declare -F afk_plan_compute >/dev/null 2>&1; then
+  printf 'agent-flow-kit: internal error: the lifecycle libraries under %s did not load completely\n' \
+    "$AFK_LIB_DIR" >&2
+  exit 1
+fi
+
+# --- declared local configuration (NFR-8) ----------------------------------
+# Every path the lifecycle touches is derived from an overridable declaration,
+# so behaviour never depends on the layout of the machine it was written on.
+# HOME is a declaration like any other: when it is absent, the derived paths
+# stay empty and the command refuses with a stable message instead of reading
+# whatever `/.claude` happens to be.
+
+AFK_KIT_ROOT="${AFK_KIT_ROOT:-$AFK_INSTALL_ROOT}"
+
+_afk_state_base="${XDG_STATE_HOME:-}"
+if [[ -z "$_afk_state_base" && -n "${HOME:-}" ]]; then
+  _afk_state_base="$HOME/.local/state"
+fi
+AFK_STATE_DIR="${AFK_STATE_DIR:-${_afk_state_base:+$_afk_state_base/agent-flow-kit}}"
+unset _afk_state_base
+AFK_MANIFEST="${AFK_MANIFEST:-${AFK_STATE_DIR:+$AFK_STATE_DIR/state.json}}"
+AFK_JOURNAL="${AFK_JOURNAL:-${AFK_STATE_DIR:+$AFK_STATE_DIR/journal.json}}"
+AFK_LOCK_DIR="${AFK_LOCK_DIR:-${AFK_STATE_DIR:+$AFK_STATE_DIR/lock}}"
+AFK_BACKUP_ROOT="${AFK_BACKUP_ROOT:-${AFK_STATE_DIR:+$AFK_STATE_DIR/backups}}"
+AFK_STAGE_ROOT="${AFK_STAGE_ROOT:-${AFK_STATE_DIR:+$AFK_STATE_DIR/stage}}"
+AFK_SKILLS_HOME="${AFK_SKILLS_HOME:-${HOME:+$HOME/.agents/skills}}"
+AFK_CLAUDE_HOME="${AFK_CLAUDE_HOME:-${HOME:+$HOME/.claude}}"
+AFK_CODEX_HOME="${AFK_CODEX_HOME:-${HOME:+$HOME/.codex}}"
+
+afk_require_declared_paths() {
+  local v
+  for v in AFK_KIT_ROOT AFK_STATE_DIR AFK_MANIFEST AFK_JOURNAL AFK_LOCK_DIR \
+           AFK_BACKUP_ROOT AFK_STAGE_ROOT \
+           AFK_SKILLS_HOME AFK_CLAUDE_HOME AFK_CODEX_HOME; do
+    if [[ -z "${!v}" ]]; then
+      afk_warn "HOME is not set and $v was not supplied: every managed destination must be declared before any installed state can be read. Nothing was inspected."
+      return 1
+    fi
+  done
+  return 0
+}
+
+afk_usage() {
+  cat <<'USAGE'
+agent-flow-kit — lifecycle entry point
+
+  agent-flow-kit status [options]
+      Read-only installed state: revisions, components, ownership, drift,
+      adaptations, registered targets, readiness scopes and the next safe
+      action. Mutates nothing, probes nothing external.
+      Options: --json --require-source-eligible
+               --allow-noncanonical-source --allow-rollback
+
+  agent-flow-kit adopt --inspect [options]
+      Inspect-only adoption analysis. Reports AUTO_ADOPTABLE,
+      APPROVAL_REQUIRED or REFUSED and changes nothing.
+      Options: --json --allow-noncanonical-source --allow-rollback
+
+  agent-flow-kit adopt [options]
+      The adoption transaction: computes a complete plan, establishes durable
+      ownership at the identities already installed, verifies the result
+      offline, and only then commits the applied-state manifest. Content is
+      never overwritten by adopting it.
+      Options: --json --plan --approve-plan <identity>
+               --allow-noncanonical-source --allow-rollback
+
+  agent-flow-kit update [options]
+      Deterministic convergence for an adopted host: plan, backup, journal,
+      write, verify, commit — or refuse. Unexplained drift blocks replacement,
+      declared local ownership is preserved, and no Git state is selected.
+      Options: --json --plan --approve-plan <identity>
+               --allow-noncanonical-source --allow-rollback
+
+  agent-flow-kit verify [options]
+      Offline verification of the installed state against the applied-state
+      manifest. Observes and proves; never repairs, never probes a live
+      service, never activates orchestration.
+      Options: --json
+
+  agent-flow-kit schema
+      The documented machine contract: schema version, state, reason and
+      ownership vocabularies, plan and operation vocabularies, and exit
+      semantics. Takes no options.
+
+Options are validated against the command: an option that means nothing to the
+command you ran is a usage failure, not a silently ignored word.
+
+  --json                        Machine-readable result on stdout.
+  --plan                        Compute and print the complete plan; write
+                                nothing. The plan carries a stable identity.
+  --approve-plan <identity>     Authorize exactly the plan with that identity.
+                                An approval never transfers to a plan that any
+                                authority-relevant input has changed.
+  --require-source-eligible     Make mutation-source eligibility part of the
+                                requested scope, so an ineligible checkout
+                                exits 4 instead of merely reporting.
+  --allow-noncanonical-source   Record explicit intent to use a detached,
+                                non-default or divergent revision.
+  --allow-rollback              Record explicit intent to treat an older
+                                source revision as a rollback.
+
+Exit codes
+  0 requested scope succeeded      1 command, internal or usage failure
+  2 owner action or conflict       3 deterministic not-ready
+  4 source or precondition refusal 5 live dependency unavailable
+
+Environment (declared local configuration)
+  AFK_KIT_ROOT AFK_STATE_DIR AFK_MANIFEST AFK_JOURNAL AFK_LOCK_DIR
+  AFK_BACKUP_ROOT AFK_STAGE_ROOT
+  AFK_SKILLS_HOME AFK_CLAUDE_HOME AFK_CODEX_HOME AFK_LIB_DIR
+USAGE
+}
+
+# Which options each command actually understands. There is no shared pool:
+# `status --inspect` and `schema --json` are mistakes, and a lifecycle that
+# accepts a word it will not act on teaches the caller a false contract.
+afk_option_allowed() { # <command> <option>
+  case "$1" in
+    status)
+      case "$2" in
+        --json|--require-source-eligible|--allow-noncanonical-source|--allow-rollback)
+          return 0 ;;
+      esac ;;
+    adopt)
+      case "$2" in
+        --json|--inspect|--plan|--approve-plan|--allow-noncanonical-source|--allow-rollback)
+          return 0 ;;
+      esac ;;
+    update)
+      case "$2" in
+        --json|--plan|--approve-plan|--allow-noncanonical-source|--allow-rollback)
+          return 0 ;;
+      esac ;;
+    verify)
+      case "$2" in
+        --json) return 0 ;;
+      esac ;;
+  esac
+  return 1
+}
+
+afk_main() {
+  local cmd json_mode="false" require_source="false"
+  local allow_noncanonical="false" allow_rollback="false"
+  local inspect="false" plan_only="false" approval=""
+
+  cmd="${1:-help}"
+  if (( $# > 0 )); then shift; fi
+
+  case "$cmd" in
+    help|-h|--help)
+      afk_usage
+      return "$AFK_EXIT_OK" ;;
+  esac
+
+  while (( $# > 0 )); do
+    case "$1" in
+      -h|--help)
+        afk_usage
+        return "$AFK_EXIT_OK" ;;
+      *)
+        if ! afk_option_allowed "$cmd" "$1"; then
+          afk_warn "'$(afk_safe_diagnostic "$cmd")' does not accept the argument '$(afk_safe_diagnostic "$1")'"
+          afk_usage >&2
+          return "$AFK_EXIT_USAGE"
+        fi
+        case "$1" in
+          --json)                      json_mode="true" ;;
+          --require-source-eligible)   require_source="true" ;;
+          --allow-noncanonical-source) allow_noncanonical="true" ;;
+          --allow-rollback)            allow_rollback="true" ;;
+          --inspect)                   inspect="true" ;;
+          --plan)                      plan_only="true" ;;
+          --approve-plan)
+            # The value is a plan identity. It is never echoed back in a
+            # diagnostic: only the closed option vocabulary ever is.
+            if (( $# < 2 )); then
+              afk_warn "--approve-plan requires the plan identity it authorizes"
+              afk_usage >&2
+              return "$AFK_EXIT_USAGE"
+            fi
+            approval="$2"
+            shift ;;
+        esac ;;
+    esac
+    shift
+  done
+
+  # Mode combinations that would make the command's authority ambiguous.
+  if [[ "$inspect" == "true" && "$plan_only" == "true" ]]; then
+    afk_warn "adopt --inspect and adopt --plan are different questions: --inspect classifies what is installed, --plan computes the transaction. Ask one at a time."
+    return "$AFK_EXIT_USAGE"
+  fi
+  if [[ "$inspect" == "true" && -n "$approval" ]]; then
+    afk_warn "adopt --inspect authorizes nothing, so it does not accept an approval."
+    return "$AFK_EXIT_USAGE"
+  fi
+  if [[ "$plan_only" == "true" && -n "$approval" ]]; then
+    afk_warn "--plan computes a plan and writes nothing, so an approval has nothing to authorize."
+    return "$AFK_EXIT_USAGE"
+  fi
+
+  if ! afk_require_tools; then
+    return "$AFK_EXIT_USAGE"
+  fi
+
+  case "$cmd" in
+    status)
+      afk_require_declared_paths || return "$AFK_EXIT_USAGE"
+      afk_cmd_status "$json_mode" "$require_source" "$allow_noncanonical" "$allow_rollback"
+      return $? ;;
+    adopt)
+      afk_require_declared_paths || return "$AFK_EXIT_USAGE"
+      if [[ "$inspect" == "true" ]]; then
+        afk_cmd_adopt_inspect "$json_mode" "$allow_noncanonical" "$allow_rollback"
+        return $?
+      fi
+      afk_run_mutation adopt "$json_mode" "$plan_only" "$approval" \
+        "$allow_noncanonical" "$allow_rollback"
+      return $? ;;
+    update)
+      afk_require_declared_paths || return "$AFK_EXIT_USAGE"
+      afk_run_mutation update "$json_mode" "$plan_only" "$approval" \
+        "$allow_noncanonical" "$allow_rollback"
+      return $? ;;
+    verify)
+      afk_require_declared_paths || return "$AFK_EXIT_USAGE"
+      afk_cmd_verify "$json_mode"
+      return $? ;;
+    schema)
+      afk_cmd_schema || return "$AFK_EXIT_USAGE"
+      return "$AFK_EXIT_OK" ;;
+    *)
+      afk_warn "unknown command: $(afk_safe_diagnostic "$cmd")"
+      afk_usage >&2
+      return "$AFK_EXIT_USAGE" ;;
+  esac
+}
+
+# The operation lock is released even if the shell is interrupted, so an
+# interrupted command does not leave an installation looking busy once its
+# owner record has been published (a signal inside the publication window can
+# still leave a recordless lock — a registered exception). The journal is
+# deliberately NOT cleaned up here: an interrupted transaction must stay
+# visible to the next invocation, which is what makes recovery possible.
+#
+# Release belongs to EXIT and to nothing else. A handler installed on INT or
+# TERM that does not exit RESUMES the script at the point the signal landed, so
+# releasing there would hand the lock back while this process is still inside
+# its transaction and still writing. A second invocation could then take the
+# freed lock and mutate the same installation alongside the first — the exact
+# state the lock exists to make impossible (FR-92), reached without the owner
+# ever dying. Every prior consideration of interruption was about a process
+# that DIED holding the lock; this is the one where it lives on without it.
+#
+# So the signal handlers terminate instead of returning. Exiting runs the EXIT
+# trap, which is what releases the lock — at the one moment this process can no
+# longer write. The status is the conventional 128 + signal number, because a
+# run killed by a signal produced no result and must not be read as one.
+#
+# Which signals need a handler is not a matter of taste. A terminating signal
+# this script does NOT trap is worse than one it does: bash runs the EXIT trap
+# and then dies immediately, without waiting for the command it was running.
+# The lock therefore comes back at the instant the shell dies while the child
+# that was mid-write — a cp staging a managed tree, say — is still alive and
+# still writing. That is the same two-owners-one-installation state as above,
+# arrived at from the other side. Trapping defers the handler until the running
+# command finishes, which is precisely the ordering the invariant needs.
+#
+# The set below is every signal that terminates this shell by default and can
+# be delivered to it alone. HUP is the one that is naturally reachable —
+# `kill -HUP <pid>`, `pkill -HUP`, a supervisor signalling the main pid — and a
+# whole-process-group hangup is not the dangerous shape, because there the
+# writer dies with the shell. USR1, USR2 and ALRM are not reachable through any
+# convention this tool takes part in; they are trapped because they are free
+# and because an invariant stated as "no terminating signal frees the lock
+# under a live writer" should not have holes an auditor has to re-derive. PIPE
+# is trapped for the same reason: no byte reaches stdout or stderr between
+# acquiring the lock and releasing it (the transaction's own output is captured
+# in command substitutions and the result is emitted afterwards), so it cannot
+# fire while the lock is held today — but that is a property of code in lib/
+# rather than of anything guaranteed here, and a single warning added inside a
+# future transaction would quietly reopen it. At the one point PIPE really can
+# fire, the final emit into a closed pipe, the lock is already gone and the
+# handler only changes a silent signal death into the same 141 exit status.
+#
+# QUIT is deliberately absent. Bash ignores SIGQUIT outright, so Ctrl-\ during
+# a transaction does not interrupt it at all today — the run continues and
+# finishes. Adding a QUIT handler would newly KILL runs that currently succeed,
+# which is an availability regression bought for no safety at all, since the
+# signal cannot free the lock it can never reach. Leave it alone.
+#
+# Both handlers stop taking every trapped signal before they do anything, so a
+# second signal cannot re-enter cleanup that is already under way and leave the
+# release half-done. afk_lock_release is exact-incarnation and idempotent, so
+# the release the ordinary path already performed makes the one here a no-op
+# rather than a second removal.
+AFK_TRAPPED_SIGNALS=(INT TERM HUP USR1 USR2 ALRM PIPE)
+
+afk_release_on_exit() {
+  trap '' "${AFK_TRAPPED_SIGNALS[@]}"
+  afk_lock_release
+}
+
+afk_terminate_on_signal() { # <exit status: 128 + signal number>
+  trap '' "${AFK_TRAPPED_SIGNALS[@]}"
+  exit "$1"
+}
+
+trap 'afk_release_on_exit' EXIT
+trap 'afk_terminate_on_signal 130' INT
+trap 'afk_terminate_on_signal 143' TERM
+trap 'afk_terminate_on_signal 129' HUP
+trap 'afk_terminate_on_signal 138' USR1
+trap 'afk_terminate_on_signal 140' USR2
+trap 'afk_terminate_on_signal 142' ALRM
+trap 'afk_terminate_on_signal 141' PIPE
+
+afk_main "$@"
+exit $?
