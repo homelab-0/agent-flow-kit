@@ -1,0 +1,268 @@
+
+[1m0. shellcheck — every script the kit ships[0m
+  [32mPASS[0m shellcheck runs here: nix 0.11.0
+  [32mPASS[0m shellcheck clean: dispatch.sh
+  [32mPASS[0m shellcheck clean: make-stamp.sh
+  [32mPASS[0m shellcheck clean: usage-check.sh
+  [32mPASS[0m shellcheck clean: github-health.sh
+  [32mPASS[0m shellcheck clean: agent-flow-kit
+  [32mPASS[0m shellcheck clean: afk-common.sh
+  [32mPASS[0m shellcheck clean: afk-source.sh
+  [32mPASS[0m shellcheck clean: afk-inventory.sh
+  [32mPASS[0m shellcheck clean: afk-readiness.sh
+  [32mPASS[0m shellcheck clean: afk-monitor.sh
+  [32mPASS[0m shellcheck clean: afk-commands.sh
+  [32mPASS[0m shellcheck clean: afk-plan.sh
+  [32mPASS[0m shellcheck clean: afk-mutate.sh
+  [32mPASS[0m shellcheck clean: lockctl-helper.sh
+
+[1m1. Pure builders (dispatch.sh sourced, main() not run)[0m
+  [32mPASS[0m effort 'low' accepted (one-to-one, not collapsed)
+  [32mPASS[0m effort 'medium' accepted (one-to-one, not collapsed)
+  [32mPASS[0m effort 'high' accepted (one-to-one, not collapsed)
+  [32mPASS[0m effort 'xhigh' accepted (one-to-one, not collapsed)
+  [32mPASS[0m effort 'max' rejected fail-closed
+  [32mPASS[0m effort 'banana' rejected fail-closed
+  [32mPASS[0m effort 'HIGH' rejected fail-closed
+  [32mPASS[0m effort '<empty>' rejected fail-closed
+  [32mPASS[0m effort 'high ' rejected fail-closed
+  [32mPASS[0m guard: {claude, claude/strong} vendor pair is launchable
+  [32mPASS[0m guard: {codex, openai/strong} vendor pair is launchable
+  [32mPASS[0m guard: {claude, local profile} has NO validated launch contract
+  [32mPASS[0m guard: {codex, local profile} has NO validated launch contract
+  [32mPASS[0m guard: reason names the forbidden redirection
+  [32mPASS[0m validator exit 0 -> dispatch 0 (proceed)
+  [32mPASS[0m validator exit 1 -> dispatch 4 (policy-invalid)
+  [32mPASS[0m validator exit 2 -> dispatch 5 (uncheckable)
+  [32mPASS[0m validator exit 127 -> dispatch 5 (uncheckable)
+  [32mPASS[0m claude/opus -> opus
+  [32mPASS[0m openai/gpt-5.6-sol -> gpt-5.6-sol
+
+[1m   generated claude terminal command[0m
+   env -i HOME=/home/op PATH=/usr/bin:/bin USER=op LANG=C.UTF-8 TERM=dumb claude -p "$(cat -- /wt/STORY.md.prompt)" --model opus --effort xhigh --append-system-prompt-file /wt/_bmad/bmm/agents/dev.md --permission-mode acceptEdits --tools "Read,Glob,Grep,Write" --strict-mcp-config --output-format json < /dev/null > /wt/STORY.md.claude-result.json; echo "CLAUDE_EXIT=$?"
+  [32mPASS[0m claude cmd: allowlist sanitizer (env -i)
+  [32mPASS[0m claude cmd: HOME is a launcher literal
+  [32mPASS[0m claude cmd: PATH is a launcher literal
+  [32mPASS[0m claude cmd: USER is a launcher literal
+  [32mPASS[0m claude cmd: LANG/TERM pinned
+  [32mPASS[0m claude cmd: stamped model passed explicitly
+  [32mPASS[0m claude cmd: stamped effort passed explicitly
+  [32mPASS[0m claude cmd: explicit least-privilege tools
+  [32mPASS[0m claude cmd: --strict-mcp-config mandatory
+  [32mPASS[0m claude cmd: permission mode acceptEdits
+  [32mPASS[0m claude cmd: stdin redirected
+  [32mPASS[0m claude cmd: JSON result to a FILE, not stdout
+  [32mPASS[0m claude cmd: in-band exit capture
+  [32mPASS[0m claude cmd: prompt read from the prompt file
+  [32mPASS[0m claude cmd: persona injected by PATH
+  [32mPASS[0m claude cmd: NO task text is shell source
+  [32mPASS[0m claude cmd: no task backtick survives
+  [32mPASS[0m claude cmd: no task subshell survives
+  [32mPASS[0m claude cmd: no runtime $HOME lookup
+  [32mPASS[0m claude cmd: no runtime $PATH lookup
+  [32mPASS[0m claude cmd: no runtime $USER lookup
+  [32mPASS[0m claude cmd: CLAUDE_CONFIG_DIR never propagated
+  [32mPASS[0m claude cmd: no Bash/shell tool granted
+  [32mPASS[0m claude cmd: no permission bypass
+  [32mPASS[0m claude cmd: no bypassPermissions
+  [32mPASS[0m claude cmd: --bare forbidden
+  [32mPASS[0m claude cmd: exactly one command substitution (the prompt file)
+
+[1m   generated codex terminal command[0m
+   env -u OPENAI_API_KEY -u CODEX_API_KEY -u ANTHROPIC_API_KEY codex exec --model gpt-5.6-sol -c model_reasoning_effort=xhigh -s workspace-write "$(cat -- /wt/STORY.md.prompt)"; echo "CODEX_EXIT=$?"
+  [32mPASS[0m codex cmd: OPENAI_API_KEY unset
+  [32mPASS[0m codex cmd: CODEX_API_KEY unset
+  [32mPASS[0m codex cmd: ANTHROPIC_API_KEY unset too
+  [32mPASS[0m codex cmd: sandbox workspace-write
+  [32mPASS[0m codex cmd: xhigh PRESERVED, not collapsed
+  [32mPASS[0m codex cmd: in-band exit capture
+  [32mPASS[0m codex cmd: task via the prompt file
+  [32mPASS[0m codex cmd: --full-auto forbidden
+  [32mPASS[0m codex cmd: no approvals/sandbox bypass
+  [32mPASS[0m codex cmd: no danger-full-access
+  [32mPASS[0m codex cmd: high maps to high
+
+[1m2. Retired paths are actually gone (source greps)[0m
+  [32mPASS[0m dispatch: rate-limit fallback loop deleted
+  [32mPASS[0m dispatch: FALLBACKS array deleted
+  [32mPASS[0m dispatch: ROUTES fallback iteration deleted
+  [32mPASS[0m dispatch: route.fallback no longer read
+  [32mPASS[0m dispatch: route.provider/model no longer read
+  [32mPASS[0m dispatch: subscriptions provider lookup gone
+  [32mPASS[0m dispatch: --full-auto gone
+  [32mPASS[0m dispatch: --skip-git-repo-check gone
+  [32mPASS[0m dispatch: old .bmad/agents default gone
+  [32mPASS[0m dispatch: lossy xhigh->high collapse gone
+  [32mPASS[0m dispatch: no orca orchestration worker-start
+  [32mPASS[0m dispatch: never relies on 'terminal wait' (it does not fire)
+  [32mPASS[0m SKILL: worker-start bypass path removed
+  [32mPASS[0m SKILL: tier/leaderboard routing tables gone
+  [32mPASS[0m SKILL: local_gpu no longer a frontmatter key
+  [32mPASS[0m SKILL: route no longer a frontmatter key
+  [32mPASS[0m HANDOFF: route no longer a frontmatter key
+  [32mPASS[0m HANDOFF: local_gpu no longer a frontmatter key
+  [32mPASS[0m subscriptions: routing tables retired
+  [32mPASS[0m usage-check: routing guidance retired
+  [32mPASS[0m dispatch: AGENT_DIR default is _bmad/bmm/agents
+
+[1m3. Integration — real dispatch.sh against stubbed Orca/validator/router[0m
+  [32mPASS[0m empty gates -> exit 2 (refuses; never emits 'done')
+  [32mPASS[0m empty gates: says why
+  [32mPASS[0m empty gates: no result artifact written
+  [32mPASS[0m legacy route: block -> exit 2
+  [32mPASS[0m legacy route: block explains the move
+  [32mPASS[0m missing persona file -> exit 2
+  [32mPASS[0m missing persona: names the path it looked for
+  [32mPASS[0m missing persona: says it must never no-op
+  [32mPASS[0m no stamp -> exit 5 (uncheckable)
+  [32mPASS[0m stamped effort 'max' -> exit 4 (fail-closed before launch)
+  [32mPASS[0m bad effort: explains --effort fails OPEN
+  [32mPASS[0m validator exit 1 -> dispatch exit 4
+  [32mPASS[0m policy-invalid: failing check surfaced
+  [32mPASS[0m policy-invalid: no result artifact
+  [32mPASS[0m policy-invalid: nothing was launched
+  [32mPASS[0m validator exit 2 -> dispatch exit 5
+  [32mPASS[0m uncheckable: validator stderr surfaced
+  [32mPASS[0m validator called with the launcher's --catalog
+  [32mPASS[0m vendor profile: full happy path -> exit 0
+  [32mPASS[0m vendor profile: no /v1/place call
+  [32mPASS[0m vendor profile: NO --evidence passed (presence is itself a failure)
+  [32mPASS[0m vendor profile: says placement not required
+  [32mPASS[0m result.json written
+  [32mPASS[0m result: status done
+  [32mPASS[0m result: catalog_version carried
+  [32mPASS[0m result: stamp digest carried
+  [32mPASS[0m result: stamp marked validated
+  [32mPASS[0m result: placement summary
+  [32mPASS[0m result: harness recorded
+  [32mPASS[0m result: native model recorded
+  [32mPASS[0m result: effort recorded
+  [32mPASS[0m result: persona recorded
+  [32mPASS[0m result: orca terminal recorded
+  [32mPASS[0m result: harness exit recorded
+  [32mPASS[0m result: gate recorded
+  [32mPASS[0m launched cmd: env -i sanitizer
+  [32mPASS[0m launched cmd: --strict-mcp-config
+  [32mPASS[0m launched cmd: stamped effort
+  [32mPASS[0m launched cmd: prompt file, not text
+  [32mPASS[0m launched cmd: no story body inline
+  [32mPASS[0m terminal titled for Orca visibility
+  [32mPASS[0m failing gate -> exit 1 despite harness exit 0
+  [32mPASS[0m failing gate: status gates_failed
+  [32mPASS[0m unknown-effort warning -> exit 4 even though CLAUDE_EXIT=0
+  [32mPASS[0m unknown-effort: says it ran at the DEFAULT effort
+  [32mPASS[0m NEEDS-HUMAN -> exit 3
+  [32mPASS[0m placement required: placed+validated, then refused at the guard
+  [32mPASS[0m placement required: POST /v1/place called
+  [32mPASS[0m placement required: --evidence passed to the validator
+  [32mPASS[0m placement: re-fetched on the next attempt (never cached)
+  [32mPASS[0m /v1/place 503 -> exit 6 (refused, never launched unplaced)
+  [32mPASS[0m repo waits for setup -> refuses to launch
+  [32mPASS[0m setup gate: says STOP
+  [32mPASS[0m not an Orca worktree -> exit 2 (refuses invisible launch)
+  [32mPASS[0m invisible launch: explains the requirement
+  [32mPASS[0m non-default CLAUDE_CONFIG_DIR -> fails closed
+  [32mPASS[0m CLAUDE_CONFIG_DIR: named as unsupported
+
+[1m3b. Launch-contract capability guard — fail-closed, reaches no runner[0m
+  [32mPASS[0m guard[claude]: exit 7 — distinct from 1/2/3/4/5/6
+  [32mPASS[0m guard[claude]: marker is distinctly typed
+  [32mPASS[0m guard[claude]: marker names the harness
+  [32mPASS[0m guard[claude]: marker names the profile
+  [32mPASS[0m guard[claude]: marker names the reason
+  [32mPASS[0m guard[claude]: marker says the stamp was VALID
+  [32mPASS[0m guard[claude]: marker says route NOT modified
+  [32mPASS[0m guard[claude]: marker tells the human what to do
+  [32mPASS[0m guard[claude]: no Orca terminal created
+  [32mPASS[0m guard[claude]: no harness command built
+  [32mPASS[0m guard[claude]: no result artifact
+  [32mPASS[0m guard[claude]: fires after /v1/place ran
+  [32mPASS[0m guard[claude]: fires after stamp validation
+  [32mPASS[0m guard[claude]: stamp harness untouched
+  [32mPASS[0m guard[claude]: stamp model_profile untouched
+  [32mPASS[0m guard[claude]: no substitute harness suggested in stderr
+  [32mPASS[0m guard[codex]: exit 7 — distinct from 1/2/3/4/5/6
+  [32mPASS[0m guard[codex]: marker is distinctly typed
+  [32mPASS[0m guard[codex]: marker names the harness
+  [32mPASS[0m guard[codex]: marker names the profile
+  [32mPASS[0m guard[codex]: marker names the reason
+  [32mPASS[0m guard[codex]: marker says the stamp was VALID
+  [32mPASS[0m guard[codex]: marker says route NOT modified
+  [32mPASS[0m guard[codex]: marker tells the human what to do
+  [32mPASS[0m guard[codex]: no Orca terminal created
+  [32mPASS[0m guard[codex]: no harness command built
+  [32mPASS[0m guard[codex]: no result artifact
+  [32mPASS[0m guard[codex]: fires after /v1/place ran
+  [32mPASS[0m guard[codex]: fires after stamp validation
+  [32mPASS[0m guard[codex]: stamp harness untouched
+  [32mPASS[0m guard[codex]: stamp model_profile untouched
+  [32mPASS[0m guard[codex]: no substitute harness suggested in stderr
+  [32mPASS[0m guard: vendor pair {claude, claude/strong} still launches
+  [32mPASS[0m guard: vendor pair leaves no blocked marker
+
+[1m4. make-stamp.sh — expires_at verbatim, override is provenance only[0m
+  [32mPASS[0m make-stamp writes a stamp from a route response
+  [32mPASS[0m stamp: expires_at copied VERBATIM
+  [32mPASS[0m stamp: effort carried
+  [32mPASS[0m stamp: task.story_id
+  [32mPASS[0m stamp: task.tags carried
+  [32mPASS[0m stamp: context_size carried
+  [32mPASS[0m stamp: override null when accepted
+  [32mPASS[0m stamp: rationale NOT carried (not in the closed shape)
+  [32mPASS[0m stamp: fallbacks NOT carried (no runtime fallback exists)
+  [32mPASS[0m stamp: property set stays CLOSED
+  [32mPASS[0m override: final harness moved
+  [32mPASS[0m override: final profile moved
+  [32mPASS[0m override: ORIGINAL recommendation preserved
+  [32mPASS[0m override: actor recorded
+  [32mPASS[0m override: expires_at STILL verbatim (no fresh window)
+  [32mPASS[0m override without actor/reason is refused
+  [32mPASS[0m metered/cost_class dual-key mismatch is refused
+  [32mPASS[0m story_id omitted: refused
+  [32mPASS[0m story_id omitted: NO stamp file produced
+  [32mPASS[0m story_id omitted: error names story_id
+  [32mPASS[0m story_id omitted: error explains why
+  [32mPASS[0m story_id explicitly null: refused
+  [32mPASS[0m story_id explicitly null: NO stamp file produced
+  [32mPASS[0m story_id explicitly null: error names story_id
+  [32mPASS[0m story_id explicitly null: error explains why
+  [32mPASS[0m story_id empty string: refused
+  [32mPASS[0m story_id empty string: NO stamp file produced
+  [32mPASS[0m story_id empty string: error names story_id
+  [32mPASS[0m story_id empty string: error explains why
+  [32mPASS[0m story_id present: --request path still stamps
+  [32mPASS[0m story_id present: carried verbatim
+  [32mPASS[0m no field was laundered into the string "null"
+  [32mPASS[0m null tag element dropped, real tags kept
+  [32mPASS[0m null response field 'harness' is refused
+  [32mPASS[0m null response field 'harness': no stamp produced
+  [32mPASS[0m null response field 'model_profile' is refused
+  [32mPASS[0m null response field 'model_profile': no stamp produced
+  [32mPASS[0m null response field 'effort' is refused
+  [32mPASS[0m null response field 'effort': no stamp produced
+  [32mPASS[0m null response field 'catalog_version' is refused
+  [32mPASS[0m null response field 'catalog_version': no stamp produced
+  [32mPASS[0m null response field 'expires_at' is refused
+  [32mPASS[0m null response field 'expires_at': no stamp produced
+  [32mPASS[0m null entitlement_pool is ACCEPTED (local execution draws on no pool)
+  [32mPASS[0m null entitlement_pool stays JSON null, not "null"
+
+[1m5. Live control-plane chain (opt-in, read-only, launches nothing)[0m
+  [33mSKIP[0m live chain (set AGENT_ROUTER_URL/_TOKEN + validator + catalog)
+
+[1m6. Lifecycle gate — tests/lifecycle-tests.sh[0m
+  [32mPASS[0m lifecycle gate: [1m474 passed, 0 failed[0m
+
+[1m7. Lifecycle mutation gate — tests/lifecycle-mutation-tests.sh[0m
+  [32mPASS[0m lifecycle mutation gate: [1m577 passed, 0 failed[0m
+
+[1m8. Lifecycle concurrency gate — tests/lifecycle-concurrency-tests.sh[0m
+  [32mPASS[0m lifecycle concurrency gate: [1m207 passed, 0 failed[0m
+
+[1m9. Lifecycle readiness gate — tests/lifecycle-readiness-tests.sh[0m
+  [32mPASS[0m lifecycle readiness gate: [1m231 passed, 0 failed[0m
+
+[1m10. Lifecycle dispatch gate — tests/lifecycle-dispatch-tests.sh[0m
+  [32mPASS[0m lifecycle dispatch gate: [1m182 passed, 0 failed[0m
+
+[1m235 passed, 0 failed[0m

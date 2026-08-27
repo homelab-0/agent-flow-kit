@@ -1,0 +1,30 @@
+{
+  "story": "_bmad-output/implementation-artifacts/AFK-PORT-1.3-FULL-REVIEW.md",
+  "cycle": 1,
+  "status": "done",
+  "route": {
+    "harness": "claude",
+    "model_profile": "claude/strong",
+    "native_model": "opus",
+    "effort": "high",
+    "persona": "dev"
+  },
+  "stamp": {
+    "digest": "sha256:832a4464561536ded04a48d3a228d88ee663bd858b24e7a2e1797e90651f6072",
+    "expires_at": "2026-08-27T12:17:39Z",
+    "catalog_version": "sha256:9b7ba27e367f8cfa0caeed4057fe0fab1cd4138b11f9f65f906822276bfa5e20",
+    "validated": true
+  },
+  "placement": {
+    "required": false
+  },
+  "launch": {
+    "orca_terminal": "term_c9d7f307-fb8c-4c5e-b3e0-aecd3b635d83",
+    "harness_exit": 0
+  },
+  "gates": {
+    "bash tests/lifecycle-tests.sh": "pass",
+    "bash tests/run-tests.sh": "pass",
+    "git diff --check": "pass"
+  }
+}

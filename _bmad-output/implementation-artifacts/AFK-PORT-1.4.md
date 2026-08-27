@@ -195,6 +195,47 @@ So that portability is proven by the actual fleet rather than inferred from fixt
 - Trust established for the canonical AFK checkout must not be presented as proof that a distinct generated Orca worktree is trusted. If Claude continues to require separate approval for each new external worktree path, record that as a concrete autonomy limitation and human intervention in the acceptance evidence.
 - The acceptance harness must never edit Claude's trust database, script acceptance of the protected prompt, or use prompt-skipping/permission-bypass behavior to manufacture a green result.
 
+
+## Acceptance Conditions Registered by Story 1.3 (recorded at the 1.3 freeze review)
+
+Story 1.3's proof obligations were deterministic and stubbed by design
+("where implementation support precedes Story 1.4 proof"). The following live
+proofs are Story 1.4 acceptance conditions, each with its 1.3 evidence pointer:
+
+- **Live composed dispatch — supervised Orca Dispatch/Worker and persona proof
+  on the same worker.** 1.3 proves the contract in stubbed regressions
+  (`tests/lifecycle-dispatch-tests.sh`); live, the 1.3 orchestration ran
+  persona-proven workers under tracking-only dispatches, and the one attempt to
+  attach supervision to a batch worker terminal failed (Orca injected an agent
+  preamble and auto-failed the Dispatch — incident recorded in
+  `evidence/AFK-PORT-1.3-C4.worker-done.md` and the coordinator freeze record).
+  1.4 must demonstrate one worker that is simultaneously persona-proven,
+  Orca-supervised from creation, and released through the supervised lifecycle.
+- **Live completion delivery across a coordinator turn boundary on real Orca,
+  with no in-turn wait.** Stub-proven by the monitor regressions (durable
+  watcher, at-least-once idempotent reconciliation). Live motivating evidence:
+  the 2026-08-26 Orca runtime restart silently lost a committed-looking
+  worker_done, detected only by reconnect reconciliation (coordinator freeze
+  record, "Operational incidents"). 1.4 must show `monitor --reconcile`
+  consuming a real delivery committed while no coordinator turn was live.
+- **Live status render on both Claude and Codex, including a PLAN-mode PM.**
+  Story 1.4 must run the status surface live in a real Claude session, a real
+  Codex session, and a PLAN-mode PM session, and retain the rendered output of
+  each as acceptance evidence. A JSON/human parity table does not satisfy this
+  condition: 1.3's table-driven parity and orchestration-bridge coverage
+  (`tests/lifecycle-readiness-tests.sh`) is the implementation proof only; no
+  live render was performed on any of the three surfaces this increment. A
+  registered backlog candidate (statusline hook consuming the status JSON;
+  see `traceability.md`) proves out naturally alongside this condition: a
+  live PLAN-mode render and a populated statusline are the same
+  demonstration.
+- **Durable close with no resurrection across a real Orca
+  disconnect/reconnect.** Stub-proven (non-resurrection regression with its
+  discriminating control; B1/P1 fixes). Live supporting evidence: worker tabs
+  closed before the 2026-08-26 app restart did not resurrect after it
+  (terminal-list verifications in the settlement records). 1.4 must run the
+  probe against a real reconnect on the acceptance host.
+
 ## Dev Agent Record
 
 - Status: planned
