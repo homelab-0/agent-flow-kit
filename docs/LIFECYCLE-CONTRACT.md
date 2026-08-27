@@ -7,6 +7,11 @@ subcommand; it never parses human output.
 Result schema version: **1.0**
 Supported lifecycle schema major: **1**
 Supported state schema major: **1**
+Supported execution-stamp schema major: **1**
+Supported validator contract major: **1**
+Supported target wiring major: **1**
+Supported orchestration state major: **1**
+Supported dispatch watch schema major: **1**
 
 Machine-code meaning does not change inside a schema major version. New states,
 reason codes and fields may be added; existing ones do not silently change
@@ -21,11 +26,12 @@ away from the executable that implements it.
 
 | Command | Behaviour |
 |---|---|
-| `status` | Read-only installed state, ownership, drift, adaptations, source eligibility, readiness scopes. Writes nothing, probes nothing external. |
+| `status` | Read-only installed state, ownership, drift, adaptations, source eligibility, target wiring, orchestration summary, dispatch-monitor summary, readiness scopes. Writes nothing. Probes nothing external unless `--live` is requested. |
 | `adopt --inspect` | Inspect-only adoption analysis. Reports a disposition and changes nothing. |
 | `adopt` | The adoption transaction: establishes durable ownership at the identities already installed, verifies offline, then commits the manifest. |
 | `update` | Deterministic convergence for an adopted host: plan, backup, journal, write, verify, commit — or refuse. |
-| `verify` | Offline verification of installed state against the applied-state manifest. Observes and proves; never repairs. |
+| `verify` | Verification of installed state against the applied-state manifest. Observes and proves; never repairs. Offline unless `--live` is requested. |
+| `monitor` | The durable worker-completion watch and the provenance-bound release of the resources a settled worker owned. One bounded pass per invocation; read-only without an action verb. |
 | `schema` | Emits this contract's vocabularies as JSON. |
 
 `--plan` turns `adopt` or `update` into a computation: it emits the complete
@@ -38,27 +44,31 @@ adopt --inspect
 adopt
 update
 verify
+monitor
 schema
 ```
 <!-- end -->
 
-Live readiness — router availability, provider sessions, Orca, validator
-contracts — belongs to Story 1.3. Nothing in this increment performs a network
-request, an authentication probe, or any other external call.
+`status` and `verify` accept `--live`, `--synthetic-route`, `--stamp <path>`
+and `--target <id>`. Everything else on the surface is deterministic and
+offline: without `--live`, no lifecycle command executes another program, opens
+a socket, authenticates anywhere, or creates a temporary file.
 
-`status`, `adopt --inspect`, `verify` and every `--plan` invocation are pure
-functions of local state. They emit no timestamp, so two runs over unchanged
-state produce byte-identical machine output — which is what makes idempotence
-testable rather than asserted.
+Default `status`, `adopt --inspect`, `verify`, `monitor` without an action verb
+and every `--plan` invocation are pure functions of local state. They emit no
+timestamp, so two runs over unchanged state produce byte-identical machine
+output — which is what makes idempotence testable rather than asserted. A live
+run does emit observation timestamps, because an external observation without
+one is not evidence.
 
 ## Command output
 
 Both renderings derive from one normalized model. `--json` prints the document;
 human output is projected from that same document, so the two cannot drift. The
 projection is complete: every component, target, adaptation, finding, readiness
-scope, live fact, environment record, plan entry, operation step and
-verification check in the document appears in the human rendering, with its
-state and its reason.
+scope, live fact, environment record, orchestration field, dispatch record,
+plan entry, operation step and verification check in the document appears in
+the human rendering, with its state and its reason.
 
 ```
 {
@@ -71,6 +81,8 @@ state and its reason.
   "source_eligibility": {...},
   "readiness": {...},
   "live_facts": {...},
+  "orchestration": {...},
+  "dispatch_monitor": {...},
   "environment": [...],
   "components": [...],
   "targets": [...],
@@ -252,6 +264,11 @@ document, because it reached no result. `SIGQUIT` is deliberately not in that
 set: it is ignored outright, so it interrupts no transaction and can free no
 lock.
 
+The same `EXIT` boundary removes the validator fixture directory an explicit
+live evaluation may have created. That directory, under the system temporary
+directory, is the only path outside the declared state directory this
+executable ever creates, and a run that dies mid-probe must not leave it behind.
+
 A process that dies without running its cleanup at all — `SIGKILL`, an OOM
 kill, a power loss — leaves its lock exactly where it was, and that lock is what
 reclamation is for. Reclamation clears it whenever the record it left behind can
@@ -286,15 +303,17 @@ SOURCE_INELIGIBLE
 ### `readiness`
 
 Each scope carries `state`, `evaluated`, `reason` and `evidence_provenance`.
+The four execution scopes are produced **independently**, and a dependency
+failure blocks only the narrowest scope it invalidates.
 
-| Scope | Behaviour in this increment |
-|---|---|
-| `INSTALLED_INTEGRITY` | Evaluated offline from hashes and path structure. |
-| `MUTATION_SOURCE_ELIGIBLE` | `TRUE` / `FALSE`, evaluated from Git state. |
-| `HOST_EXECUTION_READY` | `NOT_EVALUATED` / `LIVE_PROBE_NOT_REQUESTED`. |
-| `NEW_WORK_READY` | `NOT_EVALUATED` / `LIVE_PROBE_NOT_REQUESTED`. |
-| `TARGET_READY` | `NOT_EVALUATED` / `LIVE_PROBE_NOT_REQUESTED`. |
-| `ROUTE_READY` | `OUT_OF_SCOPE` / `NO_EXECUTION_STAMP_SUPPLIED`. |
+| Scope | State vocabulary | Behaviour |
+|---|---|---|
+| `INSTALLED_INTEGRITY` | an overall state | Evaluated offline from hashes and path structure. |
+| `MUTATION_SOURCE_ELIGIBLE` | `TRUE` / `FALSE` | Evaluated from Git state. |
+| `HOST_EXECUTION_READY` | a readiness state | `NOT_EVALUATED` without `--live`. With `--live`: `TRUE` only when installed integrity is proven, Orca is usable, a compatible validator is usable, and at least one complete centrally approved harness path is usable. |
+| `NEW_WORK_READY` | a readiness state | `NOT_EVALUATED` without `--live`. With `--live`: requires the router **in addition to** host readiness. |
+| `TARGET_READY` | a readiness state | Evaluated offline per registered target. `PARTIAL` when some targets resolve and some do not. Per-target verdicts are carried in `readiness.TARGET_READY.targets[]`. |
+| `ROUTE_READY` | a readiness state | `OUT_OF_SCOPE` without `--stamp`. With `--stamp`: `FALSE` on any deterministic refusal; `NOT_EVALUATED` offline once the deterministic checks pass, because the validator verdict is a live fact; `TRUE` only under `--live` with every authority answered. |
 
 <!-- machine-checkable: readiness_scopes -->
 ```
@@ -307,20 +326,427 @@ ROUTE_READY
 ```
 <!-- end -->
 
+<!-- machine-checkable: readiness_states -->
+```
+TRUE
+FALSE
+PARTIAL
+UNAVAILABLE
+NOT_EVALUATED
+OUT_OF_SCOPE
+```
+<!-- end -->
+
 Four distinct conditions are representable and are never collapsed: an
 evaluated false result, a field outside the command's scope (`OUT_OF_SCOPE`), a
 temporarily unavailable observation (`UNAVAILABLE`), and a probe that was not
 performed (`NOT_EVALUATED`).
 
+`HOST_EXECUTION_READY`, `NEW_WORK_READY` and `ROUTE_READY` each carry
+`launch_authoritative: false`, and `ROUTE_READY` also carries
+`placement_selected: false`. Neither value is ever anything else: readiness is
+diagnostic evidence about one instant, and the canonical dispatch path
+revalidates every execution-critical fact immediately before launch.
+
+#### Independence, in the cases that matter
+
+- **Router outage.** The router narrows `NEW_WORK_READY` and nothing else.
+  `HOST_EXECUTION_READY` may remain `TRUE`, installed state is not `BROKEN`,
+  and no local route is invented in the router's place. Router availability is
+  never an implicit host-execution prerequisite.
+- **One incompatible target.** `TARGET_READY:A` is `FALSE` while
+  `TARGET_READY:B` stays `TRUE`. Neither target poisons the host, and the
+  aggregate reports `PARTIAL` rather than pretending one boolean describes a
+  set of independent repositories.
+- **One unavailable harness.** Claude Code and Codex are first class and
+  individually optional. The host stays execution-ready through the other
+  complete approved path, and the unavailable harness is reported on its own.
+  Neither harness is ever globally mandatory.
+- **An unavailable harness a route selected.** `ROUTE_READY` is `FALSE` and the
+  launch is blocked. No other harness, model, profile, host or funding path is
+  ever substituted: only a fresh central decision changes the answer.
+
 ### `live_facts`
 
-`router_status`, `router_catalog_provenance`, `claude_native_session`,
-`codex_native_session`, `orca_runtime`, `validator_contract`.
+Every external fact this lifecycle knows about is present on every run, seeded
+`NOT_EVALUATED` before anything is probed, so a key never simply disappears
+because a probe took an early return:
 
-Default evaluation performs **no** router request, no provider-authentication
-probe and no other external call, so every one of these reports
-`NOT_EVALUATED` with reason `LIVE_PROBE_NOT_REQUESTED`. Live evaluation is
-Story 1.3.
+`orca_executable`, `validator_executable`, `claude_executable`,
+`codex_executable`, `orca_runtime`, `orca_capability`, `validator_contract`,
+`validator_fixtures`, `claude_capability`, `codex_capability`,
+`claude_native_session`, `codex_native_session`, `claude_workspace_trust`,
+`router_status`, `router_catalog_provenance`, `router_synthetic_route`,
+`route_placement`, `route_authority`.
+
+Each carries:
+
+```
+{"state": ..., "evaluated": bool, "reason": ...,
+ "observed_at": ..., "timeout_ms": ..., "freshness_seconds": ...,
+ "evidence_provenance": ..., "transient": bool,
+ "launch_authoritative": false, "detail": ...}
+```
+
+<!-- machine-checkable: live_fact_states -->
+```
+PRESENT
+ABSENT
+AVAILABLE
+UNAVAILABLE
+COMPATIBLE
+INCOMPATIBLE
+UNKNOWN
+NOT_EVALUATED
+OUT_OF_SCOPE
+```
+<!-- end -->
+
+Executable **resolution** is a filesystem fact and is evaluated on every run;
+it carries no `observed_at`, because there is no external party whose answer
+could go stale. Everything that requires a dependency to **run** — an Orca
+status probe, the validator contract and fixtures, harness capability and auth,
+the router — is an external observation and happens only under `--live`.
+
+That boundary is deliberate. A harness binary is an agent client that can create
+state under `HOME` and can consume provider tokens, and a validator is a
+separate product with its own contract; "locally discoverable capability" is
+satisfied by resolution plus this kit's declared capability contract, and
+anything beyond that is a live probe.
+
+#### What a live probe may and may not do
+
+Every live probe is bounded by a declared timeout, is non-mutating, is
+timestamped, records its evidence source and freshness window, and is
+explicitly non-authoritative for launch. A host that cannot bound a probe
+reports `PROBE_BOUND_UNAVAILABLE` rather than running an unbounded probe as if
+it were a bounded one.
+
+No live probe logs in, creates a worker, changes a BMAD repository, runs
+implementation work, consumes inference tokens where a safe status probe
+exists, creates placement, mutates production work, changes external authority,
+or enables a metered fallback. A transient live observation is never persisted
+into the applied-state manifest: the manifest carries identities, declared
+paths and revisions, and nothing else.
+
+`--synthetic-route` is a second, separate opt-in on top of `--live`. It asks
+the router for one harmless recommendation; it stamps nothing, launches nothing
+and spends no provider token. It never happens merely because live mode was
+requested.
+
+#### Orca
+
+Orca readiness is a read-only status probe plus an **explicit capability
+contract** — preferred over a version-only assumption, because a version number
+has to be interpreted while a capability list is the dependency answering for
+itself. The required capabilities are `worktree-ownership`,
+`visible-worker-launch`, `argument-environment-transport`, `provider-runtime`
+and `session-process-isolation`.
+
+Routine readiness never creates a disposable worker to report ready. Readiness
+that manufactures a worker is not readiness, it is work.
+
+#### The validator and its offline fixtures
+
+The kit does not decide whether a stamp is valid; it decides whether the thing
+that decides is usable, and it records the validator's machine-readable
+contract without reimplementing its policy.
+
+A live evaluation materializes a fixture set under the system temporary
+directory and asks the validator for a verdict on each: one known-valid stamp,
+one expired, one tampered, one whose catalog provenance does not match, and one
+carrying an incompatible field. The known-valid fixture must be accepted.
+
+Only an exit status of exactly **1** is the validator's policy answer. A
+validator that could not start, timed out, or fell over on the document has not
+refused anything: that is `VALIDATOR_VERDICT_UNAVAILABLE`, a transient live
+condition which makes the run exit 5 rather than 3. Reading an unanswerable
+dependency as a refusal would turn "we could not look" into a proven verdict,
+and the two need different actions from an operator.
+
+The **anti-vacuity** control is the point: a validator that accepts *every*
+negative fixture is `VALIDATOR_ANTI_VACUITY_FAILED` and blocks host readiness.
+Which individual refusals are correct is not judged here — that would be
+reimplementing validator policy on the wrong side of the boundary. A negative
+fixture that went unanswered is not counted as a rejection either, because a
+silence is not a proof.
+
+#### Harnesses, authentication and funding
+
+Harness readiness proves executable resolution, then the invocation
+capabilities the frozen launch contract actually uses, then the authentication
+**class** through the harness's own safe native status mechanism. No credential
+value is read, copied, persisted or displayed at any point.
+
+| Auth classification | Meaning |
+|---|---|
+| `AUTH_NATIVE_SUBSCRIPTION` | The funding class the approved paths are stamped for. |
+| `AUTH_MODE_UNSUPPORTED` | An API-key session: a legitimate funding class, but not the one a subscription route was approved for. |
+| `AUTH_REQUIRED` | No usable session. Reported as actionable; automatic login never happens. |
+| `AUTH_STATUS_UNPROVEN` | The status could not be classified safely. |
+
+A newer harness version whose required capabilities are all positively proven
+stays ready. Inability to prove invocation, permission or subscription-auth
+semantics makes that harness path not ready.
+
+**Metered-path conflicts are per route, never global.** For a route approved for
+native subscription funding, the presence of a name that is known to be able to
+redirect or meter that harness — `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
+`ANTHROPIC_BASE_URL`, `CLAUDE_CONFIG_DIR` for Claude Code; `OPENAI_API_KEY`,
+`CODEX_API_KEY`, `OPENAI_BASE_URL` for Codex — blocks that route with
+`ROUTE_FUNDING_CONFLICT` and nothing else. Presence of the NAME is the signal;
+the value is never inspected, persisted or emitted.
+
+A stamp whose funding class is explicitly metered or API-backed is not subject
+to that check: credential shape alone is never treated as proof that every
+API-backed path is forbidden. Compatibility follows the central funding and
+entitlement contract carried by the stamp.
+
+#### Claude Code workspace trust
+
+Claude Code saves workspace trust per directory in its own user-owned project
+state. When a route names a worker path, readiness reads that record and
+reports a path awaiting the protected prompt as `WORKSPACE_TRUST_REQUIRED` —
+an owner action that blocks that route loudly and is never presented as
+launchable.
+
+The lifecycle never edits that database, never accepts the prompt on a human's
+behalf, and never uses non-interactive prompt skipping as a workaround. Reading
+the record starts no process and opens no socket, so it happens whenever a route
+names a path, live mode or not.
+
+A Claude route whose workspace path cannot be determined at all — because the
+target binding it would come from did not resolve — reports
+`NO_SELECTED_WORKSPACE` rather than leaving the fact at its unprobed seed.
+"No workspace was selected" and "the probe was not requested" are different
+sentences, and a protected human decision must not disappear out of a route's
+readiness by being described with the wrong one.
+
+### `orchestration`
+
+A bounded, read-only summary of normalized orchestration state, **consumed**
+rather than owned:
+
+```
+{"state": "ACTIVE|INACTIVE|NOT_AVAILABLE", "evaluated": bool, "reason": ...,
+ "session": {"mode": "PLAN|ORCH|WORKER", "phase": ..., "task": ...,
+             "needs_human": bool},
+ "parent":  {"role": ..., "id": ...},
+ "workers": {"available": N, "by_state": {...}}}
+```
+
+<!-- machine-checkable: orchestration_states -->
+```
+ACTIVE
+INACTIVE
+NOT_AVAILABLE
+```
+<!-- end -->
+
+<!-- machine-checkable: orchestration_modes -->
+```
+PLAN
+ORCH
+WORKER
+```
+<!-- end -->
+
+The lifecycle never reconstructs this state from terminals, transcripts or
+logs, never repairs it, and never becomes its owner. Only the members listed
+above are carried through; a state document is someone else's territory and
+must not become an arbitrary passthrough for content this contract has never
+declared.
+
+`parent` is generic. `parent = PM` is one arrangement of a supervised session,
+not the shape of the model, and nothing here implements worker-originated
+delegation.
+
+A missing document reports `NOT_AVAILABLE` and emits no finding at all: absent
+orchestration state is a normal condition and must never make ordinary
+lifecycle or host readiness fail. An unreadable document or an unsupported
+schema major warns inside its own scope. An active session waiting on a human
+is reported **loudly** as `ORCHESTRATION_NEEDS_HUMAN` with `owner_action`
+severity and no blocked scope: it is an owner action, and it is not a defect of
+this installation.
+
+### `dispatch_monitor`
+
+The durable worker-completion watch, summarized read-only on every command:
+
+```
+{"state": "NOT_AVAILABLE|IDLE|WATCHING|NEEDS_HUMAN", "evaluated": bool,
+ "reason": ...,
+ "counts": {"total": N, "watching": N, "completed": N, "settled": N,
+            "degraded": N, "unreadable": N},
+ "pending_deliveries": N,
+ "retained": {"terminals": N, "worktrees": N,
+              "local_branches": N, "remote_branches": N},
+ "dispatches": [{"id": ..., "state": ..., "acknowledged": bool,
+                 "fault": ..., "cleanup": {...}}],
+ "required_action": ...}
+```
+
+<!-- machine-checkable: monitor_states -->
+```
+NOT_AVAILABLE
+IDLE
+WATCHING
+NEEDS_HUMAN
+```
+<!-- end -->
+
+<!-- machine-checkable: dispatch_states -->
+```
+WATCHING
+COMPLETED
+SETTLED
+MONITOR_DEGRADED
+```
+<!-- end -->
+
+<!-- machine-checkable: cleanup_dispositions -->
+```
+PENDING
+REMOVED
+RETAINED
+NOT_APPLICABLE
+NEEDS_OWNER
+```
+<!-- end -->
+
+The summary is a filesystem fact: it creates no directory, writes no file, and
+never fails a command. A host that has never dispatched a supervised worker
+reports `NOT_AVAILABLE`.
+
+The summary describes the state the pass it belongs to actually read. `monitor`
+summarizes once before its action and once after it, and the second reading is
+allowed to disagree with the first: a pass that consumed the corrected delivery
+for the only degraded Dispatch on the host reports `WATCHING` and exits 0, not
+the `NEEDS_HUMAN` it would have reported a moment earlier. What the pass itself
+could not resolve — a descriptor it refused, a delivery naming no Dispatch, a
+resource it would not release — leaves no mark in the watch set for a later
+reading to recover, so it is carried across the pass and still decides the
+verdict.
+
+## The dispatch monitor
+
+A coordinator that launches a worker and then relies on a later human message
+to make it look again is not an orchestration loop. The completion arrives
+while nobody is watching, and the terminal, worktree and branch stay behind
+because the moment they could have been released passed unobserved. The watch
+therefore lives on disk under the declared state directory:
+
+| Path | Contents |
+|---|---|
+| `dispatch/watch/<dispatch_id>.json` | The durable record of one supervised Dispatch. Written before control is yielded; survives coordinator turns, coordinator restarts and Orca disconnects. |
+| `dispatch/inbox/<delivery_id>.json` | Completion deliveries the supervised transport committed. Consumed by a later invocation, never lost because nobody was listening. |
+| `dispatch/results/<dispatch_id>.*` | The retained compact result and its traceability record, kept **outside** the worktree that produced them. |
+
+`monitor` performs exactly one bounded pass per invocation. There is no
+`--wait`, no rolling poll and no long-lived turn: the record carries the
+declared poll interval and backoff ceiling so a scheduler outside this process
+can drive the next pass. Nothing here blocks, and nothing here can spin.
+
+Every observation the pass makes outside this host is bounded by the same
+declared timeout the live probes use, and none of them can ask a human
+anything: the Orca listing, the durable close, and the remote-branch
+observations alike. An unbounded call would make "one bounded pass" untrue of
+the pass that mattered most — the one settling a worker over a transport that
+stopped answering. A host that cannot enforce that bound does not get the call
+run unbounded either: the observation is refused, reported as
+`PROBE_BOUND_UNAVAILABLE`, and whatever it could not decide is retained on
+`NEEDS_OWNER`. This is stricter than the live readiness probes, which on a host
+without a bounding tool report `PROBE_BOUND_UNAVAILABLE` once and then run the
+observation unbounded rather than refusing it — and deliberately so: a
+readiness probe that outruns its bound costs time, while a settlement
+observation that outruns its bound is the hang this engine exists to remove.
+
+### Completion authority
+
+Only a supervised `worker_done` or `escalation` delivery completes a worker.
+Terminal idleness, an exited process, transcript text, provider session history
+and tab state are diagnostic observations: each of them is equally true of a
+worker that failed, was killed, or never started, so none of them may
+manufacture a result.
+
+| Observation | Outcome |
+|---|---|
+| `worker_done` delivered | Retained, reconciled, acknowledged. `COMPLETED`. |
+| `escalation` delivered | Retained and reconciled. `COMPLETED` with `needs_human`, and its resources stay retained. |
+| Heartbeat window expired | `MONITOR_DEGRADED` / `WORKER_HEARTBEAT_EXPIRED`. Never a result. |
+| Terminal exited or absent with no delivery | `MONITOR_DEGRADED` / `WORKER_TERMINAL_EXITED_WITHOUT_DELIVERY`. Never a result. |
+| Delivery unreadable, or its result unparseable | Retained unacknowledged and loud. Recoverable: a corrected delivery reconciles on the next pass. |
+| Result could not be retained | Not acknowledged. `RESULT_NOT_RETAINED`, and the delivery stays on disk. |
+
+A delivery never creates a Dispatch. One that names a Dispatch this host holds
+no watch record for is `DISPATCH_UNKNOWN`, stays on disk, and stays loud.
+
+### At-least-once, idempotent
+
+Delivery is at-least-once, so the same `worker_done` can arrive twice: after an
+Orca disconnect that dropped the acknowledgement, or after a coordinator
+restart. The order is **retention, reconciliation, then acknowledgement** — an
+acknowledgement that outran retention is how a completion disappears.
+
+Every effect is keyed by `delivery_id`. A replay is recognized and dropped as
+`DELIVERY_REPLAY_IGNORED`: it cannot schedule settlement twice, cannot write a
+second traceability record, and cannot repeat a cleanup that already happened.
+A coordinator that restarts with one completed unacknowledged Dispatch and one
+active Dispatch reconciles the first and leaves the second exactly as it was.
+
+### Provenance-bound cleanup
+
+A resource is a cleanup candidate only because a watch record proves AFK created
+it for that exact Dispatch. Nothing is swept by age, by name, or by looking like
+scratch: a coordinator's own terminal, a user's branch, a protected branch and a
+legacy worktree carry no provenance here and are unreachable by this code.
+
+`monitor --cleanup` requires `--live`, because deciding whether a terminal may
+be closed — and proving it closed — is an external observation.
+
+| Resource | Released only when | Otherwise |
+|---|---|---|
+| Terminal | AFK-owned, and a **durable** close was requested for it, the request itself was accepted, and its absence re-observed afterwards. `IDLE`, `EXITED` and `ABSENT` all reach that request, and all three consume its outcome. | `ACTIVE`, `AWAITING_ANSWER`, `AMBIGUOUS` and `USER_TAKEOVER` are retained untouched. A close that was refused, a close that could not be bounded, and an absence that could not be re-observed are all unproven closures: `NEEDS_OWNER`. |
+| Worktree | AFK-owned, its worker settled, its terminal released, its result retained outside it, and `git status` clean. Removal goes through Git's own worktree bookkeeping. | Retained `WORKTREE_RETAINED_DIRTY` or `WORKTREE_RETAINED_UNSETTLED`. A path that cannot be removed as a worktree is one this code has not proven it created: it is retained, never recursively deleted. |
+| Local branch | AFK-owned, not protected, its worktree removed, and its commits proven reachable from the expected base — with either a merged pull request or an explicit disposable flag. | `BRANCH_RETAINED_UNIQUE_COMMITS` (unique or unpushed work fails closed), `BRANCH_RETAINED_UNMERGED`, `BRANCH_RETAINED_PROTECTED`, `BRANCH_NOT_OWNED`. |
+| Remote branch | The record carries an explicit `remote_delete_authorized` **and** a merged pull request, the local branch is already gone, and both the observation before the deletion and the re-observation after it completed inside the declared bound. | `REMOTE_BRANCH_RETAINED_UNAUTHORIZED`, reported with the owner action. A remote observation that could not complete proves nothing either way and is `NEEDS_OWNER`. This host never broadens its own repository authority. |
+
+**What `ABSENT` means, in both places that read it.** `ABSENT` is one
+observation — Orca is not listing that handle at this instant — and the two
+readers of it say what it proves for their own question rather than each
+assuming its own answer:
+
+- the **watch sweep** reads it as a monitoring fault. A watched worker whose tab
+  is gone with no supervised delivery has an unknown outcome, never a
+  completion: `WORKER_TERMINAL_EXITED_WITHOUT_DELIVERY`.
+- **cleanup** reads it as unproven. A handle Orca has forgotten may still be a
+  resumable provider session — which is the entire premise of the durable close
+  — so absence alone is never proof of release. Cleanup requests the durable
+  close first and re-observes afterwards, exactly as it does for an idle
+  terminal, and the request's own outcome is part of the evidence. For an
+  absent handle it is the only part that carries any: the re-observation
+  afterwards repeats what was already true before the request, whether the close
+  succeeded, failed, or was refused outright. Whether Orca will close a handle
+  it is no longer listing is a property of that daemon and is never assumed
+  here — an Orca that refuses leaves the terminal `NEEDS_OWNER`, because a close
+  that failed and a terminal that is nonetheless gone is still an unproven
+  closure. Skipping the request altogether is how a settled Dispatch comes to
+  own nothing while its tab comes back on the next reconnect.
+
+Each disposition is reported independently as `REMOVED`, `RETAINED`,
+`NOT_APPLICABLE` or `NEEDS_OWNER`, and ambiguity fails closed on `NEEDS_OWNER`
+rather than deleting. A Dispatch whose four dispositions are all terminal
+becomes `SETTLED`; repeating cleanup on a settled Dispatch does nothing and
+recreates nothing.
+
+Failed cleanup never rewrites a successful implementation result. It does
+prevent the attempt from presenting resource cleanup as complete: the retained
+terminal, worktree and branch counts stay in `dispatch_monitor.retained`, and
+the required action stays loud.
+
+A pre-existing branch or worktree with no AFK provenance is report-only
+inventory for a separate owner-approved plan. It is never a deletion target of
+worker settlement, and this code has no path that could make it one.
 
 ### `environment`
 
@@ -339,8 +765,8 @@ revisions and nothing else.
 Caller-supplied text is treated the same way: an unrecognized command or option
 is echoed back only when it is in the closed command/option vocabulary, and is
 otherwise replaced with a placeholder, so a mistyped credential on the command
-line cannot land in a usage diagnostic. The VALUE of `--approve-plan` is never
-echoed either.
+line cannot land in a usage diagnostic. The VALUES of `--approve-plan`,
+`--stamp`, `--target` and `--register` are never echoed either.
 
 ## Ownership classes
 
@@ -354,7 +780,7 @@ echoed either.
 | `USER_OWNED` | Content outside a managed section. Inventoried by shape only, never by content, never compared. |
 | `TARGET_WIRING` | A registered BMAD target repository. |
 | `CANONICAL_SOURCE` | The source checkout itself. |
-| `KIT_STATE` | The state manifest, the operation journal and the operation lock. |
+| `KIT_STATE` | The state manifest, the operation journal, the operation lock and the durable dispatch watch. |
 | `REGISTERED_ADAPTATION` | An explicit adaptation record. |
 
 <!-- machine-checkable: ownership_classes -->
@@ -418,6 +844,124 @@ a section is being **inserted** into a file that has none: if the file does not
 end with a newline, one is added before the begin marker, because a marker that
 is not a whole line is not a marker. Insertion appends; no existing byte moves.
 
+## Registered BMAD targets
+
+Directory presence is not compatibility. A registered target is resolved
+mechanically, on every run, entirely from the filesystem, and each verdict is
+scoped to `TARGET_READY:<id>`.
+
+<!-- machine-checkable: target_states -->
+```
+READY
+INCOMPATIBLE
+BROKEN
+NOT_EVALUATED
+```
+<!-- end -->
+
+The recognized layouts are the v6 tree
+(`_bmad/bmm/workflows/4-implementation/create-story/template.md`) and the v6
+skills layout (`.agents/skills/bmad-create-story/template.md`, optionally
+mirrored under `.claude/skills/`). Resolution proceeds in order and fails
+closed at the first unmet condition:
+
+| Check | Failure |
+|---|---|
+| The target path exists | `TARGET_PATH_MISSING` |
+| A recognized story template exists and resolves to a readable file | `TARGET_TEMPLATE_UNRESOLVED` |
+| No second physical copy of the wiring disagrees with the first | `TARGET_WIRING_OWNERSHIP_AMBIGUOUS` |
+| Some recognized layout is present at all | `TARGET_WIRING_UNRECOGNIZED` |
+| The template carries `linear`, `stamp`, `persona`, `gates` and `max_cycles` | `TARGET_WIRING_SCHEMA_INCOMPATIBLE` |
+| The template carries no retired `route` or `local_gpu` key | `TARGET_WIRING_MALFORMED` |
+| `_bmad/bmm/agents/dev.md` and `pm.md` exist and resolve to readable files | `TARGET_PERSONA_UNRESOLVED` |
+
+All met is `TARGET_WIRING_PROVEN`, and the wiring identity of the resolved
+template is reported as bounded evidence.
+
+Two copies of the wiring that disagree are ownership ambiguity, not a tie to
+break: guessing which one dispatch will read is exactly the decision this
+lifecycle refuses to make by itself.
+
+## The execution stamp and route readiness
+
+`--stamp <path>` puts one accepted routing decision into scope. `--target <id>`
+binds that route to one registered target; when exactly one target is
+registered it is used without being named.
+
+Any other arity is a binding this lifecycle will not guess at. Two or more
+registered targets with no `--target` is ownership ambiguity of exactly the kind
+the wiring rules already refuse to resolve, and a host with none registered has
+nowhere to dispatch the route into: both are `ROUTE_TARGET_UNRESOLVED`, and the
+route is `FALSE`. Naming the target resolves it — the operator decides, not the
+lifecycle. The target is an operand of the intersection below, and an operand
+that cannot be determined fails the route closed rather than dropping out of it:
+an intersection that quietly loses a leg would report a route launchable with
+that leg never evaluated, and would take the workspace-trust decision that hangs
+off the bound path out with it.
+
+An execution stamp is a **closed** document. Its property set is
+`harness`, `model_profile`, `effort`, `cost_class`, `entitlement_pool`,
+`metered`, `placement_policy`, `placement_required`, `catalog_version`,
+`catalog_document_version`, `expires_at`, `task`, `override`, `created_at`;
+anything else, or a missing required member, is `STAMP_SHAPE_INVALID`.
+
+Route readiness is the **intersection** of every authority, and each is
+evaluated by its own owner:
+
+| Dimension | Owner | Failure |
+|---|---|---|
+| Catalog legality, funding class, placement policy, provenance, expiry | router / catalog / validator | `STAMP_VALIDATION_FAILED` |
+| Expiry, deterministically | this kit | `STAMP_EXPIRED` |
+| Launch contract for {harness, profile, effort} | this kit | `ROUTE_PROFILE_UNSUPPORTED` |
+| Metered-path conditions for a subscription route | this host's environment | `ROUTE_FUNDING_CONFLICT` |
+| The target BMAD wiring the route needs | the target repository | `ROUTE_TARGET_UNRESOLVED` |
+| The selected harness being usable | the harness | `ROUTE_HARNESS_UNAVAILABLE` |
+| Workspace trust for the selected path | a human | `WORKSPACE_TRUST_REQUIRED` |
+| Host execution readiness | this host | `NO_APPROVED_HARNESS_PATH` |
+
+This kit's launch contract covers `claude` and `codex` for native vendor
+subscription execution, at effort `low`, `medium`, `high` or `xhigh`. A profile
+carrying `placement_required: true` has no validated launch contract on either
+vendor harness, because the only mechanisms that would point them at local
+compute are the redirections their contracts forbid.
+
+**Placement is never a lifecycle concern.** No physical inference placement is
+selected, persisted, added to the immutable stamp or assumed reusable here.
+Where a route requires placement it stays an ephemeral per-attempt dispatch
+concern, and `readiness.ROUTE_READY.placement_selected` is `false` on every
+path.
+
+**An observation is never authorization.** A successful live observation at T1
+is diagnostic evidence about T1. It is not reusable at T2, it is not recorded
+as a launch grant, and the canonical dispatch path revalidates every
+execution-critical fact immediately before launch.
+
+**An accepted stamp survives a router outage.** When the router is unavailable
+but the stamp is unexpired and requires no rerouting, route readiness may
+continue on what a compatible validator can prove locally. Any requirement for
+a fresh route blocks the launch instead.
+
+## Compatibility declarations
+
+The router and its catalog own legal harness/profile relationships, model and
+profile legality, entitlement or funding class, placement requirements, catalog
+provenance, expiry and resource policy. Runtime observation may **remove**
+availability; it never adds authority.
+
+This kit owns, and publishes through `schema`, only executor capability: the
+lifecycle and state schema majors it implements, the execution-stamp and
+validator contract majors it records, the BMAD wiring major it supports, the
+orchestration state major it consumes, the dispatch watch major it owns, the
+Orca launch capabilities it requires, and the harnesses and invocation features
+it can drive.
+
+<!-- machine-checkable: approved_harnesses -->
+```
+claude
+codex
+```
+<!-- end -->
+
 ## Path type, containment and symlink boundaries
 
 Before any managed destination is read, hashed, backed up or replaced:
@@ -447,6 +991,9 @@ Evidence is bounded identifiers, never file dumps:
 - section identity: `sha256:` of the normalized payload
 - link identity: `link:<resolved absolute target>`
 - user-owned region: a line count, never content
+- target wiring identity: `sha256:` of the resolved story template's payload
+- execution stamp identity: `sha256:` of the stamp document's bytes
+- retained worker result identity: `sha256:` of the retained result document
 
 A tree identity **fails** rather than under-reporting: an unreadable member, an
 unreadable subdirectory or a failed scan produces no identity at all, and the
@@ -460,6 +1007,9 @@ When the **canonical** side cannot be read, the component is
 Matching the applied identity proves nothing about currency when nobody could
 open the content it would be compared with.
 
+A live probe's stdout is diagnostic input, not evidence: it is truncated before
+it is read, and only a classification derived from it ever reaches the result.
+
 <!-- machine-checkable: evidence_provenance -->
 ```
 HASH_COMPARISON
@@ -471,6 +1021,12 @@ MANIFEST_SCHEMA
 OWNERSHIP_RULE
 ADAPTATION_RECORD
 OPERATION_JOURNAL
+VERSION_PROBE
+CAPABILITY_PROBE
+AUTH_STATUS_PROBE
+ROUTER_STATUS
+VALIDATOR_FIXTURE
+BMAD_RESOLUTION
 ```
 <!-- end -->
 
@@ -808,12 +1364,12 @@ the act of adopting it:
   ownership claim itself;
 - an ambiguous, redirected, unreadable or malformed destination refuses.
 
-## Offline verification
+## Verification
 
-`verify` observes and proves. It never repairs, never probes a live service and
-never activates orchestration. The same function is the final gate before any
-applied-state manifest is committed, so a convergence can never be committed on
-weaker evidence than a verification demands.
+`verify` observes and proves. It never repairs and never activates
+orchestration. The same function is the final gate before any applied-state
+manifest is committed, so a convergence can never be committed on weaker
+evidence than a verification demands.
 
 ```
 {"verified": bool, "offline": true, "repaired": false,
@@ -834,9 +1390,11 @@ SKIP
 Checks: manifest invariants and applied hash, state schema compatibility, no
 open operation, no operation in progress, every declared component's integrity
 against its recorded identity (with a valid adaptation as the one legitimate
-difference), machine-local preservation, every adaptation record, and target
-wiring **structure**. A missing target warns inside its own scope; proving
-persona and template resolution is live readiness work and belongs to Story 1.3.
+difference), machine-local preservation, and every adaptation record. Target
+wiring, the orchestration bridge, the dispatch-monitor summary and the
+readiness scopes are reported beside the verification through the same
+normalized model, and a target that does not resolve warns inside its own scope
+without failing the verification.
 
 Verification failure is reported as a blocking finding, so it drives the same
 overall state machine every other blocking fact does — and nothing is repaired
@@ -946,6 +1504,113 @@ OPERATION_RECOVERY_VERIFICATION_FAILED
 OPERATION_LOCK_OWNER_UNVERIFIABLE
 OPERATION_LOCK_RECLAIMED
 DESTINATION_METADATA_NOT_PRESERVED
+EXECUTABLE_RESOLVED
+EXECUTABLE_NOT_RESOLVED
+PROBE_BOUND_UNAVAILABLE
+NO_TARGET_REGISTERED
+TARGET_SCOPE_PARTIAL
+TARGET_WIRING_UNRECOGNIZED
+TARGET_WIRING_SCHEMA_INCOMPATIBLE
+TARGET_WIRING_MALFORMED
+TARGET_WIRING_OWNERSHIP_AMBIGUOUS
+TARGET_WIRING_PROVEN
+TARGET_PERSONA_UNRESOLVED
+TARGET_TEMPLATE_UNRESOLVED
+ORCHESTRATION_STATE_NOT_AVAILABLE
+ORCHESTRATION_STATE_UNREADABLE
+ORCHESTRATION_STATE_SCHEMA_UNSUPPORTED
+ORCHESTRATION_STATE_AVAILABLE
+ORCHESTRATION_SESSION_INACTIVE
+ORCHESTRATION_NEEDS_HUMAN
+ORCA_NOT_RESOLVED
+ORCA_PROBE_FAILED
+ORCA_PROBE_TIMED_OUT
+ORCA_RUNTIME_REACHABLE
+ORCA_CAPABILITY_UNPROVEN
+ORCA_CAPABILITY_INCOMPATIBLE
+ORCA_CAPABILITY_PROVEN
+VALIDATOR_NOT_RESOLVED
+VALIDATOR_CONTRACT_UNREADABLE
+VALIDATOR_CONTRACT_INCOMPATIBLE
+VALIDATOR_CONTRACT_PROVEN
+VALIDATOR_FIXTURE_FAILED
+VALIDATOR_VERDICT_UNAVAILABLE
+VALIDATOR_ANTI_VACUITY_FAILED
+VALIDATOR_FIXTURES_PROVEN
+HARNESS_NOT_RESOLVED
+HARNESS_CAPABILITY_UNPROVEN
+HARNESS_CAPABILITY_PROVEN
+AUTH_NATIVE_SUBSCRIPTION
+AUTH_MODE_UNSUPPORTED
+AUTH_REQUIRED
+AUTH_STATUS_UNPROVEN
+NO_SELECTED_WORKSPACE
+WORKSPACE_TRUST_ESTABLISHED
+WORKSPACE_TRUST_REQUIRED
+WORKSPACE_TRUST_UNPROVEN
+ROUTER_ENDPOINT_NOT_DECLARED
+ROUTER_TRANSPORT_UNTRUSTED
+ROUTER_AUTH_MISSING
+ROUTER_UNREACHABLE
+ROUTER_TIMED_OUT
+ROUTER_API_SHAPE_UNSUPPORTED
+ROUTER_AVAILABLE
+ROUTER_CATALOG_COMPATIBLE
+ROUTER_CATALOG_INCOMPATIBLE
+NO_APPROVED_HARNESS_PATH
+HOST_EXECUTION_READY_PROVEN
+INSTALLED_INTEGRITY_NOT_PROVEN
+STAMP_UNREADABLE
+STAMP_SHAPE_INVALID
+STAMP_EXPIRED
+STAMP_VALIDATION_FAILED
+STAMP_VALIDATION_UNPROVEN
+ROUTE_PROFILE_UNSUPPORTED
+ROUTE_FUNDING_CONFLICT
+ROUTE_TARGET_UNRESOLVED
+ROUTE_HARNESS_UNAVAILABLE
+ROUTE_READY_PROVEN
+PLACEMENT_NOT_A_LIFECYCLE_CONCERN
+LIVE_OBSERVATION_NOT_LAUNCH_AUTHORITY
+DISPATCH_WATCH_NOT_AVAILABLE
+DISPATCH_WATCH_IDLE
+DISPATCH_WATCH_ACTIVE
+DISPATCH_WATCH_REGISTERED
+DISPATCH_DESCRIPTOR_INVALID
+DISPATCH_RECORD_UNREADABLE
+DISPATCH_RECORD_SCHEMA_UNSUPPORTED
+DISPATCH_UNKNOWN
+DELIVERY_UNREADABLE
+DELIVERY_REPLAY_IGNORED
+WORKER_DONE_RETAINED
+WORKER_ESCALATION_RETAINED
+RESULT_NOT_RETAINED
+RESULT_UNPARSEABLE
+WORKER_HEARTBEAT_EXPIRED
+WORKER_TERMINAL_EXITED_WITHOUT_DELIVERY
+MONITOR_DEGRADED
+TERMINAL_RELEASED
+TERMINAL_RELEASE_UNPROVEN
+TERMINAL_RETAINED_ACTIVE
+TERMINAL_RETAINED_AWAITING_ANSWER
+TERMINAL_RETAINED_AMBIGUOUS
+TERMINAL_RETAINED_USER_TAKEOVER
+TERMINAL_NOT_OWNED
+WORKTREE_REMOVED
+WORKTREE_RETAINED_UNSETTLED
+WORKTREE_RETAINED_DIRTY
+WORKTREE_NOT_OWNED
+BRANCH_DELETED
+BRANCH_RETAINED_UNMERGED
+BRANCH_RETAINED_UNIQUE_COMMITS
+BRANCH_RETAINED_PROTECTED
+BRANCH_RETAINED_WORKTREE_PRESENT
+BRANCH_NOT_OWNED
+REMOTE_BRANCH_DELETED
+REMOTE_BRANCH_ABSENT
+REMOTE_BRANCH_RETAINED_UNAUTHORIZED
+CLEANUP_NEEDS_OWNER
+CLEANUP_COMPLETE
 ```
 <!-- end -->
 
@@ -969,7 +1634,14 @@ safely happen next:
 `blocked_scopes` uses the readiness-scope names plus `MUTATION_SOURCE`,
 `MUTATION:<component>` and `TARGET_READY:<target>`. Only findings that block
 `INSTALLED_INTEGRITY` can drive the overall state to `NOT_READY` or
-`NEEDS_OWNER`.
+`NEEDS_OWNER`. A transient live observation sets `transient: true`, which is
+how automation tells "retry later" from "an owner must decide".
+
+Dispatch-monitor findings block no readiness scope at all. A worker that needs a
+human and a resource that could not be released are owner actions about
+orchestration, not defects of this installation: they are loud, they set the
+`monitor` command's own exit code, and they never make `status` report the
+installation `NOT_READY`.
 
 ## Adoption analysis
 
@@ -1009,10 +1681,10 @@ comparable by construction.
 |---|---|
 | 0 | Requested scope succeeded. `READY_WITH_WARNINGS`, `READY_WITH_ADAPTATION`, a computable plan, a verified installation and a no-op update all count as success. |
 | 1 | Command, internal or usage failure. Includes an unknown command, an option the command does not accept, a missing library, an undeclared destination, and any failure to assemble a well-formed result. |
-| 2 | Owner action or conflict. A refused plan, a required or mismatched approval, a stale plan, a concurrent operation, and a failure whose restoration could not complete. |
-| 3 | Deterministic not-ready or verification failure. A rolled-back operation and a recovered interruption land here: nothing claims the target revision. |
+| 2 | Owner action or conflict. A refused plan, a required or mismatched approval, a stale plan, a concurrent operation, a failure whose restoration could not complete, a route awaiting a human workspace-trust decision, and a monitor pass that left something only a human can decide. |
+| 3 | Deterministic not-ready or verification failure. A rolled-back operation and a recovered interruption land here: nothing claims the target revision. So does a readiness scope this run put in scope and proved false. |
 | 4 | Source or precondition refusal. An ineligible mutation source, or `status --require-source-eligible` on one. |
-| 5 | Live dependency unavailable or timed out. Not produced by this increment, which performs no live probe. |
+| 5 | Live dependency unavailable or timed out. Produced only by a run that requested live readiness and could not look. |
 
 <!-- machine-checkable: exit_codes -->
 ```
@@ -1029,6 +1701,17 @@ For `adopt --inspect` the requested scope is the analysis itself:
 `AUTO_ADOPTABLE` exits 0, `APPROVAL_REQUIRED` and `REFUSED` exit 2, regardless
 of the installation's overall readiness.
 
+For `monitor` the requested scope is the pass itself: it exits 2 when something
+is left that only a human can decide, and 0 when the pass accounted for every
+watched Dispatch. "Left" is decided on what the pass read after its own action,
+so a fault it repaired is not carried into its verdict.
+
+A run that requests `--live` or names a `--stamp` puts those scopes into scope,
+so their verdict decides the exit code. A default `status` remains an
+installed-state question and keeps deriving its code from installed integrity:
+adding a readiness scope to the output never changes what an existing caller's
+exit code means.
+
 These are the codes a lifecycle command produces from a result. A run stopped
 by a signal produces none: it exits `128 +` the signal number — 130 for
 `SIGINT`, 143 for `SIGTERM`, 129 for `SIGHUP`, and the same arithmetic for
@@ -1039,10 +1722,16 @@ its journal intact for the next command to resolve.
 
 ## Guarantees this contract makes
 
-- `status`, `adopt --inspect`, `verify` and every `--plan` invocation mutate no
-  filesystem, Git, runtime, authentication, router or orchestration state.
+- `status`, `adopt --inspect`, `verify`, `monitor` without an action verb and
+  every `--plan` invocation mutate no filesystem, Git, runtime, authentication,
+  router or orchestration state.
+- Without `--live` no lifecycle command executes another program, opens a
+  socket, authenticates anywhere or creates a temporary file.
 - The lifecycle never fetches, pulls, merges, rebases or switches Git state,
   and never activates orchestration or mutates external authority.
+- No live probe logs in, creates a worker, changes a BMAD repository, runs
+  implementation, creates placement, or enables a metered path; every one is
+  bounded, timestamped and non-authoritative for launch.
 - No free-form or model-driven merging resolves any managed-content question.
 - Path type, containment and symlink boundaries — including parent chains —
   are validated before a managed destination is read, hashed, backed up or
@@ -1051,8 +1740,24 @@ its journal intact for the next command to resolve.
   revision, and partial state is never reported as successful convergence.
 - Content outside a managed section, declared machine-local configuration and
   target-project content are preserved.
-- Source eligibility, installed integrity and live availability are
-  independent dimensions and are independently observable.
+- Source eligibility, installed integrity, host execution readiness, new-work
+  readiness, per-target readiness and per-route readiness are independent
+  dimensions and are independently observable.
+- No route is ever substituted, retargeted or extended locally, and no live
+  observation is ever recorded as launch authorization.
+- A worker is completed only by a supervised completion delivery. Terminal
+  idleness, an exited process and session history never manufacture a result,
+  and a monitoring fault is always reported as a monitoring fault.
+- Completion delivery is at-least-once and its handling is idempotent: a replay
+  cannot duplicate settlement, traceability or cleanup, and nothing is
+  acknowledged before it has been retained and reconciled.
+- Cleanup is provenance-bound. A terminal, worktree or branch is released only
+  because a durable record proves this host created it for that exact Dispatch;
+  ambiguity fails closed, and unowned, protected and default resources are
+  report-only inventory.
+- Every observation a monitor pass makes outside this host is bounded and
+  non-interactive, or is refused and reported rather than made unbounded, so
+  one bounded pass stays one bounded pass whatever the transport does.
 - No secret value, credential content or authorization header is emitted or
   persisted, on any path, including diagnostics, failure paths, the journal
   and the manifest.
