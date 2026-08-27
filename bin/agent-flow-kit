@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
 # agent-flow-kit — the one lifecycle entry point (FR-22).
 #
-# Read-only:  status, adopt --inspect, verify, schema, and any --plan.
-# Mutating:   adopt, update.
+# Read-only:  status, adopt --inspect, verify, schema, monitor, and any --plan.
+# Mutating:   adopt, update, and the monitor's own action verbs, which write
+#             only inside the declared state directory.
 #
 # Git fetching, pulling, branch switching, route selection, orchestration
 # activation and every external authority remain outside this executable
-# (FR-28, FR-34). Live readiness probes belong to Story 1.3; everything here is
-# deterministic and offline.
+# (FR-28, FR-34).
+#
+# Default evaluation is deterministic and offline: no process is executed and
+# no socket is opened. `--live` adds bounded, non-mutating readiness probes; it
+# never logs in, never creates a worker, never changes a BMAD repository, never
+# runs implementation, never creates placement, and never enables a metered
+# path.
 
 set -uo pipefail
 
@@ -23,7 +29,7 @@ AFK_LIB_DIR="${AFK_LIB_DIR:-$AFK_INSTALL_ROOT/lib}"
 # A missing or unreadable library is an internal failure with a stable message
 # and the usage exit code — never a partially loaded lifecycle that answers
 # questions with whichever functions happened to load.
-for _afk_lib in afk-common afk-source afk-inventory afk-commands afk-plan afk-mutate; do
+for _afk_lib in afk-common afk-source afk-inventory afk-readiness afk-monitor afk-commands afk-plan afk-mutate; do
   if [[ ! -r "$AFK_LIB_DIR/$_afk_lib.sh" ]]; then
     printf 'agent-flow-kit: internal error: required library %s.sh is missing or unreadable under %s\n' \
       "$_afk_lib" "$AFK_LIB_DIR" >&2
@@ -41,6 +47,12 @@ unset _afk_lib
 # shellcheck source=lib/afk-inventory.sh
 # shellcheck disable=SC1090,SC1091
 . "$AFK_LIB_DIR/afk-inventory.sh"
+# shellcheck source=lib/afk-readiness.sh
+# shellcheck disable=SC1090,SC1091
+. "$AFK_LIB_DIR/afk-readiness.sh"
+# shellcheck source=lib/afk-monitor.sh
+# shellcheck disable=SC1090,SC1091
+. "$AFK_LIB_DIR/afk-monitor.sh"
 # shellcheck source=lib/afk-commands.sh
 # shellcheck disable=SC1090,SC1091
 . "$AFK_LIB_DIR/afk-commands.sh"
@@ -54,6 +66,8 @@ unset _afk_lib
 if ! declare -F afk_cmd_status >/dev/null 2>&1 \
    || ! declare -F afk_render_human >/dev/null 2>&1 \
    || ! declare -F afk_transaction_execute >/dev/null 2>&1 \
+   || ! declare -F afk_readiness_evaluate >/dev/null 2>&1 \
+   || ! declare -F afk_monitor_reconcile >/dev/null 2>&1 \
    || ! declare -F afk_plan_compute >/dev/null 2>&1; then
   printf 'agent-flow-kit: internal error: the lifecycle libraries under %s did not load completely\n' \
     "$AFK_LIB_DIR" >&2
@@ -84,16 +98,46 @@ AFK_SKILLS_HOME="${AFK_SKILLS_HOME:-${HOME:+$HOME/.agents/skills}}"
 AFK_CLAUDE_HOME="${AFK_CLAUDE_HOME:-${HOME:+$HOME/.claude}}"
 AFK_CODEX_HOME="${AFK_CODEX_HOME:-${HOME:+$HOME/.codex}}"
 
+# The orchestration state document is consumed from the declared state
+# directory. It is read-only input: nothing here creates or repairs it.
+AFK_ORCH_STATE="${AFK_ORCH_STATE:-${AFK_STATE_DIR:+$AFK_STATE_DIR/orchestration.json}}"
+
+# The durable dispatch watch. Re-derived here rather than at source time,
+# because the libraries are loaded before AFK_STATE_DIR is resolved and a
+# derivation from an empty base would silently produce an unusable path.
+AFK_DISPATCH_DIR="${AFK_DISPATCH_DIR:-${AFK_STATE_DIR:+$AFK_STATE_DIR/dispatch}}"
+AFK_DISPATCH_WATCH_DIR="${AFK_DISPATCH_WATCH_DIR:-${AFK_DISPATCH_DIR:+$AFK_DISPATCH_DIR/watch}}"
+AFK_DISPATCH_INBOX_DIR="${AFK_DISPATCH_INBOX_DIR:-${AFK_DISPATCH_DIR:+$AFK_DISPATCH_DIR/inbox}}"
+AFK_DISPATCH_RESULT_DIR="${AFK_DISPATCH_RESULT_DIR:-${AFK_DISPATCH_DIR:+$AFK_DISPATCH_DIR/results}}"
+
 afk_require_declared_paths() {
   local v
   for v in AFK_KIT_ROOT AFK_STATE_DIR AFK_MANIFEST AFK_JOURNAL AFK_LOCK_DIR \
            AFK_BACKUP_ROOT AFK_STAGE_ROOT \
-           AFK_SKILLS_HOME AFK_CLAUDE_HOME AFK_CODEX_HOME; do
+           AFK_SKILLS_HOME AFK_CLAUDE_HOME AFK_CODEX_HOME AFK_DISPATCH_DIR; do
     if [[ -z "${!v}" ]]; then
       afk_warn "HOME is not set and $v was not supplied: every managed destination must be declared before any installed state can be read. Nothing was inspected."
       return 1
     fi
   done
+  return 0
+}
+
+# The bounding tool, declared where the scope that needs it is known. It is
+# load-bearing for every observation a live run makes outside this host — the
+# Orca listing, the durable close, and the three remote-branch git calls — so an
+# operator learns it is missing from the command rather than from a warning
+# buried in a result document.
+#
+# Declared, not required: this kit already has a defined answer for a host that
+# cannot bound an observation, and refusing the run would take that answer away
+# rather than give it. The live probes report PROBE_BOUND_UNAVAILABLE, and the
+# settlement pass refuses the call and retains the resource on NEEDS_OWNER.
+# Nothing offline needs the tool at all, so nothing offline is refused for it.
+afk_declare_bounding_tool() {
+  [[ "$AFK_LIVE_MODE" == "true" ]] || return 0
+  afk_have timeout && return 0
+  afk_warn "no timeout tool on this host: an external observation cannot be bounded, so the settlement pass refuses its Orca and remote-branch calls and retains what it could not decide, and every live probe reports PROBE_BOUND_UNAVAILABLE."
   return 0
 }
 
@@ -103,9 +147,11 @@ agent-flow-kit — lifecycle entry point
 
   agent-flow-kit status [options]
       Read-only installed state: revisions, components, ownership, drift,
-      adaptations, registered targets, readiness scopes and the next safe
-      action. Mutates nothing, probes nothing external.
-      Options: --json --require-source-eligible
+      adaptations, registered targets and their wiring, the orchestration
+      summary, the dispatch-monitor summary, readiness scopes and the next
+      safe action. Mutates nothing. Without --live it probes nothing external.
+      Options: --json --live --synthetic-route --stamp <path> --target <id>
+               --require-source-eligible
                --allow-noncanonical-source --allow-rollback
 
   agent-flow-kit adopt --inspect [options]
@@ -130,9 +176,15 @@ agent-flow-kit — lifecycle entry point
 
   agent-flow-kit verify [options]
       Offline verification of the installed state against the applied-state
-      manifest. Observes and proves; never repairs, never probes a live
-      service, never activates orchestration.
-      Options: --json
+      manifest. Observes and proves; never repairs, never activates
+      orchestration. Without --live it probes no live service.
+      Options: --json --live --synthetic-route --stamp <path> --target <id>
+
+  agent-flow-kit monitor [options]
+      The durable worker-completion watch. Without an action verb it reports
+      the watch read-only and writes nothing. One bounded pass per invocation:
+      it never blocks, never polls in a loop, and never waits for a worker.
+      Options: --json --register <path> --reconcile --cleanup --live
 
   agent-flow-kit schema
       The documented machine contract: schema version, state, reason and
@@ -143,6 +195,36 @@ Options are validated against the command: an option that means nothing to the
 command you ran is a usage failure, not a silently ignored word.
 
   --json                        Machine-readable result on stdout.
+  --live                        On status and verify: add bounded, non-mutating
+                                readiness probes for Orca, the stamp validator
+                                and its offline fixtures, native harness
+                                capability and auth CLASS, and the central
+                                router. On monitor: authorize the bounded
+                                read-only Orca terminal observation the
+                                settlement pass needs — it does not turn on the
+                                readiness probes, which are a status question.
+                                Never logs in, never creates a worker, never
+                                spends provider tokens, never enables a metered
+                                path.
+  --synthetic-route             With --live only: additionally ask the router
+                                for one harmless recommendation. Nothing is
+                                stamped, nothing is launched.
+  --stamp <path>                Evaluate ROUTE_READY for one accepted
+                                execution stamp. The observation is diagnostic
+                                evidence and never launch authorization.
+  --target <id>                 With --stamp only: bind route readiness to one
+                                registered BMAD target.
+  --register <path>             monitor only: establish the durable watch for
+                                one supervised Dispatch from a descriptor,
+                                before control is yielded. Idempotent.
+  --reconcile                   monitor only: consume every pending completion
+                                delivery, retain and reconcile it, and only
+                                then acknowledge it. A replay is dropped.
+  --cleanup                     monitor only: reconcile, then release the
+                                terminal, worktree and branch a settled worker
+                                owned. Requires --live, fails closed on any
+                                ambiguity, and never touches a resource this
+                                host cannot prove it created for that Dispatch.
   --plan                        Compute and print the complete plan; write
                                 nothing. The plan carries a stable identity.
   --approve-plan <identity>     Authorize exactly the plan with that identity.
@@ -165,6 +247,13 @@ Environment (declared local configuration)
   AFK_KIT_ROOT AFK_STATE_DIR AFK_MANIFEST AFK_JOURNAL AFK_LOCK_DIR
   AFK_BACKUP_ROOT AFK_STAGE_ROOT
   AFK_SKILLS_HOME AFK_CLAUDE_HOME AFK_CODEX_HOME AFK_LIB_DIR
+  AFK_ORCA_BIN AFK_CLAUDE_BIN AFK_CODEX_BIN AFK_VALIDATOR_BIN AFK_CURL_BIN
+  AFK_ORCH_STATE AFK_CLAUDE_TRUST_DB AFK_ROUTER_TOKEN_ENV
+  AFK_LIVE_TIMEOUT_MS AFK_LIVE_FRESHNESS_S
+  AFK_DISPATCH_DIR AFK_DISPATCH_WATCH_DIR AFK_DISPATCH_INBOX_DIR
+  AFK_DISPATCH_RESULT_DIR AFK_MONITOR_POLL_SECONDS
+  AFK_MONITOR_BACKOFF_CEILING_SECONDS AFK_MONITOR_HEARTBEAT_SECONDS
+  AFK_MONITOR_PROTECTED_BRANCHES
 USAGE
 }
 
@@ -175,7 +264,7 @@ afk_option_allowed() { # <command> <option>
   case "$1" in
     status)
       case "$2" in
-        --json|--require-source-eligible|--allow-noncanonical-source|--allow-rollback)
+        --json|--require-source-eligible|--allow-noncanonical-source|--allow-rollback|--live|--synthetic-route|--stamp|--target)
           return 0 ;;
       esac ;;
     adopt)
@@ -190,7 +279,11 @@ afk_option_allowed() { # <command> <option>
       esac ;;
     verify)
       case "$2" in
-        --json) return 0 ;;
+        --json|--live|--synthetic-route|--stamp|--target) return 0 ;;
+      esac ;;
+    monitor)
+      case "$2" in
+        --json|--live|--register|--reconcile|--cleanup) return 0 ;;
       esac ;;
   esac
   return 1
@@ -200,6 +293,7 @@ afk_main() {
   local cmd json_mode="false" require_source="false"
   local allow_noncanonical="false" allow_rollback="false"
   local inspect="false" plan_only="false" approval=""
+  local monitor_verbs=0
 
   cmd="${1:-help}"
   if (( $# > 0 )); then shift; fi
@@ -228,6 +322,42 @@ afk_main() {
           --allow-rollback)            allow_rollback="true" ;;
           --inspect)                   inspect="true" ;;
           --plan)                      plan_only="true" ;;
+          --live)                      AFK_LIVE_MODE="true" ;;
+          --synthetic-route)           AFK_SYNTHETIC_ROUTE="true" ;;
+          --reconcile)
+            AFK_MONITOR_MODE="reconcile"; monitor_verbs=$((monitor_verbs + 1)) ;;
+          --cleanup)
+            AFK_MONITOR_MODE="cleanup"; monitor_verbs=$((monitor_verbs + 1)) ;;
+          --register)
+            # The value is a path. Like every other option value it is never
+            # echoed back in a diagnostic: only the closed option vocabulary is.
+            if (( $# < 2 )); then
+              afk_warn "--register requires the path of the dispatch descriptor to watch"
+              afk_usage >&2
+              return "$AFK_EXIT_USAGE"
+            fi
+            AFK_MONITOR_DESCRIPTOR="$2"
+            AFK_MONITOR_MODE="register"
+            monitor_verbs=$((monitor_verbs + 1))
+            shift ;;
+          --stamp)
+            # The value is a path. Like every other option value it is never
+            # echoed back in a diagnostic: only the closed option vocabulary is.
+            if (( $# < 2 )); then
+              afk_warn "--stamp requires the path of the execution stamp to evaluate"
+              afk_usage >&2
+              return "$AFK_EXIT_USAGE"
+            fi
+            AFK_STAMP_FILE="$2"
+            shift ;;
+          --target)
+            if (( $# < 2 )); then
+              afk_warn "--target requires the id of a registered BMAD target"
+              afk_usage >&2
+              return "$AFK_EXIT_USAGE"
+            fi
+            AFK_ROUTE_TARGET="$2"
+            shift ;;
           --approve-plan)
             # The value is a plan identity. It is never echoed back in a
             # diagnostic: only the closed option vocabulary ever is.
@@ -256,10 +386,27 @@ afk_main() {
     afk_warn "--plan computes a plan and writes nothing, so an approval has nothing to authorize."
     return "$AFK_EXIT_USAGE"
   fi
+  if [[ "$AFK_SYNTHETIC_ROUTE" == "true" && "$AFK_LIVE_MODE" != "true" ]]; then
+    afk_warn "--synthetic-route asks the router for a recommendation, which is a live probe: pass --live to request live evaluation explicitly."
+    return "$AFK_EXIT_USAGE"
+  fi
+  if [[ -n "$AFK_ROUTE_TARGET" && -z "$AFK_STAMP_FILE" ]]; then
+    afk_warn "--target binds route readiness to one registered target, so it needs the --stamp whose route it binds."
+    return "$AFK_EXIT_USAGE"
+  fi
+  if (( monitor_verbs > 1 )); then
+    afk_warn "monitor performs one bounded pass: register, reconcile and cleanup are separate questions, so ask one at a time."
+    return "$AFK_EXIT_USAGE"
+  fi
+  if [[ "$AFK_MONITOR_MODE" == "cleanup" && "$AFK_LIVE_MODE" != "true" ]]; then
+    afk_warn "monitor --cleanup has to ask Orca whether a worker terminal may be closed and prove that it closed, which is a live observation: pass --live to authorize it explicitly."
+    return "$AFK_EXIT_USAGE"
+  fi
 
   if ! afk_require_tools; then
     return "$AFK_EXIT_USAGE"
   fi
+  afk_declare_bounding_tool
 
   case "$cmd" in
     status)
@@ -283,6 +430,15 @@ afk_main() {
     verify)
       afk_require_declared_paths || return "$AFK_EXIT_USAGE"
       afk_cmd_verify "$json_mode"
+      return $? ;;
+    monitor)
+      afk_require_declared_paths || return "$AFK_EXIT_USAGE"
+      # On this command --live authorizes the monitor's own bounded Orca
+      # observation and nothing else. The readiness probes answer a different
+      # question and are not silently switched on by a settlement pass.
+      AFK_MONITOR_LIVE="$AFK_LIVE_MODE"
+      AFK_LIVE_MODE="false"
+      afk_cmd_monitor "$json_mode"
       return $? ;;
     schema)
       afk_cmd_schema || return "$AFK_EXIT_USAGE"
@@ -352,11 +508,17 @@ afk_main() {
 # release half-done. afk_lock_release is exact-incarnation and idempotent, so
 # the release the ordinary path already performed makes the one here a no-op
 # rather than a second removal.
+#
+# The validator fixture directory an explicit live evaluation may have created
+# is removed on the same boundary and for the same reason: it is the only path
+# outside the state directory this executable ever creates, and a run that dies
+# mid-probe must not leave it behind.
 AFK_TRAPPED_SIGNALS=(INT TERM HUP USR1 USR2 ALRM PIPE)
 
 afk_release_on_exit() {
   trap '' "${AFK_TRAPPED_SIGNALS[@]}"
   afk_lock_release
+  afk_validator_fixture_dir_remove
 }
 
 afk_terminate_on_signal() { # <exit status: 128 + signal number>
