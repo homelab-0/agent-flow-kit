@@ -1,0 +1,504 @@
+
+[1m0. Pure primitives (lib sourced, nothing executed)[0m
+  [32mPASS[0m tree identity is deterministic
+  [32mPASS[0m tree identity is a bounded sha256 identifier
+  [32mPASS[0m excluding a member changes the identity
+  [32mPASS[0m an excluded machine-owned member cannot move the managed identity
+  [32mPASS[0m but a managed member does move it
+  [32mPASS[0m a relative tree root is refused
+  [32mPASS[0m an exclusion containing a space excludes exactly that member
+  [32mPASS[0m a glob exclusion is not expanded
+  [32mPASS[0m an unreadable member fails the whole tree identity
+  [32mPASS[0m a newline in a name is encoded, not emitted raw
+  [32mPASS[0m a tab in a name is encoded
+  [32mPASS[0m a backslash is escaped first, so the encoding is reversible
+  [32mPASS[0m guard: real file with file expected
+  [32mPASS[0m guard: real dir with dir expected
+  [32mPASS[0m guard: absent path
+  [32mPASS[0m guard: dir where a file is declared
+  [32mPASS[0m guard: symlink where a real file is declared fails closed
+  [32mPASS[0m guard: a link inside its boundary is accepted
+  [32mPASS[0m guard: a link escaping its boundary fails closed
+  [32mPASS[0m guard: a real file where a link is declared
+  [32mPASS[0m guard: a symlinked PARENT escaping the container fails closed
+  [32mPASS[0m guard: the same path inside its container is accepted
+  [32mPASS[0m guard: an unresolvable declared boundary fails closed
+  [32mPASS[0m tree scan finds the escaping symlink
+  [32mPASS[0m a clean tree reports no escape
+  [32mPASS[0m containment: child of root
+  [32mPASS[0m containment: sibling of root
+  [32mPASS[0m section payload extracted exactly
+  [32mPASS[0m an absent section returns 2
+  [32mPASS[0m a duplicated begin marker is malformed (3), never best-effort
+  [32mPASS[0m an unterminated section is malformed (3)
+  [32mPASS[0m reversed markers are malformed (3)
+  [32mPASS[0m section identity equals canonical payload identity
+  [32mPASS[0m a missing final newline does not manufacture drift
+  [32mPASS[0m a real payload change does move the identity
+  [32mPASS[0m the published reason vocabulary is non-empty
+  [32mPASS[0m every published reason code carries a specific message
+  [32mPASS[0m every published reason code carries a required action
+  [32mPASS[0m the vocabulary has no duplicate codes
+
+[1m1. Secret redaction — with an anti-vacuity control[0m
+  [32mPASS[0m anti-vacuity: every reported variable DOES reach the result path
+  [32mPASS[0m the shipped redactor removes every one of them
+  [32mPASS[0m presence is still reported for every one of them
+  [32mPASS[0m redacted presence is still reported
+  [32mPASS[0m the variable name is still reported
+  [32mPASS[0m a secret-bearing name is classified as such
+  [32mPASS[0m a non-secret name is classified as configuration
+  [32mPASS[0m a known option is echoed back verbatim
+  [32mPASS[0m a live-mode option is in the closed vocabulary
+  [32mPASS[0m an unknown option is replaced
+  [32mPASS[0m an unknown bare argument is replaced
+
+[1m2. Repository identity and mutation-source eligibility[0m
+  [32mPASS[0m checkout revision recorded exactly
+  [32mPASS[0m repository identified by root commit
+  [32mPASS[0m identity method is declared
+  [32mPASS[0m kit declaration read
+  [32mPASS[0m the declaration is complete
+  [32mPASS[0m clean checkout is an eligible source
+  [32mPASS[0m clean checkout allows mutation
+  [32mPASS[0m managed inputs are carried as a list
+  [32mPASS[0m a directory merely NAMED agent-flow-kit is not identified
+  [32mPASS[0m and says why
+  [32mPASS[0m a non-Git source is ineligible
+  [32mPASS[0m and reports no revision it cannot prove
+  [32mPASS[0m an unparseable declaration is refused
+  [32mPASS[0m and blocks mutation
+  [32mPASS[0m and is reported as such
+  [32mPASS[0m a declaration missing default_branch is incomplete, never partly honoured
+  [32mPASS[0m and it blocks mutation: default_branch
+  [32mPASS[0m a declaration missing managed_inputs is incomplete, never partly honoured
+  [32mPASS[0m and it blocks mutation: managed_inputs
+  [32mPASS[0m a declaration missing state_schema_version is incomplete, never partly honoured
+  [32mPASS[0m and it blocks mutation: state_schema_version
+  [32mPASS[0m a declaration without kit_id cannot identify the repository
+  [32mPASS[0m and it blocks mutation: kit_id
+  [32mPASS[0m an absolute managed input is refused
+  [32mPASS[0m a managed input escaping the checkout is refused
+  [32mPASS[0m an empty managed-input declaration is refused
+  [32mPASS[0m a spaced managed input is one declared path, not two
+  [32mPASS[0m and it is present, so nothing is reported missing
+  [32mPASS[0m the clean checkout stays eligible
+  [32mPASS[0m dirt inside the spaced input is detected as managed dirt
+  [32mPASS[0m an uncommitted managed input blocks mutation
+  [32mPASS[0m with its own stable reason
+  [32mPASS[0m installed state stays healthy while the source is ineligible
+  [32mPASS[0m installed integrity stays READY
+  [32mPASS[0m mutation-source eligibility is separately FALSE
+  [32mPASS[0m every source finding is scoped to MUTATION_SOURCE only
+  [32mPASS[0m overall is not BROKEN
+  [32mPASS[0m overall is not NOT_READY
+  [32mPASS[0m and status still exits successfully
+  [32mPASS[0m eligibility in the requested scope exits 4 (source refusal)
+  [32mPASS[0m dirt outside the input set does not block mutation
+  [32mPASS[0m but is still reported
+  [32mPASS[0m a newer canonical revision is an ordinary update
+  [32mPASS[0m and the source stays eligible
+  [32mPASS[0m the component reports UPDATE_AVAILABLE
+  [32mPASS[0m with a stable reason
+  [32mPASS[0m update availability is a warning, not a failure
+  [32mPASS[0m and the next safe action says so
+  [32mPASS[0m an older source is a downgrade, not an update
+  [32mPASS[0m downgrade blocks unattended mutation
+  [32mPASS[0m with its own reason
+  [32mPASS[0m a detached HEAD is reported too
+  [32mPASS[0m explicit intent unblocks it
+  [32mPASS[0m and the intent is recorded, not forgotten
+  [32mPASS[0m the reason is still retained as evidence
+  [32mPASS[0m a non-default branch is noncanonical
+  [32mPASS[0m and blocks unattended mutation
+  [32mPASS[0m an unreachable applied revision is refused, not guessed
+  [32mPASS[0m a different repository identity is refused as a source
+  [32mPASS[0m an applied revision on another line of history is DIVERGED
+  [32mPASS[0m divergence blocks unattended mutation
+  [32mPASS[0m with its own stable reason
+  [32mPASS[0m explicit intent unblocks divergence too
+  [32mPASS[0m an absent declared managed input is reported
+  [32mPASS[0m and blocks mutation
+  [32mPASS[0m an unreadable canonical side is not CURRENT
+  [32mPASS[0m with its own stable reason
+  [32mPASS[0m and it is not mutation-safe
+  [32mPASS[0m the managed tree is not CURRENT either
+  [32mPASS[0m no source-derived component claims to be CURRENT
+  [32mPASS[0m installed integrity is still reported independently
+  [32mPASS[0m HEAD is unchanged
+  [32mPASS[0m branch is unchanged
+  [32mPASS[0m refs, reachable objects and working state are all unchanged
+  [32mPASS[0m a newer major lifecycle schema in the source is refused
+  [32mPASS[0m and blocks mutation
+  [32mPASS[0m an OLDER major lifecycle schema is refused just as firmly
+
+[1m3. Unknown / legacy host and inspect-only adoption[0m
+  [32mPASS[0m an unadopted host is not adopted
+  [32mPASS[0m installed state is UNKNOWN
+  [32mPASS[0m every component is UNKNOWN/NOT_ADOPTED
+  [32mPASS[0m an unadopted installation is deterministically not ready
+  [32mPASS[0m overall says so
+  [32mPASS[0m and names the next safe action
+  [32mPASS[0m an exactly canonical legacy install is auto-adoptable
+  [32mPASS[0m and exits successfully
+  [32mPASS[0m inspection declares itself inspect-only
+  [32mPASS[0m no mutation was performed
+  [32mPASS[0m no manifest was created
+  [32mPASS[0m no ownership was claimed
+  [32mPASS[0m no revision advanced
+  [32mPASS[0m the managed copy matches current canonical content
+  [32mPASS[0m the managed section matches current canonical content
+  [32mPASS[0m machine-local state is adoptable by ownership rule
+  [32mPASS[0m recognized wiring is adoptable
+  [32mPASS[0m no state manifest appeared
+  [32mPASS[0m no state directory appeared
+  [32mPASS[0m repeated analysis is byte-identical
+  [32mPASS[0m and still mutates nothing
+  [32mPASS[0m dispositions stay inside the frozen set
+  [32mPASS[0m a recognized prior canonical file is still auto-adoptable
+  [32mPASS[0m a recognized prior canonical section is still auto-adoptable
+  [32mPASS[0m a recognized prior canonical TREE is auto-adoptable too
+  [32mPASS[0m the whole analysis stays auto-adoptable
+  [32mPASS[0m recognition survives a long later history (file)
+  [32mPASS[0m recognition survives a long later history (tree)
+  [32mPASS[0m unrecognized content requires approval
+  [32mPASS[0m with a stable reason
+  [32mPASS[0m and the aggregate is APPROVAL_REQUIRED
+  [32mPASS[0m which is an owner-action exit
+  [32mPASS[0m still no manifest
+  [32mPASS[0m an unexpectedly redirected destination refuses adoption
+  [32mPASS[0m and the aggregate refuses
+  [32mPASS[0m which is an owner-action exit
+  [32mPASS[0m an ineligible mutation source refuses adoption analysis
+  [32mPASS[0m with its own stable reason
+  [32mPASS[0m which is an owner-action exit
+  [32mPASS[0m and nothing was written
+  [32mPASS[0m once the source is eligible again the analysis proceeds
+  [32mPASS[0m an adopted installation refuses adoption analysis
+  [32mPASS[0m with a stable reason
+
+[1m4. Ownership and state branches on an adopted host[0m
+  [32mPASS[0m an unchanged adopted host is CURRENT
+  [32mPASS[0m overall READY
+  [32mPASS[0m exit 0
+  [32mPASS[0m the applied revision is recorded
+  [32mPASS[0m managed copy tree CURRENT
+  [32mPASS[0m managed copy file CURRENT
+  [32mPASS[0m managed section CURRENT
+  [32mPASS[0m managed link CURRENT
+  [32mPASS[0m every component carries an ownership class
+  [32mPASS[0m every component carries an integrity identity or a reason
+  [32mPASS[0m the recorded file identity is a real content hash
+  [32mPASS[0m machine-owned config is LOCAL_ADAPTATION by ownership rule
+  [32mPASS[0m with an ownership-rule provenance, not a judgement call
+  [32mPASS[0m and the managed tree is unaffected by it
+  [32mPASS[0m user content outside the section is EXTERNAL_STATE
+  [32mPASS[0m the managed section itself stays CURRENT
+  [32mPASS[0m and neither is kit drift
+  [32mPASS[0m user-owned content is reported by shape, not by content
+  [32mPASS[0m an unexplained managed edit is LOCAL_DRIFT
+  [32mPASS[0m with a stable reason
+  [32mPASS[0m it is not mutation-safe
+  [32mPASS[0m it demands owner action
+  [32mPASS[0m it blocks installed integrity
+  [32mPASS[0m overall NEEDS_OWNER
+  [32mPASS[0m exit 2 (owner action)
+  [32mPASS[0m expected and observed identities are both reported
+  [32mPASS[0m non-critical drift is still LOCAL_DRIFT
+  [32mPASS[0m and still refuses to be overwritten
+  [32mPASS[0m but does not poison host readiness
+  [32mPASS[0m overall stays a success with warnings
+  [32mPASS[0m and exits 0
+  [32mPASS[0m a link inside the boundary but pointing elsewhere passes the path guard
+  [32mPASS[0m and is LOCAL_DRIFT, not BROKEN
+  [32mPASS[0m with the link-specific reason
+  [32mPASS[0m it is not mutation-safe
+  [32mPASS[0m the resolved target is reported as evidence
+  [32mPASS[0m exit 2 (owner action, the link is execution critical)
+  [32mPASS[0m a missing non-critical component is BROKEN
+  [32mPASS[0m with a stable reason
+  [32mPASS[0m scoped to itself, so the host is only warned
+  [32mPASS[0m a missing execution-critical component is BROKEN
+  [32mPASS[0m installed state is BROKEN
+  [32mPASS[0m overall NOT_READY
+  [32mPASS[0m exit 3 (deterministic not-ready)
+  [32mPASS[0m an unrecorded component is UNKNOWN
+  [32mPASS[0m with a stable reason
+  [32mPASS[0m and is not mutation-safe
+  [32mPASS[0m an unreadable member makes the component BROKEN
+  [32mPASS[0m with a stable reason
+  [32mPASS[0m and no identity is reported for it
+
+[1m5. Registered adaptations, revalidated every time[0m
+  [32mPASS[0m before registration the difference is drift
+  [32mPASS[0m a valid registered adaptation legitimizes the difference
+  [32mPASS[0m with the adaptation-record provenance
+  [32mPASS[0m and names the record
+  [32mPASS[0m the record is reported as matched
+  [32mPASS[0m overall READY_WITH_ADAPTATION
+  [32mPASS[0m which is a success
+  [32mPASS[0m a stale adaptation cannot legitimize the difference
+  [32mPASS[0m and the record is reported STALE
+  [32mPASS[0m with its own finding
+  [32mPASS[0m exit 2
+  [32mPASS[0m a record missing required fields is INVALID
+  [32mPASS[0m with a stable reason
+  [32mPASS[0m a record naming an undeclared component is rejected
+  [32mPASS[0m an unsupported disposition is rejected
+  [32mPASS[0m a duplicated adaptation id is rejected
+  [32mPASS[0m a type that does not belong to the ownership class is rejected
+  [32mPASS[0m and legitimizes nothing
+  [32mPASS[0m a location that is not the component's declared location is rejected
+  [32mPASS[0m and legitimizes nothing
+  [32mPASS[0m an expected identity in the wrong shape is rejected
+  [32mPASS[0m a section record without its section id is a location mismatch
+  [32mPASS[0m with the declared section location it is structurally valid
+  [32mPASS[0m though it is stale against what is installed
+  [32mPASS[0m an OWNER_REVIEW adaptation is still recognized
+  [32mPASS[0m but is not mutation-safe
+  [32mPASS[0m and says why
+  [32mPASS[0m an unobservable component makes its adaptation unrevalidatable
+
+[1m6. Manifest schema compatibility, shape and interrupted operations[0m
+  [32mPASS[0m an unknown newer major state schema refuses
+  [32mPASS[0m with a stable reason
+  [32mPASS[0m and requires an owner
+  [32mPASS[0m exit 2
+  [32mPASS[0m a recognized older schema is usable but flagged for migration
+  [32mPASS[0m and the installation stays readable
+  [32mPASS[0m exiting successfully with a warning
+  [32mPASS[0m an unrecognized manifest shape yields an owner decision
+  [32mPASS[0m overall NEEDS_OWNER
+  [32mPASS[0m exit 2
+  [32mPASS[0m an invalid manifest shape is refused: del(.applied_revision)
+  [32mPASS[0m and it is never treated as adopted: del(.applied_revision)
+  [32mPASS[0m an invalid manifest shape is refused: del(.repository)
+  [32mPASS[0m and it is never treated as adopted: del(.repository)
+  [32mPASS[0m an invalid manifest shape is refused: .repository.identity = 42
+  [32mPASS[0m and it is never treated as adopted: .repository.identity = 42
+  [32mPASS[0m an invalid manifest shape is refused: del(.components)
+  [32mPASS[0m and it is never treated as adopted: del(.components)
+  [32mPASS[0m an invalid manifest shape is refused: .components = []
+  [32mPASS[0m and it is never treated as adopted: .components = []
+  [32mPASS[0m an invalid manifest shape is refused: .adaptations = {}
+  [32mPASS[0m and it is never treated as adopted: .adaptations = {}
+  [32mPASS[0m an invalid manifest shape is refused: .targets = "none"
+  [32mPASS[0m and it is never treated as adopted: .targets = "none"
+  [32mPASS[0m an invalid manifest shape is refused: .applied_revision = "not-a-sha"
+  [32mPASS[0m and it is never treated as adopted: .applied_revision = "not-a-sha"
+  [32mPASS[0m an invalid manifest shape is refused: .components["model-router"].identity = null
+  [32mPASS[0m and it is never treated as adopted: .components["model-router"].identity = null
+  [32mPASS[0m an invalid manifest shape is refused: .targets = [{path: "/tmp/afk-target"}]
+  [32mPASS[0m and it is never treated as adopted: .targets = [{path: "/tmp/afk-target"}]
+  [32mPASS[0m a manifest redirected out of the state directory is refused
+  [32mPASS[0m and is never treated as adopted
+  [32mPASS[0m which requires an owner
+  [32mPASS[0m an open journal makes the installation INTERRUPTED
+  [32mPASS[0m read-only status never calls that stably healthy
+  [32mPASS[0m with a stable reason
+  [32mPASS[0m exit 2
+  [32mPASS[0m a committed journal is not an interruption
+  [32mPASS[0m an unparseable journal proves nothing was completed
+  [32mPASS[0m with its own stable reason
+  [32mPASS[0m and the installation is INTERRUPTED, not healthy
+  [32mPASS[0m a journal path of the wrong type is unsafe, not absent
+  [32mPASS[0m with its own stable reason
+  [32mPASS[0m and the installation is INTERRUPTED
+  [32mPASS[0m a journal redirected out of the state directory is unsafe
+  [32mPASS[0m even though it claims to be committed
+
+[1m7. Path type, containment and symlink boundaries fail closed[0m
+  [32mPASS[0m an unexpected symlink on a managed destination is BROKEN
+  [32mPASS[0m with the path-guard reason
+  [32mPASS[0m and no identity was computed through it
+  [32mPASS[0m nothing behind the redirection was read into the result
+  [32mPASS[0m a symlink escaping a managed tree is BROKEN
+  [32mPASS[0m with the containment reason
+  [32mPASS[0m and names the offending member
+  [32mPASS[0m the escaped content never reaches the result
+  [32mPASS[0m a managed link redirected outside its boundary is BROKEN
+  [32mPASS[0m with the containment reason
+  [32mPASS[0m and it blocks a critical scope
+  [32mPASS[0m a real directory where a link is declared is BROKEN
+  [32mPASS[0m with the type reason
+  [32mPASS[0m a file where a managed tree is declared is BROKEN
+  [32mPASS[0m with the type reason
+  [32mPASS[0m a symlinked parent directory fails closed
+  [32mPASS[0m the component is BROKEN, not silently followed
+  [32mPASS[0m and no identity was computed through it
+  [32mPASS[0m components in other declared roots are unaffected
+  [32mPASS[0m duplicated section markers are BROKEN, not best-effort
+  [32mPASS[0m with a stable reason
+  [32mPASS[0m and it is not mutation-safe
+
+[1m8. Registered BMAD targets are scoped, never global[0m
+  [32mPASS[0m every registered target is inventoried
+  [32mPASS[0m a missing target is BROKEN
+  [32mPASS[0m and blocks only its own scope
+  [32mPASS[0m a target that exists but is not wired is INCOMPATIBLE, not ready
+  [32mPASS[0m because directory presence is not compatibility
+  [32mPASS[0m and it too blocks only its own scope
+  [32mPASS[0m the wired target resolves mechanically
+  [32mPASS[0m with a stable reason
+  [32mPASS[0m and blocks nothing at all
+  [32mPASS[0m the aggregate scope reports PARTIAL, never a single false
+  [32mPASS[0m with its own reason
+  [32mPASS[0m TARGET_READY(repo-ok) is true
+  [32mPASS[0m TARGET_READY(repo-bare) is false
+  [32mPASS[0m the wiring identity of the healthy target is bounded evidence
+  [32mPASS[0m no bad target makes the host not ready
+  [32mPASS[0m and none of it fails the command
+  [32mPASS[0m installed integrity is untouched by any of it
+
+[1m9. No live probe is performed by default[0m
+  [32mPASS[0m no external binary was invoked
+  [32mPASS[0m router availability is NOT_EVALUATED
+  [32mPASS[0m with the frozen reason code
+  [32mPASS[0m native Claude session NOT_EVALUATED
+  [32mPASS[0m native Codex session NOT_EVALUATED
+  [32mPASS[0m Orca runtime NOT_EVALUATED
+  [32mPASS[0m validator fixtures NOT_EVALUATED
+  [32mPASS[0m host execution readiness NOT_EVALUATED
+  [32mPASS[0m new-work readiness NOT_EVALUATED
+  [32mPASS[0m route readiness is OUT_OF_SCOPE, not merely unprobed
+  [32mPASS[0m with its own reason
+  [32mPASS[0m an unprobed live fact is never reported as evaluated
+  [32mPASS[0m an offline-evaluated scope is reported as evaluated
+  [32mPASS[0m the resolution of a stubbed harness is reported
+  [32mPASS[0m and resolving it still invoked nothing
+
+[1m10. Secrets never reach emitted output (end to end, every path)[0m
+  [32mPASS[0m no secret value appears in machine output
+  [32mPASS[0m and none on stderr
+  [32mPASS[0m conflicting variable names are still reported by name
+  [32mPASS[0m and their values are marked redacted
+  [32mPASS[0m no environment record claims to have emitted a value
+  [32mPASS[0m the machine-local file WAS read (its identity matches its bytes)
+  [32mPASS[0m the secret-bearing user file WAS read (its shape is reported)
+  [32mPASS[0m every evidence identifier is bounded and single-line
+  [32mPASS[0m no leak through ANTHROPIC_API_KEY alone
+  [32mPASS[0m no leak through AGENT_ROUTER_TOKEN alone
+  [32mPASS[0m no leak through OP_SERVICE_ACCOUNT_TOKEN alone
+  [32mPASS[0m no leak through CLAUDE_CONFIG_DIR alone
+  [32mPASS[0m no secret value appears in human output
+  [32mPASS[0m an unrecognized option is a usage failure
+  [32mPASS[0m and the offending argument is never echoed (stderr)
+  [32mPASS[0m nor on stdout
+  [32mPASS[0m the diagnostic says an option was not recognized
+  [32mPASS[0m an unrecognized command is a usage failure
+  [32mPASS[0m and the command text is never echoed
+  [32mPASS[0m an unknown option among valid ones still fails
+  [32mPASS[0m a --stamp value never reaches a diagnostic (stderr)
+  [32mPASS[0m nor the machine result
+  [32mPASS[0m a missing library is a stable internal failure
+  [32mPASS[0m with a stable message
+  [32mPASS[0m and no environment value on that path either
+  [32mPASS[0m an undeclared HOME is a stable usage failure
+  [32mPASS[0m that names what must be declared
+  [32mPASS[0m and leaks nothing
+
+[1m11. Repeated read-only evaluation is side-effect free and stable[0m
+  [32mPASS[0m the first ever run creates nothing on the host
+  [32mPASS[0m no state tree was created
+  [32mPASS[0m no cache tree was created
+  [32mPASS[0m no config tree was created
+  [32mPASS[0m and neither does the first adoption analysis
+  [32mPASS[0m machine output is byte-stable across runs (1 vs 2)
+  [32mPASS[0m machine output is byte-stable across runs (2 vs 3)
+  [32mPASS[0m human output is byte-stable across runs
+  [32mPASS[0m no timestamp leaked into the normalized result
+  [32mPASS[0m the installed host is unchanged (contents, dirs, modes)
+  [32mPASS[0m the declared state directory is unchanged
+  [32mPASS[0m the checkout working tree is unchanged
+  [32mPASS[0m Git refs, reachable objects, HEAD and status are unchanged
+  [32mPASS[0m the state manifest was not rewritten
+  [32mPASS[0m no lock file was created
+  [32mPASS[0m no journal was created
+
+[1m12. The machine contract itself[0m
+  [32mPASS[0m top-level key present: schema_version
+  [32mPASS[0m top-level key present: kind
+  [32mPASS[0m top-level key present: command
+  [32mPASS[0m top-level key present: operation
+  [32mPASS[0m top-level key present: checkout
+  [32mPASS[0m top-level key present: installed
+  [32mPASS[0m top-level key present: source_eligibility
+  [32mPASS[0m top-level key present: readiness
+  [32mPASS[0m top-level key present: live_facts
+  [32mPASS[0m top-level key present: orchestration
+  [32mPASS[0m top-level key present: environment
+  [32mPASS[0m top-level key present: components
+  [32mPASS[0m top-level key present: targets
+  [32mPASS[0m top-level key present: adaptations
+  [32mPASS[0m top-level key present: findings
+  [32mPASS[0m top-level key present: overall
+  [32mPASS[0m top-level key present: next_safe_action
+  [32mPASS[0m the result schema is versioned
+  [32mPASS[0m the command is identified
+  [32mPASS[0m the document declares its kind
+  [32mPASS[0m every component carries the full automation field set
+  [32mPASS[0m every finding carries the full automation field set
+  [32mPASS[0m every finding carries evidence provenance
+  [32mPASS[0m every finding severity is inside the frozen set
+  [32mPASS[0m every live fact carries the full automation field set
+  [32mPASS[0m no live fact ever claims launch authority
+  [32mPASS[0m the exit code is carried in the document, not only in the process
+  [32mPASS[0m schema is valid JSON
+  [32mPASS[0m schema and contract document agree exactly on commands
+  [32mPASS[0m schema and contract document agree exactly on component_states
+  [32mPASS[0m schema and contract document agree exactly on overall_states
+  [32mPASS[0m schema and contract document agree exactly on readiness_states
+  [32mPASS[0m schema and contract document agree exactly on target_states
+  [32mPASS[0m schema and contract document agree exactly on live_fact_states
+  [32mPASS[0m schema and contract document agree exactly on orchestration_states
+  [32mPASS[0m schema and contract document agree exactly on orchestration_modes
+  [32mPASS[0m schema and contract document agree exactly on approved_harnesses
+  [32mPASS[0m schema and contract document agree exactly on source_states
+  [32mPASS[0m schema and contract document agree exactly on ownership_classes
+  [32mPASS[0m schema and contract document agree exactly on severities
+  [32mPASS[0m schema and contract document agree exactly on readiness_scopes
+  [32mPASS[0m schema and contract document agree exactly on evidence_provenance
+  [32mPASS[0m schema and contract document agree exactly on adaptation_dispositions
+  [32mPASS[0m schema and contract document agree exactly on adaptation_types
+  [32mPASS[0m schema and contract document agree exactly on adaptation_states
+  [32mPASS[0m schema and contract document agree exactly on adoption_dispositions
+  [32mPASS[0m schema and contract document agree exactly on reason_codes
+  [32mPASS[0m schema and contract document agree exactly on exit semantics
+  [32mPASS[0m the exit vocabulary names the usage class
+  [32mPASS[0m and the owner-action class
+  [32mPASS[0m every reason code in a status result is published
+  [32mPASS[0m the published vocabulary has no duplicate codes
+  [32mPASS[0m every reason code in an adoption result is published
+  [32mPASS[0m human output is a complete projection of the machine document
+  [32mPASS[0m the adoption analysis is projected into human output too
+
+[1m13. Coarse, stable exit semantics[0m
+  [32mPASS[0m a healthy host exits 0
+  [32mPASS[0m owner action exits 2
+  [32mPASS[0m deterministic not-ready exits 3
+  [32mPASS[0m source refusal in the requested scope exits 4
+  [32mPASS[0m and the same state without that scope still exits 0
+  [32mPASS[0m adopting an already-adopted host is an owner-action refusal
+  [32mPASS[0m and says which state it refused on
+  [32mPASS[0m update at the applied revision is a stable no-op (exit 0)
+  [32mPASS[0m and says it required no mutation
+  [32mPASS[0m offline verification of a healthy host exits 0
+  [32mPASS[0m and reports itself verified
+  [32mPASS[0m an unknown command is a usage failure
+  [32mPASS[0m an unknown option is a usage failure
+  [32mPASS[0m help exits 0
+  [32mPASS[0m and documents the exit contract
+  [32mPASS[0m an option belonging to another command is refused
+  [32mPASS[0m schema takes no options
+  [32mPASS[0m adopt does not accept the status-only scope option
+  [32mPASS[0m the undocumented --dry-run alias does not exist
+  [32mPASS[0m inspect and plan are different questions, not one command
+  [32mPASS[0m an approval has nothing to authorize on a plan-only run
+  [32mPASS[0m an approval without its plan identity is a usage failure
+  [32mPASS[0m a mutating verb does not accept live readiness options
+  [32mPASS[0m a synthetic route request without --live is a usage failure
+  [32mPASS[0m --target without the --stamp it binds is a usage failure
+  [32mPASS[0m --stamp without its path is a usage failure
+  [32mPASS[0m the refused verbs changed nothing at all
+
+[1m474 passed, 0 failed[0m

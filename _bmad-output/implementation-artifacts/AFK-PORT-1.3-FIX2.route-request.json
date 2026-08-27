@@ -1,0 +1,19 @@
+{
+  "story_id": "AFK-PORT-1.3-FIX2",
+  "title": "Final authorized cycle: close the two post-fix remedy-completeness blockers",
+  "summary": "Josh-authorized over-budget cycle fixing the two reproduced post-fix-review blockers in the Story 1.3 cycle-3 delta: P1 - the ABSENT-terminal cleanup arm treats absence-after-close as proof although absence preceded the request, discarding the close's own failure status, so a failed durable close still reports RELEASED and the settled dispatch is unrevisitable (consume the release status for all states, stub learns to refuse closes for unlisted handles, contract sentences made true); P2 - the monitor's two Orca observations run unbounded on hosts without timeout(1), contradicting the pass's own new bounded-observation contract sentence and the frozen PROBE_BOUND_UNAVAILABLE rule (strict bounding policy for both calls, timeout added to required tools with frozen-collision stop rule); D2 - the stalled-remote regression made non-vacuous on unbounded hosts with loud skip accounting. Freeze-gates the safety-critical Story 1.3 orchestration surface; acceptance oracles are the reviewer attack scripts flipping to NOT REPRODUCED with A1-A4 staying fixed and all gates green.",
+  "touched_paths": [
+    "lib/afk-monitor.sh",
+    "lib/afk-readiness.sh",
+    "lib/afk-common.sh",
+    "docs/LIFECYCLE-CONTRACT.md",
+    "tests/lifecycle-dispatch-tests.sh",
+    "_bmad-output/implementation-artifacts/AFK-PORT-1.3.md"
+  ],
+  "ambiguity": "low",
+  "blast_radius": "high",
+  "volume_hint": "low",
+  "tags": ["security", "tests"],
+  "repo": "agent-flow-kit",
+  "requester": "bmad-pm"
+}

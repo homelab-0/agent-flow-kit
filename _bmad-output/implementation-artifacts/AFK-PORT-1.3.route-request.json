@@ -1,0 +1,19 @@
+{
+  "story_id": "AFK-PORT-1.3",
+  "title": "Prove Execution Readiness Without Crossing Authority Boundaries",
+  "summary": "Implement the frozen Story 1.3 readiness lifecycle: independent normalized readiness scopes HOST_EXECUTION_READY, NEW_WORK_READY, TARGET_READY(target_repo), ROUTE_READY(execution_stamp) with narrowest-scope failure isolation; offline-by-default evaluation (locally knowable facts only, live-dependent facts NOT_EVALUATED) and explicit live mode with bounded, non-mutating, timestamped, non-launch-authoritative probes that never log in, create workers, mutate work, consume inference tokens when a safe status probe exists, or enable metered fallback; Orca capability/version readiness without disposable workers; per-target BMAD readiness isolation; router-unavailability isolation (NEW_WORK_READY false, no local route invention, host readiness retained); exact-stamp route readiness with local validator proof and refusal-not-substitution; validator anti-vacuity fixtures; native harness auth classification without credential inspection; funding/auth conflict scoping; contract-intersection compatibility; no placement persistence; T1 observations never reusable launch authority at T2; read-only normalized orchestration-state bridge with generic parent identity; durable worker-completion monitoring (event-driven or bounded polling, at-least-once idempotent worker_done handling, reconnect/restart reconciliation) replacing the rolling check --wait defect; provenance-bound worker terminal/worktree/branch cleanup with fail-closed retention; deterministic offline and stubbed-live table-driven suites; Story 1.1, Story 1.2, and frozen orchestration regression gates stay green. Workspace-trust NEEDS_HUMAN detection for Claude paths. No router/catalog/control-plane product work; no weakening of frozen requirements.",
+  "touched_paths": [
+    "bin/agent-flow-kit",
+    "lib/",
+    "docs/LIFECYCLE-CONTRACT.md",
+    "tests/",
+    "_bmad-output/implementation-artifacts/AFK-PORT-1.3.md",
+    "_bmad-output/implementation-artifacts/traceability.md"
+  ],
+  "ambiguity": "medium",
+  "blast_radius": "high",
+  "volume_hint": "high",
+  "tags": ["security", "tests"],
+  "repo": "agent-flow-kit",
+  "requester": "bmad-pm"
+}

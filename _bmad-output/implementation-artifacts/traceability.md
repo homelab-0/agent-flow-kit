@@ -147,3 +147,35 @@ document's machine-checkable block, and the message/action tables):
   plan to bind; what it contributes is the bound evidence set (expected/observed
   identities, ownership, adaptation records) the Story 1.2 plan will bind to and
   revalidate.
+
+## Story 1.3 — Prove Execution Readiness Without Crossing Authority Boundaries
+
+Converged 2026-08-26 (superseding freeze 7d126fc after one authorized PR-triage round; see the story file) on worktree `afk-port-1.3` (base master `bd9d9fb`), four
+cycles + three independent reviews, final verdict CLEAN. Full narrative in the
+story file's coordinator freeze record; per-dispatch provenance in
+`AFK-PORT-1.3*.route-request/response/stamp.json`; worker_done evidence and
+review reports under `evidence/`.
+
+| Finding | Requirement pressure | Fix | Regression |
+|---|---|---|---|
+| B1 | Frozen worker-terminal cleanup contract — durable close intent must be requested/recorded | `ABSENT` no longer accepted as proof of release; unified `ABSENT\|IDLE\|EXITED` arm requests the durable close before judging | `ghost` + IDLE control (dispatch gate) |
+| B2 | Route readiness = intersection incl. compatible BMAD target; workspace-trust NEEDS_HUMAN | Undeterminable target binding fails closed `ROUTE_TARGET_UNRESOLVED`; trust check decoupled from target path; `NO_SELECTED_WORKSPACE` revived | six-row `targetarity` matrix (readiness gate) |
+| B3 | `monitor` exit semantics — exit 2 only when something is left for a human | NEEDS_HUMAN latch split into per-pass and derived flags; summary describes the state just read | recovery-pass `RUN_RC`/state assertions |
+| B4 | Bounded completion monitor — no unbounded external call | Remote git observations bounded + non-interactive via `afk_monitor_git_remote`; no tool → `PROBE_BOUND_UNAVAILABLE`/`NEEDS_OWNER` | `stalled-remote` + answering control |
+| P1 | Same cleanup contract (class remainder of B1) | Durable-close call status consumed for all three states; refused close is `NEEDS_OWNER TERMINAL_RELEASE_UNPROVEN`; stub models refusal | `ghost-refused` + `idle-refused` control |
+| P2 | "One bounded pass" + frozen probe-bound rule (class remainder of B4) | Monitor's Orca listing + durable close moved to strict bounding (`afk_monitor_probe_strict`); bounding tool declared on live runs | dispatch-gate section 8 (PATH sandbox, attack + 3 controls) |
+| N1 | Gate integrity — published-reason sweeps must be falsifiable | Two vacuous jq sweeps bind-first with executable falsifiability controls | the controls themselves |
+| F1 | Contract truthfulness | Cross-reference sentence made true inline (docs lane); readiness-probe bound divergence REGISTERED with R1 evidence, not fixed | lifecycle contract-comparison assertions |
+
+Hardening backlog additions (registered, unscheduled): readiness-probe strict
+bounding (R1), durable-close capability gating (F4), F2/F3/F5/F6/F7, D1/D5–D8,
+N2–N4/N6/N7/N9–N12, N8 (dead `afk_monitor_reset`), plus the inherited 1.2 set.
+
+Backlog candidate (Josh, 2026-08-27, post-1.4 integration — outside frozen
+1.3): a statusline hook (ccstatusline-style) that consumes `agent-flow-kit
+status --json` and renders orchestration state inline on both the Claude and
+Codex status bars — MODE (PLAN/ORCH/WORKER), phase, task, worker counts, and
+loud NEEDS_HUMAN. Pull-side consumer of the 1.3 bridge; introduces no scraper
+or control-plane surface. Story 1.4's live-render acceptance condition is the
+natural proving ground: a live PLAN-mode render and a populated statusline are
+the same demonstration.
