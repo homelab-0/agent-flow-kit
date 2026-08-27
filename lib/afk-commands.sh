@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
 # afk-commands.sh — the command surface: read-only status, inspect-only
-# adoption analysis, the adoption and update transactions, offline
-# verification, and the published schema.
+# adoption analysis, the adoption and update transactions, verification, the
+# dispatch monitor, and the published schema.
 #
-# `status`, `adopt --inspect`, `verify` and every `--plan` invocation write
-# nothing at all: not a manifest, not a journal, not a lock, not a cache, not a
-# temporary file. Only afk_run_mutation can reach afk-mutate.sh, and only after
-# a complete plan has been computed, approved where required, and revalidated.
+# `status`, `adopt --inspect`, `verify`, `monitor` without an action verb and
+# every `--plan` invocation write nothing at all: not a manifest, not a journal,
+# not a lock, not a cache, not a temporary file. Only afk_run_mutation can reach
+# afk-mutate.sh, and only after a complete plan has been computed, approved
+# where required, and revalidated.
+#
+# Two exceptions, and both are declared ones: an explicitly requested live
+# evaluation materializes validator fixtures under the system temporary
+# directory and removes them again, and the dispatch monitor's action verbs
+# write inside the declared state directory — its own watch records, retained
+# results and traceability records, and nothing else. No live observation is
+# ever persisted into the applied-state manifest (FR-87).
 #
 # shellcheck disable=SC2034
 # The AFK_R_* result-model inputs are declared in afk-common.sh, assigned here
@@ -21,9 +29,19 @@ AFK_COMMANDS_SOURCED=1
 # Environment names whose PRESENCE is diagnostically useful. Values never leave
 # afk_env_record; only the name, the presence flag and the redacted placeholder
 # are reported (FR-81, FR-82).
+#
+# The provider variables are here because their mere presence can select a
+# metered or redirected execution path for a route approved for native
+# subscription funding. Reporting the NAME is what makes that diagnosable;
+# reading the value would be the thing this lifecycle refuses to do.
 AFK_ENV_NAMES=(
   ANTHROPIC_API_KEY
+  ANTHROPIC_AUTH_TOKEN
+  ANTHROPIC_BASE_URL
   CLAUDE_CONFIG_DIR
+  OPENAI_API_KEY
+  OPENAI_BASE_URL
+  CODEX_API_KEY
   AGENT_ROUTER_URL
   AGENT_ROUTER_TOKEN
   OP_SERVICE_ACCOUNT_TOKEN
@@ -38,21 +56,6 @@ afk_environment_json() {
   printf '%s' "$out" | jq -sc '.'
 }
 
-# Nothing here is probed by default. Each fact carries the four-way distinction
-# the machine contract promises: evaluated-false, out of scope, unavailable,
-# and not performed (FR-73, FR-84).
-afk_live_facts_json() {
-  jq -nc '
-    {state: "NOT_EVALUATED", evaluated: false, reason: "LIVE_PROBE_NOT_REQUESTED",
-     observed_at: null, timeout_ms: null, evidence_provenance: null} as $np
-    | {router_status: $np,
-       router_catalog_provenance: $np,
-       claude_native_session: $np,
-       codex_native_session: $np,
-       orca_runtime: $np,
-       validator_contract: $np}'
-}
-
 afk_installed_integrity_state() {
   printf '%s' "$AFK_FINDINGS" | jq -sr '
     map(select(.blocked_scopes | index("INSTALLED_INTEGRITY"))) as $b
@@ -60,27 +63,6 @@ afk_installed_integrity_state() {
       elif ($b | map(select(.severity == "blocking"))     | length) > 0 then "NOT_READY"
       elif ($b | length) > 0 then "READY_WITH_WARNINGS"
       else "READY" end'
-}
-
-afk_readiness_json() {
-  local integrity
-  integrity="$(afk_installed_integrity_state)"
-  jq -nc \
-    --arg integrity "$integrity" \
-    --argjson source_ok "$AFK_SRC_MUTATION_ALLOWED" \
-    '{state: "NOT_EVALUATED", evaluated: false, reason: "LIVE_PROBE_NOT_REQUESTED",
-      evidence_provenance: null} as $np
-     | {INSTALLED_INTEGRITY: {state: $integrity, evaluated: true, reason: null,
-                              evidence_provenance: "HASH_COMPARISON"},
-        MUTATION_SOURCE_ELIGIBLE: {state: (if $source_ok then "TRUE" else "FALSE" end),
-                                   evaluated: true,
-                                   reason: (if $source_ok then null else "SOURCE_INELIGIBLE" end),
-                                   evidence_provenance: "GIT_STATE"},
-        HOST_EXECUTION_READY: $np,
-        NEW_WORK_READY: $np,
-        TARGET_READY: $np,
-        ROUTE_READY: {state: "OUT_OF_SCOPE", evaluated: false,
-                      reason: "NO_EXECUTION_STAMP_SUPPLIED", evidence_provenance: null}}'
 }
 
 # afk_evaluate_installation <allow-noncanonical> <allow-rollback>
@@ -108,7 +90,16 @@ afk_evaluate_installation() {
   fi
 
   afk_evaluate_components
-  afk_evaluate_targets
+
+  # Scoped readiness runs after component evaluation and never before it: the
+  # host, target and route scopes are all judged against installed integrity,
+  # and integrity is exactly what the component pass just established.
+  afk_readiness_evaluate
+
+  # The dispatch-monitor summary is a filesystem fact like installed integrity:
+  # it reads the durable watch records, creates nothing, and never fails a
+  # command. A host that has never dispatched a worker reports NOT_AVAILABLE.
+  afk_monitor_summarize
 
   installed_state="$(afk_installed_state)"
   if [[ "$lock_state" == "HELD" && "$AFK_LOCK_HELD" != "true" ]]; then
@@ -416,6 +407,22 @@ afk_emit_result() { # <json-mode: true|false>  -> returns the contract exit code
   return "$code"
 }
 
+# A readiness-scoped run answers the question it was ASKED. Default status is
+# an installed-state question and keeps deriving its exit code from installed
+# integrity; a run that requested live readiness or named an execution stamp
+# put those scopes into scope, so their verdict decides the code (FR-77).
+afk_apply_readiness_exit() {
+  local code
+  if [[ "$AFK_LIVE_MODE" != "true" && -z "$AFK_STAMP_FILE" ]]; then
+    return 0
+  fi
+  code="$(afk_readiness_exit_code)"
+  if [[ -n "$code" ]]; then
+    AFK_R_FORCED_EXIT="$code"
+  fi
+  return 0
+}
+
 afk_cmd_status() { # <json-mode> <require-source> <allow-noncanonical> <allow-rollback>
   AFK_R_COMMAND="status"
   AFK_R_REQUIRE_SOURCE="$2"
@@ -424,6 +431,7 @@ afk_cmd_status() { # <json-mode> <require-source> <allow-noncanonical> <allow-ro
   AFK_R_EXTRA="{}"
   AFK_R_OPERATION='{"id": null, "mutating": false}'
   afk_evaluate_installation "$3" "$4"
+  afk_apply_readiness_exit
   afk_emit_result "$1"
 }
 
@@ -445,7 +453,50 @@ afk_cmd_adopt_inspect() { # <json-mode> <allow-noncanonical> <allow-rollback>
   afk_emit_result "$1"
 }
 
-# --- offline verification ---------------------------------------------------
+# --- the dispatch monitor ---------------------------------------------------
+#
+# One bounded pass per invocation, and never a blocking wait: the durable watch
+# record is what survives a coordinator turn, so a completion that arrives while
+# nobody is looking is consumed by the next pass rather than by a live poll.
+#
+# The requested scope is the monitor pass itself, so its verdict decides the
+# exit code: an owner action when something is left that only a human can
+# decide, and success when the pass settled everything it could.
+afk_cmd_monitor() { # <json-mode>
+  AFK_R_COMMAND="monitor"
+  AFK_R_REQUIRE_SOURCE="false"
+  AFK_R_FORCED_EXIT=""
+  AFK_R_NEXT_ACTION=""
+  AFK_R_EXTRA="{}"
+  AFK_R_OPERATION='{"id": null, "mutating": false}'
+  afk_evaluate_installation "false" "false"
+
+  case "$AFK_MONITOR_MODE" in
+    register)
+      afk_monitor_register "$AFK_MONITOR_DESCRIPTOR" || true ;;
+    reconcile)
+      afk_monitor_reconcile ;;
+    cleanup)
+      # Settlement follows completion in one bounded pass: consuming the inbox
+      # first is what makes a just-completed worker settlable in the same run.
+      afk_monitor_reconcile
+      afk_monitor_cleanup ;;
+    *) : ;;
+  esac
+
+  # Recomputed after the action, so the reported counts describe the state the
+  # pass left behind rather than the state it started from.
+  afk_monitor_summarize
+  AFK_R_FORCED_EXIT="$(afk_monitor_exit_code)"
+  if [[ "$AFK_MON_NEEDS_HUMAN" == "true" ]]; then
+    AFK_R_NEXT_ACTION="Resolve the reported dispatch-monitor findings: a degraded watch is never turned into a worker result, and a resource this pass could not prove it may release is retained."
+  else
+    AFK_R_NEXT_ACTION="No action required: every watched Dispatch is accounted for, and nothing was released that this host could not prove it owned."
+  fi
+  afk_emit_result "$1"
+}
+
+# --- verification -----------------------------------------------------------
 
 afk_cmd_verify() { # <json-mode>
   local verified="false"
@@ -468,8 +519,14 @@ afk_cmd_verify() { # <json-mode>
     verified="true"
   fi
 
-  AFK_R_EXTRA="$(jq -nc --argjson verification "$(afk_verification_json "$verified")" \
-    '{verification: $verification}')"
+  # The verification CHECKS are hash comparisons and are offline whatever else
+  # the run did — but the RUN is not, once live readiness was requested, and a
+  # document that said otherwise would be describing a command that did not
+  # happen. So the two flags report this invocation rather than the check kind.
+  AFK_R_EXTRA="$(afk_verification_json "$verified" \
+    | jq -c --arg live "$AFK_LIVE_MODE" \
+        '{verification: (. + {offline: ($live != "true"),
+                              live_probes_performed: ($live == "true")})}')"
 
   if [[ "$verified" == "true" ]]; then
     AFK_R_NEXT_ACTION="No action required: the installed state was proven against the applied revision, offline."
@@ -482,6 +539,7 @@ afk_cmd_verify() { # <json-mode>
       "0 failing checks" "$AFK_VERIFY_FAILURES failing checks" "false" "false" ""
     AFK_R_READINESS="$(afk_readiness_json)"
   fi
+  afk_apply_readiness_exit
   afk_emit_result "$1"
 }
 
@@ -779,7 +837,7 @@ afk_run_mutation() {
 
 afk_cmd_schema() {
   local reasons types actions dispositions results
-  reasons="$({ afk_reason_codes; afk_mutation_reason_codes; } \
+  reasons="$({ afk_reason_codes; afk_mutation_reason_codes; afk_readiness_reason_codes; afk_monitor_reason_codes; } \
     | jq -R -s -c 'split("\n") | map(select(length > 0))')" || return 1
   types="$(afk_adaptation_types | jq -R -s -c 'split("\n") | map(select(length > 0))')" || return 1
   actions="$(afk_plan_actions | jq -R -s -c 'split("\n") | map(select(length > 0))')" || return 1
@@ -789,6 +847,11 @@ afk_cmd_schema() {
     --arg result_schema "$AFK_RESULT_SCHEMA_VERSION" \
     --arg lifecycle_major "$AFK_SUPPORTED_LIFECYCLE_SCHEMA_MAJOR" \
     --arg state_major "$AFK_SUPPORTED_STATE_SCHEMA_MAJOR" \
+    --arg stamp_major "$AFK_SUPPORTED_STAMP_SCHEMA_MAJOR" \
+    --arg validator_major "$AFK_SUPPORTED_VALIDATOR_CONTRACT_MAJOR" \
+    --arg wiring_major "$AFK_SUPPORTED_TARGET_WIRING_MAJOR" \
+    --arg orch_major "$AFK_SUPPORTED_ORCH_STATE_MAJOR" \
+    --arg dispatch_major "$AFK_SUPPORTED_DISPATCH_SCHEMA_MAJOR" \
     --argjson reason_codes "$reasons" \
     --argjson adaptation_types "$types" \
     --argjson plan_actions "$actions" \
@@ -803,13 +866,28 @@ afk_cmd_schema() {
     '{result_schema_version: $result_schema,
       supported_lifecycle_schema_major: $lifecycle_major,
       supported_state_schema_major: $state_major,
-      commands: ["status", "adopt --inspect", "adopt", "update", "verify", "schema"],
+      supported_stamp_schema_major: $stamp_major,
+      supported_validator_contract_major: $validator_major,
+      supported_target_wiring_major: $wiring_major,
+      supported_orchestration_state_major: $orch_major,
+      supported_dispatch_schema_major: $dispatch_major,
+      commands: ["status", "adopt --inspect", "adopt", "update", "verify", "monitor", "schema"],
       component_states: ["CURRENT", "UPDATE_AVAILABLE", "LOCAL_ADAPTATION", "LOCAL_DRIFT",
                          "EXTERNAL_STATE", "UNKNOWN", "BROKEN", "INCOMPATIBLE",
                          "MIGRATION_REQUIRED", "INTERRUPTED", "UNAVAILABLE", "NOT_EVALUATED",
                          "OUT_OF_SCOPE"],
       overall_states: ["READY", "READY_WITH_ADAPTATION", "READY_WITH_WARNINGS",
                        "NOT_READY", "NEEDS_OWNER"],
+      readiness_states: ["TRUE", "FALSE", "PARTIAL", "UNAVAILABLE", "NOT_EVALUATED",
+                         "OUT_OF_SCOPE"],
+      target_states: ["READY", "INCOMPATIBLE", "BROKEN", "NOT_EVALUATED"],
+      live_fact_states: ["PRESENT", "ABSENT", "AVAILABLE", "UNAVAILABLE", "COMPATIBLE",
+                         "INCOMPATIBLE", "UNKNOWN", "NOT_EVALUATED", "OUT_OF_SCOPE"],
+      orchestration_states: ["ACTIVE", "INACTIVE", "NOT_AVAILABLE"],
+      orchestration_modes: ["PLAN", "ORCH", "WORKER"],
+      monitor_states: ["NOT_AVAILABLE", "IDLE", "WATCHING", "NEEDS_HUMAN"],
+      dispatch_states: ["WATCHING", "COMPLETED", "SETTLED", "MONITOR_DEGRADED"],
+      cleanup_dispositions: ["PENDING", "REMOVED", "RETAINED", "NOT_APPLICABLE", "NEEDS_OWNER"],
       source_states: ["ELIGIBLE", "SOURCE_INELIGIBLE"],
       ownership_classes: ["MANAGED_COPY_TREE", "MANAGED_COPY_FILE", "MANAGED_SECTION",
                           "MANAGED_LINK", "MACHINE_LOCAL", "USER_OWNED", "TARGET_WIRING",
@@ -820,7 +898,9 @@ afk_cmd_schema() {
                          "ROUTE_READY"],
       evidence_provenance: ["HASH_COMPARISON", "FILE_STRUCTURE", "PATH_STRUCTURE",
                             "GIT_STATE", "GIT_HISTORY", "MANIFEST_SCHEMA",
-                            "OWNERSHIP_RULE", "ADAPTATION_RECORD", "OPERATION_JOURNAL"],
+                            "OWNERSHIP_RULE", "ADAPTATION_RECORD", "OPERATION_JOURNAL",
+                            "VERSION_PROBE", "CAPABILITY_PROBE", "AUTH_STATUS_PROBE",
+                            "ROUTER_STATUS", "VALIDATOR_FIXTURE", "BMAD_RESOLUTION"],
       adaptation_dispositions: ["PRESERVE", "REEVALUATE", "OWNER_REVIEW"],
       adaptation_types: $adaptation_types,
       adaptation_states: ["VALID_MATCHED", "STALE", "INVALID"],
@@ -831,6 +911,7 @@ afk_cmd_schema() {
       journal_states: ["NONE", "PREPARING", "IN_PROGRESS", "ROLLING_BACK", "ROLLED_BACK",
                        "ROLLBACK_INCOMPLETE", "COMMITTED", "UNREADABLE", "UNSAFE"],
       verification_results: ["PASS", "FAIL", "WARN", "SKIP"],
+      approved_harnesses: ["claude", "codex"],
       reason_codes: $reason_codes,
       exit_codes: ({}
         | .[$e_ok]       = "requested scope succeeded (includes READY_WITH_WARNINGS and READY_WITH_ADAPTATION)"
