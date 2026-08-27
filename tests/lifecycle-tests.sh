@@ -14,6 +14,9 @@
 # The MUTATING half of the surface — plans, approvals, the adoption and update
 # transactions, backups, rollback, interruption recovery and offline
 # verification — has its own isolated gate in tests/lifecycle-mutation-tests.sh.
+# The SCOPED READINESS half — host, new-work, target and route readiness, live
+# probes, the orchestration bridge — has its own gate in
+# tests/lifecycle-readiness-tests.sh.
 #
 # Usage: tests/lifecycle-tests.sh
 # Exit:  0 all passed, 1 any failure.
@@ -95,6 +98,38 @@ JSON
   git_commit_all "$d" "canonical v1"
 }
 
+# make_bmad_target <dir> — a target repository wired for agent-flow-kit: the v6
+# tree story template carrying the frontmatter contract, and the persona files
+# dispatch injects. This is the shape target readiness has to resolve, and the
+# fixture is deliberately minimal so a missing piece is what a test removes.
+make_bmad_target() {
+  local d="$1"
+  mkdir -p "$d/_bmad/bmm/workflows/4-implementation/create-story" "$d/_bmad/bmm/agents"
+  cat > "$d/_bmad/bmm/workflows/4-implementation/create-story/template.md" <<'TEMPLATE'
+---
+linear:
+stamp:
+persona: dev
+gates:
+  - "<real command>"
+max_cycles: 3
+---
+
+Story body.
+TEMPLATE
+  printf 'You are the dev persona.\n' > "$d/_bmad/bmm/agents/dev.md"
+  printf 'You are the PM persona.\n'  > "$d/_bmad/bmm/agents/pm.md"
+}
+
+SC="" HOMEDIR="" CHECKOUT=""
+new_scenario() { # <name>
+  SC="$TMPROOT/sc-$1"
+  HOMEDIR="$SC/home"
+  CHECKOUT="$SC/checkout"
+  mkdir -p "$HOMEDIR" "$CHECKOUT"
+  make_checkout "$CHECKOUT"
+}
+
 # install_kit <home> <checkout> — a complete, healthy legacy installation.
 install_kit() {
   local h="$1" c="$2"
@@ -113,15 +148,6 @@ install_kit() {
   cp "$c/files/codex-AGENTS.md" "$h/.codex/AGENTS.md"
 }
 
-SC="" HOMEDIR="" CHECKOUT=""
-new_scenario() { # <name>
-  SC="$TMPROOT/sc-$1"
-  HOMEDIR="$SC/home"
-  CHECKOUT="$SC/checkout"
-  mkdir -p "$HOMEDIR" "$CHECKOUT"
-  make_checkout "$CHECKOUT"
-}
-
 RUN_OUT="" RUN_ERR="" RUN_RC=0
 run_afk() { # <args...> — runs against $HOMEDIR / $CHECKOUT
   RUN_OUT="$(HOME="$HOMEDIR" \
@@ -136,6 +162,10 @@ jget() { printf '%s' "$RUN_OUT" | jq -r "$1"; }
 
 component_field() { # <component-id> <field-expr>
   printf '%s' "$RUN_OUT" | jq -r --arg id "$1" ".components[] | select(.id == \$id) | $2"
+}
+
+target_field() { # <target-id> <field-expr>
+  printf '%s' "$RUN_OUT" | jq -r --arg id "$1" ".targets[] | select(.id == \$id) | $2"
 }
 
 adoption_field() { # <component-id> <field>
@@ -386,7 +416,7 @@ identity_redactor() { printf '%s\n' "$1"; }
 
 # Every reported environment name is checked individually: one leaking source
 # is enough, and a single-variable test would not find it.
-ENV_NAMES_UNDER_TEST="ANTHROPIC_API_KEY CLAUDE_CONFIG_DIR AGENT_ROUTER_URL AGENT_ROUTER_TOKEN OP_SERVICE_ACCOUNT_TOKEN AGENT_STAMP_VALIDATE_CATALOG_PATH"
+ENV_NAMES_UNDER_TEST="ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CONFIG_DIR OPENAI_API_KEY OPENAI_BASE_URL CODEX_API_KEY AGENT_ROUTER_URL AGENT_ROUTER_TOKEN OP_SERVICE_ACCOUNT_TOKEN AGENT_STAMP_VALIDATE_CATALOG_PATH"
 VACUOUS=0; UNREDACTED=0; NO_PRESENCE=0
 for name in $ENV_NAMES_UNDER_TEST; do
   export "$name=$SENTINEL"
@@ -421,6 +451,7 @@ unset AGENT_ROUTER_TOKEN
 
 # Caller-supplied text is never echoed unless it is in the closed vocabulary.
 assert_eq "a known option is echoed back verbatim" "$(afk_safe_diagnostic '--json')" "--json"
+assert_eq "a live-mode option is in the closed vocabulary" "$(afk_safe_diagnostic '--live')" "--live"
 assert_eq "an unknown option is replaced" \
   "$(afk_safe_diagnostic "--$SENTINEL")" "<unrecognized option>"
 assert_eq "an unknown bare argument is replaced" \
@@ -1332,24 +1363,58 @@ assert_eq "and it is not mutation-safe" \
 # ===========================================================================
 head1 "8. Registered BMAD targets are scoped, never global"
 # ===========================================================================
+# One compatible target, one that exists but is not wired, and one that is not
+# there at all. The point of the scenario is that all three coexist: neither
+# broken target poisons the healthy one, and neither poisons the host.
 
 new_scenario targets
 install_kit "$HOMEDIR" "$CHECKOUT"
 write_manifest
-mkdir -p "$SC/repo-ok"
+make_bmad_target "$SC/repo-ok"
+mkdir -p "$SC/repo-bare"
 manifest_patch ".targets = [{id: \"repo-ok\", path: \"$SC/repo-ok\"},
+                            {id: \"repo-bare\", path: \"$SC/repo-bare\"},
                             {id: \"repo-gone\", path: \"$SC/repo-gone\"}]"
 run_afk status --json
-assert_eq "both targets are inventoried" "$(jget '.targets | length')" "2"
+assert_eq "every registered target is inventoried" "$(jget '.targets | length')" "3"
+
 assert_eq "a missing target is BROKEN" \
-  "$(printf '%s' "$RUN_OUT" | jq -r '.targets[] | select(.id == "repo-gone") | .reason')" "TARGET_PATH_MISSING"
+  "$(target_field repo-gone .reason)" "TARGET_PATH_MISSING"
 assert_eq "and blocks only its own scope" \
-  "$(printf '%s' "$RUN_OUT" | jq -r '.targets[] | select(.id == "repo-gone") | .blocked_scopes[0]')" "TARGET_READY:repo-gone"
-assert_eq "the healthy target is untouched" \
-  "$(printf '%s' "$RUN_OUT" | jq -r '.targets[] | select(.id == "repo-ok") | .state')" "NOT_EVALUATED"
-assert_eq "one bad target does not make the host not ready" \
+  "$(target_field repo-gone '.blocked_scopes[0]')" "TARGET_READY:repo-gone"
+
+assert_eq "a target that exists but is not wired is INCOMPATIBLE, not ready" \
+  "$(target_field repo-bare .state)" "INCOMPATIBLE"
+assert_eq "because directory presence is not compatibility" \
+  "$(target_field repo-bare .reason)" "TARGET_WIRING_UNRECOGNIZED"
+assert_eq "and it too blocks only its own scope" \
+  "$(target_field repo-bare '.blocked_scopes[0]')" "TARGET_READY:repo-bare"
+
+assert_eq "the wired target resolves mechanically" \
+  "$(target_field repo-ok .state)" "READY"
+assert_eq "with a stable reason" \
+  "$(target_field repo-ok .reason)" "TARGET_WIRING_PROVEN"
+assert_eq "and blocks nothing at all" \
+  "$(target_field repo-ok '.blocked_scopes | length')" "0"
+
+# Target A incompatible and target B compatible, side by side, with the
+# aggregate refusing to collapse a set of repositories into one boolean.
+assert_eq "the aggregate scope reports PARTIAL, never a single false" \
+  "$(jget '.readiness.TARGET_READY.state')" "PARTIAL"
+assert_eq "with its own reason" \
+  "$(jget '.readiness.TARGET_READY.reason')" "TARGET_SCOPE_PARTIAL"
+assert_eq "TARGET_READY(repo-ok) is true" \
+  "$(jget '.readiness.TARGET_READY.targets[] | select(.id == "repo-ok") | .state')" "TRUE"
+assert_eq "TARGET_READY(repo-bare) is false" \
+  "$(jget '.readiness.TARGET_READY.targets[] | select(.id == "repo-bare") | .state')" "FALSE"
+assert_eq "the wiring identity of the healthy target is bounded evidence" \
+  "$(jget '.readiness.TARGET_READY.targets[] | select(.id == "repo-ok") | .wiring_identity | startswith("sha256:")')" "true"
+
+assert_eq "no bad target makes the host not ready" \
   "$(jget '.overall.state')" "READY_WITH_WARNINGS"
-assert_eq "and does not fail the command" "$RUN_RC" "0"
+assert_eq "and none of it fails the command" "$RUN_RC" "0"
+assert_eq "installed integrity is untouched by any of it" \
+  "$(jget '.readiness.INSTALLED_INTEGRITY.state')" "READY"
 
 # ===========================================================================
 head1 "9. No live probe is performed by default"
@@ -1386,6 +1451,7 @@ assert_eq "with the frozen reason code"            "$(jget '.live_facts.router_s
 assert_eq "native Claude session NOT_EVALUATED"    "$(jget '.live_facts.claude_native_session.state')" "NOT_EVALUATED"
 assert_eq "native Codex session NOT_EVALUATED"     "$(jget '.live_facts.codex_native_session.state')" "NOT_EVALUATED"
 assert_eq "Orca runtime NOT_EVALUATED"             "$(jget '.live_facts.orca_runtime.state')" "NOT_EVALUATED"
+assert_eq "validator fixtures NOT_EVALUATED"       "$(jget '.live_facts.validator_fixtures.state')" "NOT_EVALUATED"
 assert_eq "host execution readiness NOT_EVALUATED" "$(jget '.readiness.HOST_EXECUTION_READY.state')" "NOT_EVALUATED"
 assert_eq "new-work readiness NOT_EVALUATED"       "$(jget '.readiness.NEW_WORK_READY.state')" "NOT_EVALUATED"
 # Not-evaluated and out-of-scope stay distinguishable (FR-73).
@@ -1397,6 +1463,12 @@ assert_eq "an unprobed live fact is never reported as evaluated" \
   "$(jget '.live_facts.router_status.evaluated')" "false"
 assert_eq "an offline-evaluated scope is reported as evaluated" \
   "$(jget '.readiness.INSTALLED_INTEGRITY.evaluated')" "true"
+
+# Executable RESOLUTION is a filesystem fact and IS evaluated by default — the
+# binaries above are on PATH — and it still starts none of them.
+assert_eq "the resolution of a stubbed harness is reported" \
+  "$(jget '.live_facts.claude_executable.state')" "PRESENT"
+assert_no_file "and resolving it still invoked nothing" "$SC/live-probe-marker"
 
 # ===========================================================================
 head1 "10. Secrets never reach emitted output (end to end, every path)"
@@ -1472,6 +1544,11 @@ assert_absent "and the command text is never echoed" "$RUN_ERR" "$SENTINEL"
 
 run_afk status --json --require-source-eligible --not-real
 assert_eq "an unknown option among valid ones still fails" "$RUN_RC" "1"
+
+# An option VALUE is never echoed either, however it was mistyped.
+run_afk status --stamp "$SENTINEL" --json
+assert_absent "a --stamp value never reaches a diagnostic (stderr)" "$RUN_ERR" "$SENTINEL"
+assert_absent "nor the machine result"                              "$RUN_OUT" "$SENTINEL"
 
 # An internal failure path: the libraries cannot be found.
 NOLIB_ERR="$(HOME="$HOMEDIR" AFK_LIB_DIR="$SC/no-such-lib-dir" \
@@ -1558,13 +1635,13 @@ new_scenario contract
 install_kit "$HOMEDIR" "$CHECKOUT"
 write_manifest
 printf 'edited by hand\n' >> "$HOMEDIR/.agents/skills/model-router/SKILL.md"
-mkdir -p "$SC/repo-ok"
+make_bmad_target "$SC/repo-ok"
 manifest_patch ".targets = [{id: \"repo-ok\", path: \"$SC/repo-ok\"}]"
 run_afk status --json
 
 for key in schema_version kind command operation checkout installed source_eligibility \
-           readiness live_facts environment components targets adaptations findings \
-           overall next_safe_action; do
+           readiness live_facts orchestration environment components targets adaptations \
+           findings overall next_safe_action; do
   assert_eq "top-level key present: $key" "$(jget "has(\"$key\")")" "true"
 done
 assert_eq "the result schema is versioned" "$(jget '.schema_version')" "1.0"
@@ -1588,6 +1665,15 @@ assert_eq "every finding carries evidence provenance" \
 assert_eq "every finding severity is inside the frozen set" \
   "$(printf '%s' "$RUN_OUT" | jq -r '[.findings[] | select(.severity != "info" and .severity != "warning"
      and .severity != "owner_action" and .severity != "blocking")] | length')" "0"
+assert_eq "every live fact carries the full automation field set" \
+  "$(printf '%s' "$RUN_OUT" | jq -r '[.live_facts | to_entries[] | .value
+     | select((has("state") and has("evaluated") and has("reason") and has("observed_at")
+               and has("timeout_ms") and has("freshness_seconds")
+               and has("evidence_provenance") and has("transient")
+               and has("launch_authoritative")) | not)] | length')" "0"
+assert_eq "no live fact ever claims launch authority" \
+  "$(printf '%s' "$RUN_OUT" | jq -r '[.live_facts | to_entries[]
+     | select(.value.launch_authoritative != false)] | length')" "0"
 assert_eq "the exit code is carried in the document, not only in the process" \
   "$(jget '.overall.exit_code')" "$RUN_RC"
 
@@ -1607,9 +1693,11 @@ doc_vocab() { # <key> — the machine-checkable block from the contract document
   ' "$CONTRACT_DOC" | LC_ALL=C sort
 }
 
-for key in commands component_states overall_states source_states ownership_classes \
-           severities readiness_scopes evidence_provenance adaptation_dispositions \
-           adaptation_types adaptation_states adoption_dispositions reason_codes; do
+for key in commands component_states overall_states readiness_states target_states \
+           live_fact_states orchestration_states orchestration_modes approved_harnesses \
+           source_states ownership_classes severities readiness_scopes evidence_provenance \
+           adaptation_dispositions adaptation_types adaptation_states adoption_dispositions \
+           reason_codes; do
   s="$(schema_vocab "$key")"
   d="$(doc_vocab "$key")"
   if [[ -z "$s" ]]; then
@@ -1629,14 +1717,35 @@ assert_contains "the exit vocabulary names the usage class" "$SCHEMA_EXITS" "com
 assert_contains "and the owner-action class"                "$SCHEMA_EXITS" "owner action or conflict"
 
 # Every reason the implementation actually emits is inside the published set.
+#
+# The value under test is bound to a jq VARIABLE before it reaches index().
+# jq evaluates the ARGUMENT of index() against the INPUT of index() — the
+# published array — so `$pub | index(.)` asks that array whether it contains
+# ITSELF, which it always does, at index 0. The sweep would then select nothing
+# and guard nothing. Each sweep therefore carries the executable falsifiability
+# control the readiness gate carries: the same expression, run over a copy of
+# the document with exactly one out-of-set value injected, must report exactly
+# that one.
 PUB_REASONS="$(printf '%s' "$SCHEMA_JSON" | jq -c '.reason_codes')"
+unpublished_reasons() { # <document> -> how many reason strings are outside the set
+  printf '%s' "$1" | jq -r --argjson pub "$PUB_REASONS" \
+    '[.. | objects | .reason? | select(type == "string")
+      | . as $r | select(($pub | index($r)) == null)] | length'
+}
 assert_eq "every reason code in a status result is published" \
-  "$(printf '%s' "$CONTRACT_JSON" | jq -r --argjson pub "$PUB_REASONS" \
-     '[.. | objects | .reason? | select(type == "string") | select(($pub | index(.)) == null)] | length')" "0"
+  "$(unpublished_reasons "$CONTRACT_JSON")" "0"
+assert_eq "and that sweep still FAILS on an unpublished code" \
+  "$(unpublished_reasons "$(printf '%s' "$CONTRACT_JSON" \
+     | jq -c '.readiness.ROUTE_READY.reason = "NOT_A_PUBLISHED_CODE"')")" "1"
+assert_eq "the published vocabulary has no duplicate codes" \
+  "$(printf '%s' "$SCHEMA_JSON" | jq -r '.reason_codes[]' | LC_ALL=C sort | uniq -d | wc -l | tr -d ' ')" "0"
 run_afk adopt --inspect --json
+ADOPT_SWEEP_JSON="$RUN_OUT"
 assert_eq "every reason code in an adoption result is published" \
-  "$(printf '%s' "$RUN_OUT" | jq -r --argjson pub "$PUB_REASONS" \
-     '[.. | objects | .reason? | select(type == "string") | select(($pub | index(.)) == null)] | length')" "0"
+  "$(unpublished_reasons "$ADOPT_SWEEP_JSON")" "0"
+assert_eq "and that sweep still FAILS on an unpublished code" \
+  "$(unpublished_reasons "$(printf '%s' "$ADOPT_SWEEP_JSON" \
+     | jq -c '.readiness.ROUTE_READY.reason = "NOT_A_PUBLISHED_CODE"')")" "1"
 
 # --- human output is a COMPLETE projection of the same document -----------
 run_afk status
@@ -1658,7 +1767,9 @@ done < <(printf '%s' "$CONTRACT_JSON" | jq -r '
   + [ .components[] | select(.evidence.observed != null) | .evidence.observed ]
   + [ .findings[] | .reason, .message, .required_action ]
   + [ .readiness | to_entries[] | .key, .value.state ]
+  + [ .readiness.TARGET_READY.targets[] | .id, .state, .reason, .path ]
   + [ .live_facts | to_entries[] | .key, .value.state, .value.reason ]
+  + [ .orchestration | .state, .reason ]
   + [ .environment[] | .name ]
   + [ .targets[] | .id, .state, .path ]
   | map(select(. != null and . != "")) | .[]')
@@ -1746,6 +1857,14 @@ run_afk update --plan --approve-plan sha256:whatever
 assert_eq "an approval has nothing to authorize on a plan-only run" "$RUN_RC" "1"
 run_afk update --approve-plan
 assert_eq "an approval without its plan identity is a usage failure" "$RUN_RC" "1"
+run_afk adopt --live
+assert_eq "a mutating verb does not accept live readiness options" "$RUN_RC" "1"
+run_afk status --synthetic-route
+assert_eq "a synthetic route request without --live is a usage failure" "$RUN_RC" "1"
+run_afk status --target repo-ok
+assert_eq "--target without the --stamp it binds is a usage failure" "$RUN_RC" "1"
+run_afk status --stamp
+assert_eq "--stamp without its path is a usage failure" "$RUN_RC" "1"
 
 # The refusing and no-op verbs really did nothing.
 FP_BEFORE="$(fingerprint_tree "$HOMEDIR")"
