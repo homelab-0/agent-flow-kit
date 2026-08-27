@@ -13,9 +13,11 @@
 #
 # The lifecycle surface has its own isolated gates — tests/lifecycle-tests.sh
 # for the read-only half, tests/lifecycle-mutation-tests.sh for the destructive
-# half, and tests/lifecycle-concurrency-tests.sh for the operation lock under
-# real contention. Sections 6, 7 and 8 aggregate them here so one command still
-# answers "is the kit green".
+# half, tests/lifecycle-concurrency-tests.sh for the operation lock under real
+# contention, tests/lifecycle-readiness-tests.sh for scoped execution
+# readiness, and tests/lifecycle-dispatch-tests.sh for the durable
+# worker-completion watch and its provenance-bound cleanup. Sections 6 through
+# 10 aggregate them here so one command still answers "is the kit green".
 #
 # Usage: tests/run-tests.sh
 # Exit:  0 all passed, 1 any failure.
@@ -130,8 +132,10 @@ SC_SCRIPTS=("$DISPATCH" "$MAKE_STAMP" "$USAGE_CHECK" "$GH_HEALTH")
 # is the real guard against an unset read.
 SC_LIFECYCLE=("$KIT_ROOT/bin/agent-flow-kit" "$KIT_ROOT/lib/afk-common.sh" \
               "$KIT_ROOT/lib/afk-source.sh" "$KIT_ROOT/lib/afk-inventory.sh" \
-              "$KIT_ROOT/lib/afk-commands.sh" "$KIT_ROOT/lib/afk-plan.sh" \
-              "$KIT_ROOT/lib/afk-mutate.sh" "$KIT_ROOT/tests/lockctl-helper.sh")
+              "$KIT_ROOT/lib/afk-readiness.sh" "$KIT_ROOT/lib/afk-monitor.sh" \
+              "$KIT_ROOT/lib/afk-commands.sh" \
+              "$KIT_ROOT/lib/afk-plan.sh" "$KIT_ROOT/lib/afk-mutate.sh" \
+              "$KIT_ROOT/tests/lockctl-helper.sh")
 
 if (( ${#SC_CMD[@]} > 0 )); then
   ok "shellcheck runs here: ${SC_CMD[0]} ${SC_VERSION:-(version not reported)}"
@@ -1064,6 +1068,51 @@ if [[ -f "$CONCURRENCY_TESTS" ]]; then
   fi
 else
   bad "lifecycle concurrency gate present" "missing: $CONCURRENCY_TESTS"
+fi
+
+# ===========================================================================
+head1 "9. Lifecycle readiness gate — tests/lifecycle-readiness-tests.sh"
+# ===========================================================================
+# Scoped execution readiness — host, new-work, per-target and per-route — plus
+# the stubbed live surface: Orca capability, the validator contract and its
+# anti-vacuity fixtures, native harness capability and auth class, router
+# availability, and the orchestration bridge. Every live branch is reached
+# against stubbed binaries, so this gate opens no socket and launches nothing.
+# Aggregated the same way as the other three: its own process, its output tail
+# surfaced on failure.
+
+READINESS_TESTS="$KIT_ROOT/tests/lifecycle-readiness-tests.sh"
+if [[ -f "$READINESS_TESTS" ]]; then
+  if readiness_out="$(bash "$READINESS_TESTS" 2>&1)"; then
+    ok "lifecycle readiness gate: $(tail -1 <<<"$readiness_out")"
+  else
+    bad "lifecycle readiness gate" "$(tail -1 <<<"$readiness_out")"
+    printf '%s\n' "$readiness_out" | tail -40
+  fi
+else
+  bad "lifecycle readiness gate present" "missing: $READINESS_TESTS"
+fi
+
+# ===========================================================================
+head1 "10. Lifecycle dispatch gate — tests/lifecycle-dispatch-tests.sh"
+# ===========================================================================
+# The durable worker-completion watch and the provenance-bound release of the
+# resources a settled worker owned: at-least-once delivery and its idempotence,
+# monitoring faults that never become worker results, durable terminal closure
+# proven across a reconnect, and cleanup that fails closed on everything it
+# cannot prove it created. Real local Git repositories, a stubbed Orca, no
+# network. Aggregated the same way as the other four.
+
+DISPATCH_TESTS="$KIT_ROOT/tests/lifecycle-dispatch-tests.sh"
+if [[ -f "$DISPATCH_TESTS" ]]; then
+  if dispatch_out="$(bash "$DISPATCH_TESTS" 2>&1)"; then
+    ok "lifecycle dispatch gate: $(tail -1 <<<"$dispatch_out")"
+  else
+    bad "lifecycle dispatch gate" "$(tail -1 <<<"$dispatch_out")"
+    printf '%s\n' "$dispatch_out" | tail -40
+  fi
+else
+  bad "lifecycle dispatch gate present" "missing: $DISPATCH_TESTS"
 fi
 
 # ===========================================================================
