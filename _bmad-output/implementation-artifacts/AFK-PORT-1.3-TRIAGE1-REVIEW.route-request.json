@@ -1,0 +1,12 @@
+{
+  "story_id": "AFK-PORT-1.3-TRIAGE1-REVIEW",
+  "title": "Diff-scoped review of the post-freeze triage delta",
+  "summary": "Freeze-gating delta review (fresh session, review-only) of the cfcf9b5..7d126fc triage round: heartbeat-window persistence class-closure (all readers of the global default, stored-value edge shapes, legacy fallback vs no-deadline case, expiry-judge consistency), regression discrimination honesty, readiness-suite skip counting behavior-neutrality, non-heartbeat record safety through the shared reconciliation edit, and record truthfulness. Gates the superseding freeze of the safety-critical monitor surface.",
+  "touched_paths": ["_bmad-output/implementation-artifacts/evidence/"],
+  "ambiguity": "low",
+  "blast_radius": "high",
+  "volume_hint": "low",
+  "tags": ["security", "tests"],
+  "repo": "agent-flow-kit",
+  "requester": "bmad-pm"
+}
