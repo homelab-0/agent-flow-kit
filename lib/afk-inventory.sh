@@ -8,6 +8,11 @@
 # judgement call: a difference is legitimate because an ownership rule or a
 # valid registered adaptation says so, or it is LOCAL_DRIFT (FR-6, FR-9).
 #
+# Registered BMAD targets are INVENTORIED here (the manifest is read below) and
+# RESOLVED in afk-readiness.sh, which is where target wiring, personas and
+# templates are proven. Directory presence is not compatibility, so there is no
+# presence-only target verdict in this file.
+#
 # Identity computations are read into a variable WITHOUT `|| var=""`. A helper
 # that fails prints nothing, so the empty-string check below catches it; adding
 # `||` would let an unrelated non-zero (a `find` that hit one unreadable
@@ -639,29 +644,6 @@ afk_emit_user_owned_region() { # <component-id> <file> <section-id>
   C_OBSERVED="$outside lines outside the managed section"
   C_MUTATION_SAFE="true"
   afk_c_emit
-}
-
-# --- registered BMAD targets ------------------------------------------------
-
-afk_evaluate_targets() {
-  local n i tid tpath
-  n="$(printf '%s' "$AFK_MANIFEST_JSON" | jq -r '(.targets // []) | length')"
-  case "$n" in ''|*[!0-9]*) n=0 ;; esac
-  for (( i = 0; i < n; i++ )); do
-    tid="$(printf '%s' "$AFK_MANIFEST_JSON" | jq -r ".targets[$i].id // \"\"")"
-    tpath="$(printf '%s' "$AFK_MANIFEST_JSON" | jq -r ".targets[$i].path // \"\"")"
-    [[ -n "$tid" ]] || continue
-    if [[ -d "$tpath" ]]; then
-      # Structural presence only. Proving persona/template/wiring resolution is
-      # live readiness work and belongs to Story 1.3, so it is NOT_EVALUATED
-      # here rather than optimistically ready.
-      afk_add_target "$tid" "$tpath" "NOT_EVALUATED" "TARGET_READINESS_NOT_EVALUATED" "info" ""
-    else
-      afk_add_target "$tid" "$tpath" "BROKEN" "TARGET_PATH_MISSING" "warning" "TARGET_READY:$tid"
-      afk_add_finding "$tid" "TARGET_WIRING" "BROKEN" "TARGET_PATH_MISSING" \
-        "warning" "TARGET_READY:$tid" "FILE_STRUCTURE" "$tpath" "absent" "false" "false" ""
-    fi
-  done
 }
 
 # --- installed-state summary ------------------------------------------------

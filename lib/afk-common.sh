@@ -496,14 +496,14 @@ afk_env_record() { # <name> -> one JSON object
 # The usage text printed alongside lists what the command does accept, which is
 # the part that actually helps.
 #
-# The VALUE of --approve-plan is deliberately not echoable either: it is
-# positionally a value, and the closed vocabulary is the only thing that ever
-# reaches a diagnostic.
+# The VALUES of --approve-plan, --stamp, --target and --register are
+# deliberately not echoable either: they are positionally values, and the
+# closed vocabulary is the only thing that ever reaches a diagnostic.
 afk_safe_diagnostic() { # <raw>
   case "$1" in
-    status|adopt|update|verify|schema|help)
+    status|adopt|update|verify|schema|monitor|help)
       printf '%s' "$1" ;;
-    -h|--help|--json|--inspect|--plan|--apply|--approve-plan|--require-source-eligible|--allow-noncanonical-source|--allow-rollback)
+    -h|--help|--json|--inspect|--plan|--apply|--approve-plan|--require-source-eligible|--allow-noncanonical-source|--allow-rollback|--live|--synthetic-route|--stamp|--target|--register|--reconcile|--cleanup)
       printf '%s' "$1" ;;
     '')
       printf '<empty argument>' ;;
@@ -562,9 +562,12 @@ afk_f_reset() {
 #
 # This list is the authority for the read-only half of the surface;
 # afk_mutation_reason_codes in afk-mutate.sh is the authority for the mutating
-# half. `schema` publishes both verbatim, the contract document repeats them in
-# a machine-checkable block, and the deterministic gates prove all three agree
-# and that every code carries a real message and a real action.
+# half, afk_readiness_reason_codes in afk-readiness.sh for the scoped readiness
+# half, and afk_monitor_reason_codes in afk-monitor.sh for the dispatch watch
+# and settlement half. `schema` publishes all four verbatim, the contract
+# document repeats them in a machine-checkable block, and the deterministic
+# gates prove they agree and that every code carries a real message and a real
+# action.
 
 afk_reason_codes() {
   cat <<'CODES'
@@ -641,7 +644,21 @@ CODES
 
 AFK_REASON_FALLBACK='See the lifecycle contract for this reason code.'
 
+# The readiness and dispatch-monitor halves of the vocabulary live with the
+# engines that emit them, so a code, its message and its required action are
+# added in one place. Each hook is consulted BEFORE the local table and prints
+# nothing for a code it does not own, which keeps the fallback the single
+# "unknown code" answer rather than several competing ones.
 afk_reason_message() { # <reason>
+  local ext
+  if declare -F afk_readiness_reason_message >/dev/null 2>&1; then
+    ext="$(afk_readiness_reason_message "$1")"
+    if [[ -n "$ext" ]]; then printf '%s' "$ext"; return 0; fi
+  fi
+  if declare -F afk_monitor_reason_message >/dev/null 2>&1; then
+    ext="$(afk_monitor_reason_message "$1")"
+    if [[ -n "$ext" ]]; then printf '%s' "$ext"; return 0; fi
+  fi
   case "$1" in
     INSTALLATION_NOT_ADOPTED)          printf 'No agent-flow-kit state manifest exists, so no installed component has a proven owner or baseline.' ;;
     STATE_SCHEMA_UNRECOGNIZED)         printf 'The state manifest does not present a recognizable versioned shape.' ;;
@@ -705,7 +722,7 @@ afk_reason_message() { # <reason>
     SOURCE_REVISION_FORMAT_UNSUPPORTED) printf 'The source revision is not the 40-character lowercase hex object name this lifecycle records as an applied revision, so nothing computed from it could ever be committed.' ;;
     LIVE_PROBE_NOT_REQUESTED)          printf 'No live evaluation was requested, so this external fact was not probed.' ;;
     NO_EXECUTION_STAMP_SUPPLIED)       printf 'No execution stamp was supplied, so route readiness is outside this command scope.' ;;
-    TARGET_READINESS_NOT_EVALUATED)    printf 'Target wiring resolution is live readiness work and was not evaluated here.' ;;
+    TARGET_READINESS_NOT_EVALUATED)    printf 'No registered BMAD target was evaluated for this scope.' ;;
     ADOPTION_NOT_APPLICABLE_ALREADY_ADOPTED) printf 'This installation already has an established manifest, so adoption analysis does not apply.' ;;
     ADOPTION_SOURCE_INELIGIBLE)        printf 'Adoption records a canonical revision, so an ineligible mutation source cannot be adopted from.' ;;
     UNRECOGNIZED_CONTENT)              printf 'Installed content matches no canonical or recognized prior revision, so ownership cannot be claimed mechanically.' ;;
@@ -745,6 +762,15 @@ afk_reason_message() { # <reason>
 }
 
 afk_reason_action() { # <reason>
+  local ext
+  if declare -F afk_readiness_reason_action >/dev/null 2>&1; then
+    ext="$(afk_readiness_reason_action "$1")"
+    if [[ -n "$ext" ]]; then printf '%s' "$ext"; return 0; fi
+  fi
+  if declare -F afk_monitor_reason_action >/dev/null 2>&1; then
+    ext="$(afk_monitor_reason_action "$1")"
+    if [[ -n "$ext" ]]; then printf '%s' "$ext"; return 0; fi
+  fi
   case "$1" in
     INSTALLATION_NOT_ADOPTED)          printf 'Run: agent-flow-kit adopt --inspect' ;;
     STATE_SCHEMA_UNRECOGNIZED|STATE_SCHEMA_UNKNOWN_MAJOR|STATE_MANIFEST_SHAPE_INVALID) \
@@ -780,6 +806,9 @@ afk_reason_action() { # <reason>
     TARGET_PATH_MISSING)               printf 'Re-register or restore the target repository path.' ;;
     LINK_TARGET_MISSING|LINK_TARGET_UNEXPECTED) printf 'Repoint the managed link at its declared target.' ;;
     ADOPTION_SOURCE_INELIGIBLE)        printf 'Make this checkout an eligible source, then re-run the adoption analysis.' ;;
+    LIVE_PROBE_NOT_REQUESTED)          printf 'Re-run with --live to evaluate this external fact under a bounded, non-mutating probe.' ;;
+    NO_EXECUTION_STAMP_SUPPLIED)       printf 'Re-run with --stamp <path> to evaluate route readiness for one accepted decision.' ;;
+    TARGET_READINESS_NOT_EVALUATED)    printf 'Register a BMAD target in the state manifest to have its wiring evaluated.' ;;
     PLAN_NO_CHANGE_REQUIRED)           printf 'Nothing to do: the installation already carries this revision.' ;;
     PLAN_NOT_COMPUTABLE)               printf 'Resolve the findings above; a plan that cannot be computed is never approximated.' ;;
     PLAN_STALE_SOURCE_CHANGED|PLAN_STALE_MANIFEST_CHANGED|PLAN_STALE_DESTINATION_CHANGED) \
@@ -940,6 +969,8 @@ afk_build_result() {
     --argjson source "$AFK_R_SOURCE" \
     --argjson readiness "$AFK_R_READINESS" \
     --argjson live "$AFK_R_LIVE" \
+    --argjson orchestration "$AFK_R_ORCHESTRATION" \
+    --argjson dispatch "$AFK_R_DISPATCH" \
     --argjson env "$AFK_R_ENV" \
     --argjson extra "$AFK_R_EXTRA" \
     --argjson components "$components" \
@@ -963,6 +994,8 @@ afk_build_result() {
      source_eligibility: $source,
      readiness: $readiness,
      live_facts: $live,
+     orchestration: $orchestration,
+     dispatch_monitor: $dispatch,
      environment: $env,
      components: $components,
      targets: $targets,
@@ -1014,6 +1047,8 @@ afk_result_is_well_formed() {
        and (.source_eligibility | type == "object")
        and (.readiness | type == "object")
        and (.live_facts | type == "object")
+       and (.orchestration | type == "object")
+       and (.dispatch_monitor | type == "object")
        and (.environment | type == "array")
        and (.components | type == "array")
        and (.targets | type == "array")
@@ -1088,10 +1123,66 @@ afk_render_human() { # <result-json-document>
   printf '\n  readiness\n'
   afk_render_q -r '.readiness | to_entries[] |
     "    \(.key): \(.value.state)  evaluated=\(.value.evaluated)  reason=\(.value.reason // "-")"'
+  if [[ "$(afk_render_q -r '.readiness.TARGET_READY.targets // [] | length')" != "0" ]]; then
+    afk_render_q -r '.readiness.TARGET_READY.targets[] |
+      "      TARGET_READY:\(.id) = \(.state)  \(.reason)  \(.path)  wiring=\(.wiring_identity // "-")  detail=\(.detail // "-")"'
+  fi
+  printf '    ROUTE_READY execution_stamp: %s (placement_selected=%s, launch_authoritative=%s)\n' \
+    "$(afk_render_q -r '.readiness.ROUTE_READY.execution_stamp // "-"')" \
+    "$(afk_render_q -r '.readiness.ROUTE_READY.placement_selected // false')" \
+    "$(afk_render_q -r '.readiness.ROUTE_READY.launch_authoritative // false')"
 
   printf '\n  live facts (default evaluation performs no live probe)\n'
   afk_render_q -r '.live_facts | to_entries[] |
-    "    \(.key): \(.value.state) (\(.value.reason))  evaluated=\(.value.evaluated)"'
+    "    \(.key): \(.value.state) (\(.value.reason))  evaluated=\(.value.evaluated)"
+    + "  observed_at=\(.value.observed_at // "-")  timeout_ms=\(.value.timeout_ms // "-")"
+    + "  freshness_s=\(.value.freshness_seconds // "-")  transient=\(.value.transient // false)"
+    + "  launch_authoritative=\(.value.launch_authoritative // false)  detail=\(.value.detail // "-")"'
+
+  printf '\n  orchestration (read-only summary; consumed, never owned)\n'
+  printf '    state: %s (%s)  evaluated=%s\n' \
+    "$(afk_render_q -r '.orchestration.state')" \
+    "$(afk_render_q -r '.orchestration.reason')" \
+    "$(afk_render_q -r '.orchestration.evaluated')"
+  printf '    mode=%s phase=%s task=%s needs_human=%s\n' \
+    "$(afk_render_q -r '.orchestration.session.mode // "-"')" \
+    "$(afk_render_q -r '.orchestration.session.phase // "-"')" \
+    "$(afk_render_q -r '.orchestration.session.task // "-"')" \
+    "$(afk_render_q -r '.orchestration.session.needs_human // false')"
+  printf '    parent=%s/%s  workers_available=%s\n' \
+    "$(afk_render_q -r '.orchestration.parent.role // "-"')" \
+    "$(afk_render_q -r '.orchestration.parent.id // "-"')" \
+    "$(afk_render_q -r '.orchestration.workers.available // "-"')"
+  if [[ "$(afk_render_q -r '.orchestration.workers.by_state // {} | length')" != "0" ]]; then
+    afk_render_q -r '.orchestration.workers.by_state | to_entries[] |
+      "      workers \(.key)=\(.value)"'
+  fi
+
+  printf '\n  dispatch monitor (durable completion watch; provenance-bound cleanup)\n'
+  printf '    state: %s (%s)  evaluated=%s\n' \
+    "$(afk_render_q -r '.dispatch_monitor.state')" \
+    "$(afk_render_q -r '.dispatch_monitor.reason')" \
+    "$(afk_render_q -r '.dispatch_monitor.evaluated')"
+  printf '    dispatches total=%s watching=%s completed=%s settled=%s degraded=%s unreadable=%s\n' \
+    "$(afk_render_q -r '.dispatch_monitor.counts.total // 0')" \
+    "$(afk_render_q -r '.dispatch_monitor.counts.watching // 0')" \
+    "$(afk_render_q -r '.dispatch_monitor.counts.completed // 0')" \
+    "$(afk_render_q -r '.dispatch_monitor.counts.settled // 0')" \
+    "$(afk_render_q -r '.dispatch_monitor.counts.degraded // 0')" \
+    "$(afk_render_q -r '.dispatch_monitor.counts.unreadable // 0')"
+  printf '    pending deliveries=%s  retained terminals=%s worktrees=%s local_branches=%s remote_branches=%s\n' \
+    "$(afk_render_q -r '.dispatch_monitor.pending_deliveries // 0')" \
+    "$(afk_render_q -r '.dispatch_monitor.retained.terminals // 0')" \
+    "$(afk_render_q -r '.dispatch_monitor.retained.worktrees // 0')" \
+    "$(afk_render_q -r '.dispatch_monitor.retained.local_branches // 0')" \
+    "$(afk_render_q -r '.dispatch_monitor.retained.remote_branches // 0')"
+  if [[ "$(afk_render_q -r '.dispatch_monitor.dispatches // [] | length')" != "0" ]]; then
+    afk_render_q -r '.dispatch_monitor.dispatches[] |
+      "      dispatch \(.id // "-"): \(.state)  acknowledged=\(.acknowledged)  fault=\(.fault // "-")\n"
+      + "        cleanup terminal=\((.cleanup.terminal? // "-"))  worktree=\((.cleanup.worktree? // "-"))"
+      + "  local_branch=\((.cleanup.local_branch? // "-"))  remote_branch=\((.cleanup.remote_branch? // "-"))"'
+  fi
+  printf '    required action: %s\n' "$(afk_render_q -r '.dispatch_monitor.required_action // "-"')"
 
   printf '\n  environment (names and presence only; values are never emitted)\n'
   afk_render_q -r '.environment[] |
