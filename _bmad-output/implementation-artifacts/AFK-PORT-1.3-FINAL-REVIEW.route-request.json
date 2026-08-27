@@ -1,0 +1,14 @@
+{
+  "story_id": "AFK-PORT-1.3-FINAL-REVIEW",
+  "title": "Freeze-gating diff-scoped review of the Story 1.3 cycle-4 delta",
+  "summary": "Final delta-scoped review (fresh session, review-only) gating the Story 1.3 freeze: remedy completeness of the cycle-4 fixes (consumed durable-close outcomes, strict bounding for the monitor's Orca observations), judgment of the declared-not-fatal bounding-tool deviation, new-regression check on the changed cleanup dispositions, skip-accounting honesty, and contract truthfulness. Freeze-gates the safety-critical orchestration/cleanup surface; a wrong CLEAN verdict freezes a defect. Same review class as all prior stamped review dispatches in this story (blast_radius high).",
+  "touched_paths": [
+    "_bmad-output/implementation-artifacts/evidence/"
+  ],
+  "ambiguity": "low",
+  "blast_radius": "high",
+  "volume_hint": "low",
+  "tags": ["security", "tests"],
+  "repo": "agent-flow-kit",
+  "requester": "bmad-pm"
+}
