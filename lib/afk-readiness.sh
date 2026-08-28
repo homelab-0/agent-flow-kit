@@ -164,6 +164,7 @@ AFK_RD_ROUTER="NOT_EVALUATED"
 AFK_RD_LIVE_UNAVAILABLE="false"
 
 AFK_PROBE_OUT=""
+AFK_PROBE_PARSE_OUT=""
 AFK_PROBE_RC=0
 AFK_PROBE_STATUS=""
 AFK_PROBE_UNBOUNDED_REPORTED="false"
@@ -457,11 +458,12 @@ afk_probe_timeout_seconds() {
 
 # afk_probe_run <argv...>
 # Sets AFK_PROBE_STATUS to NOT_RESOLVED, TIMEOUT, OK or NONZERO, AFK_PROBE_RC
-# to the observed status, and AFK_PROBE_OUT to bounded stdout.
+# to the observed status, AFK_PROBE_PARSE_OUT to complete stdout for immediate
+# parsing, and AFK_PROBE_OUT to at most 4096 bytes of retained evidence.
 # Returns 0 only for AFK_PROBE_STATUS=OK.
 afk_probe_run() {
   local secs out rc
-  AFK_PROBE_OUT=""; AFK_PROBE_RC=0; AFK_PROBE_STATUS=""
+  AFK_PROBE_OUT=""; AFK_PROBE_PARSE_OUT=""; AFK_PROBE_RC=0; AFK_PROBE_STATUS=""
   if [[ $# -lt 1 || -z "${1:-}" ]]; then
     AFK_PROBE_STATUS="NOT_RESOLVED"; return 1
   fi
@@ -483,8 +485,9 @@ afk_probe_run() {
     rc=$?
   fi
   AFK_PROBE_RC=$rc
-  # Bounded evidence, never a transcript: a probe's stdout is diagnostic input
-  # and can carry anything the dependency felt like printing.
+  # Parse the complete response during this one bounded pass. Retained evidence
+  # remains capped at 4096 bytes and is never a dependency transcript.
+  AFK_PROBE_PARSE_OUT="$out"
   AFK_PROBE_OUT="$(printf '%s' "$out" | head -c 4096)"
   if (( rc == 124 )); then
     AFK_PROBE_STATUS="TIMEOUT"; return 1
@@ -565,6 +568,11 @@ afk_live_facts_json() {
   # seed for the same key and the last word on a fact is the one reported.
   out="$(printf '%s' "$AFK_LIVE_ENTRIES" | jq -sc 'map({(.key): .fact}) | add // {}')" || return 1
   printf '%s' "$out"
+}
+
+afk_live_fact_reason() { # <key> -> latest grounded reason, if evaluated
+  printf '%s' "$AFK_LIVE_ENTRIES" | jq -sr --arg key "$1" \
+    'map(select(.key == $key and .fact.evaluated)) | last | .fact.reason // empty'
 }
 
 # --- executable resolution (offline, no process is started) -----------------
@@ -1486,7 +1494,7 @@ afk_probe_router() {
   # API shape: a 200 from something that is not the router is not the router.
   afk_probe_run "$AFK_CURL_BIN" -sS --max-time "$(afk_probe_timeout_seconds)" \
     -H "Authorization: Bearer ${!token_name}" "$url/v1/status"
-  body="$AFK_PROBE_OUT"
+  body="$AFK_PROBE_PARSE_OUT"
   if ! printf '%s' "$body" | jq -e 'type == "object" and has("catalog_version")' >/dev/null 2>&1; then
     AFK_RD_ROUTER="FALSE"
     afk_live_fact "router_status" "INCOMPATIBLE" "ROUTER_API_SHAPE_UNSUPPORTED" "ROUTER_STATUS" "true" "false" ""
@@ -1708,7 +1716,7 @@ afk_evaluate_route_readiness() {
 # --- aggregation ------------------------------------------------------------
 
 afk_aggregate_host_readiness() {
-  local integrity
+  local integrity reason
   integrity="$(afk_installed_integrity_state)"
 
   if [[ "$AFK_LIVE_MODE" != "true" ]]; then
@@ -1727,10 +1735,14 @@ afk_aggregate_host_readiness() {
     AFK_RD_HOST_REASON="INSTALLED_INTEGRITY_NOT_PROVEN"
   elif [[ "$AFK_RD_ORCA" != "TRUE" ]]; then
     AFK_RD_HOST_STATE="FALSE"
-    AFK_RD_HOST_REASON="ORCA_NOT_RESOLVED"
+    reason="$(afk_live_fact_reason orca_capability)"
+    [[ -n "$reason" ]] || reason="$(afk_live_fact_reason orca_runtime)"
+    AFK_RD_HOST_REASON="${reason:-ORCA_NOT_RESOLVED}"
   elif [[ "$AFK_RD_VALIDATOR" != "TRUE" ]]; then
     AFK_RD_HOST_STATE="FALSE"
-    AFK_RD_HOST_REASON="VALIDATOR_NOT_RESOLVED"
+    reason="$(afk_live_fact_reason validator_fixtures)"
+    [[ -n "$reason" ]] || reason="$(afk_live_fact_reason validator_contract)"
+    AFK_RD_HOST_REASON="${reason:-VALIDATOR_NOT_RESOLVED}"
   elif [[ "$AFK_RD_CLAUDE_PATH" == "TRUE" || "$AFK_RD_CODEX_PATH" == "TRUE" ]]; then
     # One complete centrally approved path is the bar. The other harness is
     # reported independently and is never globally mandatory (FR-52).
@@ -1753,10 +1765,10 @@ afk_aggregate_host_readiness() {
     else
       AFK_RD_NEWWORK_STATE="FALSE"; AFK_RD_NEWWORK_REASON="$AFK_RD_HOST_REASON"
     fi
-  elif [[ "$AFK_RD_ROUTER" == "UNAVAILABLE" ]]; then
-    AFK_RD_NEWWORK_STATE="FALSE"; AFK_RD_NEWWORK_REASON="ROUTER_UNREACHABLE"
   else
-    AFK_RD_NEWWORK_STATE="FALSE"; AFK_RD_NEWWORK_REASON="ROUTER_ENDPOINT_NOT_DECLARED"
+    reason="$(afk_live_fact_reason router_status)"
+    AFK_RD_NEWWORK_STATE="FALSE"
+    AFK_RD_NEWWORK_REASON="${reason:-ROUTER_ENDPOINT_NOT_DECLARED}"
   fi
   return 0
 }
