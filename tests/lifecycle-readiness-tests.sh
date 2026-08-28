@@ -438,6 +438,13 @@ case "${STUB_ROUTER:-ok}" in
   badshape)
     if $wants_code; then printf '200'; else printf '{"hello":"world"}'; fi
     exit 0 ;;
+  large)
+    if $wants_code; then printf '200'; else
+      jq -nc --arg catalog "${STUB_ROUTER_CATALOG:-sha256:abc}" \
+        --arg padding "$(printf '%05000d' 0)" \
+        '{catalog_version:$catalog, catalog_entries:$padding}'
+    fi
+    exit 0 ;;
 esac
 if $wants_code; then printf '200'; exit 0; fi
 printf '{"catalog_version":"%s"}' "${STUB_ROUTER_CATALOG:-sha256:abc}"
@@ -450,6 +457,7 @@ STUB_ORCA=ok; STUB_ORCA_CAPS=full; STUB_VALIDATOR=honest
 STUB_CLAUDE_AUTH=sub; STUB_CLAUDE_CAPS=full; STUB_CODEX_AUTH=sub
 STUB_ROUTER=ok; STUB_ROUTER_CATALOG="sha256:abc"
 LIVE_TIMEOUT_MS=5000
+ORCA_BIN_OVERRIDE="orca"
 CLAUDE_BIN_OVERRIDE="claude"; CODEX_BIN_OVERRIDE="codex"
 ROUTER_URL="https://router.invalid"; ROUTER_TOKEN="stub-token"
 ENV_ANTHROPIC_API_KEY=""; ENV_OP_TOKEN=""
@@ -459,6 +467,7 @@ stub_reset() {
   STUB_CLAUDE_AUTH=sub; STUB_CLAUDE_CAPS=full; STUB_CODEX_AUTH=sub
   STUB_ROUTER=ok; STUB_ROUTER_CATALOG="sha256:abc"
   LIVE_TIMEOUT_MS=5000
+  ORCA_BIN_OVERRIDE="orca"
   CLAUDE_BIN_OVERRIDE="claude"; CODEX_BIN_OVERRIDE="codex"
   ROUTER_URL="https://router.invalid"; ROUTER_TOKEN="stub-token"
   ENV_ANTHROPIC_API_KEY=""; ENV_OP_TOKEN=""
@@ -475,6 +484,7 @@ run_afk() { # <args...>
              XDG_STATE_HOME="$HOMEDIR/.local/state" \
              AFK_KIT_ROOT="$CHECKOUT" \
              AFK_LIVE_TIMEOUT_MS="$LIVE_TIMEOUT_MS" \
+             AFK_ORCA_BIN="$ORCA_BIN_OVERRIDE" \
              AFK_CLAUDE_BIN="$CLAUDE_BIN_OVERRIDE" \
              AFK_CODEX_BIN="$CODEX_BIN_OVERRIDE" \
              AGENT_ROUTER_URL="$ROUTER_URL" \
@@ -705,9 +715,49 @@ STUB_ROUTER=badshape
 run_afk status --json --live
 assert_eq "a 200 from something that is not the router is incompatible" \
   "$(jget '.live_facts.router_status.reason')" "ROUTER_API_SHAPE_UNSUPPORTED"
+assert_eq "new-work readiness names the grounded incompatible-router blocker" \
+  "$(jget '.readiness.NEW_WORK_READY.reason')" "ROUTER_API_SHAPE_UNSUPPORTED"
 assert_eq "which still narrows new work only" \
   "$(jget '.readiness.HOST_EXECUTION_READY.state')" "TRUE"
+
+STUB_ROUTER=large
+run_afk status --json --live
+assert_eq "a valid router document larger than the evidence cap is parsed completely" \
+  "$(jget '.live_facts.router_status.reason')" "ROUTER_AVAILABLE"
+assert_eq "and the large healthy response permits new work" \
+  "$(jget '.readiness.NEW_WORK_READY.state')" "TRUE"
 stub_reset
+
+# --- the complete parse buffer does not outlive its parse -----------------
+# Sourced-library reproduction: probe and inspection share one process, so a
+# buffer the classification failed to clear is directly measurable here. The
+# fixture is the >4096-byte router document, so a lingering buffer would be
+# the uncapped body, not a capped remnant.
+PROBE_AFTER_CLASSIFY="$(
+  export PATH="$BIN:$PATH" STUB_ROUTER=large STUB_ROUTER_CATALOG="sha256:abc"
+  export AGENT_ROUTER_URL="https://router.invalid" AGENT_ROUTER_TOKEN="stub-token"
+  afk_probe_router >/dev/null 2>&1
+  printf '%s %s' "$AFK_RD_ROUTER" "${#AFK_PROBE_PARSE_OUT}"
+)"
+assert_eq "the >4096-byte fixture still classifies the router available" \
+  "${PROBE_AFTER_CLASSIFY% *}" "TRUE"
+assert_eq "and the complete parse buffer is empty once classification completes" \
+  "${PROBE_AFTER_CLASSIFY#* }" "0"
+
+PROBE_RESET_SHAPE="$(
+  export STUB_ROUTER=large STUB_ROUTER_CATALOG="sha256:abc"
+  afk_probe_run "$BIN/curl"
+  printf '%s %s ' "${#AFK_PROBE_PARSE_OUT}" "${#AFK_PROBE_OUT}"
+  afk_readiness_reset
+  printf '%s %s' "${#AFK_PROBE_PARSE_OUT}" "${#AFK_PROBE_OUT}"
+)"
+read -r RESET_PARSE_BEFORE RESET_RETAINED_BEFORE RESET_PARSE_AFTER RESET_RETAINED_AFTER \
+  <<<"$PROBE_RESET_SHAPE"
+assert_eq "the reset fixture exceeds the retention cap" \
+  "$(( RESET_PARSE_BEFORE > 4096 ))" "1"
+assert_eq "with retained evidence capped at 4096 bytes" "$RESET_RETAINED_BEFORE" "4096"
+assert_eq "readiness reset clears the complete parse buffer" "$RESET_PARSE_AFTER" "0"
+assert_eq "and the capped probe evidence with it" "$RESET_RETAINED_AFTER" "0"
 
 if command -v timeout >/dev/null 2>&1; then
   STUB_ROUTER=slow
@@ -840,6 +890,22 @@ STUB_ORCA_CAPS=none
 run_afk status --json --live
 assert_eq "an Orca with no capability contract cannot be proven" \
   "$(jget '.live_facts.orca_capability.reason')" "ORCA_CAPABILITY_UNPROVEN"
+assert_eq "host readiness names the grounded Orca capability blocker" \
+  "$(jget '.readiness.HOST_EXECUTION_READY.reason')" "ORCA_CAPABILITY_UNPROVEN"
+assert_ne "and does not contradict the resolved executable fact" \
+  "$(jget '.readiness.HOST_EXECUTION_READY.reason')" "ORCA_NOT_RESOLVED"
+stub_reset
+
+ORCA_BIN_OVERRIDE="orca-not-installed"
+run_afk status --json --live
+assert_eq "a genuinely unresolvable Orca keeps the resolution reason" \
+  "$(jget '.readiness.HOST_EXECUTION_READY.reason')" "ORCA_NOT_RESOLVED"
+stub_reset
+
+ROUTER_URL=""
+run_afk status --json --live
+assert_eq "an undeclared router endpoint keeps its precondition reason" \
+  "$(jget '.readiness.NEW_WORK_READY.reason')" "ROUTER_ENDPOINT_NOT_DECLARED"
 stub_reset
 
 # --- the anti-vacuity control --------------------------------------------
