@@ -198,6 +198,7 @@ afk_readiness_reset() {
   AFK_RD_ROUTER="NOT_EVALUATED"
   AFK_RD_LIVE_UNAVAILABLE="false"
   AFK_PROBE_UNBOUNDED_REPORTED="false"
+  AFK_PROBE_OUT=""; AFK_PROBE_PARSE_OUT=""
   AFK_STAMP_JSON="{}"; AFK_STAMP_PRESENT="false"
   AFK_STAMP_HARNESS=""; AFK_STAMP_PROFILE=""; AFK_STAMP_EFFORT=""
   AFK_STAMP_PLACEMENT_REQUIRED="false"; AFK_STAMP_COST_CLASS=""
@@ -1495,6 +1496,10 @@ afk_probe_router() {
   afk_probe_run "$AFK_CURL_BIN" -sS --max-time "$(afk_probe_timeout_seconds)" \
     -H "Authorization: Bearer ${!token_name}" "$url/v1/status"
   body="$AFK_PROBE_PARSE_OUT"
+  # The complete response lives exactly as long as this parse: once it is in
+  # the function-local copy, only the capped AFK_PROBE_OUT evidence may stay
+  # reachable after the classification returns.
+  AFK_PROBE_PARSE_OUT=""
   if ! printf '%s' "$body" | jq -e 'type == "object" and has("catalog_version")' >/dev/null 2>&1; then
     AFK_RD_ROUTER="FALSE"
     afk_live_fact "router_status" "INCOMPATIBLE" "ROUTER_API_SHAPE_UNSUPPORTED" "ROUTER_STATUS" "true" "false" ""

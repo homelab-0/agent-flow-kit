@@ -728,6 +728,37 @@ assert_eq "and the large healthy response permits new work" \
   "$(jget '.readiness.NEW_WORK_READY.state')" "TRUE"
 stub_reset
 
+# --- the complete parse buffer does not outlive its parse -----------------
+# Sourced-library reproduction: probe and inspection share one process, so a
+# buffer the classification failed to clear is directly measurable here. The
+# fixture is the >4096-byte router document, so a lingering buffer would be
+# the uncapped body, not a capped remnant.
+PROBE_AFTER_CLASSIFY="$(
+  export PATH="$BIN:$PATH" STUB_ROUTER=large STUB_ROUTER_CATALOG="sha256:abc"
+  export AGENT_ROUTER_URL="https://router.invalid" AGENT_ROUTER_TOKEN="stub-token"
+  afk_probe_router >/dev/null 2>&1
+  printf '%s %s' "$AFK_RD_ROUTER" "${#AFK_PROBE_PARSE_OUT}"
+)"
+assert_eq "the >4096-byte fixture still classifies the router available" \
+  "${PROBE_AFTER_CLASSIFY% *}" "TRUE"
+assert_eq "and the complete parse buffer is empty once classification completes" \
+  "${PROBE_AFTER_CLASSIFY#* }" "0"
+
+PROBE_RESET_SHAPE="$(
+  export STUB_ROUTER=large STUB_ROUTER_CATALOG="sha256:abc"
+  afk_probe_run "$BIN/curl"
+  printf '%s %s ' "${#AFK_PROBE_PARSE_OUT}" "${#AFK_PROBE_OUT}"
+  afk_readiness_reset
+  printf '%s %s' "${#AFK_PROBE_PARSE_OUT}" "${#AFK_PROBE_OUT}"
+)"
+read -r RESET_PARSE_BEFORE RESET_RETAINED_BEFORE RESET_PARSE_AFTER RESET_RETAINED_AFTER \
+  <<<"$PROBE_RESET_SHAPE"
+assert_eq "the reset fixture exceeds the retention cap" \
+  "$(( RESET_PARSE_BEFORE > 4096 ))" "1"
+assert_eq "with retained evidence capped at 4096 bytes" "$RESET_RETAINED_BEFORE" "4096"
+assert_eq "readiness reset clears the complete parse buffer" "$RESET_PARSE_AFTER" "0"
+assert_eq "and the capped probe evidence with it" "$RESET_RETAINED_AFTER" "0"
+
 if command -v timeout >/dev/null 2>&1; then
   STUB_ROUTER=slow
   LIVE_TIMEOUT_MS=1000
