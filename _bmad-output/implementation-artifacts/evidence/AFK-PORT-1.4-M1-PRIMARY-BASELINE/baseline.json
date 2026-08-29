@@ -1,0 +1,167 @@
+{
+  "result_schema_version": "afk-port-1.4-baseline-v1",
+  "observation": {
+    "timestamp_utc": "2026-08-27T14:52:27Z",
+    "provenance": "date -u +%Y-%m-%dT%H:%M:%SZ"
+  },
+  "host": {
+    "hostname": "ubuntu-devbox",
+    "virtualization": "kvm",
+    "chassis": "vm",
+    "hardware_vendor": "QEMU",
+    "os": "Ubuntu 24.04.4 LTS",
+    "kernel": "Linux 7.0.0-29-generic",
+    "architecture": "x86_64",
+    "provenance": [
+      "hostnamectl --json=short",
+      "systemd-detect-virt",
+      "uname -srmo",
+      "/etc/os-release"
+    ]
+  },
+  "paths": {
+    "canonical_checkout": "/home/devbox/repos/jlengelbrecht/agent-flow-kit",
+    "installed_share": {
+      "path": "/home/devbox/.local/share/agent-flow-kit",
+      "state": "PRESENT"
+    },
+    "installed_state": {
+      "path": "/home/devbox/.local/state/agent-flow-kit",
+      "state": "ABSENT"
+    },
+    "story_worktree": "/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.4",
+    "orca_workspace_root": "/home/devbox/orca/workspaces",
+    "provenance": "test -e and stat -c %F on each explicit path"
+  },
+  "canonical_git": {
+    "branch": "story/afk-port-1.2",
+    "head_sha": "2475bf22ccdb30b6aac472de55f08c45f39a770e",
+    "comparison_ref": "master",
+    "behind_comparison_ref": 23,
+    "ahead_of_comparison_ref": 6,
+    "tracked_change_count": 0,
+    "untracked_count": 5,
+    "untracked_classes": {
+      "files": 5,
+      "directories": 0,
+      "other": 0
+    },
+    "tracked_change_classes": {
+      "modified": 0,
+      "added": 0,
+      "deleted": 0,
+      "renamed": 0,
+      "conflicted": 0
+    },
+    "provenance": [
+      "git -C /home/devbox/repos/jlengelbrecht/agent-flow-kit branch --show-current",
+      "git -C /home/devbox/repos/jlengelbrecht/agent-flow-kit rev-parse HEAD",
+      "git -C /home/devbox/repos/jlengelbrecht/agent-flow-kit rev-list --left-right --count master...HEAD",
+      "git -C /home/devbox/repos/jlengelbrecht/agent-flow-kit status --porcelain=v1 -z (aggregate counts and filesystem classes only)"
+    ]
+  },
+  "installed_kit": {
+    "applied_revision": null,
+    "manifest": {
+      "path": "/home/devbox/.local/state/agent-flow-kit/state.json",
+      "state": "ABSENT"
+    },
+    "checkout_revision_observed_by_lifecycle": "2475bf22ccdb30b6aac472de55f08c45f39a770e",
+    "installation_state": "UNKNOWN",
+    "installation_reason": "INSTALLATION_NOT_ADOPTED",
+    "provenance": [
+      "status.json: checkout.revision",
+      "status.json: findings[state-manifest]",
+      "verify.json: extra.verification.checks[manifest_present]"
+    ]
+  },
+  "ownership": {
+    "durable_ownership_proven": false,
+    "ownership_claimed": false,
+    "component_classes": [
+      "MANAGED_COPY_TREE",
+      "MACHINE_LOCAL",
+      "MANAGED_LINK",
+      "MANAGED_SECTION",
+      "USER_OWNED",
+      "MANAGED_COPY_FILE"
+    ],
+    "provenance": [
+      "status.json: components[].ownership",
+      "adopt-inspect.json: extra.adoption.ownership_claimed",
+      "adopt-inspect.json: extra.adoption.note"
+    ]
+  },
+  "bmad_targets_and_wiring": {
+    "registered_targets": [],
+    "registered_target_count": 0,
+    "observed_wiring": [
+      {
+        "id": "model-router-claude-link",
+        "state": "UNKNOWN",
+        "reason": "NOT_ADOPTED",
+        "ownership": "MANAGED_LINK"
+      },
+      {
+        "id": "humanizer-claude-link",
+        "state": "UNKNOWN",
+        "reason": "NOT_ADOPTED",
+        "ownership": "MANAGED_LINK"
+      },
+      {
+        "id": "claude-global-policy",
+        "state": "UNKNOWN",
+        "reason": "MANAGED_SECTION_ABSENT",
+        "ownership": "MANAGED_SECTION"
+      },
+      {
+        "id": "codex-global-guidance",
+        "state": "UNKNOWN",
+        "reason": "NOT_ADOPTED",
+        "ownership": "MANAGED_COPY_FILE"
+      }
+    ],
+    "provenance": "status.json: targets and components"
+  },
+  "harnesses": {
+    "claude": {
+      "availability": "PRESENT",
+      "path": "/home/devbox/.local/bin/claude",
+      "auth_mode": "CREDENTIAL_FILE_PRESENT_API_KEY_ENV_ABSENT"
+    },
+    "codex": {
+      "availability": "PRESENT",
+      "path": "/home/devbox/.local/bin/codex",
+      "auth_mode": "NO_DEFAULT_AUTH_FILE_OR_API_KEY_ENV_OBSERVED"
+    },
+    "provenance": "command -v; existence-only checks for default credential files; presence-only checks for API-key environment variables"
+  },
+  "orca": {
+    "runtime_version": "1.4.188",
+    "runtime_state": "ready",
+    "runtime_reachable": true,
+    "connection_kind": "REMOTE_ORCA_SERVER_WITH_SEPARATE_HUB",
+    "cli_target_kind": "local",
+    "provenance": [
+      "orca-ide status --json",
+      "coordinator-supplied fact: this is a remote Orca server; hub is a separate machine"
+    ]
+  },
+  "validator": {
+    "agent_stamp_validate": {
+      "availability": "PRESENT",
+      "path": "/home/devbox/.local/bin/agent-stamp-validate"
+    },
+    "catalog": {
+      "path": "/home/devbox/.local/share/agent-flow-kit/catalogs/agent-router-1.3.0.yaml",
+      "sha256": "9b7ba27e367f8cfa0caeed4057fe0fab1cd4138b11f9f65f906822276bfa5e20"
+    },
+    "provenance": "command -v agent-stamp-validate; find catalog path; sha256sum catalog"
+  },
+  "router_endpoint": {
+    "reachability_class": "NOT_TESTED_UNCONFIGURED_ENV",
+    "authenticated_endpoint_called": false,
+    "basis": "AGENT_ROUTER_URL and AGENT_ROUTER_TOKEN were absent in lifecycle environment classification",
+    "provenance": "status.json: environment (presence/classification only)"
+  }
+}

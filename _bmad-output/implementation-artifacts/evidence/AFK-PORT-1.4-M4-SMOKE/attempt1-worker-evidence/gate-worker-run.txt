@@ -1,0 +1,7 @@
+GATE FAIL: changed-file set is not exactly the staged canary:
+A  smoke/canary.txt
+?? .agents/skills/bmad-agent-dev/
+?? SMOKE-BRIEF.md
+?? smoke-evidence/
+?? stories/SMOKE-CANARY.md.stamp.json
+exit status: 1

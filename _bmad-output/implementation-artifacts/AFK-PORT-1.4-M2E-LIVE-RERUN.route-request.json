@@ -1,0 +1,12 @@
+{
+  "story_id": "AFK-PORT-1.4-M2E-LIVE-RERUN",
+  "title": "Story 1.4 M2e: live verification rerun on the fixed readiness surface",
+  "summary": "Rerun the primary host's explicit live verification on the merged, checkout-live readiness fixes with declared host configuration; read-only; every FALSE scope's reason must be grounded in the same result's live facts.",
+  "touched_paths": ["_bmad-output/implementation-artifacts/evidence/AFK-PORT-1.4-M2E-LIVE-RERUN/"],
+  "ambiguity": "low",
+  "blast_radius": "low",
+  "volume_hint": "low",
+  "tags": [],
+  "repo": "agent-flow-kit",
+  "requester": "bmad-pm"
+}

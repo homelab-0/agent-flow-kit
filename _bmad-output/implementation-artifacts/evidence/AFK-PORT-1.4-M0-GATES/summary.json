@@ -1,0 +1,76 @@
+{
+  "persona_proof": "07ee71cffbefa3372dda5a882a82acdd526fac49a468322088607061c404a4ee",
+  "worktree_head": "8a7cbc194fd56114d65c7dfd6a42106c807fb46b",
+  "gates": [
+    {
+      "gate": "lifecycle",
+      "command": "bash tests/lifecycle-tests.sh",
+      "exit_status": 0,
+      "passed": 476,
+      "failed": 0,
+      "skipped": 0,
+      "wall_seconds": 558,
+      "log": "lifecycle.log"
+    },
+    {
+      "gate": "readiness",
+      "command": "bash tests/lifecycle-readiness-tests.sh",
+      "exit_status": 0,
+      "passed": 251,
+      "failed": 0,
+      "skipped": 0,
+      "wall_seconds": 317,
+      "log": "readiness.log"
+    },
+    {
+      "gate": "dispatch",
+      "command": "bash tests/lifecycle-dispatch-tests.sh",
+      "exit_status": 0,
+      "passed": 250,
+      "failed": 0,
+      "skipped": 0,
+      "wall_seconds": 218,
+      "log": "dispatch.log"
+    },
+    {
+      "gate": "mutation",
+      "command": "bash tests/lifecycle-mutation-tests.sh",
+      "exit_status": 0,
+      "passed": 577,
+      "failed": 0,
+      "skipped": 0,
+      "wall_seconds": 1939,
+      "log": "mutation.log"
+    },
+    {
+      "gate": "concurrency",
+      "command": "bash tests/lifecycle-concurrency-tests.sh",
+      "exit_status": 0,
+      "passed": 207,
+      "failed": 0,
+      "skipped": 0,
+      "wall_seconds": 41,
+      "log": "concurrency.log"
+    },
+    {
+      "gate": "run-tests",
+      "command": "bash tests/run-tests.sh",
+      "exit_status": 0,
+      "passed": 235,
+      "failed": 0,
+      "skipped": 1,
+      "wall_seconds": 3100,
+      "log": "run-tests.log"
+    },
+    {
+      "gate": "git-diff-check",
+      "command": "git diff --check",
+      "exit_status": 0,
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "wall_seconds": 0,
+      "log": "git-diff-check.log"
+    }
+  ]
+}

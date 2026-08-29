@@ -1,0 +1,14 @@
+{
+  "story_id": "AFK-PORT-1.4-M2A-ADOPT",
+  "title": "Story 1.4 M2a: adoption transaction at the stale revision on the primary host",
+  "summary": "Execute the kit's own adoption transaction on the primary host's canonical checkout, positioned at its true stale revision (master @ bd9d9fb): status precheck, adopt inspect, full plan capture with a hard stop on any non-kit-owned write target, preservation before/after hashing, plan-identity approval under Josh's delegated M2 authority, offline verification. The only mutation is the kit's own transaction; permissive flags forbidden; refusals stop the lane.",
+  "touched_paths": [
+    "_bmad-output/implementation-artifacts/evidence/AFK-PORT-1.4-M2A-ADOPT/"
+  ],
+  "ambiguity": "low",
+  "blast_radius": "medium",
+  "volume_hint": "low",
+  "tags": [],
+  "repo": "agent-flow-kit",
+  "requester": "bmad-pm"
+}

@@ -1,0 +1,156 @@
+agent-flow-kit status  (result schema 1.0)
+  checkout path     : /home/devbox/repos/jlengelbrecht/agent-flow-kit
+  checkout revision : fbc0923a2513beee5527afde57cd69c5600a735a
+  checkout branch   : master
+  repository        : rootcommit:d74e7f9542cfe2731e09a0ff5c5e1b4cf325062f
+  declaration       : COMPLETE
+  applied revision  : 8a7cbc194fd56114d65c7dfd6a42106c807fb46b
+  installed state   : CURRENT
+  adopted           : true
+  journal state     : COMMITTED
+  lock state        : NONE
+  source eligibility: ELIGIBLE (mutation_allowed=true, revision_relation=AHEAD)
+    source reason: SOURCE_DIRT_OUTSIDE_INPUT_SET
+
+  components
+    model-router  [MANAGED_COPY_TREE]  CURRENT  -
+      destination: /home/devbox/.agents/skills/model-router
+      expected=sha256:d6cc40f6e5e9e54afd1cc399ccbdbe9fff4df39deb9c2a90663530217699ed4b  observed=sha256:d6cc40f6e5e9e54afd1cc399ccbdbe9fff4df39deb9c2a90663530217699ed4b  provenance=HASH_COMPARISON
+      severity=info  mutation_safe=true  owner_action_required=false  execution_critical=true
+      blocked_scopes=-  adaptation=-  detail=-
+    model-router-config  [MACHINE_LOCAL]  LOCAL_ADAPTATION  MACHINE_OWNED_REGION
+      destination: /home/devbox/.agents/skills/model-router/subscriptions.yaml
+      expected=-  observed=sha256:3bf9b0bf0515899886c6fa33026065fa6319284334141820a1ec8e587ae55c88  provenance=OWNERSHIP_RULE
+      severity=info  mutation_safe=true  owner_action_required=false  execution_critical=false
+      blocked_scopes=-  adaptation=-  detail=-
+    model-router-claude-link  [MANAGED_LINK]  CURRENT  -
+      destination: /home/devbox/.claude/skills/model-router
+      expected=link:/home/devbox/.agents/skills/model-router  observed=link:/home/devbox/.agents/skills/model-router  provenance=PATH_STRUCTURE
+      severity=info  mutation_safe=true  owner_action_required=false  execution_critical=true
+      blocked_scopes=-  adaptation=-  detail=-
+    humanizer  [MANAGED_COPY_TREE]  CURRENT  -
+      destination: /home/devbox/.agents/skills/humanizer
+      expected=sha256:fced7a333ae1ed2c10fc0cefbf8ce2770d90a8a364fbabd0e0bda1a59c831b1f  observed=sha256:fced7a333ae1ed2c10fc0cefbf8ce2770d90a8a364fbabd0e0bda1a59c831b1f  provenance=HASH_COMPARISON
+      severity=info  mutation_safe=true  owner_action_required=false  execution_critical=false
+      blocked_scopes=-  adaptation=-  detail=-
+    humanizer-claude-link  [MANAGED_LINK]  CURRENT  -
+      destination: /home/devbox/.claude/skills/humanizer
+      expected=link:/home/devbox/.agents/skills/humanizer  observed=link:/home/devbox/.agents/skills/humanizer  provenance=PATH_STRUCTURE
+      severity=info  mutation_safe=true  owner_action_required=false  execution_critical=false
+      blocked_scopes=-  adaptation=-  detail=-
+    claude-global-policy  [MANAGED_SECTION]  CURRENT  -
+      destination: /home/devbox/.claude/CLAUDE.md
+      expected=sha256:3bf080b8f0994903a639d992d2245eb2e5a5a8b9c69c3ff9ac697839a475c9b1  observed=sha256:3bf080b8f0994903a639d992d2245eb2e5a5a8b9c69c3ff9ac697839a475c9b1  provenance=HASH_COMPARISON
+      severity=info  mutation_safe=true  owner_action_required=false  execution_critical=true
+      blocked_scopes=-  adaptation=-  detail=-
+    claude-global-policy:outside-section  [USER_OWNED]  EXTERNAL_STATE  USER_OWNED_REGION
+      destination: /home/devbox/.claude/CLAUDE.md
+      expected=-  observed=279 lines outside the managed section  provenance=FILE_STRUCTURE
+      severity=info  mutation_safe=true  owner_action_required=false  execution_critical=false
+      blocked_scopes=-  adaptation=-  detail=-
+    codex-global-guidance  [MANAGED_COPY_FILE]  CURRENT  -
+      destination: /home/devbox/.codex/AGENTS.md
+      expected=sha256:0d52d4773b0c1a5d3ffb3f666020f28c09f07660bc88a03024d92c589ddf18bb  observed=sha256:0d52d4773b0c1a5d3ffb3f666020f28c09f07660bc88a03024d92c589ddf18bb  provenance=HASH_COMPARISON
+      severity=info  mutation_safe=true  owner_action_required=false  execution_critical=false
+      blocked_scopes=-  adaptation=-  detail=-
+
+  registered BMAD targets
+    (none registered)
+
+  registered adaptations
+    (none registered)
+
+  readiness
+    INSTALLED_INTEGRITY: READY  evaluated=true  reason=-
+    MUTATION_SOURCE_ELIGIBLE: TRUE  evaluated=true  reason=-
+    HOST_EXECUTION_READY: FALSE  evaluated=true  reason=ORCA_CAPABILITY_UNPROVEN
+    NEW_WORK_READY: FALSE  evaluated=true  reason=ORCA_CAPABILITY_UNPROVEN
+    TARGET_READY: NOT_EVALUATED  evaluated=false  reason=NO_TARGET_REGISTERED
+    ROUTE_READY: OUT_OF_SCOPE  evaluated=false  reason=NO_EXECUTION_STAMP_SUPPLIED
+    ROUTE_READY execution_stamp: - (placement_selected=false, launch_authoritative=false)
+
+  live facts (default evaluation performs no live probe)
+    router_status: AVAILABLE (ROUTER_AVAILABLE)  evaluated=true  observed_at=2026-08-28T06:31:17Z  timeout_ms=5000  freshness_s=300  transient=false  launch_authoritative=false  detail=HTTP 200
+    router_catalog_provenance: COMPATIBLE (ROUTER_CATALOG_COMPATIBLE)  evaluated=true  observed_at=2026-08-28T06:31:17Z  timeout_ms=5000  freshness_s=300  transient=false  launch_authoritative=false  detail=-
+    router_synthetic_route: NOT_EVALUATED (LIVE_PROBE_NOT_REQUESTED)  evaluated=false  observed_at=-  timeout_ms=-  freshness_s=-  transient=false  launch_authoritative=false  detail=-
+    claude_native_session: NOT_EVALUATED (HARNESS_CAPABILITY_UNPROVEN)  evaluated=false  observed_at=-  timeout_ms=-  freshness_s=-  transient=false  launch_authoritative=false  detail=-
+    codex_native_session: UNKNOWN (AUTH_STATUS_UNPROVEN)  evaluated=true  observed_at=2026-08-28T06:31:17Z  timeout_ms=5000  freshness_s=300  transient=false  launch_authoritative=false  detail=-
+    claude_capability: INCOMPATIBLE (HARNESS_CAPABILITY_UNPROVEN)  evaluated=true  observed_at=2026-08-28T06:31:17Z  timeout_ms=5000  freshness_s=300  transient=false  launch_authoritative=false  detail=--model --permission-mode --append-system-prompt-file --strict-mcp-config
+    codex_capability: COMPATIBLE (HARNESS_CAPABILITY_PROVEN)  evaluated=true  observed_at=2026-08-28T06:31:17Z  timeout_ms=5000  freshness_s=300  transient=false  launch_authoritative=false  detail=-
+    claude_workspace_trust: NOT_EVALUATED (LIVE_PROBE_NOT_REQUESTED)  evaluated=false  observed_at=-  timeout_ms=-  freshness_s=-  transient=false  launch_authoritative=false  detail=-
+    orca_runtime: AVAILABLE (ORCA_RUNTIME_REACHABLE)  evaluated=true  observed_at=2026-08-28T06:31:14Z  timeout_ms=5000  freshness_s=300  transient=false  launch_authoritative=false  detail=-
+    orca_capability: UNKNOWN (ORCA_CAPABILITY_UNPROVEN)  evaluated=true  observed_at=2026-08-28T06:31:16Z  timeout_ms=5000  freshness_s=300  transient=false  launch_authoritative=false  detail=-
+    validator_contract: UNKNOWN (VALIDATOR_CONTRACT_UNREADABLE)  evaluated=true  observed_at=2026-08-28T06:31:16Z  timeout_ms=5000  freshness_s=300  transient=false  launch_authoritative=false  detail=-
+    validator_fixtures: UNAVAILABLE (VALIDATOR_VERDICT_UNAVAILABLE)  evaluated=true  observed_at=2026-08-28T06:31:16Z  timeout_ms=5000  freshness_s=300  transient=true  launch_authoritative=false  detail=no verdict on the known-valid fixture
+    route_placement: NOT_EVALUATED (LIVE_PROBE_NOT_REQUESTED)  evaluated=false  observed_at=-  timeout_ms=-  freshness_s=-  transient=false  launch_authoritative=false  detail=-
+    route_authority: NOT_EVALUATED (LIVE_PROBE_NOT_REQUESTED)  evaluated=false  observed_at=-  timeout_ms=-  freshness_s=-  transient=false  launch_authoritative=false  detail=-
+    orca_executable: PRESENT (EXECUTABLE_RESOLVED)  evaluated=true  observed_at=-  timeout_ms=-  freshness_s=-  transient=false  launch_authoritative=false  detail=/home/devbox/.local/bin/orca-ide
+    validator_executable: PRESENT (EXECUTABLE_RESOLVED)  evaluated=true  observed_at=-  timeout_ms=-  freshness_s=-  transient=false  launch_authoritative=false  detail=/home/devbox/.local/bin/agent-stamp-validate
+    claude_executable: PRESENT (EXECUTABLE_RESOLVED)  evaluated=true  observed_at=-  timeout_ms=-  freshness_s=-  transient=false  launch_authoritative=false  detail=/home/devbox/.local/bin/claude
+    codex_executable: PRESENT (EXECUTABLE_RESOLVED)  evaluated=true  observed_at=-  timeout_ms=-  freshness_s=-  transient=false  launch_authoritative=false  detail=/home/devbox/.local/bin/codex
+
+  orchestration (read-only summary; consumed, never owned)
+    state: NOT_AVAILABLE (ORCHESTRATION_STATE_NOT_AVAILABLE)  evaluated=false
+    mode=- phase=- task=- needs_human=false
+    parent=-/-  workers_available=-
+
+  dispatch monitor (durable completion watch; provenance-bound cleanup)
+    state: NOT_AVAILABLE (DISPATCH_WATCH_NOT_AVAILABLE)  evaluated=false
+    dispatches total=0 watching=0 completed=0 settled=0 degraded=0 unreadable=0
+    pending deliveries=0  retained terminals=0 worktrees=0 local_branches=0 remote_branches=0
+    required action: -
+
+  environment (names and presence only; values are never emitted)
+    ANTHROPIC_API_KEY: present=false [SECRET_BEARING] value=-
+    ANTHROPIC_AUTH_TOKEN: present=false [SECRET_BEARING] value=-
+    ANTHROPIC_BASE_URL: present=false [CONFIGURATION] value=-
+    CLAUDE_CONFIG_DIR: present=false [CONFIGURATION] value=-
+    OPENAI_API_KEY: present=false [SECRET_BEARING] value=-
+    OPENAI_BASE_URL: present=false [CONFIGURATION] value=-
+    CODEX_API_KEY: present=false [SECRET_BEARING] value=-
+    AGENT_ROUTER_URL: present=true [CONFIGURATION] value=[REDACTED]
+    AGENT_ROUTER_TOKEN: present=true [SECRET_BEARING] value=[REDACTED]
+    OP_SERVICE_ACCOUNT_TOKEN: present=true [SECRET_BEARING] value=[REDACTED]
+    AGENT_STAMP_VALIDATE_CATALOG_PATH: present=false [CONFIGURATION] value=-
+
+  findings
+    [warning] installation SOURCE_DIRT_OUTSIDE_INPUT_SET
+      The source checkout is dirty outside the declared managed input set.
+      impact: Does not block the reported scope, but is worth acting on.
+      action: No action required for mutation; this dirt cannot influence installed output.
+      blocked_scopes=MUTATION_SOURCE  mutation_safe=false  transient=false
+      expected=0 uncommitted paths outside the input set  observed=2 uncommitted paths outside the input set  provenance=GIT_STATE
+    [blocking] orca ORCA_CAPABILITY_UNPROVEN
+      Orca offers no explicit capability contract, so the launch capabilities a supervised worker depends on cannot be proven.
+      impact: Blocks the reported readiness scope deterministically.
+      action: Install an Orca version that declares the required launch capabilities explicitly.
+      blocked_scopes=HOST_EXECUTION_READY  mutation_safe=true  transient=false
+      expected=an explicit capability contract  observed=not offered  provenance=CAPABILITY_PROBE
+    [warning] validator VALIDATOR_CONTRACT_UNREADABLE
+      The validator offers no machine-readable identity and contract, so only its behaviour can be checked.
+      impact: Does not block the reported scope, but is worth acting on.
+      action: No action required for readiness; the fixture suite is the behavioural proof that actually decides.
+      blocked_scopes=-  mutation_safe=true  transient=false
+      expected=a machine-readable contract  observed=not offered  provenance=VALIDATOR_FIXTURE
+    [blocking] validator VALIDATOR_VERDICT_UNAVAILABLE
+      The validator could not deliver a verdict on an offline fixture, so its usability is temporarily unproven rather than refuted.
+      impact: Blocks the reported readiness scope deterministically.
+      action: Retry later, then investigate the validator installation: an unanswerable validator is a transient live condition, never a proven refusal.
+      blocked_scopes=HOST_EXECUTION_READY  mutation_safe=true  transient=true
+      expected=a verdict on a known-valid fixture  observed=no verdict  provenance=VALIDATOR_FIXTURE
+    [warning] claude HARNESS_CAPABILITY_UNPROVEN
+      This harness cannot prove the invocation capabilities the frozen launch contract uses.
+      impact: Does not block the reported scope, but is worth acting on.
+      action: Install a harness version that offers the invocation capabilities the launch contract uses.
+      blocked_scopes=-  mutation_safe=true  transient=false
+      expected=every required invocation capability  observed=missing: --model --permission-mode --append-system-prompt-file --strict-mcp-config  provenance=CAPABILITY_PROBE
+    [warning] codex AUTH_STATUS_UNPROVEN
+      The harness auth status could not be classified through a safe native mechanism.
+      impact: Does not block the reported scope, but is worth acting on.
+      action: Check the harness auth status by hand; readiness will not guess a session state.
+      blocked_scopes=-  mutation_safe=true  transient=false
+      expected=a classifiable auth status  observed=unclassifiable  provenance=AUTH_STATUS_PROBE
+
+  overall           : READY_WITH_WARNINGS
+  exit code         : 5
+  next safe action  : No action required.
