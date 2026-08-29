@@ -473,7 +473,11 @@ afk_probe_run() {
   fi
   secs="$(afk_probe_timeout_seconds)"
   if afk_have timeout; then
-    out="$(timeout "$secs" "$@" 2>/dev/null)"
+    if [[ "${AFK_PROBE_MERGE_STDERR:-}" == "true" ]]; then
+      out="$(timeout "$secs" "$@" 2>&1)"
+    else
+      out="$(timeout "$secs" "$@" 2>/dev/null)"
+    fi
     rc=$?
   else
     if [[ "$AFK_PROBE_UNBOUNDED_REPORTED" != "true" ]]; then
@@ -482,7 +486,11 @@ afk_probe_run() {
         "warning" "" "CAPABILITY_PROBE" "a bounded probe" "no timeout tool on this host" \
         "true" "true" ""
     fi
-    out="$("$@" 2>/dev/null)"
+    if [[ "${AFK_PROBE_MERGE_STDERR:-}" == "true" ]]; then
+      out="$("$@" 2>&1)"
+    else
+      out="$("$@" 2>/dev/null)"
+    fi
     rc=$?
   fi
   AFK_PROBE_RC=$rc
@@ -498,6 +506,17 @@ afk_probe_run() {
   fi
   AFK_PROBE_STATUS="OK"
   return 0
+}
+
+# afk_probe_run_merged <argv...>
+# The auth-status variant of afk_probe_run: identical contract, timeout bound
+# and 4096-byte retention cap, but the captured classification input is the
+# command's combined stdout+stderr — codex reports its login state on stderr,
+# and a stdout-only capture misreads a live subscription session as
+# unclassifiable. Reserved for the auth-status probes; every other probe keeps
+# the stdout-only contract of afk_probe_run.
+afk_probe_run_merged() {
+  AFK_PROBE_MERGE_STDERR="true" afk_probe_run "$@"
 }
 
 # --- the live-fact record ---------------------------------------------------
@@ -1374,10 +1393,13 @@ afk_probe_harness() {
   # session is reported rather than refreshed: automatic login is never a
   # readiness action.
   case "$h" in
-    claude) afk_probe_run "$bin" auth status ;;
-    codex)  afk_probe_run "$bin" login status ;;
+    claude) afk_probe_run_merged "$bin" auth status ;;
+    codex)  afk_probe_run_merged "$bin" login status ;;
     *)      AFK_PROBE_STATUS="NOT_RESOLVED"; AFK_PROBE_OUT="" ;;
   esac
+  # Classification reads only the capped evidence; the complete combined
+  # response has no reader past this point and must not stay reachable.
+  AFK_PROBE_PARSE_OUT=""
   if [[ "$AFK_PROBE_STATUS" == "TIMEOUT" ]]; then
     AFK_RD_LIVE_UNAVAILABLE="true"
     afk_live_fact "$auth_key" "UNAVAILABLE" "AUTH_STATUS_UNPROVEN" "AUTH_STATUS_PROBE" "true" "true" "timed out"

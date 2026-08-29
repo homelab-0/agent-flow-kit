@@ -415,9 +415,11 @@ if [[ "${1:-}" == "--help" ]]; then
 fi
 if [[ "${1:-} ${2:-}" == "login status" ]]; then
   case "${STUB_CODEX_AUTH:-sub}" in
-    api)  printf 'Logged in using an API key\n'; exit 0 ;;
-    none) printf 'Not logged in\n'; exit 1 ;;
-    *)    printf 'Logged in using ChatGPT\n'; exit 0 ;;
+    api)        printf 'Logged in using an API key\n'; exit 0 ;;
+    none)       printf 'Not logged in\n'; exit 1 ;;
+    stderr-sub) printf 'Logged in using ChatGPT\n' >&2; exit 0 ;;
+    silent)     exit 0 ;;
+    *)          printf 'Logged in using ChatGPT\n'; exit 0 ;;
   esac
 fi
 exit 1
@@ -856,6 +858,23 @@ STUB_CLAUDE_AUTH=weird
 run_afk status --json --live
 assert_eq "an unclassifiable status is unproven, never assumed good" \
   "$(jget '.live_facts.claude_native_session.reason')" "AUTH_STATUS_UNPROVEN"
+stub_reset
+
+# A real codex reports its login state on STDERR; the probe must classify
+# from the combined streams, and silence on both streams must stay unproven.
+STUB_CODEX_AUTH=stderr-sub
+run_afk status --json --live
+assert_eq "a codex subscription reported only on stderr is still classified" \
+  "$(jget '.live_facts.codex_native_session.reason')" "AUTH_NATIVE_SUBSCRIPTION"
+assert_eq "while the claude stdout auth path answers exactly as before" \
+  "$(jget '.live_facts.claude_native_session.reason')" "AUTH_NATIVE_SUBSCRIPTION"
+
+STUB_CODEX_AUTH=silent
+run_afk status --json --live
+assert_eq "a harness silent on both streams is unknown, never assumed good" \
+  "$(jget '.live_facts.codex_native_session.state')" "UNKNOWN"
+assert_eq "and carries the unproven reason" \
+  "$(jget '.live_facts.codex_native_session.reason')" "AUTH_STATUS_UNPROVEN"
 stub_reset
 
 STUB_CLAUDE_CAPS=partial
