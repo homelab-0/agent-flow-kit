@@ -1,0 +1,12 @@
+{
+  "story_id": "SMOKE-CANARY",
+  "title": "Orchestration acceptance smoke: create one frozen canary file in the wired target",
+  "summary": "Disposable approved story for the acceptance smoke on the wired target repository afk-smoke-target: create exactly one staged canary file (smoke/canary.txt) with a frozen byte sequence (sha256 pinned in the story and its pre-declared deterministic gate), stage it, run the gate, report. No production behavior, no dependencies, no secrets, no infrastructure, no commits, no merge.",
+  "touched_paths": ["smoke/canary.txt"],
+  "ambiguity": "low",
+  "blast_radius": "low",
+  "volume_hint": "low",
+  "tags": [],
+  "repo": "afk-smoke-target",
+  "requester": "bmad-pm"
+}

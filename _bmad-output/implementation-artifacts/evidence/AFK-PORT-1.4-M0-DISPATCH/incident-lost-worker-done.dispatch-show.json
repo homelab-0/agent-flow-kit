@@ -1,0 +1,29 @@
+{
+  "id": "2b9ee97d-49c2-4846-90ff-611e275cec2d",
+  "ok": true,
+  "result": {
+    "dispatch": {
+      "id": "ctx_e146f62699c1",
+      "task_id": "task_cd5acc0c0e1a",
+      "assignee_handle": "term_783f8887-d7bd-4e7d-b835-b42994812041",
+      "assignee_pane_key": "d6f4a506-66c2-40e7-af58-d627534f96c4:a79dff51-23b3-415c-b8c3-a0ba9a79ab48",
+      "status": "dispatched",
+      "failure_count": 0,
+      "last_failure": null,
+      "dispatched_at": "2026-08-27 05:43:58",
+      "completed_at": null,
+      "created_at": "2026-08-27 05:43:58",
+      "last_heartbeat_at": null,
+      "run_id": "run_5a0ac02ec79c",
+      "capability_hash": "db65aa752ada9e3a807c0f4a1546720521ccc295a26ac02dd4d103e2ca386786",
+      "process_incarnation": "5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.4@@3d61e045:9ef27d3e-ff08-40ec-aefd-8d33788f4986",
+      "capability_revoked_at": null,
+      "contract_version": 1,
+      "launch_token_hash": "5ebc9f2566e1657947acc2ebbbabb0d82c9e14cb5fe9e53ad7eeed1bd61f8a69",
+      "termination_reason": null
+    }
+  },
+  "_meta": {
+    "runtimeId": "17c2b2fc-c149-4200-a58d-0af421b5ffb1"
+  }
+}

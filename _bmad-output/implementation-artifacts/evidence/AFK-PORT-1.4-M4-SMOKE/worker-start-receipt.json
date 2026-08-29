@@ -1,0 +1,65 @@
+{
+  "id": "2978c98f-c99b-4de2-8037-61d34d85e353",
+  "ok": true,
+  "result": {
+    "runId": "run_5a0ac02ec79c",
+    "taskId": "task_e977fffb8a07",
+    "dispatchId": "ctx_c824cee4d09c",
+    "state": "ready",
+    "stage": "input_accepted",
+    "setup": {
+      "requested": "not_applicable",
+      "effective": "not_applicable",
+      "source": "existing_worktree",
+      "hookFound": false,
+      "startupPolicy": "start-immediately",
+      "state": "not_applicable"
+    },
+    "launch": {
+      "requested": {
+        "agent": "codex",
+        "model": null,
+        "effort": null
+      },
+      "effective": {
+        "agent": "codex",
+        "model": null,
+        "effort": null
+      }
+    },
+    "timeoutMs": 60000,
+    "effects": [
+      {
+        "kind": "worktree",
+        "action": "reused",
+        "id": "d1c607d7-063b-4e28-86ae-ae4c24038ea8::/home/devbox/orca/workspaces/afk-smoke-target/afk-smoke-run"
+      },
+      {
+        "kind": "setup",
+        "action": "not_applicable",
+        "state": "not_applicable"
+      },
+      {
+        "kind": "terminal",
+        "role": "agent",
+        "action": "created",
+        "id": "term_ddb37627-ef33-45e4-809c-f89b7dfaa08d",
+        "surface": "visible"
+      },
+      {
+        "kind": "dispatch_input",
+        "role": "agent",
+        "id": "term_ddb37627-ef33-45e4-809c-f89b7dfaa08d",
+        "state": "accepted"
+      }
+    ],
+    "residualResources": [],
+    "mutation": {
+      "requestId": "accd87d4-55ae-4b3a-8be4-c3a008423884",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "3a68d567-8659-4055-af4a-14ebec8848ec"
+  }
+}

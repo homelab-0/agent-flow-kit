@@ -1,0 +1,1 @@
+3bf9b0bf0515899886c6fa33026065fa6319284334141820a1ec8e587ae55c88  /home/devbox/.agents/skills/model-router/subscriptions.yaml

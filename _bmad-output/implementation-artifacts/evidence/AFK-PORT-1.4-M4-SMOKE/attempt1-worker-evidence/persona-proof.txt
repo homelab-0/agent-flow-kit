@@ -1,0 +1,2 @@
+07ee71cffbefa3372dda5a882a82acdd526fac49a468322088607061c404a4ee
+persona proof source: skill files provisioned into the smoke worktree by the coordinator handoff

@@ -5,10 +5,10 @@ Frozen baseline: 95 FRs · 33 ACs · 12 NFRs
 | Requirement range | Story | Implementation artifact | Deterministic test/evidence | Status |
 |---|---|---|---|---|
 | FR-1–21, FR-24, FR-29–35, FR-72–84, FR-91, FR-93–94 | AFK-PORT-1.1 | `bin/agent-flow-kit`, `lib/afk-{common,source,inventory,commands}.sh`, `lifecycle/kit.json`, `docs/LIFECYCLE-CONTRACT.md` | Routed cycle 3 after two-group adversarial review: `tests/lifecycle-tests.sh`, `tests/run-tests.sh`, `git diff --check` all independently passed | IMPLEMENTED + VERIFIED |
-| FR-22–28, FR-36–46, FR-91–94 | AFK-PORT-1.2 | `lib/afk-{plan,mutate}.sh`, `lib/afk-{common,source,inventory,commands}.sh`, `docs/LIFECYCLE-CONTRACT.md` | `tests/lifecycle-mutation-tests.sh` (destructive temp-HOME suite: plan/approval binding, rollback, interruption recovery, idempotence, F1–F8 adversarial regressions, plus `f6window` / `f6contendclean` for the acquisition publication window, `f6vanishrecord` for a record released underneath the read of it, `f6markervanish` for the arbitration marker the winner's rename carried away, and `f6silentreclaim` for a reclamation whose take was lost), `tests/lifecycle-concurrency-tests.sh` (the operation lock under real barrier-synchronized contention, section 10 for the publication window, section 11 for a record seen and then found gone, section 12 for the single-observation discriminator and section 13 for a reclamation that is never silent, and `tests/lifecycle-mutation-tests.sh` section 11 for a lifecycle command interrupted by a signal at four chosen points in and around its transaction, and section 12 for every terminating signal delivered pid-only while a managed write is still in flight), `tests/lifecycle-tests.sh`, `tests/run-tests.sh`, `git diff --check` | IMPLEMENTED — adversarial findings F1–F8 fixed, F6 re-fixed for concurrency, F6-R1 fixed for acquisition guidance, F6-R2 and F6-R3 fixed for the two vanished-record mis-refusals, F6-R4 fixed by judging one observation, F6-R9 fixed so a reclamation is never silent, F6-R10 fixed so a signal never releases the lock while the process can still write, F6-R11 fixed so no terminating signal frees it under a write that is still running; awaiting independent verification |
-| FR-47–90, FR-95 | AFK-PORT-1.3 | TBD by worker | readiness matrix; validator anti-vacuity; visibility regression | PLANNED |
-| AC-1–33 | AFK-PORT-1.4 | retained acceptance bundle | two-host, Git-channel, real route/stamp/Orca smoke, cleanup | PLANNED |
-| NFR-1–12 | AFK-PORT-1.1–1.4 | cross-cutting | story gates plus final traceability audit | PARTIAL — NFR-1, 5, 7, 8, 10, 11, 12 exercised by the Story 1.1 gate |
+| FR-22–28, FR-36–46, FR-91–94 | AFK-PORT-1.2 | `lib/afk-{plan,mutate}.sh`, `lib/afk-{common,source,inventory,commands}.sh`, `docs/LIFECYCLE-CONTRACT.md` | `tests/lifecycle-mutation-tests.sh` (destructive temp-HOME suite: plan/approval binding, rollback, interruption recovery, idempotence, F1–F8 adversarial regressions, plus `f6window` / `f6contendclean` for the acquisition publication window, `f6vanishrecord` for a record released underneath the read of it, `f6markervanish` for the arbitration marker the winner's rename carried away, and `f6silentreclaim` for a reclamation whose take was lost), `tests/lifecycle-concurrency-tests.sh` (the operation lock under real barrier-synchronized contention, section 10 for the publication window, section 11 for a record seen and then found gone, section 12 for the single-observation discriminator and section 13 for a reclamation that is never silent, and `tests/lifecycle-mutation-tests.sh` section 11 for a lifecycle command interrupted by a signal at four chosen points in and around its transaction, and section 12 for every terminating signal delivered pid-only while a managed write is still in flight), `tests/lifecycle-tests.sh`, `tests/run-tests.sh`, `git diff --check` | IMPLEMENTED — adversarial findings F1–F8 fixed, F6 re-fixed for concurrency, F6-R1 fixed for acquisition guidance, F6-R2 and F6-R3 fixed for the two vanished-record mis-refusals, F6-R4 fixed by judging one observation, F6-R9 fixed so a reclamation is never silent, F6-R10 fixed so a signal never releases the lock while the process can still write, F6-R11 fixed so no terminating signal frees it under a write that is still running; FROZEN — IMPLEMENTED + VERIFIED at superseding freeze `0079ff6` (eleven review rounds; final gates independently green) 
+| FR-47–90, FR-95 | AFK-PORT-1.3 | `lib/afk-readiness.sh`, `lib/afk-monitor.sh`, `bin/agent-flow-kit`, `lib/afk-common.sh` | `tests/lifecycle-readiness-tests.sh`, `tests/lifecycle-dispatch-tests.sh`, full composite; converged 2026-08-26 (superseding freeze `7d126fc`), post-freeze triage T1/T2; 1.4 live acceptance layered on top | IMPLEMENTED + VERIFIED |
+| AC-1–33 | AFK-PORT-1.4 | retained acceptance bundle (`evidence/INDEX.md`; Mac branch `evidence/afk-port-1.4-mac`) | two real hosts, Git channel, real route/stamp/Orca smoke, durable-watch turn boundary, restart probe, cleanup — 140-item ultracode sweep in `evidence/AFK-PORT-1.4-M5-TRACEABILITY/traceability-sweep.json` | ACCEPTANCE-ONLY + PROVEN (32) / EXPLICITLY BLOCKED (AC-20 natural-route clause) — see Story 1.4 section |
+| NFR-1–12 | AFK-PORT-1.1–1.4 | cross-cutting | story gates plus the 1.4 final traceability sweep (12/12 verified) | IMPLEMENTED + VERIFIED |
 
 Final statuses are restricted to IMPLEMENTED + VERIFIED, ACCEPTANCE-ONLY + PROVEN, or EXPLICITLY BLOCKED.
 
@@ -179,3 +179,84 @@ loud NEEDS_HUMAN. Pull-side consumer of the 1.3 bridge; introduces no scraper
 or control-plane surface. Story 1.4's live-render acceptance condition is the
 natural proving ground: a live PLAN-mode render and a populated statusline are
 the same demonstration.
+
+## Story 1.4 — Prove Portability Across Real Orca Hosts (CLOSED 2026-08-29)
+
+Full per-requirement verification: `evidence/AFK-PORT-1.4-M5-TRACEABILITY/traceability-sweep.json`
+(140 items, produced by a 13-agent independent verification sweep; every mapping
+checked against the actual retained artifact, not the story record's claim).
+Counts: 107 IMPLEMENTED + VERIFIED · 29 ACCEPTANCE-ONLY + PROVEN ·
+1 EXPLICITLY BLOCKED · 3 sweep-time gaps, all three discharged at M5 assembly:
+
+- AC-14-class bundle index: `evidence/INDEX.md` (this assembly).
+- AC-21-class stamp-validation retention: launch-moment JSON not retained
+  (recorded retention miss); session record + post-hoc validation of the same
+  unexpired stamp retained (`AFK-PORT-1.4-M5-TRACEABILITY/smoke-stamp-posthoc-validation.json`).
+- AC-31/32/33 closure: this section, the index, and the verdict in
+  `AFK-PORT-1.4.md` discharge them.
+
+**EXPLICITLY BLOCKED — one clause.** The smoke's natural valid route
+(`{claude, local-code-standard}`) is valid-but-unlaunchable under the frozen
+launch adapter (the standard-band routing deadlock, documented since M0), so
+the smoke ran on the owner's recorded standing override to the route's own
+first fallback. Every other element of that AC (classification, route response,
+catalog provenance, entitlement, fallback, accepted decision, stamp, first-time
+ROUTE_READY evaluation) is retained and proven. Resolution path: the owner's
+out-of-band routing solution; the moment the catalog changes, the natural route
+is preferred.
+
+**Registered acceptance conditions (from the 1.3 freeze) — final dispositions:**
+composed dispatch live PROVEN; turn-boundary durable completion PROVEN
+(worker-committed delivery consumed by `monitor --reconcile` with no
+coordinator turn live; replay dropped; corrected-delivery repair exercised);
+live status renders captured on claude, codex, and PLAN-mode surfaces
+(codex-render session provenance rests on the dispatch record's files-modified
+listing — recorded); durable-close-after-reconnect PROVEN at full strength
+(deliberate app quit plus a full VM restart; zero of fourteen released worker
+terminals resurrected; durable watch records intact); persona-proof
+reproducibility SATISFIED on the fresh macOS host with the source sentence
+retained; macOS signal numbering OBSERVED (USR1=30→158, USR2=31→159) with the
+M5 RULING: the contract's platform-derived arithmetic (`128 +` the signal
+number) is authoritative and its prose already carries no platform literal —
+the Linux literals live only in the mutation suite and are a recorded
+test-harness portability backlog item; workspace-trust disposition RECORDED
+(Orca-created worktree paths launched claude workers with no trust prompt;
+no trust database touched; evidence: FIX-C1 attempt-4 and smoke worker-start
+receipts).
+
+**Caveat / residual / hardening-backlog registry (verdict-bearing):**
+1. AC-20 natural-route caveat (above) — the verdict's one qualification.
+2. Retention misses (evidence-harness, this story): smoke attempt-2
+   worker-side artifacts; launch-moment stamp-validation JSON; the /tmp
+   manifest backup (VM restart) — mitigations and surviving proofs listed in
+   `evidence/INDEX.md`.
+3. Stamp override provenance: `override.original` in override-derived stamps
+   is self-referential (make-stamp received the pre-derived response); the
+   true natural decision is retained beside each stamp as
+   `*.route-response.natural.json` — cross-file chain intact; make-stamp
+   usage-pattern backlog item.
+4. Readiness validator fixture uses a placeholder digest the stricter
+   validator build rejects (real stamp validation unaffected) —
+   `evidence/AFK-PORT-1.4-M4-SMOKE/residual-validator-fixture-incompatibility.md`.
+5. Devin PR#23 finding: conflicting positive auth classes prefer subscription
+   — below blocker bar, dispositioned on the PR, backlog.
+6. C1-REVIEW-002: composite gate does not name failing mutation tests —
+   backlog (flake classification was reach-based).
+7. macOS test-harness portability findings: mutation/concurrency suite
+   scenario mechanics fail on Darwin while the kit's lifecycle works
+   (adoption/verify proven live); three test files tracked without exec bits;
+   trailing-space diff-check findings in retained raw output — backlog.
+8. Operational upstream notes: codex mid-turn wedge pattern (2/2 long
+   implementation turns), worker-stop/terminal-close false receipts (3×),
+   Orca Electron relaunch requires the owner's desktop session, stale
+   v1.4.185 daemon zombie, `AFK_ORCA_BIN=orca` default vs GNOME screen
+   reader, kit `next_safe_action` loops back to the refusing command on
+   ADOPTION_SOURCE_INELIGIBLE.
+9. Story-record corrections at M5: the 1.3 preamble-incident pointer
+   (`AFK-PORT-1.3-C4.worker-done.md`) was wrong — the incident's source is
+   the 1.3 coordinator freeze record; corrected here.
+
+**Second host:** the Mac is an ADOPTED fleet member (real-home adoption,
+owner-approved plan `sha256:9a19ced0…`, preservation byte-identical, offline
+verify clean, honest live state). Its future updates ride the proven Git
+channel.
