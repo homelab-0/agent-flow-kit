@@ -500,6 +500,52 @@ afk_probe_run() {
   return 0
 }
 
+# afk_probe_run_merged <argv...>
+# The dedicated auth-status runner: the same status vocabulary, timeout bound
+# and 4096-byte retained-evidence cap as afk_probe_run, but the captured
+# classification input is the command's combined stdout+stderr — codex reports
+# its login state on stderr, and a stdout-only capture misreads a live
+# subscription session as unclassifiable. The combined transcript has exactly
+# one reader, the auth classifier working from the capped evidence, so
+# AFK_PROBE_PARSE_OUT is left cleared rather than retaining the complete
+# response. Used at exactly the two auth-status call sites; every other probe
+# keeps the stdout-only contract of afk_probe_run, which this function never
+# reconfigures.
+afk_probe_run_merged() {
+  local secs out rc
+  AFK_PROBE_OUT=""; AFK_PROBE_PARSE_OUT=""; AFK_PROBE_RC=0; AFK_PROBE_STATUS=""
+  if [[ $# -lt 1 || -z "${1:-}" ]]; then
+    AFK_PROBE_STATUS="NOT_RESOLVED"; return 1
+  fi
+  if ! afk_have "$1" && [[ ! -x "$1" ]]; then
+    AFK_PROBE_STATUS="NOT_RESOLVED"; return 1
+  fi
+  secs="$(afk_probe_timeout_seconds)"
+  if afk_have timeout; then
+    out="$(timeout "$secs" "$@" 2>&1)"
+    rc=$?
+  else
+    if [[ "$AFK_PROBE_UNBOUNDED_REPORTED" != "true" ]]; then
+      AFK_PROBE_UNBOUNDED_REPORTED="true"
+      afk_add_finding "live-probe" "KIT_STATE" "UNKNOWN" "PROBE_BOUND_UNAVAILABLE" \
+        "warning" "" "CAPABILITY_PROBE" "a bounded probe" "no timeout tool on this host" \
+        "true" "true" ""
+    fi
+    out="$("$@" 2>&1)"
+    rc=$?
+  fi
+  AFK_PROBE_RC=$rc
+  AFK_PROBE_OUT="$(printf '%s' "$out" | head -c 4096)"
+  if (( rc == 124 )); then
+    AFK_PROBE_STATUS="TIMEOUT"; return 1
+  fi
+  if (( rc != 0 )); then
+    AFK_PROBE_STATUS="NONZERO"; return 1
+  fi
+  AFK_PROBE_STATUS="OK"
+  return 0
+}
+
 # --- the live-fact record ---------------------------------------------------
 #
 # One shape for every external observation, so automation can treat them
@@ -1305,19 +1351,23 @@ afk_harness_required_flags() { # <harness>
 }
 
 afk_harness_auth_classification() { # <harness> <probe output>
+  # Fail closed on wording: logged-out and auth-required evidence is checked
+  # BEFORE any positive pattern, so an incidental positive mention (a warning
+  # that happens to name the product) can never mask an actual logged-out
+  # status arriving in the same combined transcript.
   case "$1" in
     claude)
       case "$2" in
+        *'Not logged in'*|*'not authenticated'*|*'expired'*) printf 'AUTH_REQUIRED' ;;
         *'claude.ai'*|*'firstParty'*|*'subscription'*)       printf 'NATIVE_SUBSCRIPTION' ;;
         *'apiKey'*|*'api_key'*|*'console.anthropic'*)        printf 'API_KEY' ;;
-        *'Not logged in'*|*'not authenticated'*|*'expired'*) printf 'AUTH_REQUIRED' ;;
         *)                                                   printf 'UNKNOWN' ;;
       esac ;;
     codex)
       case "$2" in
+        *'Not logged in'*|*'not logged in'*|*'expired'*)     printf 'AUTH_REQUIRED' ;;
         *'Logged in using ChatGPT'*|*'ChatGPT'*|*'chatgpt'*) printf 'NATIVE_SUBSCRIPTION' ;;
         *'API key'*|*'api key'*|*'apiKey'*)                  printf 'API_KEY' ;;
-        *'Not logged in'*|*'not logged in'*|*'expired'*)     printf 'AUTH_REQUIRED' ;;
         *)                                                   printf 'UNKNOWN' ;;
       esac ;;
     *) printf 'UNKNOWN' ;;
@@ -1374,10 +1424,13 @@ afk_probe_harness() {
   # session is reported rather than refreshed: automatic login is never a
   # readiness action.
   case "$h" in
-    claude) afk_probe_run "$bin" auth status ;;
-    codex)  afk_probe_run "$bin" login status ;;
+    claude) afk_probe_run_merged "$bin" auth status ;;
+    codex)  afk_probe_run_merged "$bin" login status ;;
     *)      AFK_PROBE_STATUS="NOT_RESOLVED"; AFK_PROBE_OUT="" ;;
   esac
+  # Classification reads only the capped evidence; the complete combined
+  # response has no reader past this point and must not stay reachable.
+  AFK_PROBE_PARSE_OUT=""
   if [[ "$AFK_PROBE_STATUS" == "TIMEOUT" ]]; then
     AFK_RD_LIVE_UNAVAILABLE="true"
     afk_live_fact "$auth_key" "UNAVAILABLE" "AUTH_STATUS_UNPROVEN" "AUTH_STATUS_PROBE" "true" "true" "timed out"
@@ -1386,7 +1439,11 @@ afk_probe_harness() {
     return 1
   fi
   cls="$(afk_harness_auth_classification "$h" "$AFK_PROBE_OUT")"
-  if [[ "$AFK_PROBE_STATUS" != "OK" && "$cls" == "UNKNOWN" ]]; then
+  # Command outcome outranks transcript wording: a status command that did not
+  # succeed has proven no usable session, whatever its output happened to
+  # mention, so a non-OK outcome disqualifies a positive classification
+  # rather than only rescuing an unclassifiable one.
+  if [[ "$AFK_PROBE_STATUS" != "OK" ]]; then
     cls="AUTH_REQUIRED"
   fi
   case "$cls" in
