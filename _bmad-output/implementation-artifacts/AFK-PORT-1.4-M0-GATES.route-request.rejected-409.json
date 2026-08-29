@@ -1,0 +1,18 @@
+{
+  "story_id": "AFK-PORT-1.4-M0-GATES",
+  "title": "Story 1.4 M0: prerequisite gate sweep in the fresh story worktree",
+  "summary": "Run the complete prerequisite gate set green before any real-user mutation, per Story 1.4 AC-1: bash tests/lifecycle-tests.sh, bash tests/lifecycle-readiness-tests.sh, bash tests/lifecycle-dispatch-tests.sh, bash tests/run-tests.sh, the mutation suite, and git diff --check, all from the fresh Orca story worktree at master 8a7cbc1. Retain full logs as evidence, report per-gate pass/fail counts and wall time. No product-code changes; writes are limited to evidence files and the Dev Agent Record status line. Any red gate is reported verbatim and classified, never patched by this worker. Context requirement: the worker retains two long-running suite logs (~36 and ~28 minutes of output), the frozen story file, and evidence assembly in one session; declared context_size 150000.",
+  "touched_paths": [
+    "_bmad-output/implementation-artifacts/AFK-PORT-1.4.md",
+    "_bmad-output/implementation-artifacts/evidence/"
+  ],
+  "ambiguity": "low",
+  "blast_radius": "low",
+  "volume_hint": "high",
+  "tags": [
+    "tests"
+  ],
+  "repo": "agent-flow-kit",
+  "requester": "bmad-pm",
+  "context_size": 150000
+}

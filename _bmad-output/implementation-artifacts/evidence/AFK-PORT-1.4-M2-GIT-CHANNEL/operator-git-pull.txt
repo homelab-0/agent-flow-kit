@@ -1,0 +1,240 @@
+== PULL (operator, 2026-08-27T15:47:17Z) ==
+bd9d9fb028149b0f381e44de965955230d2b45cd
+From https://github.com/jlengelbrecht/agent-flow-kit
+ * branch            master     -> FETCH_HEAD
+error: The following untracked working tree files would be overwritten by merge:
+	_bmad-output/implementation-artifacts/AFK-PORT-1.8.md
+	_bmad-output/planning-artifacts/epics-block-1.8.md
+	_bmad-output/planning-artifacts/prds/prd-agent-flow-kit-2026-08-24/prd-addendum-1.8.md
+	_bmad-output/planning-artifacts/prds/prd-agent-flow-kit-2026-08-24/reconciliation-story-1.8.md
+Please move or remove them before you merge.
+Aborting
+Updating bd9d9fb..8a7cbc1
+post-pull HEAD: bd9d9fb028149b0f381e44de965955230d2b45cd
+?? _bmad-output/implementation-artifacts/AFK-PORT-1.3-COORDINATOR-HANDOFF.md
+?? _bmad-output/implementation-artifacts/AFK-PORT-1.8.md
+?? _bmad-output/planning-artifacts/epics-block-1.8.md
+?? _bmad-output/planning-artifacts/prds/prd-agent-flow-kit-2026-08-24/prd-addendum-1.8.md
+?? _bmad-output/planning-artifacts/prds/prd-agent-flow-kit-2026-08-24/reconciliation-story-1.8.md
+== PULL retry (operator, 2026-08-27T15:47:51Z) after lossless removal of 4 byte-identical untracked collisions (backups + hashes in this dir) ==
+From https://github.com/jlengelbrecht/agent-flow-kit
+ * branch            master     -> FETCH_HEAD
+Updating bd9d9fb..8a7cbc1
+Fast-forward
+ .../AFK-PORT-1.3-FINAL-REVIEW.md                   |   91 +
+ ...AFK-PORT-1.3-FINAL-REVIEW.md.claude-result.json |    1 +
+ .../AFK-PORT-1.3-FINAL-REVIEW.md.prompt            |    8 +
+ .../AFK-PORT-1.3-FINAL-REVIEW.route-request.json   |   14 +
+ .../AFK-PORT-1.3-FINAL-REVIEW.route-response.json  |    1 +
+ .../AFK-PORT-1.3-FINAL-REVIEW.stamp.json           |   23 +
+ .../implementation-artifacts/AFK-PORT-1.3-FIX.md   |  202 +++
+ .../AFK-PORT-1.3-FIX.md.claude-result.json         |    1 +
+ .../AFK-PORT-1.3-FIX.md.prompt                     |    8 +
+ .../AFK-PORT-1.3-FIX.md.result.json                |   30 +
+ .../AFK-PORT-1.3-FIX.route-request.json            |   21 +
+ .../AFK-PORT-1.3-FIX.route-response.json           |    1 +
+ .../AFK-PORT-1.3-FIX.stamp.json                    |   23 +
+ .../implementation-artifacts/AFK-PORT-1.3-FIX2.md  |  101 ++
+ .../AFK-PORT-1.3-FIX2.md.claude-result.json        |    1 +
+ .../AFK-PORT-1.3-FIX2.md.prompt                    |    8 +
+ .../AFK-PORT-1.3-FIX2.md.result.json               |   30 +
+ .../AFK-PORT-1.3-FIX2.route-request.json           |   19 +
+ .../AFK-PORT-1.3-FIX2.route-response.json          |    1 +
+ .../AFK-PORT-1.3-FIX2.stamp.json                   |   23 +
+ .../AFK-PORT-1.3-FULL-REVIEW.md                    |  131 ++
+ .../AFK-PORT-1.3-FULL-REVIEW.md.claude-result.json |    1 +
+ .../AFK-PORT-1.3-FULL-REVIEW.md.prompt             |    8 +
+ .../AFK-PORT-1.3-FULL-REVIEW.md.result.json        |   30 +
+ .../AFK-PORT-1.3-POSTFIX-REVIEW.md                 |  109 ++
+ ...K-PORT-1.3-POSTFIX-REVIEW.md.claude-result.json |    1 +
+ .../AFK-PORT-1.3-POSTFIX-REVIEW.md.prompt          |    8 +
+ .../AFK-PORT-1.3-POSTFIX-REVIEW.md.result.json     |   30 +
+ ...-1.3-POSTFIX-REVIEW.route-request.attempt1.json |   14 +
+ .../AFK-PORT-1.3-POSTFIX-REVIEW.route-request.json |   17 +
+ ...1.3-POSTFIX-REVIEW.route-response.attempt1.json |    1 +
+ ...AFK-PORT-1.3-POSTFIX-REVIEW.route-response.json |    1 +
+ ...AFK-PORT-1.3-POSTFIX-REVIEW.stamp.attempt1.json |   23 +
+ .../AFK-PORT-1.3-POSTFIX-REVIEW.stamp.json         |   23 +
+ .../AFK-PORT-1.3-REVIEW.route-request.json         |   14 +
+ .../AFK-PORT-1.3-REVIEW.route-response.json        |    1 +
+ .../AFK-PORT-1.3-REVIEW.stamp.json                 |   23 +
+ .../AFK-PORT-1.3-TRIAGE1-REVIEW.md                 |   57 +
+ ...K-PORT-1.3-TRIAGE1-REVIEW.md.claude-result.json |    1 +
+ .../AFK-PORT-1.3-TRIAGE1-REVIEW.md.prompt          |    8 +
+ .../AFK-PORT-1.3-TRIAGE1-REVIEW.md.result.json     |   30 +
+ .../AFK-PORT-1.3-TRIAGE1-REVIEW.route-request.json |   12 +
+ ...AFK-PORT-1.3-TRIAGE1-REVIEW.route-response.json |    1 +
+ .../AFK-PORT-1.3-TRIAGE1-REVIEW.stamp.json         |   23 +
+ .../AFK-PORT-1.3-TRIAGE1.md                        |   71 +
+ .../AFK-PORT-1.3-TRIAGE1.md.claude-result.json     |    1 +
+ .../AFK-PORT-1.3-TRIAGE1.md.prompt                 |    8 +
+ .../AFK-PORT-1.3-TRIAGE1.md.result.json            |   30 +
+ .../AFK-PORT-1.3-TRIAGE1.route-request.json        |   17 +
+ .../AFK-PORT-1.3-TRIAGE1.route-response.json       |    1 +
+ .../AFK-PORT-1.3-TRIAGE1.stamp.json                |   23 +
+ .../implementation-artifacts/AFK-PORT-1.3.md       | 1177 +++++++++++-
+ .../AFK-PORT-1.3.md.claude-result.json             |    1 +
+ .../AFK-PORT-1.3.md.prompt                         |    8 +
+ .../AFK-PORT-1.3.md.result.json                    |   30 +
+ .../AFK-PORT-1.3.md.stamp.json                     |   23 +
+ .../AFK-PORT-1.3.route-request.json                |   19 +
+ .../AFK-PORT-1.3.route-response.json               |    1 +
+ .../implementation-artifacts/AFK-PORT-1.4.md       |   41 +
+ .../implementation-artifacts/AFK-PORT-1.8.md       |   87 +
+ .../evidence/AFK-PORT-1.3-C1-gates/run-tests.log   |  305 ++++
+ .../evidence/AFK-PORT-1.3-C1.worker-done.md        |   29 +
+ .../evidence/AFK-PORT-1.3-C2-gates/lifecycle.log   |  504 ++++++
+ .../evidence/AFK-PORT-1.3-C2-gates/run-tests.log   |  268 +++
+ .../evidence/AFK-PORT-1.3-C2.worker-done.md        |   20 +
+ .../evidence/AFK-PORT-1.3-C3-gates/diff-check.log  |    0
+ .../evidence/AFK-PORT-1.3-C3-gates/lifecycle.log   |  506 ++++++
+ .../evidence/AFK-PORT-1.3-C3-gates/run-tests.log   |  268 +++
+ .../evidence/AFK-PORT-1.3-C3.worker-done.md        |   23 +
+ .../evidence/AFK-PORT-1.3-C4-gates/diff-check.log  |    0
+ .../evidence/AFK-PORT-1.3-C4-gates/lifecycle.log   |  506 ++++++
+ .../evidence/AFK-PORT-1.3-C4-gates/run-tests.log   |  268 +++
+ .../evidence/AFK-PORT-1.3-C4.worker-done.md        |   22 +
+ .../evidence/AFK-PORT-1.3-F1-docsfix-lifecycle.log |  506 ++++++
+ .../R1-readiness-probe-unbounded.sh                |  202 +++
+ .../evidence/AFK-PORT-1.3-FINAL-REVIEW.md          |  391 ++++
+ .../A1-terminal-absent-no-durable-close.sh         |  111 ++
+ .../A2-route-ready-without-target.sh               |  326 ++++
+ .../A3-stale-needs-human.sh                        |   99 ++
+ .../A4-unbounded-remote-op.sh                      |  102 ++
+ .../AFK-PORT-1.3-FULL-REVIEW-attack/README.md      |   35 +
+ .../lib-dispatch-fixture.sh                        |  169 ++
+ .../evidence/AFK-PORT-1.3-FULL-REVIEW.md           |  726 ++++++++
+ .../P1-absent-close-unproven.sh                    |  260 +++
+ .../P2-orca-observation-unbounded.sh               |  209 +++
+ .../evidence/AFK-PORT-1.3-POSTFIX-REVIEW.md        |  512 ++++++
+ .../T1a-window-class-matrix.sh                     |  274 +++
+ .../T1b-antivacuity-two-trees.sh                   |  185 ++
+ .../T2-skip-summary.sh                             |  191 ++
+ .../evidence/AFK-PORT-1.3-TRIAGE1-REVIEW.md        |  398 +++++
+ .../implementation-artifacts/traceability.md       |   32 +
+ _bmad-output/planning-artifacts/epics-block-1.8.md |   31 +
+ _bmad-output/planning-artifacts/epics.md           |   21 +
+ .../prd-addendum-1.8.md                            |   53 +
+ .../reconciliation-story-1.8.md                    |   67 +
+ bin/agent-flow-kit                                 |  190 +-
+ docs/LIFECYCLE-CONTRACT.md                         |  797 ++++++++-
+ lib/afk-commands.sh                                |  179 +-
+ lib/afk-common.sh                                  |  111 +-
+ lib/afk-inventory.sh                               |   28 +-
+ lib/afk-monitor.sh                                 | 1253 +++++++++++++
+ lib/afk-readiness.sh                               | 1867 ++++++++++++++++++++
+ tests/lifecycle-dispatch-tests.sh                  | 1217 +++++++++++++
+ tests/lifecycle-readiness-tests.sh                 | 1271 +++++++++++++
+ tests/lifecycle-tests.sh                           |  175 +-
+ tests/run-tests.sh                                 |   59 +-
+ 106 files changed, 17302 insertions(+), 176 deletions(-)
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-FINAL-REVIEW.md
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-FINAL-REVIEW.md.claude-result.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-FINAL-REVIEW.md.prompt
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-FINAL-REVIEW.route-request.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-FINAL-REVIEW.route-response.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-FINAL-REVIEW.stamp.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-FIX.md
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-FIX.md.claude-result.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-FIX.md.prompt
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-FIX.md.result.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-FIX.route-request.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-FIX.route-response.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-FIX.stamp.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-FIX2.md
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-FIX2.md.claude-result.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-FIX2.md.prompt
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-FIX2.md.result.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-FIX2.route-request.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-FIX2.route-response.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-FIX2.stamp.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-FULL-REVIEW.md
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-FULL-REVIEW.md.claude-result.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-FULL-REVIEW.md.prompt
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-FULL-REVIEW.md.result.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-POSTFIX-REVIEW.md
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-POSTFIX-REVIEW.md.claude-result.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-POSTFIX-REVIEW.md.prompt
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-POSTFIX-REVIEW.md.result.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-POSTFIX-REVIEW.route-request.attempt1.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-POSTFIX-REVIEW.route-request.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-POSTFIX-REVIEW.route-response.attempt1.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-POSTFIX-REVIEW.route-response.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-POSTFIX-REVIEW.stamp.attempt1.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-POSTFIX-REVIEW.stamp.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-REVIEW.route-request.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-REVIEW.route-response.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-REVIEW.stamp.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-TRIAGE1-REVIEW.md
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-TRIAGE1-REVIEW.md.claude-result.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-TRIAGE1-REVIEW.md.prompt
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-TRIAGE1-REVIEW.md.result.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-TRIAGE1-REVIEW.route-request.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-TRIAGE1-REVIEW.route-response.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-TRIAGE1-REVIEW.stamp.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-TRIAGE1.md
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-TRIAGE1.md.claude-result.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-TRIAGE1.md.prompt
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-TRIAGE1.md.result.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-TRIAGE1.route-request.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-TRIAGE1.route-response.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3-TRIAGE1.stamp.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3.md.claude-result.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3.md.prompt
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3.md.result.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3.md.stamp.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3.route-request.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.3.route-response.json
+ create mode 100644 _bmad-output/implementation-artifacts/AFK-PORT-1.8.md
+ create mode 100644 _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.3-C1-gates/run-tests.log
+ create mode 100644 _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.3-C1.worker-done.md
+ create mode 100644 _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.3-C2-gates/lifecycle.log
+ create mode 100644 _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.3-C2-gates/run-tests.log
+ create mode 100644 _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.3-C2.worker-done.md
+ create mode 100644 _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.3-C3-gates/diff-check.log
+ create mode 100644 _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.3-C3-gates/lifecycle.log
+ create mode 100644 _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.3-C3-gates/run-tests.log
+ create mode 100644 _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.3-C3.worker-done.md
+ create mode 100644 _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.3-C4-gates/diff-check.log
+ create mode 100644 _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.3-C4-gates/lifecycle.log
+ create mode 100644 _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.3-C4-gates/run-tests.log
+ create mode 100644 _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.3-C4.worker-done.md
+ create mode 100644 _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.3-F1-docsfix-lifecycle.log
+ create mode 100644 _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.3-FINAL-REVIEW-attack/R1-readiness-probe-unbounded.sh
+ create mode 100644 _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.3-FINAL-REVIEW.md
+ create mode 100644 _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.3-FULL-REVIEW-attack/A1-terminal-absent-no-durable-close.sh
+ create mode 100644 _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.3-FULL-REVIEW-attack/A2-route-ready-without-target.sh
+ create mode 100644 _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.3-FULL-REVIEW-attack/A3-stale-needs-human.sh
+ create mode 100644 _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.3-FULL-REVIEW-attack/A4-unbounded-remote-op.sh
+ create mode 100644 _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.3-FULL-REVIEW-attack/README.md
+ create mode 100644 _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.3-FULL-REVIEW-attack/lib-dispatch-fixture.sh
+ create mode 100644 _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.3-FULL-REVIEW.md
+ create mode 100644 _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.3-POSTFIX-REVIEW-attack/P1-absent-close-unproven.sh
+ create mode 100644 _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.3-POSTFIX-REVIEW-attack/P2-orca-observation-unbounded.sh
+ create mode 100644 _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.3-POSTFIX-REVIEW.md
+ create mode 100644 _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.3-TRIAGE1-REVIEW-attack/T1a-window-class-matrix.sh
+ create mode 100644 _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.3-TRIAGE1-REVIEW-attack/T1b-antivacuity-two-trees.sh
+ create mode 100644 _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.3-TRIAGE1-REVIEW-attack/T2-skip-summary.sh
+ create mode 100644 _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.3-TRIAGE1-REVIEW.md
+ create mode 100644 _bmad-output/planning-artifacts/epics-block-1.8.md
+ create mode 100644 _bmad-output/planning-artifacts/prds/prd-agent-flow-kit-2026-08-24/prd-addendum-1.8.md
+ create mode 100644 _bmad-output/planning-artifacts/prds/prd-agent-flow-kit-2026-08-24/reconciliation-story-1.8.md
+ create mode 100644 lib/afk-monitor.sh
+ create mode 100644 lib/afk-readiness.sh
+ create mode 100644 tests/lifecycle-dispatch-tests.sh
+ create mode 100644 tests/lifecycle-readiness-tests.sh
+post-pull HEAD: 8a7cbc194fd56114d65c7dfd6a42106c807fb46b
+untracked now:
+?? _bmad-output/implementation-artifacts/AFK-PORT-1.3-COORDINATOR-HANDOFF.md
+== PULL 2 (fix delivery, operator, 2026-08-28T06:25:18Z) ==
+8a7cbc194fd56114d65c7dfd6a42106c807fb46b
+ lib/afk-readiness.sh               | 39 +++++++++++++++-------
+ tests/lifecycle-readiness-tests.sh | 66 ++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 94 insertions(+), 11 deletions(-)
+post-pull HEAD: fbc0923a2513beee5527afde57cd69c5600a735a
+?? _bmad-output/implementation-artifacts/AFK-PORT-1.3-COORDINATOR-HANDOFF.md
+?? _bmad-output/planning-artifacts/follow-on-managed-coordinator-report-style.md
+== PULL 3 (auth-probe fix delivery, operator, 2026-08-29T06:14:58Z) ==
+ tests/lifecycle-readiness-tests.sh | 45 +++++++++++++++++++++++--
+ 2 files changed, 104 insertions(+), 8 deletions(-)
+post-pull HEAD: b2d25640f71c0a01aac261b0ab1398cea7a66319

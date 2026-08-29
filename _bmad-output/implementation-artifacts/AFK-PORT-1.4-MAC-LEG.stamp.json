@@ -1,0 +1,27 @@
+{
+  "harness": "codex",
+  "model_profile": "openai/strong",
+  "effort": "medium",
+  "cost_class": "subscription",
+  "entitlement_pool": "openai-plus",
+  "metered": false,
+  "placement_policy": "prefer-warm-local",
+  "placement_required": false,
+  "catalog_version": "sha256:59781b92c39d2f40e7d289330bb7cc7a0193da505e88052e36aaec79fe28eb36",
+  "expires_at": "2026-08-29T04:22:08Z",
+  "task": {
+    "story_id": "AFK-PORT-1.4-MAC-LEG",
+    "tags": []
+  },
+  "override": {
+    "actor": "Josh (standing 1.4 authorization, 2026-08-27)",
+    "at": "2026-08-28T04:22:18Z",
+    "original": {
+      "harness": "codex",
+      "model_profile": "openai/strong"
+    },
+    "reason": "Known valid-but-unlaunchable standard-band primary (M0 precedent). Standing Story 1.4 authorization: override to the route's own first fallback {codex, openai/strong} for the Mac handoff leg. Re-minted against catalog 1.5.0 (deliberate MiniMax-promotion move, prox-ops PR #1289); trusted catalog installed from prox-ops main @ 05ef3eb7, digest verified against live /v1/status. M4 smoke excluded."
+  },
+  "created_at": "2026-08-28T04:22:18Z",
+  "catalog_document_version": "1.5.0"
+}

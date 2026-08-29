@@ -1,0 +1,65 @@
+{
+  "id": "d2766d7f-7c3a-4760-977a-037f909409ef",
+  "ok": true,
+  "result": {
+    "runId": "run_5a0ac02ec79c",
+    "taskId": "task_25d8d7e758d2",
+    "dispatchId": "ctx_90f39bda1b4a",
+    "state": "ready",
+    "stage": "input_accepted",
+    "setup": {
+      "requested": "not_applicable",
+      "effective": "not_applicable",
+      "source": "existing_worktree",
+      "hookFound": false,
+      "startupPolicy": "start-immediately",
+      "state": "not_applicable"
+    },
+    "launch": {
+      "requested": {
+        "agent": "codex",
+        "model": null,
+        "effort": null
+      },
+      "effective": {
+        "agent": "codex",
+        "model": null,
+        "effort": null
+      }
+    },
+    "timeoutMs": 60000,
+    "effects": [
+      {
+        "kind": "worktree",
+        "action": "reused",
+        "id": "5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.4"
+      },
+      {
+        "kind": "setup",
+        "action": "not_applicable",
+        "state": "not_applicable"
+      },
+      {
+        "kind": "terminal",
+        "role": "agent",
+        "action": "created",
+        "id": "term_7a65ce44-db90-447e-815e-9d4f7daaf733",
+        "surface": "visible"
+      },
+      {
+        "kind": "dispatch_input",
+        "role": "agent",
+        "id": "term_7a65ce44-db90-447e-815e-9d4f7daaf733",
+        "state": "accepted"
+      }
+    ],
+    "residualResources": [],
+    "mutation": {
+      "requestId": "c383fddc-63bc-4705-8f8c-0c813841adaf",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "17c2b2fc-c149-4200-a58d-0af421b5ffb1"
+  }
+}

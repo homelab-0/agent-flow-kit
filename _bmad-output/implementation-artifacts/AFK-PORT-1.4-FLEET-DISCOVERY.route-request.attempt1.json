@@ -1,0 +1,14 @@
+{
+  "story_id": "AFK-PORT-1.4-FLEET-DISCOVERY",
+  "title": "Story 1.4: read-only Orca fleet discovery for the portability host pair",
+  "summary": "Read-only observation of the reachable Orca fleet to propose the two representative hosts for the Story 1.4 portability proof per AC-3: primary is the current always-on remote host if it carries meaningful legacy/stale agent-flow-kit state, otherwise the stalest qualifying active host; second is a distinct remote Orca host with evidence of at least two material differences (revision age, installation layout, harness state, target wiring, Orca configuration, path layout, or OS). One host is expected to be macOS. The laptop inference host is out of scope. Output: a machine-readable candidate table with the representativeness dimensions per host and a recommended pair, secret-free, for coordinator and human confirmation. Strictly no mutation, no lifecycle operations, no credential values retained.",
+  "touched_paths": [
+    "_bmad-output/implementation-artifacts/evidence/"
+  ],
+  "ambiguity": "medium",
+  "blast_radius": "low",
+  "volume_hint": "low",
+  "tags": [],
+  "repo": "agent-flow-kit",
+  "requester": "bmad-pm"
+}

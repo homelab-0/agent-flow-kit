@@ -1,0 +1,2 @@
+GATE PASS: exactly smoke/canary.txt staged with frozen sha 8d1ddaae1392ded28e2d15f17901ea54d6e88ac03499059c9d5d45d043354093; no tracked modifications
+8d1ddaae1392ded28e2d15f17901ea54d6e88ac03499059c9d5d45d043354093  smoke/canary.txt

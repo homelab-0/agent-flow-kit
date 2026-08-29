@@ -1,0 +1,8 @@
+== AFTER ==
+master
+bd9d9fb028149b0f381e44de965955230d2b45cd
+?? _bmad-output/implementation-artifacts/AFK-PORT-1.3-COORDINATOR-HANDOFF.md
+?? _bmad-output/implementation-artifacts/AFK-PORT-1.8.md
+?? _bmad-output/planning-artifacts/epics-block-1.8.md
+?? _bmad-output/planning-artifacts/prds/prd-agent-flow-kit-2026-08-24/prd-addendum-1.8.md
+?? _bmad-output/planning-artifacts/prds/prd-agent-flow-kit-2026-08-24/reconciliation-story-1.8.md

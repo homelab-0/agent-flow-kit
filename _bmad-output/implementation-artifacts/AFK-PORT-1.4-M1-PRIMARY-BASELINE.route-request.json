@@ -1,0 +1,14 @@
+{
+  "story_id": "AFK-PORT-1.4-M1-PRIMARY-BASELINE",
+  "title": "Story 1.4 M1: primary-host baseline capture and pre-mutation lifecycle inspection",
+  "summary": "Read-only observation of the PRIMARY portability host (the always-on devbox VM): machine-readable secret-free host baseline with per-fact provenance (AC-4), the pair-representativeness record including the observed-not-selected cachyos candidate, and the pre-mutation lifecycle inspection via the canonical installation's own status/verify/adopt-inspect JSON with a truthful ambiguity verdict (AC-5). No lifecycle mutation, no git writes, evidence-only output into the story worktree.",
+  "touched_paths": [
+    "_bmad-output/implementation-artifacts/evidence/AFK-PORT-1.4-M1-PRIMARY-BASELINE/"
+  ],
+  "ambiguity": "low",
+  "blast_radius": "low",
+  "volume_hint": "low",
+  "tags": [],
+  "repo": "agent-flow-kit",
+  "requester": "bmad-pm"
+}

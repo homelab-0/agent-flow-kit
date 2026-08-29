@@ -1,0 +1,47 @@
+{
+  "lifecycle_schema_version": "1.0",
+  "state_schema_version": "1.0",
+  "applied_revision": "8a7cbc194fd56114d65c7dfd6a42106c807fb46b",
+  "repository": {
+    "identity": "rootcommit:d74e7f9542cfe2731e09a0ff5c5e1b4cf325062f"
+  },
+  "components": {
+    "model-router": {
+      "ownership": "MANAGED_COPY_TREE",
+      "identity": "sha256:d6cc40f6e5e9e54afd1cc399ccbdbe9fff4df39deb9c2a90663530217699ed4b",
+      "path": "/home/devbox/.agents/skills/model-router"
+    },
+    "model-router-claude-link": {
+      "ownership": "MANAGED_LINK",
+      "identity": "link:/home/devbox/.agents/skills/model-router",
+      "path": "/home/devbox/.claude/skills/model-router"
+    },
+    "humanizer": {
+      "ownership": "MANAGED_COPY_TREE",
+      "identity": "sha256:fced7a333ae1ed2c10fc0cefbf8ce2770d90a8a364fbabd0e0bda1a59c831b1f",
+      "path": "/home/devbox/.agents/skills/humanizer"
+    },
+    "humanizer-claude-link": {
+      "ownership": "MANAGED_LINK",
+      "identity": "link:/home/devbox/.agents/skills/humanizer",
+      "path": "/home/devbox/.claude/skills/humanizer"
+    },
+    "claude-global-policy": {
+      "ownership": "MANAGED_SECTION",
+      "identity": "sha256:3bf080b8f0994903a639d992d2245eb2e5a5a8b9c69c3ff9ac697839a475c9b1",
+      "path": "/home/devbox/.claude/CLAUDE.md"
+    },
+    "codex-global-guidance": {
+      "ownership": "MANAGED_COPY_FILE",
+      "identity": "sha256:0d52d4773b0c1a5d3ffb3f666020f28c09f07660bc88a03024d92c589ddf18bb",
+      "path": "/home/devbox/.codex/AGENTS.md"
+    }
+  },
+  "adaptations": [],
+  "targets": [
+    {
+      "id": "afk-smoke-target",
+      "path": "/home/devbox/repos/jlengelbrecht/afk-smoke-target"
+    }
+  ]
+}

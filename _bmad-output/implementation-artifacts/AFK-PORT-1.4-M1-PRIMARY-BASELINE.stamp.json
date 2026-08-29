@@ -1,0 +1,27 @@
+{
+  "harness": "codex",
+  "model_profile": "openai/strong",
+  "effort": "medium",
+  "cost_class": "subscription",
+  "entitlement_pool": "openai-plus",
+  "metered": false,
+  "placement_policy": "prefer-warm-local",
+  "placement_required": false,
+  "catalog_version": "sha256:9b7ba27e367f8cfa0caeed4057fe0fab1cd4138b11f9f65f906822276bfa5e20",
+  "expires_at": "2026-08-28T14:49:57Z",
+  "task": {
+    "story_id": "AFK-PORT-1.4-M1-PRIMARY-BASELINE",
+    "tags": []
+  },
+  "override": {
+    "actor": "Josh (standing 1.4 authorization, 2026-08-27)",
+    "at": "2026-08-27T14:50:08Z",
+    "original": {
+      "harness": "codex",
+      "model_profile": "openai/strong"
+    },
+    "reason": "Routed primary {claude, local-code-standard} is the known valid-but-unlaunchable pair under the frozen launch adapter (M0 precedent; 409 on honest context re-route). Josh's standing Story 1.4 authorization: override to the route's own first fallback {codex, openai/strong}, fields verbatim from the router's fallback entry. M4 smoke route excluded from this authorization."
+  },
+  "created_at": "2026-08-27T14:50:08Z",
+  "catalog_document_version": "1.4.0"
+}

@@ -1,0 +1,36 @@
+{
+  "id": "55b69e00-fcf3-4324-8c97-bbafd4477eaf",
+  "ok": true,
+  "result": {
+    "message": {
+      "id": "msg_ba73b782dfdf",
+      "run_id": "run_5a0ac02ec79c",
+      "from_handle": "term_7109ab52-76c8-484c-ba4f-8353ef2d554f",
+      "to_handle": "run:run_5a0ac02ec79c",
+      "subject": "Adoption verified at stale revision",
+      "body": "Executed the stale kit's approved adoption transaction at bd9d9fb028149b0f381e44de965955230d2b45cd and captured the complete lifecycle evidence. Adoption committed as ADOPTED, offline integrity is READY with zero verification failures, and all seven preservation hashes are byte-identical. Nothing remains in this lane; the expected UPDATE_AVAILABLE and non-blocking stale-source warnings are recorded in classification.md.",
+      "type": "worker_done",
+      "priority": "normal",
+      "thread_id": null,
+      "payload": "{\"taskId\":\"task_c86461e2c0cb\",\"dispatchId\":\"ctx_b5cb3f706c42\",\"outcome\":\"succeeded\",\"filesModified\":[\"_bmad-output/implementation-artifacts/evidence/AFK-PORT-1.4-M2A-ADOPT\"],\"reportPath\":\"_bmad-output/implementation-artifacts/evidence/AFK-PORT-1.4-M2A-ADOPT/classification.md\"}",
+      "read": 0,
+      "sequence": 229,
+      "created_at": "2026-08-27T15:46:37Z",
+      "delivered_at": null,
+      "sender_pane_key": "a9324069-de9e-4cfd-a635-8b3ded197cfa:eb6e5905-b292-4e13-827a-d2261a766778",
+      "delivery_contract": "current_delivery"
+    },
+    "lifecycle": {
+      "action": "completed",
+      "taskId": "task_c86461e2c0cb",
+      "dispatchId": "ctx_b5cb3f706c42"
+    },
+    "mutation": {
+      "requestId": "0363636b-fe4a-4b21-84b1-6b0ea24755ca",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "17c2b2fc-c149-4200-a58d-0af421b5ffb1"
+  }
+}

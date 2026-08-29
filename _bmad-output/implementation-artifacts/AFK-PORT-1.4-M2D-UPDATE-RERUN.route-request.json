@@ -1,0 +1,12 @@
+{
+  "story_id": "AFK-PORT-1.4-M2D-UPDATE-RERUN",
+  "summary": "Deliver the merged readiness fixes to the adopted primary host through the kit's own update channel (second live exercise: UPDATE_AVAILABLE detection, plan/approve, convergence with preservation proof), then rerun the explicit live verification on the fixed surface with declared host configuration, verifying every FALSE scope's reason is grounded in the same result's live facts. Mutations only via the kit transaction.",
+  "title": "Story 1.4 M2d: fix delivery via update channel + live verification rerun",
+  "touched_paths": ["_bmad-output/implementation-artifacts/evidence/AFK-PORT-1.4-M2D-UPDATE-RERUN/"],
+  "ambiguity": "low",
+  "blast_radius": "medium",
+  "volume_hint": "low",
+  "tags": [],
+  "repo": "agent-flow-kit",
+  "requester": "bmad-pm"
+}
