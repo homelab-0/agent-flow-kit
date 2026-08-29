@@ -415,11 +415,14 @@ if [[ "${1:-}" == "--help" ]]; then
 fi
 if [[ "${1:-} ${2:-}" == "login status" ]]; then
   case "${STUB_CODEX_AUTH:-sub}" in
-    api)        printf 'Logged in using an API key\n'; exit 0 ;;
-    none)       printf 'Not logged in\n'; exit 1 ;;
-    stderr-sub) printf 'Logged in using ChatGPT\n' >&2; exit 0 ;;
-    silent)     exit 0 ;;
-    *)          printf 'Logged in using ChatGPT\n'; exit 0 ;;
+    api)         printf 'Logged in using an API key\n'; exit 0 ;;
+    none)        printf 'Not logged in\n'; exit 1 ;;
+    stderr-sub)  printf 'Logged in using ChatGPT\n' >&2; exit 0 ;;
+    stderr-warn) printf 'Warning: ChatGPT authentication support is deprecated\n' >&2
+                 printf 'Not logged in\n'; exit 1 ;;
+    fail-sub)    printf 'Logged in using ChatGPT\n' >&2; exit 1 ;;
+    silent)      exit 0 ;;
+    *)           printf 'Logged in using ChatGPT\n'; exit 0 ;;
   esac
 fi
 exit 1
@@ -875,6 +878,23 @@ assert_eq "a harness silent on both streams is unknown, never assumed good" \
   "$(jget '.live_facts.codex_native_session.state')" "UNKNOWN"
 assert_eq "and carries the unproven reason" \
   "$(jget '.live_facts.codex_native_session.reason')" "AUTH_STATUS_UNPROVEN"
+
+# The reviewer's spoof: a stderr warning that happens to name ChatGPT arrives
+# merged with an actual logged-out status. Logged-out evidence must win over
+# an incidental positive mention — never the other way around.
+STUB_CODEX_AUTH=stderr-warn
+run_afk status --json --live
+assert_eq "a ChatGPT-naming warning cannot mask a logged-out status" \
+  "$(jget '.live_facts.codex_native_session.reason')" "AUTH_REQUIRED"
+assert_eq "and the spoofed session is unavailable, not ready" \
+  "$(jget '.live_facts.codex_native_session.state')" "UNAVAILABLE"
+
+# Positive-pattern text proves nothing when the status command itself failed:
+# a nonzero outcome disqualifies a positive classification outright.
+STUB_CODEX_AUTH=fail-sub
+run_afk status --json --live
+assert_eq "positive stderr text with a nonzero exit is never a subscription" \
+  "$(jget '.live_facts.codex_native_session.reason')" "AUTH_REQUIRED"
 stub_reset
 
 STUB_CLAUDE_CAPS=partial
