@@ -318,12 +318,28 @@ validate_stamp() {
 #   codex  -> HARNESS-LAUNCH-codex.md  - a native ChatGPT subscription session.
 #             Vendor-hosted (§9), §7 carries the same prohibition.
 #
-# The gap this closes: the catalog today approves {claude, local-code-standard},
-# and /v1/route really does recommend it. But a local profile is local compute
-# reached through agentgateway, and the only ways to point Claude Code at it are
-# precisely the redirections its launch contract forbids. An approved pair is
-# therefore NOT permission to invent a launch path - the pair is routable and
-# simultaneously unlaunchable, and the honest response is to stop and say so.
+# The discriminator is NATIVE REACHABILITY, derived from the STAMP alone, belt
+# and braces: a harness is natively launchable iff the stamped model_profile is
+# in that vendor's native family AND the stamped entitlement_pool is that
+# vendor's native subscription pool (claude -> claude/* on anthropic-max,
+# codex -> openai/* on openai-plus). Everything else on those harnesses is
+# refused, whatever its placement flag says.
+#
+# Two instances of the same class prove why placement_required alone was never
+# the right key:
+#   1. {claude, local-code-standard}: the catalog approves it and /v1/route
+#      really does recommend it, but a local profile is local compute reached
+#      through agentgateway - reachable only via the redirections §7 forbids.
+#   2. {claude, minimax/strong} (catalog 1.5.0): vendor-hosted, so
+#      placement_required is false and the old placement-keyed guard waved it
+#      through - yet the catalog's own notes say it is reachable ONLY via the
+#      forbidden ANTHROPIC_BASE_URL redirection. The native launch then
+#      stripped 'minimax/m3' to 'm3' and ran it against Anthropic on the
+#      anthropic-max subscription while every artifact recorded minimax: a
+#      silent provider AND funding provenance mismatch from a clean stamp.
+# An approved pair is therefore NOT permission to invent a launch path - a pair
+# can be routable and simultaneously unlaunchable, and the honest response is
+# to stop and say so.
 #
 # Temporary and deliberately fail-closed, pending the vendor-neutral local-agent
 # harness story. When that lands with its own validated contract, this guard
@@ -331,16 +347,48 @@ validate_stamp() {
 # ---------------------------------------------------------------------------
 
 # unsupported_launch_reason - echoes a human-readable reason when this adapter
-# has no validated launch contract for the pair, or nothing when it does.
+# has no validated launch contract for the stamped pair, or nothing when it
+# does. Native reachability is decided from the STAMP alone: profile family
+# AND entitlement pool must both be the harness vendor's own.
 unsupported_launch_reason() {
-  local harness="$1" profile="$2" placement_required="$3"
+  local harness="$1" profile="$2" placement_required="$3" pool="$4"
+  local native_family native_pool family_ok=""
   case "$harness" in
-    claude|codex)
-      if [[ "$placement_required" == "true" ]]; then
-        printf '%s' "harness '$harness' has a validated launch contract for NATIVE VENDOR SUBSCRIPTION execution only (vendor-hosted, placement_required false). Profile '$profile' carries placement_required=true, i.e. local compute, which that contract cannot reach: the only mechanisms that would point '$harness' at a local endpoint are the provider/base-URL redirections its contract explicitly forbids."
-      fi
+    claude)
+      native_family="claude/*"; native_pool="anthropic-max"
+      case "$profile" in claude/*) family_ok=1 ;; esac
+      ;;
+    codex)
+      native_family="openai/*"; native_pool="openai-plus"
+      case "$profile" in openai/*) family_ok=1 ;; esac
+      ;;
+    *)
+      # Unknown harnesses are refused later by the launch case; this guard
+      # only declares capability for the two contracts it implements.
+      return 0
       ;;
   esac
+
+  if [[ -n "$family_ok" && "$pool" == "$native_pool" && "$placement_required" != "true" ]]; then
+    return 0   # natively launchable: vendor's own family on the vendor's own pool
+  fi
+
+  # Local-compute pairs keep their established refusal wording.
+  if [[ "$placement_required" == "true" ]]; then
+    printf '%s' "harness '$harness' has a validated launch contract for NATIVE VENDOR SUBSCRIPTION execution only (vendor-hosted, placement_required false). Profile '$profile' carries placement_required=true, i.e. local compute, which that contract cannot reach: the only mechanisms that would point '$harness' at a local endpoint are the provider/base-URL redirections its contract explicitly forbids."
+    return 0
+  fi
+
+  # Vendor-hosted but not natively reachable: name the actual mismatch.
+  local mismatch=""
+  if [[ -z "$family_ok" ]]; then
+    mismatch="model_profile '$profile' is outside the native family '$native_family'"
+  fi
+  if [[ "$pool" != "$native_pool" ]]; then
+    if [[ -n "$mismatch" ]]; then mismatch+=", and "; fi
+    mismatch+="entitlement_pool '${pool:-<none>}' is not the native pool '$native_pool'"
+  fi
+  printf '%s' "harness '$harness' has a validated launch contract for NATIVE VENDOR SUBSCRIPTION execution only: profile family '$native_family' funded by entitlement_pool '$native_pool'. Stamped ${mismatch}. The only mechanisms that would point '$harness' at that provider are the provider/base-URL redirections its contract explicitly forbids; a native launch would instead strip the provider qualifier and silently run the wrong provider on the wrong funding pool while the stamp and every downstream artifact record otherwise."
 }
 
 # refuse_unsupported_launch - write the .blocked marker a human will read.
@@ -363,8 +411,9 @@ attempt would be making a routing decision after acceptance, with no stamp, no
 expiry and no validation - the exact failure this chain exists to prevent.
 
 What a human can do:
-  - re-route: POST /v1/route for a vendor-hosted profile, accept it, re-stamp
-    (scripts/make-stamp.sh), and re-dispatch; or
+  - re-route: POST /v1/route for a pair this adapter can natively launch (the
+    harness vendor's own profile family on its own entitlement pool), accept
+    it, re-stamp (scripts/make-stamp.sh), and re-dispatch; or
   - wait for the vendor-neutral local-agent harness and its own launch contract,
     after which this pair becomes launchable with no change here.
 EOF
@@ -483,6 +532,7 @@ main() {
   EFFORT="$(jq -r '.effort // ""' "$STAMP_FILE")"
   PLACEMENT_REQUIRED="$(jq -r '.placement_required // false' "$STAMP_FILE")"
   PLACEMENT_POLICY="$(jq -r '.placement_policy // ""' "$STAMP_FILE")"
+  ENTITLEMENT_POOL="$(jq -r '.entitlement_pool // ""' "$STAMP_FILE")"
   STAMP_CATALOG_VERSION="$(jq -r '.catalog_version // ""' "$STAMP_FILE")"
   STAMP_EXPIRES_AT="$(jq -r '.expires_at // ""' "$STAMP_FILE")"
   STAMP_DIGEST="sha256:$(sha256_of "$STAMP_FILE")"
@@ -559,7 +609,7 @@ EOF
   # adapter is the only authority on whether it CAN launch it). Nothing has been
   # created at this point: no terminal, no command text, no result artifact.
   local unsupported
-  unsupported="$(unsupported_launch_reason "$HARNESS" "$MODEL_PROFILE" "$PLACEMENT_REQUIRED")"
+  unsupported="$(unsupported_launch_reason "$HARNESS" "$MODEL_PROFILE" "$PLACEMENT_REQUIRED" "$ENTITLEMENT_POOL")"
   if [[ -n "$unsupported" ]]; then
     refuse_unsupported_launch "$HARNESS" "$MODEL_PROFILE" "$EFFORT" \
       "$unsupported" "${STORY}.blocked"

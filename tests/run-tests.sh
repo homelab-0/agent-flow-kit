@@ -175,23 +175,58 @@ for e in max banana HIGH "" "high "; do
 done
 
 # --- launch-contract capability: what THIS adapter can actually launch -----
-# The adapter declares its own capability; it never judges the route.
-assert_eq "guard: {claude, claude/strong} vendor pair is launchable" \
-  "$(unsupported_launch_reason claude 'claude/strong' false)" ""
-assert_eq "guard: {codex, openai/strong} vendor pair is launchable" \
-  "$(unsupported_launch_reason codex 'openai/strong' false)" ""
-if [[ -n "$(unsupported_launch_reason claude local-code-standard true)" ]]; then
+# The adapter declares its own capability; it never judges the route. Native
+# reachability is stamp-derived, belt and braces: profile family AND
+# entitlement pool must both be the harness vendor's own.
+assert_eq "guard: {claude, claude/strong, anthropic-max} native pair is launchable" \
+  "$(unsupported_launch_reason claude 'claude/strong' false anthropic-max)" ""
+assert_eq "guard: {codex, openai/strong, openai-plus} native pair is launchable" \
+  "$(unsupported_launch_reason codex 'openai/strong' false openai-plus)" ""
+if [[ -n "$(unsupported_launch_reason claude local-code-standard true '')" ]]; then
   ok "guard: {claude, local profile} has NO validated launch contract"
 else
   bad "guard: {claude, local profile} has NO validated launch contract"
 fi
-if [[ -n "$(unsupported_launch_reason codex local-code-standard true)" ]]; then
+if [[ -n "$(unsupported_launch_reason codex local-code-standard true '')" ]]; then
   ok "guard: {codex, local profile} has NO validated launch contract"
 else
   bad "guard: {codex, local profile} has NO validated launch contract"
 fi
-assert_contains "guard: reason names the forbidden redirection" \
-  "$(unsupported_launch_reason claude local-code-standard true)" "explicitly forbids"
+assert_contains "guard: local reason names the forbidden redirection" \
+  "$(unsupported_launch_reason claude local-code-standard true '')" "explicitly forbids"
+
+# The second instance of the class: {claude, minimax/strong} is vendor-hosted
+# (placement_required=false) in catalog 1.5.0, reachable ONLY via the forbidden
+# ANTHROPIC_BASE_URL redirection. The old placement-keyed guard waved it
+# through to a native Anthropic launch of 'm3' on anthropic-max while every
+# artifact recorded minimax — the exact provenance mismatch this refuses.
+MINIMAX_REASON="$(unsupported_launch_reason claude 'minimax/strong' false minimax-max)"
+if [[ -n "$MINIMAX_REASON" ]]; then
+  ok "guard: {claude, minimax/strong, minimax-max} REFUSED (no native reachability)"
+else
+  bad "guard: {claude, minimax/strong, minimax-max} REFUSED (no native reachability)" \
+    "a vendor-hosted non-native pair passed the guard: silent provider/funding mismatch"
+fi
+assert_contains "guard: minimax reason names the profile-family mismatch" \
+  "$MINIMAX_REASON" "outside the native family 'claude/*'"
+assert_contains "guard: minimax reason names the pool mismatch" \
+  "$MINIMAX_REASON" "'minimax-max' is not the native pool 'anthropic-max'"
+if [[ -n "$(unsupported_launch_reason codex 'minimax/strong' false minimax-max)" ]]; then
+  ok "guard: {codex, minimax/strong} REFUSED (cross-harness control)"
+else
+  bad "guard: {codex, minimax/strong} REFUSED (cross-harness control)"
+fi
+# Belt and braces: either mismatch ALONE refuses.
+if [[ -n "$(unsupported_launch_reason claude 'claude/strong' false minimax-max)" ]]; then
+  ok "guard: native family on a foreign pool REFUSED"
+else
+  bad "guard: native family on a foreign pool REFUSED"
+fi
+if [[ -n "$(unsupported_launch_reason claude 'minimax/strong' false anthropic-max)" ]]; then
+  ok "guard: foreign family on the native pool REFUSED"
+else
+  bad "guard: foreign family on the native pool REFUSED"
+fi
 
 # --- validator exit remap: never collides with dispatch's own 0/1/2/3 ------
 assert_eq "validator exit 0 -> dispatch 0 (proceed)"           "$(remap_validator_exit 0)" "0"
@@ -368,6 +403,11 @@ profiles:
     physical:
       - model_id: qwen36-27b
         placement: cachyos-7900xtx
+  "minimax/strong":
+    hosting: vendor
+    physical:
+      - model_id: "minimax/m3"
+        placement: null
 YAML
 
 # --- stub orca ------------------------------------------------------------
@@ -443,15 +483,17 @@ export STUB_REPO_ID="repo-1234"
 export STUB_WT_ID="repo-1234::$WT"
 
 # --- fixtures -------------------------------------------------------------
-write_stamp() { # write_stamp <file> <effort> <placement_required> [profile] [harness]
+write_stamp() { # write_stamp <file> <effort> <placement_required> [profile] [harness] [pool]
   # A local (placement_required) profile is free and draws on no entitlement
   # pool, exactly as the catalog declares it — the fixture stays truthful even
   # though the stubbed validator would not notice.
   jq -n --arg e "$2" --argjson pr "$3" --arg p "${4:-claude/strong}" \
-        --arg h "${5:-claude}" \
+        --arg h "${5:-claude}" --arg pool "${6:-}" \
     '{harness:$h, model_profile:$p, effort:$e,
       cost_class:(if $pr then "free" else "subscription" end),
-      entitlement_pool:(if $pr then null else "anthropic-max" end),
+      entitlement_pool:(if $pr then null
+                        elif $pool != "" then $pool
+                        else "anthropic-max" end),
       metered:false,
       placement_policy:"prefer-warm-local", placement_required:$pr,
       catalog_version:"sha256:abc", expires_at:"2099-01-01T00:00:00Z",
@@ -712,6 +754,36 @@ gates: [\"true\"]"
 
 assert_guard_refuses claude local-code-standard
 assert_guard_refuses codex  local-code-standard
+
+# The second instance of the class: {claude, minimax/strong, minimax-max} is a
+# CLEAN stamp — vendor-hosted, placement_required=false, no override — that the
+# old placement-keyed guard waved through to `claude --model m3` against
+# Anthropic on anthropic-max while the stamp recorded minimax. Stamp-derived
+# native reachability must refuse it before any command text exists, naming the
+# actual mismatch.
+: > "$STUB_STATE/terminal-creates"
+rm -f "$STUB_STATE/last-command.txt" "$WT/s-guard-minimax.md.result.json" \
+      "$WT/s-guard-minimax.md.blocked"
+write_story "$WT/s-guard-minimax.md" "persona: dev
+gates: [\"true\"]"
+write_stamp "$WT/s-guard-minimax.md.stamp.json" high false "minimax/strong" claude minimax-max
+rc="$(run_dispatch s-guard-minimax.md)"
+assert_eq "guard[minimax]: {claude, minimax/strong, minimax-max} -> exit 7" "$rc" "7"
+mm_marker="$(cat "$WT/s-guard-minimax.md.blocked" 2>/dev/null || true)"
+assert_contains "guard[minimax]: marker is distinctly typed" "$mm_marker" "UNSUPPORTED-LAUNCH-CONTRACT:"
+assert_contains "guard[minimax]: marker names the profile-family mismatch" \
+  "$mm_marker" "model_profile 'minimax/strong' is outside the native family 'claude/*'"
+assert_contains "guard[minimax]: marker names the pool mismatch" \
+  "$mm_marker" "entitlement_pool 'minimax-max' is not the native pool 'anthropic-max'"
+assert_contains "guard[minimax]: marker says the stamp was VALID" "$mm_marker" "The stamp is VALID"
+assert_contains "guard[minimax]: marker says route NOT modified"  "$mm_marker" "route was NOT modified"
+assert_empty_file "guard[minimax]: no Orca terminal created" "$STUB_STATE/terminal-creates"
+assert_no_file    "guard[minimax]: no harness command built" "$STUB_STATE/last-command.txt"
+assert_no_file    "guard[minimax]: no result artifact"       "$WT/s-guard-minimax.md.result.json"
+assert_eq "guard[minimax]: stamp model_profile untouched" \
+  "$(jq -r .model_profile "$WT/s-guard-minimax.md.stamp.json")" "minimax/strong"
+assert_eq "guard[minimax]: stamp entitlement_pool untouched" \
+  "$(jq -r .entitlement_pool "$WT/s-guard-minimax.md.stamp.json")" "minimax-max"
 
 # The vendor pairs each harness DOES have a contract for still launch normally —
 # the guard is a capability declaration, not a blanket refusal.
