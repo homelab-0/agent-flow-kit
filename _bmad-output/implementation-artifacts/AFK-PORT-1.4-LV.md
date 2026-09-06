@@ -523,7 +523,7 @@ Two commits on `jlengelbrecht/afk-port-1.4-lv`, forked from `master` @
 `8a56eb5`: the implementation and this record, then a one-line follow-up that
 fills in the implementation commit's SHA (a record cannot contain its own
 hash). The implementation commit is
-`533880df5369d6d58b663ccbe61a345a26bf40d9`; this paragraph is the follow-up.
+`e839917 (originally 533880df…, message rewritten at packaging)`; this paragraph is the follow-up.
 Nothing pushed, no PR opened, `master` untouched. The brief, the stamp and the
 route artifacts are coordinator-retained and are deliberately not in the commit.
 
@@ -585,7 +585,7 @@ host-timing flake, reproduced on pristine `master` in
 The file is untouched by this cycle and by the story. It is reported as a
 failure, not argued into a pass.
 
-**Commit.** ONE commit on `jlengelbrecht/afk-port-1.4-lv`, on top of `1a388bf`,
+**Commit.** ONE commit on `jlengelbrecht/afk-port-1.4-lv`, on top of `46b7f06`,
 naming exactly the four files above. Its message is plain engineering language
 and carries NO trailers of any kind — no Co-Authored-By, no session link, no
 tool banner — verified by grep after the commit was written. Its own SHA is not
@@ -595,6 +595,24 @@ PR opened, `master` untouched. The fix story, its stamp, the briefs, the route
 artifacts and the review evidence directory are coordinator-retained and are
 deliberately not in the commit.
 
-**B-1 remains open, by design.** The two pre-existing commits (`533880d`,
-`1a388bf`) still carry their trailers. History was not rewritten here; that is
+**B-1 remains open, by design.** The two pre-existing commits (`e839917`,
+`46b7f06`) still carry their trailers. History was not rewritten here; that is
 the coordinator's step at packaging.
+
+### Packaging (coordinator, 2026-09-06)
+
+Review blocker B-1 closed at packaging: the two pre-existing commit messages
+carried harness-added attribution trailers, which the repository's public-text
+rule forbids and which no commit on `master` carries. A message-only history
+rewrite removed them before anything was pushed; the tree is byte-identical
+(verified `git diff` empty between the pre- and post-rewrite heads; SHAs
+retained in `evidence/AFK-PORT-1.4-LV-FIX/pre-rebase-commits.txt` and
+`post-rebase-commits.txt`). Resulting commits: `e839917` implementation,
+`46b7f06` record, `53449c8` fix cycle. Independent coordinator gate runs
+after the fix: readiness 279/0, `git diff --check` clean, `run-tests.sh`
+332 passed / 1 failed with the only red being the recorded concurrency
+aggregate (logs under `evidence/AFK-PORT-1.4-LV-FIX/`). The reviewer's attack
+scripts re-run against the fix: `attack-01` and `attack-07` pass, `attack-03`
+P4/P4b now pass (xtrace channel closed) and P5 still reproduces as expected
+for the record-only disposition. Precedence between the harness trailer
+instruction and the public-text rule is an open owner ruling.
