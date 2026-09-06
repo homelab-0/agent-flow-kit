@@ -504,6 +504,7 @@ of the suites this story actually changes, are green.
 Two commits on `jlengelbrecht/afk-port-1.4-lv`, forked from `master` @
 `8a56eb5`: the implementation and this record, then a one-line follow-up that
 fills in the implementation commit's SHA (a record cannot contain its own
-hash). SHAs are listed in the second commit and in the completion message.
+hash). The implementation commit is
+`533880df5369d6d58b663ccbe61a345a26bf40d9`; this paragraph is the follow-up.
 Nothing pushed, no PR opened, `master` untouched. The brief, the stamp and the
 route artifacts are coordinator-retained and are deliberately not in the commit.
