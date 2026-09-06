@@ -333,6 +333,19 @@ GWCMD="$(build_claude_gateway_command "/home/op" "/usr/bin:/bin" "op" \
 head1 "   generated gateway-backed local claude terminal command"
 printf '   %s\n' "$GWCMD"
 
+# The credential is assigned to a shell variable before `env -i`, so an xtrace
+# inherited from the terminal's own shell would print its value into a buffer
+# Orca persists. The generated text disables xtrace before the assignment, and
+# it has to be the FIRST thing in the text or the assignment can precede it.
+assert_eq "gateway cmd: the text opens by disabling xtrace" \
+  "${GWCMD:0:8}" "set +x; "
+# ...and that prefix is the gateway class's alone: the native text assigns
+# nothing and must not have acquired it.
+assert_absent "claude cmd: the native text is unchanged — no xtrace prefix" \
+  "$CMD" "set +x"
+assert_eq "claude cmd: the native text still opens with the env -i sanitizer" \
+  "${CMD:0:6}" "env -i"
+
 # The env -i allowlist is the contract, and it is asserted as a SET, not as a
 # handful of substrings: an extra ANTHROPIC_* or CLAUDE_* name is exactly the
 # kind of quiet widening this class exists to make impossible.
@@ -541,8 +554,11 @@ case "$sub" in
     echo created >> "$STUB_STATE/terminal-creates"
     jq -n '{ok:true,result:{terminal:{handle:"term_stub"}}}' ;;
   "terminal read")
-    jq -n --arg t "${STUB_TERMINAL_TAIL:-}" \
-      '{ok:true,result:{terminal:{handle:"term_stub",status:"running",
+    # STUB_TERMINAL_STATUS lets a case drive the terminal to its END state. A
+    # stub that only ever answers "running" cannot exercise the launch failure
+    # a terminal that exits without an exit marker is supposed to be.
+    jq -n --arg t "${STUB_TERMINAL_TAIL:-}" --arg s "${STUB_TERMINAL_STATUS:-running}" \
+      '{ok:true,result:{terminal:{handle:"term_stub",status:$s,
         tail:($t|split("\n"))}}}' ;;
   "terminal rename") jq -n '{ok:true}' ;;
   *) jq -n '{ok:true,result:{}}' ;;
@@ -964,6 +980,12 @@ assert_absent "gateway: ANTHROPIC_API_KEY never appears" "$GW_LAUNCHED" "ANTHROP
 # terminal at launch time. Prove first that the configured mechanism really
 # does resolve to the sentinel, so the absence assertions below are not
 # vacuously true of a mechanism that resolves to nothing.
+# Which of these carries the proof: "the value is NOT in the generated command"
+# is the load-bearing one — the stub never executes the command text, so the
+# credential is never resolved during a suite run and the remaining absences
+# are structural. Their runtime counterparts (the terminal shell, its children,
+# xtrace, /proc) are covered by the reviewer's attack-03 in
+# _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.4-LV-REVIEW/.
 GW_RESOLVED="$( . "$WORK/op-env" && "$BIN/op" read "op://stubvault/agw-claude-code/credential" )"
 assert_eq "gateway: the configured reference really resolves to the credential" \
   "$GW_RESOLVED" "$GW_SENTINEL"
@@ -1000,6 +1022,21 @@ assert_contains "gateway preflight: names launcher.gateway_endpoint" \
 assert_empty_file "gateway preflight: endpoint — no terminal created" "$STUB_STATE/terminal-creates"
 assert_no_file "gateway preflight: endpoint — no command built" "$STUB_STATE/last-command.txt"
 assert_no_file "gateway preflight: endpoint — no result artifact" "$WT/s-gateway.md.result.json"
+
+# (a2) and a refusal does not leave LAST cycle's result artifact on disk.
+# `rm -f` sits above the preflights, so a reader that opens
+# ${STORY}.claude-result.json by name after a refusal finds nothing rather than
+# a stale result for a launch that never happened.
+: > "$STUB_STATE/terminal-creates"
+rm -f "$STUB_STATE/last-command.txt" "$WT/s-gateway.md.result.json"
+printf '{"stale":"last cycle"}' > "$WT/s-gateway.md.claude-result.json"
+rc="$(STUB_GATEWAY_URL=""; export STUB_GATEWAY_URL; run_dispatch s-gateway.md)"
+assert_eq "gateway preflight: stale artifact — still refuses (exit 2)" "$rc" "2"
+assert_no_file "gateway preflight: the STALE claude-result.json is gone" \
+  "$WT/s-gateway.md.claude-result.json"
+assert_no_file "gateway preflight: stale — no result artifact written" \
+  "$WT/s-gateway.md.result.json"
+assert_empty_file "gateway preflight: stale — no terminal created" "$STUB_STATE/terminal-creates"
 
 # (b) no credential reference configured
 : > "$STUB_STATE/terminal-creates"
@@ -1066,6 +1103,27 @@ assert_empty_file "gateway preflight: context — no terminal created" "$STUB_ST
 assert_no_file "gateway preflight: context — no command built" "$STUB_STATE/last-command.txt"
 assert_no_file "gateway preflight: context — no result artifact" "$WT/s-gateway.md.result.json"
 cp "$WORK/catalog-full.yaml" "$WORK/catalog.yaml"
+
+# --- an empty credential read is a LAUNCH FAILURE, never status: done -------
+# The class's single most important safety property, exercised end to end
+# rather than argued. The generated text refuses and exits 78 WITHOUT printing
+# a CLAUDE_EXIT line, so the terminal reaches its end state with no marker.
+# Drive the stub to exactly that shape: dispatch must report a launch that did
+# not complete honestly and write no result artifact at all.
+: > "$STUB_STATE/terminal-creates"
+rm -f "$STUB_STATE/last-command.txt" "$WT/s-gateway.md.result.json" \
+      "$WT/s-gateway.md.claude-result.json"
+export STUB_TERMINAL_STATUS="exited"
+export STUB_TERMINAL_TAIL="dispatch: gateway credential resolved EMPTY; refusing to start claude unauthenticated"
+rc="$(run_dispatch s-gateway.md)"
+assert_eq "gateway empty-read: reported as a launch failure (exit 2)" "$rc" "2"
+assert_contains "gateway empty-read: says the launch did not complete honestly" \
+  "$(cat "$WORK/err")" "did not complete honestly"
+assert_no_file "gateway empty-read: no result artifact — never status: done" \
+  "$WT/s-gateway.md.result.json"
+unset STUB_TERMINAL_STATUS
+export STUB_TERMINAL_TAIL="ok
+CLAUDE_EXIT=0"
 
 # --- and the class stays narrow: a local profile stamped with a vendor pool -
 # Free execution funded from a vendor subscription pool is a stamp whose

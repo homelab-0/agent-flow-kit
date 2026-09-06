@@ -931,9 +931,10 @@ base-URL, provider and model redirection the CLIs expose.
 **Gateway-backed local execution**, on `claude` only: a profile the trusted
 catalog marks `hosting: local`, carrying `placement_required: true`, drawing on
 no entitlement pool, at `cost_class: free`. Its launch contract is the catalog's
-own record of what was live-validated for that pair, and it is five per-process
-variables set inside the launch's `env -i` allowlist, on the harness subprocess
-and nowhere else:
+own record for that pair: four live-validated variables, plus the
+context-window variable the catalog records as observed during that validation
+(evidence finding F3) rather than exercised by it. All five are set inside the
+launch's `env -i` allowlist, on the harness subprocess and nowhere else:
 
 | Variable | Value | Where the value comes from |
 |---|---|---|

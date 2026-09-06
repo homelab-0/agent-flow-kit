@@ -143,6 +143,12 @@ echo \"CLAUDE_EXIT=\$?\""
 # file inside that substitution also keeps the service-account token in a
 # subshell rather than in the terminal's own environment.
 #
+# The text opens with `set +x` because the credential is assigned to a shell
+# variable before `env -i`, and an xtrace inherited from the terminal's own
+# shell (a `set -x` in a login rc, or a BASH_ENV) would render the resolved
+# value into the persisted terminal buffer. Disabling xtrace for this command
+# closes that channel; the native class assigns nothing and is unchanged.
+#
 # An empty read is fatal BEFORE claude starts. A claude with an empty token is
 # not a degraded gateway session; it is an unauthenticated one, and starting it
 # would put a session's provider and funding back in doubt — which is the whole
@@ -156,7 +162,8 @@ build_claude_gateway_command() {
   local persona_arg=""
   [[ -n "$persona_file" ]] && persona_arg=" --append-system-prompt-file $(shq "$persona_file")"
   printf '%s' \
-"ANTHROPIC_AUTH_TOKEN=\"\$(. $(shq "$op_env_file") && op read $(shq "$token_ref"))\"; \
+"set +x; \
+ANTHROPIC_AUTH_TOKEN=\"\$(. $(shq "$op_env_file") && op read $(shq "$token_ref"))\"; \
 [ -n \"\$ANTHROPIC_AUTH_TOKEN\" ] || { \
 echo 'dispatch: gateway credential resolved EMPTY; refusing to start claude unauthenticated' >&2; \
 exit 78; }; \
@@ -361,7 +368,8 @@ validate_stamp() {
 # that improvises a launch it has never validated is exactly what every frozen
 # contract in this chain exists to prevent.
 #
-# The launch classes this adapter implements, all live-validated and frozen:
+# The launch classes this adapter implements, whose contracts are
+# live-validated and frozen:
 #   1. NATIVE VENDOR SUBSCRIPTION, claude -> HARNESS-LAUNCH-claude.md and
 #      codex -> HARNESS-LAUNCH-codex.md. Vendor-hosted (§9: placement_required
 #      is false), and §7 FORBIDS every endpoint, base-URL, provider and model
@@ -747,6 +755,10 @@ EOF
       approved_path="$(cfg '.launcher.approved_path' AGENT_FLOW_APPROVED_PATH "$(dirname "$(command -v "$harness_bin")"):/usr/local/bin:/usr/bin:/bin")"
       approved_user="$(id -un)"
       result_file="${STORY}.claude-result.json"
+      # Removed BEFORE the preflights, not after them: a refusal that left last
+      # cycle's artifact on disk would hand a reader that opens the file by name
+      # a stale result for a launch that never happened.
+      rm -f "$result_file"
       # Which of the two classes: the guard above already decided it, and this
       # reads the same stamp fact it decided on. A claude stamp that requires
       # placement and reached this line is a validated gateway-backed local
@@ -776,13 +788,11 @@ EOF
         max_context="$(yq -r ".profiles.\"$MODEL_PROFILE\".min_context // \"\"" "$CATALOG_PATH")"
         [[ -n "$max_context" && "$max_context" != "null" ]] || \
           die "catalog profile '$MODEL_PROFILE' declares no min_context, so the session's real context window is unknown and the launch is refused rather than run at the harness default" "$EX_CONFIG"
-        rm -f "$result_file"
         command_text="$(build_claude_gateway_command "$approved_home" "$approved_path" "$approved_user" \
                          "$PROMPT_FILE" "$NATIVE_MODEL" "$EFFORT" "$result_file" "$PERSONA_FILE" \
                          "$gateway_url" "$token_ref" "$op_env_file" "$placement_header" "$max_context")"
         log "launch class: gateway-backed local ($MODEL_PROFILE -> $NATIVE_MODEL at $gateway_url, x-placement $placement_header, context $max_context)"
       else
-        rm -f "$result_file"
         command_text="$(build_claude_command "$approved_home" "$approved_path" "$approved_user" \
                          "$PROMPT_FILE" "$NATIVE_MODEL" "$EFFORT" "$result_file" "$PERSONA_FILE")"
         log "launch class: native vendor subscription"

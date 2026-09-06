@@ -311,14 +311,28 @@ thing, plus it puts the value in dispatch's own environment); a wrapper
 the value out of `env`'s argv, but adds a shell to the frozen §5 command shape
 and breaks AC-2's requirement that the allowlist carry `ANTHROPIC_AUTH_TOKEN`).
 
-**Residual, disclosed:** for the microseconds between the shell expanding the
-substitution and `env` exec'ing claude, the value is in `env`'s own argv and so
-in `/proc/<pid>/cmdline`. After the exec the process image is claude's and the
-value lives only in `/proc/<pid>/environ`, which is the point of the class and
-is same-user readable only. The window is tiny and same-user, but it is not
-nothing; closing it means the `sh -c` wrapper above, which is a change to the
-frozen command shape and belongs to a prox-ops contract amendment rather than
-to this story.
+**Residual, disclosed (corrected after review):** for the interval between the
+shell expanding the substitution and `env` exec'ing claude, the value is in
+`env`'s own argv and so in `/proc/<pid>/cmdline`. After the exec the process
+image is claude's and the value lives only in `/proc/<pid>/environ`, which is
+mode `0600` and readable by the owner alone — that steady state is the point of
+the class and it holds. The window before it does not: `/proc/<pid>/cmdline` is
+mode `0444`, and on a default Linux host — including this one, whose `/proc` is
+mounted `rw,nosuid,nodev,noexec,relatime` with no `hidepid` — **any local user
+can read it**, not only the owner. The reviewer demonstrated this rather than
+argued it: `attack-03` P5 raced an unprivileged poller against a real launch
+and read the sentinel out of another process's `cmdline`. So this is a genuine
+window against any local account on the host, and the earlier
+"same-user readable only" characterisation of it was wrong.
+
+Two mitigations, in the order they should be taken. The cheap one is fleet
+configuration and needs no change here: mount `/proc` with `hidepid=2`, which
+hides other users' process directories outright and closes the window for every
+process on the host, not just this launch. The thorough one is still the `sh -c`
+wrapper inside `env -i` rejected above, which keeps the value out of `env`'s
+argv entirely; it changes the frozen §5 command shape, so it remains a prox-ops
+contract amendment assigned to the coordinator and not a kit change. The design
+call for this story is unchanged — only the risk statement was wrong.
 
 ### Launch-class discriminator
 
@@ -472,10 +486,14 @@ of the suites this story actually changes, are green.
 
 ### Deferred, deliberately, and disclosed
 
-1. **`env` argv exposure of the resolved credential** (diagnosed above). A
-   microsecond-wide, same-user window before `exec`. Closing it needs a wrapper
-   shell inside `env -i`, which changes the frozen §5 command shape and is a
-   prox-ops contract question, not a kit change.
+1. **`env` argv exposure of the resolved credential** (diagnosed above, and
+   corrected after review). A brief window before `exec` during which the value
+   sits in `env`'s argv and so in `/proc/<pid>/cmdline` — which is mode `0444`
+   and, absent `hidepid`, readable by ANY local user, not just this one. The
+   reviewer reproduced the read (`attack-03` P5). Interim fleet mitigation:
+   mount `/proc` with `hidepid=2`. The full fix is a wrapper shell inside
+   `env -i`, which changes the frozen §5 command shape and stays a prox-ops
+   contract question assigned to the coordinator, not a kit change.
 2. **`launcher.gateway_token_ref` ships empty**, so a fleet operator must fill
    in the vault reference before the first gateway launch. Shipping this
    fleet's reference as a default would make AC-4(b) unreachable in the default
@@ -508,3 +526,75 @@ hash). The implementation commit is
 `533880df5369d6d58b663ccbe61a345a26bf40d9`; this paragraph is the follow-up.
 Nothing pushed, no PR opened, `master` untouched. The brief, the stamp and the
 route artifacts are coordinator-retained and are deliberately not in the commit.
+
+### Post-review fix cycle (AFK-PORT-1.4-LV-FIX)
+
+One bounded cycle answering the independent review
+(`evidence/AFK-PORT-1.4-LV-REVIEW/REVIEW.md`, verdict NOT CLEAN — 1 blocker,
+9 residuals). A fresh session; it did not write the implementation and did not
+write the review. Every finding is dispositioned below, and nothing outside
+this table was touched.
+
+| Finding | Disposition | Where |
+|---|---|---|
+| **B-1** both commits carry AI-attribution trailers | **coordinator, at packaging.** Existing commits are not rewritten here; the fix cycle's own commit carries no trailers of any kind. | — |
+| **R-1** `/proc/<pid>/cmdline` exposure is wider than the record said | **record corrected** (F5). The claim was wrong, not the design call: `cmdline` is mode `0444` and readable by any local user absent `hidepid`, and the reviewer read the sentinel out of it during a live launch (`attack-03` P5). `hidepid=2` is named as the interim fleet mitigation; the `sh -c` wrapper stays the prox-ops amendment the coordinator owns. No code change. | "Credential conveyance", disclosed item 1 |
+| **R-2** `set -x` in the terminal shell prints the credential | **fixed** (F1). The generated gateway text now opens `set +x; ` before the credential assignment, so an inherited xtrace cannot render the value into the terminal buffer Orca persists. The native text is untouched, which the suite asserts both ways. | `dispatch.sh` `build_claude_gateway_command`; `run-tests.sh` |
+| **R-3** the `x-placement` value is shell-safe but not shape-checked | **backlog.** Out of scope by the fix story's hard stops. The value comes from the trusted router and `shq` makes it inert as shell; shape-checking it is defence in depth, not a reachable path. | — |
+| **R-4** the readiness mirror admits a row the adapter refuses | **accepted**, as already disclosed (item 5). No catalog profile is vendor-hosted and placement-required, so the divergent row cannot be produced by a real catalog, and giving readiness the catalog would make it a second policy loader. | — |
+| **R-5** the empty-read refusal is never exercised through `orca_launch` | **test added** (F3). The `terminal read` stub gained a `STUB_TERMINAL_STATUS` knob so a case can drive the terminal to its end state; a gateway launch whose terminal exits with no `CLAUDE_EXIT` line is asserted to exit 2, to say the launch did not complete honestly, and to write no `${STORY}.result.json`. | `run-tests.sh` |
+| **R-6** AC-3's absence assertions are mostly structural | **kept, annotated.** The block now says which assertion is load-bearing (the credential value absent from the generated command text) and points at `attack-03` for the runtime channels a stubbed suite cannot reach. | `run-tests.sh` |
+| **R-7** two sentences claim more validation than happened | **fixed** (F4). The contract doc now reads four live-validated variables plus the context-window variable the catalog records as *observed* during that validation (finding F3), and the `dispatch.sh` header says "whose contracts are live-validated and frozen" — this adapter's gateway implementation has not itself been launched against a live gateway, and the smoke re-run is a separate story. | `docs/LIFECYCLE-CONTRACT.md`; `dispatch.sh` header |
+| **R-8** a stale result artifact survives a gateway preflight refusal | **fixed** (F2). `rm -f "$result_file"` is hoisted above the gateway preflights, so a refusal leaves nothing for a reader that opens the file by name. A case pre-creates a stale artifact, triggers the endpoint-unset refusal, and asserts both it and `${STORY}.result.json` are absent afterwards. | `dispatch.sh` `main`; `run-tests.sh` |
+| **R-9** the guard abstains on an unknown harness | **no action.** Unchanged from `master`, and the launch `case` refuses the unknown harness before any terminal exists. | — |
+
+**Files changed in this cycle.** `files/model-router/scripts/dispatch.sh`
+(F1, F2, F4), `tests/run-tests.sh` (F1, F2, F3, R-6 annotation),
+`docs/LIFECYCLE-CONTRACT.md` (F4), and this story file (F5, F6).
+
+**Deferred, deliberately, and disclosed (this cycle).** Nothing beyond F1-F6
+was changed. The two things noticed while working and deliberately left alone:
+R-3's header shape check, which the fix story names as a hard stop; and the
+second terminal shape the reviewer flagged under R-5 — a terminal that keeps
+reporting `running` after the command has refused, which is still fail-closed
+but only after the full `LAUNCH_TIMEOUT`. Shortening that timeout for a launch
+that has printed nothing is a behaviour change outside F1-F6 and belongs to a
+follow-up.
+
+**Gates — run by this worker, in this worktree.**
+
+| Gate | Result |
+|---|---|
+| `bash tests/run-tests.sh` | **332 passed, 1 failed** (exit 1) — the one failure is the recorded host flake below. Sub-gates: shellcheck clean; lifecycle 476/0; mutation 558/0; **concurrency 204 passed, 3 failed**; readiness 279/0; dispatch 250/0. All six new assertions from this cycle pass. |
+| `bash tests/lifecycle-readiness-tests.sh` | **279 passed, 0 failed** (exit 0) |
+| `git diff --check` | clean, exit 0 |
+
+**The one failure, verbatim and unargued.** `run-tests.sh` section 8 aggregates
+`tests/lifecycle-concurrency-tests.sh`, which exits 1 on this host with
+`204 passed, 3 failed`. Run directly, the three are:
+
+```
+FAIL a contender that observed the window waits it out rather than refusing
+FAIL and reports the live owner it was waiting for
+FAIL so nothing it says can be read as 'this lock has no owner'
+```
+
+Exactly the three sub-assertions the fix story records as the pre-existing
+host-timing flake, reproduced on pristine `master` in
+`evidence/AFK-PORT-1.4-LV/coordinator-baseline-concurrency-master-8a56eb5.log`.
+The file is untouched by this cycle and by the story. It is reported as a
+failure, not argued into a pass.
+
+**Commit.** ONE commit on `jlengelbrecht/afk-port-1.4-lv`, on top of `1a388bf`,
+naming exactly the four files above. Its message is plain engineering language
+and carries NO trailers of any kind — no Co-Authored-By, no session link, no
+tool banner — verified by grep after the commit was written. Its own SHA is not
+recorded here: a record cannot contain its own hash, and the fix story allows
+one commit, so no follow-up commit was made to fill it in. Nothing pushed, no
+PR opened, `master` untouched. The fix story, its stamp, the briefs, the route
+artifacts and the review evidence directory are coordinator-retained and are
+deliberately not in the commit.
+
+**B-1 remains open, by design.** The two pre-existing commits (`533880d`,
+`1a388bf`) still carry their trailers. History was not rewritten here; that is
+the coordinator's step at packaging.
