@@ -178,6 +178,7 @@ AFK_STAMP_PROFILE=""
 AFK_STAMP_EFFORT=""
 AFK_STAMP_PLACEMENT_REQUIRED="false"
 AFK_STAMP_COST_CLASS=""
+AFK_STAMP_ENTITLEMENT_POOL=""
 AFK_STAMP_METERED="false"
 AFK_STAMP_IDENTITY=""
 
@@ -202,6 +203,7 @@ afk_readiness_reset() {
   AFK_STAMP_JSON="{}"; AFK_STAMP_PRESENT="false"
   AFK_STAMP_HARNESS=""; AFK_STAMP_PROFILE=""; AFK_STAMP_EFFORT=""
   AFK_STAMP_PLACEMENT_REQUIRED="false"; AFK_STAMP_COST_CLASS=""
+  AFK_STAMP_ENTITLEMENT_POOL=""
   AFK_STAMP_METERED="false"; AFK_STAMP_IDENTITY=""
 }
 
@@ -991,6 +993,7 @@ afk_load_stamp() {
   AFK_STAMP_PROFILE="$(printf '%s' "$j" | jq -r '.model_profile')"
   AFK_STAMP_EFFORT="$(printf '%s' "$j" | jq -r '.effort')"
   AFK_STAMP_COST_CLASS="$(printf '%s' "$j" | jq -r '.cost_class')"
+  AFK_STAMP_ENTITLEMENT_POOL="$(printf '%s' "$j" | jq -r '.entitlement_pool // ""')"
   AFK_STAMP_METERED="$(printf '%s' "$j" | jq -r '.metered')"
   AFK_STAMP_PLACEMENT_REQUIRED="$(printf '%s' "$j" | jq -r '.placement_required')"
   AFK_STAMP_IDENTITY="$(afk_sha256_file "$AFK_STAMP_FILE")"
@@ -1000,12 +1003,32 @@ afk_load_stamp() {
 # The kit's own launch-contract declaration, mirrored from the launch adapter.
 # It answers only "can THIS executor drive that pair", never "is that pair
 # allowed" — the catalog already answered the second question.
-afk_launch_contract_reason() { # <harness> <profile> <placement_required>
+#
+# The adapter implements two classes and this mirrors both: native vendor
+# subscription execution on either approved harness, and gateway-backed local
+# execution on claude — a placement-required profile that draws on no
+# entitlement pool and is free. Readiness judges those two conditions from the
+# stamp it was handed. It does NOT load the trusted catalog, so the adapter's
+# third condition (the catalog marking the profile hosting: local) is checked
+# only at dispatch, where the trusted document is in hand. Readiness therefore
+# never claims launch authority for this pair, and never did: ROUTE_READY stays
+# NOT_EVALUATED offline and the adapter revalidates immediately before launch.
+afk_launch_contract_reason() { # <harness> <profile> <placement_required> [pool] [cost_class]
+  local pool="${4:-}" cost_class="${5:-}"
   if ! afk_list_contains "$1" "$AFK_APPROVED_HARNESSES"; then
     printf 'no launch contract for harness %s' "$1"
     return 0
   fi
   if [[ "$3" == "true" ]]; then
+    if [[ "$1" == "claude" && ( -z "$pool" || "$pool" == "null" ) && "$cost_class" == "free" ]]; then
+      printf ''            # gateway-backed local execution
+      return 0
+    fi
+    if [[ "$1" == "claude" ]]; then
+      printf 'profile %s requires placement, and gateway-backed local execution on claude is funded by no entitlement pool at cost_class free; this stamp carries pool %s at cost_class %s' \
+        "$2" "${pool:-<none>}" "${cost_class:-<unset>}"
+      return 0
+    fi
     printf 'profile %s requires placement; the %s launch contract covers native vendor subscription execution only' \
       "$2" "$1"
     return 0
@@ -1650,7 +1673,7 @@ afk_evaluate_route_readiness() {
   fi
   if [[ -z "$reason" ]]; then
     contract_reason="$(afk_launch_contract_reason "$AFK_STAMP_HARNESS" "$AFK_STAMP_PROFILE" \
-      "$AFK_STAMP_PLACEMENT_REQUIRED")"
+      "$AFK_STAMP_PLACEMENT_REQUIRED" "$AFK_STAMP_ENTITLEMENT_POOL" "$AFK_STAMP_COST_CLASS")"
     if [[ -n "$contract_reason" ]]; then
       reason="ROUTE_PROFILE_UNSUPPORTED"
     fi
