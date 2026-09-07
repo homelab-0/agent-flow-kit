@@ -1,0 +1,32 @@
+{
+  "story": "stories/CELL-lg-compact-T1.md",
+  "cycle": 1,
+  "status": "gates_failed",
+  "route": {
+    "harness": "claude",
+    "model_profile": "local-general",
+    "native_model": "qwen36-27b",
+    "effort": "medium",
+    "persona": "dev-compact"
+  },
+  "stamp": {
+    "digest": "sha256:c77ddf3a96213b1741ecda598d0635595141085bb08213d0b867806e7b3a1e91",
+    "expires_at": "2026-09-08T07:11:28Z",
+    "catalog_version": "sha256:c4d49d9a9db3b203cab02200dc0e335ae3b02934d91fe81b08975d5acc7cd027",
+    "validated": true
+  },
+  "placement": {
+    "required": true,
+    "placement": "kserve-a5000",
+    "model": "qwen36-27b",
+    "resolved_at": "2026-09-07T07:11:32Z",
+    "ttl_seconds": 30
+  },
+  "launch": {
+    "orca_terminal": "term_f535ae63-9eb4-4864-b219-f9c0637801c2",
+    "harness_exit": 0
+  },
+  "gates": {
+    "bash spike/gates/gate-T1.sh": "fail"
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "cell": "lg-full-T2",
+  "harness": "claude",
+  "profile": "local-general",
+  "mode": "full",
+  "task": "T2",
+  "status": "gates_failed_or_error",
+  "dispatch_exit": 3,
+  "gate": "PASS",
+  "gate_line": "GATE PASS (T2): spike/out/wordfreq.sh reports the expected top-three word frequencies",
+  "override": "claude/local-code-standard->claude/local-general",
+  "window_tokens": 65536,
+  "payload": {
+    "persona_bytes": 7944,
+    "story_bytes": 662,
+    "prompt_bytes": 552,
+    "bytes": 9158,
+    "tokens_est_bytes4": 2290,
+    "ratio": 0.034942626953125,
+    "headroom_tokens": 63246
+  },
+  "envelope": {
+    "is_error": false,
+    "num_turns": 26,
+    "duration_ms": 122946,
+    "stop_reason": "end_turn",
+    "denials": 12,
+    "model_usage": [
+      {
+        "model": "qwen36-27b",
+        "contextWindow": 65536,
+        "inputTokens": 4601,
+        "outputTokens": 4340,
+        "cacheRead": 362374,
+        "cacheCreation": 0
+      }
+    ]
+  },
+  "wall_seconds": 137,
+  "finished_at": "2026-09-07T07:20:12Z"
+}

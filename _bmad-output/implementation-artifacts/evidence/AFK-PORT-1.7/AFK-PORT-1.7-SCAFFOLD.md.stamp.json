@@ -1,0 +1,32 @@
+{
+  "harness": "claude",
+  "model_profile": "claude/strong",
+  "effort": "medium",
+  "cost_class": "subscription",
+  "entitlement_pool": "anthropic-max",
+  "metered": false,
+  "placement_policy": "prefer-warm-local",
+  "placement_required": false,
+  "catalog_version": "sha256:c4d49d9a9db3b203cab02200dc0e335ae3b02934d91fe81b08975d5acc7cd027",
+  "expires_at": "2026-09-08T06:11:42Z",
+  "task": {
+    "story_id": "AFK-PORT-1.7-SCAFFOLD",
+    "tags": [
+      "spike",
+      "docs",
+      "tests"
+    ],
+    "title": "Spike scaffolding: benchmark matrix, persona payloads, canary tasks and gates (Story 1.7)"
+  },
+  "override": {
+    "actor": "Josh (standing implementation-prefers-claude ruling; applied by the ORCH coordinator 2026-09-07)",
+    "at": "2026-09-07T06:20:47Z",
+    "original": {
+      "harness": "claude",
+      "model_profile": "claude/strong"
+    },
+    "reason": "Attempt 1 on the natural route {claude, local-code-standard, medium} produced nothing: 57 turns, 43 permission denials, every Read and Write resolved to the canonical repository path instead of the Orca worktree despite the story naming relative paths (evidence AFK-PORT-1.7/scaffold-attempt1). Second identical failure class after M4R attempt 1; recorded as Story 1.7 evidence in its own right. Re-planned per the standing ruling to claude/strong; fields from catalog 1.6.0; catalog_version and expires_at verbatim."
+  },
+  "created_at": "2026-09-07T06:20:47Z",
+  "catalog_document_version": "1.6.0"
+}

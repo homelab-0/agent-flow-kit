@@ -1,0 +1,25 @@
+{
+  "cell": "lcs-none-T2",
+  "harness": "claude",
+  "profile": "local-code-standard",
+  "mode": "none",
+  "task": "T2",
+  "status": "done",
+  "dispatch_exit": 0,
+  "gate": "PASS",
+  "gate_line": "GATE PASS (T2): spike/out/wordfreq.sh reports the expected top-three word frequencies",
+  "override": "none",
+  "window_tokens": 65536,
+  "payload": {
+    "persona_bytes": 0,
+    "story_bytes": 647,
+    "prompt_bytes": 553,
+    "bytes": 1200,
+    "tokens_est_bytes4": 300,
+    "ratio": 0.00457763671875,
+    "headroom_tokens": 65236
+  },
+  "envelope": null,
+  "wall_seconds": 201,
+  "finished_at": "2026-09-07T06:50:56Z"
+}

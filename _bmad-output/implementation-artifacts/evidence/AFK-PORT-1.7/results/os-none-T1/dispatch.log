@@ -1,0 +1,9 @@
+dispatch: persona: none stamped
+dispatch: [stories/CELL-os-none-T1.md] cycle 1/1 -> codex openai/strong (gpt-5.6-sol) effort=medium
+dispatch: stamp: CELL-os-none-T1.md.stamp.json sha256:6c0d1498f848430beee7ca88a5ab7d1c5cf6e13869e4e57b3e649f221208ac3d expires=2026-09-08T07:25:33Z catalog=sha256:c4d49d9a9db3b203cab02200dc0e335ae3b02934d91fe81b08975d5acc7cd027
+dispatch: setup policy: start-immediately
+dispatch: placement: not required for openai/strong (vendor-hosted) — no /v1/place call, no evidence
+dispatch: stamp valid — all 8 checks passed (catalog sha256:c4d49d9a9db3b203cab02200dc0e335ae3b02934d91fe81b08975d5acc7cd027)
+dispatch: launched in Orca terminal term_d8bea898-51ab-4207-ab17-a171477939be — "CELL-os-none-T1.md codex openai/strong medium c1"
+dispatch: CODEX_EXIT=0
+dispatch: {"story":"stories/CELL-os-none-T1.md","cycle":1,"status":"done","route":{"harness":"codex","model_profile":"openai/strong","native_model":"gpt-5.6-sol","effort":"medium","persona":""},"stamp":{"digest":"sha256:6c0d1498f848430beee7ca88a5ab7d1c5cf6e13869e4e57b3e649f221208ac3d","expires_at":"2026-09-08T07:25:33Z","catalog_version":"sha256:c4d49d9a9db3b203cab02200dc0e335ae3b02934d91fe81b08975d5acc7cd027","validated":true},"placement":{"required":false},"launch":{"orca_terminal":"term_d8bea898-51ab-4207-ab17-a171477939be","harness_exit":0},"gates":{"bash spike/gates/gate-T1.sh":"pass"}}

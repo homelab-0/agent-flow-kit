@@ -1,0 +1,25 @@
+{
+  "cell": "os-none-T1",
+  "harness": "codex",
+  "profile": "openai/strong",
+  "mode": "none",
+  "task": "T1",
+  "status": "done",
+  "dispatch_exit": 0,
+  "gate": "PASS",
+  "gate_line": "GATE PASS (T1): spike/out/t1.txt matches the expected bytes",
+  "override": "claude/local-code-standard->codex/openai/strong",
+  "window_tokens": null,
+  "payload": {
+    "persona_bytes": 0,
+    "story_bytes": 695,
+    "prompt_bytes": 552,
+    "bytes": 1247,
+    "tokens_est_bytes4": 312,
+    "ratio": null,
+    "headroom_tokens": null
+  },
+  "envelope": null,
+  "wall_seconds": 79,
+  "finished_at": "2026-09-07T07:26:49Z"
+}

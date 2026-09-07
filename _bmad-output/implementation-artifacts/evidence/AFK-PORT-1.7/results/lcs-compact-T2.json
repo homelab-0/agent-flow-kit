@@ -1,0 +1,41 @@
+{
+  "cell": "lcs-compact-T2",
+  "harness": "claude",
+  "profile": "local-code-standard",
+  "mode": "compact",
+  "task": "T2",
+  "status": "gates_failed_or_error",
+  "dispatch_exit": 1,
+  "gate": "FAIL",
+  "gate_line": "GATE FAIL (T2): spike/out/wordfreq.sh does not exist",
+  "override": "none",
+  "window_tokens": 65536,
+  "payload": {
+    "persona_bytes": 446,
+    "story_bytes": 677,
+    "prompt_bytes": 556,
+    "bytes": 1679,
+    "tokens_est_bytes4": 420,
+    "ratio": 0.00640869140625,
+    "headroom_tokens": 65116
+  },
+  "envelope": {
+    "is_error": false,
+    "num_turns": 8,
+    "duration_ms": 17450,
+    "stop_reason": "end_turn",
+    "denials": 5,
+    "model_usage": [
+      {
+        "model": "qwen36-27b",
+        "contextWindow": 65536,
+        "inputTokens": 855,
+        "outputTokens": 569,
+        "cacheRead": 70466,
+        "cacheCreation": 0
+      }
+    ]
+  },
+  "wall_seconds": 32,
+  "finished_at": "2026-09-07T06:55:14Z"
+}

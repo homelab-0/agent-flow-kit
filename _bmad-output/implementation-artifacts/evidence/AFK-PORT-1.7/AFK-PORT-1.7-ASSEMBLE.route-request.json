@@ -1,0 +1,12 @@
+{
+  "story_id": "AFK-PORT-1.7-ASSEMBLE",
+  "title": "Assemble the Story 1.7 spike evidence bundle, per-profile recommendations and threshold rule",
+  "summary": "Evidence assembly and analysis over 27 retained benchmark cell results (JSON) plus scaffolding and runner: a per-cell CSV, a grounded analysis of pass rates, payload-vs-window and failure classes, per-profile recommendations applied mechanically from the declared rule, a machine-readable threshold rule, a bundle index, and the story record. No production code, no prohibition recorded. Requires reading roughly sixty small JSON and log files and synthesising honestly; numbers must come only from the data.",
+  "touched_paths": ["_bmad-output/implementation-artifacts/evidence/AFK-PORT-1.7/", "_bmad-output/implementation-artifacts/AFK-PORT-1.7.md"],
+  "ambiguity": "medium",
+  "blast_radius": "low",
+  "volume_hint": "low",
+  "tags": ["spike", "docs"],
+  "repo": "agent-flow-kit",
+  "requester": "bmad-pm"
+}
