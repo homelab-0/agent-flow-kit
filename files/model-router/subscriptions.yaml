@@ -38,6 +38,32 @@ launcher:
   # Point it at the catalog DOCUMENT itself, never at the ConfigMap wrapper.
   catalog_path: ""
 
+  # --- the gateway-backed local launch class (claude + a hosting: local
+  # profile). These three keys are what the launcher, and only the launcher,
+  # supplies for it; the rest of that launch comes from the trusted catalog and
+  # the per-attempt POST /v1/place evidence.
+
+  # Where agentgateway's Anthropic-compatible endpoint lives. Rule 1 still
+  # holds: this names an ENDPOINT, not a harness, profile or effort for a task.
+  # Env override: AGENT_FLOW_GATEWAY_URL. Empty refuses the launch.
+  gateway_endpoint: https://ai-gateway.homelab0.org
+
+  # A REFERENCE to the scoped gateway key, never the key. Rule 2: no secret
+  # lives here. dispatch.sh embeds this literal in the generated command and
+  # the value is resolved at launch time, in the terminal, inside a command
+  # substitution — so it exists in no command text, title, log or file.
+  # Fill in the 1Password reference for this fleet, e.g.
+  # op://<vault>/agw-claude-code/credential. Env override:
+  # AGENT_FLOW_GATEWAY_TOKEN_REF. Empty refuses the launch, deliberately: a
+  # claude started with an empty token is an unauthenticated session.
+  gateway_token_ref: ""
+
+  # The file that authenticates the 1Password CLI (a service-account token,
+  # sourced inside that same subshell so it never reaches the terminal's own
+  # environment). A PATH, never a credential. Empty means
+  # "<approved_home>/.op-agent-env". Env override: AGENT_FLOW_OP_ENV_FILE.
+  op_env_file: ""
+
   # The pre-execution stamp validator. Fail-closed, run immediately before every
   # launch; its 0/1/2 exits are remapped into dispatch.sh's 4/5 band.
   stamp_validator: agent-stamp-validate

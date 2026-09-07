@@ -919,11 +919,48 @@ evaluated by its own owner:
 | Workspace trust for the selected path | a human | `WORKSPACE_TRUST_REQUIRED` |
 | Host execution readiness | this host | `NO_APPROVED_HARNESS_PATH` |
 
-This kit's launch contract covers `claude` and `codex` for native vendor
-subscription execution, at effort `low`, `medium`, `high` or `xhigh`. A profile
-carrying `placement_required: true` has no validated launch contract on either
-vendor harness, because the only mechanisms that would point them at local
-compute are the redirections their contracts forbid.
+This kit's launch contract covers two classes, both at effort `low`, `medium`,
+`high` or `xhigh`.
+
+**Native vendor subscription execution**, on `claude` and on `codex`: the
+harness vendor's own profile family funded by its own entitlement pool
+(`claude/*` on `anthropic-max`, `openai/*` on `openai-plus`), vendor-hosted, so
+`placement_required` is false. Their frozen contracts forbid every endpoint,
+base-URL, provider and model redirection the CLIs expose.
+
+**Gateway-backed local execution**, on `claude` only: a profile the trusted
+catalog marks `hosting: local`, carrying `placement_required: true`, drawing on
+no entitlement pool, at `cost_class: free`. Its launch contract is the catalog's
+own record for that pair: four live-validated variables, plus the
+context-window variable the catalog records as observed during that validation
+(evidence finding F3) rather than exercised by it. All five are set inside the
+launch's `env -i` allowlist, on the harness subprocess and nowhere else:
+
+| Variable | Value | Where the value comes from |
+|---|---|---|
+| `ANTHROPIC_BASE_URL` | the gateway's Anthropic-compatible endpoint | launcher configuration (`launcher.gateway_endpoint`, or `AGENT_FLOW_GATEWAY_URL`) |
+| `ANTHROPIC_AUTH_TOKEN` | the scoped gateway key, as a bearer header | resolved at launch time from a launcher-configured REFERENCE (`launcher.gateway_token_ref`); never a value in config, never in command text, a title, a log or a file |
+| `ANTHROPIC_MODEL` | the profile's physical model id | the trusted catalog. Required, not optional: an unpinned session is refused at the gateway |
+| `ANTHROPIC_CUSTOM_HEADERS` | `x-placement: <value>` | copied verbatim from the `headers` object of the `POST /v1/place` result fetched for this attempt; never composed |
+| `CLAUDE_CODE_MAX_CONTEXT_TOKENS` | the profile's real window | the trusted catalog's `min_context`. Absent, the harness assumes 200000 tokens and compacts far too late for the model |
+
+No API key is set on either class, no file-borne redirection is accepted (the
+settings preflight still refuses `env`, `apiKeyHelper`, `forceLoginMethod` and
+provider redirections in any settings layer), and nothing is exported into the
+operator's shell.
+
+**Placement is per launch, not per turn.** `ANTHROPIC_CUSTOM_HEADERS` is fixed
+when the harness process starts and cannot be refreshed while it runs, so one
+session pins one placement for its whole life; a session never re-places
+itself. Evidence is fetched fresh immediately before each attempt. A stale or
+withdrawn placement degrades to the gateway's frozen headerless default and is
+served — it costs latency, not correctness — so relaunching is how a long
+session is re-placed, and nothing breaks if it is not.
+
+Anything outside those two classes is refused before any command text exists.
+The refusal names the mismatch, writes a marker a human can read, and never
+substitutes a harness, model, profile or funding path for the one that was
+stamped.
 
 **Placement is never a lifecycle concern.** No physical inference placement is
 selected, persisted, added to the immutable stamp or assumed reusable here.

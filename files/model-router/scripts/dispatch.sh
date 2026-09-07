@@ -31,9 +31,14 @@
 #      Writes a ${STORY}.blocked marker naming the pair. The route is never
 #      mutated and no substitute harness is ever chosen.
 #
-# Billing invariants: native subscription sessions only. The harness launch is
-# sanitized per contracts/agent-router/HARNESS-LAUNCH-{claude,codex}.md — never
-# add --bare, --full-auto, --dangerously-* or an API-key variable here.
+# Billing invariants. Two funding shapes, both non-metered: the native vendor
+# subscription sessions, and the gateway-backed local class on `claude`
+# (cost_class free, no entitlement pool, a LAN-scoped agentgateway key that buys
+# no vendor spend). The harness launch is sanitized per
+# contracts/agent-router/HARNESS-LAUNCH-{claude,codex}.md — never add --bare,
+# --full-auto, --dangerously-* or an API-key variable here. ANTHROPIC_API_KEY is
+# set on no path: the gateway class authenticates with ANTHROPIC_AUTH_TOKEN, the
+# bearer header the catalog validated, and never an API key.
 
 set -euo pipefail
 
@@ -119,6 +124,59 @@ claude -p \"\$(cat -- $(shq "$prompt_file"))\" \
 --permission-mode acceptEdits --tools \"Read,Glob,Grep,Write\" \
 --strict-mcp-config --output-format json < /dev/null > $(shq "$result_file"); \
 echo \"CLAUDE_EXIT=\$?\""
+}
+
+# build_claude_gateway_command — the SECOND validated claude launch class, as
+# generated terminal text: gateway-backed local execution of a `hosting: local`
+# profile, exactly as catalog 1.6.0 records it for local-code-standard
+# (STORY-036-1, R1-R17). Everything the native launch freezes is preserved:
+# the env -i allowlist sanitizer, the prompt file as the only data channel, the
+# model and effort flags, acceptEdits, the four-tool set, --strict-mcp-config,
+# the stdin redirect, the result-file redirect and the in-band exit line. The
+# only difference is five per-process variables inside that allowlist.
+#
+# Four of the five are launcher-resolved literals, baked in exactly like HOME
+# and PATH. The credential is the one value that must not be: the text carries
+# only the 1Password REFERENCE and the service-account env file, and the value
+# is resolved at terminal runtime, inside a command substitution, so it exists
+# in no command text, no terminal title, no log and no file. Sourcing the env
+# file inside that substitution also keeps the service-account token in a
+# subshell rather than in the terminal's own environment.
+#
+# The text opens with `set +x` because the credential is assigned to a shell
+# variable before `env -i`, and an xtrace inherited from the terminal's own
+# shell (a `set -x` in a login rc, or a BASH_ENV) would render the resolved
+# value into the persisted terminal buffer. Disabling xtrace for this command
+# closes that channel; the native class assigns nothing and is unchanged.
+#
+# An empty read is fatal BEFORE claude starts. A claude with an empty token is
+# not a degraded gateway session; it is an unauthenticated one, and starting it
+# would put a session's provider and funding back in doubt — which is the whole
+# thing this class exists to keep certain. It exits without printing an exit
+# marker, so the launcher reports a launch that did not complete honestly
+# rather than a run whose gates happened to pass.
+build_claude_gateway_command() {
+  local home="$1" path="$2" user="$3" prompt_file="$4" model="$5" effort="$6" \
+        result_file="$7" persona_file="$8" base_url="$9" token_ref="${10}" \
+        op_env_file="${11}" placement_header="${12}" max_context="${13}"
+  local persona_arg=""
+  [[ -n "$persona_file" ]] && persona_arg=" --append-system-prompt-file $(shq "$persona_file")"
+  printf '%s' \
+"set +x; \
+ANTHROPIC_AUTH_TOKEN=\"\$(. $(shq "$op_env_file") && op read $(shq "$token_ref"))\"; \
+[ -n \"\$ANTHROPIC_AUTH_TOKEN\" ] || { \
+echo 'dispatch: gateway credential resolved EMPTY; refusing to start claude unauthenticated' >&2; \
+exit 78; }; \
+env -i HOME=$(shq "$home") PATH=$(shq "$path") USER=$(shq "$user") LANG=C.UTF-8 TERM=dumb \
+ANTHROPIC_BASE_URL=$(shq "$base_url") ANTHROPIC_AUTH_TOKEN=\"\$ANTHROPIC_AUTH_TOKEN\" \
+ANTHROPIC_MODEL=$(shq "$model") \
+ANTHROPIC_CUSTOM_HEADERS=$(shq "x-placement: $placement_header") \
+CLAUDE_CODE_MAX_CONTEXT_TOKENS=$(shq "$max_context") \
+claude -p \"\$(cat -- $(shq "$prompt_file"))\" \
+--model $(shq "$model") --effort $(shq "$effort")${persona_arg} \
+--permission-mode acceptEdits --tools \"Read,Glob,Grep,Write\" \
+--strict-mcp-config --output-format json < /dev/null > $(shq "$result_file"); \
+echo \"CLAUDE_EXIT=\$?\"; unset ANTHROPIC_AUTH_TOKEN"
 }
 
 # build_codex_command — the frozen codex launch, as generated terminal text.
@@ -310,48 +368,61 @@ validate_stamp() {
 # that improvises a launch it has never validated is exactly what every frozen
 # contract in this chain exists to prevent.
 #
-# The launch contracts this adapter implements, both live-validated and frozen:
-#   claude -> HARNESS-LAUNCH-claude.md - a native Anthropic subscription
-#             session. Vendor-hosted (§9: placement_required is false), and §7
-#             FORBIDS every endpoint, base-URL, provider and model redirection
-#             mechanism the CLI exposes.
-#   codex  -> HARNESS-LAUNCH-codex.md  - a native ChatGPT subscription session.
-#             Vendor-hosted (§9), §7 carries the same prohibition.
+# The launch classes this adapter implements, whose contracts are
+# live-validated and frozen:
+#   1. NATIVE VENDOR SUBSCRIPTION, claude -> HARNESS-LAUNCH-claude.md and
+#      codex -> HARNESS-LAUNCH-codex.md. Vendor-hosted (§9: placement_required
+#      is false), and §7 FORBIDS every endpoint, base-URL, provider and model
+#      redirection mechanism the CLI exposes.
+#   2. GATEWAY-BACKED LOCAL, claude only -> catalog 1.6.0,
+#      profiles.local-code-standard.notes, which IS the validated launch
+#      contract for that pair (STORY-036-1, R1-R17). A `hosting: local` profile
+#      reached through agentgateway's Anthropic-compatible endpoint, pinned to
+#      the catalog's physical model, placed by the x-placement header copied
+#      verbatim from the /v1/place evidence, funded by a LAN-scoped gateway key
+#      that buys no vendor spend. The four redirection variables it sets are a
+#      PER-PROCESS exception this catalog validated; a file-borne redirection
+#      would be an unvalidated second path and the settings preflight still
+#      refuses one.
 #
-# The discriminator is NATIVE REACHABILITY, derived from the STAMP alone, belt
-# and braces: a harness is natively launchable iff the stamped model_profile is
-# in that vendor's native family AND the stamped entitlement_pool is that
-# vendor's native subscription pool (claude -> claude/* on anthropic-max,
-# codex -> openai/* on openai-plus). Everything else on those harnesses is
-# refused, whatever its placement flag says.
+# The discriminator is derived from the STAMP plus the launcher's TRUSTED
+# CATALOG, belt and braces, and never from the story or a runtime lookup:
+#   class 1 iff the stamped model_profile is in that vendor's native family AND
+#           the stamped entitlement_pool is that vendor's native subscription
+#           pool (claude -> claude/* on anthropic-max, codex -> openai/* on
+#           openai-plus) AND placement_required is not true;
+#   class 2 iff the harness is claude AND the trusted catalog marks the profile
+#           hosting: local AND placement_required is true AND the stamp carries
+#           NO entitlement pool AND its cost_class is free.
+# Everything else is refused, whatever its placement flag says.
 #
-# Two instances of the same class prove why placement_required alone was never
-# the right key:
-#   1. {claude, local-code-standard}: the catalog approves it and /v1/route
-#      really does recommend it, but a local profile is local compute reached
-#      through agentgateway - reachable only via the redirections §7 forbids.
-#   2. {claude, minimax/strong} (catalog 1.5.0): vendor-hosted, so
+# Two instances of what class 2 is NOT, and why the discriminator is this
+# specific rather than keyed on placement_required alone:
+#   1. {claude, minimax/strong} (catalog 1.5.0): vendor-hosted, so
 #      placement_required is false and the old placement-keyed guard waved it
-#      through - yet the catalog's own notes say it is reachable ONLY via the
-#      forbidden ANTHROPIC_BASE_URL redirection. The native launch then
-#      stripped 'minimax/m3' to 'm3' and ran it against Anthropic on the
-#      anthropic-max subscription while every artifact recorded minimax: a
+#      through - yet the catalog's own notes say it is reachable ONLY via an
+#      ANTHROPIC_BASE_URL redirection nothing here has validated. The native
+#      launch then stripped 'minimax/m3' to 'm3' and ran it against Anthropic on
+#      the anthropic-max subscription while every artifact recorded minimax: a
 #      silent provider AND funding provenance mismatch from a clean stamp.
-# An approved pair is therefore NOT permission to invent a launch path - a pair
-# can be routable and simultaneously unlaunchable, and the honest response is
-# to stop and say so.
-#
-# Temporary and deliberately fail-closed, pending the vendor-neutral local-agent
-# harness story. When that lands with its own validated contract, this guard
-# stops matching on its own; nothing here needs to be relaxed to make it pass.
+#   2. A local profile stamped with a vendor entitlement pool: class 2 is free
+#      by construction, so a pool on that stamp means the funding story and the
+#      execution story disagree, and neither class covers it.
+# An approved pair is still NOT permission to invent a launch path - a pair can
+# be routable and simultaneously unlaunchable, and the honest response is to
+# stop and say so. What changed is that {claude, local} now HAS a validated
+# path; what did not change is that having one is the only thing that admits it.
 # ---------------------------------------------------------------------------
 
 # unsupported_launch_reason - echoes a human-readable reason when this adapter
 # has no validated launch contract for the stamped pair, or nothing when it
-# does. Native reachability is decided from the STAMP alone: profile family
-# AND entitlement pool must both be the harness vendor's own.
+# does. The stamp supplies harness, profile, placement flag, entitlement pool
+# and cost class; the launcher's TRUSTED catalog supplies the profile hosting.
+# Neither the story nor the environment is consulted, and an argument that was
+# not supplied fails the pair CLOSED rather than defaulting it open.
 unsupported_launch_reason() {
-  local harness="$1" profile="$2" placement_required="$3" pool="$4"
+  local harness="$1" profile="$2" placement_required="$3" pool="$4" \
+        hosting="${5:-}" cost_class="${6:-}"
   local native_family native_pool family_ok=""
   case "$harness" in
     claude)
@@ -364,16 +435,41 @@ unsupported_launch_reason() {
       ;;
     *)
       # Unknown harnesses are refused later by the launch case; this guard
-      # only declares capability for the two contracts it implements.
+      # only declares capability for the contracts it implements.
       return 0
       ;;
   esac
 
+  # Class 1 - native vendor subscription. Unchanged, and deliberately checked
+  # first so nothing about the second class can widen it.
   if [[ -n "$family_ok" && "$pool" == "$native_pool" && "$placement_required" != "true" ]]; then
-    return 0   # natively launchable: vendor's own family on the vendor's own pool
+    return 0
   fi
 
-  # Local-compute pairs keep their established refusal wording.
+  # Class 2 - gateway-backed local execution. claude only, and every condition
+  # is required: each one is a fact the catalog's launch contract assumes.
+  if [[ "$harness" == "claude" && "$placement_required" == "true" ]]; then
+    local missing=""
+    if [[ "$hosting" != "local" ]]; then
+      missing="the trusted catalog does not mark profile '$profile' hosting: local (it reads '${hosting:-<unset>}')"
+    fi
+    if [[ -n "$pool" && "$pool" != "null" ]]; then
+      if [[ -n "$missing" ]]; then missing+="; and "; fi
+      missing+="the stamp carries entitlement_pool '$pool', while gateway-backed local execution draws on no pool at all"
+    fi
+    if [[ "$cost_class" != "free" ]]; then
+      if [[ -n "$missing" ]]; then missing+="; and "; fi
+      missing+="the stamp's cost_class is '${cost_class:-<unset>}', not 'free'"
+    fi
+    if [[ -z "$missing" ]]; then
+      return 0   # gateway-backed local: validated, launchable
+    fi
+    printf '%s' "harness 'claude' has two validated launch classes: NATIVE VENDOR SUBSCRIPTION execution (vendor-hosted, placement_required false, profile family '$native_family' funded by entitlement_pool '$native_pool'), and GATEWAY-BACKED LOCAL execution (catalog hosting 'local', placement_required=true, no entitlement pool, cost_class 'free'). Profile '$profile' matches neither: $missing. Admitting it anyway would mean improvising a launch neither contract validated, and the only other mechanisms that would point 'claude' at that endpoint are the provider/base-URL redirections its native contract explicitly forbids."
+    return 0
+  fi
+
+  # Local compute on a harness with NO gateway-backed class keeps the
+  # established refusal wording; for codex it is still exactly true.
   if [[ "$placement_required" == "true" ]]; then
     printf '%s' "harness '$harness' has a validated launch contract for NATIVE VENDOR SUBSCRIPTION execution only (vendor-hosted, placement_required false). Profile '$profile' carries placement_required=true, i.e. local compute, which that contract cannot reach: the only mechanisms that would point '$harness' at a local endpoint are the provider/base-URL redirections its contract explicitly forbids."
     return 0
@@ -411,17 +507,30 @@ attempt would be making a routing decision after acceptance, with no stamp, no
 expiry and no validation - the exact failure this chain exists to prevent.
 
 What a human can do:
-  - re-route: POST /v1/route for a pair this adapter can natively launch (the
-    harness vendor's own profile family on its own entitlement pool), accept
-    it, re-stamp (scripts/make-stamp.sh), and re-dispatch; or
-  - wait for the vendor-neutral local-agent harness and its own launch contract,
-    after which this pair becomes launchable with no change here.
+  - re-route: POST /v1/route for a pair this adapter has a validated launch
+    class for - the harness vendor's own profile family on its own entitlement
+    pool, or a hosting: local profile on claude, placement-required, free and
+    drawing on no entitlement pool - accept it, re-stamp
+    (scripts/make-stamp.sh), and re-dispatch; or
+  - fix the mismatch the reason above names, if it is a stamp or catalog fact
+    that is simply wrong; or
+  - wait for a harness/profile pair to gain its own validated launch contract,
+    after which it becomes launchable with no change here.
 EOF
 }
 
 # ---------------------------------------------------------------------------
 # Claude credential/settings preflight (HARNESS-LAUNCH-claude.md §3, §5.0b, §7)
 # ---------------------------------------------------------------------------
+
+# approved_path_has — is <binary> resolvable on the launcher's APPROVED PATH?
+# The gateway credential is read by the terminal at launch time, so the tool
+# that reads it has to be there BEFORE a terminal exists; checking the approved
+# PATH rather than dispatch.sh's own keeps the answer about the environment the
+# launch actually runs in. The subshell is what stops the probe PATH leaking.
+approved_path_has() { # <binary> <PATH>
+  ( PATH="$2"; command -v "$1" >/dev/null 2>&1 )
+}
 
 # resolve_approved_home — the supported store is Claude's DEFAULT store under
 # the operator's explicitly resolved and approved HOME. Resolved and validated
@@ -533,6 +642,7 @@ main() {
   PLACEMENT_REQUIRED="$(jq -r '.placement_required // false' "$STAMP_FILE")"
   PLACEMENT_POLICY="$(jq -r '.placement_policy // ""' "$STAMP_FILE")"
   ENTITLEMENT_POOL="$(jq -r '.entitlement_pool // ""' "$STAMP_FILE")"
+  STAMP_COST_CLASS="$(jq -r '.cost_class // ""' "$STAMP_FILE")"
   STAMP_CATALOG_VERSION="$(jq -r '.catalog_version // ""' "$STAMP_FILE")"
   STAMP_EXPIRES_AT="$(jq -r '.expires_at // ""' "$STAMP_FILE")"
   STAMP_DIGEST="sha256:$(sha256_of "$STAMP_FILE")"
@@ -550,6 +660,13 @@ main() {
   [[ -n "$PHYSICAL_MODEL" && "$PHYSICAL_MODEL" != "null" ]] || \
     die "catalog has no physical model for profile '$MODEL_PROFILE'" "$EX_STAMP_UNCHECKABLE"
   NATIVE_MODEL="$(native_model_arg "$PHYSICAL_MODEL")"
+
+  # Hosting is the launch-class discriminator's catalog half, and it comes from
+  # the same trusted document — never from the stamp, which a workload could
+  # otherwise use to talk this adapter into a launch class it does not qualify
+  # for. An absent value stays empty and fails the pair closed at the guard.
+  PROFILE_HOSTING="$(yq -r ".profiles.\"$MODEL_PROFILE\".hosting // \"\"" "$CATALOG_PATH")"
+  [[ "$PROFILE_HOSTING" == "null" ]] && PROFILE_HOSTING=""
 
   # ---- persona: never a silent no-op --------------------------------------
   PERSONA_FILE=""
@@ -609,7 +726,9 @@ EOF
   # adapter is the only authority on whether it CAN launch it). Nothing has been
   # created at this point: no terminal, no command text, no result artifact.
   local unsupported
-  unsupported="$(unsupported_launch_reason "$HARNESS" "$MODEL_PROFILE" "$PLACEMENT_REQUIRED" "$ENTITLEMENT_POOL")"
+  unsupported="$(unsupported_launch_reason "$HARNESS" "$MODEL_PROFILE" \
+                   "$PLACEMENT_REQUIRED" "$ENTITLEMENT_POOL" \
+                   "$PROFILE_HOSTING" "$STAMP_COST_CLASS")"
   if [[ -n "$unsupported" ]]; then
     refuse_unsupported_launch "$HARNESS" "$MODEL_PROFILE" "$EFFORT" \
       "$unsupported" "${STORY}.blocked"
@@ -630,14 +749,54 @@ EOF
   case "$HARNESS" in
     claude)
       local approved_home approved_path approved_user
+      local gateway_url token_ref op_env_file placement_header max_context
       approved_home="$(resolve_approved_home)"
       claude_settings_preflight "$approved_home"
       approved_path="$(cfg '.launcher.approved_path' AGENT_FLOW_APPROVED_PATH "$(dirname "$(command -v "$harness_bin")"):/usr/local/bin:/usr/bin:/bin")"
       approved_user="$(id -un)"
       result_file="${STORY}.claude-result.json"
+      # Removed BEFORE the preflights, not after them: a refusal that left last
+      # cycle's artifact on disk would hand a reader that opens the file by name
+      # a stale result for a launch that never happened.
       rm -f "$result_file"
-      command_text="$(build_claude_command "$approved_home" "$approved_path" "$approved_user" \
-                       "$PROMPT_FILE" "$NATIVE_MODEL" "$EFFORT" "$result_file" "$PERSONA_FILE")"
+      # Which of the two classes: the guard above already decided it, and this
+      # reads the same stamp fact it decided on. A claude stamp that requires
+      # placement and reached this line is a validated gateway-backed local
+      # launch and nothing else.
+      if [[ "$PLACEMENT_REQUIRED" == "true" ]]; then
+        # Every preflight below runs while nothing exists yet: no terminal, no
+        # command text, no result artifact. A gateway launch that cannot be
+        # fully specified must not become a half-specified claude session.
+        gateway_url="$(cfg '.launcher.gateway_endpoint' AGENT_FLOW_GATEWAY_URL '')"
+        [[ -n "$gateway_url" ]] || \
+          die "gateway-backed local launch needs launcher.gateway_endpoint (or AGENT_FLOW_GATEWAY_URL). It is LAUNCHER configuration and is never taken from the story, the stamp or the catalog" "$EX_CONFIG"
+        token_ref="$(cfg '.launcher.gateway_token_ref' AGENT_FLOW_GATEWAY_TOKEN_REF '')"
+        [[ -n "$token_ref" ]] || \
+          die "gateway-backed local launch needs launcher.gateway_token_ref (or AGENT_FLOW_GATEWAY_TOKEN_REF) — a REFERENCE to the scoped gateway key, resolved at launch time. Its value never lives in config" "$EX_CONFIG"
+        op_env_file="$(cfg '.launcher.op_env_file' AGENT_FLOW_OP_ENV_FILE "$approved_home/.op-agent-env")"
+        [[ -r "$op_env_file" ]] || \
+          die "the credential env file '$op_env_file' is not readable, so the reference could not be resolved at launch time and claude would start unauthenticated" "$EX_CONFIG"
+        approved_path_has op "$approved_path" || \
+          die "'op' is not on the approved PATH ($approved_path) — the gateway credential reference cannot be resolved at launch time" "$EX_CONFIG"
+        # Copied VERBATIM from the evidence this attempt just fetched; never
+        # composed here, and never carried over from a previous attempt.
+        placement_header="$(jq -r '.result.headers["x-placement"] // ""' "$EVIDENCE_FILE" 2>/dev/null || true)"
+        [[ -n "$placement_header" && "$placement_header" != "null" ]] || \
+          die "the POST /v1/place evidence carries no x-placement header. The header value is copied verbatim from the place result, never composed, so there is nothing to convey and the launch is refused" "$EX_PLACEMENT"
+        # The profile's real window. Claude Code does not recognise a local
+        # model id, assumes 200000 tokens and compacts far too late for it.
+        max_context="$(yq -r ".profiles.\"$MODEL_PROFILE\".min_context // \"\"" "$CATALOG_PATH")"
+        [[ -n "$max_context" && "$max_context" != "null" ]] || \
+          die "catalog profile '$MODEL_PROFILE' declares no min_context, so the session's real context window is unknown and the launch is refused rather than run at the harness default" "$EX_CONFIG"
+        command_text="$(build_claude_gateway_command "$approved_home" "$approved_path" "$approved_user" \
+                         "$PROMPT_FILE" "$NATIVE_MODEL" "$EFFORT" "$result_file" "$PERSONA_FILE" \
+                         "$gateway_url" "$token_ref" "$op_env_file" "$placement_header" "$max_context")"
+        log "launch class: gateway-backed local ($MODEL_PROFILE -> $NATIVE_MODEL at $gateway_url, x-placement $placement_header, context $max_context)"
+      else
+        command_text="$(build_claude_command "$approved_home" "$approved_path" "$approved_user" \
+                         "$PROMPT_FILE" "$NATIVE_MODEL" "$EFFORT" "$result_file" "$PERSONA_FILE")"
+        log "launch class: native vendor subscription"
+      fi
       exit_marker="CLAUDE_EXIT"
       ;;
     codex)
