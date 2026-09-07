@@ -1108,10 +1108,20 @@ compensates for: it never becomes fallback logic and never blocks the other
 harness.
 
 The envelope also carries the model's own `contextWindow`, recorded as
-`window_reported_tokens` for **corroboration only**. The budget window is the
-catalog's on every path; a disagreement is recorded as `WINDOW_DISAGREEMENT` and
-left standing, because resolving two authorities by preferring one is how a kit
+`window_reported_tokens` for **corroboration only**, and read by an **exact
+match** on the routed model's key in `modelUsage` — the harness names its own
+models, so a key that does not match is a different model and corroborating
+against it would produce a disagreement about a model that did not run the turn.
+Where no key matches, `window_reported_tokens` is `null` and the finding is
+`WINDOW_UNCORROBORATED`. The budget window is the catalog's on every path; a
+disagreement between the two is recorded as `WINDOW_DISAGREEMENT` and left
+standing, because resolving two authorities by preferring one is how a kit
 starts inventing routed facts.
+
+A `usage` object that carries **none** of `input_tokens`,
+`cache_read_input_tokens` or `cache_creation_input_tokens` is a run whose
+context was never published, not a run that used none: the adapter reports
+`USAGE_UNOBSERVABLE` rather than `usage_tokens: 0`.
 
 ### Phase-boundary discipline
 `usage / window` is compared against the declared ratios by the same
@@ -1123,6 +1133,13 @@ the state is `CONTINUATION_REQUIRED`, at or above `checkpoint_ratio`
 At or above `checkpoint_ratio` the finding `HIGH_USAGE` is added: a run that
 *ended* that close to its window was sized too close to it — a planning signal
 for the PM, not a fact about one attempt.
+
+`CONTINUATION_REQUIRED` is a statement about **unfinished** work. A ratio in
+the continuation band at the end of a run whose gates passed, and whose worker
+signalled nothing, is a sizing observation instead: the state is `CHECKPOINT_DUE`
+(or `OK`, per the checkpoint rule applied to the same ratio) and the `HIGH_USAGE`
+finding carries the observation. The state is reached from the ratio only on an
+**unfinished** run, or from the worker's own signal.
 
 An observation that cannot be evaluated — no usage published, or no declared
 window — **does not overwrite `state`**: the pre-dispatch verdict is a real
@@ -1150,22 +1167,39 @@ a permitted outcome.
 
 Both artifacts are secret-free by rule and are held to the kit's redaction
 discipline on read. Only their identity — path and `sha256` — reaches the thin
-result: no member value is ever copied into a result, a log or a marker,
+result: no member value is ever copied into a result, a log or a marker, and
 validation verdicts come from a closed vocabulary and never quote the offending
-value, and the one piece of worker free text that does reach a marker — the
-reason on the `CONTINUATION-REQUIRED:` line — passes through the redactor first.
+value. The worker's continuation reason is **caller-supplied free text and is
+never echoed at all** — a credential is not distinguishable from a typo by
+shape, so no pattern filter is applied to it. What the marker and the log record
+is `reason_given`, `reason_bytes`, and `reason_words`: the words of the reason
+that appear in a closed vocabulary, the same discipline `afk_safe_diagnostic`
+applies to caller-supplied arguments. A `CONTINUATION-REQUIRED:` line with an
+empty reason is not a signal a human can act on: it is refused on the same path
+as invalid evidence, with `detail=SIGNAL_REASON_EMPTY`.
+
+The signal is matched line-anchored (`^CONTINUATION-REQUIRED:`), mirroring the
+frozen `NEEDS-HUMAN:` channel, so a worker that begins a line with the marker
+while explaining that it did *not* need it is read as having signalled; the
+prompt paragraph tells the worker not to. **Known limitation:** for `codex` the
+worker text is the terminal tail read with `--limit 5000`, so on a chatty run
+the signal can scroll out of view and the run reports its gate outcome instead.
+Neither is fixed by this capability; both are recorded here.
 
 | what the launcher finds | what it does |
 |---|---|
 | a valid checkpoint | records `checkpoint_artifact` identity |
 | a checkpoint that does not validate | finding `CHECKPOINT_ARTIFACT_INVALID`; the attempt is **not** refused — a checkpoint is a resumption aid, not a completion claim |
+| a checkpoint byte-identical to the one the attempt started with | finding `CHECKPOINT_ARTIFACT_STALE`; no `checkpoint_artifact` identity is published, because this worker did not write it |
 | `CONTINUATION-REQUIRED:` with a valid, freshly written continuation | `budget.state: CONTINUATION_REQUIRED`, `status: continuation_required`, `continuation_artifact` identity, and one dated line in the story's `## Dev Agent Record`, idempotent per cycle |
 | `CONTINUATION-REQUIRED:` with a missing, unparseable, schema-mismatched, member-short or byte-unchanged artifact | loud `NEEDS_HUMAN`: a `${STORY}.blocked` marker with reason `CONTINUATION_ARTIFACT_INVALID`, exit code 3, and **no result artifact at all** |
 | usage ≥ `continuation_ratio`, gates failed, no worker signal | `status: continuation_required` — the kit reports no headroom it cannot see and manufactures no completed result |
+| usage ≥ `continuation_ratio`, gates **passed**, no worker signal | `status: done` with `budget.state: CHECKPOINT_DUE` and finding `HIGH_USAGE` — a finished run is sized, not continued |
 
-A continuation artifact is not deleted before a launch the way the result
-artifact is, because the next cycle is meant to resume from it; freshness is
-proved by identity instead. `continuation_required` is additive within the
+Neither lifecycle artifact is deleted before a launch the way the result
+artifact is, because the next cycle is meant to resume from them; freshness is
+proved by identity instead — the sha of each is captured before the launch, and
+a byte-identical file afterwards was not written by this worker. `continuation_required` is additive within the
 result schema major and exits as unfinished work (exit code 1), not a completion.
 
 ### The context budget on the dispatch monitor
@@ -1188,6 +1222,13 @@ continuation_required
 needs_human
 ```
 <!-- end -->
+
+The first three are the statuses a thin result artifact carries. `needs_human`
+is **delivery-only**: it is the status a delivery reports and `afk-monitor.sh`
+gates on, and it is exactly the path on which `dispatch.sh` deliberately writes
+no result artifact at all. The list is the union a reader of either producer may
+meet, which is what the vocabulary is for; no thin result will ever be found
+carrying `needs_human`.
 
 ## Compatibility declarations
 

@@ -1731,6 +1731,25 @@ assert_eq "adapter/claude: an envelope with no usage member is NOT_EVALUATED" \
 envelope 10 0 0 "" > "$WORK/nowindow.json"
 assert_eq "adapter/claude: no reported window is null, never the catalog's" \
   "$(usage_adapter_claude "$WORK/nowindow.json" opus | jq -r '.window_tokens|type')" "null"
+# A `usage` object present but carrying NONE of the three context members is a
+# run whose context was never published. Reporting 0 for it would be the one
+# place the adapter says more than it saw.
+printf '{"type":"result","usage":{"output_tokens":9999}}' > "$WORK/outputonly.json"
+assert_eq "adapter/claude: usage with no input or cache member is unobservable" \
+  "$(usage_adapter_claude "$WORK/outputonly.json" opus | jq -r '.reason + " " + (.usage_tokens|tostring)')" \
+  "USAGE_UNOBSERVABLE null"
+# ... and the control: ONE of the three is enough to be an observation.
+printf '{"type":"result","usage":{"cache_read_input_tokens":42}}' > "$WORK/cacheonly.json"
+assert_eq "adapter CONTROL: any one of the three members IS an observation" \
+  "$(usage_adapter_claude "$WORK/cacheonly.json" opus | jq -r '.provenance + " " + (.usage_tokens|tostring)')" \
+  "HARNESS_ENVELOPE 42"
+# Corroboration is an EXACT key match. The harness names its own models, so the
+# single entry that happens to be there is a different model's window.
+envelope 10 0 0 200000 "some-other-model" > "$WORK/othermodel.json"
+assert_eq "adapter/claude: a non-matching modelUsage key corroborates nothing" \
+  "$(usage_adapter_claude "$WORK/othermodel.json" opus | jq -r '.window_tokens|tostring')" "null"
+assert_eq "adapter CONTROL: the matching key IS read" \
+  "$(usage_adapter_claude "$WORK/othermodel.json" some-other-model | jq -r '.window_tokens|tostring')" "200000"
 assert_eq "adapter/codex: the second harness reports NOT_EVALUATED" \
   "$(usage_adapter_codex | jq -r '.provenance + " " + .reason')" "NOT_EVALUATED USAGE_UNOBSERVABLE"
 assert_eq "the core calls ONE interface: claude routes to the claude adapter" \
@@ -1748,7 +1767,7 @@ else ok "AC-1: no adapter scrapes a terminal or a transcript"; fi
 load_budget_policy "$BUDGET_POLICY_SHIPPED" 2>/dev/null
 band() { # <usage> <window> -> "STATE findings"
   HARNESS=claude BUDGET_FINDINGS=() BUDGET_STATE="" BUDGET_REASON=""
-  budget_evaluate_usage "$(jq -nc --argjson u "$1" '{usage_tokens:$u, window_tokens:null,
+  budget_evaluate_usage "$(jq -nc --argjson u "$1" --argjson w "$2" '{usage_tokens:$u, window_tokens:$w,
       provenance:"HARNESS_ENVELOPE", observed_at:"END_OF_RUN", reason:null}')" "$2" 2>/dev/null
   printf '%s %s' "$BUDGET_STATE" "${BUDGET_FINDINGS[*]-}"
 }
@@ -1756,6 +1775,19 @@ assert_eq "usage band: one ppm BELOW checkpoint is still OK"        "$(band 6999
 assert_eq "usage band: EQUAL to checkpoint crosses it"        "$(band 700000 1000000)" "CHECKPOINT_DUE HIGH_USAGE"
 assert_eq "usage band: EQUAL to continuation crosses it" \
   "$(band 850000 1000000)" "CONTINUATION_REQUIRED HIGH_USAGE"
+# An observation the adapter DID make but for which no window came back
+# corroborates nothing, and says so rather than leaving a null to interpret.
+HARNESS=claude; BUDGET_FINDINGS=(); BUDGET_STATE=""; BUDGET_REASON=""
+budget_evaluate_usage "$(jq -nc '{usage_tokens:10, window_tokens:null,
+    provenance:"HARNESS_ENVELOPE", observed_at:"END_OF_RUN", reason:null}')" 1000000 2>/dev/null
+assert_eq "window: an observation with no reported window is UNCORROBORATED" \
+  "${BUDGET_FINDINGS[*]-}" "WINDOW_UNCORROBORATED"
+# The control: nothing observed corroborates nothing either, and does not
+# claim a corroboration failure for an observation that never happened.
+HARNESS=codex; BUDGET_FINDINGS=(); BUDGET_STATE="OK"; BUDGET_REASON=""
+budget_evaluate_usage "$(usage_adapter_codex)" 1000000 2>/dev/null
+assert_eq "window CONTROL: an unobserved usage raises no corroboration finding" \
+  "${BUDGET_FINDINGS[*]-}" ""
 # An unobservable usage never overwrites the pre-dispatch verdict: it is
 # reported in the usage members, where a reader who cares about observation
 # looks, and the estimate's own conclusion is not thrown away.
@@ -1783,7 +1815,9 @@ PARA="$(worker_discipline_paragraph "/wt/S.md")"
 for needle in "/wt/S.md.checkpoint.json" "afk-checkpoint/1" "/wt/S.md.continuation.json" \
               "afk-continuation/1" "remaining_acceptance" "in_flight" "unretired_findings" \
               "CONTINUATION-REQUIRED:" "have read the story" \
-              "before you run the gates" "secret-free"; do
+              "before you run the gates" "secret-free" \
+              "or when the harness signals" "The reason must not be empty" \
+              "never begin a line with it unless you are actually stopping"; do
   assert_contains "prompt paragraph names [$needle]" "$PARA" "$needle"
 done
 assert_eq "prompt paragraph: byte-stable for the same story" \
@@ -1942,44 +1976,152 @@ rc="$(STUB_CATALOG="$WORK/catalog-windowed.yaml"; export STUB_CATALOG; run_dispa
 assert_eq "silent exhaustion CONTROL: a low-usage gate failure stays gates_failed" \
   "$(bud .status "$BR")" "gates_failed"
 
-# --- redaction: a sentinel in an artifact reaches nothing (AC-5) ----------
-# The redactor is indirected, so the case proves the value TRAVELS the redacted
-# path rather than merely being absent by luck.
-ART_SENTINEL='sk-live-9f2a4c7e1b8d3550aa11bb22cc33'
-assert_contains "redaction: the redactor keeps the words either side of a secret" \
-  "$(artifact_redact "leaked $ART_SENTINEL here")" "leaked [REDACTED] here"
-assert_absent "redaction: and removes the secret itself" \
-  "$(artifact_redact "leaked $ART_SENTINEL here")" "$ART_SENTINEL"
+# --- a stale checkpoint is not this cycle's (AC-4) ------------------------
+# The worker writes nothing this attempt, so the checkpoint on disk is the one
+# the attempt started with. Its identity must not be published as evidence of
+# work this worker did not do.
+reset_stubs; spawn_reset
+write_story "$WT/s-ckpt-stale.md" "persona: dev
+gates: [\"true\"]"
+write_stamp "$WT/s-ckpt-stale.md.stamp.json" high false
+export STUB_SPAWN_PATH1="$WT/s-ckpt-stale.md.checkpoint.json"
+STUB_SPAWN_BODY1="$(ckpt afk-checkpoint/1)"; export STUB_SPAWN_BODY1
+rc="$(run_dispatch s-ckpt-stale.md)"
+BR="$WT/s-ckpt-stale.md.result.json"
+assert_eq "checkpoint CONTROL: the first cycle's checkpoint IS published" \
+  "$(bud .budget.checkpoint_artifact.path "$BR")" "s-ckpt-stale.md.checkpoint.json"
+reset_stubs; spawn_reset
+rc="$(run_dispatch s-ckpt-stale.md 2)"
+assert_eq "checkpoint: an unchanged checkpoint does not refuse the attempt" "$rc" "0"
+assert_eq "checkpoint: it is recorded as stale" \
+  "$(jq -c '.budget.findings' "$BR")" '["CHECKPOINT_ARTIFACT_STALE"]'
+assert_eq "checkpoint: and no identity is claimed for an earlier cycle's file" \
+  "$(bud '.budget.checkpoint_artifact|type' "$BR")" "null"
+
+# --- a finished run is never a continuation (AC-4) ------------------------
+# The ratio says the run ended close to its window; the gates say it finished.
+# Those are a sizing observation and an outcome, not two outcomes.
+reset_stubs; spawn_reset
+export STUB_TERMINAL_TAIL="ok
+CLAUDE_EXIT=0"
+write_story "$WT/s-fin-high.md" "persona: dev
+gates: [\"true\"]"
+write_stamp "$WT/s-fin-high.md.stamp.json" high false
+export STUB_SPAWN_PATH1="$WT/s-fin-high.md.claude-result.json"
+STUB_SPAWN_BODY1="$(envelope 190000 0 0 200000 opus)"; export STUB_SPAWN_BODY1
+rc="$(STUB_CATALOG="$WORK/catalog-windowed.yaml"; export STUB_CATALOG; run_dispatch s-fin-high.md)"
+BR="$WT/s-fin-high.md.result.json"
+assert_eq "finished run: gates passed, so the run is done" "$(bud .status "$BR")" "done"
+assert_eq "finished run: 190000/200000 is reported as sizing, not continuation" \
+  "$(bud .budget.state "$BR")" "CHECKPOINT_DUE"
+assert_eq "finished run: the sizing signal is the finding that carries it" \
+  "$(jq -c '.budget.findings' "$BR")" '["HIGH_USAGE"]'
+# The control for the demotion: the SAME ratio on an UNFINISHED run is still a
+# continuation, so the state above was demoted by the outcome and not lost.
+reset_stubs; spawn_reset
+write_story "$WT/s-fin-high.md" "persona: dev
+gates: [\"false\"]"
+export STUB_SPAWN_PATH1="$WT/s-fin-high.md.claude-result.json"
+STUB_SPAWN_BODY1="$(envelope 190000 0 0 200000 opus)"; export STUB_SPAWN_BODY1
+rc="$(STUB_CATALOG="$WORK/catalog-windowed.yaml"; export STUB_CATALOG; run_dispatch s-fin-high.md)"
+assert_eq "finished run CONTROL: the same ratio with failed gates continues" \
+  "$(bud .budget.state "$BR")" "CONTINUATION_REQUIRED"
+
+# --- the continuation reason is recorded, never echoed (AC-5) -------------
+# The reason is caller-supplied free text, so no filter is applied to it: the
+# content reaches nothing. The sentinels are the shapes a pattern denylist
+# misses — short, keyword-adjacent, and broken by an excluded character — plus
+# the long token-shaped one, so the assertion is about the channel and not
+# about one regex.
+SHORT_SENTINEL='hunter2'
+KEYWORD_SENTINEL='password=Tr0ub4dor&3'
+BROKEN_SENTINEL='xoxb-2f9a:8c1d-77aa-9e0f'
+LONG_SENTINEL='sk-live-9f2a4c7e1b8d3550aa11bb22cc33'
+SIGNAL_REASON="context exhausted, the token was $LONG_SENTINEL $SHORT_SENTINEL $KEYWORD_SENTINEL $BROKEN_SENTINEL"
 reset_stubs; spawn_reset
 export STUB_TERMINAL_TAIL="working
-CONTINUATION-REQUIRED: stopping, the token was $ART_SENTINEL
+CONTINUATION-REQUIRED: $SIGNAL_REASON
 CLAUDE_EXIT=0"
 write_story "$WT/s-secret.md" "persona: dev
 gates: [\"true\"]"
 write_stamp "$WT/s-secret.md.stamp.json" high false
 export STUB_SPAWN_PATH1="$WT/s-secret.md.continuation.json"
 STUB_SPAWN_BODY1="$(ckpt afk-continuation/1 \
-  "$(jq -nc --arg s "$ART_SENTINEL" '{in_flight:$s, unretired_findings:[$s]}')")"
+  "$(jq -nc --arg s "$LONG_SENTINEL" '{in_flight:$s, unretired_findings:[$s]}')")"
 export STUB_SPAWN_BODY1
 rc="$(run_dispatch s-secret.md 1)"
 assert_eq "redaction: the continuation is still accepted" \
   "$(bud .status "$WT/s-secret.md.result.json")" "continuation_required"
-assert_absent "redaction: no sentinel in the thin result" \
-  "$(cat "$WT/s-secret.md.result.json")" "$ART_SENTINEL"
-assert_absent "redaction: nor in the dispatch log" "$(cat "$WORK/err")" "$ART_SENTINEL"
+for sent in "$LONG_SENTINEL" "$SHORT_SENTINEL" "$KEYWORD_SENTINEL" "$BROKEN_SENTINEL"; do
+  assert_absent "redaction: no sentinel [$sent] in the thin result" \
+    "$(cat "$WT/s-secret.md.result.json")" "$sent"
+  assert_absent "redaction: nor in the dispatch log [$sent]" "$(cat "$WORK/err")" "$sent"
+done
 # and on the path where the same signal is refused, the marker is clean too
 reset_stubs; spawn_reset
 rc="$(run_dispatch s-secret.md 2)"
 assert_eq "redaction: the stale artifact is refused" "$rc" "3"
-assert_absent "redaction: no sentinel in the NEEDS-HUMAN marker" \
-  "$(cat "$WT/s-secret.md.blocked")" "$ART_SENTINEL"
+for sent in "$LONG_SENTINEL" "$SHORT_SENTINEL" "$KEYWORD_SENTINEL" "$BROKEN_SENTINEL"; do
+  assert_absent "redaction: no sentinel [$sent] in the NEEDS-HUMAN marker" \
+    "$(cat "$WT/s-secret.md.blocked")" "$sent"
+done
+assert_absent "redaction: not even the ordinary words of the reason" \
+  "$(cat "$WT/s-secret.md.blocked")" "exhausted, the token was"
 assert_contains "redaction: the marker still says what went wrong" \
-  "$(cat "$WT/s-secret.md.blocked")" "[REDACTED]"
-# The control for both: the worker's line DOES reach the marker, so what is
-# absent above is absent because the redactor removed it and not because
-# nothing travels this path at all.
-assert_contains "redaction CONTROL: the worker's own words do reach the marker" \
-  "$(cat "$WT/s-secret.md.blocked")" "stopping, the token was"
+  "$(cat "$WT/s-secret.md.blocked")" "detail=ARTIFACT_STALE"
+# The anti-vacuity control. The sentinels are absent because the content is
+# never echoed, not because nothing travels this path: the marker records that
+# a reason was given, HOW MANY BYTES it was, and the closed-vocabulary words
+# it contained — all three derived from the very line asserted absent above.
+assert_contains "redaction CONTROL: the marker records that a reason was given" \
+  "$(cat "$WT/s-secret.md.blocked")" "reason_given=true"
+assert_contains "redaction CONTROL: and its exact byte length" \
+  "$(cat "$WT/s-secret.md.blocked")" "reason_bytes=$(printf '%s' "$SIGNAL_REASON" | wc -c | tr -d ' ')"
+assert_contains "redaction CONTROL: and only closed-vocabulary words" \
+  "$(cat "$WT/s-secret.md.blocked")" "reason_words=context"
+# The vocabulary is closed, called directly: a word outside it is never echoed,
+# and one inside it is.
+assert_eq "vocabulary: a word in the closed set is echoed" \
+  "$(continuation_reason_word "Context,")" "context"
+assert_eq "vocabulary: anything else is not" \
+  "$(continuation_reason_word "$SHORT_SENTINEL")" ""
+assert_eq "vocabulary: a summary of a secret-only reason names no words" \
+  "$(continuation_signal_summary "CONTINUATION-REQUIRED: $LONG_SENTINEL")" \
+  "reason_given=true reason_bytes=${#LONG_SENTINEL} reason_words=none"
+
+# --- an empty reason is not a signal (AC-4) -------------------------------
+reset_stubs; spawn_reset
+export STUB_TERMINAL_TAIL="working
+CONTINUATION-REQUIRED:
+CLAUDE_EXIT=0"
+write_story "$WT/s-empty.md" "persona: dev
+gates: [\"true\"]"
+write_stamp "$WT/s-empty.md.stamp.json" high false
+export STUB_SPAWN_PATH1="$WT/s-empty.md.continuation.json"
+STUB_SPAWN_BODY1="$(ckpt afk-continuation/1 "$CONT_EXTRA")"; export STUB_SPAWN_BODY1
+rc="$(run_dispatch s-empty.md 1)"
+assert_eq "empty reason: refused on the invalid-signal path" "$rc" "3"
+assert_contains "empty reason: with the stable reason code" \
+  "$(cat "$WT/s-empty.md.blocked")" "reason=CONTINUATION_ARTIFACT_INVALID"
+assert_contains "empty reason: naming which check failed" \
+  "$(cat "$WT/s-empty.md.blocked")" "detail=SIGNAL_REASON_EMPTY"
+assert_no_file "empty reason: NO result artifact claims an outcome" \
+  "$WT/s-empty.md.result.json"
+# The control: the SAME artifact with a non-empty reason is accepted, so the
+# refusal above is about the empty reason and nothing else.
+reset_stubs; spawn_reset
+export STUB_TERMINAL_TAIL="working
+CONTINUATION-REQUIRED: the story is larger than one window
+CLAUDE_EXIT=0"
+write_story "$WT/s-empty2.md" "persona: dev
+gates: [\"true\"]"
+write_stamp "$WT/s-empty2.md.stamp.json" high false
+export STUB_SPAWN_PATH1="$WT/s-empty2.md.continuation.json"
+STUB_SPAWN_BODY1="$(ckpt afk-continuation/1 "$CONT_EXTRA")"; export STUB_SPAWN_BODY1
+rc="$(run_dispatch s-empty2.md 1)"
+assert_eq "empty reason CONTROL: a non-empty reason on the same artifact passes" \
+  "$(bud .status "$WT/s-empty2.md.result.json")" "continuation_required"
+
 spawn_reset
 export STUB_TERMINAL_TAIL="ok
 CLAUDE_EXIT=0"

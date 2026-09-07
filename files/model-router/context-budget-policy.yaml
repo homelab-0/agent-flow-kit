@@ -45,7 +45,9 @@ reason_codes:
   - HIGH_USAGE                  # the run ENDED at or past checkpoint_ratio (sizing signal)
   - WINDOW_DISAGREEMENT         # harness-reported window differs from the catalog's
   - CHECKPOINT_ARTIFACT_INVALID # a checkpoint was present but did not validate
+  - CHECKPOINT_ARTIFACT_STALE   # the checkpoint on disk is byte-identical to the one this attempt started with
   - CONTINUATION_ARTIFACT_INVALID # a continuation was signalled without valid evidence
+  - WINDOW_UNCORROBORATED       # the envelope carries no window for the routed model
 
 # The bounded budget state a dispatch reports. All four are declared here and
 # published by `agent-flow-kit schema`; pre-dispatch produces only OK and

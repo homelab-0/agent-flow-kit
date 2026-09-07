@@ -311,3 +311,82 @@ One commit, the tip of `jlengelbrecht/afk-port-1.5b`. Its SHA cannot be written
 into the commit that carries this record, so it is reported in the worker_done
 body instead. Nothing was pushed, no PR was opened, `master` was not touched.
 No trailers of any kind were added; the environment appended none.
+
+### Post-review fix cycle (AFK-PORT-1.5B-FIX)
+
+One bounded cycle answering `evidence/AFK-PORT-1.5B-REVIEW/REVIEW.md` (NOT CLEAN:
+one blocker, nine residuals). A fresh session that wrote neither the code nor the
+review. Exactly the eight authorized items; the frozen launch command texts were
+not touched.
+
+| item | disposition |
+|---|---|
+| BLK-1 — the continuation reason was filtered by a 24-char pattern denylist | **fixed (F1)**, reviewer's option (a). `artifact_redact` and its `BUDGET_REDACT_FN` indirection are deleted; nothing else used them. The reason's CONTENT now reaches nothing — not the marker, not the log, not the result. `continuation_signal_summary` records `reason_given`, `reason_bytes` and `reason_words`, the last drawn from a closed vocabulary (`continuation_reason_word`) exactly as `afk_safe_diagnostic` does for argv. The stable `reason=CONTINUATION_ARTIFACT_INVALID` code is unchanged. |
+| RES-1 — `CONTINUATION_REQUIRED` published beside `status: done` | **fixed (F2)**. A ratio-derived continuation state on a run whose gates passed and whose worker signalled nothing is demoted to what the checkpoint rule says about the same ratio (`CHECKPOINT_DUE`, or `OK`), and `HIGH_USAGE` carries the sizing observation. Only a state computed from a ratio is demoted; a worker's signal is never. Contract decision table gains the row. |
+| RES-2 — an earlier cycle's checkpoint published as this cycle's | **fixed (F3)**. `CHECKPOINT_BEFORE` is captured pre-launch beside `CONTINUATION_BEFORE`; a byte-identical checkpoint afterwards is finding `CHECKPOINT_ARTIFACT_STALE` and publishes no `checkpoint_artifact` identity. A finding, not a refusal — consistent with how an invalid checkpoint is treated. |
+| RES-3 — a `usage` object with no token member gave `usage_tokens: 0` | **fixed (F4)**. At least one of `input_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens` must be present; otherwise `USAGE_UNOBSERVABLE`. |
+| RES-4 — the single-entry `modelUsage` fallback | **fixed (F4)**. Dropped. Corroboration is an exact key match on the routed model; where no key matches, `window_reported_tokens` is `null` and the finding is `WINDOW_UNCORROBORATED`. |
+| RES-5 — the discipline paragraph omitted the harness-pressure trigger | **fixed (F5)**. "or when the harness signals context pressure" added; the paragraph is still byte-stable per story and still carries no threshold. |
+| RES-6 — `^CONTINUATION-REQUIRED:` matched anywhere | **bounded and documented (F6)**, not changed. The line anchor mirrors the frozen `NEEDS-HUMAN` channel. The paragraph now tells the worker never to begin a line with the marker unless it is actually stopping, and the contract records the codex `--limit 5000` terminal tail as a known limitation. |
+| RES-7 — an empty reason was accepted | **fixed (F5)**. An empty reason is an invalid signal and takes the existing refusal path: `NEEDS_HUMAN`, exit 3, no result artifact, `detail=SIGNAL_REASON_EMPTY`. |
+| RES-8 — `needs_human` in `dispatch_result_statuses` | **documented (F7)**. The contract now states it is delivery-only: `afk-monitor.sh` gates on it and `dispatch.sh` deliberately writes no result on that path. The published list is the union a reader of either producer may meet; no rename, no schema-major change. |
+| RES-9 — the unpublished-reason sweep did not see `budget.usage_reason` | **fixed (F7)**. The readiness suite's sweep now collects `.usage_reason?` alongside `.reason?` against the union of `reason_codes` and `budget_reason_codes`, with its own falsifiability control. |
+
+Two reason codes are added to `context-budget-policy.yaml` and mirrored in
+`schema`: `CHECKPOINT_ARTIFACT_STALE` and `WINDOW_UNCORROBORATED`.
+
+#### Deferred, deliberately, and disclosed (this cycle)
+
+- **The reviewer's one note on the disclosed items — an unparseable-envelope
+  assertion in the suite** — was not added. Diagnosis: it is outside F1–F8, and
+  the fix story's scope is exactly the eight items. The behaviour is covered
+  (`USAGE_UNOBSERVABLE` for a truncated envelope, a bare string, `null`, an
+  array and a top-level array); what is missing is a suite assertion, and it
+  remains a one-line backlog item for whoever next opens section 3d.
+- **`WINDOW_UNCORROBORATED` fires only where an observation was actually made**
+  (`usage_provenance == HARNESS_ENVELOPE`). Diagnosis: a run that observed no
+  usage has nothing to corroborate, and raising a corroboration failure for it
+  would be a finding about an event that did not happen. The consequence is that
+  `codex`, which observes nothing, never carries the finding.
+- **The closed vocabulary is a judgement call, not a derived set.** Diagnosis:
+  no vocabulary can be derived from the reasons workers have not yet written.
+  It is deliberately small and drawn from the stop conditions the discipline
+  paragraph itself names; a reason using none of it records
+  `reason_words=none`, which is a true statement and not a degradation.
+
+#### Gates (this cycle, run by the worker in this worktree)
+
+| gate | result |
+|---|---|
+| `bash tests/lifecycle-tests.sh` | **478 passed, 0 failed** |
+| `bash tests/lifecycle-readiness-tests.sh` | **290 passed, 0 failed** |
+| `bash tests/lifecycle-dispatch-tests.sh` | **256 passed, 0 failed** |
+| `git diff --check` | clean, exit 0 |
+| `bash tests/run-tests.sh` | **590 passed, 1 failed** — the one red is the recorded flake |
+
+The single red is the `lifecycle concurrency gate` aggregate, `204 passed, 3
+failed`. Run directly, it names the same three sub-assertions as the recorded
+baseline:
+
+```
+  FAIL a contender that observed the window waits it out rather than refusing
+  FAIL and reports the live owner it was waiting for
+  FAIL so nothing it says can be read as 'this lock has no owner'
+204 passed, 3 failed
+```
+
+Same tally, same three assertions, same publication-window scenario as
+`evidence/AFK-PORT-1.4-LV/coordinator-baseline-concurrency-master-8a56eb5.log`.
+Nothing in this cycle touches locking. It is the only red. The suite's own
+sections 6, 9 and 10 run the other three gates against this same tree and report
+the tallies above.
+
+Diff for this cycle: 368 insertions, 67 deletions across six files,
+plus 79 lines of this story record.
+
+#### Commit (this cycle)
+
+One commit on `jlengelbrecht/afk-port-1.5b`, named files only, plain engineering
+language, no trailers of any kind. A commit cannot carry its own hash, so the
+SHA is reported in the worker_done body instead. Nothing pushed, no PR opened,
+`master` untouched. Briefs, stamps and route artifacts are not committed.
