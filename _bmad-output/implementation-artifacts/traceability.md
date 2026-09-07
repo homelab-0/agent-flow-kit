@@ -180,6 +180,24 @@ or control-plane surface. Story 1.4's live-render acceptance condition is the
 natural proving ground: a live PLAN-mode render and a populated statusline are
 the same demonstration.
 
+## Story 1.7 (Spike) — Persona Payload Viability on Local Profiles (COMPLETE 2026-09-07)
+
+Evidence-only spike, run after Josh's go on the 1.5–1.7 set. Bundle:
+`evidence/AFK-PORT-1.7/` (index `INDEX.md`; 27 cells; matrix, persona
+payloads, canary gates declared before any run; per-cell machine-readable
+results; analysis; recommendations; threshold rule). Per-profile
+recommendations by the declared rule applied mechanically:
+`local-code-standard` unsuitable (full 1/3, compact 2/3, none 3/3),
+`local-general` unsuitable (full 1/3, compact 0/3, none 1/3; same physical
+model — variance, cells run once), `claude/strong` full (3/3),
+`openai/strong` NOT_EVALUATED (adapter defect; none-mode addendum 3/3). All
+local payloads < 4% of the 65,536 window: the result is behavioural, not
+capacity. No prohibition recorded; the persona-independence contract stands.
+Registry adds: (19) codex prompt positional-argument defect (`---` parsed as
+an option); (20) dispatch prompt should state the absolute working directory;
+(21) gate-pass-with-NEEDS-HUMAN precedence; (22) workspace-trust stall and
+bypassed permissions on supervised interactive launches.
+
 ## Story 1.4 — Prove Portability Across Real Orca Hosts (CLOSED 2026-08-29; verdict upgraded to GREEN 2026-09-07)
 
 Full per-requirement verification: `evidence/AFK-PORT-1.4-M5-TRACEABILITY/traceability-sweep.json`

@@ -181,3 +181,51 @@ This is a bounded evidence-only spike: it produces a recommendation artifact, no
   `evidence/AFK-PORT-1.7/`, 308 of them per-cell result and provenance files)
   plus this Dev Agent Record. No product code, test, workflow, or
   configuration file is touched, which is what the two gates above confirm.
+
+## Coordinator log (ORCH PM, 2026-09-07)
+
+- Embargo lifted on Josh's "go" (2026-09-07). Spike run in parallel with
+  Story 1.5 lane A, as the story allows.
+- Scaffolding lane `AFK-PORT-1.7-SCAFFOLD` (disposable target
+  `afk-smoke-target`, story + self-check gate declared and committed before
+  dispatch at `3aad453`): attempt 1 on the NATURAL route
+  `{claude, local-code-standard, medium}` through the installed adapter
+  produced nothing — 57 turns, 43 permission denials, every Read/Write
+  resolved to the canonical repository path instead of the Orca worktree
+  (`evidence/AFK-PORT-1.7/scaffold-attempt1/`). Attempt 2 under a recorded
+  override to `claude/strong` (stamp `sha256:03b533a6…`), supervised
+  interactive worker: stalled twice on Claude Code's workspace-trust dialog
+  for the new worktree (Orca `agent_prompt_stalled`); the coordinator
+  accepted the dialog, recovered the task and attached the session. The
+  worker delivered all ten files and reported honestly that its only gate
+  red was a tracked template the coordinator had clobbered while provisioning
+  `.agents` (coordinator defect; reverted; self-check `GATE PASS`);
+  scaffolding committed to the target at `6e5ab98`.
+- Matrix executed by the coordinator (`runner/run-cells.sh`), each cell a
+  fresh Orca worktree, a `/v1/route` call, a stamp (natural for
+  `local-code-standard`; recorded override for `local-general`,
+  `claude/strong`, `openai/strong` — a spike cell must run on its named
+  profile), the installed `dispatch.sh`, an independent gate, measurement,
+  and cleanup. 24 matrix cells + 3 codex `none` addendum cells; all cell
+  worktrees and terminals verified removed; evidence checked secret-free by
+  exact match. Cells were run once each.
+- Assembly lane `AFK-PORT-1.7-ASSEMBLE` (analyst persona, proof
+  `4baeaab8…`; natural route `local-code-standard` overridden to
+  `claude/strong` citing the matrix's own pass rates; stamp
+  `sha256:83b2356a…`) produced the bundle (`INDEX.md`), `cells.csv`,
+  `ANALYSIS.md`, `RECOMMENDATION.md`, `threshold-rule.yaml` and the record
+  above. Coordinator validation: 27 rows, rule applied mechanically,
+  no-prohibition statement present, threshold rule parses, codex full
+  baseline `NOT_EVALUATED` with the adapter defect named.
+- Hardening items raised by this spike (to the traceability registry):
+  (19) the codex adapter passes the prompt as a positional argument and a
+  persona file beginning with `---` is parsed as an option — terminate
+  options with `--`; (20) the dispatch prompt should state the worker's
+  absolute working directory (local models resolve to the canonical repo
+  otherwise); (21) a worker that passes its gate yet prints `NEEDS-HUMAN:`
+  is reported as blocked (exit 3) — decide precedence; (22) supervised
+  interactive launches in a new worktree stall on the workspace-trust
+  dialog, and Orca runs them with permissions bypassed — owner posture
+  question.
+- Verdict: Story 1.7 spike COMPLETE as an evidence-only deliverable. It
+  records no prohibition; the persona-independence contract stands.
