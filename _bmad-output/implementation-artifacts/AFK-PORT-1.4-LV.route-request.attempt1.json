@@ -1,0 +1,22 @@
+{
+  "story_id": "AFK-PORT-1.4-LV",
+  "title": "Gateway launch variant for local profiles on the claude harness",
+  "summary": "Add a second validated launch class to the kit's dispatch adapter so the natural standard-band route {claude, local-code-standard} becomes launchable: claude driven against the agentgateway Anthropic-compatible endpoint with the catalog-1.6.0 validated per-process variables (ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN resolved at launch from a 1Password reference, ANTHROPIC_MODEL pinned to the catalog physical id, ANTHROPIC_CUSTOM_HEADERS carrying the verbatim /v1/place x-placement header, CLAUDE_CODE_MAX_CONTEXT_TOKENS from the catalog min_context). Extends the native-reachability guard (PR #25) with a fail-closed discriminator from the stamp plus the trusted catalog, mirrors the capability in the readiness library, updates the lifecycle contract doc, and adds pure and stubbed-integration regression coverage including a sentinel-based proof that the credential value never reaches command text, titles, logs or artifacts. The native subscription launch must stay byte-identical. The worker edits the credential-sanitizer boundary of the launch path and designs the credential conveyance mechanism under hard constraints: a plausible-but-wrong result leaks a token or silently runs the wrong provider on the wrong funding pool. Several large files are rewritten (dispatch.sh ~730 lines, run-tests.sh, the readiness library, its test suite, the contract doc).",
+  "touched_paths": [
+    "files/model-router/scripts/dispatch.sh",
+    "files/model-router/subscriptions.yaml",
+    "lib/afk-readiness.sh",
+    "tests/run-tests.sh",
+    "tests/lifecycle-readiness-tests.sh",
+    "docs/LIFECYCLE-CONTRACT.md",
+    "files/model-router/SKILL.md",
+    "_bmad-output/implementation-artifacts/AFK-PORT-1.4-LV.md"
+  ],
+  "ambiguity": "medium",
+  "blast_radius": "high",
+  "context_size": 90000,
+  "volume_hint": "low",
+  "tags": ["security", "secrets", "tests", "docs"],
+  "repo": "agent-flow-kit",
+  "requester": "bmad-pm"
+}

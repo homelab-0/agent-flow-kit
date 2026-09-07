@@ -256,6 +256,26 @@ receipts).
    (`AFK-PORT-1.3-C4.worker-done.md`) was wrong — the incident's source is
    the 1.3 coordinator freeze record; corrected here.
 
+**Post-close addition (2026-09-07) — launch variant merged, verdict unchanged.**
+`AFK-PORT-1.4-LV` (gateway-backed launch class for local profiles on the
+`claude` harness) merged to `master` as `db610fe` (PR #26) under owner-granted
+merge authority, with a fresh-session adversarial + senior review, one bounded
+fix cycle, and the coordinator's independent gate runs on record
+(`AFK-PORT-1.4-LV.md`, `evidence/AFK-PORT-1.4-LV*/`). This removes the
+adapter-side half of the one blocking clause: `{claude, local-code-standard}`
+is now natively launchable through the validated catalog-1.6.0 gateway path.
+The frozen verdict is NOT edited and remains `AGENT-FLOW-KIT PORTABILITY
+BLOCKED` until the natural-route smoke re-run records the superseding GREEN
+entry; that run is blocked on the gateway credential being reachable from the
+executing host. New registry items: (10) `env` argv window is world-readable
+absent `hidepid` — interim fleet mitigation `hidepid=2`, contract amendment
+(wrapper shell) owed to prox-ops; (11) `x-placement` header value not
+shape-checked (defence in depth); (12) launch timeout not shortened for a
+launch that printed nothing; (13) `tests/lifecycle-concurrency-tests.sh`
+host-timing flake (3 assertions, publication-window rendezvous) reproduced
+on pristine `master`; (14) catalog gap: `claude/strong` declares no
+`min_context`, so any explicit `context_size` routes away from it.
+
 **Second host:** the Mac is an ADOPTED fleet member (real-home adoption,
 owner-approved plan `sha256:9a19ced0…`, preservation byte-identical, offline
 verify clean, honest live state). Its future updates ride the proven Git

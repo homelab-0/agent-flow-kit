@@ -1,0 +1,145 @@
+{
+  "id": "c7882262-c271-4e34-ba44-f006b197701d",
+  "ok": true,
+  "result": {
+    "dispatch": {
+      "id": "ctx_b906efea1c27",
+      "task_id": "task_a90826b8bcc3",
+      "assignee_handle": "term_2d19fc47-1b23-45ce-a27c-d2247fee6b0c",
+      "assignee_pane_key": "e7cfd550-1279-47aa-9d07-8a0cbe030fb5:34e438b6-795a-4c07-a152-5dfcd1740ff4",
+      "status": "failed",
+      "failure_count": 0,
+      "last_failure": "{\"provenance\":\"worker_report\",\"outcome\":\"failed\",\"messageId\":\"msg_a4ef237aace8\",\"reportedBy\":\"term_2d19fc47-1b23-45ce-a27c-d2247fee6b0c\",\"subject\":\"Gateway launch class implemented; 4/5 gates green, run-tests.sh red on a pre-existing concurrency failure\",\"body\":\"Implemented AFK-PORT-1.4-LV in the worktree: a second validated claude launch class (gateway-backed local) in dispatch.sh with a new build_claude_gateway_command, a two-class unsupported_launch_reason reading the stamp plus the trusted catalog's hosting, five fail-closed preflights, three new launcher keys in subscriptions.yaml, the readiness mirror in afk-readiness.sh, the two-class launch contract in docs/LIFECYCLE-CONTRACT.md, and new assertions across run-tests.sh sections 1/3/3b plus lifecycle-readiness-tests.sh. I ran all five gates myself: lifecycle-readiness 279/0, lifecycle-dispatch 250/0, lifecycle 476/0, git diff --check clean, and run-tests.sh 322 passed / 1 failed (exit 1, 41m59s) where the single failure is the aggregate 'lifecycle concurrency gate' reporting its sub-suite's '204 passed, 3 failed' — verbatim: 'a contender that observed the window waits it out rather than refusing' (expected '1', got '3'), 'and reports the live owner it was waiting for' (expected 'LIVE', got 'UNKNOWN'), 'so nothing it says can be read as this lock has no owner' (expected '0', got '1'). Those three reproduce identically in a fresh clone of pristine master @ 8a56eb5 on this host with none of my changes present — a host-timing-sensitive busy-wait rendezvous in the operation-lock publication-window test, in files this story does not touch — so I am reporting failed per the brief's all-five-gates rule rather than arguing it into a pass; every AC is addressed in the record, sections 0-5 of run-tests.sh are fully green, and the credential-conveyance decision plus one disclosed residual (the microsecond env-argv window before exec) are written up in the Dev Agent Record. Commits on jlengelbrecht/afk-port-1.4-lv only: 533880df5369d6d58b663ccbe61a345a26bf40d9 and 1a388bff7b2ec4c640c256604af44db64ea6b4b3; nothing pushed, no PR, master untouched, reviewable diff 6 files / 650 added / 85 deleted.\",\"completedBy\":\"term_2d19fc47-1b23-45ce-a27c-d2247fee6b0c\",\"filesModified\":[\"files/model-router/scripts/dispatch.sh\",\"files/model-router/subscriptions.yaml\",\"lib/afk-readiness.sh\",\"tests/run-tests.sh\",\"tests/lifecycle-readiness-tests.sh\",\"docs/LIFECYCLE-CONTRACT.md\",\"_bmad-output/implementation-artifacts/AFK-PORT-1.4-LV.md\"],\"reportPath\":\"_bmad-output/implementation-artifacts/AFK-PORT-1.4-LV.md\",\"completedAt\":\"2026-09-06T06:45:09.695Z\"}",
+      "dispatched_at": "2026-09-06 05:27:38",
+      "completed_at": "2026-09-06 06:45:09",
+      "created_at": "2026-09-06 05:27:38",
+      "last_heartbeat_at": "2026-09-06T06:32:05Z",
+      "run_id": "run_cb472ab8640c",
+      "capability_hash": "eb426e26a2e771a791901e116af76b9ece272e722e0dfd8e41b27f37890a5341",
+      "process_incarnation": "5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.4-lv@@6d92bbc9:9ff1310d-3e76-42cb-9ea6-960a9fe20852",
+      "capability_revoked_at": "2026-09-06 06:45:09",
+      "contract_version": 1,
+      "launch_token_hash": "6167ceec6de702d57037f62d884fc28ef9bf2e9178a8e38a4a924c1ad9c032eb",
+      "termination_reason": null,
+      "depth": 1
+    },
+    "worker": {
+      "dispatch_id": "ctx_b906efea1c27",
+      "runtime_epoch": "ea1d57f6-4774-40f8-adad-824a66f35a86",
+      "state": "failed",
+      "stage": "settled",
+      "worktree_id": "5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.4-lv",
+      "agent_terminal_handle": "term_2d19fc47-1b23-45ce-a27c-d2247fee6b0c",
+      "setup_state": "not_applicable",
+      "effects": [
+        {
+          "kind": "worktree",
+          "action": "reused",
+          "id": "5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.4-lv"
+        },
+        {
+          "kind": "setup",
+          "action": "not_applicable",
+          "state": "not_applicable"
+        },
+        {
+          "kind": "terminal",
+          "role": "agent",
+          "action": "created",
+          "id": "term_2d19fc47-1b23-45ce-a27c-d2247fee6b0c",
+          "surface": "visible"
+        },
+        {
+          "kind": "dispatch_input",
+          "role": "agent",
+          "id": "term_2d19fc47-1b23-45ce-a27c-d2247fee6b0c",
+          "state": "accepted"
+        }
+      ],
+      "residual_resources": "[{\"kind\":\"terminal\",\"role\":\"agent\",\"action\":\"created\",\"id\":\"term_2d19fc47-1b23-45ce-a27c-d2247fee6b0c\",\"surface\":\"visible\"}]",
+      "start_options": "{\"worktree\":\"id:5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.4-lv\",\"resolvedWorktreeId\":\"5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.4-lv\",\"name\":null,\"repo\":null,\"baseBranch\":null,\"terminal\":null,\"agent\":\"claude\",\"launch\":{\"requested\":{\"agent\":\"claude\",\"model\":\"opus\",\"effort\":\"high\"},\"effective\":{\"agent\":\"claude\",\"model\":\"opus\",\"effort\":\"high\"}},\"timeoutMs\":180000,\"setup\":\"not_applicable\",\"setupSource\":\"existing_worktree\"}",
+      "last_error": null,
+      "created_at": "2026-09-06 05:27:38",
+      "updated_at": "2026-09-06 06:45:09",
+      "residualResources": [
+        {
+          "kind": "terminal",
+          "role": "agent",
+          "action": "created",
+          "id": "term_2d19fc47-1b23-45ce-a27c-d2247fee6b0c",
+          "surface": "visible"
+        }
+      ],
+      "startOptions": {
+        "worktree": "id:5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.4-lv",
+        "resolvedWorktreeId": "5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.4-lv",
+        "name": null,
+        "repo": null,
+        "baseBranch": null,
+        "terminal": null,
+        "agent": "claude",
+        "launch": {
+          "requested": {
+            "agent": "claude",
+            "model": "opus",
+            "effort": "high"
+          },
+          "effective": {
+            "agent": "claude",
+            "model": "opus",
+            "effort": "high"
+          }
+        },
+        "timeoutMs": 180000,
+        "setup": "not_applicable",
+        "setupSource": "existing_worktree"
+      }
+    },
+    "terminal": {
+      "handle": "term_2d19fc47-1b23-45ce-a27c-d2247fee6b0c",
+      "ptyId": "5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.4-lv@@6d92bbc9",
+      "incarnationId": "9ff1310d-3e76-42cb-9ea6-960a9fe20852",
+      "orphaned": false,
+      "worktreeId": "5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.4-lv",
+      "worktreePath": "/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.4-lv",
+      "branch": "refs/heads/jlengelbrecht/afk-port-1.4-lv",
+      "tabId": "e7cfd550-1279-47aa-9d07-8a0cbe030fb5",
+      "leafId": "34e438b6-795a-4c07-a152-5dfcd1740ff4",
+      "title": "✳ Orca multi-agent IDE worker dispatch",
+      "connected": true,
+      "writable": true,
+      "lastOutputAt": 1788677142421,
+      "preview": "rerun the concurrency suite to confirm it's flaky4 not deterministic",
+      "executionHostId": "local",
+      "agentIdentity": "claude",
+      "paneRuntimeId": -1,
+      "rendererGraphEpoch": 0,
+      "agentWait": null
+    },
+    "observation": {
+      "status": "live",
+      "exactWorker": true,
+      "agentWait": null
+    },
+    "terminalResource": {
+      "id": "wtr_174f0d52552e",
+      "ownershipState": "owned",
+      "releaseState": "not_requested",
+      "retainedReason": null,
+      "terminalHandle": "term_2d19fc47-1b23-45ce-a27c-d2247fee6b0c",
+      "worktreeId": "5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.4-lv",
+      "originDispatchId": "ctx_b906efea1c27",
+      "ownerDispatchId": "ctx_b906efea1c27",
+      "releaseRequestedAt": null,
+      "releaseCompletedAt": null,
+      "releaseError": null,
+      "archive": {
+        "source": null,
+        "status": null
+      }
+    }
+  },
+  "_meta": {
+    "runtimeId": "ea1d57f6-4774-40f8-adad-824a66f35a86"
+  }
+}

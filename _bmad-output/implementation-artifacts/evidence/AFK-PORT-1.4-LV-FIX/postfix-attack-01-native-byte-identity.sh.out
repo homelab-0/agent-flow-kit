@@ -1,0 +1,6 @@
+PASS build_claude_command (with persona) byte-identical to master
+PASS build_claude_command (no persona) byte-identical to master
+PASS build_codex_command byte-identical to master
+PASS CONTROL: a perturbed effort IS detected as different
+--- the native command text (HEAD) ---
+env -i HOME=/home/op PATH=/usr/bin:/bin USER=op LANG=C.UTF-8 TERM=dumb claude -p "$(cat -- /wt/S.md.prompt)" --model claude-opus-5 --effort high --append-system-prompt-file /wt/agents/dev.md --permission-mode acceptEdits --tools "Read,Glob,Grep,Write" --strict-mcp-config --output-format json < /dev/null > /wt/S.md.claude-result.json; echo "CLAUDE_EXIT=$?"
