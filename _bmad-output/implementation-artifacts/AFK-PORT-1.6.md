@@ -1,6 +1,6 @@
 ---
 linear:
-stamp: AFK-PORT-1.6.md.stamp.json
+stamp: _bmad-output/implementation-artifacts/AFK-PORT-1.6.md.stamp.json
 persona: dev
 gates:
   - "bash tests/lifecycle-tests.sh"

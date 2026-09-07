@@ -1,0 +1,32 @@
+  PASS native claude cmd identical to master (effort low)
+  PASS gateway claude cmd identical to master (effort low)
+  PASS codex cmd identical to master (effort low)
+  PASS native claude cmd identical to base (effort low)
+  PASS gateway claude cmd identical to base (effort low)
+  PASS codex cmd identical to base (effort low)
+  PASS native claude cmd identical to master (effort medium)
+  PASS gateway claude cmd identical to master (effort medium)
+  PASS codex cmd identical to master (effort medium)
+  PASS native claude cmd identical to base (effort medium)
+  PASS gateway claude cmd identical to base (effort medium)
+  PASS codex cmd identical to base (effort medium)
+  PASS native claude cmd identical to master (effort high)
+  PASS gateway claude cmd identical to master (effort high)
+  PASS codex cmd identical to master (effort high)
+  PASS native claude cmd identical to base (effort high)
+  PASS gateway claude cmd identical to base (effort high)
+  PASS codex cmd identical to base (effort high)
+  PASS native claude cmd identical to master (effort xhigh)
+  PASS gateway claude cmd identical to master (effort xhigh)
+  PASS codex cmd identical to master (effort xhigh)
+  PASS native claude cmd identical to base (effort xhigh)
+  PASS gateway claude cmd identical to base (effort xhigh)
+  PASS codex cmd identical to base (effort xhigh)
+  PASS CONTROL: master's builder produced non-empty text
+  PASS CONTROL: a perturbed model IS detected as different
+  PASS CONTROL: a perturbed gateway window IS detected as different
+  PASS dispatch.sh has ZERO deleted lines vs the branch base
+  PASS gateway launch text mentions no estimate
+  PASS gateway launch text still carries the catalog window
+
+attack-01-launch-texts.sh: 30 passed, 0 failed

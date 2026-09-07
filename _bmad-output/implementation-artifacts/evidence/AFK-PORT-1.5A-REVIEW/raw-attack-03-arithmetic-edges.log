@@ -1,0 +1,40 @@
+  PASS 3: baseline dispatches with a huge window
+     (info) estimate for the fixture story: 152 tokens
+     (info) continuation: window AT boundary   window=178        exit=8  ratio=0.853932   findings=-
+  PASS 3: ratio at/over 0.850000 refuses with exit 8
+  PASS 3: and the refusal ratio really is at the boundary
+     (info) continuation: one token MORE window window=179        exit=0  ratio=0.849162   findings=["SIZING_RISK"]
+  PASS 3: one ppm below 0.85 does NOT refuse
+  FAIL 3: and its ratio is strictly below the threshold
+        0.849162
+     (info) sizing risk: window AT 0.60        window=253        exit=0  ratio=0.691699   findings=["SIZING_RISK"]
+  PASS 3: at 0.600000 dispatch proceeds
+  PASS 3: at 0.600000 SIZING_RISK fires (>= is crossing)
+     (info) sizing risk: one token MORE window window=254        exit=0  ratio=0.688976   findings=["SIZING_RISK"]
+  FAIL 3: one ppm below 0.60 fires NO finding
+        expected [[]] got [["SIZING_RISK"]]
+     (info) min_context=0            exit=5  state=-              window_tokens=-
+  PASS 3/window=0: not silently accepted as a healthy budget (exit 5 state -)
+     (info) min_context=-1           exit=5  state=-              window_tokens=-
+  PASS 3/window=-1: not silently accepted as a healthy budget (exit 5 state -)
+     (info) min_context="0"          exit=5  state=-              window_tokens=-
+  PASS 3/window="0": not silently accepted as a healthy budget (exit 5 state -)
+     (info) min_context=null         exit=0  state=NOT_EVALUATED  window_tokens=null
+  PASS 3/window=null: not silently accepted as a healthy budget (exit 0 state NOT_EVALUATED)
+     (info) min_context=notanumber   exit=5  state=-              window_tokens=-
+  PASS 3/window=notanumber: not silently accepted as a healthy budget (exit 5 state -)
+     (info) min_context=0.5          exit=5  state=-              window_tokens=-
+  PASS 3/window=0.5: not silently accepted as a healthy budget (exit 5 state -)
+  PASS 3: budget_estimate_tokens 0 -> 0
+  PASS 3: budget_ratio_ppm 0/65536 -> 0
+  PASS 3: ratio refuses a zero window
+  PASS 3: ratio refuses a negative window
+  PASS 3: threshold 0.850 == 0.85
+  PASS 3: threshold refuses '.85'
+  PASS 3: threshold refuses '85%'
+  PASS 3: threshold 1.0 -> 1000000
+  PASS 3: threshold 0.8500001 truncates to 850000 (6dp is the resolution)
+  PASS 3/huge: a 20MB payload refuses (exit 8), no overflow
+  PASS 3/huge: the marker's ratio is a sane large number
+
+attack-03-arithmetic-edges.sh: 23 passed, 2 failed

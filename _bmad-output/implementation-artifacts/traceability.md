@@ -180,6 +180,24 @@ or control-plane surface. Story 1.4's live-render acceptance condition is the
 natural proving ground: a live PLAN-mode render and a populated statusline are
 the same demonstration.
 
+## Story 1.5 — Context Budgeting and Continuation (IN PROGRESS; lane A merged 2026-09-07)
+
+Split into four sequential lanes by the coordinator (total scope preserved;
+FR coverage: A = FR-96–98 + FR-99 declaration; B = FR-99 evaluation, FR-100,
+FR-101, FR-104, FR-105; C = FR-102–103; D = FR-121–126). **Lane A merged**
+(PR #30, `c89b302`): window read from the trusted catalog at the stamp's
+catalog version, deterministic `bytes4-v1` sizing estimate over persona +
+story + prompt + `payload_refs`, thresholds only in
+`files/model-router/context-budget-policy.yaml`, fail-closed sizing refusal
+before placement (exit 8, `STORY-SIZING:` marker, `reason=SIZING_REFUSED`),
+sizing-risk finding in the thin result and the story record (locked,
+idempotent per cycle), contract `## The context budget` + `budget_states`.
+Review CLEAN with nine residuals; R1–R3, R8 fixed on the branch; R4 (fenced
+`## ` inside the record ends the section scan), R5 (policy validated by
+shape not value) → backlog items 23–24; R6/R7 accepted. Diff 1080/800
+accepted by the owner as one PR. Story 1.5 frontmatter stamp path made
+repo-relative (Devin PR #13 note).
+
 ## Story 1.7 (Spike) — Persona Payload Viability on Local Profiles (COMPLETE 2026-09-07)
 
 Evidence-only spike, run after Josh's go on the 1.5–1.7 set. Bundle:
