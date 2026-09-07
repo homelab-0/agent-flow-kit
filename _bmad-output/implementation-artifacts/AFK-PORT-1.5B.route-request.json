@@ -1,0 +1,12 @@
+{
+  "story_id": "AFK-PORT-1.5B",
+  "title": "Usage observation, checkpoint and continuation artifacts, budget state (Story 1.5, lane B)",
+  "summary": "Second of four lanes for the frozen Story 1.5 in the kit's dispatch adapter: per-harness usage adapters reading the end-of-run result envelope (claude) or reporting NOT_EVALUATED (codex), post-run evaluation against the declared checkpoint and continuation thresholds, a launcher-owned prompt paragraph declaring checkpoint and continuation artifacts and phase boundaries, artifact validation under the kit's redaction rules, a continuation_required thin-result status with loud NEEDS_HUMAN for an invalid artifact, a context_budget member on the dispatch monitor's watch record and status rendering, contract and schema updates, and tests on both harnesses. Frozen launch command texts stay byte-identical. Design judgment calls: adapter interface shape, artifact schemas, boundary declarations, reconciliation of observed usage with the worker's signal. A wrong result misreports budget health or manufactures a completion; no credentials handled.",
+  "touched_paths": ["files/model-router/scripts/dispatch.sh", "files/model-router/context-budget-policy.yaml", "files/model-router/SKILL.md", "lib/afk-monitor.sh", "lib/afk-commands.sh", "docs/LIFECYCLE-CONTRACT.md", "tests/run-tests.sh", "tests/lifecycle-dispatch-tests.sh", "tests/lifecycle-readiness-tests.sh", "_bmad-output/implementation-artifacts/AFK-PORT-1.5B.md"],
+  "ambiguity": "medium",
+  "blast_radius": "medium",
+  "volume_hint": "low",
+  "tags": ["tests", "docs"],
+  "repo": "agent-flow-kit",
+  "requester": "bmad-pm"
+}

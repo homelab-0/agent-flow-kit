@@ -1,0 +1,12 @@
+{
+  "story_id": "AFK-PORT-1.5B-REVIEW",
+  "title": "Adversarial and senior review of Story 1.5 lane B (usage observation, artifacts, budget state)",
+  "summary": "Independent fresh-session review of a change to the kit's dispatch adapter and monitor library: per-harness usage adapters over the result envelope, post-run threshold evaluation, a launcher-owned prompt paragraph, checkpoint and continuation artifact validation under redaction rules, a continuation_required status with loud NEEDS_HUMAN, and a context_budget watch member. The reviewer proves the frozen launch texts and prompt data discipline, attacks adapter edge cases, precedence rules, artifact validation and redaction, the NEEDS_HUMAN path, record-append idempotence, watch-record sourcing and docs truth, and writes a report with reproduced blockers and residuals. Changes no product code. A plausible-but-wrong review would let a misreported budget state or a manufactured completion into the dispatch path.",
+  "touched_paths": ["_bmad-output/implementation-artifacts/evidence/AFK-PORT-1.5B-REVIEW/"],
+  "ambiguity": "low",
+  "blast_radius": "medium",
+  "volume_hint": "low",
+  "tags": ["review", "tests"],
+  "repo": "agent-flow-kit",
+  "requester": "bmad-pm"
+}
