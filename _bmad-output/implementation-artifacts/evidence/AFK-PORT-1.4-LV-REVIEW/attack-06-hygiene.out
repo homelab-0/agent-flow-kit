@@ -1,0 +1,73 @@
+=== git diff --check (working tree) ===
+exit=0
+=== git diff --check master...HEAD ===
+exit=0
+=== commit messages ===
+--- 1a388bff7b2ec4c640c256604af44db64ea6b4b3
+Record the implementation commit SHA in the story's Dev Agent Record
+
+Split out because a record cannot contain its own hash.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01VVe3jsnuz8QZsty4ZnghW8
+
+--- 533880df5369d6d58b663ccbe61a345a26bf40d9
+Add a gateway-backed launch class for local profiles on the claude harness
+
+The launch adapter had one validated way to start claude: a native vendor
+subscription session. A profile the catalog marks hosting: local is reachable
+only through the gateway, so the adapter refused it — routable and unlaunchable
+at the same time.
+
+This adds the second class. It is the native launch plus five per-process
+variables inside the same env -i allowlist: the gateway endpoint, the scoped
+key, the model pin, the x-placement header copied verbatim from the /v1/place
+result fetched for that attempt, and the profile's real context window. The
+claude invocation itself is byte-identical to the native one, which the tests
+now check by comparing the two builders directly rather than by eye.
+
+The credential is resolved by the terminal at launch time from a 1Password
+reference the launcher configures; only the reference and the service-account
+env file are ever in the command text, and an empty read stops the launch
+before claude starts rather than letting an unauthenticated session run.
+
+Admission is narrow and reads the stamp plus the trusted catalog: claude, the
+catalog marking the profile local, placement required, no entitlement pool,
+cost class free. Everything else keeps refusing, and a local profile stamped
+with a vendor pool is refused by name. Readiness mirrors the two classes, and
+the lifecycle contract document describes both.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01VVe3jsnuz8QZsty4ZnghW8
+
+=== files changed vs the story's declared surface ===
+_bmad-output/implementation-artifacts/AFK-PORT-1.4-LV.md
+docs/LIFECYCLE-CONTRACT.md
+files/model-router/scripts/dispatch.sh
+files/model-router/subscriptions.yaml
+lib/afk-readiness.sh
+tests/lifecycle-readiness-tests.sh
+tests/run-tests.sh
+=== working tree (untracked) ===
+?? _bmad-output/implementation-artifacts/AFK-PORT-1.4-LV-BRIEF.md
+?? _bmad-output/implementation-artifacts/AFK-PORT-1.4-LV-REVIEW-BRIEF.md
+?? _bmad-output/implementation-artifacts/AFK-PORT-1.4-LV-REVIEW.md
+?? _bmad-output/implementation-artifacts/AFK-PORT-1.4-LV-REVIEW.md.stamp.json
+?? _bmad-output/implementation-artifacts/AFK-PORT-1.4-LV.md.stamp.json
+?? _bmad-output/implementation-artifacts/AFK-PORT-1.4-LV.route-request.json
+?? _bmad-output/implementation-artifacts/AFK-PORT-1.4-LV.route-response.json
+?? _bmad-output/implementation-artifacts/AFK-PORT-1.4-LV.stamp.validation-at-mint.json
+?? _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.4-LV-REVIEW/
+=== AI-attribution / internal-vocabulary scan of commit messages ===
+5:Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+6:Claude-Session: https://claude.ai/code/session_01VVe3jsnuz8QZsty4ZnghW8
+8:Add a gateway-backed launch class for local profiles on the claude harness
+10:The launch adapter had one validated way to start claude: a native vendor
+12:only through the gateway, so the adapter refused it — routable and unlaunchable
+16:variables inside the same env -i allowlist: the gateway endpoint, the scoped
+19:claude invocation itself is byte-identical to the native one, which the tests
+25:before claude starts rather than letting an unauthenticated session run.
+27:Admission is narrow and reads the stamp plus the trusted catalog: claude, the
+31:the lifecycle contract document describes both.
+33:Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+34:Claude-Session: https://claude.ai/code/session_01VVe3jsnuz8QZsty4ZnghW8

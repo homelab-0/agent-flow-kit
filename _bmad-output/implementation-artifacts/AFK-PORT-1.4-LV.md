@@ -616,3 +616,36 @@ scripts re-run against the fix: `attack-01` and `attack-07` pass, `attack-03`
 P4/P4b now pass (xtrace channel closed) and P5 still reproduces as expected
 for the record-only disposition. Precedence between the harness trailer
 instruction and the public-text rule is an open owner ruling.
+
+### Coordinator log — merge (2026-09-07) **[MERGE LOGGED]**
+
+- Merge authority for this scope granted by Josh ("you can handle merge").
+  PR #26 squash-merged to `master` as `db610fe` at 2026-09-07T05:02Z. Review
+  wave: GitGuardian success; Devin Review reported pass but skipped ("trial
+  expired and no credits remaining" — no Devin findings will arrive on this
+  repository until credits are restored); zero comments; no external
+  engagement. Merge decision made on gate evidence only: fresh-session
+  adversarial + senior review (`evidence/AFK-PORT-1.4-LV-REVIEW/`, 1 blocker
+  closed at packaging, 9 residuals dispositioned), one bounded fix cycle
+  (`AFK-PORT-1.4-LV-FIX`), coordinator's independent gate runs before and
+  after the fix (`evidence/AFK-PORT-1.4-LV/`, `evidence/AFK-PORT-1.4-LV-FIX/`).
+- Routing provenance retained beside this record: `AFK-PORT-1.4-LV`
+  natural `{claude, claude/strong, high}` (attempt 1 with an explicit
+  `context_size` routed to `{claude, minimax/strong}` and the validator
+  refused the override — catalog 1.6.0 gap: `claude/strong` declares no
+  `min_context`; retained as `*.attempt1.*`); `AFK-PORT-1.4-LV-REVIEW`
+  natural `{claude, claude/strong, high}`; `AFK-PORT-1.4-LV-FIX` natural
+  `{claude, local-code-standard, medium}` overridden under the standing
+  routing-deadlock ruling to `{claude, claude/strong, medium}` (the natural
+  pair is the one this change unlocks, unmerged at the time).
+- Standing observations for the owner: harness-added attribution trailers
+  vs. the public-text rule (precedence ruling open); the gateway credential
+  `agw-claude-code` is not visible to this host's 1Password service account
+  (blocks the natural-route smoke); `hidepid=2` on `/proc` as the fleet-wide
+  interim mitigation for the `env` argv window.
+- Story 1.4 verdict is UNCHANGED by this merge (`PORTABILITY BLOCKED`, one
+  clause). The natural-route smoke re-run, once the credential is reachable
+  and the guard on `master` admits the pair, is what records the superseding
+  GREEN entry.
+- Cleanup: all three worker terminals released and verified closed; the
+  `afk-port-1.4-lv` worktree removed through Orca; remote branch deleted.
