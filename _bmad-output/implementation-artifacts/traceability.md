@@ -180,7 +180,7 @@ or control-plane surface. Story 1.4's live-render acceptance condition is the
 natural proving ground: a live PLAN-mode render and a populated statusline are
 the same demonstration.
 
-## Story 1.5 — Context Budgeting and Continuation (IN PROGRESS; lane A merged 2026-09-07)
+## Story 1.5 — Context Budgeting and Continuation (IN PROGRESS; lanes A and B merged 2026-09-07)
 
 Split into four sequential lanes by the coordinator (total scope preserved;
 FR coverage: A = FR-96–98 + FR-99 declaration; B = FR-99 evaluation, FR-100,
@@ -197,6 +197,21 @@ Review CLEAN with nine residuals; R1–R3, R8 fixed on the branch; R4 (fenced
 shape not value) → backlog items 23–24; R6/R7 accepted. Diff 1080/800
 accepted by the owner as one PR. Story 1.5 frontmatter stamp path made
 repo-relative (Devin PR #13 note).
+
+**Lane B merged** (PR #32, `6d1315f`): per-harness usage adapters (claude from
+the end-of-run envelope with provenance and window corroboration on an exact
+key; codex `NOT_EVALUATED`), post-run evaluation against the checkpoint and
+continuation thresholds with `HIGH_USAGE`, a launcher-owned prompt paragraph
+declaring checkpoint/continuation artifacts and phase boundaries, artifact
+validation with freshness by pre-launch sha, `continuation_required` status,
+loud `NEEDS_HUMAN` on an invalid signal, no worker free text in any artifact,
+and the `context_budget` watch member. Review NOT CLEAN (redaction blocker) →
+fix cycle → diff-scoped post-fix review CLEAN. Registry adds: (25) the
+pre-existing `NEEDS-HUMAN:` channel echoes worker free text verbatim — apply
+the same closed-vocabulary discipline; (26) readiness unpublished-reason sweep
+union weakens the `.reason` check; (27) codex terminal tail is bounded
+(`--limit 5000`) so a signal can scroll out; (28) GitGuardian flags redaction
+test sentinels (incident 37069849 ignored as test credential).
 
 ## Story 1.7 (Spike) — Persona Payload Viability on Local Profiles (COMPLETE 2026-09-07)
 

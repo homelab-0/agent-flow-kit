@@ -1,0 +1,55 @@
+=== checkpoint schema ===
+valid                                                -> VALID
+absent file                                          -> ARTIFACT_MISSING
+empty file                                           -> ARTIFACT_UNPARSEABLE
+not json                                             -> ARTIFACT_UNPARSEABLE
+truncated json                                       -> ARTIFACT_UNPARSEABLE
+a JSON array, not an object                          -> ARTIFACT_UNPARSEABLE
+a bare JSON string                                   -> ARTIFACT_UNPARSEABLE
+JSON null                                            -> ARTIFACT_UNPARSEABLE
+wrong schema id                                      -> ARTIFACT_SCHEMA_MISMATCH
+member present but null                              -> ARTIFACT_MEMBER_MISSING
+member present but EMPTY []                          -> VALID
+member present but empty ""                          -> VALID
+continuation body under checkpoint members           -> VALID
+
+=== continuation schema (extra members) ===
+valid continuation                                   -> VALID
+checkpoint body offered as a continuation            -> ARTIFACT_SCHEMA_MISMATCH
+continuation missing in_flight                       -> ARTIFACT_MEMBER_MISSING
+
+NOTE: a shape-valid artifact whose every member is empty is VALID (disclosed
+      in the record as 'validated for shape, not for usefulness').
+
+=== no member value ever reaches the identity that goes to the result ===
+  identity: {"path":"/tmp/rev1.5b/art/c.json","sha256":"sha256:7c8eaac3fc0b82bc46ac7851dbb1ce0cd9a26a65349e8422f0ad017ce5a8f172"}
+  no leak of [gate]
+  no leak of [AC-1]
+  no leak of [afk-continuation]
+  no leak of [completed]
+  sha matches the file: yes
+
+=== the freshness (ARTIFACT_STALE) identity check, transcribed from dispatch.sh ===
+1488:            && "$CONTINUATION_BEFORE" == "$(sha256_of "$CONTINUATION_FILE")" ]]; then
+1489-        verdict="ARTIFACT_STALE"
+1490-      fi
+1491-    fi
+  before=<none>   after=aaa      in=VALID    -> VALID
+  before=aaa      after=aaa      in=VALID    -> ARTIFACT_STALE
+  before=aaa      after=bbb      in=VALID    -> VALID
+  before=aaa      after=aaa      in=ARTIFACT_MISSING -> ARTIFACT_MISSING
+  (row 2 is the refusal: a byte-identical artifact after the run was not written by this worker)
+
+=== the SAME freshness check does NOT exist for the checkpoint ===
+  occurrences of a checkpoint pre-launch sha: 4
+  1241:  CHECKPOINT_FILE="${STORY}.checkpoint.json"
+  1243:  CONTINUATION_BEFORE="" CHECKPOINT_BEFORE=""
+  1244:  [[ -f "$CONTINUATION_FILE" ]] && CONTINUATION_BEFORE="$(sha256_of "$CONTINUATION_FILE")"
+  1352:      rm -f "$result_file"
+  1352:      rm -f "$result_file"
+  1241:  CHECKPOINT_FILE="${STORY}.checkpoint.json"
+  1243:  CONTINUATION_BEFORE="" CHECKPOINT_BEFORE=""
+  1244:  [[ -f "$CONTINUATION_FILE" ]] && CONTINUATION_BEFORE="$(sha256_of "$CONTINUATION_FILE")"
+  (the result artifact IS removed pre-launch; the checkpoint is neither removed
+   nor sha-captured, so a checkpoint left by an EARLIER cycle is reported as this
+   cycle's checkpoint_artifact identity.)

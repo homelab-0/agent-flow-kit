@@ -1,0 +1,145 @@
+{
+  "id": "0ae754f8-496d-4419-8577-cc1157c3ba4b",
+  "ok": true,
+  "result": {
+    "dispatch": {
+      "id": "ctx_d00de4ffa05f",
+      "task_id": "task_9a15a6a423cb",
+      "assignee_handle": "term_834f26c5-60d9-4acb-893b-ffb7d62fd95e",
+      "assignee_pane_key": "465f4a88-4b72-47cc-8d72-4125ce1cbb9d:e1ab7dec-06b7-41c5-9c78-84d15761686d",
+      "status": "completed",
+      "failure_count": 0,
+      "last_failure": null,
+      "dispatched_at": "2026-09-07 19:39:43",
+      "completed_at": "2026-09-07 19:56:38",
+      "created_at": "2026-09-07 19:39:43",
+      "last_heartbeat_at": "2026-09-07T19:55:45Z",
+      "run_id": "run_cb472ab8640c",
+      "capability_hash": "7ef310c235ce67110f10a3bc787630a8ed4d00b404f9a3677462c1c398fd3de3",
+      "process_incarnation": "5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5b@@d288564d:d4de62ec-c647-4065-bb0b-f3b2efd24afa",
+      "capability_revoked_at": "2026-09-07 19:56:38",
+      "contract_version": 1,
+      "launch_token_hash": "634f184c4cf2a4da63e9df4a2f6a11e2f495858088f6c30b48d5c49895db4623",
+      "termination_reason": null,
+      "depth": 1
+    },
+    "worker": {
+      "dispatch_id": "ctx_d00de4ffa05f",
+      "runtime_epoch": "ea1d57f6-4774-40f8-adad-824a66f35a86",
+      "state": "succeeded",
+      "stage": "settled",
+      "worktree_id": "5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5b",
+      "agent_terminal_handle": "term_834f26c5-60d9-4acb-893b-ffb7d62fd95e",
+      "setup_state": "not_applicable",
+      "effects": [
+        {
+          "kind": "worktree",
+          "action": "reused",
+          "id": "5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5b"
+        },
+        {
+          "kind": "setup",
+          "action": "not_applicable",
+          "state": "not_applicable"
+        },
+        {
+          "kind": "terminal",
+          "role": "agent",
+          "action": "created",
+          "id": "term_834f26c5-60d9-4acb-893b-ffb7d62fd95e",
+          "surface": "visible"
+        },
+        {
+          "kind": "dispatch_input",
+          "role": "agent",
+          "id": "term_834f26c5-60d9-4acb-893b-ffb7d62fd95e",
+          "state": "accepted"
+        }
+      ],
+      "residual_resources": "[{\"kind\":\"terminal\",\"role\":\"agent\",\"action\":\"created\",\"id\":\"term_834f26c5-60d9-4acb-893b-ffb7d62fd95e\",\"surface\":\"visible\"}]",
+      "start_options": "{\"worktree\":\"id:5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5b\",\"resolvedWorktreeId\":\"5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5b\",\"name\":null,\"repo\":null,\"baseBranch\":null,\"terminal\":null,\"agent\":\"claude\",\"launch\":{\"requested\":{\"agent\":\"claude\",\"model\":\"opus\",\"effort\":\"medium\"},\"effective\":{\"agent\":\"claude\",\"model\":\"opus\",\"effort\":\"medium\"}},\"timeoutMs\":180000,\"setup\":\"not_applicable\",\"setupSource\":\"existing_worktree\"}",
+      "last_error": null,
+      "created_at": "2026-09-07 19:39:43",
+      "updated_at": "2026-09-07 19:56:38",
+      "residualResources": [
+        {
+          "kind": "terminal",
+          "role": "agent",
+          "action": "created",
+          "id": "term_834f26c5-60d9-4acb-893b-ffb7d62fd95e",
+          "surface": "visible"
+        }
+      ],
+      "startOptions": {
+        "worktree": "id:5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5b",
+        "resolvedWorktreeId": "5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5b",
+        "name": null,
+        "repo": null,
+        "baseBranch": null,
+        "terminal": null,
+        "agent": "claude",
+        "launch": {
+          "requested": {
+            "agent": "claude",
+            "model": "opus",
+            "effort": "medium"
+          },
+          "effective": {
+            "agent": "claude",
+            "model": "opus",
+            "effort": "medium"
+          }
+        },
+        "timeoutMs": 180000,
+        "setup": "not_applicable",
+        "setupSource": "existing_worktree"
+      }
+    },
+    "terminal": {
+      "handle": "term_834f26c5-60d9-4acb-893b-ffb7d62fd95e",
+      "ptyId": "5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5b@@d288564d",
+      "incarnationId": "d4de62ec-c647-4065-bb0b-f3b2efd24afa",
+      "orphaned": false,
+      "worktreeId": "5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5b",
+      "worktreePath": "/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5b",
+      "branch": "refs/heads/jlengelbrecht/afk-port-1.5b",
+      "tabId": "465f4a88-4b72-47cc-8d72-4125ce1cbb9d",
+      "leafId": "e1ab7dec-06b7-41c5-9c78-84d15761686d",
+      "title": "✳ AFK-PORT-1.5B review",
+      "connected": true,
+      "writable": true,
+      "lastOutputAt": 1788811068562,
+      "preview": ".blocked and the dispatch log. The suite's single 30-char sentinel is the\none shape it catches, and the suite's own anti-vacuity control proves the raw worker text reaches the marker.\n- 9 residuals, led by budget.state: CONTINUATION_REQUIRED being published beside status: done on a gates-passing run",
+      "executionHostId": "local",
+      "agentIdentity": "claude",
+      "paneRuntimeId": -1,
+      "rendererGraphEpoch": 0,
+      "agentWait": null
+    },
+    "observation": {
+      "status": "live",
+      "exactWorker": true,
+      "agentWait": null
+    },
+    "terminalResource": {
+      "id": "wtr_2c2fec7071b7",
+      "ownershipState": "owned",
+      "releaseState": "not_requested",
+      "retainedReason": null,
+      "terminalHandle": "term_834f26c5-60d9-4acb-893b-ffb7d62fd95e",
+      "worktreeId": "5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5b",
+      "originDispatchId": "ctx_d00de4ffa05f",
+      "ownerDispatchId": "ctx_d00de4ffa05f",
+      "releaseRequestedAt": null,
+      "releaseCompletedAt": null,
+      "releaseError": null,
+      "archive": {
+        "source": null,
+        "status": null
+      }
+    }
+  },
+  "_meta": {
+    "runtimeId": "ea1d57f6-4774-40f8-adad-824a66f35a86"
+  }
+}

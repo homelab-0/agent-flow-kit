@@ -1,0 +1,31 @@
+{
+  "harness": "claude",
+  "model_profile": "claude/strong",
+  "effort": "medium",
+  "cost_class": "subscription",
+  "entitlement_pool": "anthropic-max",
+  "metered": false,
+  "placement_policy": "prefer-warm-local",
+  "placement_required": false,
+  "catalog_version": "sha256:c4d49d9a9db3b203cab02200dc0e335ae3b02934d91fe81b08975d5acc7cd027",
+  "expires_at": "2026-09-08T18:23:27Z",
+  "task": {
+    "story_id": "AFK-PORT-1.5B",
+    "tags": [
+      "tests",
+      "docs"
+    ],
+    "title": "Usage observation, checkpoint and continuation artifacts, budget state (Story 1.5, lane B)"
+  },
+  "override": {
+    "actor": "Josh (standing implementation-prefers-claude ruling; applied by the ORCH coordinator 2026-09-07)",
+    "at": "2026-09-07T18:24:35Z",
+    "original": {
+      "harness": "claude",
+      "model_profile": "claude/strong"
+    },
+    "reason": "Natural route {claude, local-code-standard, medium}. This lane rewrites the dispatch adapter (~1000 lines after lane A), the monitor library and three test suites — a payload well past the sizing-risk band for a 65536-token batch worker without Edit — and the Story 1.7 spike measured that profile at 6/9 on trivial canaries with a path-resolution failure class. Recorded as a story-sizing finding for the natural route. Standing ruling: implementation dispatches prefer claude/strong. Fields from catalog 1.6.0; catalog_version and expires_at verbatim."
+  },
+  "created_at": "2026-09-07T18:24:35Z",
+  "catalog_document_version": "1.6.0"
+}
