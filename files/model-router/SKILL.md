@@ -156,6 +156,12 @@ gates:
   - "pnpm test"
   - "pnpm lint"
 max_cycles: 3
+# OPTIONAL. Extra files the worker's payload will carry — templates, contracts,
+# a continuation artifact. Repo-relative, and counted by the pre-dispatch
+# sizing estimate below. A path that does not exist REFUSES the dispatch
+# (PAYLOAD_REF_MISSING) rather than being skipped.
+payload_refs:
+  - contracts/agent-router/HARNESS-LAUNCH-claude.md
 ---
 ```
 
@@ -167,6 +173,28 @@ is worse than none.
 Placement is not stamped by you either. `placement_policy` and
 `placement_required` come from the router inside the stamp; the physical
 placement is resolved late, per attempt, by dispatch.
+
+**Story sizing is checked before the launch, and it can refuse.** dispatch reads
+the routed profile's context window from the trusted catalog — exactly, never
+derived — and estimates the payload it is about to hand the worker: the persona
+file, the story, the generated prompt and every `payload_refs:` path, each
+counted once. Thresholds and the estimate method come from the declared policy
+document `context-budget-policy.yaml`, never from a constant in code and never
+from your story.
+
+A payload already at or past the continuation threshold refuses with exit 8 and
+a `STORY-SIZING:` marker, before any placement or terminal exists — a story that
+starts past the point where a worker would have to hand over cannot finish, and
+that is a planning finding, not a routing one. Split the story, trim what the
+payload declares, or route it to a profile with a larger window (a new
+`/v1/route` call and a new stamp — never an edit to the one you have). In the
+band below that, dispatch proceeds and writes one `SIZING_RISK` line into the
+story's Dev Agent Record so the size shows up in the record instead of only in
+the outcome. A profile whose catalog entry declares no window reports
+`NOT_EVALUATED`: the kit never invents one.
+
+The estimate is advisory kit policy. It is not sent to `/v1/route`, it is not a
+`context_size` minimum, and it changes no route.
 
 ### 6. Dispatch — visibly, through Orca
 

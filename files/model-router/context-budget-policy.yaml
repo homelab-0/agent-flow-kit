@@ -1,0 +1,52 @@
+# context-budget-policy.yaml — the kit's declared context-budget policy.
+#
+# LAUNCHER CONFIGURATION, exactly like subscriptions.yaml: it is installed with
+# the kit and read by the launcher only. It is NEVER read from a story, from an
+# execution stamp, or from anything a workload can write — a workload that could
+# choose its own thresholds would not be under a budget at all.
+#
+# Every threshold and the estimate method live HERE and nowhere else. There is
+# no default in code: a policy file that is unreadable, malformed or missing a
+# key refuses dispatch with BUDGET_POLICY_UNREADABLE rather than falling back to
+# a constant nobody declared. Tuning a value is a policy edit, not a code
+# change; the accepted values below are the owner-accepted defaults of
+# 2026-08-26 (PRD addendum FR-98, FR-99).
+#
+# For tests and for a host that deliberately runs a different policy, the path
+# is overridable with $AGENT_FLOW_BUDGET_POLICY or launcher.budget_policy.
+
+schema_version: 1
+
+# How planned payload BYTES become an estimated token count. The id is part of
+# the contract: a result records the method it used, so an estimate is never
+# comparable across methods by accident.
+#   bytes4-v1  ceil(bytes / 4)
+estimate_method: bytes4-v1
+
+# Ratios of estimate (or observed usage) to the routed context window.
+# A ratio EQUAL to a threshold counts as crossing it.
+sizing_risk_ratio: 0.60     # >= this, dispatch proceeds and records SIZING_RISK
+checkpoint_ratio: 0.70      # >= this, a worker must checkpoint (lane B)
+continuation_ratio: 0.85    # >= this, pre-dispatch refuses; in flight, continue
+
+# How many continuations one story may consume before a human decides (lane C).
+continuation_cap: 2
+
+# The stable reason codes this policy's outcomes are reported under. Automation
+# reads these, so they are declared here rather than discovered by reading the
+# implementation.
+reason_codes:
+  - CONTEXT_WINDOW_UNDECLARED   # the catalog declares no window for the profile
+  - SIZING_REFUSED              # pre-dispatch estimate at or past continuation
+  - SIZING_RISK                 # pre-dispatch estimate in the risk band
+  - PAYLOAD_REF_MISSING         # a declared payload_refs path does not exist
+  - BUDGET_POLICY_UNREADABLE    # this file could not be read or is incomplete
+
+# The bounded budget state a dispatch reports. All four are declared here and
+# published by `agent-flow-kit schema`; pre-dispatch produces only OK and
+# NOT_EVALUATED, the other two belong to in-flight usage evaluation.
+budget_states:
+  - OK
+  - CHECKPOINT_DUE
+  - CONTINUATION_REQUIRED
+  - NOT_EVALUATED

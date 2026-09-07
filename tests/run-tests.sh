@@ -423,6 +423,122 @@ assert_absent   "codex cmd: no danger-full-access"          "$CCMD" "danger-full
 assert_contains "codex cmd: high maps to high" \
   "$(build_codex_command /p m high)" "model_reasoning_effort=high"
 
+# --- context budget: the arithmetic, at the boundaries ---------------------
+head1 "   context budget — estimate and thresholds (pure)"
+
+BUDGET_POLICY_SHIPPED="$KIT_ROOT/files/model-router/context-budget-policy.yaml"
+
+# The documented method, and only the documented method. ceil(bytes/4).
+assert_eq "estimate: 0 bytes -> 0 tokens"      "$(budget_estimate_tokens 0 bytes4-v1)"    "0"
+assert_eq "estimate: 1 byte rounds UP to 1"    "$(budget_estimate_tokens 1 bytes4-v1)"    "1"
+assert_eq "estimate: 4 bytes -> 1 token"       "$(budget_estimate_tokens 4 bytes4-v1)"    "1"
+assert_eq "estimate: 5 bytes rounds UP to 2"   "$(budget_estimate_tokens 5 bytes4-v1)"    "2"
+assert_eq "estimate: 40000 bytes -> 10000"     "$(budget_estimate_tokens 40000 bytes4-v1)" "10000"
+assert_eq "estimate: same inputs, same number" \
+  "$(budget_estimate_tokens 123457 bytes4-v1)" "$(budget_estimate_tokens 123457 bytes4-v1)"
+if budget_estimate_tokens 100 bytes3-v9 >/dev/null 2>&1; then
+  bad "estimate: an UNDECLARED method is refused, never guessed"
+else ok "estimate: an UNDECLARED method is refused, never guessed"; fi
+if budget_estimate_tokens "not-a-number" bytes4-v1 >/dev/null 2>&1; then
+  bad "estimate: a non-numeric byte count is refused"
+else ok "estimate: a non-numeric byte count is refused"; fi
+
+# Decimal ratios become parts per million EXACTLY. 0.85 is not representable in
+# binary, and a float path that lands on 849999 would silently move the refusal
+# threshold off the value the policy declares.
+assert_eq "threshold: 0.60 -> 600000 ppm exactly" "$(budget_threshold_ppm 0.60)" "600000"
+assert_eq "threshold: 0.70 -> 700000 ppm exactly" "$(budget_threshold_ppm 0.70)" "700000"
+assert_eq "threshold: 0.85 -> 850000 ppm exactly" "$(budget_threshold_ppm 0.85)" "850000"
+assert_eq "threshold: 0.7 and 0.70 are the same"  "$(budget_threshold_ppm 0.7)" "$(budget_threshold_ppm 0.70)"
+if budget_threshold_ppm "sixty percent" >/dev/null 2>&1; then
+  bad "threshold: a non-ratio is refused"
+else ok "threshold: a non-ratio is refused"; fi
+
+assert_eq "ratio: 850/1000 -> 850000 ppm"  "$(budget_ratio_ppm 850 1000)"   "850000"
+assert_eq "ratio: 0/65536 -> 0 ppm"        "$(budget_ratio_ppm 0 65536)"    "0"
+if budget_ratio_ppm 100 0 >/dev/null 2>&1; then
+  bad "ratio: a zero window is refused, never divided by"
+else ok "ratio: a zero window is refused, never divided by"; fi
+
+# A ratio EQUAL to a threshold COUNTS AS CROSSING IT (FR-98, "at or above").
+# This is the assertion the whole refusal hangs on, so it is proved on both
+# sides of each boundary rather than only at it.
+for band in "600000:sizing risk" "700000:checkpoint" "850000:continuation"; do
+  t="${band%%:*}"; nm="${band#*:}"
+  if budget_crosses "$t" "$t"; then ok "boundary: ratio EQUAL to the $nm threshold crosses it"
+  else bad "boundary: ratio EQUAL to the $nm threshold crosses it"; fi
+  if budget_crosses "$(( t - 1 ))" "$t"; then bad "boundary: one ppm BELOW the $nm threshold does not"
+  else ok "boundary: one ppm BELOW the $nm threshold does not"; fi
+  if budget_crosses "$(( t + 1 ))" "$t"; then ok "boundary: one ppm ABOVE the $nm threshold does"
+  else bad "boundary: one ppm ABOVE the $nm threshold does"; fi
+done
+
+# The reported number and the compared number come from the SAME value, so a
+# result can never show a ratio that disagrees with the decision it drove.
+assert_eq "ratio rendering: 850000 ppm reads 0.850000" "$(budget_ratio_decimal 850000)" "0.850000"
+assert_eq "ratio rendering: 1000000 ppm reads 1.000000" "$(budget_ratio_decimal 1000000)" "1.000000"
+
+# --- the policy file is the ONLY place a threshold lives -------------------
+assert_eq "policy: the shipped policy declares every required key" \
+  "$(budget_policy_missing_keys "$BUDGET_POLICY_SHIPPED")" ""
+assert_eq "policy: a missing file is refused, not defaulted" \
+  "$(budget_policy_missing_keys "$TMPROOT/no-such-policy.yaml")" "unreadable"
+printf 'sizing_risk_ratio: 0.60\nbudget_states: [OK, CHECKPOINT_DUE, CONTINUATION_REQUIRED, NOT_EVALUATED]\nreason_codes: [A,B,C,D,E]\n' \
+  > "$TMPROOT/partial-policy.yaml"
+PARTIAL_MISSING="$(budget_policy_missing_keys "$TMPROOT/partial-policy.yaml")"
+assert_contains "policy: an incomplete policy names estimate_method"    "$PARTIAL_MISSING" "estimate_method"
+assert_contains "policy: an incomplete policy names checkpoint_ratio"   "$PARTIAL_MISSING" "checkpoint_ratio"
+assert_contains "policy: an incomplete policy names continuation_ratio" "$PARTIAL_MISSING" "continuation_ratio"
+assert_contains "policy: an incomplete policy names continuation_cap"   "$PARTIAL_MISSING" "continuation_cap"
+printf 'not: [valid\n' > "$TMPROOT/broken-policy.yaml"
+assert_eq "policy: an unparseable policy is refused" \
+  "$(budget_policy_missing_keys "$TMPROOT/broken-policy.yaml")" "unparseable"
+
+# AC-3, stated as a grep because it is a property of the SOURCE: no threshold
+# value is a constant in the launcher. Comments are stripped first, so the
+# prose that explains the policy cannot satisfy the check.
+code_of_early() { grep -vE '^[[:space:]]*#' "$1"; }
+if code_of_early "$DISPATCH" | grep -qE '0\.(6|7|85)0?[^0-9]'; then
+  bad "policy: no threshold constant appears in dispatch.sh" \
+      "$(code_of_early "$DISPATCH" | grep -nE '0\.(6|7|85)0?[^0-9]' | head -3)"
+else ok "policy: no threshold constant appears in dispatch.sh"; fi
+if grep -qE '^[[:space:]]*(sizing_risk_ratio|checkpoint_ratio|continuation_ratio|continuation_cap|estimate_method):' \
+     "$BUDGET_POLICY_SHIPPED"; then
+  ok "policy: every threshold and the method are declared in the policy document"
+else bad "policy: every threshold and the method are declared in the policy document"; fi
+
+# --- AC-7, byte-identity of both frozen launch command texts ---------------
+# Proved against master's own builders rather than against a transcription of
+# them, with a control so a vacuous "both empty" comparison cannot pass.
+head1 "   the frozen launch command texts are byte-identical to master"
+MASTER_DISPATCH="$TMPROOT/master-dispatch.sh"
+if git -C "$KIT_ROOT" show master:files/model-router/scripts/dispatch.sh > "$MASTER_DISPATCH" 2>/dev/null; then
+  emit_from() { bash -c 'set -uo pipefail; . "$1"; shift; "$@"' _emit "$@"; }
+  BI_ARGS=(/home/op /usr/bin:/bin op /wt/S.md.prompt claude-opus-5 high /wt/S.md.claude-result.json /wt/agents/dev.md)
+  BI_GW=(/home/op /usr/bin:/bin op /wt/S.md.prompt qwen36-27b high /wt/S.md.claude-result.json /wt/agents/dev.md \
+         https://gw.invalid op://v/i/credential /home/op/.op-agent-env cachyos-7900xtx 65536)
+  for probe in "build_claude_command ${BI_ARGS[*]}" \
+               "build_claude_gateway_command ${BI_GW[*]}" \
+               "build_codex_command /wt/S.md.prompt gpt-5.6-sol xhigh"; do
+    # shellcheck disable=SC2086
+    m="$(emit_from "$MASTER_DISPATCH" $probe)"
+    # shellcheck disable=SC2086
+    h="$(emit_from "$DISPATCH" $probe)"
+    nm="${probe%% *}"
+    if [[ -z "$m" ]]; then bad "byte-identity: $nm" "master produced nothing — the probe is broken"
+    elif [[ "$m" == "$h" ]]; then ok "byte-identity: $nm unchanged from master"
+    else bad "byte-identity: $nm unchanged from master" "$(diff <(printf '%s\n' "$m") <(printf '%s\n' "$h") | head -4)"; fi
+  done
+  # CONTROL — the comparison must be able to see a difference.
+  if [[ "$(emit_from "$MASTER_DISPATCH" build_claude_command "${BI_ARGS[@]}")" \
+        != "$(emit_from "$DISPATCH" build_claude_command /home/op /usr/bin:/bin op \
+              /wt/S.md.prompt claude-opus-5 medium /wt/S.md.claude-result.json /wt/agents/dev.md)" ]]; then
+    ok "byte-identity CONTROL: a perturbed effort IS detected as different"
+  else bad "byte-identity CONTROL: a perturbed effort IS detected as different"; fi
+else
+  skip "byte-identity vs master (no master ref in this checkout)"
+fi
+
 # ===========================================================================
 head1 "2. Retired paths are actually gone (source greps)"
 # ===========================================================================
@@ -530,7 +646,21 @@ profiles:
     physical:
       - model_id: "minimax/m3"
         placement: null
+  "openai/strong":
+    hosting: vendor
+    min_context: 400000
+    physical:
+      - model_id: "openai/gpt-5.6-sol"
+        placement: null
 YAML
+
+# The SAME catalog with one difference: the native claude profile declares a
+# window. `claude/strong` declares none in the catalog the kit actually ships
+# against, which is why the undeclared-window path below is the honest default
+# here too — but a native profile WITH a window has to be exercised as well, or
+# the declared-window path would only ever be proved on the gateway class.
+awk -v w=200000 '{print} /^  "claude\/strong":[[:space:]]*$/ {print "    min_context: " w}' \
+  "$WORK/catalog.yaml" > "$WORK/catalog-windowed.yaml"
 
 # --- stub orca ------------------------------------------------------------
 cat > "$BIN/orca" <<'STUB'
@@ -644,10 +774,11 @@ write_story() { # write_story <file> <frontmatter-body>
 
 # Hermetic: every launcher env var dispatch.sh reads is pinned here, so an
 # ambient live-chain configuration (section 5) can never shadow a stub.
-run_dispatch() { # run_dispatch <story> -> echoes exit code, stderr to $WORK/err
+run_dispatch() { # run_dispatch <story> [cycle] -> echoes exit code, stderr to $WORK/err
   ( cd "$WT" && PATH="$BIN:$PATH" HOME="$HOME_DIR" \
       AGENT_STAMP_VALIDATE="agent-stamp-validate" \
-      AGENT_STAMP_VALIDATE_CATALOG_PATH="$WORK/catalog.yaml" \
+      AGENT_STAMP_VALIDATE_CATALOG_PATH="${STUB_CATALOG-$WORK/catalog.yaml}" \
+      AGENT_FLOW_BUDGET_POLICY="${STUB_BUDGET_POLICY-$KIT_ROOT/files/model-router/context-budget-policy.yaml}" \
       AGENT_FLOW_CONFIG="$WORK/nonexistent.yaml" \
       SUBSCRIPTIONS_FILE="" \
       AGENT_ROUTER_URL="https://router.invalid" \
@@ -659,7 +790,7 @@ run_dispatch() { # run_dispatch <story> -> echoes exit code, stderr to $WORK/err
       AGENT_FLOW_GATEWAY_TOKEN_REF="${STUB_TOKEN_REF-op://stubvault/agw-claude-code/credential}" \
       AGENT_FLOW_OP_ENV_FILE="${STUB_OP_ENV_FILE-$WORK/op-env}" \
       CLAUDE_CONFIG_DIR="" \
-      bash "$DISPATCH" "$1" 1 ) >"$WORK/out" 2>"$WORK/err"
+      bash "$DISPATCH" "$1" "${2:-1}" ) >"$WORK/out" 2>"$WORK/err"
   echo $?
 }
 
@@ -1160,6 +1291,320 @@ write_stamp "$WT/s-guard-ok.md.stamp.json" high false "claude/strong" claude
 rc="$(run_dispatch s-guard-ok.md)"
 assert_eq "guard: vendor pair {claude, claude/strong} still launches" "$rc" "0"
 assert_no_file "guard: vendor pair leaves no blocked marker" "$WT/s-guard-ok.md.blocked"
+
+# ===========================================================================
+head1 "3c. Context budget — the window as routed fact, and pre-dispatch sizing"
+# ===========================================================================
+# The window is the CATALOG's, read exactly. The estimate is the launcher's own
+# advisory policy, computed from files that already exist, and it reaches no
+# router. Everything below runs the real dispatch.sh against the same stubs
+# section 3 uses, so each threshold action is proved by what dispatch actually
+# did — the exit code, the marker, the artifacts that do or do not exist —
+# rather than by a helper called in isolation.
+
+bud() { jq -r "$1" "$2"; }               # read one budget field from a result
+reset_stubs() {                          # forget what the last case did
+  : > "$STUB_STATE/curl-calls"; : > "$STUB_STATE/terminal-creates"
+  rm -f "$STUB_STATE/last-command.txt"
+}
+export STUB_TERMINAL_TAIL="ok
+CLAUDE_EXIT=0"
+
+# --- an UNDECLARED window: NOT_EVALUATED, and no window is invented --------
+# `claude/strong` declares no min_context in the catalog the kit ships against.
+# That is the honest catalog state, and the kit reports it as such.
+reset_stubs
+write_story "$WT/s-bud-none.md" "persona: dev
+gates: [\"true\"]"
+write_stamp "$WT/s-bud-none.md.stamp.json" high false
+rc="$(run_dispatch s-bud-none.md)"
+assert_eq "budget/undeclared: dispatch still proceeds" "$rc" "0"
+BR="$WT/s-bud-none.md.result.json"
+assert_eq "budget/undeclared: state NOT_EVALUATED"      "$(bud .budget.state "$BR")" "NOT_EVALUATED"
+assert_eq "budget/undeclared: stable reason code"       "$(bud .budget.reason "$BR")" "CONTEXT_WINDOW_UNDECLARED"
+assert_eq "budget/undeclared: window_tokens is null, not a guess" \
+  "$(bud '.budget.window_tokens|type' "$BR")" "null"
+assert_eq "budget/undeclared: ratio is null (nothing to divide by)" \
+  "$(bud '.budget.estimate_ratio|type' "$BR")" "null"
+assert_eq "budget/undeclared: NO findings can fire"     "$(bud '.budget.findings|length' "$BR")" "0"
+assert_eq "budget/undeclared: the estimate is still recorded" \
+  "$(bud '.budget.estimate_tokens > 0' "$BR")" "true"
+assert_eq "budget/undeclared: method recorded"          "$(bud .budget.estimate_method "$BR")" "bytes4-v1"
+assert_eq "budget/undeclared: window_source is the catalog" \
+  "$(bud .budget.window_source "$BR")" "CATALOG"
+assert_absent "budget/undeclared: nothing was appended to the story record" \
+  "$(cat "$WT/s-bud-none.md")" "SIZING_RISK"
+
+# The estimate is EXACTLY the documented sum: persona + story + prompt, each
+# once, ceil(bytes/4). Computed here from the same files dispatch counted.
+EXPECT_BYTES=$(( $(wc -c < "$WT/_bmad/bmm/agents/dev.md") \
+               + $(wc -c < "$WT/s-bud-none.md") \
+               + $(wc -c < "$WT/s-bud-none.md.prompt") ))
+assert_eq "budget: the estimate is the documented sum of the declared inputs" \
+  "$(bud .budget.estimate_tokens "$BR")" "$(( (EXPECT_BYTES + 3) / 4 ))"
+BASE_ESTIMATE="$(bud .budget.estimate_tokens "$BR")"
+
+# Deterministic: the same inputs produce the same number, run after run.
+rc="$(run_dispatch s-bud-none.md)"
+assert_eq "budget: the estimate is deterministic across runs" \
+  "$(bud .budget.estimate_tokens "$BR")" "$BASE_ESTIMATE"
+
+# --- a DECLARED window, native launch class -------------------------------
+reset_stubs
+write_story "$WT/s-bud-native.md" "persona: dev
+gates: [\"true\"]"
+write_stamp "$WT/s-bud-native.md.stamp.json" high false
+rc="$(STUB_CATALOG="$WORK/catalog-windowed.yaml"; export STUB_CATALOG; run_dispatch s-bud-native.md)"
+assert_eq "budget/native: dispatch proceeds" "$rc" "0"
+BR="$WT/s-bud-native.md.result.json"
+assert_eq "budget/native: window carried from the catalog EXACTLY" \
+  "$(bud .budget.window_tokens "$BR")" "200000"
+assert_eq "budget/native: window_source CATALOG"  "$(bud .budget.window_source "$BR")" "CATALOG"
+assert_eq "budget/native: state OK"               "$(bud .budget.state "$BR")" "OK"
+assert_eq "budget/native: no reason on a grounded budget" "$(bud '.budget.reason|type' "$BR")" "null"
+assert_eq "budget/native: ratio recorded"         "$(bud '.budget.estimate_ratio > 0' "$BR")" "true"
+assert_eq "budget/native: ratio agrees with estimate/window" \
+  "$(bud '(.budget.estimate_ratio * 1000000 | floor)' "$BR")" \
+  "$(bud '(.budget.estimate_tokens * 1000000 / .budget.window_tokens | floor)' "$BR")"
+assert_eq "budget/native: well inside the risk band -> no findings" \
+  "$(bud '.budget.findings|length' "$BR")" "0"
+assert_contains "budget/native: the launch class is unchanged" \
+  "$(cat "$WORK/err")" "native vendor subscription"
+
+# --- a DECLARED window, gateway-backed local launch class -----------------
+# Same budget behaviour on the other claude launch class, and the launch text
+# it produces is still the frozen one.
+reset_stubs
+write_story "$WT/s-bud-gw.md" "persona: dev
+gates: [\"true\"]"
+write_stamp "$WT/s-bud-gw.md.stamp.json" high true local-code-standard
+rc="$(run_dispatch s-bud-gw.md)"
+assert_eq "budget/gateway: dispatch proceeds" "$rc" "0"
+BR="$WT/s-bud-gw.md.result.json"
+assert_eq "budget/gateway: window carried from the catalog EXACTLY" \
+  "$(bud .budget.window_tokens "$BR")" "65536"
+assert_eq "budget/gateway: state OK"             "$(bud .budget.state "$BR")" "OK"
+assert_eq "budget/gateway: method recorded"      "$(bud .budget.estimate_method "$BR")" "bytes4-v1"
+assert_contains "budget/gateway: the gateway launch class still ran" \
+  "$(cat "$WORK/err")" "gateway-backed local"
+GWL="$(cat "$STUB_STATE/last-command.txt")"
+assert_contains "budget/gateway: CLAUDE_CODE_MAX_CONTEXT_TOKENS is still the catalog's" \
+  "$GWL" "CLAUDE_CODE_MAX_CONTEXT_TOKENS=65536"
+assert_absent "budget/gateway: the estimate never entered the launch text" \
+  "$GWL" "estimate"
+
+# --- the same behaviour on the OTHER harness (NFR-13/15) ------------------
+reset_stubs
+export STUB_TERMINAL_TAIL="ok
+CODEX_EXIT=0"
+write_story "$WT/s-bud-codex.md" "persona: dev
+gates: [\"true\"]"
+write_stamp "$WT/s-bud-codex.md.stamp.json" high false "openai/strong" codex openai-plus
+rc="$(run_dispatch s-bud-codex.md)"
+assert_eq "budget/codex: dispatch proceeds on the second harness" "$rc" "0"
+BR="$WT/s-bud-codex.md.result.json"
+assert_eq "budget/codex: window carried from the catalog EXACTLY" \
+  "$(bud .budget.window_tokens "$BR")" "400000"
+assert_eq "budget/codex: state OK"          "$(bud .budget.state "$BR")" "OK"
+assert_eq "budget/codex: same method, no per-harness estimate" \
+  "$(bud .budget.estimate_method "$BR")" "bytes4-v1"
+assert_contains "budget/codex: the codex launch text is the frozen one" \
+  "$(cat "$STUB_STATE/last-command.txt")" "codex exec --model"
+export STUB_TERMINAL_TAIL="ok
+CLAUDE_EXIT=0"
+
+# --- REFUSAL at or above the continuation threshold ----------------------
+# The window is set to the payload's own estimate, so the ratio is exactly 1.0
+# — past 0.85 by construction rather than by a magic byte count.
+reset_stubs
+write_story "$WT/s-bud-refuse.md" "persona: dev
+gates: [\"true\"]"
+write_stamp "$WT/s-bud-refuse.md.stamp.json" high false
+rc="$(run_dispatch s-bud-refuse.md)"   # first pass: learn this story's estimate
+REFUSE_EST="$(bud .budget.estimate_tokens "$WT/s-bud-refuse.md.result.json")"
+rm -f "$WT/s-bud-refuse.md.result.json" "$WT/s-bud-refuse.md.blocked"
+awk -v w="$REFUSE_EST" '{print} /^  "claude\/strong":[[:space:]]*$/ {print "    min_context: " w}' \
+  "$WORK/catalog.yaml" > "$WORK/catalog-tiny.yaml"
+reset_stubs
+rc="$(STUB_CATALOG="$WORK/catalog-tiny.yaml"; export STUB_CATALOG; run_dispatch s-bud-refuse.md)"
+assert_eq "sizing refusal: distinct exit code 8" "$rc" "8"
+SZM="$(cat "$WT/s-bud-refuse.md.blocked" 2>/dev/null || true)"
+assert_contains "sizing refusal: marker is typed STORY-SIZING:" "$SZM" "STORY-SIZING:"
+assert_contains "sizing refusal: marker names the estimate"     "$SZM" "estimate=$REFUSE_EST"
+assert_contains "sizing refusal: marker names the window"       "$SZM" "window=$REFUSE_EST"
+assert_contains "sizing refusal: marker names the ratio"        "$SZM" "ratio=1.000000"
+assert_contains "sizing refusal: marker names the threshold"    "$SZM" "threshold=0.850000"
+assert_contains "sizing refusal: marker enumerates the inputs counted" "$SZM" "Inputs counted"
+assert_contains "sizing refusal: marker names the story file among them" "$SZM" "s-bud-refuse.md"
+assert_contains "sizing refusal: marker says it is a PLANNING outcome" "$SZM" "PLANNING outcome"
+assert_empty_file "sizing refusal: NO /v1/place call was made"    "$STUB_STATE/curl-calls"
+assert_empty_file "sizing refusal: NO Orca terminal was created"  "$STUB_STATE/terminal-creates"
+assert_no_file "sizing refusal: NO harness command was built"     "$STUB_STATE/last-command.txt"
+assert_no_file "sizing refusal: NO result artifact was written"   "$WT/s-bud-refuse.md.result.json"
+assert_absent "sizing refusal: the stamp was not consulted for a substitute route" \
+  "$(cat "$WORK/err")" "fallback"
+
+# --- the SIZING-RISK band: proceeds, records, and does not duplicate ------
+# Window chosen so the ratio lands near 0.70 — inside [0.60, 0.85) with margin
+# on both sides, so integer division cannot drift the case into another band.
+RISK_WINDOW=$(( REFUSE_EST * 10 / 7 ))
+awk -v w="$RISK_WINDOW" '{print} /^  "claude\/strong":[[:space:]]*$/ {print "    min_context: " w}' \
+  "$WORK/catalog.yaml" > "$WORK/catalog-risk.yaml"
+reset_stubs
+write_story "$WT/s-bud-risk.md" "persona: dev
+gates: [\"true\"]"
+printf '\n## Dev Agent Record\n\n(worker fills in)\n' >> "$WT/s-bud-risk.md"
+write_stamp "$WT/s-bud-risk.md.stamp.json" high false
+export STUB_CATALOG="$WORK/catalog-risk.yaml"
+rc="$(run_dispatch s-bud-risk.md 1)"
+assert_eq "sizing risk: dispatch is NOT blocked" "$rc" "0"
+BR="$WT/s-bud-risk.md.result.json"
+assert_eq "sizing risk: state stays OK (the dispatch is healthy)" "$(bud .budget.state "$BR")" "OK"
+assert_eq "sizing risk: the finding is in the thin result" \
+  "$(jq -c '.budget.findings' "$BR")" '["SIZING_RISK"]'
+assert_eq "sizing risk: exactly one line in the story record" \
+  "$(grep -ac '^- budget: SIZING_RISK ' "$WT/s-bud-risk.md")" "1"
+assert_contains "sizing risk: the recorded line names estimate, window and cycle" \
+  "$(grep -a '^- budget: SIZING_RISK ' "$WT/s-bud-risk.md")" "cycle 1"
+assert_contains "sizing risk: the line sits under the Dev Agent Record heading" \
+  "$(sed -n '/^## Dev Agent Record/,$p' "$WT/s-bud-risk.md")" "- budget: SIZING_RISK"
+assert_empty_file "sizing risk: still no /v1/place for a vendor profile" "$STUB_STATE/curl-calls"
+assert_no_file "sizing risk: no blocked marker" "$WT/s-bud-risk.md.blocked"
+
+# Idempotent PER CYCLE: re-dispatching the same cycle does not write a second
+# line; a genuinely new cycle is a new observation and gets its own.
+rc="$(run_dispatch s-bud-risk.md 1)"
+assert_eq "sizing risk: a re-dispatch of the SAME cycle does not duplicate" \
+  "$(grep -ac '^- budget: SIZING_RISK ' "$WT/s-bud-risk.md")" "1"
+rc="$(run_dispatch s-bud-risk.md 2)"
+assert_eq "sizing risk: a NEW cycle records its own observation" \
+  "$(grep -ac '^- budget: SIZING_RISK ' "$WT/s-bud-risk.md")" "2"
+assert_eq "sizing risk: and the second line is keyed to cycle 2" \
+  "$(grep -ac 'cycle 2 ' "$WT/s-bud-risk.md")" "1"
+assert_contains "sizing risk: the story body was not otherwise disturbed" \
+  "$(cat "$WT/s-bud-risk.md")" "Do the thing."
+unset STUB_CATALOG
+
+# --- payload_refs: counted, counted ONCE, and refused when missing --------
+# The two stories below differ by exactly one character in one filename, so
+# their own byte lengths are equal and the only variable is what they declare.
+printf 'x%.0s' $(seq 4000) > "$WT/ref-a.txt"
+printf 'y%.0s' $(seq 4000) > "$WT/ref-b.txt"
+reset_stubs
+write_story "$WT/s-bud-ref1.md" "persona: dev
+gates: [\"true\"]
+payload_refs: [ref-a.txt, ref-a.txt]"
+write_story "$WT/s-bud-ref2.md" "persona: dev
+gates: [\"true\"]
+payload_refs: [ref-a.txt, ref-b.txt]"
+write_stamp "$WT/s-bud-ref1.md.stamp.json" high false
+write_stamp "$WT/s-bud-ref2.md.stamp.json" high false
+rc="$(run_dispatch s-bud-ref1.md)"; assert_eq "payload_refs: a story with refs dispatches" "$rc" "0"
+rc="$(run_dispatch s-bud-ref2.md)"
+E_DUP="$(bud .budget.estimate_tokens "$WT/s-bud-ref1.md.result.json")"
+E_TWO="$(bud .budget.estimate_tokens "$WT/s-bud-ref2.md.result.json")"
+assert_eq "payload_refs: a DISTINCT second ref adds its 4000 bytes (1000 tokens)" \
+  "$(( E_TWO - E_DUP ))" "1000"
+assert_eq "payload_refs: the SAME ref listed twice is counted ONCE" \
+  "$E_DUP" \
+  "$(( ( $(wc -c < "$WT/_bmad/bmm/agents/dev.md") + $(wc -c < "$WT/s-bud-ref1.md") \
+        + $(wc -c < "$WT/s-bud-ref1.md.prompt") + 4000 + 3 ) / 4 ))"
+
+reset_stubs
+write_story "$WT/s-bud-refmiss.md" "persona: dev
+gates: [\"true\"]
+payload_refs: [ref-a.txt, ref-nowhere.txt]"
+write_stamp "$WT/s-bud-refmiss.md.stamp.json" high false
+rc="$(run_dispatch s-bud-refmiss.md)"
+assert_eq "payload_refs: a missing ref REFUSES (config exit)" "$rc" "2"
+assert_contains "payload_refs: the refusal carries the stable reason code" \
+  "$(cat "$WORK/err")" "PAYLOAD_REF_MISSING"
+assert_contains "payload_refs: the refusal names the entry" \
+  "$(cat "$WORK/err")" "ref-nowhere.txt"
+assert_empty_file "payload_refs: missing ref made no /v1/place call" "$STUB_STATE/curl-calls"
+assert_empty_file "payload_refs: missing ref created no terminal" "$STUB_STATE/terminal-creates"
+assert_no_file "payload_refs: missing ref wrote no result" "$WT/s-bud-refmiss.md.result.json"
+
+# --- an unreadable policy refuses BEFORE anything happens ----------------
+reset_stubs
+rc="$(STUB_BUDGET_POLICY="$WORK/no-such-policy.yaml"; export STUB_BUDGET_POLICY; run_dispatch s-bud-none.md)"
+assert_eq "policy unreadable: config exit" "$rc" "2"
+assert_contains "policy unreadable: stable reason code" \
+  "$(cat "$WORK/err")" "BUDGET_POLICY_UNREADABLE"
+assert_contains "policy unreadable: says a missing threshold is not a default" \
+  "$(cat "$WORK/err")" "no default in code"
+assert_empty_file "policy unreadable: no /v1/place call"   "$STUB_STATE/curl-calls"
+assert_empty_file "policy unreadable: no terminal created" "$STUB_STATE/terminal-creates"
+assert_no_file "policy unreadable: no harness command"     "$STUB_STATE/last-command.txt"
+# and an INCOMPLETE policy is refused just as hard — a missing key is not a default
+reset_stubs
+printf 'estimate_method: bytes4-v1\ncontinuation_ratio: 0.85\n' > "$WORK/incomplete-policy.yaml"
+rc="$(STUB_BUDGET_POLICY="$WORK/incomplete-policy.yaml"; export STUB_BUDGET_POLICY; run_dispatch s-bud-none.md)"
+assert_eq "policy incomplete: config exit" "$rc" "2"
+assert_contains "policy incomplete: names the keys it is missing" \
+  "$(cat "$WORK/err")" "sizing_risk_ratio"
+assert_empty_file "policy incomplete: no terminal created" "$STUB_STATE/terminal-creates"
+
+# --- AC-6: the estimate is not, and cannot become, a routing input -------
+# Two independent proofs: the launcher never mentions the route request at all,
+# and a request that declares no context_size is POSTed without one.
+# The launcher's only HTTP call is the placement one. `/v1/route` appears in
+# dispatch.sh solely inside refusal prose that tells a human to go and re-route,
+# so the check is on what the code CALLS, not on which strings it contains — a
+# grep that a comment can satisfy is a grep that guards nothing.
+AC6_CURL="$(code_of "$DISPATCH" | grep -nE 'curl ' || true)"
+if [[ -z "$AC6_CURL" ]]; then
+  bad "AC-6: the launcher's only HTTP call is /v1/place" "no curl call found — the probe is broken"
+elif grep -q '/v1/route' <<<"$AC6_CURL"; then
+  bad "AC-6: the launcher's only HTTP call is /v1/place" "$AC6_CURL"
+elif ! grep -q '/v1/place' <<<"$AC6_CURL"; then
+  bad "AC-6: the launcher's only HTTP call is /v1/place" "curl targets neither endpoint: $AC6_CURL"
+else ok "AC-6: the launcher's only HTTP call is /v1/place, never /v1/route"; fi
+if grep -q 'context_size' "$DISPATCH"; then
+  bad "AC-6: 'context_size' appears nowhere in the launcher, in code or in prose" \
+      "$(grep -n 'context_size' "$DISPATCH" | head -2)"
+else ok "AC-6: 'context_size' appears nowhere in the launcher, in code or in prose"; fi
+mkdir -p "$WORK/reqbin"
+cat > "$WORK/reqbin/curl" <<'STUB'
+#!/usr/bin/env bash
+out=""; prev=""
+for a in "$@"; do
+  [[ "$prev" == "-o" ]] && out="$a"
+  [[ "$prev" == "-d" ]] && printf '%s' "$a" > "$STUB_STATE/route-request-body.json"
+  [[ "$prev" == "-d" && "${a:0:1}" == "@" ]] && cat "${a:1}" > "$STUB_STATE/route-request-body.json"
+  prev="$a"
+done
+if [[ -n "$out" ]]; then cat "$STUB_ROUTE_RESPONSE" > "$out"; fi
+printf '200'
+STUB
+chmod +x "$WORK/reqbin/curl"
+cat > "$WORK/sized-request.json" <<'JSON'
+{"story_id":"STORY-SIZED-1","title":"a story with a sizing estimate",
+ "summary":"the kit computed a pre-dispatch estimate for this story",
+ "ambiguity":"low","blast_radius":"low","volume_hint":"low","tags":["docs"]}
+JSON
+cat > "$WORK/route-response-ac6.json" <<'JSON'
+{"harness":"claude","model_profile":"claude/strong","effort":"high",
+ "cost_class":"subscription","entitlement_pool":"anthropic-max","metered":false,
+ "placement_policy":"prefer-warm-local","placement_required":false,
+ "catalog_version":"sha256:abc","expires_at":"2099-01-01T00:00:00Z"}
+JSON
+rm -f "$STUB_STATE/route-request-body.json"
+if PATH="$WORK/reqbin:$PATH" STUB_ROUTE_RESPONSE="$WORK/route-response-ac6.json" \
+   AGENT_FLOW_CONFIG="$WORK/nonexistent.yaml" SUBSCRIPTIONS_FILE="" \
+   AGENT_ROUTER_URL="https://router.invalid" AGENT_ROUTER_TOKEN=t \
+   bash "$MAKE_STAMP" --request "$WORK/sized-request.json" \
+     --out "$WORK/ac6.stamp.json" >/dev/null 2>&1; then
+  assert_eq "AC-6: the POSTed /v1/route body carries NO context_size" \
+    "$(jq -r 'has("context_size")' "$STUB_STATE/route-request-body.json")" "false"
+  assert_eq "AC-6: and no capacity input of any other name" \
+    "$(jq -r '[keys[]|select(test("context|window|budget|capacity"))]|length' \
+       "$STUB_STATE/route-request-body.json")" "0"
+  assert_eq "AC-6: the resulting stamp carries no context_size either" \
+    "$(jq -r '.task|has("context_size")' "$WORK/ac6.stamp.json")" "false"
+else
+  bad "AC-6: make-stamp round trip on a story with a sizing estimate"
+fi
 
 # ===========================================================================
 head1 "4. make-stamp.sh — expires_at verbatim, override is provenance only"
