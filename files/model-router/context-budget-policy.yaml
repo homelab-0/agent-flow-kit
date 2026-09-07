@@ -41,6 +41,11 @@ reason_codes:
   - SIZING_RISK                 # pre-dispatch estimate in the risk band
   - PAYLOAD_REF_MISSING         # a declared payload_refs path does not exist
   - BUDGET_POLICY_UNREADABLE    # this file could not be read or is incomplete
+  - USAGE_UNOBSERVABLE          # the harness publishes no usage under its frozen launch
+  - HIGH_USAGE                  # the run ENDED at or past checkpoint_ratio (sizing signal)
+  - WINDOW_DISAGREEMENT         # harness-reported window differs from the catalog's
+  - CHECKPOINT_ARTIFACT_INVALID # a checkpoint was present but did not validate
+  - CONTINUATION_ARTIFACT_INVALID # a continuation was signalled without valid evidence
 
 # The bounded budget state a dispatch reports. All four are declared here and
 # published by `agent-flow-kit schema`; pre-dispatch produces only OK and

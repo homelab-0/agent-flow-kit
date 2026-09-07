@@ -588,7 +588,7 @@ afk_monitor_register() { # <descriptor path>
 
 afk_monitor_reconcile_delivery() { # <delivery path>
   local dpath="$1" doc did dispatch_id kind status rpath rec rc
-  local resfile identity retained trace
+  local resfile identity retained trace context_budget
 
   if ! doc="$(jq -c '.' "$dpath" 2>/dev/null)" || [[ -z "$doc" ]]; then
     afk_monitor_needs_human
@@ -718,13 +718,25 @@ afk_monitor_reconcile_delivery() { # <delivery path>
   fi
 
   # --- reconciliation, then the acknowledgement ----------------------------
+  # The worker's own context-budget state, carried onto the watch record so a
+  # reader sees it without opening the retained result (Story 1.5 lane B,
+  # FR-105). BOUNDED here rather than trusted: a delivery is worker-shaped
+  # input, and a state outside the published four is not a fifth state, it is
+  # an unobserved one. Introduced by this capability — a record written before
+  # it existed simply carries NOT_EVALUATED.
+  context_budget="$(printf '%s' "$doc" | jq -r '
+    (.result.budget.state // "") as $s
+    | if ["OK","CHECKPOINT_DUE","CONTINUATION_REQUIRED","NOT_EVALUATED"] | index($s)
+      then $s else "NOT_EVALUATED" end' 2>/dev/null)" || context_budget="NOT_EVALUATED"
+
   rec="$(printf '%s' "$rec" | jq -c \
     --arg d "$did" --arg st "$status" --arg id "$identity" --arg rp "$resfile" \
-    --arg kind "$kind" '
+    --arg kind "$kind" --arg cb "$context_budget" '
     .state = "COMPLETED"
     | .acknowledged = true
     | .fault = null
     | .result = {retained: true, path: $rp, identity: $id, status: $st, kind: $kind,
+                 context_budget: $cb,
                  needs_human: (($kind == "escalation") or ($st == "needs_human"))}
     | .settlement.scheduled_count =
         (if ((.settlement.scheduled_count // 0) > 0) then (.settlement.scheduled_count) else 1 end)
@@ -1158,7 +1170,8 @@ afk_monitor_summarize() {
       AFK_MON_NEEDS_HUMAN="true"
       entries="${entries}$(jq -nc \
         '{id: null, state: "MONITOR_DEGRADED", acknowledged: false,
-          fault: "DISPATCH_RECORD_UNREADABLE", cleanup: null}')"$'\n'
+          fault: "DISPATCH_RECORD_UNREADABLE", context_budget: "NOT_EVALUATED",
+          cleanup: null}')"$'\n'
       continue
     fi
     state="$(afk_monitor_jget "$rec" '.state // ""')"
@@ -1202,7 +1215,8 @@ afk_monitor_summarize() {
     fi
     entries="${entries}$(printf '%s' "$rec" | jq -c \
       '{id: .dispatch_id, state: .state, acknowledged: (.acknowledged == true),
-        fault: .fault, cleanup: .cleanup}')"$'\n'
+        fault: .fault, context_budget: (.result.context_budget // "NOT_EVALUATED"),
+        cleanup: .cleanup}')"$'\n'
   done < <(afk_monitor_records)
 
   if (( total == 0 )); then

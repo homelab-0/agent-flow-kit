@@ -1,0 +1,313 @@
+---
+linear:
+stamp: _bmad-output/implementation-artifacts/AFK-PORT-1.5B.md.stamp.json
+persona: dev
+gates:
+  - "bash tests/run-tests.sh"
+  - "bash tests/lifecycle-readiness-tests.sh"
+  - "bash tests/lifecycle-tests.sh"
+  - "git diff --check"
+max_cycles: 3
+---
+
+# AFK-PORT-1.5B — Usage observation, checkpoint and continuation artifacts, budget state
+
+Lane B of four for the frozen Story 1.5 (`AFK-PORT-1.5.md`; authority: PRD
+addendum Capability 5, FR-99 evaluation, FR-100, FR-101, FR-104, FR-105;
+NFR-13–15). Lane A (merged, PR #30) provides the window, the sizing estimate,
+the policy file with `checkpoint_ratio`, `continuation_ratio` and the budget
+states declared, and the `budget` thin-result member. Lane C (continuation
+dispatch, cap) and lane D (ORCH PM budget) follow; leave documented seams,
+not implementations.
+
+Budget for this lane INCLUDING tests and prose: ≤ 800 reviewable lines. Scope
+was cut to fit; if you cannot fit, stop and disclose rather than absorb.
+
+## Design ruling (coordinator, binding for this lane)
+
+The frozen launch command texts stay byte-identical: no `stream-json` for
+claude, no `--json` for codex. Consequences, all consistent with FR-104:
+- Under `claude -p`, usage is observable only from the END-OF-RUN result
+  envelope (`modelUsage[<model>]` and `usage`). Mid-run usage is
+  `NOT_EVALUATED`. The harness adapter reports what it can, with provenance.
+- Under `codex exec` without `--json`, usage is not observable at all: the
+  codex adapter reports `NOT_EVALUATED` / `USAGE_UNOBSERVABLE`. It never
+  becomes core fallback logic and never blocks the claude path.
+- Mid-run checkpoint/continuation discipline is therefore DETERMINISTIC
+  PHASE-BOUNDARY POLICY carried in the generated prompt: the worker
+  checkpoints at declared boundaries regardless of usage, and stops with a
+  continuation artifact at the next boundary when it judges it cannot finish
+  or when the harness signals context pressure. The kit evaluates observed
+  usage after the run and reconciles it with the worker's signal.
+
+## Scope
+
+**S1 — usage adapters (FR-104, NFR-13).** In `dispatch.sh`, a per-harness
+usage reader: `claude` reads the retained result envelope and yields
+`usage_tokens` (the last turn's `input_tokens + cache_read_input_tokens +
+cache_creation_input_tokens` from `usage`, i.e. the context actually held at
+the last request), `window_tokens` (`modelUsage[<model>].contextWindow`, used
+ONLY as corroboration — the budget window remains the catalog's per lane A;
+disagreement is recorded, never resolved by the kit), `provenance:
+HARNESS_ENVELOPE`, `observed_at: END_OF_RUN`. `codex` yields
+`NOT_EVALUATED` / `USAGE_UNOBSERVABLE`. No terminal or transcript reading.
+Adapters are named functions per harness; the core calls one interface.
+
+**S2 — post-run evaluation (FR-99).** With a catalog window and an observed
+usage, `usage_ratio = usage/window` (parts per million, same arithmetic as
+lane A) against the policy's `checkpoint_ratio` and `continuation_ratio`:
+`budget.state` = `OK` | `CHECKPOINT_DUE` | `CONTINUATION_REQUIRED`, with
+`budget.usage_tokens`, `budget.usage_ratio`, `budget.usage_provenance`,
+`budget.observed_at`. Unobservable or undeclared → `NOT_EVALUATED` with the
+reason (`USAGE_UNOBSERVABLE` / `CONTEXT_WINDOW_UNDECLARED`). A ratio at or
+above the checkpoint threshold at end of run adds finding `HIGH_USAGE` to
+`budget.findings` (the PM's story-sizing signal, FR-105).
+
+**S3 — worker discipline in the prompt (FR-100, FR-101, FR-104 fallback).**
+The generated prompt gains a fixed, launcher-owned paragraph (data, never
+shell) naming: the checkpoint artifact path `<story>.checkpoint.json`, its
+required members (`completed`, `current_state`, `remaining_acceptance`,
+`next_steps`, `updated_at`, `schema: afk-checkpoint/1`), the declared phase
+boundaries at which it MUST be written or refreshed (after reading the story;
+after implementation and before gates; before reporting), the continuation
+artifact path `<story>.continuation.json` (`schema: afk-continuation/1`;
+checkpoint members plus `in_flight` and `unretired_findings`), and the rule:
+if you cannot finish, stop at the next boundary, write the continuation
+artifact, and print one line `CONTINUATION-REQUIRED: <one-line reason>` then
+end your turn. Both artifacts are secret-free by rule and are redacted by the
+kit's existing redaction on read (S4).
+
+**S4 — artifact handling (FR-100, FR-101, FR-105).** After the run, the
+launcher validates any present checkpoint/continuation artifact (schema id,
+required members, JSON parse) through the same redaction rules as other
+lifecycle output (the existing sentinel discipline applies: a secret-looking
+value is never echoed into a result or log). A `CONTINUATION-REQUIRED:` line
+with a valid artifact → `budget.state: CONTINUATION_REQUIRED`, thin-result
+`status: continuation_required` (additive within the result schema major),
+`budget.continuation_artifact` = path + sha256, and the story record gains
+one dated line (locked, idempotent per cycle, reusing lane A's append).
+A `CONTINUATION-REQUIRED:` line with a MISSING or UNPARSEABLE artifact → the
+story enters loud `NEEDS_HUMAN` (`.blocked` marker, reason
+`CONTINUATION_ARTIFACT_INVALID`, the existing needs-human exit) and no
+result claims completion. Observed usage ≥ continuation threshold with gates
+failed and no worker signal → `budget.state: CONTINUATION_REQUIRED` and
+`status: continuation_required` as well (the kit never reports headroom it
+cannot see, and never manufactures a completed result). Actual continuation
+DISPATCH is lane C: this lane only produces the signal and the artifact.
+
+**S5 — budget field on the kit's own state (FR-105).** The dispatch monitor's
+watch record and the `status` rendering gain a bounded `context_budget`
+member per watched dispatch (`OK` | `CHECKPOINT_DUE` | `CONTINUATION_REQUIRED`
+| `NOT_EVALUATED`) sourced from the retained thin result on reconcile; the
+contract documents it as introduced here with no retroactive requirement on
+the frozen 1.3 deliverable. `NEEDS_HUMAN` for an invalid continuation
+artifact surfaces through the existing monitor path.
+
+**S6 — contract, schema, docs.** `docs/LIFECYCLE-CONTRACT.md` `## The context
+budget` extended: adapters and provenance, phase boundaries, artifact
+schemas, the two new statuses/reasons (`continuation_required`,
+`CONTINUATION_ARTIFACT_INVALID`, `USAGE_UNOBSERVABLE`, `HIGH_USAGE`), the
+`context_budget` watch member; reason codes added to the policy file's
+declared list; `SKILL.md` one paragraph. Every sentence true of the code.
+
+**S7 — tests (both harnesses).** `tests/run-tests.sh`: claude envelope
+fixtures at ratios below/at/above both thresholds (boundary equality counts
+as crossing); codex → `NOT_EVALUATED`; window disagreement recorded; the
+prompt paragraph present and byte-stable; valid checkpoint accepted; invalid
+or missing continuation artifact → `NEEDS_HUMAN` marker, no result claiming
+done; valid continuation → `continuation_required` status + record line
+(idempotent); redaction: a sentinel inside an artifact never reaches result,
+log or marker; both frozen launch texts byte-identical (existing oracle).
+`tests/lifecycle-dispatch-tests.sh`: watch record carries `context_budget`
+after reconcile; `NEEDS_HUMAN` surfaces. `tests/lifecycle-readiness-tests.sh`:
+`schema` lists the new status/reasons.
+
+## Out of scope — hard stops
+
+Continuation dispatch, the cap and its PM decision (lane C); the ORCH PM
+budget (lane D); Story 1.6 registry codes beyond the reason-code discipline;
+any change to the frozen launch command texts, `make-stamp.sh`, the
+validator, the catalog, `/v1/route` requests; terminal or transcript reading;
+retrofitting the frozen 1.3 orchestration document.
+
+## Acceptance criteria
+
+- **AC-1** claude usage from the envelope with provenance; codex
+  `NOT_EVALUATED`; no scraping (S1, tests).
+- **AC-2** post-run state from policy thresholds with boundary equality
+  crossing; `HIGH_USAGE` finding at ≥ checkpoint (S2, tests).
+- **AC-3** prompt paragraph names artifacts, members, boundaries and the
+  stop rule; byte-stable; data never shell (S3, tests).
+- **AC-4** valid continuation → `continuation_required` status, artifact
+  identity recorded, story-record line; invalid/missing → loud `NEEDS_HUMAN`;
+  never a manufactured completion (S4, tests).
+- **AC-5** artifacts pass the kit's redaction; sentinel proof (S4, tests).
+- **AC-6** `context_budget` on the watch record and `status` rendering;
+  additive, no 1.3 retrofit (S5, tests).
+- **AC-7** contract/schema/docs true of the code; policy reason list extended
+  (S6).
+- **AC-8** both harnesses exercised; frozen launch texts byte-identical (S7).
+- **AC-9** gates green (concurrency aggregate the only tolerated red);
+  reviewable diff ≤ 800 lines INCLUDING tests and docs, reported; record
+  states seams left for lanes C/D.
+
+## Dev Agent Record
+
+Persona proof (BMAD dev, computed first): outer
+`07ee71cffbefa3372dda5a882a82acdd526fac49a468322088607061c404a4ee`, intermediates
+`b980cf2c…` (SKILL.md) and `f3f107f1…` (customize.toml) — match, no stop.
+
+### Method choices
+
+**How the window is resolved.** Unchanged from lane A: the catalog's
+`min_context` for the stamped profile, read exactly, on every path. The claude
+envelope's `modelUsage[<model>].contextWindow` is read only as
+`window_reported_tokens`; where it disagrees the finding `WINDOW_DISAGREEMENT`
+is recorded and the disagreement is left standing. Picking a winner between two
+authorities would have made the kit a third one. The adapter resolves the
+envelope key by the stamped native model, falling back to the single entry when
+there is exactly one and to null otherwise — it never guesses which of several
+models the run used.
+
+**Estimate inputs.** Untouched. The pre-dispatch estimate, its inputs and its
+`bytes4-v1` method are lane A's and were not reopened; observed usage is a
+second, separately-labelled member beside it, never a correction to it.
+
+**Refusal ordering.** Post-run work sits after the existing `NEEDS-HUMAN` exit
+(a blocked worker's usage is not a budget verdict on the story) and before the
+gates (an attempt that stopped at a phase boundary did not finish; gates over a
+deliberately half-finished tree describe the stop, not the story). Inside the
+block: checkpoint first (a finding at worst), then the continuation signal,
+whose invalid-artifact path refuses with exit 3 and writes **no result
+artifact** — the same shape the existing NEEDS-HUMAN path uses. Within the
+artifact check the window is tested before usage: without a window nothing could
+ever be evaluated, whatever the harness published.
+
+**The one design change against my first draft.** My first cut let an
+unobservable usage overwrite `budget.state` with `NOT_EVALUATED`. Running the
+suite showed that regressing six of lane A's merged assertions, and lane A was
+right: the pre-dispatch verdict is a real conclusion about a real estimate, and
+replacing it reports *less* than the kit knows. Unobservability now lands in
+`usage_provenance` and a new `usage_reason` member, and `CHECKPOINT_DUE` /
+`CONTINUATION_REQUIRED` are reached only from a computed ratio or a worker's own
+signal — never inferred. The frozen lane A behaviour is byte-for-byte intact.
+
+**Record-append idempotence.** Lane A's `record_sizing_risk` was generalised to
+`record_budget_line <story> <cycle> <code> <detail>` — same lock, same awk
+insertion, same line format, with idempotence now keyed on **code plus cycle**
+so one cycle can record both a sizing observation and a continuation and neither
+suppresses the other. The concurrency race test was moved onto the new signature
+unchanged.
+
+**Artifact freshness.** A continuation artifact is deliberately *not* removed
+before launch the way the result artifact is — lane C is meant to resume from
+it. Freshness is proved by identity instead: the pre-launch sha256 is captured,
+and a byte-identical artifact after the run is `ARTIFACT_STALE`. This is the one
+place the design differs from the "remove stale artifacts first" habit, and the
+reason is written into the contract.
+
+**Redaction.** Only artifact *identity* (path + sha256) reaches the result, so
+member values cannot leak by construction; validation verdicts come from a
+closed vocabulary and never quote the offending value. The single piece of
+worker free text that does reach a marker — the `CONTINUATION-REQUIRED:` reason
+— goes through `artifact_redact` via the `BUDGET_REDACT_FN` indirection, mirror-
+ing `lib/afk-common.sh`. The sentinel test has an explicit anti-vacuity control:
+the worker's own words are asserted PRESENT in the marker, so the sentinel's
+absence is attributable to the redactor rather than to an empty path.
+
+### Files touched
+
+- `files/model-router/scripts/dispatch.sh` — usage adapters, post-run
+  evaluation, prompt discipline paragraph, artifact validation + redaction,
+  `record_budget_line`, result members, `continuation_required` status/exit.
+- `files/model-router/context-budget-policy.yaml` — five reason codes.
+- `lib/afk-monitor.sh` — `result.context_budget` on the watch record (bounded on
+  read) and `context_budget` in the `status` rendering.
+- `lib/afk-commands.sh` — `budget_reason_codes` and `dispatch_result_statuses`
+  in `schema` (the enum only, per the declared surface).
+- `docs/LIFECYCLE-CONTRACT.md`, `files/model-router/SKILL.md` — S6 prose.
+- `tests/run-tests.sh` (section 3d + a stub hook), `tests/lifecycle-dispatch-tests.sh`,
+  `tests/lifecycle-readiness-tests.sh`, `tests/lifecycle-tests.sh` (one vocabulary
+  key).
+
+### Diff size
+
+`git diff --stat master` excluding this story file: **800 insertions, 34
+deletions across 10 files** — at the ≤ 800 budget, and 10 of the ≤ 25 file
+budget. Scope was cut to reach it; see the deferrals below.
+
+### Gates
+
+Run from the worktree, in full, by me:
+
+| gate | result |
+|---|---|
+| `bash tests/run-tests.sh` | **555 passed, 1 failed**, exit 1, 2633s — the single failure is the recorded concurrency aggregate below; every other section green, including the sub-gates it runs (mutation 577/0, readiness 286/0, dispatch 256/0) |
+| `bash tests/lifecycle-tests.sh` | **478 passed, 0 failed**, exit 0, 467s |
+| `bash tests/lifecycle-readiness-tests.sh` | **286 passed, 0 failed**, exit 0, 293s |
+| `git diff --check` | clean, exit 0 |
+
+`tests/lifecycle-dispatch-tests.sh` is not one of the four declared gates but
+carries lane B's AC-6 test, so it was run too: **256 passed, 0 failed**.
+
+**The one tolerated red, reported verbatim.** `tests/run-tests.sh` section 8:
+
+```
+8. Lifecycle concurrency gate — tests/lifecycle-concurrency-tests.sh
+  FAIL lifecycle concurrency gate
+        204 passed, 3 failed
+```
+
+Run directly to name its three sub-assertions:
+
+```
+  FAIL a contender that observed the window waits it out rather than refusing
+  FAIL and reports the live owner it was waiting for
+  FAIL so nothing it says can be read as 'this lock has no owner'
+204 passed, 3 failed
+```
+
+Identical — same tally, same three assertions, same publication-window scenario
+(section 10, "a lock caught mid-publication is waited on, not condemned") — to
+the recorded pre-existing baseline reproduced on pristine master at 8a56eb5,
+`_bmad-output/implementation-artifacts/evidence/AFK-PORT-1.4-LV/coordinator-baseline-concurrency-master-8a56eb5.log`.
+Nothing in this lane touches locking. It is the only red.
+
+### Deferred, deliberately, and disclosed
+
+- **No mid-run usage, and no `stream-json`.** Diagnosis: the launch texts are
+  frozen and the lane's ruling is binding. The consequence is recorded as
+  contract text rather than worked around.
+- **Assertions cut to fit 800 lines.** Roughly twenty low-marginal-value
+  assertions were removed from section 3d during trimming (redundant field
+  echoes, a second above-threshold band sample, an unparseable-envelope case
+  already covered by the missing-envelope one). Every AC keeps at least one
+  falsifiable check; the cuts were duplicates, not coverage.
+- **A checkpoint's *content* is validated for shape, not for usefulness.** A
+  checkpoint whose `next_steps` is `[]` passes. Diagnosis: judging resumption
+  quality needs the story's semantics, which the launcher does not have; the
+  members are the contract, and lane C's resume is where emptiness will bite
+  visibly.
+- **`CHECKPOINT_DUE` produces no action of its own this lane.** It is a reported
+  state; nothing re-dispatches or nudges on it. That is lane C's cap-and-dispatch
+  work, and inventing half of it here would be the seam growing an implementation.
+
+### Seams left for lanes C and D
+
+- **Lane C (continuation dispatch, cap).** The signal, the validated artifact and
+  its identity, the `continuation_required` status and the per-cycle story-record
+  line all exist; `continuation_cap: 2` is declared in the policy file and is
+  read by nothing yet. Lane C consumes `budget.continuation_artifact` and counts
+  the recorded lines. Nothing in this lane dispatches, re-stamps or decides.
+- **Lane D (ORCH PM budget).** `context_budget` on the watch record and in the
+  `status` rendering is the member a PM view reads; the PM's own window-source
+  hierarchy (FR-121) is untouched here.
+- Story 1.6 registry codes were not read, cited or anticipated beyond the
+  reason-code discipline this lane's own policy file declares.
+
+### Commit
+
+One commit, the tip of `jlengelbrecht/afk-port-1.5b`. Its SHA cannot be written
+into the commit that carries this record, so it is reported in the worker_done
+body instead. Nothing was pushed, no PR was opened, `master` was not touched.
+No trailers of any kind were added; the environment appended none.

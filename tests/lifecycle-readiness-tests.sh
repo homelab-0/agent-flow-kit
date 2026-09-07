@@ -1346,6 +1346,21 @@ assert_eq "and they match the declared policy document exactly" \
   "$(printf '%s' "$SCHEMA_JSON" | jq -r '.budget_states[]' | LC_ALL=C sort)" \
   "$(yq -r '.budget_states[]' "$KIT_ROOT/files/model-router/context-budget-policy.yaml" | LC_ALL=C sort)"
 
+# Lane B extends the vocabulary the budget reports under, and the policy
+# document stays its authority — the same relationship budget_states already
+# has. The dispatch result statuses are published for the same reason: a reader
+# of a thin result must meet no status the contract does not name.
+assert_eq "schema publishes the budget reason codes the policy declares" \
+  "$(printf '%s' "$SCHEMA_JSON" | jq -r '.budget_reason_codes[]' | LC_ALL=C sort)" \
+  "$(yq -r '.reason_codes[]' "$KIT_ROOT/files/model-router/context-budget-policy.yaml" | LC_ALL=C sort)"
+for c in USAGE_UNOBSERVABLE HIGH_USAGE CONTINUATION_ARTIFACT_INVALID; do
+  assert_contains "schema publishes [$c]" \
+    "$(printf '%s' "$SCHEMA_JSON" | jq -c '.budget_reason_codes')" "$c"
+done
+assert_eq "schema publishes the dispatch result statuses, continuation included" \
+  "$(printf '%s' "$SCHEMA_JSON" | jq -c '.dispatch_result_statuses')" \
+  '["done","gates_failed","continuation_required","needs_human"]'
+
 unpublished_reasons() { # <document> -> how many reason strings are outside the set
   printf '%s' "$1" | jq -r --argjson pub "$PUB_REASONS" \
     '[.. | objects | .reason? | select(type == "string")
