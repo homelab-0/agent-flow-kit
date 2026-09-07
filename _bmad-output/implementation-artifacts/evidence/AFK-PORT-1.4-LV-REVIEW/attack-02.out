@@ -1,0 +1,25 @@
+PASS benign — no injection; rc=0; ANTHROPIC_CUSTOM_HEADERS=[x-placement: kserve-a5000]; credential-in-harness-env=yes
+PASS header quote+subshell — no injection; rc=0; ANTHROPIC_CUSTOM_HEADERS=[x-placement: a"; touch /tmp/tmp.ZpjnvwiUTe/CANARY; "b]; credential-in-harness-env=yes
+PASS header $( ) injection — no injection; rc=0; ANTHROPIC_CUSTOM_HEADERS=[x-placement: a$(touch /tmp/tmp.ZpjnvwiUTe/CANARY)b]; credential-in-harness-env=yes
+PASS header embedded space — no injection; rc=0; ANTHROPIC_CUSTOM_HEADERS=[x-placement: a b FOO=bar]; credential-in-harness-env=yes
+PASS header newline — no injection; rc=0; ANTHROPIC_CUSTOM_HEADERS=[x-placement: a]; credential-in-harness-env=yes
+PASS header semicolon — no injection; rc=0; ANTHROPIC_CUSTOM_HEADERS=[x-placement: a; touch /tmp/tmp.ZpjnvwiUTe/CANARY]; credential-in-harness-env=yes
+PASS base_url injection — no injection; rc=0; ANTHROPIC_CUSTOM_HEADERS=[x-placement: p]; credential-in-harness-env=yes
+PASS token_ref injection — no injection; rc=0; ANTHROPIC_CUSTOM_HEADERS=[x-placement: p]; credential-in-harness-env=yes
+PASS op_env_file backticks — no injection; rc=78; ANTHROPIC_CUSTOM_HEADERS=[(claude never ran)]; credential-in-harness-env=no
+PASS min_context injection — no injection; rc=0; ANTHROPIC_CUSTOM_HEADERS=[x-placement: p]; credential-in-harness-env=yes
+PASS CONTROL-A: an UNQUOTED literal (X=a; touch CANARY) does pop the canary
+PASS CONTROL-B: the sandboxed harness ran; its full environment was:
+      CLAUDE_CODE_MAX_CONTEXT_TOKENS=65536
+      PWD=/tmp/tmp.ZpjnvwiUTe
+      ANTHROPIC_CUSTOM_HEADERS=x-placement: kserve-a5000
+      HOME=/tmp/tmp.ZpjnvwiUTe/home
+      LANG=C.UTF-8
+      ANTHROPIC_BASE_URL=https://gw.invalid
+      TERM=dumb
+      USER=op
+      SHLVL=1
+      ANTHROPIC_MODEL=qwen36-27b
+      ANTHROPIC_AUTH_TOKEN=<CREDENTIAL>
+      PATH=/tmp/tmp.ZpjnvwiUTe/bin:/usr/bin:/bin
+      _=/usr/bin/env

@@ -1,0 +1,14 @@
+{
+  "story_id": "AFK-PORT-1.4-LV-REVIEW",
+  "title": "Adversarial and senior review of the gateway launch variant (AFK-PORT-1.4-LV)",
+  "summary": "Independent fresh-session review of a security-sensitive change to the kit's launch adapter: a second claude launch class that sets ANTHROPIC_BASE_URL/AUTH_TOKEN/MODEL/CUSTOM_HEADERS/MAX_CONTEXT per-process for gateway-backed local profiles, with a runtime 1Password credential resolution inside generated terminal command text. The reviewer attacks credential leakage across every channel, fail-closed preflight bypasses, launch-class discriminator soundness, native command byte-identity, shell-safety of new literals, test vacuity (mutation testing), and contract truth; writes a report with reproduced blockers and residuals; changes no product code. A plausible-but-wrong review (missing a leak path or a bypass) is expensive: it would let a credential-handling defect into the fleet's dispatch path. Reviewer capability must be at least the implementer's (claude/strong).",
+  "touched_paths": [
+    "_bmad-output/implementation-artifacts/evidence/AFK-PORT-1.4-LV-REVIEW/"
+  ],
+  "ambiguity": "low",
+  "blast_radius": "high",
+  "volume_hint": "low",
+  "tags": ["security", "secrets", "review"],
+  "repo": "agent-flow-kit",
+  "requester": "bmad-pm"
+}

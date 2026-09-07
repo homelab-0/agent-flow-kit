@@ -1,0 +1,410 @@
+
+[1m0. shellcheck — every script the kit ships[0m
+  [32mPASS[0m shellcheck runs here: nix 0.11.0
+  [32mPASS[0m shellcheck clean: dispatch.sh
+  [32mPASS[0m shellcheck clean: make-stamp.sh
+  [32mPASS[0m shellcheck clean: usage-check.sh
+  [32mPASS[0m shellcheck clean: github-health.sh
+  [32mPASS[0m shellcheck clean: agent-flow-kit
+  [32mPASS[0m shellcheck clean: afk-common.sh
+  [32mPASS[0m shellcheck clean: afk-source.sh
+  [32mPASS[0m shellcheck clean: afk-inventory.sh
+  [32mPASS[0m shellcheck clean: afk-readiness.sh
+  [32mPASS[0m shellcheck clean: afk-monitor.sh
+  [32mPASS[0m shellcheck clean: afk-commands.sh
+  [32mPASS[0m shellcheck clean: afk-plan.sh
+  [32mPASS[0m shellcheck clean: afk-mutate.sh
+  [32mPASS[0m shellcheck clean: lockctl-helper.sh
+
+[1m1. Pure builders (dispatch.sh sourced, main() not run)[0m
+  [32mPASS[0m effort 'low' accepted (one-to-one, not collapsed)
+  [32mPASS[0m effort 'medium' accepted (one-to-one, not collapsed)
+  [32mPASS[0m effort 'high' accepted (one-to-one, not collapsed)
+  [32mPASS[0m effort 'xhigh' accepted (one-to-one, not collapsed)
+  [32mPASS[0m effort 'max' rejected fail-closed
+  [32mPASS[0m effort 'banana' rejected fail-closed
+  [32mPASS[0m effort 'HIGH' rejected fail-closed
+  [32mPASS[0m effort '<empty>' rejected fail-closed
+  [32mPASS[0m effort 'high ' rejected fail-closed
+  [32mPASS[0m guard: {claude, claude/strong, anthropic-max} native pair is launchable
+  [32mPASS[0m guard: {codex, openai/strong, openai-plus} native pair is launchable
+  [32mPASS[0m guard: {claude, local-code-standard} gateway-backed local pair is launchable
+  [32mPASS[0m guard: {codex, local profile} has NO validated launch contract
+  [32mPASS[0m guard: codex+local keeps the established refusal wording
+  [32mPASS[0m guard: claude+placement without catalog hosting: local REFUSED
+  [32mPASS[0m guard: it names the missing catalog hosting
+  [32mPASS[0m guard: local reason names the forbidden redirection
+  [32mPASS[0m guard: absent catalog evidence fails the pair closed
+  [32mPASS[0m guard: a local profile stamped with a vendor pool REFUSED
+  [32mPASS[0m guard: it names the pool that should not be there
+  [32mPASS[0m guard: a local profile stamped cost_class subscription REFUSED
+  [32mPASS[0m guard: it names the cost class
+  [32mPASS[0m guard: {claude, minimax/strong, minimax-max} REFUSED (no native reachability)
+  [32mPASS[0m guard: minimax reason names the profile-family mismatch
+  [32mPASS[0m guard: minimax reason names the pool mismatch
+  [32mPASS[0m guard: {codex, minimax/strong} REFUSED (cross-harness control)
+  [32mPASS[0m guard: native family on a foreign pool REFUSED
+  [32mPASS[0m guard: foreign family on the native pool REFUSED
+  [32mPASS[0m validator exit 0 -> dispatch 0 (proceed)
+  [32mPASS[0m validator exit 1 -> dispatch 4 (policy-invalid)
+  [32mPASS[0m validator exit 2 -> dispatch 5 (uncheckable)
+  [32mPASS[0m validator exit 127 -> dispatch 5 (uncheckable)
+  [32mPASS[0m claude/opus -> opus
+  [32mPASS[0m openai/gpt-5.6-sol -> gpt-5.6-sol
+
+[1m   generated claude terminal command[0m
+   env -i HOME=/home/op PATH=/usr/bin:/bin USER=op LANG=C.UTF-8 TERM=dumb claude -p "$(cat -- /wt/STORY.md.prompt)" --model opus --effort xhigh --append-system-prompt-file /wt/_bmad/bmm/agents/dev.md --permission-mode acceptEdits --tools "Read,Glob,Grep,Write" --strict-mcp-config --output-format json < /dev/null > /wt/STORY.md.claude-result.json; echo "CLAUDE_EXIT=$?"
+  [32mPASS[0m claude cmd: allowlist sanitizer (env -i)
+  [32mPASS[0m claude cmd: HOME is a launcher literal
+  [32mPASS[0m claude cmd: PATH is a launcher literal
+  [32mPASS[0m claude cmd: USER is a launcher literal
+  [32mPASS[0m claude cmd: LANG/TERM pinned
+  [32mPASS[0m claude cmd: stamped model passed explicitly
+  [32mPASS[0m claude cmd: stamped effort passed explicitly
+  [32mPASS[0m claude cmd: explicit least-privilege tools
+  [32mPASS[0m claude cmd: --strict-mcp-config mandatory
+  [32mPASS[0m claude cmd: permission mode acceptEdits
+  [32mPASS[0m claude cmd: stdin redirected
+  [32mPASS[0m claude cmd: JSON result to a FILE, not stdout
+  [32mPASS[0m claude cmd: in-band exit capture
+  [32mPASS[0m claude cmd: prompt read from the prompt file
+  [32mPASS[0m claude cmd: persona injected by PATH
+  [32mPASS[0m claude cmd: NO task text is shell source
+  [32mPASS[0m claude cmd: no task backtick survives
+  [32mPASS[0m claude cmd: no task subshell survives
+  [32mPASS[0m claude cmd: no runtime $HOME lookup
+  [32mPASS[0m claude cmd: no runtime $PATH lookup
+  [32mPASS[0m claude cmd: no runtime $USER lookup
+  [32mPASS[0m claude cmd: CLAUDE_CONFIG_DIR never propagated
+  [32mPASS[0m claude cmd: no Bash/shell tool granted
+  [32mPASS[0m claude cmd: no permission bypass
+  [32mPASS[0m claude cmd: no bypassPermissions
+  [32mPASS[0m claude cmd: --bare forbidden
+  [32mPASS[0m claude cmd: exactly one command substitution (the prompt file)
+
+[1m   generated gateway-backed local claude terminal command[0m
+   set +x; ANTHROPIC_AUTH_TOKEN="$(. /home/op/.op-agent-env && op read op://stubvault/agw-claude-code/credential)"; [ -n "$ANTHROPIC_AUTH_TOKEN" ] || { echo 'dispatch: gateway credential resolved EMPTY; refusing to start claude unauthenticated' >&2; exit 78; }; env -i HOME=/home/op PATH=/usr/bin:/bin USER=op LANG=C.UTF-8 TERM=dumb ANTHROPIC_BASE_URL=https://gateway.invalid ANTHROPIC_AUTH_TOKEN="$ANTHROPIC_AUTH_TOKEN" ANTHROPIC_MODEL=qwen36-27b ANTHROPIC_CUSTOM_HEADERS=x-placement:\ kserve-a5000 CLAUDE_CODE_MAX_CONTEXT_TOKENS=65536 claude -p "$(cat -- /wt/STORY.md.prompt)" --model qwen36-27b --effort high --append-system-prompt-file /wt/_bmad/bmm/agents/dev.md --permission-mode acceptEdits --tools "Read,Glob,Grep,Write" --strict-mcp-config --output-format json < /dev/null > /wt/STORY.md.claude-result.json; echo "CLAUDE_EXIT=$?"; unset ANTHROPIC_AUTH_TOKEN
+  [32mPASS[0m gateway cmd: the text opens by disabling xtrace
+  [32mPASS[0m claude cmd: the native text is unchanged — no xtrace prefix
+  [32mPASS[0m claude cmd: the native text still opens with the env -i sanitizer
+  [32mPASS[0m gateway cmd: env -i allowlist is EXACTLY the contract
+  [32mPASS[0m gateway cmd: the native sanitizer prefix is unchanged
+  [32mPASS[0m gateway cmd: base URL is a launcher literal
+  [32mPASS[0m gateway cmd: ANTHROPIC_MODEL pins the catalog physical model
+  [32mPASS[0m gateway cmd: --model is the same value
+  [32mPASS[0m gateway cmd: x-placement copied verbatim from the evidence
+  [32mPASS[0m gateway cmd: the profile's REAL context window is set
+  [32mPASS[0m gateway cmd: only the 1Password REFERENCE is embedded
+  [32mPASS[0m gateway cmd: the service-account env file is sourced in a subshell
+  [32mPASS[0m gateway cmd: an empty credential is fatal BEFORE claude starts
+  [32mPASS[0m gateway cmd: and it exits without a false exit marker
+  [32mPASS[0m gateway cmd: the resolved value is dropped afterwards
+  [32mPASS[0m gateway cmd: ANTHROPIC_API_KEY never appears
+  [32mPASS[0m gateway cmd: CLAUDE_CONFIG_DIR never propagated
+  [32mPASS[0m gateway cmd: no Bash/shell tool granted
+  [32mPASS[0m gateway cmd: no permission bypass
+  [32mPASS[0m gateway cmd: --bare forbidden
+  [32mPASS[0m gateway cmd: no runtime $HOME lookup
+  [32mPASS[0m gateway cmd: no runtime $PATH lookup
+  [32mPASS[0m gateway cmd: exactly two command substitutions
+  [32mPASS[0m gateway cmd: the claude invocation is byte-identical to the native one
+
+[1m   generated codex terminal command[0m
+   env -u OPENAI_API_KEY -u CODEX_API_KEY -u ANTHROPIC_API_KEY codex exec --model gpt-5.6-sol -c model_reasoning_effort=xhigh -s workspace-write "$(cat -- /wt/STORY.md.prompt)"; echo "CODEX_EXIT=$?"
+  [32mPASS[0m codex cmd: OPENAI_API_KEY unset
+  [32mPASS[0m codex cmd: CODEX_API_KEY unset
+  [32mPASS[0m codex cmd: ANTHROPIC_API_KEY unset too
+  [32mPASS[0m codex cmd: sandbox workspace-write
+  [32mPASS[0m codex cmd: xhigh PRESERVED, not collapsed
+  [32mPASS[0m codex cmd: in-band exit capture
+  [32mPASS[0m codex cmd: task via the prompt file
+  [32mPASS[0m codex cmd: --full-auto forbidden
+  [32mPASS[0m codex cmd: no approvals/sandbox bypass
+  [32mPASS[0m codex cmd: no danger-full-access
+  [32mPASS[0m codex cmd: high maps to high
+
+[1m2. Retired paths are actually gone (source greps)[0m
+  [32mPASS[0m dispatch: rate-limit fallback loop deleted
+  [32mPASS[0m dispatch: FALLBACKS array deleted
+  [32mPASS[0m dispatch: ROUTES fallback iteration deleted
+  [32mPASS[0m dispatch: route.fallback no longer read
+  [32mPASS[0m dispatch: route.provider/model no longer read
+  [32mPASS[0m dispatch: subscriptions provider lookup gone
+  [32mPASS[0m dispatch: --full-auto gone
+  [32mPASS[0m dispatch: --skip-git-repo-check gone
+  [32mPASS[0m dispatch: old .bmad/agents default gone
+  [32mPASS[0m dispatch: lossy xhigh->high collapse gone
+  [32mPASS[0m dispatch: no orca orchestration worker-start
+  [32mPASS[0m dispatch: never relies on 'terminal wait' (it does not fire)
+  [32mPASS[0m SKILL: worker-start bypass path removed
+  [32mPASS[0m SKILL: tier/leaderboard routing tables gone
+  [32mPASS[0m SKILL: local_gpu no longer a frontmatter key
+  [32mPASS[0m SKILL: route no longer a frontmatter key
+  [32mPASS[0m HANDOFF: route no longer a frontmatter key
+  [32mPASS[0m HANDOFF: local_gpu no longer a frontmatter key
+  [32mPASS[0m subscriptions: routing tables retired
+  [32mPASS[0m usage-check: routing guidance retired
+  [32mPASS[0m dispatch: AGENT_DIR default is _bmad/bmm/agents
+
+[1m3. Integration — real dispatch.sh against stubbed Orca/validator/router[0m
+  [32mPASS[0m empty gates -> exit 2 (refuses; never emits 'done')
+  [32mPASS[0m empty gates: says why
+  [32mPASS[0m empty gates: no result artifact written
+  [32mPASS[0m legacy route: block -> exit 2
+  [32mPASS[0m legacy route: block explains the move
+  [32mPASS[0m missing persona file -> exit 2
+  [32mPASS[0m missing persona: names the path it looked for
+  [32mPASS[0m missing persona: says it must never no-op
+  [32mPASS[0m no stamp -> exit 5 (uncheckable)
+  [32mPASS[0m stamped effort 'max' -> exit 4 (fail-closed before launch)
+  [32mPASS[0m bad effort: explains --effort fails OPEN
+  [32mPASS[0m validator exit 1 -> dispatch exit 4
+  [32mPASS[0m policy-invalid: failing check surfaced
+  [32mPASS[0m policy-invalid: no result artifact
+  [32mPASS[0m policy-invalid: nothing was launched
+  [32mPASS[0m validator exit 2 -> dispatch exit 5
+  [32mPASS[0m uncheckable: validator stderr surfaced
+  [32mPASS[0m validator called with the launcher's --catalog
+  [32mPASS[0m vendor profile: full happy path -> exit 0
+  [32mPASS[0m vendor profile: no /v1/place call
+  [32mPASS[0m vendor profile: NO --evidence passed (presence is itself a failure)
+  [32mPASS[0m vendor profile: says placement not required
+  [32mPASS[0m result.json written
+  [32mPASS[0m result: status done
+  [32mPASS[0m result: catalog_version carried
+  [32mPASS[0m result: stamp digest carried
+  [32mPASS[0m result: stamp marked validated
+  [32mPASS[0m result: placement summary
+  [32mPASS[0m result: harness recorded
+  [32mPASS[0m result: native model recorded
+  [32mPASS[0m result: effort recorded
+  [32mPASS[0m result: persona recorded
+  [32mPASS[0m result: orca terminal recorded
+  [32mPASS[0m result: harness exit recorded
+  [32mPASS[0m result: gate recorded
+  [32mPASS[0m launched cmd: env -i sanitizer
+  [32mPASS[0m launched cmd: --strict-mcp-config
+  [32mPASS[0m launched cmd: stamped effort
+  [32mPASS[0m launched cmd: prompt file, not text
+  [32mPASS[0m launched cmd: no story body inline
+  [32mPASS[0m terminal titled for Orca visibility
+  [32mPASS[0m failing gate -> exit 1 despite harness exit 0
+  [32mPASS[0m failing gate: status gates_failed
+  [32mPASS[0m unknown-effort warning -> exit 4 even though CLAUDE_EXIT=0
+  [32mPASS[0m unknown-effort: says it ran at the DEFAULT effort
+  [32mPASS[0m NEEDS-HUMAN -> exit 3
+  [32mPASS[0m placement required: placed, validated, launched
+  [32mPASS[0m placement required: POST /v1/place called
+  [32mPASS[0m placement required: --evidence passed to the validator
+  [32mPASS[0m placement: re-fetched on the next attempt (never cached)
+  [32mPASS[0m /v1/place 503 -> exit 6 (refused, never launched unplaced)
+  [32mPASS[0m repo waits for setup -> refuses to launch
+  [32mPASS[0m setup gate: says STOP
+  [32mPASS[0m not an Orca worktree -> exit 2 (refuses invisible launch)
+  [32mPASS[0m invisible launch: explains the requirement
+  [32mPASS[0m non-default CLAUDE_CONFIG_DIR -> fails closed
+  [32mPASS[0m CLAUDE_CONFIG_DIR: named as unsupported
+
+[1m3b. Launch classes — one admitted exactly, everything else fail-closed[0m
+  [32mPASS[0m guard[codex]: exit 7 — distinct from 1/2/3/4/5/6
+  [32mPASS[0m guard[codex]: marker is distinctly typed
+  [32mPASS[0m guard[codex]: marker names the harness
+  [32mPASS[0m guard[codex]: marker names the profile
+  [32mPASS[0m guard[codex]: marker names the reason
+  [32mPASS[0m guard[codex]: marker says the stamp was VALID
+  [32mPASS[0m guard[codex]: marker says route NOT modified
+  [32mPASS[0m guard[codex]: marker tells the human what to do
+  [32mPASS[0m guard[codex]: no Orca terminal created
+  [32mPASS[0m guard[codex]: no harness command built
+  [32mPASS[0m guard[codex]: no result artifact
+  [32mPASS[0m guard[codex]: fires after /v1/place ran
+  [32mPASS[0m guard[codex]: fires after stamp validation
+  [32mPASS[0m guard[codex]: stamp harness untouched
+  [32mPASS[0m guard[codex]: stamp model_profile untouched
+  [32mPASS[0m guard[codex]: no substitute harness suggested in stderr
+  [32mPASS[0m guard[minimax]: {claude, minimax/strong, minimax-max} -> exit 7
+  [32mPASS[0m guard[minimax]: marker is distinctly typed
+  [32mPASS[0m guard[minimax]: marker names the profile-family mismatch
+  [32mPASS[0m guard[minimax]: marker names the pool mismatch
+  [32mPASS[0m guard[minimax]: marker says the stamp was VALID
+  [32mPASS[0m guard[minimax]: marker says route NOT modified
+  [32mPASS[0m guard[minimax]: no Orca terminal created
+  [32mPASS[0m guard[minimax]: no harness command built
+  [32mPASS[0m guard[minimax]: no result artifact
+  [32mPASS[0m guard[minimax]: stamp model_profile untouched
+  [32mPASS[0m guard[minimax]: stamp entitlement_pool untouched
+  [32mPASS[0m gateway: {claude, local-code-standard} launches (exit 0)
+  [32mPASS[0m gateway: no blocked marker written
+  [32mPASS[0m gateway: placement was fetched for this attempt
+  [32mPASS[0m gateway: the stamp was validated with that evidence
+  [32mPASS[0m gateway: the LAUNCHED allowlist is exactly the contract
+  [32mPASS[0m gateway: launched with the configured endpoint
+  [32mPASS[0m gateway: launched pinned to the catalog physical model
+  [32mPASS[0m gateway: --model carries the same value
+  [32mPASS[0m gateway: x-placement comes verbatim from the place evidence
+  [32mPASS[0m gateway: the catalog's min_context is the session window
+  [32mPASS[0m gateway: stamped effort still passed explicitly
+  [32mPASS[0m gateway: least-privilege tool set unchanged
+  [32mPASS[0m gateway: --strict-mcp-config unchanged
+  [32mPASS[0m gateway: acceptEdits unchanged
+  [32mPASS[0m gateway: stdin redirect unchanged
+  [32mPASS[0m gateway: in-band exit capture unchanged
+  [32mPASS[0m gateway: no story body inline
+  [32mPASS[0m gateway: ANTHROPIC_API_KEY never appears
+  [32mPASS[0m gateway: the configured reference really resolves to the credential
+  [32mPASS[0m gateway: the command carries the REFERENCE
+  [32mPASS[0m gateway: the value is NOT in the generated command
+  [32mPASS[0m gateway: the value is NOT in the terminal title
+  [32mPASS[0m gateway: the value is NOT on dispatch stderr
+  [32mPASS[0m gateway: the value is NOT on dispatch stdout
+  [32mPASS[0m gateway: the value is NOT in the prompt file
+  [32mPASS[0m gateway: the value is NOT in the result artifact
+  [32mPASS[0m gateway: no file the launcher wrote contains the credential
+  [32mPASS[0m gateway: the run still completes honestly
+  [32mPASS[0m gateway: placement is summarised in the result
+  [32mPASS[0m gateway preflight: no endpoint -> exit 2
+  [32mPASS[0m gateway preflight: names launcher.gateway_endpoint
+  [32mPASS[0m gateway preflight: endpoint — no terminal created
+  [32mPASS[0m gateway preflight: endpoint — no command built
+  [32mPASS[0m gateway preflight: endpoint — no result artifact
+  [32mPASS[0m gateway preflight: stale artifact — still refuses (exit 2)
+  [32mPASS[0m gateway preflight: the STALE claude-result.json is gone
+  [32mPASS[0m gateway preflight: stale — no result artifact written
+  [32mPASS[0m gateway preflight: stale — no terminal created
+  [32mPASS[0m gateway preflight: no credential reference -> exit 2
+  [32mPASS[0m gateway preflight: names launcher.gateway_token_ref
+  [32mPASS[0m gateway preflight: credential — no terminal created
+  [32mPASS[0m gateway preflight: credential — no command built
+  [32mPASS[0m gateway preflight: credential — no result artifact
+  [32mPASS[0m gateway preflight: no x-placement header -> exit 6
+  [32mPASS[0m gateway preflight: says the header is copied, never composed
+  [32mPASS[0m gateway preflight: header — no terminal created
+  [32mPASS[0m gateway preflight: header — no command built
+  [32mPASS[0m gateway preflight: header — no result artifact
+  [32mPASS[0m gateway preflight: no min_context -> exit 2
+  [32mPASS[0m gateway preflight: names the unknown context window
+  [32mPASS[0m gateway preflight: context — no terminal created
+  [32mPASS[0m gateway preflight: context — no command built
+  [32mPASS[0m gateway preflight: context — no result artifact
+  [32mPASS[0m gateway empty-read: reported as a launch failure (exit 2)
+  [32mPASS[0m gateway empty-read: says the launch did not complete honestly
+  [32mPASS[0m gateway empty-read: no result artifact — never status: done
+  [32mPASS[0m gateway: local profile on a vendor pool -> exit 7
+  [32mPASS[0m gateway: marker is distinctly typed
+  [32mPASS[0m gateway: marker names the pool that should not be there
+  [32mPASS[0m gateway: marker says the stamp was VALID
+  [32mPASS[0m gateway: marker says route NOT modified
+  [32mPASS[0m gateway: pooled — no Orca terminal created
+  [32mPASS[0m gateway: pooled — no harness command built
+  [32mPASS[0m gateway: pooled — no result artifact
+  [32mPASS[0m gateway: pooled — stamp entitlement_pool untouched
+  [32mPASS[0m guard: vendor pair {claude, claude/strong} still launches
+  [32mPASS[0m guard: vendor pair leaves no blocked marker
+
+[1m4. make-stamp.sh — expires_at verbatim, override is provenance only[0m
+  [32mPASS[0m make-stamp writes a stamp from a route response
+  [32mPASS[0m stamp: expires_at copied VERBATIM
+  [32mPASS[0m stamp: effort carried
+  [32mPASS[0m stamp: task.story_id
+  [32mPASS[0m stamp: task.tags carried
+  [32mPASS[0m stamp: context_size carried
+  [32mPASS[0m stamp: override null when accepted
+  [32mPASS[0m stamp: rationale NOT carried (not in the closed shape)
+  [32mPASS[0m stamp: fallbacks NOT carried (no runtime fallback exists)
+  [32mPASS[0m stamp: property set stays CLOSED
+  [32mPASS[0m override: final harness moved
+  [32mPASS[0m override: final profile moved
+  [32mPASS[0m override: ORIGINAL recommendation preserved
+  [32mPASS[0m override: actor recorded
+  [32mPASS[0m override: expires_at STILL verbatim (no fresh window)
+  [32mPASS[0m override without actor/reason is refused
+  [32mPASS[0m metered/cost_class dual-key mismatch is refused
+  [32mPASS[0m story_id omitted: refused
+  [32mPASS[0m story_id omitted: NO stamp file produced
+  [32mPASS[0m story_id omitted: error names story_id
+  [32mPASS[0m story_id omitted: error explains why
+  [32mPASS[0m story_id explicitly null: refused
+  [32mPASS[0m story_id explicitly null: NO stamp file produced
+  [32mPASS[0m story_id explicitly null: error names story_id
+  [32mPASS[0m story_id explicitly null: error explains why
+  [32mPASS[0m story_id empty string: refused
+  [32mPASS[0m story_id empty string: NO stamp file produced
+  [32mPASS[0m story_id empty string: error names story_id
+  [32mPASS[0m story_id empty string: error explains why
+  [32mPASS[0m story_id present: --request path still stamps
+  [32mPASS[0m story_id present: carried verbatim
+  [32mPASS[0m no field was laundered into the string "null"
+  [32mPASS[0m null tag element dropped, real tags kept
+  [32mPASS[0m null response field 'harness' is refused
+  [32mPASS[0m null response field 'harness': no stamp produced
+  [32mPASS[0m null response field 'model_profile' is refused
+  [32mPASS[0m null response field 'model_profile': no stamp produced
+  [32mPASS[0m null response field 'effort' is refused
+  [32mPASS[0m null response field 'effort': no stamp produced
+  [32mPASS[0m null response field 'catalog_version' is refused
+  [32mPASS[0m null response field 'catalog_version': no stamp produced
+  [32mPASS[0m null response field 'expires_at' is refused
+  [32mPASS[0m null response field 'expires_at': no stamp produced
+  [32mPASS[0m null entitlement_pool is ACCEPTED (local execution draws on no pool)
+  [32mPASS[0m null entitlement_pool stays JSON null, not "null"
+
+[1m5. Live control-plane chain (opt-in, read-only, launches nothing)[0m
+  [33mSKIP[0m live chain (set AGENT_ROUTER_URL/_TOKEN + validator + catalog)
+
+[1m6. Lifecycle gate — tests/lifecycle-tests.sh[0m
+  [32mPASS[0m lifecycle gate: [1m476 passed, 0 failed[0m
+
+[1m7. Lifecycle mutation gate — tests/lifecycle-mutation-tests.sh[0m
+  [32mPASS[0m lifecycle mutation gate: [1m577 passed, 0 failed[0m
+
+[1m8. Lifecycle concurrency gate — tests/lifecycle-concurrency-tests.sh[0m
+  [31mFAIL[0m lifecycle concurrency gate
+        [1m204 passed, 3 failed[0m
+  [32mPASS[0m leaving no lock behind
+  [32mPASS[0m and no residue
+
+[1m12. PROTOCOL — one observation, one verdict (the discriminator)[0m
+  [32mPASS[0m a live successor published into the freed name before the judge decided
+  [32mPASS[0m a record read once and found gone is reported as a record that is not there
+  [32mPASS[0m never as a record that could not be parsed, whatever arrived afterwards
+  [32mPASS[0m and the successor's lock is released cleanly afterwards
+  [32mPASS[0m leaving no residue
+  [32mPASS[0m an acquisition that read a vanished record while a successor published waits
+  [32mPASS[0m naming the live owner that now holds the lock
+  [32mPASS[0m and never calls the successor's valid record unparseable
+  [32mPASS[0m so no operator is ever told to remove a lock a live successor holds
+  [32mPASS[0m and it reclaimed nothing on the way to waiting
+  [32mPASS[0m the successor's lock still carries the incarnation it published
+  [32mPASS[0m which it then releases cleanly
+  [32mPASS[0m leaving no lock behind
+  [32mPASS[0m and no residue
+  [32mPASS[0m bytes that were read and do not parse are still a diagnosis
+  [32mPASS[0m saying the record could not be parsed
+  [32mPASS[0m with no wait spent on a decided answer
+  [32mPASS[0m and the lock left exactly where it was
+
+[1m13. PROTOCOL — a reclamation is never silent[0m
+  [32mPASS[0m a reclaimer that loses the take it earned says observe again
+  [32mPASS[0m the contender really did take the lock path first
+  [32mPASS[0m the abandoned incarnation's record is gone: it was destroyed
+  [32mPASS[0m and the destruction is reported even though the take was lost
+  [32mPASS[0m exactly once, for the one lock that was destroyed
+  [32mPASS[0m naming the owner it proved was gone
+  [32mPASS[0m and no reclamation residue survives it
+  [32mPASS[0m a reclaimer that wins the take acquires
+  [32mPASS[0m and reports the reclamation
+  [32mPASS[0m releasing its own incarnation afterwards
+  [32mPASS[0m leaving no lock behind
+  [32mPASS[0m and no residue
+  [32mPASS[0m an acquisition of a free lock path acquires
+  [32mPASS[0m and reports no reclamation, because it destroyed nothing
+
+[1m204 passed, 3 failed[0m
+
+[1m9. Lifecycle readiness gate — tests/lifecycle-readiness-tests.sh[0m
+  [32mPASS[0m lifecycle readiness gate: [1m279 passed, 0 failed[0m
+
+[1m10. Lifecycle dispatch gate — tests/lifecycle-dispatch-tests.sh[0m
+  [32mPASS[0m lifecycle dispatch gate: [1m250 passed, 0 failed[0m
+
+[1m332 passed, 1 failed[0m

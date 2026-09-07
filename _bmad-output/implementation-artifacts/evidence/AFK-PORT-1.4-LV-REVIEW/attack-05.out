@@ -1,0 +1,23 @@
+== BASELINE: every assertion passes on the real dispatch.sh
+PASS baseline / allowlist-is-exactly-the-contract               assertion pass (expected)
+PASS baseline / credential value absent                         assertion pass (expected)
+PASS baseline / claude invocation byte-identical                assertion pass (expected)
+PASS baseline / exactly two command substitutions               assertion pass (expected)
+PASS baseline / no ANTHROPIC_API_KEY                            assertion pass (expected)
+
+== MUTANTS: the same assertions must FAIL when the property is broken
+   [M1 applied: one extra ANTHROPIC_* in the allowlist]
+PASS M1 extra allowlist variable                                assertion fail (expected)
+   [M2 applied: dispatch.sh resolves the credential itself]
+PASS M2 credential interpolated into the command text           assertion fail (expected)
+   [M3 applied: gateway class silently grants Bash]
+PASS M3 gateway claude invocation drifts from native            assertion fail (expected)
+   [M4 applied: CLAUDE_CODE_MAX_CONTEXT_TOKENS dropped]
+PASS M4 a contract variable removed                             assertion fail (expected)
+   [M5 applied: ANTHROPIC_API_KEY reintroduced]
+PASS M5 ANTHROPIC_API_KEY reintroduced (denylist)               assertion fail (expected)
+PASS M5 ...and the allowlist SET also catches it                assertion fail (expected)
+   [M6 applied: empty-read guard removed from the generated text]
+PASS M6 empty-read guard removed                                the suite assertion ([ -n ... ] ||) would FAIL
+
+== SUMMARY: an assertion is only worth its PASS if its mutant FAILS.
