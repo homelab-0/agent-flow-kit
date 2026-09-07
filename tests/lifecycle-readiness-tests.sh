@@ -1335,6 +1335,17 @@ PUB_READINESS="$(printf '%s' "$SCHEMA_JSON" | jq -c '.readiness_states')"
 PUB_LIVE="$(printf '%s' "$SCHEMA_JSON" | jq -c '.live_fact_states')"
 PUB_TARGET="$(printf '%s' "$SCHEMA_JSON" | jq -c '.target_states')"
 
+# The context-budget vocabulary the kit publishes (Story 1.5 lane A). Only OK
+# and NOT_EVALUATED are produced pre-dispatch; all four are DECLARED here so
+# automation meets no state the contract does not name when the in-flight
+# halves land.
+assert_eq "schema publishes the four budget states" \
+  "$(printf '%s' "$SCHEMA_JSON" | jq -c '.budget_states')" \
+  '["OK","CHECKPOINT_DUE","CONTINUATION_REQUIRED","NOT_EVALUATED"]'
+assert_eq "and they match the declared policy document exactly" \
+  "$(printf '%s' "$SCHEMA_JSON" | jq -r '.budget_states[]' | LC_ALL=C sort)" \
+  "$(yq -r '.budget_states[]' "$KIT_ROOT/files/model-router/context-budget-policy.yaml" | LC_ALL=C sort)"
+
 unpublished_reasons() { # <document> -> how many reason strings are outside the set
   printf '%s' "$1" | jq -r --argjson pub "$PUB_REASONS" \
     '[.. | objects | .reason? | select(type == "string")

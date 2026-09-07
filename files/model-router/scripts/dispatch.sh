@@ -30,6 +30,11 @@
 #      validated launch contract for the stamped {harness, model_profile} pair.
 #      Writes a ${STORY}.blocked marker naming the pair. The route is never
 #      mutated and no substitute harness is ever chosen.
+#   8  REFUSED — STORY SIZING: the pre-dispatch payload estimate is already at or
+#      past the declared continuation threshold, so the worker could not finish
+#      what it was given. Writes a ${STORY}.blocked marker typed STORY-SIZING:.
+#      A planning outcome, not a routing one: nothing is placed, launched or
+#      re-routed, and the estimate never reaches /v1/route.
 #
 # Billing invariants. Two funding shapes, both non-metered: the native vendor
 # subscription sessions, and the gateway-backed local class on `claude`
@@ -50,6 +55,7 @@ readonly EX_STAMP_INVALID=4
 readonly EX_STAMP_UNCHECKABLE=5
 readonly EX_PLACEMENT=6
 readonly EX_UNSUPPORTED_LAUNCH=7
+readonly EX_SIZING_REFUSED=8
 
 # The closed effort set. Taken from execution-stamp.schema.json, NOT from a
 # harness CLI's accepted set: `claude --effort` also accepts `max`, but no
@@ -193,6 +199,71 @@ build_codex_command() {
 codex exec --model $(shq "$model") -c model_reasoning_effort=$(shq "$effort") \
 -s workspace-write \"\$(cat -- $(shq "$prompt_file"))\"; \
 echo \"CODEX_EXIT=\$?\""
+}
+
+# ---------------------------------------------------------------------------
+# Context budget — the pure half (FR-96..99, lane A).
+#
+# Everything below is arithmetic and string work over values the CALLER already
+# obtained from the trusted catalog and the declared policy file. Nothing here
+# reads a threshold, invents a window or knows what a CLI is: NFR-13 keeps the
+# budget model harness-agnostic, and the only reason these are functions at all
+# is that a boundary that cannot be exercised without a launch is a boundary
+# nobody has actually tested.
+# ---------------------------------------------------------------------------
+
+# budget_estimate_tokens — planned payload BYTES to an estimated token count,
+# by the declared method id. An unknown id is a refusal, never a guess: an
+# estimate whose method nobody declared is a number with no meaning attached.
+#   bytes4-v1   ceil(bytes / 4)
+budget_estimate_tokens() { # <bytes> <method-id>
+  local bytes="${1:-}" method="${2:-}"
+  [[ "$bytes" =~ ^[0-9]+$ ]] || return 1
+  case "$method" in
+    bytes4-v1) printf '%s' $(( (bytes + 3) / 4 )) ;;
+    *) return 1 ;;
+  esac
+}
+
+# budget_ratio_ppm — the estimate/window ratio in PARTS PER MILLION, as an
+# integer. Ratios are compared and reported from this one value so that the
+# comparison and the number a human reads can never disagree, and so that a
+# boundary case lands exactly: bash has no floats, and doing this in awk would
+# put the whole threshold decision on IEEE rounding.
+budget_ratio_ppm() { # <estimate-tokens> <window-tokens>
+  local est="${1:-}" win="${2:-}"
+  [[ "$est" =~ ^[0-9]+$ && "$win" =~ ^[0-9]+$ ]] || return 1
+  (( win > 0 )) || return 1
+  printf '%s' $(( est * 1000000 / win ))
+}
+
+# budget_threshold_ppm — a declared decimal ratio ("0.85") as parts per million.
+# Parsed by hand rather than with awk for the same reason: 0.85 is not
+# representable in binary, and `0.85 * 1000000` can land on 849999.
+budget_threshold_ppm() { # <decimal ratio>
+  local r="${1:-}" whole frac
+  [[ "$r" =~ ^[0-9]+(\.[0-9]+)?$ ]] || return 1
+  whole="${r%%.*}"
+  frac="${r#"$whole"}"; frac="${frac#.}"
+  frac="${frac}000000"; frac="${frac:0:6}"
+  printf '%s' $(( 10#$whole * 1000000 + 10#$frac ))
+}
+
+# budget_crosses — does an observed ratio reach a threshold? A ratio EQUAL to a
+# threshold COUNTS AS CROSSING IT (FR-98: "at or above"). Both arguments are
+# already integers in parts per million, so this is exact at the boundary.
+budget_crosses() { # <ratio-ppm> <threshold-ppm>
+  local r="${1:-}" t="${2:-}"
+  [[ "$r" =~ ^[0-9]+$ && "$t" =~ ^[0-9]+$ ]] || return 1
+  (( r >= t ))
+}
+
+# budget_ratio_decimal — parts per million rendered as the fixed six-decimal
+# number the thin result carries. Same source value as the comparison.
+budget_ratio_decimal() { # <ratio-ppm>
+  local p="${1:-}"
+  [[ "$p" =~ ^[0-9]+$ ]] || return 1
+  printf '%d.%06d' $(( p / 1000000 )) $(( p % 1000000 ))
 }
 
 # ---------------------------------------------------------------------------
@@ -520,6 +591,206 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# Context budget — the half that touches the filesystem.
+#
+# The policy document is LAUNCHER configuration and is loaded like all the
+# rest: config file or env override, never the story and never the stamp. The
+# window is the trusted catalog's, read exactly. Between them they are the only
+# two authorities this section has, and it invents neither.
+# ---------------------------------------------------------------------------
+
+# budget_policy_missing_keys — which required policy keys this file does not
+# declare, space-separated and empty when it declares them all. A MISSING
+# THRESHOLD IS NOT A DEFAULT: the caller refuses on any output at all, so no
+# threshold is ever reachable except from the policy document.
+budget_policy_missing_keys() { # <policy-file>
+  local f="${1:-}" k v missing=""
+  [[ -f "$f" && -r "$f" ]] || { printf '%s' "unreadable"; return 0; }
+  yq -e . "$f" >/dev/null 2>&1 || { printf '%s' "unparseable"; return 0; }
+  for k in estimate_method sizing_risk_ratio checkpoint_ratio continuation_ratio \
+           continuation_cap; do
+    v="$(yq -r ".$k // \"\"" "$f" 2>/dev/null || true)"
+    [[ -z "$v" || "$v" == "null" ]] && missing+="${missing:+ }$k"
+  done
+  v="$(yq -r '.budget_states // [] | length' "$f" 2>/dev/null || true)"
+  [[ "$v" == "4" ]] || missing+="${missing:+ }budget_states"
+  v="$(yq -r '.reason_codes // [] | length' "$f" 2>/dev/null || true)"
+  [[ "${v:-0}" -ge 5 ]] 2>/dev/null || missing+="${missing:+ }reason_codes"
+  printf '%s' "$missing"
+}
+
+# load_budget_policy — read the declared policy into BUDGET_* globals, or
+# refuse. Called EARLY, before any placement, terminal or artifact exists: a
+# host whose budget policy cannot be read has no thresholds, and dispatching
+# anyway would mean running unbudgeted work while reporting budget health.
+load_budget_policy() { # <policy-file>
+  local f="$1" missing
+  missing="$(budget_policy_missing_keys "$f")"
+  [[ -z "$missing" ]] || \
+    die "BUDGET_POLICY_UNREADABLE: the context-budget policy '$f' is unusable ($missing). Thresholds and the estimate method live ONLY in that document — there is no default in code, so a policy that cannot be read in full refuses dispatch rather than running unbudgeted work." "$EX_CONFIG"
+
+  BUDGET_POLICY_FILE="$f"
+  BUDGET_METHOD="$(yq -r '.estimate_method' "$f")"
+  BUDGET_RISK_PPM="$(budget_threshold_ppm "$(yq -r '.sizing_risk_ratio' "$f")")" || \
+    die "BUDGET_POLICY_UNREADABLE: sizing_risk_ratio in '$f' is not a decimal ratio" "$EX_CONFIG"
+  BUDGET_CONTINUATION_PPM="$(budget_threshold_ppm "$(yq -r '.continuation_ratio' "$f")")" || \
+    die "BUDGET_POLICY_UNREADABLE: continuation_ratio in '$f' is not a decimal ratio" "$EX_CONFIG"
+  budget_threshold_ppm "$(yq -r '.checkpoint_ratio' "$f")" >/dev/null || \
+    die "BUDGET_POLICY_UNREADABLE: checkpoint_ratio in '$f' is not a decimal ratio" "$EX_CONFIG"
+  log "budget policy: $f (method $BUDGET_METHOD, risk $(budget_ratio_decimal "$BUDGET_RISK_PPM"), continuation $(budget_ratio_decimal "$BUDGET_CONTINUATION_PPM"))"
+}
+
+# budget_payload_paths — the payload the worker is planned to receive, in the
+# declared order and each path exactly once: the persona file when one is
+# stamped, the story file, the generated prompt file, then every path declared
+# under the story's optional `payload_refs:` frontmatter key. The enumeration is
+# the contract (FR-97) — it is printed into the refusal marker so a human sees
+# what was counted, not just the total.
+#
+# payload_refs entries are REPO-RELATIVE, resolved against the worktree root
+# that also bounds the worker's sandbox. One that does not resolve to a readable
+# file INSIDE that root is PAYLOAD_REF_MISSING and refuses: an estimate that
+# silently skipped part of the payload would under-report exactly when it
+# matters, and one that counted a file outside the sandbox would report a
+# payload the worker cannot actually read. Containment is checked with the same
+# rule main() applies to the story itself, so `../shared/template.md` refuses
+# for the same reason a story outside the worktree does — `-f` and `-r` alone
+# are satisfied by any readable file on the host.
+budget_payload_paths() { # -> one absolute path per line, deduplicated
+  local seen=() declared=() p rp ref
+  [[ -n "${PERSONA_FILE:-}" ]] && declared+=("$PERSONA_FILE")
+  declared+=("$STORY" "$PROMPT_FILE")
+  for p in "${declared[@]}"; do
+    rp="$(realpath "$p" 2>/dev/null || true)"
+    [[ -n "$rp" && -f "$rp" ]] || continue
+    case " ${seen[*]:-} " in *" $rp "*) continue ;; esac
+    seen+=("$rp"); printf '%s\n' "$rp"
+  done
+  while IFS= read -r ref; do
+    [[ -n "$ref" ]] || continue
+    rp="$(realpath "$PWD/$ref" 2>/dev/null || true)"
+    [[ -n "$rp" && -f "$rp" && -r "$rp" ]] || \
+      die "PAYLOAD_REF_MISSING: the story declares payload_refs entry '$ref', which is not a readable file under $PWD. The sizing estimate counts every declared payload input or none — it never silently drops one." "$EX_CONFIG"
+    case "$rp" in
+      "$(realpath "$PWD")"/*) ;;
+      *) die "PAYLOAD_REF_MISSING: the story declares payload_refs entry '$ref', which resolves to '$rp' — OUTSIDE the current directory ($PWD) that bounds the worker's sandbox. The sandboxed worker cannot read it, so counting it would size a payload the worker never receives." "$EX_CONFIG" ;;
+    esac
+    case " ${seen[*]:-} " in *" $rp "*) continue ;; esac
+    seen+=("$rp"); printf '%s\n' "$rp"
+  done < <(yq --front-matter=extract -r '.payload_refs[]?' "$STORY" 2>/dev/null || true)
+}
+
+# file_bytes — byte length, BSD+GNU portable. `wc -c` is used rather than stat
+# so one code path serves both, and it counts bytes on every platform the kit
+# runs on.
+file_bytes() { wc -c < "$1" | tr -d ' '; }
+
+# refuse_story_sizing — the marker a human reads when a story was too big to
+# dispatch. It names the arithmetic and every input that produced it, because
+# "too big" without the inputs is not a finding anyone can act on. Its first
+# line carries the declared reason code SIZING_REFUSED, as does the dispatch
+# log line for the refusal: a stable code that appears in no artifact leaves
+# automation parsing an exit code or a marker prefix instead, which is the
+# coupling the reason-code discipline exists to remove.
+refuse_story_sizing() { # <marker> <estimate> <window> <ratio> <threshold> <inputs-table>
+  local marker="$1" est="$2" win="$3" ratio="$4" threshold="$5" inputs="$6"
+  rm -f "$marker"
+  cat > "$marker" <<EOF
+STORY-SIZING: reason=SIZING_REFUSED estimate=${est} window=${win} ratio=${ratio} threshold=${threshold} method=${BUDGET_METHOD}
+
+The planned payload for this story is already at or past the declared
+continuation threshold before a worker has read a single line of it. A payload
+that starts past the point where a worker would have to stop and hand over
+cannot complete the work, so dispatch is refused here rather than after a
+terminal, a placement and a session have been spent proving it.
+
+Inputs counted (each exactly once, by byte length):
+${inputs}
+Window: ${win} tokens, read exactly from the trusted catalog's min_context for
+the routed profile. It is not derived, extended or substituted, and the estimate
+was never sent to /v1/route: sizing is advisory kit policy and changes no route.
+
+This is a PLANNING outcome, not a routing one. Nothing was placed, no terminal
+was created, no command text was built, and this attempt wrote no result
+artifact.
+
+What a human can do:
+  - split the story so each part's payload fits inside the routed window; or
+  - reduce what the payload declares — the persona, the story body, or the
+    payload_refs list; or
+  - route the story to a profile whose catalog window is large enough, which
+    means a NEW POST /v1/route call and a NEW stamp, never an edit to this one; or
+  - change the declared threshold in ${BUDGET_POLICY_FILE}, which is a policy
+    decision and belongs to whoever owns that policy.
+EOF
+}
+
+# record_sizing_risk_unlocked — the append itself. Every caller reaches it
+# through record_sizing_risk, which holds the story's lock for the whole of it.
+record_sizing_risk_unlocked() { # <story> <estimate> <window> <ratio> <cycle>
+  local story="$1" est="$2" win="$3" ratio="$4" cycle="$5" line tmp
+  line="- budget: SIZING_RISK ${est}/${win} (${ratio}) cycle ${cycle} $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  if grep -qaE "^- budget: SIZING_RISK .* cycle ${cycle} " "$story"; then
+    log "budget: SIZING_RISK already recorded for cycle ${cycle} — not duplicated"
+    return 0
+  fi
+  if ! grep -qaE '^## Dev Agent Record[[:space:]]*$' "$story"; then
+    printf '\n## Dev Agent Record\n\n%s\n' "$line" >> "$story"
+    log "budget: SIZING_RISK recorded (Dev Agent Record heading created)"
+    return 0
+  fi
+  tmp="$(mktemp)"; TMPFILES+=("$tmp")
+  # Appended at the END of the Dev Agent Record section — after whatever the
+  # section already holds and before the next heading — so the lines read in
+  # cycle order instead of newest-first.
+  awk -v line="$line" '
+    /^## Dev Agent Record[[:space:]]*$/ { print; inrec = 1; next }
+    inrec && /^## / { print line; print ""; inrec = 0; print; next }
+    { print }
+    END { if (inrec) print line }
+  ' "$story" > "$tmp"
+  cat "$tmp" > "$story"
+  log "budget: SIZING_RISK recorded in $story"
+}
+
+# record_sizing_risk — append the sizing-risk finding to the story's own record,
+# once per cycle. IDEMPOTENCE IS KEYED ON THE CYCLE, not on the whole line: a
+# re-dispatch of the same cycle must not double-write, while a genuinely new
+# cycle is a new observation and gets its own line. When the story has no
+# Dev Agent Record heading the heading is created rather than the finding
+# dropped — a finding nobody records is a finding nobody acts on.
+#
+# The whole read-modify-write is ONE critical section, held on a descriptor
+# opened on the story itself. Without it two dispatches of the same story that
+# reach the risk band together interleave: the cheap outcome is a lost finding,
+# the real one is the loser rewriting the story from a copy it read before the
+# winner's write — which under contention truncates the frontmatter and the
+# body along with it. The lock is on the inode, and the write preserves the
+# inode, so it covers the `cat` as well as the read.
+#
+# flock(1) is util-linux and is absent from a stock macOS, which the kit also
+# runs on. There it degrades to the previous unserialised behaviour and says so
+# rather than refusing to record the finding at all: a dispatch must not fail
+# because a host lacks the tool that makes a concurrent dispatch safe.
+record_sizing_risk() { # <story> <estimate> <window> <ratio> <cycle>
+  local lk rc=0
+  if ! command -v flock >/dev/null 2>&1; then
+    log "budget: flock unavailable on this host — the story-record append runs unserialised"
+    record_sizing_risk_unlocked "$@"
+    return $?
+  fi
+  if ! exec {lk}<"$1"; then
+    log "budget: cannot open $1 to lock it — the append runs unserialised"
+    record_sizing_risk_unlocked "$@"
+    return $?
+  fi
+  flock -x "$lk"
+  record_sizing_risk_unlocked "$@" || rc=$?
+  exec {lk}<&-
+  return "$rc"
+}
+
+# ---------------------------------------------------------------------------
 # Claude credential/settings preflight (HARNESS-LAUNCH-claude.md §3, §5.0b, §7)
 # ---------------------------------------------------------------------------
 
@@ -610,6 +881,13 @@ main() {
   [[ -n "$CATALOG_PATH" && -f "$CATALOG_PATH" ]] || \
     die "no trusted catalog: set launcher.catalog_path or AGENT_STAMP_VALIDATE_CATALOG_PATH. It is NEVER taken from the stamp."
 
+  # The declared context-budget policy, loaded BEFORE anything else this run
+  # would do: before the stamp is opened, before Orca is asked anything, before
+  # any placement. Its thresholds are the only ones that exist, so a host that
+  # cannot read them has nothing to dispatch under.
+  BUDGET_POLICY="$(cfg '.launcher.budget_policy' AGENT_FLOW_BUDGET_POLICY "$router_dir/context-budget-policy.yaml")"
+  load_budget_policy "$BUDGET_POLICY"
+
   # ---- story frontmatter: everything OUTSIDE the closed stamp --------------
   # persona, gates, cycle policy and the stamp pointer are sibling keys. The
   # closed ExecutionStamp has no home for any of them and must not grow one.
@@ -668,6 +946,15 @@ main() {
   PROFILE_HOSTING="$(yq -r ".profiles.\"$MODEL_PROFILE\".hosting // \"\"" "$CATALOG_PATH")"
   [[ "$PROFILE_HOSTING" == "null" ]] && PROFILE_HOSTING=""
 
+  # The routed profile's context window, from the SAME trusted document, read
+  # EXACTLY: never derived from a model id, never extended, never substituted,
+  # and never taken from the stamp. A profile that declares none leaves this
+  # empty, and the budget then reports NOT_EVALUATED rather than a number the
+  # kit made up. (`claude/strong` declares none today; that is the honest
+  # catalog state and is registered as a catalog gap.)
+  PROFILE_MIN_CONTEXT="$(yq -r ".profiles.\"$MODEL_PROFILE\".min_context // \"\"" "$CATALOG_PATH")"
+  [[ "$PROFILE_MIN_CONTEXT" == "null" ]] && PROFILE_MIN_CONTEXT=""
+
   # ---- persona: never a silent no-op --------------------------------------
   PERSONA_FILE=""
   if [[ -n "$PERSONA" ]]; then
@@ -709,6 +996,54 @@ EOF
     die "$PWD is not an Orca-managed worktree — the worker would be invisible to Orca. Create the story's worktree with 'orca worktree create', mirror the story into it, and dispatch from there."
   repo_id="${selector%%::*}"
   orca_setup_policy_gate "$repo_id"
+
+  # ---- pre-dispatch sizing (FR-97, FR-98) ---------------------------------
+  # Deliberately HERE: after the setup-policy gate, and before /v1/place, stamp
+  # validation and the launch guard. Being told a story is too big to start is a
+  # PLANNING outcome, and a planning outcome must not consume a placement, a
+  # validation or a terminal to be delivered. Everything it needs already
+  # exists: the catalog window, the declared policy, and the payload files
+  # themselves — including the prompt file, which was written above.
+  BUDGET_STATE="NOT_EVALUATED" BUDGET_REASON="CONTEXT_WINDOW_UNDECLARED"
+  BUDGET_RATIO="" BUDGET_FINDINGS=()
+  local payload_bytes=0 payload_table="" pfile pbytes payload_list payload_rc=0
+  # Collected into a VARIABLE rather than read from a process substitution: a
+  # PAYLOAD_REF_MISSING refusal has to end the dispatch, and `exit` inside
+  # `< <(...)` only ends the subshell — the launch would carry on with an
+  # estimate that quietly skipped an input.
+  payload_list="$(budget_payload_paths)" || payload_rc=$?
+  (( payload_rc == 0 )) || exit "$payload_rc"
+  while IFS= read -r pfile; do
+    [[ -n "$pfile" ]] || continue
+    pbytes="$(file_bytes "$pfile")"
+    payload_bytes=$(( payload_bytes + pbytes ))
+    payload_table+="  ${pbytes} bytes  ${pfile}"$'\n'
+  done <<< "$payload_list"
+
+  BUDGET_ESTIMATE="$(budget_estimate_tokens "$payload_bytes" "$BUDGET_METHOD")" || \
+    die "BUDGET_POLICY_UNREADABLE: estimate_method '$BUDGET_METHOD' declared in $BUDGET_POLICY_FILE is not a method this launcher implements. An estimate produced by an undeclared method would be a number with no defined meaning." "$EX_CONFIG"
+
+  if [[ -n "$PROFILE_MIN_CONTEXT" ]]; then
+    local ratio_ppm
+    ratio_ppm="$(budget_ratio_ppm "$BUDGET_ESTIMATE" "$PROFILE_MIN_CONTEXT")" || \
+      die "catalog profile '$MODEL_PROFILE' declares min_context '$PROFILE_MIN_CONTEXT', which is not a positive token count" "$EX_STAMP_UNCHECKABLE"
+    BUDGET_RATIO="$(budget_ratio_decimal "$ratio_ppm")"
+    BUDGET_STATE="OK"; BUDGET_REASON=""
+    log "budget: estimate $BUDGET_ESTIMATE / window $PROFILE_MIN_CONTEXT = $BUDGET_RATIO (method $BUDGET_METHOD, window from CATALOG)"
+    if budget_crosses "$ratio_ppm" "$BUDGET_CONTINUATION_PPM"; then
+      refuse_story_sizing "${STORY}.blocked" "$BUDGET_ESTIMATE" "$PROFILE_MIN_CONTEXT" \
+        "$BUDGET_RATIO" "$(budget_ratio_decimal "$BUDGET_CONTINUATION_PPM")" "$payload_table"
+      log "STORY SIZING REFUSED: reason=SIZING_REFUSED — the planned payload is at or past the continuation threshold"
+      log "  nothing placed, nothing validated, nothing launched — see ${STORY}.blocked"
+      exit "$EX_SIZING_REFUSED"
+    fi
+    if budget_crosses "$ratio_ppm" "$BUDGET_RISK_PPM"; then
+      BUDGET_FINDINGS+=("SIZING_RISK")
+      record_sizing_risk "$STORY" "$BUDGET_ESTIMATE" "$PROFILE_MIN_CONTEXT" "$BUDGET_RATIO" "$CYCLE"
+    fi
+  else
+    log "budget: catalog profile '$MODEL_PROFILE' declares no min_context — NOT_EVALUATED (CONTEXT_WINDOW_UNDECLARED). estimate $BUDGET_ESTIMATE tokens is recorded, no threshold can fire, and no window is invented."
+  fi
 
   # ---- placement (fresh, per attempt) then FINAL validation ---------------
   EVIDENCE_FILE=""
@@ -863,6 +1198,18 @@ EOF
     --arg terminal "$TERMINAL_HANDLE" --arg hexit "$HARNESS_EXIT" \
     --arg status "$([[ $GATES_OK == true ]] && echo 'done' || echo 'gates_failed')" \
     --argjson placement "$placement_json" \
+    --argjson budget "$(jq -n \
+        --arg st "$BUDGET_STATE" --arg rs "$BUDGET_REASON" \
+        --arg win "$PROFILE_MIN_CONTEXT" --arg est "$BUDGET_ESTIMATE" \
+        --arg method "$BUDGET_METHOD" --arg ratio "$BUDGET_RATIO" \
+        --argjson findings "$(printf '%s\n' ${BUDGET_FINDINGS[@]+"${BUDGET_FINDINGS[@]}"} \
+                              | jq -R -s -c 'split("\n") | map(select(length > 0))')" \
+        '{state:$st, reason:(if $rs == "" then null else $rs end),
+          window_tokens:(if $win == "" then null else ($win|tonumber) end),
+          window_source:"CATALOG",
+          estimate_tokens:($est|tonumber), estimate_method:$method,
+          estimate_ratio:(if $ratio == "" then null else ($ratio|tonumber) end),
+          findings:$findings}')" \
     --argjson gates "$(for k in "${!GATE_RESULTS[@]}"; do
                          jq -n --arg k "$k" --arg v "${GATE_RESULTS[$k]}" '{($k):$v}'
                        done | jq -s 'add // {}')" \
@@ -872,6 +1219,7 @@ EOF
       stamp:{digest:$digest, expires_at:$expires, catalog_version:$catalog,
              validated:true},
       placement:$placement,
+      budget:$budget,
       launch:{orca_terminal:$terminal, harness_exit:($hexit|tonumber?)},
       gates:$gates}' > "${STORY}.result.json"
 

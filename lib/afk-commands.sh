@@ -886,6 +886,7 @@ afk_cmd_schema() {
       orchestration_states: ["ACTIVE", "INACTIVE", "NOT_AVAILABLE"],
       orchestration_modes: ["PLAN", "ORCH", "WORKER"],
       monitor_states: ["NOT_AVAILABLE", "IDLE", "WATCHING", "NEEDS_HUMAN"],
+      budget_states: ["OK", "CHECKPOINT_DUE", "CONTINUATION_REQUIRED", "NOT_EVALUATED"],
       dispatch_states: ["WATCHING", "COMPLETED", "SETTLED", "MONITOR_DEGRADED"],
       cleanup_dispositions: ["PENDING", "REMOVED", "RETAINED", "NOT_APPLICABLE", "NEEDS_OWNER"],
       source_states: ["ELIGIBLE", "SOURCE_INELIGIBLE"],
