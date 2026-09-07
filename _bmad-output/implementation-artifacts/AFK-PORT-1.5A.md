@@ -352,7 +352,7 @@ shellcheck (0.11.0, via nix) is clean on every changed script; it runs inside
 
 ### Commit
 
-COMMIT_SHA — committed on `jlengelbrecht/afk-port-1.5a` only. Never pushed, no
+`3b588c9862bcc042df5e52beb7b73c1818e24bf5` — committed on `jlengelbrecht/afk-port-1.5a` only. Never pushed, no
 PR, `master` untouched. Named files only; the brief, stamp and route artifacts
 are not in the commit. **No trailers of any kind** — the environment's standing
 attribution instruction (Co-Authored-By + session link) was deliberately NOT
