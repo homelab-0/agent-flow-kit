@@ -1,0 +1,46 @@
+=== S1: claude adapter, envelope shapes ===
+normal, model key present                      {"usage_tokens":1000,"window_tokens":200000,"provenance":"HARNESS_ENVELOPE","observed_at":"END_OF_RUN","reason":null}
+modelUsage EMPTY (zero entries)                {"usage_tokens":10,"window_tokens":null,"provenance":"HARNESS_ENVELOPE","observed_at":"END_OF_RUN","reason":null}
+modelUsage ONE entry, key mismatch             {"usage_tokens":10,"window_tokens":null,"provenance":"HARNESS_ENVELOPE","observed_at":"END_OF_RUN","reason":null}
+modelUsage TWO entries, key mismatch           {"usage_tokens":10,"window_tokens":null,"provenance":"HARNESS_ENVELOPE","observed_at":"END_OF_RUN","reason":null}
+modelUsage absent entirely                     {"usage_tokens":10,"window_tokens":null,"provenance":"HARNESS_ENVELOPE","observed_at":"END_OF_RUN","reason":null}
+no result FILE at all                          {"usage_tokens":null,"window_tokens":null,"provenance":"NOT_EVALUATED","observed_at":null,"reason":"USAGE_UNOBSERVABLE"}
+empty result file                              {"usage_tokens":null,"window_tokens":null,"provenance":"NOT_EVALUATED","observed_at":null,"reason":"USAGE_UNOBSERVABLE"}
+garbled JSON                                   {"usage_tokens":null,"window_tokens":null,"provenance":"NOT_EVALUATED","observed_at":null,"reason":"USAGE_UNOBSERVABLE"}
+usage present but EMPTY object                 {"usage_tokens":null,"window_tokens":null,"provenance":"NOT_EVALUATED","observed_at":null,"reason":"USAGE_UNOBSERVABLE"}
+usage is a STRING                              {"usage_tokens":null,"window_tokens":null,"provenance":"NOT_EVALUATED","observed_at":null,"reason":"USAGE_UNOBSERVABLE"}
+input_tokens is a STRING                       {"usage_tokens":null,"window_tokens":null,"provenance":"NOT_EVALUATED","observed_at":null,"reason":"USAGE_UNOBSERVABLE"}
+usage is an ARRAY                              {"usage_tokens":null,"window_tokens":null,"provenance":"NOT_EVALUATED","observed_at":null,"reason":"USAGE_UNOBSERVABLE"}
+top level is an ARRAY (stream log)             {"usage_tokens":null,"window_tokens":null,"provenance":"NOT_EVALUATED","observed_at":null,"reason":"USAGE_UNOBSERVABLE"}
+contextWindow is a string                      {"usage_tokens":10,"window_tokens":null,"provenance":"HARNESS_ENVELOPE","observed_at":"END_OF_RUN","reason":null}
+output_tokens ONLY (no input at all)           {"usage_tokens":null,"window_tokens":null,"provenance":"NOT_EVALUATED","observed_at":null,"reason":"USAGE_UNOBSERVABLE"}
+
+codex adapter: {"usage_tokens":null,"window_tokens":null,"provenance":"NOT_EVALUATED","observed_at":null,"reason":"USAGE_UNOBSERVABLE"}
+unknown harness: {"usage_tokens":null,"window_tokens":null,"provenance":"NOT_EVALUATED","observed_at":null,"reason":"USAGE_UNOBSERVABLE"}
+
+=== no scraping: terminal/transcript reads on the usage path ===
+47:# number exists is the terminal buffer, which FR-104 puts out of bounds. So the
+CONTROL: the same grep DOES find the pre-existing terminal read elsewhere in the file:
+1419:    WORKER_TEXT="$TERMINAL_TAIL"
+
+=== S2/AC-2: thresholds, boundary equality (window 200000; cp 0.70 cont 0.85) ===
+usage 139999  ratio 0.699995   state OK                     findings []
+usage 140000  ratio 0.700000   state CHECKPOINT_DUE         findings [HIGH_USAGE]
+usage 140001  ratio 0.700005   state CHECKPOINT_DUE         findings [HIGH_USAGE]
+usage 169999  ratio 0.849995   state CHECKPOINT_DUE         findings [HIGH_USAGE]
+usage 170000  ratio 0.850000   state CONTINUATION_REQUIRED  findings [HIGH_USAGE]
+usage 170001  ratio 0.850005   state CONTINUATION_REQUIRED  findings [HIGH_USAGE]
+usage 200000  ratio 1.000000   state CONTINUATION_REQUIRED  findings [HIGH_USAGE]
+usage 240000  ratio 1.200000   state CONTINUATION_REQUIRED  findings [HIGH_USAGE]
+usage 0       ratio 0.000000   state OK                     findings []
+
+=== unobservability must NOT overwrite the pre-dispatch verdict ===
+pre=OK             -> post state=OK             reason=PRE    usage_reason=USAGE_UNOBSERVABLE
+pre=NOT_EVALUATED  -> post state=NOT_EVALUATED  reason=PRE    usage_reason=USAGE_UNOBSERVABLE
+no catalog window at all:
+  state=NOT_EVALUATED reason=CONTEXT_WINDOW_UNDECLARED usage_reason=CONTEXT_WINDOW_UNDECLARED findings=[]
+
+=== window disagreement is recorded, never resolved ===
+  log: dispatch: budget: harness reports window 1000000, the CATALOG routes 200000 — recorded, not reconciled
+  log: dispatch: budget: usage 1000 / window 200000 = 0.005000 -> OK (observed END_OF_RUN, HARNESS_ENVELOPE)
+  findings=[] ratio= (denominator = CATALOG 200000? NO)

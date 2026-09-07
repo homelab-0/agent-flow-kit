@@ -390,3 +390,32 @@ One commit on `jlengelbrecht/afk-port-1.5b`, named files only, plain engineering
 language, no trailers of any kind. A commit cannot carry its own hash, so the
 SHA is reported in the worker_done body instead. Nothing pushed, no PR opened,
 `master` untouched. Briefs, stamps and route artifacts are not committed.
+
+### Coordinator log — merge (2026-09-07) **[MERGE LOGGED]**
+
+- Lane B routed naturally to `{claude, local-code-standard, medium}` and was
+  overridden to `claude/strong` under the owner's standing ruling (stamp
+  `sha256:f9578304…`), the reason citing the lane's payload and the Story 1.7
+  measurements of the natural route.
+- Implementation worker succeeded (`54dfd14`; reviewable 800/34 across 10
+  files, on budget); coordinator's independent five gates matched (286/0,
+  256/0, 478/0, diff-check, run-tests 555/1 with the recorded concurrency
+  aggregate the only red). Fresh-session adversarial + senior review
+  (`evidence/AFK-PORT-1.5B-REVIEW/`): NOT CLEAN — one blocker (the
+  continuation reason passed through a pattern denylist instead of the kit's
+  closed-vocabulary redaction) and nine residuals. One bounded fix cycle
+  (`AFK-PORT-1.5B-FIX`, `e2f3e92`) closed the blocker and seven residuals;
+  a diff-scoped post-fix review (`evidence/AFK-PORT-1.5B-POSTFIX-REVIEW/`)
+  verified every remedy, including a mutation test on the redaction
+  assertions, and raised four low/informational residuals (RES-P1: the
+  pre-existing `NEEDS-HUMAN:` channel still echoes worker text — backlog;
+  RES-P2 sweep union; RES-P3 unreachable `OK` arm; RES-P4 a stale HEAD in
+  the reviewer brief — process). Post-fix independent gates 290/0, 256/0,
+  478/0, diff-check, 590/1.
+- PR #32: GitGuardian flagged the redaction test's keyword sentinel
+  (`password=Tr0ub4dor&3`, incident 37069849, TEST_FILE); verified a test
+  sentinel, ignored as `test_credential` with an incident comment and a PR
+  comment, re-scanned clean on a fresh push. Squash-merged to `master` as
+  `6d1315f` under the owner's standing merge grant. Host kit updated through
+  the Git channel c89b302 → 6d1315f, `CONVERGED`, installed adapter
+  byte-identical (`evidence/AFK-PORT-1.5B/host-update-*.json`).
