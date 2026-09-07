@@ -1,0 +1,58 @@
+  PASS 2a: a local profile normally dispatches (baseline)
+  PASS 2a CONTROL: the baseline DID call /v1/place
+  PASS 2a: exit code is the distinct EX_SIZING_REFUSED=8
+  PASS 2a: marker is typed STORY-SIZING:
+  PASS 2a: marker names the ratio
+  PASS 2a: marker names the threshold
+  PASS 2a: NO /v1/place call was made
+  PASS 2a: NO Orca terminal was created
+  PASS 2a: NO harness command text was built
+  PASS 2a: NO result artifact was written
+  PASS 2a: the stamp validator was NEVER invoked
+     (info) 2b: exact-boundary proof lives in attack-06-exact-boundary.sh
+  PASS 2c/missing: refuses with the CONFIG exit code
+  PASS 2c/missing: names BUDGET_POLICY_UNREADABLE
+  PASS 2c/missing: the stamp was never opened
+  PASS 2c/missing: no placement call
+  PASS 2c/missing: no terminal
+  PASS 2c/unparseable: refuses with the CONFIG exit code
+  PASS 2c/unparseable: names BUDGET_POLICY_UNREADABLE
+  PASS 2c/unparseable: the stamp was never opened
+  PASS 2c/unparseable: no placement call
+  PASS 2c/unparseable: no terminal
+  PASS 2c/empty: refuses with the CONFIG exit code
+  PASS 2c/empty: names BUDGET_POLICY_UNREADABLE
+  PASS 2c/empty: the stamp was never opened
+  PASS 2c/empty: no placement call
+  PASS 2c/empty: no terminal
+  PASS 2d/missing-continuation_ratio: refused (exit 2)
+     (info) 2d/missing-continuation_ratio exit=2 err=BUDGET_POLICY_UNREADABLE
+  PASS 2d/missing-sizing_risk_ratio: refused (exit 2)
+     (info) 2d/missing-sizing_risk_ratio exit=2 err=BUDGET_POLICY_UNREADABLE
+  PASS 2d/missing-estimate_method: refused (exit 2)
+     (info) 2d/missing-estimate_method exit=2 err=BUDGET_POLICY_UNREADABLE
+  PASS 2d/missing-continuation_cap: refused (exit 2)
+     (info) 2d/missing-continuation_cap exit=2 err=BUDGET_POLICY_UNREADABLE
+  PASS 2d/nonnumeric-threshold: refused (exit 2)
+     (info) 2d/nonnumeric-threshold exit=2 err=BUDGET_POLICY_UNREADABLE
+  PASS 2d/ratio-dot85: refused (exit 2)
+     (info) 2d/ratio-dot85 exit=2 err=BUDGET_POLICY_UNREADABLE
+  PASS 2d/ratio-percent: refused (exit 2)
+     (info) 2d/ratio-percent exit=2 err=BUDGET_POLICY_UNREADABLE
+  PASS 2d/unknown-estimate-method: refused (exit 2)
+     (info) 2d/unknown-estimate-method exit=2 err=BUDGET_POLICY_UNREADABLE
+  PASS 2d/risk-nonnumeric: refused (exit 2)
+     (info) 2d/risk-nonnumeric exit=2 err=BUDGET_POLICY_UNREADABLE
+  PASS 2d/checkpoint-nonnumeric: refused (exit 2)
+     (info) 2d/checkpoint-nonnumeric exit=2 err=BUDGET_POLICY_UNREADABLE
+  PASS 2d/budget_states-only-three: refused (exit 2)
+     (info) 2d/budget_states-only-three exit=2 err=BUDGET_POLICY_UNREADABLE
+  PASS 2d/reason_codes-only-four: refused (exit 2)
+     (info) 2d/reason_codes-only-four exit=2 err=BUDGET_POLICY_UNREADABLE
+     (probe) ratio-0.850 (trailing zero)  exit=0  budget policy: /tmp/afk15a-review.NR5Dul/work/mut.yaml (method bytes4-v1, risk 0.600000, continuation 0.850000)
+     (probe) thresholds OUT OF ORDER      exit=0  budget policy: /tmp/afk15a-review.NR5Dul/work/mut.yaml (method bytes4-v1, risk 0.900000, continuation 0.100000)
+     (probe) continuation_cap: banana     exit=0  budget policy: /tmp/afk15a-review.NR5Dul/work/mut.yaml (method bytes4-v1, risk 0.600000, continuation 0.850000)
+     (probe) continuation_ratio: 0        exit=8  budget policy: /tmp/afk15a-review.NR5Dul/work/mut.yaml (method bytes4-v1, risk 0.600000, continuation 0.000000)
+     (probe) budget_states renamed x4     exit=0  budget policy: /tmp/afk15a-review.NR5Dul/work/mut.yaml (method bytes4-v1, risk 0.600000, continuation 0.850000)
+
+attack-02-refusal-ordering.sh: 38 passed, 0 failed

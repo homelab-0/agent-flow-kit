@@ -544,3 +544,31 @@ convention), including the three reviewer oracles re-run against the fixed tree.
   and forbids rewriting it, and a commit cannot contain its own hash. The
   previous cycle recorded its SHA in a second commit (`daa00e9`); that option is
   closed here. The coordinator has the SHA from the branch head.
+
+### Coordinator log — merge (2026-09-07) **[MERGE LOGGED]**
+
+- Story 1.5 split by the coordinator into four sequential lanes preserving its
+  total scope (A: window as routed fact + pre-dispatch sizing; B: usage
+  observation, checkpoint/continuation artifacts, budget state field; C:
+  continuation dispatch and cap; D: ORCH PM budget). Lane A routed naturally
+  to `{claude, local-code-standard, medium}` and was overridden to
+  `claude/strong` under the owner's standing ruling, the override reason
+  itself a story-sizing finding for the natural route (stamp
+  `sha256:44b7382f…`).
+- Implementation worker succeeded (`3b588c9`, `daa00e9`); coordinator's
+  independent gates matched (281/0, 476/0, diff-check, run-tests 454/1 with
+  the recorded concurrency aggregate the only red). Fresh-session adversarial
+  + senior review (`evidence/AFK-PORT-1.5A-REVIEW/`, natural route overridden
+  to `claude/strong` under the reviewer ≥ implementer rule): CLEAN, nine
+  residuals; one bounded fix cycle (`AFK-PORT-1.5A-FIX`, `fb05a31`) closed
+  R1–R3 and R8, re-verified by the coordinator with the reviewer's own
+  scripts; post-fix independent gates 281/0, 477/0, diff-check, 474/1.
+- Diff size: 8 reviewable files, +1080/−4, over the 800 budget. Reviewer and
+  coordinator recommended shipping as one PR; **owner ruled "fine to do this
+  as one PR"** and granted standing merge rights (2026-09-07). PR #30
+  squash-merged to `master` as `c89b302` (GitGuardian clean; Devin skipped,
+  no credits; zero comments). Host kit updated through the Git channel
+  2db1747 → c89b302, `CONVERGED`, installed adapter byte-identical
+  (`evidence/AFK-PORT-1.5A/host-update-*.json`).
+- Planning lesson applied to lanes B–D: budget the tests and the prose when
+  scoping a lane.
