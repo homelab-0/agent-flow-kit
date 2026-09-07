@@ -182,18 +182,56 @@ assert_eq "guard: {claude, claude/strong, anthropic-max} native pair is launchab
   "$(unsupported_launch_reason claude 'claude/strong' false anthropic-max)" ""
 assert_eq "guard: {codex, openai/strong, openai-plus} native pair is launchable" \
   "$(unsupported_launch_reason codex 'openai/strong' false openai-plus)" ""
-if [[ -n "$(unsupported_launch_reason claude local-code-standard true '')" ]]; then
-  ok "guard: {claude, local profile} has NO validated launch contract"
-else
-  bad "guard: {claude, local profile} has NO validated launch contract"
-fi
-if [[ -n "$(unsupported_launch_reason codex local-code-standard true '')" ]]; then
+# The second class, gateway-backed local: claude only, and every one of its
+# four conditions is load bearing. Each is a fact the catalog's launch contract
+# assumes, so each one alone must refuse.
+assert_eq "guard: {claude, local-code-standard} gateway-backed local pair is launchable" \
+  "$(unsupported_launch_reason claude local-code-standard true '' local free)" ""
+if [[ -n "$(unsupported_launch_reason codex local-code-standard true '' local free)" ]]; then
   ok "guard: {codex, local profile} has NO validated launch contract"
 else
-  bad "guard: {codex, local profile} has NO validated launch contract"
+  bad "guard: {codex, local profile} has NO validated launch contract" \
+    "the second class is claude-only; codex has no contract that reaches local compute"
 fi
+assert_contains "guard: codex+local keeps the established refusal wording" \
+  "$(unsupported_launch_reason codex local-code-standard true '' local free)" "explicitly forbids"
+
+GW_NO_HOSTING="$(unsupported_launch_reason claude local-code-standard true '' vendor free)"
+if [[ -n "$GW_NO_HOSTING" ]]; then
+  ok "guard: claude+placement without catalog hosting: local REFUSED"
+else
+  bad "guard: claude+placement without catalog hosting: local REFUSED" \
+    "the catalog half of the discriminator was not consulted"
+fi
+assert_contains "guard: it names the missing catalog hosting" "$GW_NO_HOSTING" "hosting: local"
 assert_contains "guard: local reason names the forbidden redirection" \
-  "$(unsupported_launch_reason claude local-code-standard true '')" "explicitly forbids"
+  "$GW_NO_HOSTING" "explicitly forbids"
+
+# Belt and braces: a catalog fact that was never supplied fails CLOSED rather
+# than defaulting open, so an un-updated caller cannot widen the class.
+if [[ -n "$(unsupported_launch_reason claude local-code-standard true '')" ]]; then
+  ok "guard: absent catalog evidence fails the pair closed"
+else
+  bad "guard: absent catalog evidence fails the pair closed"
+fi
+
+GW_POOLED="$(unsupported_launch_reason claude local-code-standard true anthropic-max local free)"
+if [[ -n "$GW_POOLED" ]]; then
+  ok "guard: a local profile stamped with a vendor pool REFUSED"
+else
+  bad "guard: a local profile stamped with a vendor pool REFUSED" \
+    "funding and execution disagree on that stamp; neither class covers it"
+fi
+assert_contains "guard: it names the pool that should not be there" \
+  "$GW_POOLED" "entitlement_pool 'anthropic-max'"
+
+GW_PAID="$(unsupported_launch_reason claude local-code-standard true '' local subscription)"
+if [[ -n "$GW_PAID" ]]; then
+  ok "guard: a local profile stamped cost_class subscription REFUSED"
+else
+  bad "guard: a local profile stamped cost_class subscription REFUSED"
+fi
+assert_contains "guard: it names the cost class" "$GW_PAID" "cost_class is 'subscription'"
 
 # The second instance of the class: {claude, minimax/strong} is vendor-hosted
 # (placement_required=false) in catalog 1.5.0, reachable ONLY via the forbidden
@@ -281,6 +319,89 @@ assert_absent "claude cmd: --bare forbidden"                    "$CMD" "--bare"
 # Only ONE command substitution may appear, and it must be the prompt file read.
 subs="$(grep -o '\$(' <<<"$CMD" | wc -l)"
 assert_eq "claude cmd: exactly one command substitution (the prompt file)" "$subs" "1"
+
+# --- the generated gateway-backed local claude command ---------------------
+# The second launch class. It must be the native command plus exactly the
+# contract's five variables, and nothing else: the value of the credential
+# must not be IN it, and the claude invocation itself must not differ by a byte.
+GWCMD="$(build_claude_gateway_command "/home/op" "/usr/bin:/bin" "op" \
+          "/wt/STORY.md.prompt" "qwen36-27b" "high" "/wt/STORY.md.claude-result.json" \
+          "/wt/_bmad/bmm/agents/dev.md" "https://gateway.invalid" \
+          "op://stubvault/agw-claude-code/credential" "/home/op/.op-agent-env" \
+          "kserve-a5000" "65536")"
+
+head1 "   generated gateway-backed local claude terminal command"
+printf '   %s\n' "$GWCMD"
+
+# The credential is assigned to a shell variable before `env -i`, so an xtrace
+# inherited from the terminal's own shell would print its value into a buffer
+# Orca persists. The generated text disables xtrace before the assignment, and
+# it has to be the FIRST thing in the text or the assignment can precede it.
+assert_eq "gateway cmd: the text opens by disabling xtrace" \
+  "${GWCMD:0:8}" "set +x; "
+# ...and that prefix is the gateway class's alone: the native text assigns
+# nothing and must not have acquired it.
+assert_absent "claude cmd: the native text is unchanged — no xtrace prefix" \
+  "$CMD" "set +x"
+assert_eq "claude cmd: the native text still opens with the env -i sanitizer" \
+  "${CMD:0:6}" "env -i"
+
+# The env -i allowlist is the contract, and it is asserted as a SET, not as a
+# handful of substrings: an extra ANTHROPIC_* or CLAUDE_* name is exactly the
+# kind of quiet widening this class exists to make impossible.
+GW_ENV_SEGMENT="${GWCMD#*env -i }"
+GW_ENV_SEGMENT="${GW_ENV_SEGMENT%% claude -p*}"
+GW_ENV_NAMES="$(tr ' ' '\n' <<<"$GW_ENV_SEGMENT" \
+                | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' | tr '\n' ' ')"
+assert_eq "gateway cmd: env -i allowlist is EXACTLY the contract" \
+  "$GW_ENV_NAMES" \
+  "HOME PATH USER LANG TERM ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL ANTHROPIC_CUSTOM_HEADERS CLAUDE_CODE_MAX_CONTEXT_TOKENS "
+
+assert_contains "gateway cmd: the native sanitizer prefix is unchanged" \
+  "$GWCMD" "env -i HOME=/home/op PATH=/usr/bin:/bin USER=op LANG=C.UTF-8 TERM=dumb "
+assert_contains "gateway cmd: base URL is a launcher literal" \
+  "$GWCMD" "ANTHROPIC_BASE_URL=https://gateway.invalid"
+assert_contains "gateway cmd: ANTHROPIC_MODEL pins the catalog physical model" \
+  "$GWCMD" "ANTHROPIC_MODEL=qwen36-27b"
+assert_contains "gateway cmd: --model is the same value" "$GWCMD" "--model qwen36-27b"
+assert_contains "gateway cmd: x-placement copied verbatim from the evidence" \
+  "$GWCMD" "ANTHROPIC_CUSTOM_HEADERS=$(shq 'x-placement: kserve-a5000')"
+assert_contains "gateway cmd: the profile's REAL context window is set" \
+  "$GWCMD" "CLAUDE_CODE_MAX_CONTEXT_TOKENS=65536"
+
+# The credential: a reference and an env file in the text, the value nowhere.
+assert_contains "gateway cmd: only the 1Password REFERENCE is embedded" \
+  "$GWCMD" "op read op://stubvault/agw-claude-code/credential"
+assert_contains "gateway cmd: the service-account env file is sourced in a subshell" \
+  "$GWCMD" '"$(. /home/op/.op-agent-env && op read'
+assert_contains "gateway cmd: an empty credential is fatal BEFORE claude starts" \
+  "$GWCMD" '[ -n "$ANTHROPIC_AUTH_TOKEN" ] ||'
+assert_contains "gateway cmd: and it exits without a false exit marker" "$GWCMD" "exit 78"
+assert_contains "gateway cmd: the resolved value is dropped afterwards" \
+  "$GWCMD" "unset ANTHROPIC_AUTH_TOKEN"
+
+# Everything the native class froze, still frozen.
+assert_absent "gateway cmd: ANTHROPIC_API_KEY never appears"     "$GWCMD" "ANTHROPIC_API_KEY"
+assert_absent "gateway cmd: CLAUDE_CONFIG_DIR never propagated"  "$GWCMD" "CLAUDE_CONFIG_DIR"
+assert_absent "gateway cmd: no Bash/shell tool granted"          "$GWCMD" "Bash"
+assert_absent "gateway cmd: no permission bypass"                "$GWCMD" "dangerously"
+assert_absent "gateway cmd: --bare forbidden"                    "$GWCMD" "--bare"
+assert_absent "gateway cmd: no runtime \$HOME lookup"            "$GWCMD" '$HOME'
+assert_absent "gateway cmd: no runtime \$PATH lookup"            "$GWCMD" '$PATH'
+
+# Exactly two command substitutions: the credential read and the prompt file.
+gw_subs="$(grep -o '\$(' <<<"$GWCMD" | wc -l)"
+assert_eq "gateway cmd: exactly two command substitutions" "$gw_subs" "2"
+
+# AC-5's other half, proved by construction rather than by eyeballing: the
+# claude invocation is byte-identical to the native one for the same inputs.
+GW_NATIVE_TWIN="$(build_claude_command "/home/op" "/usr/bin:/bin" "op" \
+                   "/wt/STORY.md.prompt" "qwen36-27b" "high" \
+                   "/wt/STORY.md.claude-result.json" "/wt/_bmad/bmm/agents/dev.md")"
+GW_TAIL="${GWCMD#*CLAUDE_CODE_MAX_CONTEXT_TOKENS=65536 }"
+GW_TAIL="${GW_TAIL%; unset ANTHROPIC_AUTH_TOKEN}"
+assert_eq "gateway cmd: the claude invocation is byte-identical to the native one" \
+  "$GW_TAIL" "${GW_NATIVE_TWIN#*TERM=dumb }"
 
 # --- the generated codex command -------------------------------------------
 CCMD="$(build_codex_command "/wt/STORY.md.prompt" "gpt-5.6-sol" "xhigh")"
@@ -400,6 +521,7 @@ profiles:
         placement: null
   local-code-standard:
     hosting: local
+    min_context: 65536
     physical:
       - model_id: qwen36-27b
         placement: workstation
@@ -432,8 +554,11 @@ case "$sub" in
     echo created >> "$STUB_STATE/terminal-creates"
     jq -n '{ok:true,result:{terminal:{handle:"term_stub"}}}' ;;
   "terminal read")
-    jq -n --arg t "${STUB_TERMINAL_TAIL:-}" \
-      '{ok:true,result:{terminal:{handle:"term_stub",status:"running",
+    # STUB_TERMINAL_STATUS lets a case drive the terminal to its END state. A
+    # stub that only ever answers "running" cannot exercise the launch failure
+    # a terminal that exits without an exit marker is supposed to be.
+    jq -n --arg t "${STUB_TERMINAL_TAIL:-}" --arg s "${STUB_TERMINAL_STATUS:-running}" \
+      '{ok:true,result:{terminal:{handle:"term_stub",status:$s,
         tail:($t|split("\n"))}}}' ;;
   "terminal rename") jq -n '{ok:true}' ;;
   *) jq -n '{ok:true,result:{}}' ;;
@@ -474,7 +599,20 @@ STUB
 
 printf '#!/usr/bin/env bash\nexit 0\n' > "$BIN/claude"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$BIN/codex"
+
+# --- stub op (the 1Password CLI) and its service-account env file ----------
+# GW_SENTINEL stands in for the scoped gateway key. It is what a real `op read`
+# would return, and section 3b proves it reaches the harness environment and
+# NOTHING else: not the command text, not the terminal title, not a log, not a
+# file the launcher writes.
+GW_SENTINEL='sentinel-gateway-credential-2f4a9c'
+cat > "$BIN/op" <<STUB
+#!/usr/bin/env bash
+[[ "\$1" == "read" && -n "\${2:-}" ]] || exit 2
+printf '%s' '$GW_SENTINEL'
+STUB
 chmod +x "$BIN"/*
+printf 'export OP_SERVICE_ACCOUNT_TOKEN=stub-service-account\n' > "$WORK/op-env"
 
 STUB_STATE="$WORK/state"; mkdir -p "$STUB_STATE"
 export STUB_STATE
@@ -491,8 +629,8 @@ write_stamp() { # write_stamp <file> <effort> <placement_required> [profile] [ha
         --arg h "${5:-claude}" --arg pool "${6:-}" \
     '{harness:$h, model_profile:$p, effort:$e,
       cost_class:(if $pr then "free" else "subscription" end),
-      entitlement_pool:(if $pr then null
-                        elif $pool != "" then $pool
+      entitlement_pool:(if $pool != "" then $pool
+                        elif $pr then null
                         else "anthropic-max" end),
       metered:false,
       placement_policy:"prefer-warm-local", placement_required:$pr,
@@ -517,6 +655,9 @@ run_dispatch() { # run_dispatch <story> -> echoes exit code, stderr to $WORK/err
       AGENT_ROUTER_TOKEN_ENV="AGENT_ROUTER_TOKEN" \
       AGENT_DIR="" AGENT_FLOW_APPROVED_HOME="" AGENT_FLOW_APPROVED_PATH="" \
       AGENT_FLOW_LAUNCH_TIMEOUT=20 \
+      AGENT_FLOW_GATEWAY_URL="${STUB_GATEWAY_URL-https://gateway.invalid}" \
+      AGENT_FLOW_GATEWAY_TOKEN_REF="${STUB_TOKEN_REF-op://stubvault/agw-claude-code/credential}" \
+      AGENT_FLOW_OP_ENV_FILE="${STUB_OP_ENV_FILE-$WORK/op-env}" \
       CLAUDE_CONFIG_DIR="" \
       bash "$DISPATCH" "$1" 1 ) >"$WORK/out" 2>"$WORK/err"
   echo $?
@@ -660,10 +801,10 @@ write_story "$WT/s-local.md" "persona: dev
 gates: [\"true\"]"
 write_stamp "$WT/s-local.md.stamp.json" high true local-code-standard
 rc="$(run_dispatch s-local.md)"
-# The placement MACHINERY runs to completion; the launch is then refused by the
-# capability guard, because no local profile has a validated launch contract on
-# either vendor harness today (section 3b). Exit 7, not 0.
-assert_eq "placement required: placed+validated, then refused at the guard" "$rc" "7"
+# The placement machinery runs to completion and the launch now proceeds: this
+# pair has a validated launch class (section 3b). What section 3 asserts here is
+# only that placement happened first, freshly, and reached the validator.
+assert_eq "placement required: placed, validated, launched" "$rc" "0"
 assert_contains "placement required: POST /v1/place called" \
   "$(cat "$STUB_STATE/curl-calls")" "/v1/place"
 assert_contains "placement required: --evidence passed to the validator" \
@@ -703,13 +844,12 @@ assert_eq "non-default CLAUDE_CONFIG_DIR -> fails closed" "$out_rc" "2"
 assert_contains "CLAUDE_CONFIG_DIR: named as unsupported" "$(cat "$WORK/err")" "unsupported"
 
 # ===========================================================================
-head1 "3b. Launch-contract capability guard — fail-closed, reaches no runner"
+head1 "3b. Launch classes — one admitted exactly, everything else fail-closed"
 # ===========================================================================
-# The router's catalog approves {claude, local-code-standard} and /v1/route
-# really does recommend it, but HARNESS-LAUNCH-claude.md §7 forbids every
-# redirection that could point Claude Code at local compute. Routable and
-# unlaunchable at once. The adapter must stop, loudly and distinctly, and must
-# never retarget the attempt to a harness it CAN launch.
+# The adapter has two validated launch classes and declares its own capability
+# for both. A pair inside one launches, exactly as its contract specifies; a
+# pair outside both is stopped loudly and distinctly, before any command text
+# exists, and is never retargeted to a harness the adapter CAN launch.
 
 assert_guard_refuses() { # <harness> <profile>
   local h="$1" prof="$2" story="s-guard-$1.md" marker rc
@@ -752,7 +892,6 @@ gates: [\"true\"]"
     "$(cat "$WORK/err")" "falling back"
 }
 
-assert_guard_refuses claude local-code-standard
 assert_guard_refuses codex  local-code-standard
 
 # The second instance of the class: {claude, minimax/strong, minimax-max} is a
@@ -784,6 +923,231 @@ assert_eq "guard[minimax]: stamp model_profile untouched" \
   "$(jq -r .model_profile "$WT/s-guard-minimax.md.stamp.json")" "minimax/strong"
 assert_eq "guard[minimax]: stamp entitlement_pool untouched" \
   "$(jq -r .entitlement_pool "$WT/s-guard-minimax.md.stamp.json")" "minimax-max"
+
+# --- the gateway-backed local class, admitted and held to its contract -----
+# {claude, local-code-standard} is the pair the guard used to refuse. It is now
+# launchable, and ONLY as the catalog's launch contract specifies it.
+
+: > "$STUB_STATE/terminal-creates"
+: > "$STUB_STATE/curl-calls"
+rm -f "$STUB_STATE/last-command.txt" "$WT/s-gateway.md.result.json" "$WT/s-gateway.md.blocked"
+export STUB_TERMINAL_TAIL="ok
+CLAUDE_EXIT=0"
+write_story "$WT/s-gateway.md" "persona: dev
+gates: [\"true\"]"
+write_stamp "$WT/s-gateway.md.stamp.json" high true local-code-standard claude
+rc="$(run_dispatch s-gateway.md)"
+
+assert_eq "gateway: {claude, local-code-standard} launches (exit 0)" "$rc" "0"
+assert_no_file "gateway: no blocked marker written" "$WT/s-gateway.md.blocked"
+assert_contains "gateway: placement was fetched for this attempt" \
+  "$(cat "$STUB_STATE/curl-calls")" "/v1/place"
+assert_contains "gateway: the stamp was validated with that evidence" \
+  "$(cat "$STUB_STATE/validator-argv.txt")" "--evidence"
+
+GW_LAUNCHED="$(cat "$STUB_STATE/last-command.txt" 2>/dev/null || true)"
+GW_L_SEGMENT="${GW_LAUNCHED#*env -i }"
+GW_L_SEGMENT="${GW_L_SEGMENT%% claude -p*}"
+GW_L_NAMES="$(tr ' ' '\n' <<<"$GW_L_SEGMENT" \
+              | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' | tr '\n' ' ')"
+assert_eq "gateway: the LAUNCHED allowlist is exactly the contract" \
+  "$GW_L_NAMES" \
+  "HOME PATH USER LANG TERM ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL ANTHROPIC_CUSTOM_HEADERS CLAUDE_CODE_MAX_CONTEXT_TOKENS "
+assert_contains "gateway: launched with the configured endpoint" \
+  "$GW_LAUNCHED" "ANTHROPIC_BASE_URL=https://gateway.invalid"
+assert_contains "gateway: launched pinned to the catalog physical model" \
+  "$GW_LAUNCHED" "ANTHROPIC_MODEL=qwen36-27b"
+assert_contains "gateway: --model carries the same value" "$GW_LAUNCHED" "--model qwen36-27b"
+# The stub /v1/place answers headers["x-placement"] = workstation. The
+# launcher must convey THAT, verbatim, and must not compose one from the
+# catalog's placement hint or from the result's own `placement` field.
+assert_contains "gateway: x-placement comes verbatim from the place evidence" \
+  "$GW_LAUNCHED" "ANTHROPIC_CUSTOM_HEADERS=$(shq 'x-placement: workstation')"
+assert_contains "gateway: the catalog's min_context is the session window" \
+  "$GW_LAUNCHED" "CLAUDE_CODE_MAX_CONTEXT_TOKENS=65536"
+assert_contains "gateway: stamped effort still passed explicitly" "$GW_LAUNCHED" "--effort high"
+assert_contains "gateway: least-privilege tool set unchanged" \
+  "$GW_LAUNCHED" '--tools "Read,Glob,Grep,Write"'
+assert_contains "gateway: --strict-mcp-config unchanged" "$GW_LAUNCHED" "--strict-mcp-config"
+assert_contains "gateway: acceptEdits unchanged" "$GW_LAUNCHED" "--permission-mode acceptEdits"
+assert_contains "gateway: stdin redirect unchanged" "$GW_LAUNCHED" "< /dev/null"
+assert_contains "gateway: in-band exit capture unchanged" "$GW_LAUNCHED" 'echo "CLAUDE_EXIT=$?"'
+assert_absent "gateway: no story body inline" "$GW_LAUNCHED" "Do the thing"
+assert_absent "gateway: ANTHROPIC_API_KEY never appears" "$GW_LAUNCHED" "ANTHROPIC_API_KEY"
+
+# --- the credential never leaves the harness's own environment -------------
+# The reference and the env file are in the text; the VALUE is resolved by the
+# terminal at launch time. Prove first that the configured mechanism really
+# does resolve to the sentinel, so the absence assertions below are not
+# vacuously true of a mechanism that resolves to nothing.
+# Which of these carries the proof: "the value is NOT in the generated command"
+# is the load-bearing one — the stub never executes the command text, so the
+# credential is never resolved during a suite run and the remaining absences
+# are structural. Their runtime counterparts (the terminal shell, its children,
+# xtrace, /proc) are covered by the reviewer's attack-03 in
+# _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.4-LV-REVIEW/.
+GW_RESOLVED="$( . "$WORK/op-env" && "$BIN/op" read "op://stubvault/agw-claude-code/credential" )"
+assert_eq "gateway: the configured reference really resolves to the credential" \
+  "$GW_RESOLVED" "$GW_SENTINEL"
+assert_contains "gateway: the command carries the REFERENCE" \
+  "$GW_LAUNCHED" "op read op://stubvault/agw-claude-code/credential"
+assert_absent "gateway: the value is NOT in the generated command" "$GW_LAUNCHED" "$GW_SENTINEL"
+assert_absent "gateway: the value is NOT in the terminal title" \
+  "$(cat "$STUB_STATE/last-title.txt")" "$GW_SENTINEL"
+assert_absent "gateway: the value is NOT on dispatch stderr" "$(cat "$WORK/err")" "$GW_SENTINEL"
+assert_absent "gateway: the value is NOT on dispatch stdout" "$(cat "$WORK/out")" "$GW_SENTINEL"
+assert_absent "gateway: the value is NOT in the prompt file" \
+  "$(cat "$WT/s-gateway.md.prompt")" "$GW_SENTINEL"
+assert_absent "gateway: the value is NOT in the result artifact" \
+  "$(cat "$WT/s-gateway.md.result.json")" "$GW_SENTINEL"
+GW_LEAKS="$(grep -rl -- "$GW_SENTINEL" "$WT" "$STUB_STATE" 2>/dev/null || true)"
+assert_eq "gateway: no file the launcher wrote contains the credential" "$GW_LEAKS" ""
+
+assert_eq "gateway: the run still completes honestly" \
+  "$(jq -r .status "$WT/s-gateway.md.result.json")" "done"
+assert_eq "gateway: placement is summarised in the result" \
+  "$(jq -r .placement.required "$WT/s-gateway.md.result.json")" "true"
+
+# --- fail-closed preflights, each before any terminal exists ---------------
+# Every one of these is a value the launch cannot be specified without. None of
+# them may produce a half-specified claude session, so each refuses while
+# nothing exists: no terminal, no command text, no result artifact.
+# (a) no gateway endpoint configured
+: > "$STUB_STATE/terminal-creates"
+rm -f "$STUB_STATE/last-command.txt" "$WT/s-gateway.md.result.json"
+rc="$(STUB_GATEWAY_URL=""; export STUB_GATEWAY_URL; run_dispatch s-gateway.md)"
+assert_eq "gateway preflight: no endpoint -> exit 2" "$rc" "2"
+assert_contains "gateway preflight: names launcher.gateway_endpoint" \
+  "$(cat "$WORK/err")" "launcher.gateway_endpoint"
+assert_empty_file "gateway preflight: endpoint — no terminal created" "$STUB_STATE/terminal-creates"
+assert_no_file "gateway preflight: endpoint — no command built" "$STUB_STATE/last-command.txt"
+assert_no_file "gateway preflight: endpoint — no result artifact" "$WT/s-gateway.md.result.json"
+
+# (a2) and a refusal does not leave LAST cycle's result artifact on disk.
+# `rm -f` sits above the preflights, so a reader that opens
+# ${STORY}.claude-result.json by name after a refusal finds nothing rather than
+# a stale result for a launch that never happened.
+: > "$STUB_STATE/terminal-creates"
+rm -f "$STUB_STATE/last-command.txt" "$WT/s-gateway.md.result.json"
+printf '{"stale":"last cycle"}' > "$WT/s-gateway.md.claude-result.json"
+rc="$(STUB_GATEWAY_URL=""; export STUB_GATEWAY_URL; run_dispatch s-gateway.md)"
+assert_eq "gateway preflight: stale artifact — still refuses (exit 2)" "$rc" "2"
+assert_no_file "gateway preflight: the STALE claude-result.json is gone" \
+  "$WT/s-gateway.md.claude-result.json"
+assert_no_file "gateway preflight: stale — no result artifact written" \
+  "$WT/s-gateway.md.result.json"
+assert_empty_file "gateway preflight: stale — no terminal created" "$STUB_STATE/terminal-creates"
+
+# (b) no credential reference configured
+: > "$STUB_STATE/terminal-creates"
+rm -f "$STUB_STATE/last-command.txt" "$WT/s-gateway.md.result.json"
+rc="$(STUB_TOKEN_REF=""; export STUB_TOKEN_REF; run_dispatch s-gateway.md)"
+assert_eq "gateway preflight: no credential reference -> exit 2" "$rc" "2"
+assert_contains "gateway preflight: names launcher.gateway_token_ref" \
+  "$(cat "$WORK/err")" "launcher.gateway_token_ref"
+assert_empty_file "gateway preflight: credential — no terminal created" "$STUB_STATE/terminal-creates"
+assert_no_file "gateway preflight: credential — no command built" "$STUB_STATE/last-command.txt"
+assert_no_file "gateway preflight: credential — no result artifact" "$WT/s-gateway.md.result.json"
+
+# (c) the placement evidence carries no x-placement header
+: > "$STUB_STATE/terminal-creates"
+rm -f "$STUB_STATE/last-command.txt" "$WT/s-gateway.md.result.json"
+cat > "$BIN/curl" <<'STUB'
+#!/usr/bin/env bash
+out=""; prev=""
+for a in "$@"; do [[ "$prev" == "-o" ]] && out="$a"; prev="$a"; done
+echo "$*" >> "$STUB_STATE/curl-calls"
+[[ -n "$out" ]] && jq -n '{status:"placed", model:"qwen36-27b",
+    placement:"workstation", readiness:"warm", headers:{},
+    ttl_seconds:30, reason:null, alternatives:[], catalog_version:"sha256:x"}' > "$out"
+printf '200'
+STUB
+chmod +x "$BIN/curl"
+rc="$(run_dispatch s-gateway.md)"
+assert_eq "gateway preflight: no x-placement header -> exit 6" "$rc" "6"
+assert_contains "gateway preflight: says the header is copied, never composed" \
+  "$(cat "$WORK/err")" "verbatim"
+assert_empty_file "gateway preflight: header — no terminal created" "$STUB_STATE/terminal-creates"
+assert_no_file "gateway preflight: header — no command built" "$STUB_STATE/last-command.txt"
+assert_no_file "gateway preflight: header — no result artifact" "$WT/s-gateway.md.result.json"
+
+# restore the PLACING stub: the next case is about the catalog, not placement,
+# and a headerless place result would refuse it before the catalog is read
+cat > "$BIN/curl" <<'STUB'
+#!/usr/bin/env bash
+out=""; prev=""
+for a in "$@"; do [[ "$prev" == "-o" ]] && out="$a"; prev="$a"; done
+echo "$*" >> "$STUB_STATE/curl-calls"
+if [[ "${STUB_PLACE_HTTP:-200}" == "200" ]]; then
+  [[ -n "$out" ]] && jq -n '{status:"placed", model:"qwen36-27b",
+      placement:"workstation", readiness:"warm", headers:{"x-placement":"workstation"},
+      ttl_seconds:30, reason:null, alternatives:[], catalog_version:"sha256:x"}' > "$out"
+  printf '200'
+else
+  [[ -n "$out" ]] && printf '{}' > "$out"
+  printf '%s' "${STUB_PLACE_HTTP}"
+fi
+STUB
+chmod +x "$BIN/curl"
+
+# (d) the catalog profile declares no min_context
+: > "$STUB_STATE/terminal-creates"
+rm -f "$STUB_STATE/last-command.txt" "$WT/s-gateway.md.result.json"
+cp "$WORK/catalog.yaml" "$WORK/catalog-full.yaml"
+yq -i 'del(.profiles.local-code-standard.min_context)' "$WORK/catalog.yaml"
+rc="$(run_dispatch s-gateway.md)"
+assert_eq "gateway preflight: no min_context -> exit 2" "$rc" "2"
+assert_contains "gateway preflight: names the unknown context window" \
+  "$(cat "$WORK/err")" "min_context"
+assert_empty_file "gateway preflight: context — no terminal created" "$STUB_STATE/terminal-creates"
+assert_no_file "gateway preflight: context — no command built" "$STUB_STATE/last-command.txt"
+assert_no_file "gateway preflight: context — no result artifact" "$WT/s-gateway.md.result.json"
+cp "$WORK/catalog-full.yaml" "$WORK/catalog.yaml"
+
+# --- an empty credential read is a LAUNCH FAILURE, never status: done -------
+# The class's single most important safety property, exercised end to end
+# rather than argued. The generated text refuses and exits 78 WITHOUT printing
+# a CLAUDE_EXIT line, so the terminal reaches its end state with no marker.
+# Drive the stub to exactly that shape: dispatch must report a launch that did
+# not complete honestly and write no result artifact at all.
+: > "$STUB_STATE/terminal-creates"
+rm -f "$STUB_STATE/last-command.txt" "$WT/s-gateway.md.result.json" \
+      "$WT/s-gateway.md.claude-result.json"
+export STUB_TERMINAL_STATUS="exited"
+export STUB_TERMINAL_TAIL="dispatch: gateway credential resolved EMPTY; refusing to start claude unauthenticated"
+rc="$(run_dispatch s-gateway.md)"
+assert_eq "gateway empty-read: reported as a launch failure (exit 2)" "$rc" "2"
+assert_contains "gateway empty-read: says the launch did not complete honestly" \
+  "$(cat "$WORK/err")" "did not complete honestly"
+assert_no_file "gateway empty-read: no result artifact — never status: done" \
+  "$WT/s-gateway.md.result.json"
+unset STUB_TERMINAL_STATUS
+export STUB_TERMINAL_TAIL="ok
+CLAUDE_EXIT=0"
+
+# --- and the class stays narrow: a local profile stamped with a vendor pool -
+# Free execution funded from a vendor subscription pool is a stamp whose
+# funding story and execution story disagree. Neither class covers it, and the
+# refusal must name the pool rather than wave it through as "local, therefore
+# fine".
+: > "$STUB_STATE/terminal-creates"
+rm -f "$STUB_STATE/last-command.txt" "$WT/s-gw-pooled.md.result.json" "$WT/s-gw-pooled.md.blocked"
+write_story "$WT/s-gw-pooled.md" "persona: dev
+gates: [\"true\"]"
+write_stamp "$WT/s-gw-pooled.md.stamp.json" high true local-code-standard claude anthropic-max
+rc="$(run_dispatch s-gw-pooled.md)"
+assert_eq "gateway: local profile on a vendor pool -> exit 7" "$rc" "7"
+gwp_marker="$(cat "$WT/s-gw-pooled.md.blocked" 2>/dev/null || true)"
+assert_contains "gateway: marker is distinctly typed" "$gwp_marker" "UNSUPPORTED-LAUNCH-CONTRACT:"
+assert_contains "gateway: marker names the pool that should not be there" \
+  "$gwp_marker" "entitlement_pool 'anthropic-max'"
+assert_contains "gateway: marker says the stamp was VALID" "$gwp_marker" "The stamp is VALID"
+assert_contains "gateway: marker says route NOT modified" "$gwp_marker" "route was NOT modified"
+assert_empty_file "gateway: pooled — no Orca terminal created" "$STUB_STATE/terminal-creates"
+assert_no_file "gateway: pooled — no harness command built" "$STUB_STATE/last-command.txt"
+assert_no_file "gateway: pooled — no result artifact" "$WT/s-gw-pooled.md.result.json"
+assert_eq "gateway: pooled — stamp entitlement_pool untouched" \
+  "$(jq -r .entitlement_pool "$WT/s-gw-pooled.md.stamp.json")" "anthropic-max"
 
 # The vendor pairs each harness DOES have a contract for still launch normally —
 # the guard is a capability declaration, not a blanket refusal.
