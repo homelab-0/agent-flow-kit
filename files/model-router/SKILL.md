@@ -197,6 +197,20 @@ the outcome. A profile whose catalog entry declares no window reports
 The estimate is advisory kit policy. It is not sent to `/v1/route`, it is not a
 `context_size` minimum, and it changes no route.
 
+**After the run, the budget is what the harness actually published.** `claude`
+publishes one end-of-run result envelope, so its usage adapter reads that and
+nothing else — the kit scrapes no terminal and no transcript — and reports
+`HARNESS_ENVELOPE` / `END_OF_RUN`; `codex exec` publishes none, so its adapter
+reports `NOT_EVALUATED` / `USAGE_UNOBSERVABLE`, which never becomes fallback
+logic in the core and never blocks the other harness. Mid-run usage being
+unobservable, the checkpoint discipline is deterministic instead: the generated
+prompt tells the worker to write `<story>.checkpoint.json` at declared phase
+boundaries, and to stop at the next boundary with `<story>.continuation.json`
+and one `CONTINUATION-REQUIRED:` line when it cannot finish. A valid
+continuation gives the thin result `status: continuation_required`; a signalled
+continuation with a missing, unparseable or stale artifact is a loud
+`NEEDS-HUMAN` and writes no result at all.
+
 ### 6. Dispatch — visibly, through Orca
 
 Orca owns worktrees, terminals, processes and native harness auth. The kit owns
