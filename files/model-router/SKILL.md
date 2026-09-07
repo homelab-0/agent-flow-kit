@@ -158,10 +158,11 @@ gates:
 max_cycles: 3
 # OPTIONAL. Extra files the worker's payload will carry — templates, contracts,
 # a continuation artifact. Repo-relative, and counted by the pre-dispatch
-# sizing estimate below. A path that does not exist REFUSES the dispatch
+# sizing estimate below. A path that does not exist, or that escapes the
+# worktree the worker is sandboxed to, REFUSES the dispatch
 # (PAYLOAD_REF_MISSING) rather than being skipped.
 payload_refs:
-  - contracts/agent-router/HARNESS-LAUNCH-claude.md
+  - docs/LIFECYCLE-CONTRACT.md
 ---
 ```
 

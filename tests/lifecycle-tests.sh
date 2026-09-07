@@ -1697,7 +1697,7 @@ for key in commands component_states overall_states readiness_states target_stat
            live_fact_states orchestration_states orchestration_modes approved_harnesses \
            source_states ownership_classes severities readiness_scopes evidence_provenance \
            adaptation_dispositions adaptation_types adaptation_states adoption_dispositions \
-           reason_codes; do
+           budget_states reason_codes; do
   s="$(schema_vocab "$key")"
   d="$(doc_vocab "$key")"
   if [[ -z "$s" ]]; then

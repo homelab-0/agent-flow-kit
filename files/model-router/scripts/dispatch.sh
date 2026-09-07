@@ -649,8 +649,13 @@ load_budget_policy() { # <policy-file>
 #
 # payload_refs entries are REPO-RELATIVE, resolved against the worktree root
 # that also bounds the worker's sandbox. One that does not resolve to a readable
-# file there is PAYLOAD_REF_MISSING and refuses: an estimate that silently
-# skipped part of the payload would under-report exactly when it matters.
+# file INSIDE that root is PAYLOAD_REF_MISSING and refuses: an estimate that
+# silently skipped part of the payload would under-report exactly when it
+# matters, and one that counted a file outside the sandbox would report a
+# payload the worker cannot actually read. Containment is checked with the same
+# rule main() applies to the story itself, so `../shared/template.md` refuses
+# for the same reason a story outside the worktree does — `-f` and `-r` alone
+# are satisfied by any readable file on the host.
 budget_payload_paths() { # -> one absolute path per line, deduplicated
   local seen=() declared=() p rp ref
   [[ -n "${PERSONA_FILE:-}" ]] && declared+=("$PERSONA_FILE")
@@ -666,6 +671,10 @@ budget_payload_paths() { # -> one absolute path per line, deduplicated
     rp="$(realpath "$PWD/$ref" 2>/dev/null || true)"
     [[ -n "$rp" && -f "$rp" && -r "$rp" ]] || \
       die "PAYLOAD_REF_MISSING: the story declares payload_refs entry '$ref', which is not a readable file under $PWD. The sizing estimate counts every declared payload input or none — it never silently drops one." "$EX_CONFIG"
+    case "$rp" in
+      "$(realpath "$PWD")"/*) ;;
+      *) die "PAYLOAD_REF_MISSING: the story declares payload_refs entry '$ref', which resolves to '$rp' — OUTSIDE the current directory ($PWD) that bounds the worker's sandbox. The sandboxed worker cannot read it, so counting it would size a payload the worker never receives." "$EX_CONFIG" ;;
+    esac
     case " ${seen[*]:-} " in *" $rp "*) continue ;; esac
     seen+=("$rp"); printf '%s\n' "$rp"
   done < <(yq --front-matter=extract -r '.payload_refs[]?' "$STORY" 2>/dev/null || true)
@@ -678,12 +687,16 @@ file_bytes() { wc -c < "$1" | tr -d ' '; }
 
 # refuse_story_sizing — the marker a human reads when a story was too big to
 # dispatch. It names the arithmetic and every input that produced it, because
-# "too big" without the inputs is not a finding anyone can act on.
+# "too big" without the inputs is not a finding anyone can act on. Its first
+# line carries the declared reason code SIZING_REFUSED, as does the dispatch
+# log line for the refusal: a stable code that appears in no artifact leaves
+# automation parsing an exit code or a marker prefix instead, which is the
+# coupling the reason-code discipline exists to remove.
 refuse_story_sizing() { # <marker> <estimate> <window> <ratio> <threshold> <inputs-table>
   local marker="$1" est="$2" win="$3" ratio="$4" threshold="$5" inputs="$6"
   rm -f "$marker"
   cat > "$marker" <<EOF
-STORY-SIZING: estimate=${est} window=${win} ratio=${ratio} threshold=${threshold} method=${BUDGET_METHOD}
+STORY-SIZING: reason=SIZING_REFUSED estimate=${est} window=${win} ratio=${ratio} threshold=${threshold} method=${BUDGET_METHOD}
 
 The planned payload for this story is already at or past the declared
 continuation threshold before a worker has read a single line of it. A payload
@@ -712,13 +725,9 @@ What a human can do:
 EOF
 }
 
-# record_sizing_risk — append the sizing-risk finding to the story's own record,
-# once per cycle. IDEMPOTENCE IS KEYED ON THE CYCLE, not on the whole line: a
-# re-dispatch of the same cycle must not double-write, while a genuinely new
-# cycle is a new observation and gets its own line. When the story has no
-# Dev Agent Record heading the heading is created rather than the finding
-# dropped — a finding nobody records is a finding nobody acts on.
-record_sizing_risk() { # <story> <estimate> <window> <ratio> <cycle>
+# record_sizing_risk_unlocked — the append itself. Every caller reaches it
+# through record_sizing_risk, which holds the story's lock for the whole of it.
+record_sizing_risk_unlocked() { # <story> <estimate> <window> <ratio> <cycle>
   local story="$1" est="$2" win="$3" ratio="$4" cycle="$5" line tmp
   line="- budget: SIZING_RISK ${est}/${win} (${ratio}) cycle ${cycle} $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   if grep -qaE "^- budget: SIZING_RISK .* cycle ${cycle} " "$story"; then
@@ -742,6 +751,43 @@ record_sizing_risk() { # <story> <estimate> <window> <ratio> <cycle>
   ' "$story" > "$tmp"
   cat "$tmp" > "$story"
   log "budget: SIZING_RISK recorded in $story"
+}
+
+# record_sizing_risk — append the sizing-risk finding to the story's own record,
+# once per cycle. IDEMPOTENCE IS KEYED ON THE CYCLE, not on the whole line: a
+# re-dispatch of the same cycle must not double-write, while a genuinely new
+# cycle is a new observation and gets its own line. When the story has no
+# Dev Agent Record heading the heading is created rather than the finding
+# dropped — a finding nobody records is a finding nobody acts on.
+#
+# The whole read-modify-write is ONE critical section, held on a descriptor
+# opened on the story itself. Without it two dispatches of the same story that
+# reach the risk band together interleave: the cheap outcome is a lost finding,
+# the real one is the loser rewriting the story from a copy it read before the
+# winner's write — which under contention truncates the frontmatter and the
+# body along with it. The lock is on the inode, and the write preserves the
+# inode, so it covers the `cat` as well as the read.
+#
+# flock(1) is util-linux and is absent from a stock macOS, which the kit also
+# runs on. There it degrades to the previous unserialised behaviour and says so
+# rather than refusing to record the finding at all: a dispatch must not fail
+# because a host lacks the tool that makes a concurrent dispatch safe.
+record_sizing_risk() { # <story> <estimate> <window> <ratio> <cycle>
+  local lk rc=0
+  if ! command -v flock >/dev/null 2>&1; then
+    log "budget: flock unavailable on this host — the story-record append runs unserialised"
+    record_sizing_risk_unlocked "$@"
+    return $?
+  fi
+  if ! exec {lk}<"$1"; then
+    log "budget: cannot open $1 to lock it — the append runs unserialised"
+    record_sizing_risk_unlocked "$@"
+    return $?
+  fi
+  flock -x "$lk"
+  record_sizing_risk_unlocked "$@" || rc=$?
+  exec {lk}<&-
+  return "$rc"
 }
 
 # ---------------------------------------------------------------------------
@@ -987,7 +1033,7 @@ EOF
     if budget_crosses "$ratio_ppm" "$BUDGET_CONTINUATION_PPM"; then
       refuse_story_sizing "${STORY}.blocked" "$BUDGET_ESTIMATE" "$PROFILE_MIN_CONTEXT" \
         "$BUDGET_RATIO" "$(budget_ratio_decimal "$BUDGET_CONTINUATION_PPM")" "$payload_table"
-      log "STORY SIZING REFUSED: the planned payload is at or past the continuation threshold"
+      log "STORY SIZING REFUSED: reason=SIZING_REFUSED — the planned payload is at or past the continuation threshold"
       log "  nothing placed, nothing validated, nothing launched — see ${STORY}.blocked"
       exit "$EX_SIZING_REFUSED"
     fi

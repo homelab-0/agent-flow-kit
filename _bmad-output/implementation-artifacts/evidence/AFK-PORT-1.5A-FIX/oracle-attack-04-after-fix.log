@@ -1,0 +1,55 @@
+  PASS 4: baseline dispatches
+  PASS 4: a story listing the same ref twice dispatches
+  PASS 4: a story listing one ref plus an empty file dispatches
+  PASS 4: a story listing two distinct refs dispatches
+  PASS 4: a story listing a file and a symlink to it dispatches
+  PASS 4: the four fixtures really are the same length (control)
+     (info) estimates: dup=1162 a+empty=1162 a+b=2162 a+symlink=1162
+  PASS 4: the SAME ref listed twice is counted ONCE
+  PASS 4: a DISTINCT second ref adds exactly its 4000 bytes
+  PASS 4: dedupe is on the RESOLVED path — symlink and target count once
+  PASS 4: a missing ref REFUSES with PAYLOAD_REF_MISSING (config exit)
+  PASS 4: a missing ref made no placement call
+  PASS 4: a missing ref created no terminal
+  PASS 4: a missing ref wrote no result
+  PASS 4: a directory REFUSES with PAYLOAD_REF_MISSING (config exit)
+  PASS 4: a directory made no placement call
+  PASS 4: a directory created no terminal
+  PASS 4: a directory wrote no result
+  PASS 4: an ABSOLUTE path REFUSES with PAYLOAD_REF_MISSING (config exit)
+  PASS 4: an ABSOLUTE path made no placement call
+  PASS 4: an ABSOLUTE path created no terminal
+  PASS 4: an ABSOLUTE path wrote no result
+  PASS 4: an absolute path outside the tree REFUSES with PAYLOAD_REF_MISSING (config exit)
+  PASS 4: an absolute path outside the tree made no placement call
+  PASS 4: an absolute path outside the tree created no terminal
+  PASS 4: an absolute path outside the tree wrote no result
+  PASS 4: a dangling name REFUSES with PAYLOAD_REF_MISSING (config exit)
+  PASS 4: a dangling name made no placement call
+  PASS 4: a dangling name created no terminal
+  PASS 4: a dangling name wrote no result
+     (info) ../outside.txt: exit=2 estimate=- (baseline story ~153)
+  PASS 4: an escaping payload_ref is refused (exit 2)
+  PASS 4: a dangling symlink REFUSES with PAYLOAD_REF_MISSING (config exit)
+  PASS 4: a dangling symlink made no placement call
+  PASS 4: a dangling symlink created no terminal
+  PASS 4: a dangling symlink wrote no result
+  PASS 4/window: dispatch proceeds
+  PASS 4/window: the CATALOG's value wins, not the stamp's
+  PASS 4/window: window_source is CATALOG
+  PASS 4/undeclared: dispatch proceeds
+  PASS 4/undeclared: state NOT_EVALUATED
+  PASS 4/undeclared: reason CONTEXT_WINDOW_UNDECLARED
+  PASS 4/undeclared: window_tokens null
+  PASS 4/undeclared: ratio null
+  PASS 4/undeclared: NO findings
+  PASS 4/undeclared: window_source still CATALOG
+  PASS 4/undeclared: the estimate is still reported
+  PASS 4/undeclared: nothing appended to the story
+  PASS 4/gateway: dispatches
+  PASS 4/gateway: CLAUDE_CODE_MAX_CONTEXT_TOKENS is the catalog's 65536
+  PASS 4/gateway: the estimate never reaches the launch text
+  PASS 4/gateway: no budget vocabulary in the launch text
+  PASS 4/gateway: window carried into the result
+
+attack-04-payload-and-window.sh: 51 passed, 0 failed

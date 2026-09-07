@@ -494,6 +494,43 @@ printf 'not: [valid\n' > "$TMPROOT/broken-policy.yaml"
 assert_eq "policy: an unparseable policy is refused" \
   "$(budget_policy_missing_keys "$TMPROOT/broken-policy.yaml")" "unparseable"
 
+# --- AC-5: the story-record append is serialised, not merely idempotent ----
+# Idempotence-per-cycle holds serially by construction; it says nothing about
+# two dispatches of the same story reaching the risk band at the same instant.
+# The append is a read-modify-write that ends in an inode-preserving `cat`, so
+# an unserialised loser rewrites the story from a copy it read before the
+# winner's write — losing findings, and under contention the frontmatter and
+# the body with them. N concurrent DISTINCT cycles must leave exactly N lines
+# and an intact story.
+head1 "   context budget — the story-record append under concurrency"
+RACE_DIR="$TMPROOT/record-race"; mkdir -p "$RACE_DIR"
+mkrace() { printf -- '---\npersona: dev\ngates: ["x"]\n---\n\nBODY-SENTINEL\n\n## Dev Agent Record\n\nexisting note\n' > "$1"; }
+
+# CONTROL first: serially the same calls are correct AND idempotent per cycle,
+# so a concurrency failure below is about serialisation and nothing else.
+mkrace "$RACE_DIR/seq.md"
+for c in 1 1 2 2 3; do record_sizing_risk "$RACE_DIR/seq.md" 100 200 0.500000 "$c" 2>/dev/null; done
+assert_eq "record/CONTROL: serial calls give one line per DISTINCT cycle" \
+  "$(grep -ac '^- budget: SIZING_RISK ' "$RACE_DIR/seq.md")" "3"
+assert_eq "record/CONTROL: serial calls preserve the body" \
+  "$(grep -ac 'BODY-SENTINEL' "$RACE_DIR/seq.md")" "1"
+
+RACE_WAYS=8 RACE_TRIALS=10 RACE_LOST=0 RACE_DAMAGED=0
+for t in $(seq "$RACE_TRIALS"); do
+  mkrace "$RACE_DIR/r.md"
+  for c in $(seq "$RACE_WAYS"); do
+    ( record_sizing_risk "$RACE_DIR/r.md" 100 200 0.500000 "$c" ) >/dev/null 2>&1 &
+  done
+  wait
+  [[ "$(grep -ac '^- budget: SIZING_RISK ' "$RACE_DIR/r.md")" == "$RACE_WAYS" ]] || RACE_LOST=$((RACE_LOST+1))
+  { [[ "$(grep -ac 'BODY-SENTINEL' "$RACE_DIR/r.md")" == "1" ]] \
+    && [[ "$(grep -ac '^gates: \["x"\]' "$RACE_DIR/r.md")" == "1" ]]; } || RACE_DAMAGED=$((RACE_DAMAGED+1))
+done
+assert_eq "record: $RACE_WAYS concurrent cycles all land — no lost update in $RACE_TRIALS trials" \
+  "$RACE_LOST" "0"
+assert_eq "record: and the frontmatter and body survive every trial" \
+  "$RACE_DAMAGED" "0"
+
 # AC-3, stated as a grep because it is a property of the SOURCE: no threshold
 # value is a constant in the launcher. Comments are stripped first, so the
 # prose that explains the policy cannot satisfy the check.
@@ -1430,6 +1467,13 @@ rc="$(STUB_CATALOG="$WORK/catalog-tiny.yaml"; export STUB_CATALOG; run_dispatch 
 assert_eq "sizing refusal: distinct exit code 8" "$rc" "8"
 SZM="$(cat "$WT/s-bud-refuse.md.blocked" 2>/dev/null || true)"
 assert_contains "sizing refusal: marker is typed STORY-SIZING:" "$SZM" "STORY-SIZING:"
+# The DECLARED reason code has to reach an artifact. A stable code that lives
+# only in a shell variable name leaves automation parsing the exit code or the
+# marker prefix, which is the coupling the reason-code discipline removes.
+assert_contains "sizing refusal: the marker's first line carries reason=SIZING_REFUSED" \
+  "$(head -1 "$WT/s-bud-refuse.md.blocked")" "reason=SIZING_REFUSED"
+assert_contains "sizing refusal: the dispatch log line carries the same code" \
+  "$(cat "$WORK/err")" "reason=SIZING_REFUSED"
 assert_contains "sizing refusal: marker names the estimate"     "$SZM" "estimate=$REFUSE_EST"
 assert_contains "sizing refusal: marker names the window"       "$SZM" "window=$REFUSE_EST"
 assert_contains "sizing refusal: marker names the ratio"        "$SZM" "ratio=1.000000"
@@ -1524,6 +1568,47 @@ assert_contains "payload_refs: the refusal names the entry" \
 assert_empty_file "payload_refs: missing ref made no /v1/place call" "$STUB_STATE/curl-calls"
 assert_empty_file "payload_refs: missing ref created no terminal" "$STUB_STATE/terminal-creates"
 assert_no_file "payload_refs: missing ref wrote no result" "$WT/s-bud-refmiss.md.result.json"
+
+# A ref that RESOLVES to a real, readable file is not thereby a ref the worker
+# can read: the worker is sandboxed to the worktree. `-f` and `-r` alone are
+# satisfied by any file on the host, so the accept path applies the containment
+# rule main() applies to the story — and `..` is the case that reaches a real
+# file, which is why it gets a live one to escape to rather than a dangling name.
+printf 'z%.0s' $(seq 4000) > "$WORK/outside.txt"
+ref_refuses() { # <tag> <payload_refs value> <what it is>
+  local tag="$1" refs="$2" what="$3"
+  reset_stubs
+  write_story "$WT/s-bud-$tag.md" "persona: dev
+gates: [\"true\"]
+payload_refs: $refs"
+  write_stamp "$WT/s-bud-$tag.md.stamp.json" high false
+  local rc; rc="$(run_dispatch "s-bud-$tag.md")"
+  assert_eq "payload_refs: $what refuses (config exit)" "$rc" "2"
+  assert_contains "payload_refs: $what carries the stable reason code" \
+    "$(cat "$WORK/err")" "PAYLOAD_REF_MISSING"
+  assert_no_file "payload_refs: $what wrote no result" "$WT/s-bud-$tag.md.result.json"
+  assert_empty_file "payload_refs: $what made no /v1/place call" "$STUB_STATE/curl-calls"
+}
+ref_refuses refesc  '[../outside.txt]'    "a ref that ESCAPES the worktree with .."
+# and the escape is refused for the RIGHT reason — containment, not existence.
+# Read here, while $WORK/err still holds THIS case's stderr: the cases below
+# overwrite it, and a `..` that reached a real file would otherwise be indicted
+# by whichever refusal ran last.
+assert_contains "payload_refs: the .. refusal names the containing directory" \
+  "$(cat "$WORK/err")" "OUTSIDE the current directory"
+ref_refuses refabs  '[/etc/hostname]'     "an absolute path outside the tree"
+ref_refuses refdir  '[.]'                 "a directory rather than a file"
+# The control that would fail if the probe stopped measuring anything: the same
+# story shape with the SAME file reachable from INSIDE the worktree dispatches,
+# so the refusals above are about containment and not about the ref mechanism.
+cp "$WORK/outside.txt" "$WT/inside.txt"
+reset_stubs
+write_story "$WT/s-bud-refin.md" "persona: dev
+gates: [\"true\"]
+payload_refs: [inside.txt]"
+write_stamp "$WT/s-bud-refin.md.stamp.json" high false
+rc="$(run_dispatch s-bud-refin.md)"
+assert_eq "payload_refs: CONTROL — the same file INSIDE the worktree dispatches" "$rc" "0"
 
 # --- an unreadable policy refuses BEFORE anything happens ----------------
 reset_stubs

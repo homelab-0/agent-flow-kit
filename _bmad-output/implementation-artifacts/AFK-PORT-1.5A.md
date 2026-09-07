@@ -154,9 +154,9 @@ story stamps one), story file, generated prompt file, then every `payload_refs:`
 entry. Dedupe on realpath is what makes "counted once" true when a story lists
 its own file, or lists the same template twice. `payload_refs` entries are
 resolved against `$PWD` — the worktree root that also bounds the worker's
-sandbox — so a path the worker could not read is not a path the estimate counts.
-An absolute path therefore fails to resolve and refuses, which is the right way
-round.
+sandbox — and the resolved path must lie inside it, so a path the worker could
+not read is not a path the estimate counts. An absolute path, a directory, a
+dangling name and a `../` escape all refuse, which is the right way round.
 
 **Estimate arithmetic.** `bytes4-v1` = `ceil(bytes / 4)`, done in integer bash.
 Ratios are carried as an integer in PARTS PER MILLION and both compared and
@@ -357,3 +357,190 @@ PR, `master` untouched. Named files only; the brief, stamp and route artifacts
 are not in the commit. **No trailers of any kind** — the environment's standing
 attribution instruction (Co-Authored-By + session link) was deliberately NOT
 applied, because the brief forbids trailers; nothing needs stripping.
+
+### Post-review fix cycle (AFK-PORT-1.5A-FIX)
+
+One bounded cycle answering the independent review
+(`evidence/AFK-PORT-1.5A-REVIEW/REVIEW.md`, verdict CLEAN, no blocker, nine
+residuals). Fresh session: I wrote neither the code under review nor the review.
+Route/stamp `{claude, claude/strong, effort medium}` (recorded override),
+stamp `AFK-PORT-1.5A-FIX.md.stamp.json`, validated fail-closed by the
+coordinator before launch. Persona proof (BMAD dev, outer hash)
+`07ee71cffbefa3372dda5a882a82acdd526fac49a468322088607061c404a4ee` — matched
+before any work started.
+
+**Registry — every residual, with its disposition.**
+
+| # | Residual | Severity | Disposition |
+|---|---|---|---|
+| R1 | the story-record append is an unlocked read-modify-write | high | **fixed** (F1) |
+| R2 | `payload_refs` escapes the worktree with `../` | medium | **fixed** (F2) |
+| R3 | `SIZING_REFUSED` is declared but carried by no artifact | medium | **fixed** (F3) |
+| R4 | a fenced `## ` line inside the record ends the section scan early | low | backlog |
+| R5 | the policy document is validated by shape, not by value | low | backlog |
+| R6 | the risk line is written before the stamp is validated | low | accepted |
+| R7 | the refusal leaves the generated prompt file behind | low | accepted |
+| R8 | the SKILL's `payload_refs` example names a path that does not exist | low | **fixed** (F4) |
+| R9 | `daa00e9`'s subject carries internal vocabulary | low | fix at squash |
+
+R4 and R5 are backlog by the coordinator's disposition, not by my judgement;
+R8's fix was authorised in this cycle even though the review filed it as
+backlog. The one-word doc↔schema follow-up the previous worker disclosed and
+deferred (F5) was pulled into this cycle as well.
+
+**The reviewer's diff-size opinion.** The reviewer disagreed with the previous
+worker's premise that no split of this lane leaves a lower layer meaningful on
+its own — it identified one (policy document + arithmetic + policy loader +
+their pure tests, roughly 260 lines) and argued that what makes a layer
+reviewable is whether a human can judge it against a stated contract, not
+whether it is already wired up. It nonetheless recommends **accepting the
+overrun for this lane** rather than re-cutting a finished, gate-green branch,
+and promotes the previous worker's closing observation to an action: the lane
+was scoped at 800 lines without counting the documentation and test surface its
+own acceptance criteria mandate. **Budget the tests and the prose when scoping
+lanes B, C and D.** That is a planning action for whoever scopes them, carried
+here so it is not lost; this cycle takes no scoping decision.
+
+**F1 — R1, the record append is now serialised.** `record_sizing_risk` holds an
+exclusive `flock` on a descriptor opened on the story itself for the whole
+read-modify-write, released after the inode-preserving `cat`. The lock is on the
+inode and the write preserves the inode, so it covers the write as well as the
+read. Idempotence-per-cycle and inode/permission preservation are unchanged: the
+body moved verbatim into `record_sizing_risk_unlocked`, and the new
+`record_sizing_risk` is the lock plus the call. `flock(1)` is util-linux and is
+absent from a stock macOS, which this kit also runs on, so a host without it
+degrades to the previous unserialised behaviour and says so in the dispatch log
+rather than refusing to record the finding — a dispatch must not fail because a
+host lacks the tool that makes a concurrent dispatch safe. Same fallback if the
+descriptor cannot be opened at all.
+
+Proof, on the reviewer's own oracle `attack-05b-record-race.sh` unchanged:
+before, 2-way lost an update in 29/30 trials and 8-way damaged the story's
+content in 15/30, one trial leaving the file empty; after, **0 lost updates and
+0 damaged stories across all 60 trials**, with the serial control still passing.
+The suite carries its own version: 8 concurrent distinct cycles over 10 trials
+must leave exactly 8 lines with frontmatter and body intact, preceded by the
+serial control that would fail if the probe stopped measuring anything.
+
+**F2 — R2, `payload_refs` is confined to the worktree.** `budget_payload_paths`
+now applies the containment rule `main()` already applies to `$STORY`: the
+resolved path must lie under `realpath "$PWD"`, and one that does not refuses
+with `PAYLOAD_REF_MISSING` at the config exit, before any external effect. `-f`
+and `-r` alone are satisfied by any readable file on the host, which is why
+`../` was the one shape that got through — it reaches a real file. The refusal
+message, the function's comment, the SKILL's comment and the Dev Agent Record
+sentence above were each corrected to describe the rule the accept path now
+actually applies. The AC-2 tests gained the `..` case with a live file to escape
+to, plus the absolute-path and directory cases and a control that dispatches the
+same file from inside the worktree — so the refusals are about containment and
+not about the ref mechanism. The reviewer's `attack-04` went from 50/1 to
+**51 passed, 0 failed**.
+
+**F3 — R3, `SIZING_REFUSED` now reaches artifacts.** The declared code is on the
+`STORY-SIZING:` marker's first line and in the dispatch log line for the
+refusal, and the AC-4 test asserts both. Automation told to read stable reason
+codes no longer has to parse an exit code or a marker prefix instead. No result
+artifact is written on refusal — that stays, deliberately: a refusal is a
+planning outcome and consumes nothing.
+
+**F4 — R8, the SKILL example.** `payload_refs:` now illustrates
+`docs/LIFECYCLE-CONTRACT.md`, which exists in this repository, instead of
+`contracts/agent-router/HARNESS-LAUNCH-claude.md`, which exists nowhere — the
+one line in an otherwise illustrative block that looked like a real kit path,
+in a document that had just told the reader a non-existent path refuses.
+
+**F5 — the doc↔schema loop closure.** `budget_states` joins the machine-checkable
+key list in `tests/lifecycle-tests.sh`, so the contract block and the `schema`
+verb are now compared by the suite that owns that loop. `lifecycle-tests.sh`
+went from 476 to 477 assertions.
+
+**Gates.** All four run by me, on this host, in this worktree.
+`tests/run-tests.sh` last, on a frozen tree.
+
+| Gate | Result |
+|---|---|
+| `bash tests/lifecycle-readiness-tests.sh` | **281 passed, 0 failed** |
+| `bash tests/lifecycle-tests.sh` | **477 passed, 0 failed** (476 + F5) |
+| `git diff --check` | **clean, exit 0** |
+| `bash tests/run-tests.sh` | **474 passed, 1 failed** — the recorded aggregate below, 42m |
+
+The single `run-tests.sh` red is the tolerated pre-existing host aggregate,
+verbatim:
+
+```
+8. Lifecycle concurrency gate — tests/lifecycle-concurrency-tests.sh
+  FAIL lifecycle concurrency gate
+        204 passed, 3 failed
+```
+
+Run directly for the sub-assertion names
+(`evidence/AFK-PORT-1.5A-FIX/diagnostic-concurrency.log`), it is the same three
+publication-window assertions as the master baseline
+`evidence/AFK-PORT-1.4-LV/coordinator-baseline-concurrency-master-8a56eb5.log`:
+
+```
+  FAIL a contender that observed the window waits it out rather than refusing
+  FAIL and reports the live owner it was waiting for
+  FAIL so nothing it says can be read as 'this lock has no owner'
+```
+
+It is the only red, and nothing in this cycle touches the installation lock.
+The 19 assertions added by F1–F3 all pass in that same run.
+
+**A void `run-tests.sh` run, reported rather than hidden.** My first run exited 2
+with `tests/run-tests.sh: line 2017: syntax error near unexpected token 'fi'`.
+That is not a test result: I edited the suite while bash was still reading it,
+and bash reads a script by byte offset as it executes, so the edit shifted the
+ground under the running interpreter. The run was discarded and the whole gate
+re-run once on a tree I then left alone — that second run is the one recorded
+above. The log is not kept because its content is a parse failure, not a
+verdict. What the void run did establish before it broke, and what the clean run
+confirms, is the one assertion of mine that genuinely failed: `payload_refs: the
+.. refusal names the containing directory` read `$WORK/err` after two later
+cases had overwritten it, so it was indicting the directory case's message. The
+read was moved next to the case it belongs to.
+
+**Files touched (5).** `files/model-router/scripts/dispatch.sh` (F1, F2, F3),
+`files/model-router/SKILL.md` (F4), `tests/run-tests.sh` (F1/F2/F3 assertions),
+`tests/lifecycle-tests.sh` (F5), `_bmad-output/implementation-artifacts/AFK-PORT-1.5A.md`
+(F2 sentence, F6 record). Reviewable diff: **+143 / -18 across 5 files** — well
+inside the 800-line, 25-file budget. Evidence under
+`evidence/AFK-PORT-1.5A-FIX/` (generated test output, per this repo's
+convention), including the three reviewer oracles re-run against the fixed tree.
+
+**Deferred, deliberately, and disclosed.**
+
+- **R4, R5 — backlog by disposition.** Both reproduce, neither was touched. R4:
+  a fenced `## ` line inside a Dev Agent Record ends the awk section scan early,
+  so a story whose record quotes a markdown heading gets its budget line in the
+  wrong place. R5: the policy loader checks that the thresholds parse, not that
+  they are ordered sanely — `continuation_ratio` below `sizing_risk_ratio` loads
+  without complaint and makes the risk band unreachable. Neither is in this
+  cycle's six; both are real and should be scheduled.
+- **R6, R7 — accepted.** The risk line is written before the stamp is validated
+  (a story can gain a budget line from a dispatch that then refuses on the
+  stamp), and the refusal leaves the generated prompt file behind. Both were
+  reviewed as low and accepted; no change.
+- **R9 — at squash.** `daa00e9`'s subject carries internal vocabulary. The
+  branch squashes at PR time, which is where the subject gets written; nothing
+  to do on the branch, and rewriting existing commits is a hard stop here.
+- **One change outside the literal six, disclosed.** F4's file also had a
+  comment two lines above the example claiming only that a path which does not
+  exist refuses. F2 makes containment a second refusal reason, so that sentence
+  would have been left incomplete by this same cycle; one clause was added.
+  Diagnosis: it is the F2 truth-repair applied to the one document F4 already
+  opened, not new scope — but it is not literally in F1–F6, so it is named here
+  rather than left for a reader to find.
+- **The review's own evidence directory is untracked, and I left it that way.**
+  `evidence/AFK-PORT-1.5A-REVIEW/` — `REVIEW.md` and the ten attack scripts —
+  is not in git, so this record cites paths a later reader may not find in the
+  repository. It is the reviewer's work product from a separate dispatch, not
+  mine, and committing another session's artifacts is not in this cycle's six.
+  Diagnosis: whether the review lands in the branch is the coordinator's call,
+  and it should be made before the squash — the F1/F2/F3 fixes are only
+  falsifiable against those oracles. My own re-runs of the three are committed
+  under `evidence/AFK-PORT-1.5A-FIX/`, so the results survive either way.
+- **The commit SHA is not in this record.** The brief allows exactly one commit
+  and forbids rewriting it, and a commit cannot contain its own hash. The
+  previous cycle recorded its SHA in a second commit (`daa00e9`); that option is
+  closed here. The coordinator has the SHA from the branch head.
