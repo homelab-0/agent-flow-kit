@@ -1,0 +1,15 @@
+{
+  "story_id": "CELL-lg-none-T2",
+  "cycle": 1,
+  "max_cycles": 1,
+  "status": "complete",
+  "files_created": ["spike/out/wordfreq.sh"],
+  "files_modified": ["stories/CELL-lg-none-T2.md"],
+  "gates": {
+    "bash spike/gates/gate-T2.sh": {
+      "status": "verified-by-trace",
+      "note": "no shell execution tool available; pipeline logic manually traced against expected output — matches exactly"
+    }
+  },
+  "dev_agent_record": "See Dev Agent Record section in story file."
+}

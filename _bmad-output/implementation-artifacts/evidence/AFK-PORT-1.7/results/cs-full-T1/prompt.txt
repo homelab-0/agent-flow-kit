@@ -1,0 +1,8 @@
+Execute the story file at stories/CELL-cs-full-T1.md (cycle 1 of 1).
+Read it fully. Implement until every acceptance criterion is satisfied. Run the
+gate commands listed in its frontmatter yourself before you consider the work
+complete, and record what you did in the story's Dev Agent Record section.
+Your process exiting 0 is not success: the gates are the arbiter, and they are
+re-run independently after you finish.
+If you hit a decision that genuinely needs a human, print one line starting with
+'NEEDS-HUMAN:' describing the question, then stop.

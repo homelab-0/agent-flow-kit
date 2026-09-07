@@ -1,0 +1,41 @@
+{
+  "cell": "lg-none-T3",
+  "harness": "claude",
+  "profile": "local-general",
+  "mode": "none",
+  "task": "T3",
+  "status": "gates_failed_or_error",
+  "dispatch_exit": 1,
+  "gate": "FAIL",
+  "gate_line": "GATE FAIL (T3): spike/out/dev-record.md does not exist",
+  "override": "claude/local-code-standard->claude/local-general",
+  "window_tokens": 65536,
+  "payload": {
+    "persona_bytes": 0,
+    "story_bytes": 786,
+    "prompt_bytes": 552,
+    "bytes": 1338,
+    "tokens_est_bytes4": 335,
+    "ratio": 0.0051116943359375,
+    "headroom_tokens": 65201
+  },
+  "envelope": {
+    "is_error": false,
+    "num_turns": 14,
+    "duration_ms": 65525,
+    "stop_reason": "end_turn",
+    "denials": 4,
+    "model_usage": [
+      {
+        "model": "qwen36-27b",
+        "contextWindow": 65536,
+        "inputTokens": 16774,
+        "outputTokens": 1536,
+        "cacheRead": 147372,
+        "cacheCreation": 0
+      }
+    ]
+  },
+  "wall_seconds": 79,
+  "finished_at": "2026-09-07T07:11:21Z"
+}

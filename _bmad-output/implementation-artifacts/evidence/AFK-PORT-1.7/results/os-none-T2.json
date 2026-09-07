@@ -1,0 +1,25 @@
+{
+  "cell": "os-none-T2",
+  "harness": "codex",
+  "profile": "openai/strong",
+  "mode": "none",
+  "task": "T2",
+  "status": "done",
+  "dispatch_exit": 0,
+  "gate": "PASS",
+  "gate_line": "GATE PASS (T2): spike/out/wordfreq.sh reports the expected top-three word frequencies",
+  "override": "claude/local-code-standard->codex/openai/strong",
+  "window_tokens": null,
+  "payload": {
+    "persona_bytes": 0,
+    "story_bytes": 1313,
+    "prompt_bytes": 552,
+    "bytes": 1865,
+    "tokens_est_bytes4": 467,
+    "ratio": null,
+    "headroom_tokens": null
+  },
+  "envelope": null,
+  "wall_seconds": 126,
+  "finished_at": "2026-09-07T07:28:57Z"
+}

@@ -1,0 +1,28 @@
+{
+  "story": "stories/CELL-os-full-T1.md",
+  "cycle": 1,
+  "status": "gates_failed",
+  "route": {
+    "harness": "codex",
+    "model_profile": "openai/strong",
+    "native_model": "gpt-5.6-sol",
+    "effort": "medium",
+    "persona": "dev-full"
+  },
+  "stamp": {
+    "digest": "sha256:3bd0a91d84702f3338040225f65eb77795d3ff332af767fd3d814c704bb1c9f3",
+    "expires_at": "2026-09-08T07:24:39Z",
+    "catalog_version": "sha256:c4d49d9a9db3b203cab02200dc0e335ae3b02934d91fe81b08975d5acc7cd027",
+    "validated": true
+  },
+  "placement": {
+    "required": false
+  },
+  "launch": {
+    "orca_terminal": "term_901c36be-9a80-4f95-8e38-456df1ebe629",
+    "harness_exit": 2
+  },
+  "gates": {
+    "bash spike/gates/gate-T1.sh": "fail"
+  }
+}
