@@ -978,6 +978,111 @@ but the stamp is unexpired and requires no rerouting, route readiness may
 continue on what a compatible validator can prove locally. Any requirement for
 a fresh route blocks the launch instead.
 
+## The context budget
+
+A routed profile's context window is a **routed fact**, and the trusted catalog
+is its only source. The launcher reads the catalog's `min_context` for the
+stamped `model_profile` — the same document, at the same `catalog_version` the
+frozen validation already proved the stamp against — and uses that value
+exactly. It is never derived from a model id, never extended, never rounded and
+never substituted, and the stamp is never asked for it.
+
+A profile that declares no `min_context` has no window, and the kit says so
+rather than inventing one: the budget is `NOT_EVALUATED` with the reason
+`CONTEXT_WINDOW_UNDECLARED`, `window_tokens` is null, no threshold can fire, and
+dispatch proceeds. Reporting budget health that is not grounded in a catalog
+value would be worse than reporting none. (`claude/strong` declares none today;
+that is the honest catalog state and is registered as a catalog gap.)
+
+This is unrelated to the gateway class's `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, which
+is set on the harness subprocess and is unchanged.
+
+### The declared policy
+
+Every threshold and the estimate method live in one machine-readable document,
+`files/model-router/context-budget-policy.yaml`, installed with the kit as
+**launcher configuration** — read from the launcher's own path
+(`launcher.budget_policy`, or `$AGENT_FLOW_BUDGET_POLICY`), never from a story
+and never from a stamp. It declares `estimate_method`, `sizing_risk_ratio`,
+`checkpoint_ratio`, `continuation_ratio`, `continuation_cap`, the stable reason
+codes and the budget states.
+
+There is no threshold constant in the launcher. A policy document that is
+unreadable, unparseable or missing a key refuses dispatch with
+`BUDGET_POLICY_UNREADABLE` and the config exit code, before any placement,
+terminal or artifact exists — a missing threshold is not a default.
+
+### The pre-dispatch sizing estimate
+
+Before any launch, the launcher estimates the planned worker payload from
+exactly these inputs, in this order, each counted once by byte length:
+
+1. the persona file, when the story stamps one;
+2. the story file;
+3. the generated prompt file;
+4. every path declared under the story's optional `payload_refs:` frontmatter
+   key, repo-relative to the worktree that bounds the worker's sandbox.
+
+Bytes become tokens by the method the policy declares. The accepted initial
+method id is `bytes4-v1`: `ceil(bytes / 4)`. A `payload_refs` entry that does
+not resolve to a readable file refuses with `PAYLOAD_REF_MISSING`; an estimate
+that silently dropped part of the payload would under-report exactly when it
+matters.
+
+The estimate is **advisory kit policy**. It is never written into a `/v1/route`
+request as a `context_size` minimum or any other capacity input, it never alters
+route selection, and stamping is untouched by it.
+
+### Pre-dispatch actions
+
+With a declared window, `estimate / window` is compared against the declared
+ratios. A ratio **equal** to a threshold counts as crossing it.
+
+| Band | Action |
+|---|---|
+| ratio ≥ `continuation_ratio` | dispatch is REFUSED fail-closed with exit code 8 and a `${STORY}.blocked` marker typed `STORY-SIZING:` |
+| `sizing_risk_ratio` ≤ ratio < `continuation_ratio` | dispatch proceeds; `SIZING_RISK` is recorded in the thin result and appended once per cycle to the story's `## Dev Agent Record` |
+| ratio < `sizing_risk_ratio` | dispatch proceeds, no finding |
+
+The refusal is a **planning outcome, not a routing one**. It runs after the
+repository setup-policy gate and before `POST /v1/place`, before stamp
+validation and before the launch-contract guard, so a story that was too big to
+start consumes no placement, no validation, no terminal, no command text and no
+result artifact. The marker names the estimate, the window, the ratio, the
+threshold and every input counted. No route is modified and no substitute is
+chosen; re-routing to a larger window means a new `/v1/route` call and a new
+stamp, exactly as everywhere else.
+
+With an undeclared window neither action can fire.
+
+### The budget member of the thin result
+
+```
+"budget": {"state": ..., "reason": ...|null,
+           "window_tokens": N|null, "window_source": "CATALOG",
+           "estimate_tokens": N, "estimate_method": ...,
+           "estimate_ratio": N|null, "findings": [...]}
+```
+
+`window_source` names the authority consulted, which is the catalog on every
+path — including the path where it declares nothing. The member is additive
+within the result schema major, and its codes follow the same stable-code
+discipline as every other reason code in this contract.
+
+<!-- machine-checkable: budget_states -->
+```
+OK
+CHECKPOINT_DUE
+CONTINUATION_REQUIRED
+NOT_EVALUATED
+```
+<!-- end -->
+
+Pre-dispatch produces only `OK` and `NOT_EVALUATED`. `CHECKPOINT_DUE` and
+`CONTINUATION_REQUIRED` are declared here, and published by `schema`, so that
+automation reading this vocabulary meets no state the contract does not name
+when in-flight usage evaluation lands.
+
 ## Compatibility declarations
 
 The router and its catalog own legal harness/profile relationships, model and
