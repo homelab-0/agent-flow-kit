@@ -1,0 +1,41 @@
+{
+  "cell": "lcs-full-T3",
+  "harness": "claude",
+  "profile": "local-code-standard",
+  "mode": "full",
+  "task": "T3",
+  "status": "gates_failed_or_error",
+  "dispatch_exit": 1,
+  "gate": "FAIL",
+  "gate_line": "GATE FAIL (T3): spike/out/dev-record.md does not exist",
+  "override": "none",
+  "window_tokens": 65536,
+  "payload": {
+    "persona_bytes": 7944,
+    "story_bytes": 807,
+    "prompt_bytes": 553,
+    "bytes": 9304,
+    "tokens_est_bytes4": 2326,
+    "ratio": 0.035491943359375,
+    "headroom_tokens": 63210
+  },
+  "envelope": {
+    "is_error": false,
+    "num_turns": 7,
+    "duration_ms": 16603,
+    "stop_reason": "end_turn",
+    "denials": 5,
+    "model_usage": [
+      {
+        "model": "qwen36-27b",
+        "contextWindow": 65536,
+        "inputTokens": 845,
+        "outputTokens": 502,
+        "cacheRead": 79111,
+        "cacheCreation": 0
+      }
+    ]
+  },
+  "wall_seconds": 32,
+  "finished_at": "2026-09-07T07:03:14Z"
+}

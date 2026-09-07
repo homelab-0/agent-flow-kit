@@ -1,0 +1,28 @@
+{
+  "story": "stories/CELL-cs-full-T3.md",
+  "cycle": 1,
+  "status": "done",
+  "route": {
+    "harness": "claude",
+    "model_profile": "claude/strong",
+    "native_model": "opus",
+    "effort": "medium",
+    "persona": "dev-full"
+  },
+  "stamp": {
+    "digest": "sha256:d3ad004dccac6f603af7dc47070172862d4e74498a9e630466fd8552acc13fb1",
+    "expires_at": "2026-09-08T07:23:45Z",
+    "catalog_version": "sha256:c4d49d9a9db3b203cab02200dc0e335ae3b02934d91fe81b08975d5acc7cd027",
+    "validated": true
+  },
+  "placement": {
+    "required": false
+  },
+  "launch": {
+    "orca_terminal": "term_209ec031-91e1-4cb7-aa62-277987fe07bb",
+    "harness_exit": 0
+  },
+  "gates": {
+    "bash spike/gates/gate-T3.sh": "pass"
+  }
+}

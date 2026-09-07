@@ -1,0 +1,35 @@
+{
+  "id": "85de5c38-a608-484b-9307-a5a3f19a1c49",
+  "ok": true,
+  "result": {
+    "dispatch": {
+      "id": "ctx_2634fb2c2a88",
+      "task_id": "task_0d36d26dc33b",
+      "assignee_handle": "term_1623bf22-2bd4-43fe-ace5-104f7402f36d",
+      "assignee_pane_key": "de8e5ed7-d316-4a32-ab6b-513615d5e456:b00370d7-f24b-4b91-9589-a2dc0a5f0555",
+      "status": "dispatched",
+      "failure_count": 0,
+      "last_failure": null,
+      "dispatched_at": "2026-09-07 06:12:18",
+      "completed_at": null,
+      "created_at": "2026-09-07 06:12:18",
+      "last_heartbeat_at": null,
+      "run_id": "run_cb472ab8640c",
+      "capability_hash": null,
+      "process_incarnation": "d1c607d7-063b-4e28-86ae-ae4c24038ea8::/home/devbox/orca/workspaces/afk-smoke-target/afk-17-scaffold@@890ebd10:a48aede8-3b61-42dc-8736-2ec2092c8459",
+      "capability_revoked_at": null,
+      "contract_version": 1,
+      "launch_token_hash": null,
+      "termination_reason": null,
+      "depth": 1
+    },
+    "injected": false,
+    "mutation": {
+      "requestId": "7dadc822-0d02-4968-bb99-c479afa2f0fc",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "ea1d57f6-4774-40f8-adad-824a66f35a86"
+  }
+}

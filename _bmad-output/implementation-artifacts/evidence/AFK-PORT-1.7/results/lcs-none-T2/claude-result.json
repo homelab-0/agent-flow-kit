@@ -1,0 +1,16 @@
+{
+  "cycle": 1,
+  "max_cycles": 1,
+  "status": "done",
+  "artifacts": ["spike/out/wordfreq.sh"],
+  "gates": {
+    "bash spike/gates/gate-T2.sh": {
+      "ran": false,
+      "reason": "no shell execution tool available in this harness; verified by manual trace",
+      "manual_trace": "input 'the cat and the dog and the bird. The DOG!' -> lowercase -> split -> sort/uniq -> sort -k1rn -k2 -> head -3 -> awk reformat -> 'the 4 / and 2 / dog 2' matches expected"
+    }
+  },
+  "dev_agent_record": "spike/out/dev-record.md",
+  "findings": [],
+  "diff_size": "1 file added, ~10 lines"
+}

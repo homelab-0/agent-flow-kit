@@ -1,0 +1,41 @@
+{
+  "cell": "lcs-compact-T3",
+  "harness": "claude",
+  "profile": "local-code-standard",
+  "mode": "compact",
+  "task": "T3",
+  "status": "done",
+  "dispatch_exit": 0,
+  "gate": "PASS",
+  "gate_line": "GATE PASS (T3): spike/out/dev-record.md has the persona line and the five headings in order",
+  "override": "none",
+  "window_tokens": 65536,
+  "payload": {
+    "persona_bytes": 446,
+    "story_bytes": 819,
+    "prompt_bytes": 556,
+    "bytes": 1821,
+    "tokens_est_bytes4": 456,
+    "ratio": 0.0069580078125,
+    "headroom_tokens": 65080
+  },
+  "envelope": {
+    "is_error": false,
+    "num_turns": 17,
+    "duration_ms": 79657,
+    "stop_reason": "end_turn",
+    "denials": 7,
+    "model_usage": [
+      {
+        "model": "qwen36-27b",
+        "contextWindow": 65536,
+        "inputTokens": 2462,
+        "outputTokens": 2845,
+        "cacheRead": 199364,
+        "cacheCreation": 0
+      }
+    ]
+  },
+  "wall_seconds": 93,
+  "finished_at": "2026-09-07T06:56:50Z"
+}

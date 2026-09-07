@@ -1,0 +1,4 @@
+make-stamp: wrote /home/devbox/repos/jlengelbrecht/agent-flow-kit/_bmad-output/implementation-artifacts/evidence/AFK-PORT-1.7/results/lcs-none-T3/CELL-lcs-none-T3.md.stamp.json
+make-stamp:   claude local-code-standard effort=medium cost=free
+make-stamp:   placement_required=true expires_at=2026-09-08T06:51:05Z
+make-stamp:   digest sha256:5c909ffa147aabc475fa713402b1122e7af297d6376bb531c819b749b3b9319e

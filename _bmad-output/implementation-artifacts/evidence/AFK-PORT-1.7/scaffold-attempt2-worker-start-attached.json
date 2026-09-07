@@ -1,0 +1,64 @@
+{
+  "id": "f0f044a3-83a3-44cd-81f0-d3d0b6e8312d",
+  "ok": true,
+  "result": {
+    "runId": "run_cb472ab8640c",
+    "taskId": "task_427d76dfad95",
+    "dispatchId": "ctx_e78ec4e6cd7b",
+    "state": "ready",
+    "stage": "input_accepted",
+    "setup": {
+      "requested": "not_applicable",
+      "effective": "not_applicable",
+      "source": "existing_worktree",
+      "hookFound": false,
+      "startupPolicy": "start-immediately",
+      "state": "not_applicable"
+    },
+    "launch": {
+      "requested": {
+        "agent": null,
+        "model": null,
+        "effort": null
+      },
+      "effective": {
+        "agent": null,
+        "model": null,
+        "effort": null
+      }
+    },
+    "timeoutMs": 180000,
+    "effects": [
+      {
+        "kind": "worktree",
+        "action": "reused",
+        "id": "d1c607d7-063b-4e28-86ae-ae4c24038ea8::/home/devbox/orca/workspaces/afk-smoke-target/afk-17-scaffold2"
+      },
+      {
+        "kind": "setup",
+        "action": "not_applicable",
+        "state": "not_applicable"
+      },
+      {
+        "kind": "terminal",
+        "role": "agent",
+        "action": "reused",
+        "id": "term_d4fca421-c714-46b4-b423-1ecb81071d95"
+      },
+      {
+        "kind": "dispatch_input",
+        "role": "agent",
+        "id": "term_d4fca421-c714-46b4-b423-1ecb81071d95",
+        "state": "accepted"
+      }
+    ],
+    "residualResources": [],
+    "mutation": {
+      "requestId": "50334302-8fd2-4785-b2d9-a6f8d0211c7f",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "ea1d57f6-4774-40f8-adad-824a66f35a86"
+  }
+}
