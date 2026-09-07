@@ -1346,9 +1346,33 @@ assert_eq "and they match the declared policy document exactly" \
   "$(printf '%s' "$SCHEMA_JSON" | jq -r '.budget_states[]' | LC_ALL=C sort)" \
   "$(yq -r '.budget_states[]' "$KIT_ROOT/files/model-router/context-budget-policy.yaml" | LC_ALL=C sort)"
 
+# Lane B extends the vocabulary the budget reports under, and the policy
+# document stays its authority — the same relationship budget_states already
+# has. The dispatch result statuses are published for the same reason: a reader
+# of a thin result must meet no status the contract does not name.
+assert_eq "schema publishes the budget reason codes the policy declares" \
+  "$(printf '%s' "$SCHEMA_JSON" | jq -r '.budget_reason_codes[]' | LC_ALL=C sort)" \
+  "$(yq -r '.reason_codes[]' "$KIT_ROOT/files/model-router/context-budget-policy.yaml" | LC_ALL=C sort)"
+for c in USAGE_UNOBSERVABLE HIGH_USAGE CONTINUATION_ARTIFACT_INVALID \
+         CHECKPOINT_ARTIFACT_STALE WINDOW_UNCORROBORATED; do
+  assert_contains "schema publishes [$c]" \
+    "$(printf '%s' "$SCHEMA_JSON" | jq -c '.budget_reason_codes')" "$c"
+done
+assert_eq "schema publishes the dispatch result statuses, continuation included" \
+  "$(printf '%s' "$SCHEMA_JSON" | jq -c '.dispatch_result_statuses')" \
+  '["done","gates_failed","continuation_required","needs_human"]'
+
+# The budget's own reason vocabulary. `usage_reason` is a SECOND reason member
+# with its own published set, so the sweep below has to see it: a member that
+# names itself a reason and escapes the reason sweep is how an unpublished code
+# ships. Both sets are accepted for both members — the sweep asks whether the
+# kit published the code, not which producer emitted it.
+PUB_BUDGET_REASONS="$(printf '%s' "$SCHEMA_JSON" | jq -c '.budget_reason_codes')"
+PUB_ALL_REASONS="$(jq -nc --argjson a "$PUB_REASONS" --argjson b "$PUB_BUDGET_REASONS" '$a + $b')"
+
 unpublished_reasons() { # <document> -> how many reason strings are outside the set
-  printf '%s' "$1" | jq -r --argjson pub "$PUB_REASONS" \
-    '[.. | objects | .reason? | select(type == "string")
+  printf '%s' "$1" | jq -r --argjson pub "$PUB_ALL_REASONS" \
+    '[.. | objects | (.reason?, .usage_reason?) | select(type == "string")
       | . as $r | select(($pub | index($r)) == null)] | length'
 }
 outside_readiness_states() { # <document>
@@ -1380,6 +1404,13 @@ assert_eq "every target state is inside the published set" \
 assert_eq "the reason sweep still FAILS on an unpublished code" \
   "$(unpublished_reasons "$(printf '%s' "$LIVE_JSON" \
      | jq -c '.readiness.ROUTE_READY.reason = "NOT_A_PUBLISHED_CODE"')")" "1"
+# The budget's usage_reason travels the same sweep. The published value passes
+# and an invented one is caught, so the member is guarded rather than merely
+# absent from a document that never carried it.
+assert_eq "a published usage_reason passes the sweep" \
+  "$(unpublished_reasons '{"budget":{"state":"OK","usage_reason":"USAGE_UNOBSERVABLE"}}')" "0"
+assert_eq "the sweep FAILS on an unpublished usage_reason" \
+  "$(unpublished_reasons '{"budget":{"state":"OK","usage_reason":"NOT_A_PUBLISHED_CODE"}}')" "1"
 assert_eq "the readiness sweep still FAILS on an out-of-set state" \
   "$(outside_readiness_states "$(printf '%s' "$LIVE_JSON" \
      | jq -c '.readiness.ROUTE_READY.state = "BANANA"')")" "1"

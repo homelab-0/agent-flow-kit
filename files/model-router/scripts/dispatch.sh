@@ -635,9 +635,9 @@ load_budget_policy() { # <policy-file>
     die "BUDGET_POLICY_UNREADABLE: sizing_risk_ratio in '$f' is not a decimal ratio" "$EX_CONFIG"
   BUDGET_CONTINUATION_PPM="$(budget_threshold_ppm "$(yq -r '.continuation_ratio' "$f")")" || \
     die "BUDGET_POLICY_UNREADABLE: continuation_ratio in '$f' is not a decimal ratio" "$EX_CONFIG"
-  budget_threshold_ppm "$(yq -r '.checkpoint_ratio' "$f")" >/dev/null || \
+  BUDGET_CHECKPOINT_PPM="$(budget_threshold_ppm "$(yq -r '.checkpoint_ratio' "$f")")" || \
     die "BUDGET_POLICY_UNREADABLE: checkpoint_ratio in '$f' is not a decimal ratio" "$EX_CONFIG"
-  log "budget policy: $f (method $BUDGET_METHOD, risk $(budget_ratio_decimal "$BUDGET_RISK_PPM"), continuation $(budget_ratio_decimal "$BUDGET_CONTINUATION_PPM"))"
+  log "budget policy: $f (method $BUDGET_METHOD, risk $(budget_ratio_decimal "$BUDGET_RISK_PPM"), checkpoint $(budget_ratio_decimal "$BUDGET_CHECKPOINT_PPM"), continuation $(budget_ratio_decimal "$BUDGET_CONTINUATION_PPM"))"
 }
 
 # budget_payload_paths — the payload the worker is planned to receive, in the
@@ -725,18 +725,21 @@ What a human can do:
 EOF
 }
 
-# record_sizing_risk_unlocked — the append itself. Every caller reaches it
-# through record_sizing_risk, which holds the story's lock for the whole of it.
-record_sizing_risk_unlocked() { # <story> <estimate> <window> <ratio> <cycle>
-  local story="$1" est="$2" win="$3" ratio="$4" cycle="$5" line tmp
-  line="- budget: SIZING_RISK ${est}/${win} (${ratio}) cycle ${cycle} $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  if grep -qaE "^- budget: SIZING_RISK .* cycle ${cycle} " "$story"; then
-    log "budget: SIZING_RISK already recorded for cycle ${cycle} — not duplicated"
+# record_budget_line_unlocked — the append itself. Every caller reaches it
+# through record_budget_line, which holds the story's lock for the whole of it.
+# The CODE is what idempotence is keyed on alongside the cycle, so a cycle that
+# produces both a sizing observation and a continuation records both once, and
+# neither can suppress the other.
+record_budget_line_unlocked() { # <story> <cycle> <code> <detail>
+  local story="$1" cycle="$2" code="$3" detail="$4" line tmp
+  line="- budget: ${code} ${detail} cycle ${cycle} $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  if grep -qaE "^- budget: ${code} .* cycle ${cycle} " "$story"; then
+    log "budget: ${code} already recorded for cycle ${cycle} — not duplicated"
     return 0
   fi
   if ! grep -qaE '^## Dev Agent Record[[:space:]]*$' "$story"; then
     printf '\n## Dev Agent Record\n\n%s\n' "$line" >> "$story"
-    log "budget: SIZING_RISK recorded (Dev Agent Record heading created)"
+    log "budget: ${code} recorded (Dev Agent Record heading created)"
     return 0
   fi
   tmp="$(mktemp)"; TMPFILES+=("$tmp")
@@ -750,10 +753,10 @@ record_sizing_risk_unlocked() { # <story> <estimate> <window> <ratio> <cycle>
     END { if (inrec) print line }
   ' "$story" > "$tmp"
   cat "$tmp" > "$story"
-  log "budget: SIZING_RISK recorded in $story"
+  log "budget: ${code} recorded in $story"
 }
 
-# record_sizing_risk — append the sizing-risk finding to the story's own record,
+# record_budget_line — append one budget observation to the story's own record,
 # once per cycle. IDEMPOTENCE IS KEYED ON THE CYCLE, not on the whole line: a
 # re-dispatch of the same cycle must not double-write, while a genuinely new
 # cycle is a new observation and gets its own line. When the story has no
@@ -772,22 +775,262 @@ record_sizing_risk_unlocked() { # <story> <estimate> <window> <ratio> <cycle>
 # runs on. There it degrades to the previous unserialised behaviour and says so
 # rather than refusing to record the finding at all: a dispatch must not fail
 # because a host lacks the tool that makes a concurrent dispatch safe.
-record_sizing_risk() { # <story> <estimate> <window> <ratio> <cycle>
+record_budget_line() { # <story> <cycle> <code> <detail>
   local lk rc=0
   if ! command -v flock >/dev/null 2>&1; then
     log "budget: flock unavailable on this host — the story-record append runs unserialised"
-    record_sizing_risk_unlocked "$@"
+    record_budget_line_unlocked "$@"
     return $?
   fi
   if ! exec {lk}<"$1"; then
     log "budget: cannot open $1 to lock it — the append runs unserialised"
-    record_sizing_risk_unlocked "$@"
+    record_budget_line_unlocked "$@"
     return $?
   fi
   flock -x "$lk"
-  record_sizing_risk_unlocked "$@" || rc=$?
+  record_budget_line_unlocked "$@" || rc=$?
   exec {lk}<&-
   return "$rc"
+}
+
+# ---------------------------------------------------------------------------
+# Per-harness usage observation (FR-104, NFR-13/14, lane B).
+#
+# The kit NEVER scrapes a terminal or a transcript to reconstruct usage. Each
+# approved harness gets a named adapter that reads only what that harness
+# publishes, and the core calls one interface and one shape:
+#   {usage_tokens, window_tokens, provenance, observed_at, reason}
+# with the token members null when unobserved. An adapter that cannot observe
+# usage says NOT_EVALUATED; that is an answer, never a fallback the core has to
+# compensate for, and it never blocks the other harness.
+usage_unobservable() { # <reason-code>
+  jq -nc --arg r "$1" '{usage_tokens:null, window_tokens:null,
+                        provenance:"NOT_EVALUATED", observed_at:null, reason:$r}'
+}
+
+# usage_adapter_claude — `claude -p --output-format json` writes ONE result
+# envelope when the turn ends. Under the frozen launch text there is no
+# stream-json, so mid-run usage does not exist to be read: the observation is
+# END_OF_RUN or it is nothing, and it is labelled as such.
+#
+# usage_tokens is the context actually HELD at the last request — input, cache
+# reads and cache creation summed. Output tokens are not context the next turn
+# carries, so adding them would inflate the ratio against a window they never
+# occupied. window_tokens is CORROBORATION ONLY: the budget window is the
+# catalog's on every path, and a harness that reports a different number is
+# recorded and left disagreeing, because reconciling two authorities by picking
+# one is how a kit starts inventing routed facts.
+usage_adapter_claude() { # <result-file> <native-model>
+  local f="${1:-}" model="${2:-}" obs
+  [[ -f "$f" ]] || { usage_unobservable USAGE_UNOBSERVABLE; return 0; }
+  # The adapter reports only what it saw. A `usage` object carrying none of the
+  # three context members is not a run that used zero context, it is a run whose
+  # context was never published — so it is unobservable, and `usage_tokens: 0`
+  # with an OK band is precisely the confident number this lane exists not to
+  # invent. Window corroboration is an EXACT key match on the stamped model:
+  # adopting the one entry that happens to be present would corroborate against
+  # a model that did not run the turn.
+  obs="$(jq -c --arg m "$model" '
+      (.usage // {}) as $u
+      | (($u | type) == "object"
+         and ($u | has("input_tokens") or has("cache_read_input_tokens")
+                or has("cache_creation_input_tokens"))) as $observed
+      | (($u.input_tokens // 0) + ($u.cache_read_input_tokens // 0)
+         + ($u.cache_creation_input_tokens // 0)) as $t
+      | ((.modelUsage // {})[$m].contextWindow) as $w
+      | if ($observed | not) or ($t | type) != "number"
+        then null
+        else {usage_tokens:$t, window_tokens:(if ($w | type) == "number" then $w else null end),
+              provenance:"HARNESS_ENVELOPE", observed_at:"END_OF_RUN", reason:null}
+        end' "$f" 2>/dev/null || true)"
+  if [[ -z "$obs" || "$obs" == "null" ]]; then usage_unobservable USAGE_UNOBSERVABLE; return 0; fi
+  printf '%s' "$obs"
+}
+
+# usage_adapter_codex — `codex exec` without --json emits no machine-readable
+# usage at all under the frozen launch text, and the only other place the
+# number exists is the terminal buffer, which FR-104 puts out of bounds. So the
+# honest answer is the whole adapter.
+usage_adapter_codex() { usage_unobservable USAGE_UNOBSERVABLE; }
+
+# harness_usage_observation — the ONE interface the core calls. Adding a harness
+# means adding an adapter and one case arm; nothing above this line changes.
+harness_usage_observation() { # <harness> <result-file> <native-model>
+  case "$1" in
+    claude) usage_adapter_claude "${2:-}" "${3:-}" ;;
+    codex)  usage_adapter_codex ;;
+    *)      usage_unobservable USAGE_UNOBSERVABLE ;;
+  esac
+}
+
+# budget_evaluate_usage — the post-run half of FR-99, on exactly the arithmetic
+# lane A already froze for the pre-dispatch half: parts per million, and a ratio
+# EQUAL to a threshold counts as crossing it. Sets the BUDGET_* globals the thin
+# result carries. Nothing here knows what a CLI is.
+budget_evaluate_usage() { # <observation-json> <catalog-window>
+  local obs="$1" win="$2" tok rep ppm
+  BUDGET_USAGE_TOKENS="$(jq -r '.usage_tokens // ""' <<<"$obs")"
+  BUDGET_USAGE_PROVENANCE="$(jq -r '.provenance' <<<"$obs")"
+  BUDGET_OBSERVED_AT="$(jq -r '.observed_at // ""' <<<"$obs")"
+  BUDGET_USAGE_RATIO="" BUDGET_USAGE_REASON="" BUDGET_USAGE_PPM=""
+  rep="$(jq -r '.window_tokens // ""' <<<"$obs")"
+  BUDGET_WINDOW_REPORTED="$rep"
+  tok="$BUDGET_USAGE_TOKENS"
+
+  # A window the harness reports that disagrees with the routed one is a fact
+  # about the two documents, recorded and left unresolved.
+  if [[ -n "$rep" && -n "$win" && "$rep" != "$win" ]]; then
+    BUDGET_FINDINGS+=("WINDOW_DISAGREEMENT")
+    log "budget: harness reports window $rep, the CATALOG routes $win — recorded, not reconciled"
+  fi
+  # Corroboration is exact or it is absent. An envelope the adapter DID read but
+  # which carries no window for the stamped model corroborates nothing, and the
+  # honest record of that is a finding rather than a silent null a reader has to
+  # interpret. Nothing is corroborated when nothing was observed either, so the
+  # finding is bounded to an observation that actually happened.
+  if [[ -z "$rep" && "$BUDGET_USAGE_PROVENANCE" == "HARNESS_ENVELOPE" ]]; then
+    BUDGET_FINDINGS+=("WINDOW_UNCORROBORATED")
+    log "budget: the harness envelope reports no window for the routed model — corroboration unavailable"
+  fi
+
+  # An unobservable usage does NOT overwrite the state the pre-dispatch half
+  # reached. That state is a real verdict about a real estimate; replacing it
+  # with NOT_EVALUATED would report LESS than the kit knows, and the honest
+  # place for "no usage was observed" is the usage members themselves, which is
+  # where a reader who cares about observation looks. The window is checked
+  # first: without one, nothing could ever be evaluated whatever the harness
+  # published, so that is the reason worth carrying.
+  if [[ -z "$win" ]]; then
+    BUDGET_USAGE_REASON="CONTEXT_WINDOW_UNDECLARED"
+    log "budget: no catalog window, so observed usage cannot be evaluated"
+    return 0
+  fi
+  if [[ -z "$tok" ]]; then
+    BUDGET_USAGE_REASON="$(jq -r '.reason // "USAGE_UNOBSERVABLE"' <<<"$obs")"
+    log "budget: usage $BUDGET_USAGE_REASON for harness $HARNESS — the pre-dispatch verdict stands"
+    return 0
+  fi
+  ppm="$(budget_ratio_ppm "$tok" "$win")" || \
+    die "budget: observed usage $tok could not be divided by window $win" "$EX_CONFIG"
+  BUDGET_USAGE_RATIO="$(budget_ratio_decimal "$ppm")"
+  BUDGET_USAGE_PPM="$ppm"
+  if budget_crosses "$ppm" "$BUDGET_CONTINUATION_PPM"; then
+    BUDGET_STATE="CONTINUATION_REQUIRED"; BUDGET_REASON=""
+  elif budget_crosses "$ppm" "$BUDGET_CHECKPOINT_PPM"; then
+    BUDGET_STATE="CHECKPOINT_DUE"; BUDGET_REASON=""
+  else
+    BUDGET_STATE="OK"; BUDGET_REASON=""
+  fi
+  # The PM's story-sizing signal (FR-105): a run that ENDED at or above the
+  # checkpoint ratio was sized too close to its window, whatever it reported.
+  budget_crosses "$ppm" "$BUDGET_CHECKPOINT_PPM" && BUDGET_FINDINGS+=("HIGH_USAGE")
+  log "budget: usage $tok / window $win = $BUDGET_USAGE_RATIO -> $BUDGET_STATE (observed $BUDGET_OBSERVED_AT, $BUDGET_USAGE_PROVENANCE)"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# Checkpoint and continuation artifacts (FR-100, FR-101).
+# ---------------------------------------------------------------------------
+
+# The worker's continuation reason is caller-supplied FREE TEXT, which is the
+# one thing the kit never pattern-matches: a credential is not distinguishable
+# from a typo by shape, and a denylist keyed on length or charset misses an AWS
+# key id, a truncated token and every passphrase. So the reason's CONTENT never
+# reaches the marker, the log or the result at all. What is recorded is that a
+# reason was given, how many bytes it was — enough to tell a truncated signal
+# from a considered one — and the words from the CLOSED vocabulary below, the
+# same discipline afk_safe_diagnostic applies to caller-supplied argv.
+
+# continuation_reason_word — echo <word> only if it is in the closed vocabulary.
+# The input is lowercased and stripped to letters before matching, and what is
+# printed is the vocabulary term itself, never the caller's bytes.
+continuation_reason_word() { # <word>
+  # Lowercased and stripped to ASCII letters in the shell itself: the vocabulary
+  # is a fixed English set, so anything else in the caller's bytes is not a word
+  # this function knows and is dropped before the case ever sees it.
+  local w="${1,,}"
+  w="${w//[^a-z]/}"
+  case "$w" in
+    context|window|budget|tokens|usage|story|scope|larger|remaining|unfinished|incomplete)
+      printf '%s' "$w" ;;
+    gates|gate|tests|review|findings|checkpoint|continuation|phase|boundary|blocked|failing|timeout|resume)
+      printf '%s' "$w" ;;
+  esac
+}
+
+# continuation_signal_summary — the closed-vocabulary record of a worker's
+# CONTINUATION-REQUIRED line. Every member is derived from the reason; none of
+# them is the reason.
+continuation_signal_summary() { # <raw signal line>
+  local reason bytes words="" w safe parts=()
+  reason="${1#*CONTINUATION-REQUIRED:}"
+  reason="${reason#"${reason%%[![:space:]]*}"}"
+  bytes="$(printf '%s' "$reason" | wc -c | tr -d ' ')"
+  # read -ra splits on whitespace WITHOUT globbing, so a reason containing * or
+  # ? cannot expand against the worktree on its way to a diagnostic.
+  read -ra parts <<<"$reason"
+  for w in ${parts[@]+"${parts[@]}"}; do
+    safe="$(continuation_reason_word "$w")"
+    [[ -z "$safe" ]] && continue
+    case ",$words," in *",$safe,"*) continue ;; esac
+    words="${words:+$words,}$safe"
+  done
+  printf 'reason_given=%s reason_bytes=%s reason_words=%s' \
+    "$([[ -n "$reason" ]] && printf 'true' || printf 'false')" \
+    "$bytes" "${words:-none}"
+}
+
+# artifact_verdict — validate one lifecycle artifact against its declared schema
+# id and required members. The verdict vocabulary is CLOSED, and no fragment of
+# the file's own content is ever part of it: a diagnostic quoting the offending
+# value is exactly how a secret in a malformed artifact reaches a marker.
+artifact_verdict() { # <path> <schema-id> <required members...>
+  local f="$1" schema="$2"; shift 2
+  [[ -f "$f" ]] || { printf 'ARTIFACT_MISSING'; return 1; }
+  jq -e 'type == "object"' "$f" >/dev/null 2>&1 || { printf 'ARTIFACT_UNPARSEABLE'; return 1; }
+  [[ "$(jq -r '.schema // ""' "$f" 2>/dev/null)" == "$schema" ]] || \
+    { printf 'ARTIFACT_SCHEMA_MISMATCH'; return 1; }
+  local m
+  for m in "$@"; do
+    jq -e --arg k "$m" 'has($k) and (.[$k] != null)' "$f" >/dev/null 2>&1 || \
+      { printf 'ARTIFACT_MEMBER_MISSING'; return 1; }
+  done
+  printf 'VALID'; return 0
+}
+
+# artifact_identity_json — path plus content digest, nothing from inside the
+# file: the members are for whoever resumes the story, not for the thin result.
+artifact_identity_json() { # <path>
+  jq -nc --arg p "$1" --arg s "sha256:$(sha256_of "$1")" '{path:$p, sha256:$s}'
+}
+
+# worker_discipline_paragraph — the launcher-owned phase-boundary contract, as
+# DATA written into the prompt file, never as shell source. Mid-run usage is
+# unobservable under the frozen launch texts, so the discipline cannot be
+# usage-driven: it is deterministic policy the worker can follow without knowing
+# its own usage, which is precisely FR-104's fallback. Byte-stable for a given
+# story — no timestamp, no threshold, no observed number.
+worker_discipline_paragraph() { # <story>
+  local story="$1"
+  cat <<EOF
+Context discipline (launcher policy, not advice). Write or refresh the
+checkpoint artifact ${story}.checkpoint.json at each of these declared phase
+boundaries, regardless of how much context you think you have left: after you
+have read the story; after implementation and before you run the gates; and
+before you report. It is a JSON object with the members schema
+("afk-checkpoint/1"), completed, current_state, remaining_acceptance,
+next_steps and updated_at.
+If you judge that you cannot finish this story, or when the harness signals
+context pressure, do not continue toward exhaustion. Stop at the NEXT boundary,
+write ${story}.continuation.json — the checkpoint members, with schema
+"afk-continuation/1", plus in_flight and unretired_findings — then print one
+line 'CONTINUATION-REQUIRED: <one-line reason>' and end your turn.
+The reason must not be empty, and that marker is a signal rather than a word:
+never begin a line with it unless you are actually stopping, because a line
+that starts with it is read as the signal whatever the rest of the line says.
+Both artifacts are read by the kit and must be secret-free: record names,
+paths and states, never credential values.
+EOF
 }
 
 # ---------------------------------------------------------------------------
@@ -987,7 +1230,19 @@ re-run independently after you finish.
 If you hit a decision that genuinely needs a human, print one line starting with
 'NEEDS-HUMAN:' describing the question, then stop.
 EOF
+    worker_discipline_paragraph "$STORY"
   } > "$PROMPT_FILE"
+
+  # What the lifecycle artifacts looked like BEFORE this attempt ran. A
+  # continuation artifact is not removed the way the result artifact is — the
+  # next cycle is supposed to resume from it — so freshness is proved by
+  # identity instead: an artifact byte-identical to the one that was already
+  # there was not written by this worker, whatever it printed.
+  CHECKPOINT_FILE="${STORY}.checkpoint.json"
+  CONTINUATION_FILE="${STORY}.continuation.json"
+  CONTINUATION_BEFORE="" CHECKPOINT_BEFORE=""
+  [[ -f "$CONTINUATION_FILE" ]] && CONTINUATION_BEFORE="$(sha256_of "$CONTINUATION_FILE")"
+  [[ -f "$CHECKPOINT_FILE" ]] && CHECKPOINT_BEFORE="$(sha256_of "$CHECKPOINT_FILE")"
 
   # ---- Orca visibility ----------------------------------------------------
   local selector repo_id
@@ -1039,7 +1294,8 @@ EOF
     fi
     if budget_crosses "$ratio_ppm" "$BUDGET_RISK_PPM"; then
       BUDGET_FINDINGS+=("SIZING_RISK")
-      record_sizing_risk "$STORY" "$BUDGET_ESTIMATE" "$PROFILE_MIN_CONTEXT" "$BUDGET_RATIO" "$CYCLE"
+      record_budget_line "$STORY" "$CYCLE" SIZING_RISK \
+        "$BUDGET_ESTIMATE/$PROFILE_MIN_CONTEXT ($BUDGET_RATIO)"
     fi
   else
     log "budget: catalog profile '$MODEL_PROFILE' declares no min_context — NOT_EVALUATED (CONTEXT_WINDOW_UNDECLARED). estimate $BUDGET_ESTIMATE tokens is recorded, no threshold can fire, and no window is invented."
@@ -1171,6 +1427,85 @@ EOF
     die "worker is blocked — see ${STORY}.blocked" "$EX_NEEDS_HUMAN"
   fi
 
+  # ---- observed usage, then the artifacts the worker was told to leave -----
+  # Deliberately AFTER the NEEDS-HUMAN exit (a blocked worker's usage is not a
+  # budget verdict on the story) and BEFORE the gates: an attempt that stopped
+  # at a phase boundary did not finish, and gates run over a deliberately
+  # half-finished tree are evidence about the stop, not about the story.
+  local observation
+  observation="$(harness_usage_observation "$HARNESS" "${result_file:-}" "$NATIVE_MODEL")"
+  budget_evaluate_usage "$observation" "$PROFILE_MIN_CONTEXT"
+
+  # A checkpoint is a resumption aid, so an invalid one is a finding and not a
+  # refusal: it costs the next cycle its head start, it does not make this
+  # attempt's outcome a lie. A continuation artifact is the opposite — it is
+  # the evidence for a status that says the work is unfinished — so it is held
+  # to a refusal.
+  BUDGET_CHECKPOINT_JSON=null BUDGET_CONTINUATION_JSON=null
+  local verdict
+  if [[ -f "$CHECKPOINT_FILE" ]]; then
+    verdict="$(artifact_verdict "$CHECKPOINT_FILE" "afk-checkpoint/1" \
+                 completed current_state remaining_acceptance next_steps updated_at)" || true
+    # A checkpoint is not removed before a launch either, so the same freshness
+    # proof the continuation artifact gets applies here: a file byte-identical
+    # to the one that was already there was not written by this worker, and
+    # publishing its identity would vouch for content this attempt never
+    # produced. It is a finding rather than a refusal, exactly as an invalid
+    # checkpoint is — a checkpoint is a resumption aid, not a completion claim.
+    if [[ "$verdict" == "VALID" && -n "$CHECKPOINT_BEFORE" \
+          && "$CHECKPOINT_BEFORE" == "$(sha256_of "$CHECKPOINT_FILE")" ]]; then
+      verdict="CHECKPOINT_ARTIFACT_STALE"
+    fi
+    if [[ "$verdict" == "VALID" ]]; then
+      BUDGET_CHECKPOINT_JSON="$(artifact_identity_json "$CHECKPOINT_FILE")"
+      log "budget: checkpoint artifact accepted ($CHECKPOINT_FILE)"
+    elif [[ "$verdict" == "CHECKPOINT_ARTIFACT_STALE" ]]; then
+      BUDGET_FINDINGS+=("CHECKPOINT_ARTIFACT_STALE")
+      log "budget: CHECKPOINT_ARTIFACT_STALE — the checkpoint on disk is an earlier cycle's, not this one's"
+    else
+      BUDGET_FINDINGS+=("CHECKPOINT_ARTIFACT_INVALID")
+      log "budget: CHECKPOINT_ARTIFACT_INVALID ($verdict) — recorded, the attempt is not refused for it"
+    fi
+  fi
+
+  RESULT_STATUS=""
+  if grep -qa '^CONTINUATION-REQUIRED:' <<<"$WORKER_TEXT"; then
+    local signal summary
+    signal="$(grep -a '^CONTINUATION-REQUIRED:' <<<"$WORKER_TEXT" | tail -1)"
+    # The summary is the ONLY thing derived from the worker's line that travels
+    # any further: a closed-vocabulary record of a reason, never the reason.
+    summary="$(continuation_signal_summary "$signal")"
+    # The signal itself is checked before its evidence. A marker line with no
+    # reason at all is not a stoppage a human can act on, so it is an invalid
+    # signal and takes the same refusal path as invalid evidence.
+    if [[ "$summary" == reason_given=false* ]]; then
+      verdict="SIGNAL_REASON_EMPTY"
+    else
+      verdict="$(artifact_verdict "$CONTINUATION_FILE" "afk-continuation/1" \
+                   completed current_state remaining_acceptance next_steps updated_at \
+                   in_flight unretired_findings)" || true
+      if [[ "$verdict" == "VALID" && -n "$CONTINUATION_BEFORE" \
+            && "$CONTINUATION_BEFORE" == "$(sha256_of "$CONTINUATION_FILE")" ]]; then
+        verdict="ARTIFACT_STALE"
+      fi
+    fi
+    if [[ "$verdict" != "VALID" ]]; then
+      # Loud, and never a manufactured completion: no result artifact is
+      # written at all on this path, so nothing downstream can read an outcome
+      # out of a run whose own evidence is missing.
+      printf 'NEEDS-HUMAN: reason=CONTINUATION_ARTIFACT_INVALID detail=%s artifact=%s\nsignal: %s\n' \
+        "$verdict" "$CONTINUATION_FILE" "$summary" > "${STORY}.blocked"
+      orca terminal rename --terminal "$TERMINAL_HANDLE" --title "$title ⚑human" >/dev/null 2>&1 || true
+      die "the worker signalled CONTINUATION-REQUIRED but its continuation artifact is $verdict — see ${STORY}.blocked" "$EX_NEEDS_HUMAN"
+    fi
+    BUDGET_CONTINUATION_JSON="$(artifact_identity_json "$CONTINUATION_FILE")"
+    BUDGET_STATE="CONTINUATION_REQUIRED"; BUDGET_REASON=""
+    RESULT_STATUS="continuation_required"
+    record_budget_line "$STORY" "$CYCLE" CONTINUATION_REQUIRED \
+      "$(jq -r .sha256 <<<"$BUDGET_CONTINUATION_JSON")"
+    log "budget: the worker signalled a continuation ($summary)"
+  fi
+
   # ---- deterministic gates: never trust the worker's word -----------------
   # A zero harness exit means the turn completed, not that the task succeeded.
   declare -A GATE_RESULTS; GATES_OK=true
@@ -1179,6 +1514,36 @@ EOF
     if bash -c "$g" >/dev/null 2>&1; then GATE_RESULTS["$g"]="pass"
     else GATE_RESULTS["$g"]="fail"; GATES_OK=false; fi
   done
+
+  # A run that finished is not a run that needs continuing. An end-of-run ratio
+  # in the continuation band on a story whose gates passed and whose worker said
+  # nothing is a SIZING observation about how close the work came to its window
+  # — which HIGH_USAGE already carries — and publishing CONTINUATION_REQUIRED
+  # beside status: done would hand a reader two incompatible facts about the
+  # same attempt. Only a state computed from a ratio is demoted, and only to
+  # what the checkpoint rule says about that same ratio.
+  if [[ -z "$RESULT_STATUS" && "$GATES_OK" == true \
+        && "$BUDGET_STATE" == "CONTINUATION_REQUIRED" && -n "$BUDGET_USAGE_PPM" ]]; then
+    if budget_crosses "$BUDGET_USAGE_PPM" "$BUDGET_CHECKPOINT_PPM"; then
+      BUDGET_STATE="CHECKPOINT_DUE"
+    else
+      BUDGET_STATE="OK"
+    fi
+    log "budget: the run FINISHED at the continuation ratio — recorded as sizing (HIGH_USAGE), state $BUDGET_STATE"
+  fi
+
+  # Observed usage at or past the continuation threshold, with the gates failed
+  # and no word from the worker, is the case where the kit can see that the
+  # attempt ran out of room but the worker never said so. Reporting it as a
+  # plain gate failure would invite a re-dispatch into the same wall; the kit
+  # says continuation instead, and never claims a completion it cannot see.
+  if [[ -z "$RESULT_STATUS" && "$GATES_OK" != true \
+        && "$BUDGET_STATE" == "CONTINUATION_REQUIRED" ]]; then
+    RESULT_STATUS="continuation_required"
+    log "budget: usage reached the continuation band with gates failed and no worker signal"
+  fi
+  [[ -n "$RESULT_STATUS" ]] || \
+    RESULT_STATUS="$([[ $GATES_OK == true ]] && echo 'done' || echo 'gates_failed')"
 
   # ---- thin result the PM can read without loading the transcript ---------
   local placement_json='{"required":false}'
@@ -1196,12 +1561,17 @@ EOF
     --arg digest "$STAMP_DIGEST" --arg expires "$STAMP_EXPIRES_AT" \
     --arg catalog "$STAMP_CATALOG_VERSION" \
     --arg terminal "$TERMINAL_HANDLE" --arg hexit "$HARNESS_EXIT" \
-    --arg status "$([[ $GATES_OK == true ]] && echo 'done' || echo 'gates_failed')" \
+    --arg status "$RESULT_STATUS" \
     --argjson placement "$placement_json" \
     --argjson budget "$(jq -n \
         --arg st "$BUDGET_STATE" --arg rs "$BUDGET_REASON" \
         --arg win "$PROFILE_MIN_CONTEXT" --arg est "$BUDGET_ESTIMATE" \
         --arg method "$BUDGET_METHOD" --arg ratio "$BUDGET_RATIO" \
+        --arg ut "$BUDGET_USAGE_TOKENS" --arg ur "$BUDGET_USAGE_RATIO" \
+        --arg up "$BUDGET_USAGE_PROVENANCE" --arg oa "$BUDGET_OBSERVED_AT" \
+        --arg ureason "$BUDGET_USAGE_REASON" \
+        --arg wr "$BUDGET_WINDOW_REPORTED" \
+        --argjson cp "$BUDGET_CHECKPOINT_JSON" --argjson ct "$BUDGET_CONTINUATION_JSON" \
         --argjson findings "$(printf '%s\n' ${BUDGET_FINDINGS[@]+"${BUDGET_FINDINGS[@]}"} \
                               | jq -R -s -c 'split("\n") | map(select(length > 0))')" \
         '{state:$st, reason:(if $rs == "" then null else $rs end),
@@ -1209,6 +1579,13 @@ EOF
           window_source:"CATALOG",
           estimate_tokens:($est|tonumber), estimate_method:$method,
           estimate_ratio:(if $ratio == "" then null else ($ratio|tonumber) end),
+          usage_tokens:(if $ut == "" then null else ($ut|tonumber) end),
+          usage_ratio:(if $ur == "" then null else ($ur|tonumber) end),
+          usage_provenance:$up,
+          usage_reason:(if $ureason == "" then null else $ureason end),
+          observed_at:(if $oa == "" then null else $oa end),
+          window_reported_tokens:(if $wr == "" then null else ($wr|tonumber) end),
+          checkpoint_artifact:$cp, continuation_artifact:$ct,
           findings:$findings}')" \
     --argjson gates "$(for k in "${!GATE_RESULTS[@]}"; do
                          jq -n --arg k "$k" --arg v "${GATE_RESULTS[$k]}" '{($k):$v}'
@@ -1227,7 +1604,11 @@ EOF
     --title "$title $([[ $GATES_OK == true ]] && echo '✓gates' || echo '✗gates')" >/dev/null 2>&1 || true
 
   log "$(jq -c . "${STORY}.result.json")"
-  [[ "$GATES_OK" == true ]] && exit "$EX_DONE" || exit "$EX_GATES_FAILED"
+  # A continuation is not a completion, whatever the gates said about a tree the
+  # worker deliberately left half-finished: it exits as unfinished work so the
+  # cycle loop treats it as work to resume rather than work to close.
+  [[ "$GATES_OK" == true && "$RESULT_STATUS" == "done" ]] \
+    && exit "$EX_DONE" || exit "$EX_GATES_FAILED"
 }
 
 # Sourced by tests/ to exercise the pure builders without running a dispatch.
