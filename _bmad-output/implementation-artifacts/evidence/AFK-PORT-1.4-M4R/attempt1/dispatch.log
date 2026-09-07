@@ -1,0 +1,10 @@
+dispatch: persona: dev (_bmad/bmm/agents/dev.md)
+dispatch: [stories/SMOKE-CANARY.md] cycle 1/1 -> claude local-code-standard (qwen36-27b) effort=medium
+dispatch: stamp: SMOKE-CANARY.md.stamp.json sha256:58a3a970c0a5f40cff46bc26ce464f91fc048daa866853f4d76aa667fe405896 expires=2026-09-08T05:40:31Z catalog=sha256:c4d49d9a9db3b203cab02200dc0e335ae3b02934d91fe81b08975d5acc7cd027
+dispatch: setup policy: start-immediately
+dispatch: placement: kserve-a5000 (ttl 30s, resolved 2026-09-07T05:42:17Z)
+dispatch: stamp valid — all 8 checks passed (catalog sha256:c4d49d9a9db3b203cab02200dc0e335ae3b02934d91fe81b08975d5acc7cd027)
+dispatch: launch class: gateway-backed local (local-code-standard -> qwen36-27b at https://ai-gateway.homelab0.org, x-placement kserve-a5000, context 65536)
+dispatch: launched in Orca terminal term_0405eeec-b35e-4f3e-a916-c095b47048db — "SMOKE-CANARY.md claude local-code-standard medium c1"
+dispatch: CLAUDE_EXIT=0
+dispatch: {"story":"stories/SMOKE-CANARY.md","cycle":1,"status":"gates_failed","route":{"harness":"claude","model_profile":"local-code-standard","native_model":"qwen36-27b","effort":"medium","persona":"dev"},"stamp":{"digest":"sha256:58a3a970c0a5f40cff46bc26ce464f91fc048daa866853f4d76aa667fe405896","expires_at":"2026-09-08T05:40:31Z","catalog_version":"sha256:c4d49d9a9db3b203cab02200dc0e335ae3b02934d91fe81b08975d5acc7cd027","validated":true},"placement":{"required":true,"placement":"kserve-a5000","model":"qwen36-27b","resolved_at":"2026-09-07T05:42:17Z","ttl_seconds":30},"launch":{"orca_terminal":"term_0405eeec-b35e-4f3e-a916-c095b47048db","harness_exit":0},"gates":{"bash tests/gate.sh":"fail"}}
