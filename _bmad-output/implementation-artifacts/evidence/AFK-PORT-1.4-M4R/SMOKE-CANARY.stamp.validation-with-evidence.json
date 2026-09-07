@@ -1,0 +1,54 @@
+{
+  "valid": true,
+  "checks": [
+    {
+      "name": "approved_pair",
+      "passed": true,
+      "reason_code": "ok",
+      "message": "the stamped {harness, model_profile} pair is in routing.ApprovedPairs, currently eligible per the loaded catalog, and (when stamped) satisfies the task's context_size requirement"
+    },
+    {
+      "name": "forbidden_for",
+      "passed": true,
+      "reason_code": "ok",
+      "message": "no tag in task.tags appears in the profile's forbidden_for list"
+    },
+    {
+      "name": "entitlement_permitted",
+      "passed": true,
+      "reason_code": "ok",
+      "message": "the stamped pool/cost_class is still a declared entitlement candidate for this profile in the loaded catalog"
+    },
+    {
+      "name": "metered_dual_key",
+      "passed": true,
+      "reason_code": "ok",
+      "message": "no metered intent is stated and no metered-spend authority is asserted"
+    },
+    {
+      "name": "placement",
+      "passed": true,
+      "reason_code": "placed_and_fresh",
+      "message": "placement_required is true and the supplied PlacementEvidence is placed, matching, authorized, on the loaded catalog, and unexpired"
+    },
+    {
+      "name": "catalog_drift_fails_closed",
+      "passed": true,
+      "reason_code": "ok",
+      "message": "the stamp's catalog_version equals the loaded catalog's digest"
+    },
+    {
+      "name": "not_expired",
+      "passed": true,
+      "reason_code": "ok",
+      "message": "now is not after the stamp's expires_at"
+    },
+    {
+      "name": "override_within_policy",
+      "passed": true,
+      "reason_code": "no_override",
+      "message": "no override is recorded on this stamp"
+    }
+  ],
+  "catalog_version": "sha256:c4d49d9a9db3b203cab02200dc0e335ae3b02934d91fe81b08975d5acc7cd027"
+}

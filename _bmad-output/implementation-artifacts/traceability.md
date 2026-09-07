@@ -180,7 +180,7 @@ or control-plane surface. Story 1.4's live-render acceptance condition is the
 natural proving ground: a live PLAN-mode render and a populated statusline are
 the same demonstration.
 
-## Story 1.4 — Prove Portability Across Real Orca Hosts (CLOSED 2026-08-29)
+## Story 1.4 — Prove Portability Across Real Orca Hosts (CLOSED 2026-08-29; verdict upgraded to GREEN 2026-09-07)
 
 Full per-requirement verification: `evidence/AFK-PORT-1.4-M5-TRACEABILITY/traceability-sweep.json`
 (140 items, produced by a 13-agent independent verification sweep; every mapping
@@ -255,6 +255,32 @@ receipts).
 9. Story-record corrections at M5: the 1.3 preamble-incident pointer
    (`AFK-PORT-1.3-C4.worker-done.md`) was wrong — the incident's source is
    the 1.3 coordinator freeze record; corrected here.
+
+**Superseding verdict (M4R, 2026-09-07): AGENT-FLOW-KIT PORTABILITY GREEN.**
+The one clause of the frozen M5 verdict is discharged: with `AFK-PORT-1.4-LV`
+merged and applied to the host through the Git channel (applied revision
+`8a7cbc1` → `2db1747`, `CONVERGED`), the natural standard-band route
+`{claude, local-code-standard}` was accepted as routed (null override), placed
+at launch (`kserve-a5000`), validated, launched through the gateway-backed
+class, completed (`CLAUDE_EXIT=0`), and passed its frozen gate under
+independent re-run (canary sha `8d1ddaae…`). Attempt 1 failed its gate on
+executor behaviour (the local model wrote to an invented absolute path and was
+refused) and is retained with its diagnosis; attempt 2 ran under pre-declared,
+committed scaffolding (gate v3 without the staging requirement; story naming
+the relative path) and passed. Full chain and cleanup under
+`evidence/AFK-PORT-1.4-M4R/`; the frozen M5 text is unchanged. New registry
+items: (15) readiness `claude_capability` probe keys on `claude --help` text
+and reports `INCOMPATIBLE` on 2.1.263 because `--append-system-prompt-file`
+is no longer listed although it works; (16) readiness `orca_capability` probe
+calls an `orca capabilities` verb the current Orca CLI no longer has, so
+`HOST_EXECUTION_READY` reports `ORCA_CAPABILITY_UNPROVEN` while launches
+succeed — both make the live `ROUTE_READY` evaluation of a valid natural stamp
+report `FALSE` for reasons unrelated to the route; (17) batch workers do not
+commit a durable completion delivery, so the kit's watch needs a
+coordinator-written corrected delivery to settle (mechanism proven here);
+(18) the local model's tendency to invent absolute paths outside the worktree
+under the least-privilege posture — story scaffolding must name relative
+paths explicitly.
 
 **Post-close addition (2026-09-07) — launch variant merged, verdict unchanged.**
 `AFK-PORT-1.4-LV` (gateway-backed launch class for local profiles on the
