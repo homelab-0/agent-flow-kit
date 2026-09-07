@@ -318,12 +318,13 @@ register() { # <descriptor json>
   run_afk monitor --json --register "$TMPROOT/descriptor.json"
 }
 
-deliver() { # <delivery id> <dispatch id> <kind> <status>
+deliver() { # <delivery id> <dispatch id> <kind> <status> [budget state]
   mkdir -p "$INBOX"
-  jq -nc --arg d "$1" --arg t "$2" --arg k "$3" --arg s "$4" \
+  jq -nc --arg d "$1" --arg t "$2" --arg k "$3" --arg s "$4" --arg b "${5:-}" \
     '{schema_version: "1.0", delivery_id: $d, dispatch_id: $t, kind: $k,
-      result: {status: $s, summary: "one bounded worker result",
-               evidence: ["evidence/one.log"]}}' > "$INBOX/$1.json"
+      result: ({status: $s, summary: "one bounded worker result",
+                evidence: ["evidence/one.log"]}
+               + (if $b == "" then {} else {budget: {state: $b}} end))}' > "$INBOX/$1.json"
 }
 
 deliver_heartbeat() { # <delivery id> <dispatch id> — a heartbeat carries no result
@@ -452,6 +453,35 @@ assert_eq "the active Dispatch is preserved exactly as it was" \
 assert_eq "and is still unacknowledged" "$(rec d-active '.acknowledged')" "false"
 assert_eq "settlement was still scheduled only once for the completed one" \
   "$(rec d-basic '.settlement.scheduled_count')" "1"
+
+# The worker's context-budget state rides onto the watch record and the status
+# rendering (Story 1.5 lane B, FR-105). It is BOUNDED on read: a delivery is
+# worker-shaped input, so a state outside the published four is an unobserved
+# one, not a fifth state — and a record from before the member existed reads
+# NOT_EVALUATED rather than being retrofitted.
+new_scenario budget
+register "$(descriptor d-bud TASK-B term-bud - - - - - false false false)"
+assert_eq "a record carries no budget before any completion" \
+  "$(rec d-bud '.result.context_budget // "absent"')" "absent"
+run_afk monitor --json
+assert_eq "and the status rendering reads NOT_EVALUATED for it" \
+  "$(printf '%s' "$RUN_OUT" | jq -r '.dispatch_monitor.dispatches[]
+     | select(.id == "d-bud") | .context_budget')" "NOT_EVALUATED"
+deliver del-b d-bud worker_done gates_failed CHECKPOINT_DUE
+run_afk monitor --json --reconcile
+assert_eq "the reconciled record carries the worker's budget state" \
+  "$(rec d-bud '.result.context_budget')" "CHECKPOINT_DUE"
+assert_eq "and the status rendering projects it per Dispatch" \
+  "$(printf '%s' "$RUN_OUT" | jq -r '.dispatch_monitor.dispatches[]
+     | select(.id == "d-bud") | .context_budget')" "CHECKPOINT_DUE"
+new_scenario budget_bounded
+register "$(descriptor d-bud2 TASK-B2 term-bud2 - - - - - false false false)"
+deliver del-b2 d-bud2 worker_done done BANANA
+run_afk monitor --json --reconcile
+assert_eq "a state outside the published four is unobserved, not a fifth state" \
+  "$(rec d-bud2 '.result.context_budget')" "NOT_EVALUATED"
+assert_eq "and the outcome the worker reported is untouched by the bounding" \
+  "$(rec d-bud2 '.result.status')" "done"
 
 # ===========================================================================
 head1 "4. A monitoring fault is a fault, never an invented worker result"

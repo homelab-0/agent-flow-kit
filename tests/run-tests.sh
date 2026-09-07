@@ -509,7 +509,7 @@ mkrace() { printf -- '---\npersona: dev\ngates: ["x"]\n---\n\nBODY-SENTINEL\n\n#
 # CONTROL first: serially the same calls are correct AND idempotent per cycle,
 # so a concurrency failure below is about serialisation and nothing else.
 mkrace "$RACE_DIR/seq.md"
-for c in 1 1 2 2 3; do record_sizing_risk "$RACE_DIR/seq.md" 100 200 0.500000 "$c" 2>/dev/null; done
+for c in 1 1 2 2 3; do record_budget_line "$RACE_DIR/seq.md" "$c" SIZING_RISK "100/200 (0.500000)" 2>/dev/null; done
 assert_eq "record/CONTROL: serial calls give one line per DISTINCT cycle" \
   "$(grep -ac '^- budget: SIZING_RISK ' "$RACE_DIR/seq.md")" "3"
 assert_eq "record/CONTROL: serial calls preserve the body" \
@@ -519,7 +519,7 @@ RACE_WAYS=8 RACE_TRIALS=10 RACE_LOST=0 RACE_DAMAGED=0
 for t in $(seq "$RACE_TRIALS"); do
   mkrace "$RACE_DIR/r.md"
   for c in $(seq "$RACE_WAYS"); do
-    ( record_sizing_risk "$RACE_DIR/r.md" 100 200 0.500000 "$c" ) >/dev/null 2>&1 &
+    ( record_budget_line "$RACE_DIR/r.md" "$c" SIZING_RISK "100/200 (0.500000)" ) >/dev/null 2>&1 &
   done
   wait
   [[ "$(grep -ac '^- budget: SIZING_RISK ' "$RACE_DIR/r.md")" == "$RACE_WAYS" ]] || RACE_LOST=$((RACE_LOST+1))
@@ -719,6 +719,13 @@ case "$sub" in
       esac
     done
     echo created >> "$STUB_STATE/terminal-creates"
+    # The terminal is what actually produces the worker's files. A case that
+    # needs a result envelope or a lifecycle artifact to exist declares it
+    # here, so nothing is pre-planted behind dispatch's own housekeeping.
+    for n in 1 2; do
+      pv="STUB_SPAWN_PATH$n"; bv="STUB_SPAWN_BODY$n"
+      [[ -n "${!pv:-}" ]] && printf '%s' "${!bv:-}" > "${!pv}"
+    done
     jq -n '{ok:true,result:{terminal:{handle:"term_stub"}}}' ;;
   "terminal read")
     # STUB_TERMINAL_STATUS lets a case drive the terminal to its END state. A
@@ -1690,6 +1697,435 @@ if PATH="$WORK/reqbin:$PATH" STUB_ROUTE_RESPONSE="$WORK/route-response-ac6.json"
 else
   bad "AC-6: make-stamp round trip on a story with a sizing estimate"
 fi
+
+
+# ===========================================================================
+head1 "3d. Context budget — observed usage, phase-boundary artifacts (lane B)"
+# ===========================================================================
+# Usage is whatever the harness PUBLISHES under its frozen launch text, and
+# nothing else. Both frozen texts are unchanged by this section, so the claude
+# adapter sees one end-of-run envelope and the codex adapter sees nothing —
+# and the discipline that carries a worker across a boundary is therefore
+# deterministic policy in the prompt rather than a usage reading.
+
+# --- the adapters, called directly (AC-1) ---------------------------------
+envelope() { # <input> <cache-read> <cache-create> [window] [model]
+  jq -nc --argjson i "$1" --argjson r "$2" --argjson c "$3" \
+     --arg w "${4:-}" --arg m "${5:-opus}" \
+    '{type:"result", is_error:false, result:"ok",
+      usage:{input_tokens:$i, cache_read_input_tokens:$r,
+             cache_creation_input_tokens:$c, output_tokens:99999},
+      modelUsage:(if $w == "" then {} else {($m):{contextWindow:($w|tonumber)}} end)}'
+}
+UF="$WORK/envelope.json"; envelope 1000 500 200 200000 opus > "$UF"
+assert_eq "adapter/claude: usage is input + cache reads + cache creation" \
+  "$(usage_adapter_claude "$UF" opus | jq -r .usage_tokens)" "1700"
+assert_eq "adapter/claude: the observation is labelled by source and by when" \
+  "$(usage_adapter_claude "$UF" opus | jq -r '.provenance + " " + .observed_at')" \
+  "HARNESS_ENVELOPE END_OF_RUN"
+assert_eq "adapter/claude: the harness window is read for corroboration" \
+  "$(usage_adapter_claude "$UF" opus | jq -r .window_tokens)" "200000"
+printf '{"type":"result","result":"ok"}' > "$WORK/usageless.json"
+assert_eq "adapter/claude: an envelope with no usage member is NOT_EVALUATED" \
+  "$(usage_adapter_claude "$WORK/usageless.json" opus | jq -r .reason)" "USAGE_UNOBSERVABLE"
+envelope 10 0 0 "" > "$WORK/nowindow.json"
+assert_eq "adapter/claude: no reported window is null, never the catalog's" \
+  "$(usage_adapter_claude "$WORK/nowindow.json" opus | jq -r '.window_tokens|type')" "null"
+# A `usage` object present but carrying NONE of the three context members is a
+# run whose context was never published. Reporting 0 for it would be the one
+# place the adapter says more than it saw.
+printf '{"type":"result","usage":{"output_tokens":9999}}' > "$WORK/outputonly.json"
+assert_eq "adapter/claude: usage with no input or cache member is unobservable" \
+  "$(usage_adapter_claude "$WORK/outputonly.json" opus | jq -r '.reason + " " + (.usage_tokens|tostring)')" \
+  "USAGE_UNOBSERVABLE null"
+# ... and the control: ONE of the three is enough to be an observation.
+printf '{"type":"result","usage":{"cache_read_input_tokens":42}}' > "$WORK/cacheonly.json"
+assert_eq "adapter CONTROL: any one of the three members IS an observation" \
+  "$(usage_adapter_claude "$WORK/cacheonly.json" opus | jq -r '.provenance + " " + (.usage_tokens|tostring)')" \
+  "HARNESS_ENVELOPE 42"
+# Corroboration is an EXACT key match. The harness names its own models, so the
+# single entry that happens to be there is a different model's window.
+envelope 10 0 0 200000 "some-other-model" > "$WORK/othermodel.json"
+assert_eq "adapter/claude: a non-matching modelUsage key corroborates nothing" \
+  "$(usage_adapter_claude "$WORK/othermodel.json" opus | jq -r '.window_tokens|tostring')" "null"
+assert_eq "adapter CONTROL: the matching key IS read" \
+  "$(usage_adapter_claude "$WORK/othermodel.json" some-other-model | jq -r '.window_tokens|tostring')" "200000"
+assert_eq "adapter/codex: the second harness reports NOT_EVALUATED" \
+  "$(usage_adapter_codex | jq -r '.provenance + " " + .reason')" "NOT_EVALUATED USAGE_UNOBSERVABLE"
+assert_eq "the core calls ONE interface: claude routes to the claude adapter" \
+  "$(harness_usage_observation claude "$UF" opus)" "$(usage_adapter_claude "$UF" opus)"
+assert_eq "and codex to the codex adapter" \
+  "$(harness_usage_observation codex "$UF" opus)" "$(usage_adapter_codex)"
+
+# The kit does not reconstruct usage. The only file the adapter opens is the
+# envelope the harness wrote; no terminal read reaches it.
+if code_of "$DISPATCH" | sed -n '/^usage_adapter_/,/^}/p' | grep -qE 'TERMINAL_TAIL|terminal read'; then
+  bad "AC-1: no adapter scrapes a terminal or a transcript"
+else ok "AC-1: no adapter scrapes a terminal or a transcript"; fi
+
+# --- the post-run bands (AC-2) --------------------------------------------
+load_budget_policy "$BUDGET_POLICY_SHIPPED" 2>/dev/null
+band() { # <usage> <window> -> "STATE findings"
+  HARNESS=claude BUDGET_FINDINGS=() BUDGET_STATE="" BUDGET_REASON=""
+  budget_evaluate_usage "$(jq -nc --argjson u "$1" --argjson w "$2" '{usage_tokens:$u, window_tokens:$w,
+      provenance:"HARNESS_ENVELOPE", observed_at:"END_OF_RUN", reason:null}')" "$2" 2>/dev/null
+  printf '%s %s' "$BUDGET_STATE" "${BUDGET_FINDINGS[*]-}"
+}
+assert_eq "usage band: one ppm BELOW checkpoint is still OK"        "$(band 699999 1000000)" "OK "
+assert_eq "usage band: EQUAL to checkpoint crosses it"        "$(band 700000 1000000)" "CHECKPOINT_DUE HIGH_USAGE"
+assert_eq "usage band: EQUAL to continuation crosses it" \
+  "$(band 850000 1000000)" "CONTINUATION_REQUIRED HIGH_USAGE"
+# An observation the adapter DID make but for which no window came back
+# corroborates nothing, and says so rather than leaving a null to interpret.
+HARNESS=claude; BUDGET_FINDINGS=(); BUDGET_STATE=""; BUDGET_REASON=""
+budget_evaluate_usage "$(jq -nc '{usage_tokens:10, window_tokens:null,
+    provenance:"HARNESS_ENVELOPE", observed_at:"END_OF_RUN", reason:null}')" 1000000 2>/dev/null
+assert_eq "window: an observation with no reported window is UNCORROBORATED" \
+  "${BUDGET_FINDINGS[*]-}" "WINDOW_UNCORROBORATED"
+# The control: nothing observed corroborates nothing either, and does not
+# claim a corroboration failure for an observation that never happened.
+HARNESS=codex; BUDGET_FINDINGS=(); BUDGET_STATE="OK"; BUDGET_REASON=""
+budget_evaluate_usage "$(usage_adapter_codex)" 1000000 2>/dev/null
+assert_eq "window CONTROL: an unobserved usage raises no corroboration finding" \
+  "${BUDGET_FINDINGS[*]-}" ""
+# An unobservable usage never overwrites the pre-dispatch verdict: it is
+# reported in the usage members, where a reader who cares about observation
+# looks, and the estimate's own conclusion is not thrown away.
+HARNESS=claude; BUDGET_FINDINGS=(); BUDGET_STATE="OK"; BUDGET_REASON=""
+budget_evaluate_usage "$(usage_adapter_codex)" 200000 2>/dev/null
+assert_eq "usage band: an unobservable usage leaves the pre-dispatch state alone" \
+  "$BUDGET_STATE/$BUDGET_REASON" "OK/"
+assert_eq "usage band: and says so in the usage members" \
+  "$BUDGET_USAGE_PROVENANCE/$BUDGET_USAGE_REASON" "NOT_EVALUATED/USAGE_UNOBSERVABLE"
+assert_eq "usage band: with no ratio rendered for it" "$BUDGET_USAGE_RATIO" ""
+HARNESS=claude; BUDGET_FINDINGS=(); BUDGET_STATE="NOT_EVALUATED"; BUDGET_REASON="CONTEXT_WINDOW_UNDECLARED"
+budget_evaluate_usage "$(usage_adapter_claude "$UF" opus)" "" 2>/dev/null
+assert_eq "usage band: an observed usage with NO window evaluates nothing" \
+  "$BUDGET_USAGE_REASON" "CONTEXT_WINDOW_UNDECLARED"
+# The reported window CORROBORATES; it never becomes the divisor.
+HARNESS=claude; BUDGET_FINDINGS=()
+budget_evaluate_usage "$(usage_adapter_claude "$UF" opus)" 65536 2>/dev/null
+assert_eq "window disagreement: recorded as a finding of its own" \
+  "${BUDGET_FINDINGS[*]}" "WINDOW_DISAGREEMENT"
+assert_eq "window disagreement: the CATALOG window is still the divisor" \
+  "$BUDGET_USAGE_RATIO" "$(budget_ratio_decimal "$(budget_ratio_ppm 1700 65536)")"
+
+# --- the prompt paragraph (AC-3) ------------------------------------------
+PARA="$(worker_discipline_paragraph "/wt/S.md")"
+for needle in "/wt/S.md.checkpoint.json" "afk-checkpoint/1" "/wt/S.md.continuation.json" \
+              "afk-continuation/1" "remaining_acceptance" "in_flight" "unretired_findings" \
+              "CONTINUATION-REQUIRED:" "have read the story" \
+              "before you run the gates" "secret-free" \
+              "or when the harness signals" "The reason must not be empty" \
+              "never begin a line with it unless you are actually stopping"; do
+  assert_contains "prompt paragraph names [$needle]" "$PARA" "$needle"
+done
+assert_eq "prompt paragraph: byte-stable for the same story" \
+  "$PARA" "$(worker_discipline_paragraph "/wt/S.md")"
+if [[ "$PARA" == "$(worker_discipline_paragraph "/wt/OTHER.md")" ]]; then
+  bad "prompt paragraph: is bound to the story it names" "identical for two stories"
+else ok "prompt paragraph: is bound to the story it names"; fi
+assert_eq "prompt paragraph: carries no threshold, so policy stays in one place" \
+  "$(grep -cE '0\.[0-9]+|70%|85%' <<<"$PARA")" "0"
+
+# --- end to end, on both harnesses ----------------------------------------
+spawn_reset() { unset STUB_SPAWN_PATH1 STUB_SPAWN_BODY1 STUB_SPAWN_PATH2 STUB_SPAWN_BODY2; }
+ckpt() { # <schema> [extra members json]
+  local x="${2:-}"; [[ -n "$x" ]] || x='{}'
+  jq -nc --arg s "$1" --argjson x "$x" \
+    '{schema:$s, completed:["one"], current_state:"mid", remaining_acceptance:["AC-9"],
+      next_steps:["resume"], updated_at:"2026-09-07T00:00:00Z"} + $x'
+}
+CONT_EXTRA='{"in_flight":"the gate run","unretired_findings":[]}'
+
+reset_stubs; spawn_reset
+write_story "$WT/s-usage.md" "persona: dev
+gates: [\"true\"]"
+write_stamp "$WT/s-usage.md.stamp.json" high false
+export STUB_SPAWN_PATH1="$WT/s-usage.md.claude-result.json"
+STUB_SPAWN_BODY1="$(envelope 120000 20000 10000 200000 opus)"; export STUB_SPAWN_BODY1
+rc="$(STUB_CATALOG="$WORK/catalog-windowed.yaml"; export STUB_CATALOG; run_dispatch s-usage.md)"
+BR="$WT/s-usage.md.result.json"
+assert_eq "usage e2e: the run completes" "$rc" "0"
+assert_eq "usage e2e: the observed usage reaches the thin result" \
+  "$(bud .budget.usage_tokens "$BR")" "150000"
+assert_eq "usage e2e: 150000/200000 is the CHECKPOINT band" "$(bud .budget.state "$BR")" "CHECKPOINT_DUE"
+assert_eq "usage e2e: and carries the PM's sizing signal" \
+  "$(jq -c '.budget.findings' "$BR")" '["HIGH_USAGE"]'
+assert_eq "usage e2e: status is unaffected by a checkpoint-band budget" \
+  "$(bud .status "$BR")" "done"
+
+reset_stubs; spawn_reset
+export STUB_TERMINAL_TAIL="ok
+CODEX_EXIT=0"
+write_story "$WT/s-usage-codex.md" "persona: dev
+gates: [\"true\"]"
+write_stamp "$WT/s-usage-codex.md.stamp.json" high false "openai/strong" codex openai-plus
+rc="$(run_dispatch s-usage-codex.md)"
+BR="$WT/s-usage-codex.md.result.json"
+assert_eq "usage e2e/codex: the second harness dispatches unaffected" "$rc" "0"
+assert_eq "usage e2e/codex: usage NOT_EVALUATED, never blocking the run" \
+  "$(bud .budget.usage_provenance "$BR")" "NOT_EVALUATED"
+assert_eq "usage e2e/codex: with the stable reason" \
+  "$(bud .budget.usage_reason "$BR")" "USAGE_UNOBSERVABLE"
+assert_eq "usage e2e/codex: and no usage number invented for it" \
+  "$(bud '.budget.usage_tokens|type' "$BR")" "null"
+export STUB_TERMINAL_TAIL="ok
+CLAUDE_EXIT=0"
+
+# --- the prompt the worker actually receives ------------------------------
+assert_contains "AC-3: the discipline reached the generated prompt FILE" \
+  "$(cat "$WT/s-usage.md.prompt")" "s-usage.md.continuation.json"
+assert_absent "AC-3: and the launch command text carries no task or artifact prose" \
+  "$(cat "$STUB_STATE/last-command.txt")" "continuation.json"
+
+# --- a valid checkpoint is accepted (AC-4) --------------------------------
+reset_stubs; spawn_reset
+write_story "$WT/s-ckpt.md" "persona: dev
+gates: [\"true\"]"
+write_stamp "$WT/s-ckpt.md.stamp.json" high false
+export STUB_SPAWN_PATH1="$WT/s-ckpt.md.checkpoint.json"
+STUB_SPAWN_BODY1="$(ckpt afk-checkpoint/1)"; export STUB_SPAWN_BODY1
+rc="$(run_dispatch s-ckpt.md)"
+BR="$WT/s-ckpt.md.result.json"
+assert_eq "checkpoint: a valid artifact does not disturb the outcome" "$rc" "0"
+assert_eq "checkpoint: its identity is recorded, as the story names it" \
+  "$(bud .budget.checkpoint_artifact.path "$BR")" "s-ckpt.md.checkpoint.json"
+# A checkpoint is a resumption aid: an invalid one is a finding, not a refusal.
+reset_stubs
+STUB_SPAWN_BODY1="$(ckpt wrong-schema/9)"; export STUB_SPAWN_BODY1
+rc="$(run_dispatch s-ckpt.md)"
+assert_eq "checkpoint: an invalid one does NOT refuse the attempt" "$rc" "0"
+assert_eq "checkpoint: it is recorded as a finding" \
+  "$(jq -c '.budget.findings' "$BR")" '["CHECKPOINT_ARTIFACT_INVALID"]'
+assert_eq "checkpoint: and no identity is claimed for it" \
+  "$(bud '.budget.checkpoint_artifact|type' "$BR")" "null"
+
+# --- a signalled continuation (AC-4) --------------------------------------
+reset_stubs; spawn_reset
+export STUB_TERMINAL_TAIL="working
+CONTINUATION-REQUIRED: the story is larger than one window
+CLAUDE_EXIT=0"
+write_story "$WT/s-cont.md" "persona: dev
+gates: [\"true\"]"
+printf '\n## Dev Agent Record\n\n(worker fills in)\n' >> "$WT/s-cont.md"
+write_stamp "$WT/s-cont.md.stamp.json" high false
+export STUB_SPAWN_PATH1="$WT/s-cont.md.continuation.json"
+STUB_SPAWN_BODY1="$(ckpt afk-continuation/1 "$CONT_EXTRA")"; export STUB_SPAWN_BODY1
+rc="$(run_dispatch s-cont.md 1)"
+BR="$WT/s-cont.md.result.json"
+assert_eq "continuation: exits as unfinished work, not as done" "$rc" "1"
+assert_eq "continuation: the thin result says so" "$(bud .status "$BR")" "continuation_required"
+assert_eq "continuation: and the budget state agrees" "$(bud .budget.state "$BR")" "CONTINUATION_REQUIRED"
+assert_eq "continuation: the artifact identity is recorded" \
+  "$(bud .budget.continuation_artifact.path "$BR")" "s-cont.md.continuation.json"
+assert_eq "continuation: exactly one line in the story record" \
+  "$(grep -ac '^- budget: CONTINUATION_REQUIRED ' "$WT/s-cont.md")" "1"
+rc="$(run_dispatch s-cont.md 1)"
+assert_eq "continuation: a re-dispatch of the SAME cycle does not duplicate" \
+  "$(grep -ac '^- budget: CONTINUATION_REQUIRED ' "$WT/s-cont.md")" "1"
+
+# A continuation artifact left by an EARLIER cycle is not this worker's word.
+reset_stubs; spawn_reset
+rc="$(run_dispatch s-cont.md 2)"
+assert_eq "continuation: an unchanged artifact is refused as stale" "$rc" "3"
+assert_contains "continuation: with the stable reason code" \
+  "$(cat "$WT/s-cont.md.blocked")" "reason=CONTINUATION_ARTIFACT_INVALID"
+assert_contains "continuation: naming which check failed" \
+  "$(cat "$WT/s-cont.md.blocked")" "detail=ARTIFACT_STALE"
+
+cont_invalid() { # <tag> <body> <expected detail>
+  reset_stubs; spawn_reset
+  write_story "$WT/s-ci-$1.md" "persona: dev
+gates: [\"true\"]"
+  write_stamp "$WT/s-ci-$1.md.stamp.json" high false
+  if [[ -n "$2" ]]; then
+    export STUB_SPAWN_PATH1="$WT/s-ci-$1.md.continuation.json"; STUB_SPAWN_BODY1="$2"; export STUB_SPAWN_BODY1
+  fi
+  local rc; rc="$(run_dispatch "s-ci-$1.md")"
+  assert_eq "continuation/$1: loud NEEDS-HUMAN exit" "$rc" "3"
+  assert_contains "continuation/$1: marker names the check that failed" \
+    "$(cat "$WT/s-ci-$1.md.blocked")" "detail=$3"
+  assert_no_file "continuation/$1: NO result artifact claims an outcome" \
+    "$WT/s-ci-$1.md.result.json"
+}
+cont_invalid missing  ""                                   ARTIFACT_MISSING
+cont_invalid broken   'not json'                           ARTIFACT_UNPARSEABLE
+cont_invalid schema   "$(ckpt afk-checkpoint/1 "$CONT_EXTRA")" ARTIFACT_SCHEMA_MISMATCH
+cont_invalid short    "$(ckpt afk-continuation/1)"          ARTIFACT_MEMBER_MISSING
+
+# Observed usage past the continuation threshold with the gates failed and NO
+# worker signal: the kit reports what it can see rather than a plain gate fail.
+reset_stubs; spawn_reset
+export STUB_TERMINAL_TAIL="ok
+CLAUDE_EXIT=0"
+write_story "$WT/s-cont-obs.md" "persona: dev
+gates: [\"false\"]"
+write_stamp "$WT/s-cont-obs.md.stamp.json" high false
+export STUB_SPAWN_PATH1="$WT/s-cont-obs.md.claude-result.json"
+STUB_SPAWN_BODY1="$(envelope 190000 0 0 200000 opus)"; export STUB_SPAWN_BODY1
+rc="$(STUB_CATALOG="$WORK/catalog-windowed.yaml"; export STUB_CATALOG; run_dispatch s-cont-obs.md)"
+BR="$WT/s-cont-obs.md.result.json"
+assert_eq "silent exhaustion: still an unfinished exit" "$rc" "1"
+assert_eq "silent exhaustion: reported as continuation, not as a plain gate fail" \
+  "$(bud .status "$BR")" "continuation_required"
+# The control: the SAME failing gate below the threshold is an ordinary fail.
+reset_stubs
+STUB_SPAWN_BODY1="$(envelope 1000 0 0 200000 opus)"; export STUB_SPAWN_BODY1
+rc="$(STUB_CATALOG="$WORK/catalog-windowed.yaml"; export STUB_CATALOG; run_dispatch s-cont-obs.md)"
+assert_eq "silent exhaustion CONTROL: a low-usage gate failure stays gates_failed" \
+  "$(bud .status "$BR")" "gates_failed"
+
+# --- a stale checkpoint is not this cycle's (AC-4) ------------------------
+# The worker writes nothing this attempt, so the checkpoint on disk is the one
+# the attempt started with. Its identity must not be published as evidence of
+# work this worker did not do.
+reset_stubs; spawn_reset
+write_story "$WT/s-ckpt-stale.md" "persona: dev
+gates: [\"true\"]"
+write_stamp "$WT/s-ckpt-stale.md.stamp.json" high false
+export STUB_SPAWN_PATH1="$WT/s-ckpt-stale.md.checkpoint.json"
+STUB_SPAWN_BODY1="$(ckpt afk-checkpoint/1)"; export STUB_SPAWN_BODY1
+rc="$(run_dispatch s-ckpt-stale.md)"
+BR="$WT/s-ckpt-stale.md.result.json"
+assert_eq "checkpoint CONTROL: the first cycle's checkpoint IS published" \
+  "$(bud .budget.checkpoint_artifact.path "$BR")" "s-ckpt-stale.md.checkpoint.json"
+reset_stubs; spawn_reset
+rc="$(run_dispatch s-ckpt-stale.md 2)"
+assert_eq "checkpoint: an unchanged checkpoint does not refuse the attempt" "$rc" "0"
+assert_eq "checkpoint: it is recorded as stale" \
+  "$(jq -c '.budget.findings' "$BR")" '["CHECKPOINT_ARTIFACT_STALE"]'
+assert_eq "checkpoint: and no identity is claimed for an earlier cycle's file" \
+  "$(bud '.budget.checkpoint_artifact|type' "$BR")" "null"
+
+# --- a finished run is never a continuation (AC-4) ------------------------
+# The ratio says the run ended close to its window; the gates say it finished.
+# Those are a sizing observation and an outcome, not two outcomes.
+reset_stubs; spawn_reset
+export STUB_TERMINAL_TAIL="ok
+CLAUDE_EXIT=0"
+write_story "$WT/s-fin-high.md" "persona: dev
+gates: [\"true\"]"
+write_stamp "$WT/s-fin-high.md.stamp.json" high false
+export STUB_SPAWN_PATH1="$WT/s-fin-high.md.claude-result.json"
+STUB_SPAWN_BODY1="$(envelope 190000 0 0 200000 opus)"; export STUB_SPAWN_BODY1
+rc="$(STUB_CATALOG="$WORK/catalog-windowed.yaml"; export STUB_CATALOG; run_dispatch s-fin-high.md)"
+BR="$WT/s-fin-high.md.result.json"
+assert_eq "finished run: gates passed, so the run is done" "$(bud .status "$BR")" "done"
+assert_eq "finished run: 190000/200000 is reported as sizing, not continuation" \
+  "$(bud .budget.state "$BR")" "CHECKPOINT_DUE"
+assert_eq "finished run: the sizing signal is the finding that carries it" \
+  "$(jq -c '.budget.findings' "$BR")" '["HIGH_USAGE"]'
+# The control for the demotion: the SAME ratio on an UNFINISHED run is still a
+# continuation, so the state above was demoted by the outcome and not lost.
+reset_stubs; spawn_reset
+write_story "$WT/s-fin-high.md" "persona: dev
+gates: [\"false\"]"
+export STUB_SPAWN_PATH1="$WT/s-fin-high.md.claude-result.json"
+STUB_SPAWN_BODY1="$(envelope 190000 0 0 200000 opus)"; export STUB_SPAWN_BODY1
+rc="$(STUB_CATALOG="$WORK/catalog-windowed.yaml"; export STUB_CATALOG; run_dispatch s-fin-high.md)"
+assert_eq "finished run CONTROL: the same ratio with failed gates continues" \
+  "$(bud .budget.state "$BR")" "CONTINUATION_REQUIRED"
+
+# --- the continuation reason is recorded, never echoed (AC-5) -------------
+# The reason is caller-supplied free text, so no filter is applied to it: the
+# content reaches nothing. The sentinels are the shapes a pattern denylist
+# misses — short, keyword-adjacent, and broken by an excluded character — plus
+# the long token-shaped one, so the assertion is about the channel and not
+# about one regex.
+SHORT_SENTINEL='hunter2'
+KEYWORD_SENTINEL='password=Tr0ub4dor&3'
+BROKEN_SENTINEL='xoxb-2f9a:8c1d-77aa-9e0f'
+LONG_SENTINEL='sk-live-9f2a4c7e1b8d3550aa11bb22cc33'
+SIGNAL_REASON="context exhausted, the token was $LONG_SENTINEL $SHORT_SENTINEL $KEYWORD_SENTINEL $BROKEN_SENTINEL"
+reset_stubs; spawn_reset
+export STUB_TERMINAL_TAIL="working
+CONTINUATION-REQUIRED: $SIGNAL_REASON
+CLAUDE_EXIT=0"
+write_story "$WT/s-secret.md" "persona: dev
+gates: [\"true\"]"
+write_stamp "$WT/s-secret.md.stamp.json" high false
+export STUB_SPAWN_PATH1="$WT/s-secret.md.continuation.json"
+STUB_SPAWN_BODY1="$(ckpt afk-continuation/1 \
+  "$(jq -nc --arg s "$LONG_SENTINEL" '{in_flight:$s, unretired_findings:[$s]}')")"
+export STUB_SPAWN_BODY1
+rc="$(run_dispatch s-secret.md 1)"
+assert_eq "redaction: the continuation is still accepted" \
+  "$(bud .status "$WT/s-secret.md.result.json")" "continuation_required"
+for sent in "$LONG_SENTINEL" "$SHORT_SENTINEL" "$KEYWORD_SENTINEL" "$BROKEN_SENTINEL"; do
+  assert_absent "redaction: no sentinel [$sent] in the thin result" \
+    "$(cat "$WT/s-secret.md.result.json")" "$sent"
+  assert_absent "redaction: nor in the dispatch log [$sent]" "$(cat "$WORK/err")" "$sent"
+done
+# and on the path where the same signal is refused, the marker is clean too
+reset_stubs; spawn_reset
+rc="$(run_dispatch s-secret.md 2)"
+assert_eq "redaction: the stale artifact is refused" "$rc" "3"
+for sent in "$LONG_SENTINEL" "$SHORT_SENTINEL" "$KEYWORD_SENTINEL" "$BROKEN_SENTINEL"; do
+  assert_absent "redaction: no sentinel [$sent] in the NEEDS-HUMAN marker" \
+    "$(cat "$WT/s-secret.md.blocked")" "$sent"
+done
+assert_absent "redaction: not even the ordinary words of the reason" \
+  "$(cat "$WT/s-secret.md.blocked")" "exhausted, the token was"
+assert_contains "redaction: the marker still says what went wrong" \
+  "$(cat "$WT/s-secret.md.blocked")" "detail=ARTIFACT_STALE"
+# The anti-vacuity control. The sentinels are absent because the content is
+# never echoed, not because nothing travels this path: the marker records that
+# a reason was given, HOW MANY BYTES it was, and the closed-vocabulary words
+# it contained — all three derived from the very line asserted absent above.
+assert_contains "redaction CONTROL: the marker records that a reason was given" \
+  "$(cat "$WT/s-secret.md.blocked")" "reason_given=true"
+assert_contains "redaction CONTROL: and its exact byte length" \
+  "$(cat "$WT/s-secret.md.blocked")" "reason_bytes=$(printf '%s' "$SIGNAL_REASON" | wc -c | tr -d ' ')"
+assert_contains "redaction CONTROL: and only closed-vocabulary words" \
+  "$(cat "$WT/s-secret.md.blocked")" "reason_words=context"
+# The vocabulary is closed, called directly: a word outside it is never echoed,
+# and one inside it is.
+assert_eq "vocabulary: a word in the closed set is echoed" \
+  "$(continuation_reason_word "Context,")" "context"
+assert_eq "vocabulary: anything else is not" \
+  "$(continuation_reason_word "$SHORT_SENTINEL")" ""
+assert_eq "vocabulary: a summary of a secret-only reason names no words" \
+  "$(continuation_signal_summary "CONTINUATION-REQUIRED: $LONG_SENTINEL")" \
+  "reason_given=true reason_bytes=${#LONG_SENTINEL} reason_words=none"
+
+# --- an empty reason is not a signal (AC-4) -------------------------------
+reset_stubs; spawn_reset
+export STUB_TERMINAL_TAIL="working
+CONTINUATION-REQUIRED:
+CLAUDE_EXIT=0"
+write_story "$WT/s-empty.md" "persona: dev
+gates: [\"true\"]"
+write_stamp "$WT/s-empty.md.stamp.json" high false
+export STUB_SPAWN_PATH1="$WT/s-empty.md.continuation.json"
+STUB_SPAWN_BODY1="$(ckpt afk-continuation/1 "$CONT_EXTRA")"; export STUB_SPAWN_BODY1
+rc="$(run_dispatch s-empty.md 1)"
+assert_eq "empty reason: refused on the invalid-signal path" "$rc" "3"
+assert_contains "empty reason: with the stable reason code" \
+  "$(cat "$WT/s-empty.md.blocked")" "reason=CONTINUATION_ARTIFACT_INVALID"
+assert_contains "empty reason: naming which check failed" \
+  "$(cat "$WT/s-empty.md.blocked")" "detail=SIGNAL_REASON_EMPTY"
+assert_no_file "empty reason: NO result artifact claims an outcome" \
+  "$WT/s-empty.md.result.json"
+# The control: the SAME artifact with a non-empty reason is accepted, so the
+# refusal above is about the empty reason and nothing else.
+reset_stubs; spawn_reset
+export STUB_TERMINAL_TAIL="working
+CONTINUATION-REQUIRED: the story is larger than one window
+CLAUDE_EXIT=0"
+write_story "$WT/s-empty2.md" "persona: dev
+gates: [\"true\"]"
+write_stamp "$WT/s-empty2.md.stamp.json" high false
+export STUB_SPAWN_PATH1="$WT/s-empty2.md.continuation.json"
+STUB_SPAWN_BODY1="$(ckpt afk-continuation/1 "$CONT_EXTRA")"; export STUB_SPAWN_BODY1
+rc="$(run_dispatch s-empty2.md 1)"
+assert_eq "empty reason CONTROL: a non-empty reason on the same artifact passes" \
+  "$(bud .status "$WT/s-empty2.md.result.json")" "continuation_required"
+
+spawn_reset
+export STUB_TERMINAL_TAIL="ok
+CLAUDE_EXIT=0"
+
 
 # ===========================================================================
 head1 "4. make-stamp.sh — expires_at verbatim, override is provenance only"
