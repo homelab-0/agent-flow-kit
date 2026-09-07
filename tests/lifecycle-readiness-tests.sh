@@ -100,10 +100,18 @@ assert_eq "claude + a vendor profile is launchable" \
   "$(afk_launch_contract_reason claude claude/strong false)" ""
 assert_eq "codex + a vendor profile is launchable" \
   "$(afk_launch_contract_reason codex openai/strong false)" ""
-assert_ne "claude + a placement-required profile has no launch contract" \
-  "$(afk_launch_contract_reason claude local-code-standard true)" ""
+# The second class the adapter implements: gateway-backed local execution on
+# claude — a placement-required profile drawing on no entitlement pool, free.
+assert_eq "claude + a free, unpooled placement-required profile is launchable" \
+  "$(afk_launch_contract_reason claude local-code-standard true "" free)" ""
 assert_ne "codex + a placement-required profile has no launch contract" \
-  "$(afk_launch_contract_reason codex local-code-standard true)" ""
+  "$(afk_launch_contract_reason codex local-code-standard true "" free)" ""
+# The class is narrow on purpose, and readiness mirrors that rather than
+# rounding a placement-required stamp up to "local, therefore fine".
+assert_ne "a local profile stamped with a vendor pool has no launch contract" \
+  "$(afk_launch_contract_reason claude local-code-standard true anthropic-max free)" ""
+assert_ne "a local profile stamped cost_class subscription has no launch contract" \
+  "$(afk_launch_contract_reason claude local-code-standard true "" subscription)" ""
 assert_ne "an unknown harness has no launch contract at all" \
   "$(afk_launch_contract_reason banana claude/strong false)" ""
 
@@ -555,11 +563,16 @@ new_scenario() { # <name>
 }
 
 write_stamp() { # <path> [harness] [profile] [effort] [expires] [placement] [cost_class] [metered]
+  # A placement-required profile is local compute: free, and drawing on no
+  # entitlement pool. The fixture says so rather than stamping every route as
+  # a vendor subscription, because the launch classes are told apart by exactly
+  # those two facts and an untruthful fixture would prove nothing about them.
   jq -n --arg h "${2:-claude}" --arg p "${3:-claude/strong}" --arg e "${4:-high}" \
         --arg x "${5:-2099-01-01T00:00:00Z}" --argjson pr "${6:-false}" \
-        --arg c "${7:-subscription}" --argjson m "${8:-false}" \
-    '{harness:$h, model_profile:$p, effort:$e, cost_class:$c,
-      entitlement_pool:"anthropic-max", metered:$m,
+        --arg c "${7:-}" --argjson m "${8:-false}" \
+    '{harness:$h, model_profile:$p, effort:$e,
+      cost_class:(if $c != "" then $c elif $pr then "free" else "subscription" end),
+      entitlement_pool:(if $pr then null else "anthropic-max" end), metered:$m,
       placement_policy:"prefer-warm-local", placement_required:$pr,
       catalog_version:"sha256:abc", expires_at:$x,
       task:{story_id:"AFK-READINESS-1", tags:["docs"]}, override:null}' > "$1"
@@ -613,8 +626,10 @@ refuse_case() { # <name> <expected reason> <write_stamp args...>
 
 refuse_case "expired stamp" STAMP_EXPIRED claude claude/strong high 2000-01-01T00:00:00Z
 refuse_case "effort outside the closed set" ROUTE_PROFILE_UNSUPPORTED claude claude/strong banana
-refuse_case "placement-required profile" ROUTE_PROFILE_UNSUPPORTED \
-  claude local-code-standard high 2099-01-01T00:00:00Z true
+refuse_case "placement-required profile on codex" ROUTE_PROFILE_UNSUPPORTED \
+  codex local-code-standard high 2099-01-01T00:00:00Z true
+refuse_case "placement-required profile on a vendor pool" ROUTE_PROFILE_UNSUPPORTED \
+  claude local-code-standard high 2099-01-01T00:00:00Z true subscription
 refuse_case "unknown harness" ROUTE_PROFILE_UNSUPPORTED banana claude/strong high
 
 printf 'not json at all\n' > "$STAMP"
@@ -625,11 +640,21 @@ run_afk status --json --stamp "$STAMP"
 assert_eq "a stamp outside the closed shape is refused" \
   "$(jget '.readiness.ROUTE_READY.reason')" "STAMP_SHAPE_INVALID"
 
-# The route is never substituted, and the decision on disk is never touched.
+# The gateway-backed local class, mirrored: this stamp is no longer refused for
+# want of a launch contract. Readiness still claims no launch authority for it —
+# offline, the validator verdict is the live fact it is waiting on.
 write_stamp "$STAMP" claude local-code-standard high 2099-01-01T00:00:00Z true
 STAMP_BEFORE="$(jq -S -c . "$STAMP")"
 run_afk status --json --stamp "$STAMP"
-assert_absent "a refused route never suggests a substitute" "$RUN_OUT" "falling back"
+assert_ne "a placement-required local route is no longer unsupported" \
+  "$(jget '.readiness.ROUTE_READY.reason')" "ROUTE_PROFILE_UNSUPPORTED"
+assert_eq "and readiness still proves nothing about it offline" \
+  "$(jget '.readiness.ROUTE_READY.reason')" "STAMP_VALIDATION_UNPROVEN"
+assert_eq "no placement is selected for it either" \
+  "$(jget '.readiness.ROUTE_READY.placement_selected')" "false"
+
+# The route is never substituted, and the decision on disk is never touched.
+assert_absent "a route decision never suggests a substitute" "$RUN_OUT" "falling back"
 assert_eq "and the accepted decision on disk is byte-identical afterwards" \
   "$(jq -S -c . "$STAMP")" "$STAMP_BEFORE"
 
