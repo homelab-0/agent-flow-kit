@@ -857,3 +857,88 @@ verdict to GREEN with no other work owed.**
   briefs must make send-verification a hard completion step (M1 brief already
   did; the worker skipped it). Live supporting evidence for the durable-watch
   acceptance conditions.
+
+## Superseding verdict (M4R, 2026-09-07) — natural-route smoke re-run
+
+The frozen M5 verdict above is not edited. Its own text authorized this entry:
+"the block dissolves the moment the owner's routing solution makes the natural
+standard-band route launchable … at which point a natural-route smoke re-run
+upgrades the verdict to GREEN with no other work owed."
+
+That condition is met and the re-run is retained in full under
+`evidence/AFK-PORT-1.4-M4R/`:
+
+- **Adapter-side fix merged first:** `AFK-PORT-1.4-LV` (PR #26, `db610fe`;
+  record PR #27, `2db1747`) gave the installed launch adapter a validated
+  gateway-backed launch class for local profiles on the `claude` harness.
+- **Git-channel update leg (M2 pattern):** the installed kit was at applied
+  revision `8a7cbc1`, `UPDATE_AVAILABLE`; plan `sha256:b58ce76b…` approved
+  (coordinator, delegated by the owner's "start the smoke"), update
+  `CONVERGED`/`VERIFICATION_PASSED` to `2db1747`, offline verify `CURRENT` with
+  integrity `READY`; the installed `dispatch.sh` is byte-identical to the
+  repository's (`update-plan.json`, `update-execute.json`,
+  `verify-post-update.json`).
+- **Target:** `afk-smoke-target` re-registered (`TARGET_READY: TRUE —
+  TARGET_WIRING_PROVEN`), deregistered again after the run; manifest backup
+  retained.
+- **Routing, natural, null override:** `/v1/route` returned
+  `{claude, local-code-standard, medium}`, `placement_required: true`,
+  policy `prefer-warm-local`, fallbacks `codex/openai/strong`,
+  `devin/devin/free`; stamp `sha256:58a3a970…`, `override: null`, expires
+  2026-09-08T05:40:31Z. Validation at mint reports
+  `placement_evidence_missing` by design (placement is resolved at launch);
+  validation against a `/v1/place` result is `valid: true`.
+- **Dispatch chain, installed kit, Orca-visible:** `/v1/place` at launch →
+  `kserve-a5000` (the only eligible candidate; both edges `OFFLINE` by
+  heartbeat/silence) → stamp valid at launch, all 8 checks → launch class
+  `gateway-backed local` (`qwen36-27b` at `https://ai-gateway.homelab0.org`,
+  `x-placement kserve-a5000`, context 65536) → Orca terminal created →
+  `CLAUDE_EXIT=0` → gate re-run by dispatch → thin result. The credential was
+  resolved at terminal runtime from `op://develop/agw-claude-code/password`
+  (the item the owner shared into the `develop` vault; the fleet's cluster
+  copy is `op://Automation/agw-claude-code/password`), and its value is
+  absent from every retained artifact (checked by exact match, both attempts).
+- **Attempt 1 (`afk-smoke-run3`, target `fb01a9f`): gate FAILED on model
+  behaviour, not on the chain.** The worker (qwen36-27b through the gateway,
+  10 turns, `is_error: false`) invented an absolute path outside the
+  worktree for its first Write, which the frozen posture refuses, and spent
+  the remaining turns asking for permission. A diagnostic session with a full
+  event stream (`attempt1/diagnostic-write-session.stream.jsonl`) reproduced
+  the refusal for the out-of-tree path and showed the same posture accepting
+  the relative path. Orca's hook cannot deny under `env -i` (it exits without a
+  decision when its environment is absent). Classified: executor behaviour on
+  the local model; evidence-harness adaptation, not a kit defect.
+- **Pre-declared scaffolding for attempt 2 (both committed in the target
+  before dispatch):** gate v3 (`fb01a9f`) drops the v2 staging requirement,
+  which assumed a worker with a shell — the natural route's worker has none —
+  and asserts the frozen bytes, no tracked modification and no other staged
+  path; the story amendment (`f9be9ba`) names the relative write path once
+  and says not to probe for an absolute one.
+- **Attempt 2 (`afk-smoke-run4`, target `f9be9ba`): PASS.** Same stamp,
+  fresh worktree, fresh placement (`kserve-a5000`, resolved
+  2026-09-07T05:47:36Z), `CLAUDE_EXIT=0`, 20 turns, served by `qwen36-27b`,
+  dispatch status `done`; **independent coordinator gate run: `GATE PASS`,
+  canary sha `8d1ddaae…`** (`attempt2/gate-independent-run.txt`,
+  `attempt2/canary.txt`). Orca tracking dispatch `ctx_419f832b1d75`, task
+  `task_15705a485064`, kit durable watch registered before yielding, settled
+  through the contract's corrected-delivery mechanism, `monitor --cleanup
+  --live` → `IDLE`, all seven watched dispatches `SETTLED` with cleanup
+  complete (`settlement/`). Worker terminal and both smoke worktrees removed
+  through Orca and verified gone.
+- **Readiness observation (recorded, not verdict-bearing):** the kit's live
+  evaluation of the natural stamp against the registered target reports
+  `ROUTE_READY: FALSE — ROUTE_HARNESS_UNAVAILABLE` and `HOST_EXECUTION_READY:
+  FALSE — ORCA_CAPABILITY_UNPROVEN` (`route-ready-natural-stamp-evaluation.live.json`).
+  Both are probe drift against upgraded tooling, not launch facts: Claude Code
+  2.1.263 no longer lists `--append-system-prompt-file` in `claude --help`
+  (the flag still works — the smoke injected the persona with it), and the
+  current Orca CLI has no `capabilities` verb. Registered as hardening items
+  15 and 16 in `traceability.md`.
+
+**AGENT-FLOW-KIT PORTABILITY GREEN — the one clause of the M5 verdict is
+discharged: the natural valid route for standard-band work
+({claude, local-code-standard}) is launchable under the installed adapter, the
+orchestration smoke ran on that route as naturally routed with a null
+override, its frozen gate passed under independent re-run, and the full
+routing, placement, validation, launch, completion and cleanup chain is
+retained. Every other proof of the M5 verdict stands unchanged.**

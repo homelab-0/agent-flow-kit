@@ -1,0 +1,12 @@
+{
+  "story_id": "SMOKE-CANARY",
+  "title": "Smoke story: create the acceptance canary (natural-route re-run, M4R)",
+  "summary": "Create one three-line file with frozen bytes in a disposable target repository and report completion. Deterministic gate (tests/gate.sh v3) checks the bytes and that nothing else changed. Trivial, fully specified, no judgment calls; the point of the run is the routing and launch chain, not the content. The worker on the natural standard-band route has no shell and only Read/Glob/Grep/Write.",
+  "touched_paths": ["smoke/canary.txt"],
+  "ambiguity": "low",
+  "blast_radius": "low",
+  "volume_hint": "low",
+  "tags": [],
+  "repo": "afk-smoke-target",
+  "requester": "bmad-pm"
+}
