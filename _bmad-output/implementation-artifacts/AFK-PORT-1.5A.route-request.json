@@ -1,0 +1,21 @@
+{
+  "story_id": "AFK-PORT-1.5A",
+  "title": "Context window as routed fact and pre-dispatch sizing policy (Story 1.5, lane A)",
+  "summary": "First of four lanes implementing the frozen Story 1.5 in the kit's dispatch adapter: resolve the routed profile's context window from the stamp plus the trusted catalog as a read-only fact (NOT_EVALUATED when undeclared), compute a deterministic documented pre-dispatch sizing estimate of the worker payload, declare thresholds and reason codes in a machine-readable launcher policy file, refuse dispatch fail-closed before placement when the estimate is past the continuation threshold, record a sizing-risk finding otherwise, expose a budget member in the thin result, and add contract, schema and skill documentation plus pure and stubbed-integration tests on both launch classes and both harnesses. No change to route requests, stamps, the validator, or the frozen launch command texts. Judgment calls: estimate input enumeration, refusal ordering, record-append idempotence. A wrong result means false refusals or missed refusals in the dispatch path; no credentials are handled.",
+  "touched_paths": [
+    "files/model-router/scripts/dispatch.sh",
+    "files/model-router/context-budget-policy.yaml",
+    "files/model-router/SKILL.md",
+    "lib/afk-commands.sh",
+    "docs/LIFECYCLE-CONTRACT.md",
+    "tests/run-tests.sh",
+    "tests/lifecycle-readiness-tests.sh",
+    "_bmad-output/implementation-artifacts/AFK-PORT-1.5A.md"
+  ],
+  "ambiguity": "medium",
+  "blast_radius": "medium",
+  "volume_hint": "low",
+  "tags": ["tests", "docs"],
+  "repo": "agent-flow-kit",
+  "requester": "bmad-pm"
+}

@@ -1,0 +1,8 @@
+15A GATES: starting @ daa00e9
+15A GATE: bash tests/lifecycle-readiness-tests.sh rc=0 277s 281 passed, 0 failed
+15A GATE: bash tests/lifecycle-tests.sh rc=0 452s 476 passed, 0 failed
+15A GATE: git diff --check rc=0 0s 
+15A GATE: bash tests/run-tests.sh rc=1 2588s 454 passed, 1 failed
+15A GATES: chain complete
+
+[exited with code 0]

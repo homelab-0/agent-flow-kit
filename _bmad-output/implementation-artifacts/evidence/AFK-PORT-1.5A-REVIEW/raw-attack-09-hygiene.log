@@ -1,0 +1,47 @@
+  --- files changed vs 39fd66c ---
+      _bmad-output/implementation-artifacts/AFK-PORT-1.5A.md
+      _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.5A/diagnostic-concurrency-head.log
+      _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.5A/gate-lifecycle-readiness-tests.log
+      _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.5A/gate-lifecycle-tests.log
+      _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.5A/gate-run-tests-run1-testbug.log
+      _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.5A/gate-run-tests.log
+      docs/LIFECYCLE-CONTRACT.md
+      files/model-router/SKILL.md
+      files/model-router/context-budget-policy.yaml
+      files/model-router/scripts/dispatch.sh
+      lib/afk-commands.sh
+      tests/lifecycle-readiness-tests.sh
+      tests/run-tests.sh
+  PASS 9: no file outside the declared surface
+     (info) reviewable diff: +947 / -3 across 7 files (budget: 800 lines / 25 files)
+  PASS 9: the worker's disclosed line count is accurate
+  PASS 9: the worker's disclosed file count is accurate
+  PASS 9: file budget met (7 / 25)
+     (info) OVER BUDGET by 147 lines (~18%) — disclosed in the Dev Agent Record
+  PASS 9: the overrun is DISCLOSED (see the review's assessment, not a silent pass)
+  --- per-file reviewable diff ---
+      105	0	docs/LIFECYCLE-CONTRACT.md
+      28	0	files/model-router/SKILL.md
+      52	0	files/model-router/context-budget-policy.yaml
+      302	0	files/model-router/scripts/dispatch.sh
+      1	0	lib/afk-commands.sh
+      11	0	tests/lifecycle-readiness-tests.sh
+      448	3	tests/run-tests.sh
+     (info) committed generated gate logs: 5 files, 2136 lines
+  --- commit messages ---
+      daa00e9 Record the commit SHA in the story's Dev Agent Record
+      3b588c9 Read the routed context window from the catalog and size stories before dispatch
+  PASS 9: no 'Co-Authored-By' trailer in any commit message
+  PASS 9: no 'Generated with' trailer in any commit message
+  PASS 9: no 'Claude-Session' trailer in any commit message
+  PASS 9: no 'claude.ai/code' trailer in any commit message
+  PASS 9: no '🤖' trailer in any commit message
+     (info) commit text mentions dev agent
+  PASS 9: commit subjects are plain engineering language (listed above for the record)
+  PASS 9 GATE: git diff --check clean (branch range and working tree)
+  PASS 9: the review changed nothing in the worktree outside its own artifacts
+  PASS 9/oracle: the no-master path reports SKIP, not PASS
+  PASS 9/oracle: the suite carries a control that makes a vacuous pass detectable
+  PASS 9/oracle: master's dispatch.sh is still the pre-change one (the oracle is meaningful)
+
+attack-09-hygiene.sh: 16 passed, 0 failed

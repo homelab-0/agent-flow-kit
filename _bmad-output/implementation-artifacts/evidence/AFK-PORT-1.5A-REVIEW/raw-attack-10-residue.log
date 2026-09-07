@@ -1,0 +1,10 @@
+  PASS 10: the refusal fired
+     (info) the refusal leaves a generated prompt file behind (530 bytes)
+  PASS 10: a widened window dispatches successfully
+  PASS 10: the .blocked marker is cleared by the successful dispatch
+     (info) artifacts after success: s.md s.md.prompt s.md.result.json s.md.stamp.json 
+     (info) stamp-invalid dispatch exit=4
+  FAIL 10: a SIZING_RISK line is written into the story even though the launch was REFUSED at stamp validation
+        - budget: SIZING_RISK 152/217 (0.700460) cycle 1 2026-09-07T09:03:05Z
+
+attack-10-residue.sh: 3 passed, 1 failed

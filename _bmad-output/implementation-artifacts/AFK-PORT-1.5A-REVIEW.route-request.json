@@ -1,0 +1,12 @@
+{
+  "story_id": "AFK-PORT-1.5A-REVIEW",
+  "title": "Adversarial and senior review of Story 1.5 lane A (context window and pre-dispatch sizing)",
+  "summary": "Independent fresh-session review of a change to the kit's dispatch adapter that adds a pre-dispatch sizing refusal path, a machine-readable threshold policy, catalog-based window resolution and a story-record append. The reviewer proves the frozen launch command texts are byte-identical, attacks refusal ordering and side effects, threshold arithmetic at the boundaries, policy-file parsing, payload_refs resolution, record-append idempotence, route-request purity and harness agnosticism, judges the disclosed 947-line diff against the 800 budget, and writes a report with reproduced blockers and residuals. Changes no product code. A plausible-but-wrong review would let a false-refusal or missed-refusal defect into the dispatch path.",
+  "touched_paths": ["_bmad-output/implementation-artifacts/evidence/AFK-PORT-1.5A-REVIEW/"],
+  "ambiguity": "low",
+  "blast_radius": "medium",
+  "volume_hint": "low",
+  "tags": ["review", "tests"],
+  "repo": "agent-flow-kit",
+  "requester": "bmad-pm"
+}

@@ -1,0 +1,30 @@
+  PASS 7: the policy document names no harness ('claude')
+  PASS 7: the policy document names no harness ('codex')
+  PASS 7: the policy document names no harness ('opus')
+  PASS 7: the policy document names no harness ('sonnet')
+  PASS 7: the policy document names no harness ('anthropic')
+  PASS 7: the policy document names no harness ('openai')
+  PASS 7: the policy document names no harness ('qwen')
+  PASS 7: the policy document names no harness ('gpt')
+  PASS 7: the policy document names no harness ('harness')
+  PASS 7: the policy document names no harness ('cli')
+  PASS 7: no threshold constant in dispatch.sh code
+  PASS 7: no ppm threshold constant in dispatch.sh code
+  PASS 7: the budget arithmetic mentions no 'claude'
+  PASS 7: the budget arithmetic mentions no 'codex'
+  PASS 7: the budget arithmetic mentions no 'qwen'
+  PASS 7: the budget arithmetic mentions no 'gateway'
+  PASS 7: no reason code or budget state carries a harness name
+  PASS 7/AC-6: make-stamp.sh is untouched by this change
+  PASS 7/AC-6: files/model-router/scripts/make-stamp.sh untouched
+  PASS 7/AC-6: 'context_size' appears nowhere in dispatch.sh
+  PASS 7/AC-6 CONTROL: dispatch.sh does make an HTTP call
+  PASS 7/AC-6: no curl call targets /v1/route
+  PASS 7/AC-6: the only curl target is /v1/place
+  PASS 7/AC-6 CONTROL: the make-stamp round trip ran
+  PASS 7/AC-6: the POSTed body carries no context_size
+  PASS 7/AC-6: nor any capacity input under another name
+  PASS 7/AC-6: the resulting stamp has no context_size
+     (info) POSTed keys: ["ambiguity","blast_radius","story_id","summary","tags","title","volume_hint"]
+
+attack-07-agnostic-and-route.sh: 27 passed, 0 failed
