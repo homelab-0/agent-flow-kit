@@ -1238,6 +1238,80 @@ assert_eq "every cleanup disposition is inside the published set" \
        | . as $d | select(($s | index($d)) == null)] | length')" "0"
 
 # ===========================================================================
+head1 "10. The coordinator's hand-over on the monitor pass (lane D)"
+# ===========================================================================
+#
+# A PM continuation is a LOUD owner action and never a launch. The reconcile
+# pass gains one additive step that reads and writes only under pm/, so the
+# worker watch it runs beside is provably untouched by it.
+
+# AC-4, grep half: the half that catches a launcher creeping back onto a path
+# no scenario reaches. The behavioural half is the whole scenario below.
+PM_SRC="$(sed -n "/coordinator.s own context budget/,/^# --- verification/p" "$KIT_ROOT/lib/afk-commands.sh")"
+PM_SRC="$PM_SRC$(sed -n '/pm-checkpoint)/,/return \$?/p' "$KIT_ROOT/bin/agent-flow-kit")"
+assert_ne "the PM engine is really the text being searched" "$(printf '%s' "$PM_SRC" | wc -l | tr -d ' ')" "0"
+for launcher in 'terminal create' 'worker-start' 'worker_start' 'terminal_create'; do
+  assert_absent "no PM path calls [$launcher]" "$PM_SRC" "$launcher"
+done
+
+new_scenario pm
+PMD="$STATE/pm"; mkdir -p "$PMD"
+RESUME='agent-flow-kit status --json  # then resume AFK-PORT-1.5 lane D'
+jq -nc --arg r "$RESUME" '{schema:"afk-pm-continuation/1", decisions:["lane closed"],
+  envelope_actions:[], open_escalations:[], budget_state:{pm_continuations:0},
+  in_flight_dispatches:["d-pm"], resume_instruction:$r,
+  updated_at:"2026-09-08T00:00:00Z"}' > "$TMPROOT/pm-cont.json"
+
+# A worker watch is in flight beside the coordinator's own budget the whole way.
+CLOSED_BEFORE="$(wc -l < "$STUB_CLOSED" | tr -d ' ')"
+register "$(descriptor d-pm t-pm - - - - - - false false false)" >/dev/null
+WATCH_BEFORE="$(cat "$WATCH/d-pm.json")"
+
+run_afk pm-checkpoint --json --continuation --write "$TMPROOT/pm-cont.json"
+assert_eq "writing the hand-over is itself an owner action" "$RUN_RC" "2"
+run_afk status --json
+assert_eq "an outstanding hand-over is loud whatever the ratio says" \
+  "$(count_findings PM_CONTINUATION_REQUIRED)" "1"
+PMF="$(printf '%s' "$RUN_OUT" | jq -r '.findings[] | select(.reason == "PM_CONTINUATION_REQUIRED") | "\(.evidence.observed)|\(.detail)"')"
+assert_contains "the finding names the artifact by path" "$PMF" "$PMD/continuation.json"
+assert_contains "and by digest"                          "$PMF" "sha256:"
+assert_contains "and carries the resume instruction verbatim" "$PMF" "$RESUME"
+assert_contains "next_safe_action hands the human the command, and no verb runs it" \
+  "$(jget '.next_safe_action')" "$RESUME"
+
+# --- AC-5: the successor reconciles it -------------------------------------
+run_afk monitor --json --reconcile --session pm-successor-2
+assert_eq "the reconcile pass records the hand-over" \
+  "$(count_findings PM_CONTINUATION_RECONCILED)" "1"
+assert_eq "binding the successor session that consumed it" \
+  "$(jq -r '.successor_session' "$PMD/continuation.reconciled.json")" "pm-successor-2"
+assert_eq "against the digest of the artifact it consumed" \
+  "$(jq -r '.artifact_sha256' "$PMD/continuation.reconciled.json")" \
+  "sha256:$(sha256sum "$PMD/continuation.json" | cut -d' ' -f1)"
+assert_eq "and counts it toward the epic budget Story 1.6 consumes" \
+  "$(jq -r '.pm_continuations' "$PMD/budget-state.json")" "1"
+run_afk status --json
+assert_eq "the condition is cleared"            "$(count_findings PM_CONTINUATION_REQUIRED)" "0"
+assert_eq "and status stops demanding an owner" "$(jget '.extra.pm_budget.needs_human')" "false"
+run_afk monitor --json --reconcile --session pm-successor-3
+assert_eq "reconciling again counts nothing twice" \
+  "$(jq -r '.pm_continuations' "$PMD/budget-state.json")" "1"
+
+# The whole coordinator hand-over left the worker watch exactly as it was.
+assert_eq "the in-flight worker watch record is byte-identical throughout" \
+  "$(cat "$WATCH/d-pm.json")" "$WATCH_BEFORE"
+assert_eq "and no worker terminal was closed by any of it" \
+  "$(wc -l < "$STUB_CLOSED" | tr -d ' ')" "$CLOSED_BEFORE"
+
+# An unreadable hand-over is never treated as one, and is reported once.
+printf 'not an artifact' > "$PMD/continuation.json"
+run_afk monitor --json --reconcile
+assert_eq "an invalid continuation artifact is refused, not reconciled" \
+  "$(count_findings PM_CONTINUATION_ARTIFACT_INVALID)" "1"
+assert_eq "and nothing was counted for it" \
+  "$(jq -r '.pm_continuations' "$PMD/budget-state.json")" "1"
+
+# ===========================================================================
 if (( SKIPPED > 0 )); then
   printf '\n\033[33mskipped checks computed no verdict — they are not passes\033[0m\n'
   printf '\033[1m%d passed, %d failed, %d skipped\033[0m\n' "$PASS" "$FAIL" "$SKIPPED"

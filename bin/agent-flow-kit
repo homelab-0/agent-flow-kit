@@ -68,6 +68,7 @@ if ! declare -F afk_cmd_status >/dev/null 2>&1 \
    || ! declare -F afk_transaction_execute >/dev/null 2>&1 \
    || ! declare -F afk_readiness_evaluate >/dev/null 2>&1 \
    || ! declare -F afk_monitor_reconcile >/dev/null 2>&1 \
+   || ! declare -F afk_cmd_pm_checkpoint >/dev/null 2>&1 \
    || ! declare -F afk_plan_compute >/dev/null 2>&1; then
   printf 'agent-flow-kit: internal error: the lifecycle libraries under %s did not load completely\n' \
     "$AFK_LIB_DIR" >&2
@@ -110,11 +111,17 @@ AFK_DISPATCH_WATCH_DIR="${AFK_DISPATCH_WATCH_DIR:-${AFK_DISPATCH_DIR:+$AFK_DISPA
 AFK_DISPATCH_INBOX_DIR="${AFK_DISPATCH_INBOX_DIR:-${AFK_DISPATCH_DIR:+$AFK_DISPATCH_DIR/inbox}}"
 AFK_DISPATCH_RESULT_DIR="${AFK_DISPATCH_RESULT_DIR:-${AFK_DISPATCH_DIR:+$AFK_DISPATCH_DIR/results}}"
 
+# The coordinator's own budget subtree: the provided usage observation and the
+# PM checkpoint, continuation and reconciliation artifacts. Read-only input and
+# kit-owned output, in the declared state directory like everything else.
+AFK_PM_DIR="${AFK_PM_DIR:-${AFK_STATE_DIR:+$AFK_STATE_DIR/pm}}"
+
 afk_require_declared_paths() {
   local v
   for v in AFK_KIT_ROOT AFK_STATE_DIR AFK_MANIFEST AFK_JOURNAL AFK_LOCK_DIR \
            AFK_BACKUP_ROOT AFK_STAGE_ROOT \
-           AFK_SKILLS_HOME AFK_CLAUDE_HOME AFK_CODEX_HOME AFK_DISPATCH_DIR; do
+           AFK_SKILLS_HOME AFK_CLAUDE_HOME AFK_CODEX_HOME AFK_DISPATCH_DIR \
+           AFK_PM_DIR; do
     if [[ -z "${!v}" ]]; then
       afk_warn "HOME is not set and $v was not supplied: every managed destination must be declared before any installed state can be read. Nothing was inspected."
       return 1
@@ -186,6 +193,13 @@ agent-flow-kit — lifecycle entry point
       it never blocks, never polls in a loop, and never waits for a worker.
       Options: --json --register <path> --reconcile --cleanup --live
 
+  agent-flow-kit pm-checkpoint --write <path> [options]
+      Validate and write the coordinator's own checkpoint artifact, or with
+      --continuation the hand-over artifact that makes a successor session a
+      loud owner action. Secret-free by rule, atomic, and starting no session:
+      a continuation is handed to a human, never launched.
+      Options: --json --write <path> --continuation
+
   agent-flow-kit schema
       The documented machine contract: schema version, state, reason and
       ownership vocabularies, plan and operation vocabularies, and exit
@@ -225,6 +239,15 @@ command you ran is a usage failure, not a silently ignored word.
                                 owned. Requires --live, fails closed on any
                                 ambiguity, and never touches a resource this
                                 host cannot prove it created for that Dispatch.
+  --pm-stamp <path>             status and monitor only: the coordinator window
+                                is this stamp profile's catalog min_context. One
+                                that cannot be resolved reports
+                                PM_STAMP_UNUSABLE, never falling through.
+  --session <id>                monitor --reconcile only: the successor that
+                                consumed the continuation artifact.
+  --write <path>                pm-checkpoint only: the submitted artifact.
+  --continuation                pm-checkpoint only: write the hand-over
+                                artifact rather than the checkpoint.
   --plan                        Compute and print the complete plan; write
                                 nothing. The plan carries a stable identity.
   --approve-plan <identity>     Authorize exactly the plan with that identity.
@@ -251,7 +274,7 @@ Environment (declared local configuration)
   AFK_ORCH_STATE AFK_CLAUDE_TRUST_DB AFK_ROUTER_TOKEN_ENV
   AFK_LIVE_TIMEOUT_MS AFK_LIVE_FRESHNESS_S
   AFK_DISPATCH_DIR AFK_DISPATCH_WATCH_DIR AFK_DISPATCH_INBOX_DIR
-  AFK_DISPATCH_RESULT_DIR AFK_MONITOR_POLL_SECONDS
+  AFK_DISPATCH_RESULT_DIR AFK_MONITOR_POLL_SECONDS AFK_PM_DIR AFK_ROUTER_CATALOG
   AFK_MONITOR_BACKOFF_CEILING_SECONDS AFK_MONITOR_HEARTBEAT_SECONDS
   AFK_MONITOR_PROTECTED_BRANCHES
 USAGE
@@ -264,7 +287,7 @@ afk_option_allowed() { # <command> <option>
   case "$1" in
     status)
       case "$2" in
-        --json|--require-source-eligible|--allow-noncanonical-source|--allow-rollback|--live|--synthetic-route|--stamp|--target)
+        --json|--require-source-eligible|--allow-noncanonical-source|--allow-rollback|--live|--synthetic-route|--stamp|--target|--pm-stamp)
           return 0 ;;
       esac ;;
     adopt)
@@ -283,7 +306,11 @@ afk_option_allowed() { # <command> <option>
       esac ;;
     monitor)
       case "$2" in
-        --json|--live|--register|--reconcile|--cleanup) return 0 ;;
+        --json|--live|--register|--reconcile|--cleanup|--pm-stamp|--session) return 0 ;;
+      esac ;;
+    pm-checkpoint)
+      case "$2" in
+        --json|--write|--continuation) return 0 ;;
       esac ;;
   esac
   return 1
@@ -294,6 +321,7 @@ afk_main() {
   local allow_noncanonical="false" allow_rollback="false"
   local inspect="false" plan_only="false" approval=""
   local monitor_verbs=0
+  local pm_write="" pm_continuation="false"
 
   cmd="${1:-help}"
   if (( $# > 0 )); then shift; fi
@@ -350,6 +378,21 @@ afk_main() {
             fi
             AFK_STAMP_FILE="$2"
             shift ;;
+          --continuation)              pm_continuation="true" ;;
+          --pm-stamp|--session|--write)
+            # The VALUE is a path or an id and is never echoed back in a
+            # diagnostic; the option name is closed vocabulary, so it is.
+            if (( $# < 2 )); then
+              afk_warn "$1 requires its value: the coordinator's execution stamp, the successor session id, or the artifact to validate and write"
+              afk_usage >&2
+              return "$AFK_EXIT_USAGE"
+            fi
+            case "$1" in
+              --pm-stamp) AFK_PM_STAMP_FILE="$2" ;;
+              --session)  AFK_PM_SESSION="$2" ;;
+              --write)    pm_write="$2" ;;
+            esac
+            shift ;;
           --target)
             if (( $# < 2 )); then
               afk_warn "--target requires the id of a registered BMAD target"
@@ -392,6 +435,14 @@ afk_main() {
   fi
   if [[ -n "$AFK_ROUTE_TARGET" && -z "$AFK_STAMP_FILE" ]]; then
     afk_warn "--target binds route readiness to one registered target, so it needs the --stamp whose route it binds."
+    return "$AFK_EXIT_USAGE"
+  fi
+  if [[ "$cmd" == "pm-checkpoint" && -z "$pm_write" ]]; then
+    afk_warn "pm-checkpoint validates and writes one submitted artifact, so it needs the --write path that carries it."
+    return "$AFK_EXIT_USAGE"
+  fi
+  if [[ -n "$AFK_PM_SESSION" && "$AFK_MONITOR_MODE" != "reconcile" && "$AFK_MONITOR_MODE" != "cleanup" ]]; then
+    afk_warn "--session names the successor that consumed a continuation artifact, which only the reconciling pass can record: pass --reconcile."
     return "$AFK_EXIT_USAGE"
   fi
   if (( monitor_verbs > 1 )); then
@@ -439,6 +490,10 @@ afk_main() {
       AFK_MONITOR_LIVE="$AFK_LIVE_MODE"
       AFK_LIVE_MODE="false"
       afk_cmd_monitor "$json_mode"
+      return $? ;;
+    pm-checkpoint)
+      afk_require_declared_paths || return "$AFK_EXIT_USAGE"
+      afk_cmd_pm_checkpoint "$json_mode" "$pm_write" "$pm_continuation"
       return $? ;;
     schema)
       afk_cmd_schema || return "$AFK_EXIT_USAGE"

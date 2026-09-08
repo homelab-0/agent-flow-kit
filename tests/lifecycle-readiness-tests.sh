@@ -1434,6 +1434,143 @@ assert_ne "while a live run does timestamp its observations" \
      | select(test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T"))] | length')" "0"
 
 # ===========================================================================
+head1 "9. The coordinator's own context budget (Story 1.5 lane D)"
+# ===========================================================================
+#
+# The PM session is human-started and unmeasurable from here, so the window and the
+# occupancy arrive as a PROVIDED observation, judged by the arithmetic a worker's usage gets.
+
+# shellcheck source=../lib/afk-commands.sh
+. "$KIT_ROOT/lib/afk-commands.sh"
+
+BAD=0
+while IFS= read -r code; do
+  [[ -n "$(afk_pm_reason_message "$code")" && -n "$(afk_pm_reason_action "$code")" ]] || BAD=$((BAD + 1))
+done < <(afk_pm_reason_codes)
+assert_ne "the PM vocabulary is non-empty" "$(afk_pm_reason_codes | wc -l | tr -d ' ')" "0"
+assert_eq "every PM code carries a specific message and required action" "$BAD" "0"
+assert_eq "and the table declares each code exactly once" "$(afk_pm_reason_codes | LC_ALL=C sort | uniq -d | wc -l | tr -d ' ')" "0"
+assert_eq "and none of them collides with a half that already existed" \
+  "$(comm -12 <(cat <(afk_reason_codes) <(afk_readiness_reason_codes) <(afk_monitor_reason_codes) | LC_ALL=C sort) <(afk_pm_reason_codes | LC_ALL=C sort) | wc -l | tr -d ' ')" "0"
+run_afk schema
+assert_eq "schema publishes the PM vocabulary with every other half" \
+  "$(printf '%s' "$RUN_OUT" | jq -r '[.reason_codes[] | select(startswith("PM_"))] | length')" "$(afk_pm_reason_codes | wc -l | tr -d ' ')"
+assert_contains "and the verb that writes the artifacts" "$(printf '%s' "$RUN_OUT" | jq -c '.commands')" "pm-checkpoint"
+
+PMD="$HOMEDIR/.local/state/agent-flow-kit/pm"
+mkdir -p "$PMD"
+export AGENT_FLOW_BUDGET_POLICY="$KIT_ROOT/files/model-router/context-budget-policy.yaml"
+pm_obs() { # <window|null> <usage|null> [reason] [provenance]
+  jq -nc --argjson w "$1" --argjson u "$2" --arg r "${3-}" --arg p "${4-HUMAN}" \
+    '{schema:"afk-pm-usage/1", harness:"claude", window_tokens:$w, usage_tokens:$u, provenance:$p, observed_at:"2026-09-08T00:00:00Z", session:"pm-1"} + (if $r == "" then {} else {reason:$r} end)' > "$PMD/usage.json"
+}
+pmb() { printf '%s' "$RUN_OUT" | jq -r ".extra.pm_budget.$1"; }
+pm_case() { # <label> <state> <reason> <window_source>
+  run_afk status --json
+  assert_eq "$1: state"         "$(pmb state)"         "$2"
+  assert_eq "$1: reason"        "$(pmb reason)"        "$3"
+  assert_eq "$1: window_source" "$(pmb window_source)" "$4"
+}
+
+# --- AC-1: what counts as an observation, and what does not ----------------
+# Provenance is RECORDED, never inferred, so the third case is malformed rather
+# than a hand-written observation by default.
+rm -f "$PMD/usage.json"
+pm_case "absent, so nothing is assumed healthy" NOT_EVALUATED PM_USAGE_UNOBSERVABLE NOT_EVALUATED
+printf 'not json at all' > "$PMD/usage.json"
+pm_case "unparseable" NOT_EVALUATED PM_USAGE_UNOBSERVABLE NOT_EVALUATED
+jq -nc '{schema:"afk-pm-usage/1", harness:"claude", window_tokens:1000, usage_tokens:900, observed_at:"x", session:"pm-1"}' > "$PMD/usage.json"
+pm_case "declaring no provenance" NOT_EVALUATED PM_USAGE_UNOBSERVABLE NOT_EVALUATED
+jq -nc '{schema:"afk-pm-usage/9", harness:"claude", window_tokens:1000, usage_tokens:900, provenance:"HUMAN", observed_at:"x", session:"pm-1"}' > "$PMD/usage.json"
+pm_case "declaring a schema this kit does not read" NOT_EVALUATED PM_USAGE_UNOBSERVABLE NOT_EVALUATED
+pm_obs 200000 100000 "" "HARNESS_ADAPTER"
+pm_case "written by an adapter" OK null ADAPTER
+# A cumulative total is not occupancy, so it is published but never divided.
+pm_obs 1000000 null "PM_USAGE_CUMULATIVE_ONLY"
+pm_case "cumulative-only" NOT_EVALUATED PM_USAGE_CUMULATIVE_ONLY ADAPTER
+assert_eq "and no ratio is computed from a cumulative figure" "$(pmb usage_ratio)" "null"
+
+# --- AC-2: the window hierarchy, in order ----------------------------------
+pm_obs 200000 100000
+run_afk status --json
+assert_eq "with no stamp the window is the adapter's own number" "$(pmb window_tokens)" "200000"
+pm_obs null 100000
+pm_case "no stamp and no adapter window" NOT_EVALUATED PM_WINDOW_UNDECLARED NOT_EVALUATED
+
+CATALOG="$TMPROOT/pm-catalog.yaml"
+printf 'catalog_version: "sha256:fixture"\nprofiles:\n  "claude/strong":\n    min_context: 200000\n' > "$CATALOG"
+PMSTAMP="$TMPROOT/pm.stamp.json"
+jq -nc '{harness:"claude", model_profile:"claude/strong", effort:"medium", cost_class:"subscription", metered:false, placement_required:false,
+         catalog_version:"sha256:fixture", expires_at:"2099-01-01T00:00:00Z", task:{story_id:"PM-SESSION"}, created_at:"2026-09-08T00:00:00Z"}' > "$PMSTAMP"
+printf '{"harness":"claude"}' > "$TMPROOT/pm-bad.stamp.json"
+# The observation carries a DIFFERENT window throughout, so a STAMP verdict
+# proves the stamp branch won rather than merely agreeing with the adapter.
+pm_obs 999 150000
+export AFK_ROUTER_CATALOG="$CATALOG"
+run_afk status --json --pm-stamp "$PMSTAMP"
+assert_eq "with a stamp the window is the catalog's min_context" "$(pmb window_source)" "STAMP"
+assert_eq "read for the stamped profile, exactly"                "$(pmb window_tokens)" "200000"
+assert_eq "and the ratio is computed against it"                 "$(pmb usage_ratio)" "0.750000"
+# A stamp named on the command line is never silently ignored, whatever went
+# wrong with it: it refuses to evaluate rather than falling to another window.
+# Whatever the observation beside it says, too: the reason the stamp branch set
+# outranks the one a usage-free observation would otherwise write over it with.
+for bad in "unresolvable catalog:$PMSTAMP:" "failing the shape check:$TMPROOT/pm-bad.stamp.json:$CATALOG"; do
+  IFS=':' read -r label stamp cat <<< "$bad"
+  for obs in "numeric usage:150000:" "cumulative-only:null:PM_USAGE_CUMULATIVE_ONLY" "no usage figure:null:"; do
+    IFS=':' read -r olabel usage orsn <<< "$obs"
+    pm_obs 999 "$usage" "$orsn"
+    AFK_ROUTER_CATALOG="$cat" run_afk status --json --pm-stamp "$stamp"
+    assert_eq "a stamp $label is unusable, $olabel"  "$(pmb reason)" "PM_STAMP_UNUSABLE"
+    assert_eq "and evaluates nothing"       "$(pmb state)" "NOT_EVALUATED"
+    assert_eq "adopting no window at all"   "$(pmb window_source)" "NOT_EVALUATED"
+    assert_eq "never falling through to the adapter's window" "$(pmb window_tokens)" "null"
+  done
+done
+unset AFK_ROUTER_CATALOG
+
+# --- AC-2: the thresholds are the policy's, and the boundary counts ---------
+CK="$(awk -v r="$(yq -r '.checkpoint_ratio' "$AGENT_FLOW_BUDGET_POLICY")"   'BEGIN { printf "%d", r * 1000000 }')"
+CO="$(awk -v r="$(yq -r '.continuation_ratio' "$AGENT_FLOW_BUDGET_POLICY")" 'BEGIN { printf "%d", r * 1000000 }')"
+while IFS='|' read -r usage label state; do
+  pm_obs 1000000 "$usage"
+  run_afk status --json
+  assert_eq "$label" "$(pmb state)" "$state"
+done <<CASES
+$(( CK - 1 ))|one ppm below the policy's checkpoint ratio is still OK|OK
+$CK|AT the checkpoint ratio counts as crossing it|CHECKPOINT_DUE
+$(( CO - 1 ))|one ppm below continuation is still only a checkpoint|CHECKPOINT_DUE
+$CO|AT the continuation ratio the coordinator must hand over|CONTINUATION_REQUIRED
+CASES
+assert_eq "which is a human's decision to act on"    "$(pmb needs_human)" "true"
+assert_eq "and the run says so in its exit code"     "$RUN_RC" "2"
+assert_eq "the loud finding is an owner action" \
+  "$(printf '%s' "$RUN_OUT" | jq -r '[.findings[] | select(.reason == "PM_CONTINUATION_REQUIRED" and .severity == "owner_action")] | length')" "1"
+# No hand-over has been written yet, so the action is to write one and then
+# start the successor — never a verb that would start it for them.
+assert_contains "next_safe_action asks for the hand-over the ratio demands" \
+  "$(jget '.next_safe_action')" "pm-checkpoint --continuation"
+assert_contains "and sends the human to Orca to start the successor themselves" \
+  "$(jget '.next_safe_action')" "start the successor ORCH PM session yourself in Orca"
+
+# There is no threshold constant in the kit: an unreadable policy bands nothing
+# rather than falling back to a number nobody declared.
+pm_obs 1000000 900000
+AGENT_FLOW_BUDGET_POLICY="$TMPROOT/no-such-policy.yaml" run_afk status --json
+assert_eq "an unreadable policy is never a default" "$(pmb reason)" "PM_BUDGET_POLICY_UNREADABLE"
+assert_eq "and nothing is banded without one"       "$(pmb state)" "NOT_EVALUATED"
+
+pm_obs 200000 100000
+run_afk status --json
+assert_eq "the pm_budget block presents exactly the declared members" \
+  "$(printf '%s' "$RUN_OUT" | jq -r '.extra.pm_budget | keys | join(",")')" \
+  "checkpoint_artifact,continuation_artifact,needs_human,reason,state,usage_ratio,usage_tokens,window_source,window_tokens"
+run_afk status
+assert_contains "and the human rendering projects it too" "$RUN_OUT" "coordinator context budget"
+unset AGENT_FLOW_BUDGET_POLICY
+rm -f "$PMD/usage.json"
+
+# ===========================================================================
 if (( SKIPPED > 0 )); then
   printf '\n\033[33mskipped checks computed no verdict — they are not passes\033[0m\n'
   printf '\033[1m%d passed, %d failed, %d skipped\033[0m\n' "$PASS" "$FAIL" "$SKIPPED"
