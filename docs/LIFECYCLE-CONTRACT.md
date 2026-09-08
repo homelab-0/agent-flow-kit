@@ -1067,6 +1067,7 @@ With an undeclared window neither action can fire.
            "estimate_ratio": N|null,
            "usage_tokens": N|null, "usage_ratio": N|null,
            "usage_provenance": "HARNESS_ENVELOPE"|"NOT_EVALUATED",
+           "usage_scope": "FINAL_CONTEXT"|"CUMULATIVE_RUN"|null,
            "usage_reason": ...|null, "observed_at": "END_OF_RUN"|null,
            "window_reported_tokens": N|null,
            "checkpoint_artifact": {"path":..., "sha256":...}|null,
@@ -1103,9 +1104,33 @@ interface, and adding a harness means adding an adapter.
 
 Under its frozen launch text `claude` publishes one end-of-run result envelope
 (`--output-format json`), so its adapter reports `usage_tokens` from that
-envelope's `usage` — input plus cache reads plus cache creation, the context
-actually held at the last request — with `usage_provenance: HARNESS_ENVELOPE`
-and `observed_at: END_OF_RUN`. `codex exec` runs without `--json` and publishes
+envelope's `usage` — input plus cache reads plus cache creation — with
+`usage_provenance: HARNESS_ENVELOPE` and `observed_at: END_OF_RUN`.
+
+**What that figure measures is `usage_scope`, and only one scope is
+occupancy.** The envelope's `usage` members are the SUM over every API call the
+run made, not the context its final call held, and the envelope publishes the
+call count in `num_turns`. So:
+
+- `num_turns == 1` — the envelope *is* that one call's context.
+  `usage_scope: FINAL_CONTEXT`, and the ratio is computed from it.
+- anything else — more turns, or an envelope that publishes no turn count and
+  therefore proves nothing about how many calls it summed —
+  `usage_scope: CUMULATIVE_RUN`, `usage_reason: USAGE_CUMULATIVE_ONLY`,
+  `usage_ratio: null`. The figure is still published, as information about the
+  run's total consumption; it is never divided by a window.
+
+A cumulative observation evaluates to nothing, on exactly the path an
+unobservable one takes: no band, no `HIGH_USAGE`, and the pre-dispatch verdict
+left standing. `CHECKPOINT_DUE`, `CONTINUATION_REQUIRED` and `HIGH_USAGE` are
+asserted **only from a `FINAL_CONTEXT` measurement** — which is what "the run
+*ended* at or past `checkpoint_ratio`" has always meant, and now says. Dividing
+a cumulative total is how an 83-turn run that never occupied more than one
+window reported a ratio of 20.30 against it.
+
+The envelope carries no per-turn or final-context figure of its own, and the
+kit reads no terminal and no transcript, so `FINAL_CONTEXT` is the only
+occupancy this contract can honestly observe. `codex exec` runs without `--json` and publishes
 nothing machine-readable, so its adapter reports `NOT_EVALUATED`, reason
 `USAGE_UNOBSERVABLE`. Neither launch command text changes to make usage
 observable; both are frozen. So under `claude` there is no mid-run usage to
@@ -1123,6 +1148,13 @@ Where no key matches, `window_reported_tokens` is `null` and the finding is
 disagreement between the two is recorded as `WINDOW_DISAGREEMENT` and left
 standing, because resolving two authorities by preferring one is how a kit
 starts inventing routed facts.
+
+The envelope also carries `total_cost_usd`, and each `modelUsage` entry a
+`costUSD`. **Neither is read, and no cost figure reaches a thin result or any
+kit aggregate.** The number is the client's own estimate — the envelope labels
+its own basis `costBasis: "unknown"` — and on a `cost_class: free` route it is
+not money at all. What a run cost is a question for whoever owns the funding
+path; publishing an estimate beside routed facts would make it look like one.
 
 A `usage` object that carries **none** of `input_tokens`,
 `cache_read_input_tokens` or `cache_creation_input_tokens` is a run whose
@@ -1144,8 +1176,19 @@ for the PM, not a fact about one attempt.
 the continuation band at the end of a run whose gates passed, and whose worker
 signalled nothing, is a sizing observation instead: the state is `CHECKPOINT_DUE`
 (or `OK`, per the checkpoint rule applied to the same ratio) and the `HIGH_USAGE`
-finding carries the observation. The state is reached from the ratio only on an
-**unfinished** run, or from the worker's own signal.
+finding carries the observation.
+
+**A ratio never sets the result `status`.** `status: continuation_required`
+says there is a hand-over to resume FROM, so it is published only when the
+worker signalled `CONTINUATION-REQUIRED:` and left a valid continuation
+artifact whose identity the result carries. The gates decide every other
+attempt: failed is `gates_failed`, passed is `done`. A `budget.state` of
+`CONTINUATION_REQUIRED` — now reachable only from a `FINAL_CONTEXT`
+measurement — stands beside that status as a sizing note, with `HIGH_USAGE`,
+and changes nothing about it. The rule exists because the alternative shipped:
+a status set from a band alone published `continuation_required` with no
+checkpoint and no continuation artifact anywhere, and a PM reading it would
+re-dispatch a continuation from nothing.
 
 An observation that cannot be evaluated — no usage published, or no declared
 window — **does not overwrite `state`**: the pre-dispatch verdict is a real
@@ -1155,6 +1198,16 @@ report less than the kit knows. It goes to `usage_reason`
 is missing) beside `usage_provenance: NOT_EVALUATED`. `CHECKPOINT_DUE` and
 `CONTINUATION_REQUIRED` are therefore reached only from a computed ratio or a
 worker's own continuation signal, never inferred.
+
+The generated prompt also names the directory the worker is standing in: one
+launcher-owned sentence saying that the repository root is the current working
+directory `<absolute worktree path>`, that paths should be relative to it, and
+that absolute paths outside it are refused. The story is mirrored into a
+worktree and states paths relative to a root it never names, so a worker
+reasoning from the repository it remembers reaches into the main checkout and
+is denied — 14 times on the run this rule comes from. Its only input is the
+directory the launcher resolved for itself: neither the story nor the persona
+can alter it, and it is byte-stable for a given worktree.
 
 Because mid-run usage is not observable under either frozen launch text, the
 checkpoint discipline cannot be driven by usage. It is **deterministic policy**,
@@ -1199,8 +1252,9 @@ Neither is fixed by this capability; both are recorded here.
 | a checkpoint byte-identical to the one the attempt started with | finding `CHECKPOINT_ARTIFACT_STALE`; no `checkpoint_artifact` identity is published, because this worker did not write it |
 | `CONTINUATION-REQUIRED:` with a valid, freshly written continuation | `budget.state: CONTINUATION_REQUIRED`, `status: continuation_required`, `continuation_artifact` identity, and one dated line in the story's `## Dev Agent Record`, idempotent per cycle |
 | `CONTINUATION-REQUIRED:` with a missing, unparseable, schema-mismatched, member-short or byte-unchanged artifact | loud `NEEDS_HUMAN`: a `${STORY}.blocked` marker with reason `CONTINUATION_ARTIFACT_INVALID`, exit code 3, and **no result artifact at all** |
-| usage ≥ `continuation_ratio`, gates failed, no worker signal | `status: continuation_required` — the kit reports no headroom it cannot see and manufactures no completed result |
+| usage ≥ `continuation_ratio`, gates failed, no worker signal | `status: gates_failed` with `budget.state: CONTINUATION_REQUIRED` and finding `HIGH_USAGE` — the band is a sizing note; there is no artifact, so there is no hand-over to resume from |
 | usage ≥ `continuation_ratio`, gates **passed**, no worker signal | `status: done` with `budget.state: CHECKPOINT_DUE` and finding `HIGH_USAGE` — a finished run is sized, not continued |
+| a cumulative (multi-turn) usage figure, whatever its size | no ratio, no band, no `HIGH_USAGE`: `usage_scope: CUMULATIVE_RUN`, `usage_reason: USAGE_CUMULATIVE_ONLY`, and the status is the gates' |
 
 Neither lifecycle artifact is deleted before a launch the way the result
 artifact is, because the next cycle is meant to resume from them; freshness is
@@ -1354,6 +1408,13 @@ continuation_decision:
   reason: <why one more continuation is the right call>
 max_cycles: 4           # the story's own cycle limit must reach it too
 ```
+
+The `max_cycles` the cap marker suggests is the **larger** of the story's
+current limit and the cycle being authorised, so applying the block never
+lowers a limit the story already carries: a story allowed 8 cycles and refused
+at the cap on cycle 4 is offered 8, not 4. `max_cycles` keeps bounding
+continuations that the cap lets through — the two limits are independent, and
+the cap gate running first does not retire the other one.
 
 Every member is required and the recorded cycle must be the cycle being run: a
 decision does not carry forward to a later one. The cycle is compared as a
