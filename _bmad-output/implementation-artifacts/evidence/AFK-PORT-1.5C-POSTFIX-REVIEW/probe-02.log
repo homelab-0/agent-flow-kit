@@ -1,0 +1,88 @@
+
+[1m3. Integration — real dispatch.sh against stubbed Orca/validator/router[0m
+
+[1mA. the HAPPY PATH: two continuations launch, the ledger has two, the third refuses[0m
+  [32mPASS[0m before any launch: no ledger exists
+  [32mPASS[0m continuation 1 of 2 launches
+  [32mPASS[0m ledger after launch 1
+  [32mPASS[0m continuation 2 of 2 launches
+  [32mPASS[0m ledger after launch 2
+  [32mPASS[0m the third continuation refuses
+  [32mPASS[0m at the cap, typed
+  [32mPASS[0m counting the ledger's length
+  [32mPASS[0m and a refusal spends nothing: the ledger is unmoved
+  [32mPASS[0m nothing launched
+  ledger: {"schema":"afk-continuation-ledger/1","entries":[{"cycle":2,"from_cycle":1,"artifact_sha256":"sha256:e817ecd7d3da4a522df38af04b6873de8d939e1321b826ea47011115682a3dd7","trigger":"WORKER_SIGNAL","at":"2026-09-08T03:10:56Z","decision":null},{"cycle":3,"from_cycle":2,"artifact_sha256":"sha256:e817ecd7d3da4a522df38af04b6873de8d939e1321b826ea47011115682a3dd7","trigger":"USAGE_BAND","at":"2026-09-08T03:10:58Z","decision":null}]}
+
+[1mB. the BYPASS (attack-05 B): re-dispatch the PREVIOUS cycle number[0m
+  exit=3  terminals launched=0
+  [32mPASS[0m the earlier cycle number is REFUSED, not launched
+  [32mPASS[0m with the stable reason code
+  [32mPASS[0m naming the cycle
+  [32mPASS[0m and the next free cycle
+  [32mPASS[0m NEEDS-HUMAN typed marker
+  [32mPASS[0m nothing was launched
+  [32mPASS[0m nothing was placed
+  [32mPASS[0m the ledger did not grow
+
+[1m   ... and it cannot be repeated[0m
+    repeat 1: exit=3
+  [32mPASS[0m repeat 1 still refused
+    repeat 2: exit=3
+  [32mPASS[0m repeat 2 still refused
+    repeat 3: exit=3
+  [32mPASS[0m repeat 3 still refused
+
+[1mC. the DEFLATION (attack-05 B/C): the retained result cannot be rewritten[0m
+  [32mPASS[0m cycle 3's retained result is byte-identical to before the re-dispatch
+  [32mPASS[0m so the count cannot go down
+
+[1mD. CONTROL (attack-05 C): the cap still holds for 4 and for 5[0m
+  [32mPASS[0m cycle 4 is still refused
+  [32mPASS[0m cycle 4 refused at the CAP
+  [32mPASS[0m cycle 5 is still refused
+  [32mPASS[0m cycle 5 refused at the CAP
+
+[1mE. the count is the LENGTH, whatever the cycle numbers say[0m
+  [32mPASS[0m two entries with unrelated cycle numbers still reach the cap
+  [32mPASS[0m and are counted as 2
+  [32mPASS[0m CONTROL: one entry is under the cap and proceeds
+  [32mPASS[0m CONTROL: and the launch appended the third-from-nothing entry
+
+[1mF. an unreadable ledger is not an empty one[0m
+  [32mPASS[0m refuses on ledger <not json>
+  [32mPASS[0m saying a count that cannot be read is not zero
+  [32mPASS[0m and nothing was launched
+  [32mPASS[0m refuses on ledger <{"schema":"afk-continuation-ledger/2","entries":[]}>
+  [32mPASS[0m saying a count that cannot be read is not zero
+  [32mPASS[0m and nothing was launched
+  [32mPASS[0m refuses on ledger <{"entries":[]}>
+  [32mPASS[0m saying a count that cannot be read is not zero
+  [32mPASS[0m and nothing was launched
+  [32mPASS[0m refuses on ledger <[]>
+  [32mPASS[0m saying a count that cannot be read is not zero
+  [32mPASS[0m and nothing was launched
+  [32mPASS[0m CONTROL: a well-formed empty ledger proceeds
+
+[1mG. the entry is written only when a window is actually spent[0m
+  stamp-refusal exit=4
+  [32mPASS[0m a refused attempt writes NO ledger
+
+[1mH. ADVERSARIAL — the ledger is a file in the worker's own sandbox[0m
+  after deleting the ledger, the capped cycle 4 -> exit=0
+  [31mFAIL[0m deleting the ledger hands the capped story its windows back
+        exit 0, launched
+
+[1mI. CONTROL — an ORDINARY cycle is still re-dispatchable (the documented recovery)[0m
+  [32mPASS[0m an ordinary cycle re-dispatches
+  [32mPASS[0m and writes no ledger entry
+
+[1mJ. RESIDUAL — a continuation UNDER the cap still meets the UNTYPED max_cycles[0m
+  cap 9, max_cycles at the shipped default -> exit=3
+  stderr: max_cycles (3) exceeded
+  marker: <none written>
+  [32mPASS[0m refused
+  [31mFAIL[0m under the cap the refusal is the UNTYPED max_cycles message, with no marker and no remedy
+        same shape as B1, one gate further along
+
+probe-02-f2-ledger-and-bypass.sh: 48 passed, 2 failed

@@ -1,0 +1,12 @@
+{
+  "story_id": "AFK-PORT-1.5C",
+  "title": "Continuation dispatch, the continuation cap, and settlement (Story 1.5, lane C)",
+  "summary": "Third of four lanes for the frozen Story 1.5 in the kit's dispatch adapter: make a continuation run as the next cycle of the same story under the same revalidated stamp through the canonical path, consuming the continuation artifact into the prompt and the sizing estimate; refuse an expired stamp naming the central re-route path; enforce the continuation cap deterministically from retained per-cycle results with an explicit recorded PM decision to exceed it; record the continuation chain in the story record; prove settlement through the unmodified completion-watch and cleanup contracts; contract and schema updates; tests on both harnesses. Frozen launch command texts stay byte-identical; no local substitution of any routed field. Judgment calls: artifact-to-prompt shape, per-cycle result retention naming, the decision key. A wrong result would launch a continuation past its cap or substitute a route.",
+  "touched_paths": ["files/model-router/scripts/dispatch.sh", "files/model-router/context-budget-policy.yaml", "files/model-router/SKILL.md", "docs/LIFECYCLE-CONTRACT.md", "lib/afk-commands.sh", "tests/run-tests.sh", "tests/lifecycle-dispatch-tests.sh", "tests/lifecycle-readiness-tests.sh", "_bmad-output/implementation-artifacts/AFK-PORT-1.5C.md"],
+  "ambiguity": "medium",
+  "blast_radius": "medium",
+  "volume_hint": "low",
+  "tags": ["tests", "docs"],
+  "repo": "agent-flow-kit",
+  "requester": "bmad-pm"
+}

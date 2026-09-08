@@ -180,7 +180,7 @@ or control-plane surface. Story 1.4's live-render acceptance condition is the
 natural proving ground: a live PLAN-mode render and a populated statusline are
 the same demonstration.
 
-## Story 1.5 — Context Budgeting and Continuation (IN PROGRESS; lanes A and B merged 2026-09-07)
+## Story 1.5 — Context Budgeting and Continuation (IN PROGRESS; lanes A, B and C merged; D and an external-report fix queued)
 
 Split into four sequential lanes by the coordinator (total scope preserved;
 FR coverage: A = FR-96–98 + FR-99 declaration; B = FR-99 evaluation, FR-100,
@@ -212,6 +212,29 @@ the same closed-vocabulary discipline; (26) readiness unpublished-reason sweep
 union weakens the `.reason` check; (27) codex terminal tail is bounded
 (`--limit 5000`) so a signal can scroll out; (28) GitGuardian flags redaction
 test sentinels (incident 37069849 ignored as test credential).
+
+**Lane C merged** (PR #34, `e207314`, 2026-09-08): a continuation runs as the
+next cycle of the same story under the same revalidated stamp through the
+canonical path; the artifact enters the prompt as data and the sizing
+estimate; an expired stamp refuses naming the central refresh; the cap counts
+from an append-only ledger (`<story>.continuations.json`) with a typed refusal
+whose marker carries the complete remedy (`continuation_decision:` +
+`max_cycles:`); retained cycles are never re-run in place; the chain lands in
+the story record; `lib/afk-monitor.sh` untouched. Review NOT CLEAN (two cap
+blockers) → fix cycle → diff-scoped post-fix review CLEAN. Registry adds:
+(29) deleting the ledger resets the count (operator action on state); (30)
+a continuation under the cap still meets the untyped `max_cycles`; (31) the
+launch guard is not re-checked under the lock; (32) the cap marker's
+suggested `max_cycles` can lower a larger existing value — queued in the
+external-report fix; (33) EXTERNAL REPORT (ai-control-plane PM, 2026-09-07):
+lane B's claude usage adapter divides the envelope's CUMULATIVE token sum by
+the window (ratio 20.3 on an 83-turn run; 3.8 on the kit's own 20-turn
+smoke) and a ratio-derived state overwrote a gates-failed status — fix
+`AFK-PORT-1.5B-FIX2` queued (multi-turn usage informational, status by gates,
+continuation only with an artifact, working directory named in the prompt,
+cost never spend); (34) owner-approved follow-up: add `Edit` to the frozen
+tool set for both claude classes, queued after lane D with a coordinated
+contract update in ai-control-plane.
 
 ## Story 1.7 (Spike) — Persona Payload Viability on Local Profiles (COMPLETE 2026-09-07)
 

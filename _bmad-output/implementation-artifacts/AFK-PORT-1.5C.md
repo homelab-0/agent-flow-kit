@@ -415,3 +415,41 @@ the whole of 3d and 3e.
   lane D, and the finding is the seam that lane will read.
 - **A single commit cannot carry its own hash**, so the commit SHA for this
   cycle is not recorded here; the coordinator records it.
+
+### Coordinator log — merge (2026-09-08) **[MERGE LOGGED]**
+
+- Lane C routed naturally to `{claude, local-code-standard, medium}` and was
+  overridden to `claude/strong` under the owner's standing ruling (stamp
+  `sha256:ea1922dc…`).
+- Implementation worker succeeded (`88c24b6`; reviewable 695/6 across 6
+  files, on budget; `lib/afk-monitor.sh` byte-identical and asserted);
+  coordinator's independent five gates matched (290/0, 256/0, 478/0,
+  diff-check, run-tests 669/1 with the recorded concurrency aggregate the
+  only red). Fresh-session adversarial + senior review
+  (`evidence/AFK-PORT-1.5C-REVIEW/`): NOT CLEAN — two blockers (the cap gate
+  unreachable behind `max_cycles` with an incomplete marker remedy; a cap
+  bypass by re-dispatching an earlier cycle number that also deflated the
+  count) and four residuals. One bounded fix cycle (`AFK-PORT-1.5C-FIX`,
+  `b7c16c2`) closed all six with an append-only continuation ledger and a
+  refusal to re-run a retained cycle; a diff-scoped post-fix review
+  (`evidence/AFK-PORT-1.5C-POSTFIX-REVIEW/`) verified every remedy from real
+  launches, showed the first reviewer's now-failing scripts to be setup
+  artefacts of the retired counting mechanism, and raised five low residuals
+  (N1 deleting the ledger resets the count; N2 a continuation under the cap
+  still meets the untyped `max_cycles`; N3 launch guard not re-checked under
+  the lock; N4 the marker's block can lower a larger `max_cycles`; N5
+  decision wording) — N4/N2 folded into the queued usage-adapter fix cycle,
+  the rest to the registry. Post-fix independent gates 290/0, 256/0, 478/0,
+  diff-check, 729/1.
+- PR #34 squash-merged to `master` as `e207314` under the owner's standing
+  merge grant (GitGuardian clean; Devin skipped; zero comments). Host kit
+  update through the Git channel: the first plan reported `LOCAL_DRIFT` on
+  the model-router tree — a peer coordinator had configured the installed
+  `subscriptions.yaml` (gateway credential reference and a catalog path) and
+  left a backup file beside it; the kit moved the stray backup out of the
+  managed tree into its own backups directory, classified the configured file
+  as a local adaptation, and converged 6d1315f → e207314 with the peer's
+  settings preserved (`evidence/AFK-PORT-1.5C/host-update-*.json`). Installed
+  adapter byte-identical to the repository.
+- The session was resumed mid-packaging; the post-fix `run-tests.sh` process
+  survived the resume and its tally was harvested from the log.

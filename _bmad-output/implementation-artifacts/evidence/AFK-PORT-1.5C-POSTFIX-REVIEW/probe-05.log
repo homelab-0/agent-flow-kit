@@ -1,0 +1,25 @@
+
+[1m3. Integration — real dispatch.sh against stubbed Orca/validator/router[0m
+
+[1mattack-05's setup, replayed: RESULTS planted, NO ledger written[0m
+  [32mPASS[0m the setup writes no ledger at all
+    exit=0  marker=<none>
+  [32mPASS[0m A: cycle 4 LAUNCHES, because the ledger the cap counts is empty
+  [32mPASS[0m    and the launch wrote the story's first ledger entry
+    exit=3  marker=NEEDS-HUMAN: reason=CYCLE_ALREADY_RETAINED cycle=3 next_free_cycle=5
+  [32mPASS[0m B: the bypass is CLOSED
+  [32mPASS[0m    by the retained-result half of the guard
+    exit=3  marker=NEEDS-HUMAN: reason=CYCLE_ALREADY_RETAINED cycle=4 next_free_cycle=5
+  [32mPASS[0m C: cycle 4 is refused — by the LEDGER half, not by the cap
+    exit=0  marker=<none>
+  [32mPASS[0m C: cycle 5 proceeds — one ledger entry is genuinely under the cap of 2
+
+[1mattack-03 A's setup, replayed[0m
+    exit=3  marker=<none>
+  [32mPASS[0m the cap does not fire, so max_cycles does — count 0, not 2
+  [32mPASS[0m    the untyped per-story limit
+  [32mPASS[0m    and no marker at all
+    exit=3  marker=CONTINUATION-CAP: reason=CONTINUATION_CAP_REACHED count=2 cap=2 cycle=4
+  [32mPASS[0m with a ledger of 2, the SAME story gets the typed cap marker
+
+probe-05-old-attack-dispositions.sh: 11 passed, 0 failed
