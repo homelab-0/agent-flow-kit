@@ -1,0 +1,73 @@
+
+[1m3. Integration — real dispatch.sh against stubbed Orca/validator/router[0m
+
+[1mF3 — the decision's cycle is read as a number however it was written[0m
+  [32mPASS[0m cycle: 4 authorises the capped cycle
+  [32mPASS[0m cycle: 4 is recorded as a number
+  [32mPASS[0m cycle: 4 normalises to 4
+  [32mPASS[0m cycle: "4" authorises the capped cycle
+  [32mPASS[0m cycle: "4" is recorded as a number
+  [32mPASS[0m cycle: "4" normalises to 4
+  [32mPASS[0m cycle: '4' authorises the capped cycle
+  [32mPASS[0m cycle: '4' is recorded as a number
+  [32mPASS[0m cycle: '4' normalises to 4
+
+[1m   CONTROLS — spellings that are NOT this cycle still do not authorise[0m
+  [32mPASS[0m cycle: 5 does NOT authorise cycle 4
+  [32mPASS[0m cycle: 5 is refused at the cap
+  [32mPASS[0m cycle: "5" does NOT authorise cycle 4
+  [32mPASS[0m cycle: "5" is refused at the cap
+  [32mPASS[0m cycle: "four" does NOT authorise cycle 4
+  [32mPASS[0m cycle: "four" is refused at the cap
+  [32mPASS[0m cycle: null does NOT authorise cycle 4
+  [32mPASS[0m cycle: null is refused at the cap
+  [32mPASS[0m cycle: true does NOT authorise cycle 4
+  [32mPASS[0m cycle: true is refused at the cap
+
+[1mF4 — the hand-over artifact names the story it belongs to[0m
+  [32mPASS[0m match: consumed
+  [32mPASS[0m match: and nothing reported as unbound
+  [32mPASS[0m mismatch: refused, pre-launch
+  [32mPASS[0m mismatch: on the invalid-artifact path
+  [32mPASS[0m mismatch: with the detail
+  [32mPASS[0m mismatch: never quoting the artifact's own content
+  [32mPASS[0m mismatch: no result claims an outcome
+  [32mPASS[0m mismatch: nothing placed
+  [32mPASS[0m mismatch: nothing launched
+  [32mPASS[0m mismatch: and no ledger entry
+  [32mPASS[0m absent: accepted this cycle
+  [32mPASS[0m absent: and reported as unbound
+
+[1m   ADVERSARIAL — a null / empty story_id is not a mismatch, and not a claim[0m
+  [32mPASS[0m story_id null is treated as absent, not a mismatch
+  [32mPASS[0m story_id null is reported unbound
+  [32mPASS[0m story_id "" is treated as absent, not a mismatch
+  [32mPASS[0m story_id "" is reported unbound
+
+[1m   the prompt asks the worker for the value the launcher checks[0m
+  [32mPASS[0m the prompt names the story_id the launcher compares against
+
+[1mF5 — a continuation refused by SIZING leaves a record line[0m
+  [32mPASS[0m sizing: the continuation is refused, exit 8
+  record line: - budget: CONTINUATION_REFUSED from cycle 2 670/619 (1.082390) cycle 3 2026-09-08T03:13:07Z
+  [32mPASS[0m sizing: one record line, naming the cycle continued
+  [32mPASS[0m sizing: written for this cycle
+  [32mPASS[0m sizing: exactly one such line
+  [32mPASS[0m sizing: it lives in the Dev Agent Record
+  [32mPASS[0m sizing: a refusal spends no window — the ledger is unmoved (cycle 2's entry only)
+  [32mPASS[0m sizing: nothing placed
+  [32mPASS[0m sizing: nothing launched
+  [32mPASS[0m CONTROL: an ordinary cycle refused by sizing, exit 8
+  [32mPASS[0m CONTROL: writes no CONTINUATION_REFUSED line
+
+[1m   F5 claim under test — 'the estimate stays deterministic' across a re-dispatch[0m
+  attempt 1: story 361 bytes, estimate 670
+  attempt 2: story 361 bytes, estimate 693
+  [32mPASS[0m the refusal is stable across the re-dispatch
+  [32mPASS[0m the record line is still written exactly once
+  [31mFAIL[0m the estimate MOVED across the re-dispatch of the same cycle
+        first attempt 670, re-dispatch 693 — the story file is a counted payload input and the record line grew it
+  attempt 3: estimate 693
+  [32mPASS[0m from the second attempt on it is stable (the append is idempotent)
+
+probe-03-f3-f4-f5.sh: 49 passed, 1 failed

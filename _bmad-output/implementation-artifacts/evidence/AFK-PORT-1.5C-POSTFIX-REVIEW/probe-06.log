@@ -1,0 +1,20 @@
+
+[1m3. Integration — real dispatch.sh against stubbed Orca/validator/router[0m
+
+[1mA. two dispatches of the SAME continuation cycle, started together[0m
+  exits: 0 0 0
+  ledger entries=3  terminals launched=3
+  ledger: [2,2,2]
+  [31mFAIL[0m cycle 2 spent more than one window
+        ledger length 3, 3 terminals — the guard is read before the launch and not re-checked under the lock
+
+[1m   ... but the ledger itself is not corrupted or lost by the concurrent appends[0m
+  [32mPASS[0m the ledger still parses under its declared schema
+  [32mPASS[0m one ledger entry per terminal actually created
+
+[1mB. CONTROL — serial dispatches of DIFFERENT cycles each append exactly one[0m
+  [32mPASS[0m cycle 2 launches
+  [32mPASS[0m cycle 3 launches
+  [32mPASS[0m two cycles, two entries
+
+probe-06-ledger-concurrency.sh: 5 passed, 1 failed

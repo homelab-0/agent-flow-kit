@@ -1,0 +1,53 @@
+
+[1m3. Integration — real dispatch.sh against stubbed Orca/validator/router[0m
+
+[1mA. the cap versus max_cycles at the SHIPPED defaults (cap=2)[0m
+  [default max_cycles] exit=3
+  stderr: dispatch: max_cycles (3) exceeded — escalate to human
+  [31mFAIL[0m the cap gate is reached at the shipped default max_cycles
+        refused earlier by max_cycles; no CONTINUATION-CAP marker was written
+  [31mFAIL[0m the marker's remedy, applied verbatim, lets the authorised cycle proceed
+        expected '0', got '3'
+  stderr: dispatch: continuation: authorised by a recorded decision (josh) for cycle 4
+dispatch: max_cycles (3) exceeded — escalate to human
+  [32mPASS[0m control: the SAME story with max_cycles: 9 proceeds
+  [32mPASS[0m the cap marker or the docs mention the max_cycles interaction
+
+[1mB. harness agnosticism — the SAME continuation on codex[0m
+  [32mPASS[0m codex continuation launches
+  [32mPASS[0m codex records continuation_of
+  [32mPASS[0m codex prompt carries the section
+  [32mPASS[0m codex REPEATED_CONTINUATION
+  --- no CLI name in the continuation logic ---
+  [32mPASS[0m no harness CLI name inside the continuation logic
+
+[1mC. the artifact is DATA — it cannot become shell, a marker or a log[0m
+  [32mPASS[0m the cycle still launches
+  [32mPASS[0m artifact content never reaches a shell
+  [32mPASS[0m and it DID reach the prompt as data
+  [32mPASS[0m no artifact content in the launched command text
+  [32mPASS[0m no artifact content in the thin result
+  [32mPASS[0m no artifact content in the story record line
+  [32mPASS[0m no artifact content on stderr
+  [32mPASS[0m control: the sentinel is in the artifact
+
+[1mD. doc / code truth[0m
+  [32mPASS[0m CONTINUATION_CAP_REACHED declared in context-budget-policy.yaml
+  [32mPASS[0m CONTINUATION_CAP_REACHED declared in afk-commands.sh
+  [32mPASS[0m CONTINUATION_CAP_REACHED declared in LIFECYCLE-CONTRACT.md
+  [32mPASS[0m CONTINUATION_CAP_REACHED declared in dispatch.sh
+  [32mPASS[0m CONTINUATION_STAMP_REFRESH_REQUIRED declared in context-budget-policy.yaml
+  [32mPASS[0m CONTINUATION_STAMP_REFRESH_REQUIRED declared in afk-commands.sh
+  [32mPASS[0m CONTINUATION_STAMP_REFRESH_REQUIRED declared in LIFECYCLE-CONTRACT.md
+  [32mPASS[0m CONTINUATION_STAMP_REFRESH_REQUIRED declared in dispatch.sh
+  [32mPASS[0m REPEATED_CONTINUATION declared in context-budget-policy.yaml
+  [32mPASS[0m REPEATED_CONTINUATION declared in afk-commands.sh
+  [32mPASS[0m REPEATED_CONTINUATION declared in LIFECYCLE-CONTRACT.md
+  [32mPASS[0m REPEATED_CONTINUATION declared in dispatch.sh
+  [32mPASS[0m no threshold constant in the launcher
+  [32mPASS[0m no continuation_cap fallback default in code
+  [32mPASS[0m no context_size in the launcher
+  [33mSKIP[0m shellcheck not installed
+
+30 passed, 2 failed
+attack-03 exit=1

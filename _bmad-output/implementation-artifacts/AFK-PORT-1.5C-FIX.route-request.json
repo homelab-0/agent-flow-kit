@@ -1,0 +1,12 @@
+{
+  "story_id": "AFK-PORT-1.5C-FIX",
+  "title": "Post-review fix cycle for Story 1.5 lane C (reachable cap gate, append-only continuation ledger, artifact binding)",
+  "summary": "One bounded fix cycle applying seven reviewer-defined items to the kit's dispatch adapter: run the continuation-cap gate before the max_cycles check and make the marker's remedy complete; replace the overwritable count with an append-only continuation ledger and refuse re-running a retained cycle in place (closing a cap bypass and count deflation the reviewer reproduced); accept a numeric-string decision cycle; bind the continuation artifact to its story; record sizing-refused continuations; document the unpruned series; registry. Each item pinned by the reviewer's reproduction scripts; frozen launch command texts and the monitor library stay byte-identical.",
+  "touched_paths": ["files/model-router/scripts/dispatch.sh", "files/model-router/context-budget-policy.yaml", "files/model-router/SKILL.md", "docs/LIFECYCLE-CONTRACT.md", "lib/afk-commands.sh", "tests/run-tests.sh", "tests/lifecycle-readiness-tests.sh", "_bmad-output/implementation-artifacts/AFK-PORT-1.5C.md", "_bmad-output/implementation-artifacts/AFK-PORT-1.5C-FIX.md"],
+  "ambiguity": "low",
+  "blast_radius": "medium",
+  "volume_hint": "low",
+  "tags": ["tests", "docs"],
+  "repo": "agent-flow-kit",
+  "requester": "bmad-pm"
+}
