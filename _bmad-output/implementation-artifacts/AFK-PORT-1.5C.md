@@ -312,3 +312,106 @@ byte-identical to master.
   authority and inventing one here would be worse than recording the claim.
 - **AC numbering.** The brief asks for AC-1–9; this story declares AC-1–8. All
   eight are addressed. Flagged rather than silently reconciled.
+
+### Post-review fix cycle (AFK-PORT-1.5C-FIX)
+
+One bounded cycle answering `evidence/AFK-PORT-1.5C-REVIEW/REVIEW.md`. Fresh
+session; it did not write the reviewed code and did not write the review.
+
+Persona proof, computed first and fail-closed:
+`{ sha256sum .agents/skills/bmad-agent-dev/SKILL.md; sha256sum
+.agents/skills/bmad-agent-dev/customize.toml; } | sha256sum` →
+`07ee71cffbefa3372dda5a882a82acdd526fac49a468322088607061c404a4ee`. Match.
+
+#### Dispositions
+
+| item | disposition |
+|---|---|
+| **B1** the cap gate is unreachable at the shipped defaults, and the marker's remedy does not unblock the cycle | **Fixed, both halves.** The continuation detection and the cap gate now run BEFORE the story's own `max_cycles` check, so a capped story gets the typed `CONTINUATION-CAP:` refusal rather than an untyped per-story limit; `max_cycles` still applies to whatever the cap lets through. The marker's suggested frontmatter now carries `max_cycles: <the cycle being authorised>` beside `continuation_decision:`, and the contract and SKILL paragraphs say why both keys are needed. |
+| **B2** the cap is not enforced: re-dispatching a cycle number grants extra continuations and deflates the count | **Fixed.** The count moved to an append-only ledger, `<story>.continuations.json` (`afk-continuation-ledger/1`), one entry per continuation LAUNCH, appended under the story's own exclusive lock immediately before the launch and never rewritten or pruned. The consumed count is its length, whatever cycle numbers it holds, so nothing a later run does can deflate it. A cycle with a ledger entry, and a continuation cycle that already published a retained result, refuse fail-closed with `reason=CYCLE_ALREADY_RETAINED` before placement, naming the next free cycle — so the bypass launches nothing and the retained result it would have overwritten survives. |
+| **R1** `continuation_decision.cycle` must be a JSON number | **Fixed.** The comparison is `(.cycle \| tonumber?)`, so `cycle: "4"` authorises cycle 4, and the recorded decision normalises it back to a number. The marker's example stays unquoted. |
+| **R2** nothing binds a continuation artifact to its story | **Fixed, additively.** The prompt asks the worker for `story_id` (the story file's basename without its extension); the schema id does not move. A present-and-different id is refused on the existing loud path with `detail=STORY_MISMATCH`, on both the consuming and the producing side; an absent one is accepted and reported as the finding `CONTINUATION_ARTIFACT_UNBOUND`. No marker ever quotes the id it read. |
+| **R3** a continuation refused by sizing leaves no record line | **Fixed.** The sizing refusal on a continuation cycle appends one dated `CONTINUATION_REFUSED` line through `record_budget_line`, carrying the cycle it would have continued and estimate/window/ratio. It is appended after the estimate, so the estimate stays deterministic across a re-dispatch. |
+| **R4** the retained series is unbounded | **Documented as load-bearing.** The contract now says in so many words that the retained per-cycle results and the ledger are never pruned because the chain and the cap are counted from them. |
+
+#### Changes
+
+- `files/model-router/scripts/dispatch.sh` — `with_story_lock` extracted so the
+  ledger append and the record append share one critical section on one inode;
+  the ledger helpers, `story_id_of`, `continuation_story_verdict`,
+  `next_free_cycle` and `refuse_cycle_retained` added; `continuations_consumed`
+  is now the ledger's length; the continuation block moved ahead of the
+  `max_cycles` check; `CONTINUATION_REFUSED` on the sizing path; the ledger
+  appended immediately before `orca_launch`.
+- `files/model-router/context-budget-policy.yaml` — three reason codes declared
+  (`CONTINUATION_REFUSED`, `CONTINUATION_ARTIFACT_UNBOUND`,
+  `CYCLE_ALREADY_RETAINED`) and the `continuation_cap` comment corrected to say
+  where the count comes from.
+- `lib/afk-commands.sh` — the same three codes published by `schema`.
+- `docs/LIFECYCLE-CONTRACT.md`, `files/model-router/SKILL.md` — the ledger, the
+  cap-before-`max_cycles` ordering, both keys in the remedy, the `story_id`
+  binding, the sizing record line, and the unpruned series as load-bearing.
+- `tests/run-tests.sh` — section 3e gains the shipped-defaults cases, the
+  marker's remedy applied verbatim out of the marker text, its control, the
+  ledger written by a real launch, the bypass and its two controls, the quoted
+  cycle, the three binding cases and the sizing record line; two existing cases
+  were re-pointed at the cycles they now describe.
+
+The frozen launch command texts and `lib/afk-monitor.sh` are byte-identical;
+the suite's own oracles for both still pass.
+
+#### Gates
+
+| gate | exit | tally |
+|---|---|---|
+| `bash tests/lifecycle-dispatch-tests.sh` | 0 | 256 passed, 0 failed |
+| `bash tests/lifecycle-readiness-tests.sh` | 0 | 290 passed, 0 failed |
+| `bash tests/lifecycle-tests.sh` | 0 | 478 passed, 0 failed |
+| `git diff --check` | 0 | clean |
+| `bash tests/run-tests.sh` | 1 | 729 passed, **1 failed** |
+
+The one red is the recorded known flake and nothing else: `lifecycle
+concurrency gate`, whose own aggregate is 204 passed / 3 failed. Its three
+assertions are the publication-window triple — `a contender that observed the
+window waits it out rather than refusing` (expected 1, got 3), `and reports the
+live owner it was waiting for` (expected LIVE, got UNKNOWN), `so nothing it says
+can be read as 'this lock has no owner'` (expected 0, got 1). Reproduced by
+running `tests/lifecycle-concurrency-tests.sh` on its own; nothing in this lane
+touches the operation lock. Every other section of the suite is green, including
+the whole of 3d and 3e.
+
+#### Deferred, deliberately, and disclosed
+
+- **`CYCLE_ALREADY_RETAINED` is scoped to continuation cycles, not to every
+  cycle.** F2 reads literally as "any cycle number with a retained result is
+  never re-run in place". Implemented that way it refuses the ordinary
+  re-dispatch that the rest of the kit documents and the suite exercises
+  throughout — a stamp refresh, a dead terminal, a flaked gate — and 20+
+  existing section-3 assertions fail on stories the suite legitimately
+  re-dispatches at the same cycle. Diagnosis: the defect B2 describes is a
+  CONTINUATION being re-run, and the deflation half is closed by the count
+  moving to the ledger, not by the guard. So the guard is: any cycle with a
+  ledger entry, plus a continuation cycle that already published a retained
+  result. That closes the bypass and the deflation with no false refusals; an
+  ordinary re-dispatch cannot move the cap, because the cap no longer reads the
+  result it rewrites.
+- **The reviewer's `attack-03` section A and `attack-05` section A baselines no
+  longer set up a capped story.** Both plant retained per-cycle results and no
+  ledger, and F2 moved the count to the ledger, so a story planted that way now
+  reads as having consumed nothing. Re-running those scripts unchanged shows
+  cycle 4 proceeding (or refused by `max_cycles`) rather than the cap firing —
+  a fixture that describes the old mechanism, not a behaviour that regressed.
+  The suite covers the same two cases against the new mechanism: `defaults/absent`
+  and `defaults/three` for B1, and `cap bypass` with both controls for B2. The
+  evidence directory is out of scope for this cycle and was not touched.
+- **Deleting the ledger resets the count.** The retained results still refuse a
+  re-run of a continuation cycle, so a story cannot replay a cycle, but a story
+  whose ledger file is removed reads as having consumed nothing. The old
+  count-from-results had the mirror-image weakness and a worse one besides.
+  Making the ledger tamper-evident is a real question and belongs to whoever
+  owns the retention policy; it is out of scope here.
+- **`story_id` is not required this cycle**, by F4's own instruction: an absent
+  member is accepted and reported. Requiring it is a schema-major decision for
+  lane D, and the finding is the seam that lane will read.
+- **A single commit cannot carry its own hash**, so the commit SHA for this
+  cycle is not recorded here; the coordinator records it.

@@ -231,7 +231,17 @@ continuation_decision:
   actor: <who decided>
   at: <RFC3339>
   reason: <why one more continuation is the right call>
+max_cycles: 4           # the story's own cycle limit, which must reach that cycle
 ```
+
+Both keys, because they are two different limits. `continuation_decision` is the
+policy authorisation; `max_cycles` is the story's own per-story cycle limit and
+defaults to 3, so an authorised cycle 4 is still refused by it unless the story
+raises it. The cap is counted from the story's append-only continuation ledger
+`<story>.continuations.json`, one entry per continuation launched, so it does not
+matter which cycle numbers were used — and a continuation cycle is never re-run
+in place: dispatch one again and you get `CYCLE_ALREADY_RETAINED` naming the next
+free cycle. Re-dispatching an ordinary cycle is unchanged.
 
 ### 6. Dispatch — visibly, through Orca
 
