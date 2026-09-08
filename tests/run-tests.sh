@@ -1709,10 +1709,13 @@ head1 "3d. Context budget — observed usage, phase-boundary artifacts (lane B)"
 # deterministic policy in the prompt rather than a usage reading.
 
 # --- the adapters, called directly (AC-1) ---------------------------------
-envelope() { # <input> <cache-read> <cache-create> [window] [model]
+# num_turns defaults to 1: the single-call envelope IS that call's context, and
+# it is the only envelope a ratio may be computed from. The multi-turn case has
+# its own fixture below.
+envelope() { # <input> <cache-read> <cache-create> [window] [model] [num-turns]
   jq -nc --argjson i "$1" --argjson r "$2" --argjson c "$3" \
-     --arg w "${4:-}" --arg m "${5:-opus}" \
-    '{type:"result", is_error:false, result:"ok",
+     --arg w "${4:-}" --arg m "${5:-opus}" --argjson n "${6:-1}" \
+    '{type:"result", is_error:false, result:"ok", num_turns:$n,
       usage:{input_tokens:$i, cache_read_input_tokens:$r,
              cache_creation_input_tokens:$c, output_tokens:99999},
       modelUsage:(if $w == "" then {} else {($m):{contextWindow:($w|tonumber)}} end)}'
@@ -1757,6 +1760,59 @@ assert_eq "the core calls ONE interface: claude routes to the claude adapter" \
 assert_eq "and codex to the codex adapter" \
   "$(harness_usage_observation codex "$UF" opus)" "$(usage_adapter_codex)"
 
+# --- what the envelope's usage MEASURES (AC-1, externally reported) --------
+# The members are the SUM over every API call the run made, not the context the
+# final call held. The fixture is the real envelope from the first natural-route
+# gateway-backed dispatch: 83 turns, 1,330,455 summed tokens against a 65,536
+# window — 20.30, a ratio for a run that never occupied more than one window.
+FU1="$KIT_ROOT/tests/fixtures/claude-result-envelope-multiturn.json"
+assert_eq "scope: a multi-turn envelope is the run's TOTAL, and says so" \
+  "$(usage_adapter_claude "$FU1" qwen36-27b | jq -r '.scope + " " + .reason')" \
+  "CUMULATIVE_RUN USAGE_CUMULATIVE_ONLY"
+assert_eq "scope: the cumulative figure is still reported, as information" \
+  "$(usage_adapter_claude "$FU1" qwen36-27b | jq -r '(.usage_tokens|tostring) + " " + .provenance')" \
+  "1330455 HARNESS_ENVELOPE"
+assert_eq "scope: a single-turn envelope IS that call's context" \
+  "$(usage_adapter_claude "$UF" opus | jq -r '.scope + " " + (.reason|tostring)')" \
+  "FINAL_CONTEXT null"
+# An envelope that publishes no turn count proves nothing about how many calls
+# it summed, so it is not a single call's context either. Fail closed.
+printf '{"type":"result","usage":{"input_tokens":10}}' > "$WORK/noturns.json"
+assert_eq "scope: no num_turns is not proof of one call — cumulative" \
+  "$(usage_adapter_claude "$WORK/noturns.json" opus | jq -r .scope)" "CUMULATIVE_RUN"
+
+# ... and what the budget half does with each. The cumulative figure is never
+# divided: no ratio, no band, no HIGH_USAGE, and the pre-dispatch verdict is
+# left exactly where lane A put it.
+load_budget_policy "$BUDGET_POLICY_SHIPPED" 2>/dev/null
+HARNESS=claude; BUDGET_FINDINGS=(); BUDGET_STATE="OK"; BUDGET_REASON=""
+budget_evaluate_usage "$(usage_adapter_claude "$FU1" qwen36-27b)" 65536 2>/dev/null
+assert_eq "FU.1: the cumulative figure yields NO ratio" "$BUDGET_USAGE_RATIO" ""
+assert_eq "FU.1: and is labelled cumulative, with the reason why" \
+  "$BUDGET_USAGE_SCOPE/$BUDGET_USAGE_REASON" "CUMULATIVE_RUN/USAGE_CUMULATIVE_ONLY"
+assert_eq "FU.1: the pre-dispatch verdict stands — no band is asserted from it" \
+  "$BUDGET_STATE" "OK"
+assert_absent "FU.1: and no HIGH_USAGE is claimed from a total" \
+  "${BUDGET_FINDINGS[*]-}" "HIGH_USAGE"
+assert_eq "FU.1: the figure itself is still published" "$BUDGET_USAGE_TOKENS" "1330455"
+# The control: the SAME arithmetic on a single-turn envelope DOES evaluate.
+envelope 60000 0 0 65536 opus 1 > "$WORK/oneturn.json"
+HARNESS=claude; BUDGET_FINDINGS=(); BUDGET_STATE="OK"; BUDGET_REASON=""
+budget_evaluate_usage "$(usage_adapter_claude "$WORK/oneturn.json" opus)" 65536 2>/dev/null
+assert_eq "CONTROL: a FINAL_CONTEXT measurement is evaluated as before" \
+  "$BUDGET_USAGE_SCOPE/$BUDGET_STATE" "FINAL_CONTEXT/CONTINUATION_REQUIRED"
+assert_contains "CONTROL: and HIGH_USAGE is asserted from that one" \
+  "${BUDGET_FINDINGS[*]-}" "HIGH_USAGE"
+
+# The cost figure in the envelope is a client-side estimate (costBasis
+# "unknown") and on a free-cost route it is not money at all. It is never read.
+if grep -q 'total_cost_usd\|costUSD' "$DISPATCH"; then
+  bad "cost: the launcher never reads the envelope's cost estimate"
+else ok "cost: the launcher never reads the envelope's cost estimate"; fi
+assert_eq "cost CONTROL: the fixture does carry one to be tempted by" \
+  "$(jq -r '(.total_cost_usd|type) + " " + .modelUsage["qwen36-27b"].costBasis' "$FU1")" \
+  "number unknown"
+
 # The kit does not reconstruct usage. The only file the adapter opens is the
 # envelope the harness wrote; no terminal read reaches it.
 if code_of "$DISPATCH" | sed -n '/^usage_adapter_/,/^}/p' | grep -qE 'TERMINAL_TAIL|terminal read'; then
@@ -1768,7 +1824,8 @@ load_budget_policy "$BUDGET_POLICY_SHIPPED" 2>/dev/null
 band() { # <usage> <window> -> "STATE findings"
   HARNESS=claude BUDGET_FINDINGS=() BUDGET_STATE="" BUDGET_REASON=""
   budget_evaluate_usage "$(jq -nc --argjson u "$1" --argjson w "$2" '{usage_tokens:$u, window_tokens:$w,
-      provenance:"HARNESS_ENVELOPE", observed_at:"END_OF_RUN", reason:null}')" "$2" 2>/dev/null
+      provenance:"HARNESS_ENVELOPE", observed_at:"END_OF_RUN",
+      scope:"FINAL_CONTEXT", reason:null}')" "$2" 2>/dev/null
   printf '%s %s' "$BUDGET_STATE" "${BUDGET_FINDINGS[*]-}"
 }
 assert_eq "usage band: one ppm BELOW checkpoint is still OK"        "$(band 699999 1000000)" "OK "
@@ -1779,7 +1836,8 @@ assert_eq "usage band: EQUAL to continuation crosses it" \
 # corroborates nothing, and says so rather than leaving a null to interpret.
 HARNESS=claude; BUDGET_FINDINGS=(); BUDGET_STATE=""; BUDGET_REASON=""
 budget_evaluate_usage "$(jq -nc '{usage_tokens:10, window_tokens:null,
-    provenance:"HARNESS_ENVELOPE", observed_at:"END_OF_RUN", reason:null}')" 1000000 2>/dev/null
+    provenance:"HARNESS_ENVELOPE", observed_at:"END_OF_RUN",
+    scope:"FINAL_CONTEXT", reason:null}')" 1000000 2>/dev/null
 assert_eq "window: an observation with no reported window is UNCORROBORATED" \
   "${BUDGET_FINDINGS[*]-}" "WINDOW_UNCORROBORATED"
 # The control: nothing observed corroborates nothing either, and does not
@@ -1828,6 +1886,30 @@ else ok "prompt paragraph: is bound to the story it names"; fi
 assert_eq "prompt paragraph: carries no threshold, so policy stays in one place" \
   "$(grep -cE '0\.[0-9]+|70%|85%' <<<"$PARA")" "0"
 
+# --- the working directory the worker is standing in (AC-3) ---------------
+# The story is mirrored into a worktree and names paths relative to a root it
+# never states. A worker that reasons from the repository it remembers reaches
+# into the main checkout and is denied — 14 times on the run this comes from.
+WTP="$(worker_worktree_paragraph "/wt/some worktree")"
+assert_contains "worktree paragraph: names the root as the working directory" \
+  "$WTP" "The repository root is the current working directory /wt/some worktree"
+assert_contains "worktree paragraph: asks for relative paths" "$WTP" "use relative paths"
+assert_contains "worktree paragraph: and says what happens outside it" \
+  "$WTP" "absolute paths outside it are refused"
+assert_eq "worktree paragraph: byte-stable for the same root" \
+  "$WTP" "$(worker_worktree_paragraph "/wt/some worktree")"
+if [[ "$WTP" == "$(worker_worktree_paragraph "/wt/other")" ]]; then
+  bad "worktree paragraph: is bound to the root it names"
+else ok "worktree paragraph: is bound to the root it names"; fi
+# It is the LAUNCHER's sentence: its only input is the directory dispatch.sh
+# resolved for itself, so nothing the story or the persona says reaches it.
+if code_of "$DISPATCH" | sed -n '/^worker_worktree_paragraph()/,/^}/p' \
+     | grep -qE '\$STORY|\$PERSONA|fm |yq'; then
+  bad "worktree paragraph: no story or persona input reaches it"
+else ok "worktree paragraph: no story or persona input reaches it"; fi
+assert_contains "worktree paragraph: dispatch derives the root itself" \
+  "$(grep -F 'worker_worktree_paragraph "$(realpath' "$DISPATCH")" 'realpath "$PWD"'
+
 # --- end to end, on both harnesses ----------------------------------------
 spawn_reset() { unset STUB_SPAWN_PATH1 STUB_SPAWN_BODY1 STUB_SPAWN_PATH2 STUB_SPAWN_BODY2; }
 ckpt() { # <schema> [extra members json]
@@ -1870,12 +1952,26 @@ assert_eq "usage e2e/codex: with the stable reason" \
   "$(bud .budget.usage_reason "$BR")" "USAGE_UNOBSERVABLE"
 assert_eq "usage e2e/codex: and no usage number invented for it" \
   "$(bud '.budget.usage_tokens|type' "$BR")" "null"
+# Cost is not spend, and it is not the kit's to publish either way: the
+# envelope's figure is the client's own estimate on a route whose cost class
+# the stamp already declares. It reaches no thin result and no aggregate.
+if jq -r 'paths(scalars)|join(".")' "$BR" | grep -qiE 'cost|usd|spend|price'; then
+  bad "cost: no cost figure reaches the thin result"
+else ok "cost: no cost figure reaches the thin result"; fi
 export STUB_TERMINAL_TAIL="ok
 CLAUDE_EXIT=0"
 
 # --- the prompt the worker actually receives ------------------------------
 assert_contains "AC-3: the discipline reached the generated prompt FILE" \
   "$(cat "$WT/s-usage.md.prompt")" "s-usage.md.continuation.json"
+# The worktree sentence names the directory the launcher actually ran in, and
+# it is byte-identical to the launcher's own function — the story is a payload
+# beside it, not an input to it.
+assert_contains "AC-3: the prompt names the worktree the worker stands in" \
+  "$(cat "$WT/s-usage.md.prompt")" \
+  "The repository root is the current working directory $(realpath "$WT")"
+assert_contains "AC-3: exactly as the launcher writes it" \
+  "$(cat "$WT/s-usage.md.prompt")" "$(worker_worktree_paragraph "$(realpath "$WT")")"
 assert_absent "AC-3: and the launch command text carries no task or artifact prose" \
   "$(cat "$STUB_STATE/last-command.txt")" "continuation.json"
 
@@ -1963,7 +2059,9 @@ cont_invalid story \
   STORY_MISMATCH
 
 # Observed usage past the continuation threshold with the gates failed and NO
-# worker signal: the kit reports what it can see rather than a plain gate fail.
+# worker signal. The kit records what it can see — the band, and HIGH_USAGE —
+# but the STATUS is the gates': there is no hand-over here, and a status that
+# says otherwise sends a PM to resume from an artifact that does not exist.
 reset_stubs; spawn_reset
 export STUB_TERMINAL_TAIL="ok
 CLAUDE_EXIT=0"
@@ -1975,14 +2073,48 @@ STUB_SPAWN_BODY1="$(envelope 190000 0 0 200000 opus)"; export STUB_SPAWN_BODY1
 rc="$(STUB_CATALOG="$WORK/catalog-windowed.yaml"; export STUB_CATALOG; run_dispatch s-cont-obs.md)"
 BR="$WT/s-cont-obs.md.result.json"
 assert_eq "silent exhaustion: still an unfinished exit" "$rc" "1"
-assert_eq "silent exhaustion: reported as continuation, not as a plain gate fail" \
-  "$(bud .status "$BR")" "continuation_required"
+assert_eq "silent exhaustion: the gates decide the status" \
+  "$(bud .status "$BR")" "gates_failed"
+assert_eq "silent exhaustion: the band stands beside it as a sizing note" \
+  "$(bud .budget.state "$BR")" "CONTINUATION_REQUIRED"
+assert_contains "silent exhaustion: with the sizing finding" \
+  "$(jq -c '.budget.findings' "$BR")" "HIGH_USAGE"
+assert_eq "silent exhaustion: and NO continuation artifact is claimed" \
+  "$(bud '.budget.continuation_artifact|type' "$BR")" "null"
 # The control: the SAME failing gate below the threshold is an ordinary fail.
 reset_stubs
 STUB_SPAWN_BODY1="$(envelope 1000 0 0 200000 opus)"; export STUB_SPAWN_BODY1
 rc="$(STUB_CATALOG="$WORK/catalog-windowed.yaml"; export STUB_CATALOG; run_dispatch s-cont-obs.md)"
 assert_eq "silent exhaustion CONTROL: a low-usage gate failure stays gates_failed" \
   "$(bud .status "$BR")" "gates_failed"
+
+# The whole (signal x gates x budget state) space, over the launcher's own
+# decision transcribed from the source. The property is one line: no row
+# publishes `continuation_required` without an artifact identity to resume
+# from — and only the worker's signal produces one.
+status_matrix_row() { # <signal:yes|no> <gates_ok> <budget_state>
+  local sig="$1" GATES_OK="$2" BUDGET_STATE="$3" RESULT_STATUS=""
+  [[ "$sig" == yes ]] && RESULT_STATUS="continuation_required"
+  [[ -n "$RESULT_STATUS" ]] || \
+    RESULT_STATUS="$([[ $GATES_OK == true ]] && echo 'done' || echo 'gates_failed')"
+  printf '%s' "$RESULT_STATUS"
+}
+matrix_bad=0 matrix_rows=0
+for sig in no yes; do for g in true false; do
+  for b in OK CHECKPOINT_DUE CONTINUATION_REQUIRED NOT_EVALUATED; do
+    matrix_rows=$((matrix_rows+1))
+    st="$(status_matrix_row "$sig" "$g" "$b")"
+    [[ "$st" == "continuation_required" && "$sig" != "yes" ]] && matrix_bad=$((matrix_bad+1))
+    [[ "$sig" == "yes" && "$st" != "continuation_required" ]] && matrix_bad=$((matrix_bad+1))
+  done
+done; done
+assert_eq "status matrix: 16 rows walked" "$matrix_rows" "16"
+assert_eq "status matrix: continuation_required iff the worker signalled" "$matrix_bad" "0"
+# and the transcription is checkable against the file: the launcher has no
+# other arm that can set the status from a budget state.
+assert_eq "status matrix: no budget state sets the status" \
+  "$(sed -n '/---- deterministic gates/,/thin result the PM can read/p' "$DISPATCH" \
+     | grep -c 'RESULT_STATUS="continuation_required"')" "0"
 
 # --- a stale checkpoint is not this cycle's (AC-4) ------------------------
 # The worker writes nothing this attempt, so the checkpoint on disk is the one
@@ -2423,7 +2555,10 @@ assert_contains "cap: it prints the exact frontmatter to add" "$CPM" "continuati
 assert_contains "cap: naming the ONE cycle it would authorise" "$CPM" "cycle: 4"
 assert_contains "cap: and names the policy that owns the number" \
   "$CPM" "context-budget-policy.yaml"
-assert_contains "cap: and the max_cycles the authorised cycle also needs" "$CPM" "max_cycles: 4"
+# This story already declares max_cycles: 8. The remedy has to reach cycle 4
+# without cutting a limit the story already carries, so it keeps the 8.
+assert_contains "cap: and a max_cycles that reaches the cycle without lowering the story's own" \
+  "$CPM" "max_cycles: 8"
 assert_no_file "cap: NO result artifact was written"   "$WT/s-c-cap.md.result.c4.json"
 assert_empty_file "cap: nothing was placed"   "$STUB_STATE/curl-calls"
 assert_empty_file "cap: nothing was launched" "$STUB_STATE/terminal-creates"
@@ -2458,6 +2593,36 @@ rc="$(run_dispatch s-c-cap.md 4)"
 assert_eq "cap bypass CONTROL: cycle 4 is still refused at the cap" "$rc" "3"
 assert_contains "cap bypass CONTROL: and still at the cap, not somewhere else" \
   "$(cat "$WT/s-c-cap.md.blocked")" "reason=CONTINUATION_CAP_REACHED"
+
+# --- the cap marker's remedy never LOWERS the story's own limit -----------
+# The suggestion has to reach the cycle being authorised. It is the larger of
+# that cycle and the limit the story already carries: a story allowed 8 cycles
+# and refused on cycle 4 must not be handed a block that quietly cuts it to 4.
+CAPM="$WORK/capmarker.txt"
+refuse_continuation_cap "$CAPM" 4 2 2 /p/policy.yaml 8
+assert_contains "cap remedy: a larger existing limit is kept" "$(cat "$CAPM")" "max_cycles: 8"
+assert_contains "cap remedy: while still authorising the named cycle" "$(cat "$CAPM")" "cycle: 4"
+refuse_continuation_cap "$CAPM" 4 2 2 /p/policy.yaml 3
+assert_contains "cap remedy: a limit that does not reach the cycle is raised to it" \
+  "$(cat "$CAPM")" "max_cycles: 4"
+refuse_continuation_cap "$CAPM" 4 2 2 /p/policy.yaml ""
+assert_contains "cap remedy: an unreadable limit falls back to the cycle" \
+  "$(cat "$CAPM")" "max_cycles: 4"
+assert_contains "cap remedy: and says applying it never lowers the limit" \
+  "$(cat "$CAPM")" "never lowers the limit you already have"
+# ... and the launcher passes the story's own limit in, so the marker on a real
+# refusal is computed from the story rather than from the cycle alone.
+assert_contains "cap remedy: the launcher hands it the story's max_cycles" \
+  "$(grep -A1 -F 'refuse_continuation_cap "${STORY}.blocked"' "$DISPATCH")" '"$MAX_CYCLES"'
+# max_cycles still bounds a continuation the cap let through: the two limits are
+# independent, and the cap gate running first does not retire the other one.
+reset_stubs; spawn_reset
+dflt_story s-c-mc          # no max_cycles declared: the launcher default of 3
+retain s-c-mc 3 null       # cycle 3 handed over, so cycle 4 is a continuation
+rm -f "$WT/s-c-mc.md.blocked"
+rc="$(run_dispatch s-c-mc.md 4)"
+assert_eq "max_cycles: a continuation the cap let through is still bounded by it" "$rc" "3"
+assert_empty_file "max_cycles: and nothing was launched" "$STUB_STATE/terminal-creates"
 
 # --- an authorised third continuation proceeds and records the decision ---
 reset_stubs
