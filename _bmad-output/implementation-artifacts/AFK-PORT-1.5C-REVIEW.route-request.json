@@ -1,0 +1,12 @@
+{
+  "story_id": "AFK-PORT-1.5C-REVIEW",
+  "title": "Adversarial and senior review of Story 1.5 lane C (continuation dispatch, cap, settlement)",
+  "summary": "Independent fresh-session review of a change to the kit's dispatch adapter that runs a continuation as the next cycle of the same story under the same revalidated stamp, consumes the continuation artifact into the prompt and the sizing estimate, refuses an expired stamp naming the central re-route path, enforces a continuation cap from retained per-cycle results with an explicit recorded decision to exceed it, records the chain, and proves settlement on the unmodified completion-watch contract. The reviewer proves frozen launch texts and the absence of any local substitution, attacks the expired-stamp path, artifact-to-prompt data discipline, cap counting and decision handling, record idempotence and settlement, and writes a report with reproduced blockers and residuals. Changes no product code. A wrong review could let a continuation launch past its cap or a substituted route ship.",
+  "touched_paths": ["_bmad-output/implementation-artifacts/evidence/AFK-PORT-1.5C-REVIEW/"],
+  "ambiguity": "low",
+  "blast_radius": "medium",
+  "volume_hint": "low",
+  "tags": ["review", "tests"],
+  "repo": "agent-flow-kit",
+  "requester": "bmad-pm"
+}

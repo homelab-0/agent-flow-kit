@@ -1,0 +1,145 @@
+{
+  "id": "1a757afa-aee7-457f-be47-9d8996514905",
+  "ok": true,
+  "result": {
+    "dispatch": {
+      "id": "ctx_e7fdbccf4d26",
+      "task_id": "task_deb6d148e679",
+      "assignee_handle": "term_45f68fbb-6441-4ef2-8f72-a88b187c0728",
+      "assignee_pane_key": "83dc5f21-f0d4-492e-b1eb-931809a7c12b:e5f9c1f9-c272-438f-9380-0b5570476d16",
+      "status": "completed",
+      "failure_count": 0,
+      "last_failure": null,
+      "dispatched_at": "2026-09-08 00:50:01",
+      "completed_at": "2026-09-08 01:19:49",
+      "created_at": "2026-09-08 00:50:01",
+      "last_heartbeat_at": "2026-09-08T01:17:48Z",
+      "run_id": "run_cb472ab8640c",
+      "capability_hash": "7e4c5f1cb3068a6523c1e4d5beb86e552e746d51b0e92d1664b6cf54e61c8559",
+      "process_incarnation": "5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5c@@50fa2ff6:790b81cc-06fd-4322-ae97-9b4f6a6f0761",
+      "capability_revoked_at": "2026-09-08 01:19:49",
+      "contract_version": 1,
+      "launch_token_hash": "deb55331a3a0160a33c3b5fac0896a7fc6a6a38f559c17b020ff87ecbafe6292",
+      "termination_reason": null,
+      "depth": 1
+    },
+    "worker": {
+      "dispatch_id": "ctx_e7fdbccf4d26",
+      "runtime_epoch": "ea1d57f6-4774-40f8-adad-824a66f35a86",
+      "state": "succeeded",
+      "stage": "settled",
+      "worktree_id": "5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5c",
+      "agent_terminal_handle": "term_45f68fbb-6441-4ef2-8f72-a88b187c0728",
+      "setup_state": "not_applicable",
+      "effects": [
+        {
+          "kind": "worktree",
+          "action": "reused",
+          "id": "5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5c"
+        },
+        {
+          "kind": "setup",
+          "action": "not_applicable",
+          "state": "not_applicable"
+        },
+        {
+          "kind": "terminal",
+          "role": "agent",
+          "action": "created",
+          "id": "term_45f68fbb-6441-4ef2-8f72-a88b187c0728",
+          "surface": "visible"
+        },
+        {
+          "kind": "dispatch_input",
+          "role": "agent",
+          "id": "term_45f68fbb-6441-4ef2-8f72-a88b187c0728",
+          "state": "accepted"
+        }
+      ],
+      "residual_resources": "[{\"kind\":\"terminal\",\"role\":\"agent\",\"action\":\"created\",\"id\":\"term_45f68fbb-6441-4ef2-8f72-a88b187c0728\",\"surface\":\"visible\"}]",
+      "start_options": "{\"worktree\":\"id:5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5c\",\"resolvedWorktreeId\":\"5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5c\",\"name\":null,\"repo\":null,\"baseBranch\":null,\"terminal\":null,\"agent\":\"claude\",\"launch\":{\"requested\":{\"agent\":\"claude\",\"model\":\"opus\",\"effort\":\"medium\"},\"effective\":{\"agent\":\"claude\",\"model\":\"opus\",\"effort\":\"medium\"}},\"timeoutMs\":180000,\"setup\":\"not_applicable\",\"setupSource\":\"existing_worktree\"}",
+      "last_error": null,
+      "created_at": "2026-09-08 00:50:01",
+      "updated_at": "2026-09-08 01:19:49",
+      "residualResources": [
+        {
+          "kind": "terminal",
+          "role": "agent",
+          "action": "created",
+          "id": "term_45f68fbb-6441-4ef2-8f72-a88b187c0728",
+          "surface": "visible"
+        }
+      ],
+      "startOptions": {
+        "worktree": "id:5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5c",
+        "resolvedWorktreeId": "5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5c",
+        "name": null,
+        "repo": null,
+        "baseBranch": null,
+        "terminal": null,
+        "agent": "claude",
+        "launch": {
+          "requested": {
+            "agent": "claude",
+            "model": "opus",
+            "effort": "medium"
+          },
+          "effective": {
+            "agent": "claude",
+            "model": "opus",
+            "effort": "medium"
+          }
+        },
+        "timeoutMs": 180000,
+        "setup": "not_applicable",
+        "setupSource": "existing_worktree"
+      }
+    },
+    "terminal": {
+      "handle": "term_45f68fbb-6441-4ef2-8f72-a88b187c0728",
+      "ptyId": "5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5c@@50fa2ff6",
+      "incarnationId": "790b81cc-06fd-4322-ae97-9b4f6a6f0761",
+      "orphaned": false,
+      "worktreeId": "5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5c",
+      "worktreePath": "/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5c",
+      "branch": "refs/heads/jlengelbrecht/afk-port-1.5c",
+      "tabId": "83dc5f21-f0d4-492e-b1eb-931809a7c12b",
+      "leafId": "e5f9c1f9-c272-438f-9380-0b5570476d16",
+      "title": "✳ AFK-PORT-1.5C code review",
+      "connected": true,
+      "writable": true,
+      "lastOutputAt": 1788830466141,
+      "preview": "❯ fix both bl92kers · done 9:20 PM · 2 s48lls still runni39",
+      "executionHostId": "local",
+      "agentIdentity": "claude",
+      "paneRuntimeId": -1,
+      "rendererGraphEpoch": 0,
+      "agentWait": null
+    },
+    "observation": {
+      "status": "live",
+      "exactWorker": true,
+      "agentWait": null
+    },
+    "terminalResource": {
+      "id": "wtr_8a021dfe7db1",
+      "ownershipState": "owned",
+      "releaseState": "not_requested",
+      "retainedReason": null,
+      "terminalHandle": "term_45f68fbb-6441-4ef2-8f72-a88b187c0728",
+      "worktreeId": "5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5c",
+      "originDispatchId": "ctx_e7fdbccf4d26",
+      "ownerDispatchId": "ctx_e7fdbccf4d26",
+      "releaseRequestedAt": null,
+      "releaseCompletedAt": null,
+      "releaseError": null,
+      "archive": {
+        "source": null,
+        "status": null
+      }
+    }
+  },
+  "_meta": {
+    "runtimeId": "ea1d57f6-4774-40f8-adad-824a66f35a86"
+  }
+}

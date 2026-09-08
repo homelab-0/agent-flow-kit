@@ -1,0 +1,12 @@
+{
+  "story_id": "AFK-PORT-1.5C-POSTFIX-REVIEW",
+  "title": "Diff-scoped review of the Story 1.5 lane C fix cycle (cap gate ordering and append-only ledger)",
+  "summary": "Fresh-session diff-scoped verification of one fix commit in the kit's dispatch adapter: re-transcribe the first reviewer's cap attacks against the new append-only ledger semantics, prove the cap gate is reachable and its marker remedy complete, prove the re-dispatch bypass and count deflation are closed, verify the artifact binding, numeric-string decision, sizing-refused record line, docs, frozen launch texts and surface. Report-only. A wrong review could let a continuation launch past its cap.",
+  "touched_paths": ["_bmad-output/implementation-artifacts/evidence/AFK-PORT-1.5C-POSTFIX-REVIEW/"],
+  "ambiguity": "low",
+  "blast_radius": "medium",
+  "volume_hint": "low",
+  "tags": ["review", "tests"],
+  "repo": "agent-flow-kit",
+  "requester": "bmad-pm"
+}

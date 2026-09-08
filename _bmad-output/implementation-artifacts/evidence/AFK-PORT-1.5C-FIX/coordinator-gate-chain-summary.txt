@@ -1,0 +1,9 @@
+15CFIX GATES: starting @ b7c16c2
+15CFIX GATE: bash tests/lifecycle-readiness-tests.sh rc=0 272s 290 passed, 0 failed
+15CFIX GATE: bash tests/lifecycle-dispatch-tests.sh rc=0 198s 256 passed, 0 failed
+15CFIX GATE: bash tests/lifecycle-tests.sh rc=0 450s 478 passed, 0 failed
+15CFIX GATE: git diff --check rc=0 0s 
+15CFIX GATE: bash tests/run-tests.sh rc=1 2576s 729 passed, 1 failed
+15CFIX GATES: chain complete
+
+[exited with code 0]

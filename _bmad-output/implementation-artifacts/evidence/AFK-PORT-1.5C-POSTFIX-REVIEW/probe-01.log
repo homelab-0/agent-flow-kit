@@ -1,0 +1,62 @@
+
+[1m3. Integration — real dispatch.sh against stubbed Orca/validator/router[0m
+
+[1mA. at the SHIPPED defaults the capped cycle gets the TYPED cap refusal[0m
+  [max_cycles absent] exit=3
+  stderr: dispatch:   nothing placed, nothing validated, nothing launched — see p1-absent.md.blocked
+  [32mPASS[0m defaults/absent: refused with NEEDS_HUMAN
+  [32mPASS[0m defaults/absent: by the CAP gate, typed
+  [32mPASS[0m defaults/absent: carrying the count
+  [32mPASS[0m defaults/absent: carrying the cap
+  [32mPASS[0m defaults/absent: not the untyped max_cycles message
+  [32mPASS[0m defaults/absent: nothing launched
+  [32mPASS[0m defaults/absent: nothing placed
+  [max_cycles three] exit=3
+  stderr: dispatch:   nothing placed, nothing validated, nothing launched — see p1-three.md.blocked
+  [32mPASS[0m defaults/three: refused with NEEDS_HUMAN
+  [32mPASS[0m defaults/three: by the CAP gate, typed
+  [32mPASS[0m defaults/three: carrying the count
+  [32mPASS[0m defaults/three: carrying the cap
+  [32mPASS[0m defaults/three: not the untyped max_cycles message
+  [32mPASS[0m defaults/three: nothing launched
+  [32mPASS[0m defaults/three: nothing placed
+
+[1mB. the marker's own remedy, applied VERBATIM, unblocks the cycle[0m
+  --- block lifted out of the marker ---
+continuation_decision:
+  cycle: 4
+  actor: <who decided>
+  at: <RFC3339 timestamp>
+  reason: <why one more continuation is the right call>
+max_cycles: 4
+  --------------------------------------
+  [32mPASS[0m remedy: carries the decision
+  [32mPASS[0m remedy: carries the story's own limit
+  exit=0  stderr-tail: dispatch: {"story":"p1-absent.md","cycle":4,"status":"done","route":{"harness":"claude","model_profile":"claude/strong","native_model":"opus","effort":"high","persona":"dev"},"stamp":{"digest":"sha256:916b2d0a6f143b876d82ec8517e3616741ea510ffaa0aa9fea73b33fd61f9bcb","expires_at":"2099-01-01T00:00:00Z","catalog_version":"sha256:abc","validated":true},"placement":{"required":false},"budget":{"state":"NOT_EVALUATED","reason":"CONTEXT_WINDOW_UNDECLARED","window_tokens":null,"window_source":"CATALOG","estimate_tokens":648,"estimate_method":"bytes4-v1","estimate_ratio":null,"usage_tokens":null,"usage_ratio":null,"usage_provenance":"NOT_EVALUATED","usage_reason":"CONTEXT_WINDOW_UNDECLARED","observed_at":null,"window_reported_tokens":null,"checkpoint_artifact":null,"continuation_artifact":null,"continuation_of":{"cycle":3,"artifact_sha256":"sha256:e817ecd7d3da4a522df38af04b6873de8d939e1321b826ea47011115682a3dd7","trigger":"USAGE_BAND","usage_tokens":180000,"usage_ratio":0.900000},"continuation_decision":{"cycle":4,"actor":"pm","at":"2026-09-07T00:00:00Z","reason":"one more"},"findings":["REPEATED_CONTINUATION","CONTINUATION_ARTIFACT_UNBOUND"]},"launch":{"orca_terminal":"term_stub","harness_exit":0},"gates":{"true":"pass"}}
+  [32mPASS[0m remedy: the authorised cycle proceeds
+  [32mPASS[0m remedy: and the decision is recorded
+
+[1mC. CONTROL — the decision ALONE is not enough at the shipped defaults[0m
+  [32mPASS[0m control: refused
+  [32mPASS[0m control: by max_cycles, which the marker therefore has to name
+  [32mPASS[0m control: nothing launched
+
+[1mD. CONTROL — max_cycles still bounds what the cap lets through[0m
+  [32mPASS[0m bound: an authorised cycle past max_cycles is still refused
+  [32mPASS[0m bound: by the per-story limit
+
+[1mE. ADVERSARIAL — applying the block verbatim to a story that ALREADY declares max_cycles[0m
+  [32mPASS[0m dup: the capped story with max_cycles: 8 still gets the typed marker
+  --- block this marker prints for a story that already has max_cycles: 8 ---
+continuation_decision:
+  cycle: 4
+  actor: pm
+  at: 2026-09-07T00:00:00Z
+  reason: one more
+max_cycles: 4
+  verbatim-paste onto max_cycles: 8 -> exit=0
+  stderr: dispatch: budget: no catalog window, so observed usage cannot be evaluated
+dispatch: {"story":"p1-dup.md","cycle":4,"status":"done","route":{"harness":"claude","model_profile":"claude/strong","native_model":"opus","effort":"high","persona":"dev"},"stamp":{"digest":"sha256:916b2d0a6f143b876d82ec8517e3616741ea510ffaa0aa9fea73b33fd61f9bcb","expires_at":"2099-01-01T00:00:00Z","catalog_version":"sha256:abc","validated":true},"placement":{"required":false},"budget":{"state":"NOT_EVALUATED","reason":"CONTEXT_WINDOW_UNDECLARED","window_tokens":null,"window_source":"CATALOG","estimate_tokens":648,"estimate_method":"bytes4-v1","estimate_ratio":null,"usage_tokens":null,"usage_ratio":null,"usage_provenance":"NOT_EVALUATED","usage_reason":"CONTEXT_WINDOW_UNDECLARED","observed_at":null,"window_reported_tokens":null,"checkpoint_artifact":null,"continuation_artifact":null,"continuation_of":{"cycle":3,"artifact_sha256":"sha256:e817ecd7d3da4a522df38af04b6873de8d939e1321b826ea47011115682a3dd7","trigger":"USAGE_BAND","usage_tokens":180000,"usage_ratio":0.900000},"continuation_decision":{"cycle":4,"actor":"pm","at":"2026-09-07T00:00:00Z","reason":"one more"},"findings":["REPEATED_CONTINUATION","CONTINUATION_ARTIFACT_UNBOUND"]},"launch":{"orca_terminal":"term_stub","harness_exit":0},"gates":{"true":"pass"}}
+  [32mPASS[0m dup: a verbatim paste onto an existing max_cycles still dispatches
+
+probe-01-f1-cap-before-maxcycles.sh: 25 passed, 0 failed
