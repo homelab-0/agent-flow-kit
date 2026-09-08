@@ -1,0 +1,12 @@
+{
+  "story_id": "AFK-PORT-1.5B-FIX2-REVIEW",
+  "title": "Diff-scoped review of the usage-adapter fix (cumulative tokens, status precedence)",
+  "summary": "Fresh-session diff-scoped verification of one fix commit in the kit's dispatch adapter answering an external report: prove multi-turn envelope usage is reported as cumulative information with no ratio and single-turn usage keeps its ratio, that HIGH_USAGE is asserted only from a final-context measurement, that gates decide status and a continuation status requires an artifact, that the prompt names the working directory, that cost never becomes spend, and that the cap marker never lowers max_cycles; verify frozen launch texts, surface and fixture hygiene. Report-only.",
+  "touched_paths": ["_bmad-output/implementation-artifacts/evidence/AFK-PORT-1.5B-FIX2-REVIEW/"],
+  "ambiguity": "low",
+  "blast_radius": "medium",
+  "volume_hint": "low",
+  "tags": ["review", "tests"],
+  "repo": "agent-flow-kit",
+  "requester": "bmad-pm"
+}

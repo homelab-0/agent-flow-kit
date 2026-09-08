@@ -1,0 +1,56 @@
+{
+  "story": "_bmad-output/implementation-artifacts/stories/story-fu.1-checkout-pin-comments.md",
+  "cycle": 1,
+  "status": "continuation_required",
+  "route": {
+    "harness": "claude",
+    "model_profile": "local-code-standard",
+    "native_model": "qwen36-27b",
+    "effort": "medium",
+    "persona": "dev"
+  },
+  "stamp": {
+    "digest": "sha256:0894c167135f3f9b0631cb9e9e060fef2d4b11192eea763ccd60527dc4b8a8f1",
+    "expires_at": "2026-09-09T01:46:06Z",
+    "catalog_version": "sha256:c4d49d9a9db3b203cab02200dc0e335ae3b02934d91fe81b08975d5acc7cd027",
+    "validated": true
+  },
+  "placement": {
+    "required": true,
+    "placement": "kserve-a5000",
+    "model": "qwen36-27b",
+    "resolved_at": "2026-09-08T01:46:29Z",
+    "ttl_seconds": 30
+  },
+  "budget": {
+    "state": "CONTINUATION_REQUIRED",
+    "reason": null,
+    "window_tokens": 65536,
+    "window_source": "CATALOG",
+    "estimate_tokens": 1753,
+    "estimate_method": "bytes4-v1",
+    "estimate_ratio": 0.026748,
+    "usage_tokens": 1330455,
+    "usage_ratio": 20.301132,
+    "usage_provenance": "HARNESS_ENVELOPE",
+    "usage_reason": null,
+    "observed_at": "END_OF_RUN",
+    "window_reported_tokens": 65536,
+    "checkpoint_artifact": null,
+    "continuation_artifact": null,
+    "findings": [
+      "HIGH_USAGE"
+    ]
+  },
+  "launch": {
+    "orca_terminal": "term_fa2491d4-906c-4311-ad2f-00a2c2df0ecf",
+    "harness_exit": 0
+  },
+  "gates": {
+    "! grep -rn 'v5.0.0' .github/workflows/": "pass",
+    "git diff --numstat main -- .github/workflows | awk '{a+=$1; d+=$2} END {exit !(a==4 && d==4)}'": "fail",
+    "git diff --name-only main | grep -v '^.github/workflows/' | wc -l | grep -qx 0": "pass",
+    "actionlint": "fail",
+    "test \"$(grep -c 'fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0' .github/workflows/release.yaml .github/workflows/build-agent-router.yaml .github/workflows/contract-checks.yaml | awk -F: '{s+=$2} END {print s}')\" = 5": "pass"
+  }
+}

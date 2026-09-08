@@ -236,6 +236,23 @@ cost never spend); (34) owner-approved follow-up: add `Edit` to the frozen
 tool set for both claude classes, queued after lane D with a coordinated
 contract update in ai-control-plane.
 
+**External-report fix merged** (PR #36, `f9bffe0`, 2026-09-08): the claude
+usage adapter divided the envelope's CUMULATIVE token totals by the context
+window (ratio 20.3 on an 83-turn run in ai-control-plane; 3.8 on the kit's own
+20-turn smoke) and the resulting state overwrote a gates-failed outcome as
+`continuation_required` with no artifact. Fixed under the frozen envelope
+(option (a)): multi-turn usage is informational (`CUMULATIVE_RUN`, null ratio,
+`USAGE_CUMULATIVE_ONLY`), single-turn keeps `FINAL_CONTEXT` and its ratio,
+thresholds and `HIGH_USAGE` only from a final-context measurement, gates decide
+the status, the prompt names the absolute working directory, cost is never
+spend, and the cap marker never lowers `max_cycles`. Reported envelope
+committed as `tests/fixtures/claude-result-envelope-multiturn.json`. Registry
+adds: (35) removing an Orca worktree while a worker is active in the same
+repository destroyed the live worktree and SIGKILLed its agent (~1h of
+uncommitted work lost) and dropped the coordinator's Run binding — never
+remove a worktree while the repository has a live worker; (36) `Edit` in the
+frozen claude tool set is owner-approved and queued after lane D.
+
 ## Story 1.7 (Spike) — Persona Payload Viability on Local Profiles (COMPLETE 2026-09-07)
 
 Evidence-only spike, run after Josh's go on the 1.5–1.7 set. Bundle:
