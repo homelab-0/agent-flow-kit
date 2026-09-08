@@ -1005,7 +1005,10 @@ Every threshold and the estimate method live in one machine-readable document,
 (`launcher.budget_policy`, or `$AGENT_FLOW_BUDGET_POLICY`), never from a story
 and never from a stamp. It declares `estimate_method`, `sizing_risk_ratio`,
 `checkpoint_ratio`, `continuation_ratio`, `continuation_cap`, the stable reason
-codes and the budget states.
+codes — including `CONTINUATION_CAP_REACHED`,
+`CONTINUATION_STAMP_REFRESH_REQUIRED`, `REPEATED_CONTINUATION`,
+`CONTINUATION_REFUSED`, `CONTINUATION_ARTIFACT_UNBOUND` and
+`CYCLE_ALREADY_RETAINED` — and the budget states.
 
 There is no threshold constant in the launcher. A policy document that is
 unreadable, unparseable or missing a key refuses dispatch with
@@ -1068,6 +1071,9 @@ With an undeclared window neither action can fire.
            "window_reported_tokens": N|null,
            "checkpoint_artifact": {"path":..., "sha256":...}|null,
            "continuation_artifact": {"path":..., "sha256":...}|null,
+           "continuation_of": {"cycle":N, "artifact_sha256":..., "trigger":...,
+                               "usage_tokens":N|null, "usage_ratio":N|null}|null,
+           "continuation_decision": {"cycle":N, "actor":..., "at":..., "reason":...}|null,
            "findings": [...]}
 ```
 
@@ -1201,6 +1207,167 @@ artifact is, because the next cycle is meant to resume from them; freshness is
 proved by identity instead — the sha of each is captured before the launch, and
 a byte-identical file afterwards was not written by this worker. `continuation_required` is additive within the
 result schema major and exits as unfinished work (exit code 1), not a completion.
+
+### Continuation cycles, the cap, and the decision key
+
+A continuation is the **next cycle of the same story under the same accepted
+stamp**, launched through `dispatch.sh` exactly as any cycle is: setup gate,
+pre-dispatch sizing, `POST /v1/place`, fail-closed revalidation, launch guard,
+launch, gates, thin result. There is no second entry point and no local
+substitution of harness, model, profile or funding, and neither frozen launch
+command text changes. What a continuation changes is what the launcher puts
+into the prompt and what it refuses before launching.
+
+`${STORY}.result.json` is overwritten every cycle, so from this capability on
+the launcher also retains one copy per cycle at `${STORY}.result.c<n>.json`,
+written immediately after the thin result. The continuation **chain** — which
+cycle a continuation continues — is derived from those retained copies and from
+nothing else: no counter is stored, and nothing a workload can edit is
+consulted. The **cap** is counted from the ledger below.
+
+Neither series is ever pruned, and that is load-bearing rather than tidy: the
+retained per-cycle results and the continuation ledger are the only evidence the
+chain and the cap exist at all, so deleting either would make a story's spent
+continuations uncountable and hand it back windows it had already used.
+
+**A continuation cycle is run once.** A cycle that has an entry in the
+continuation ledger, and a cycle that is itself a continuation and already has a
+retained result, are settled: dispatching either again refuses fail-closed with a
+`${STORY}.blocked` marker carrying `reason=CYCLE_ALREADY_RETAINED`, the cycle and
+the next free cycle number, and exit code 3 — before placement, validation or any
+terminal. Re-running one would spend a second window under a number that has
+already spent one and overwrite the evidence the chain is read from, which is
+exactly how a story could hand itself back a continuation it had already
+consumed. A continuation is always the NEXT cycle.
+
+Re-dispatching an **ordinary** cycle is unaffected, and remains the documented
+recovery from a stamp refresh, a dead terminal or a flaked gate. It cannot move
+the cap, which is counted from the ledger and not from the result it rewrites.
+Likewise, an attempt that refused *before* it launched — a stamp refusal, a cap
+refusal, a sizing refusal — leaves neither a result nor a ledger entry, so
+"re-dispatch this same cycle" still means what those markers say it means.
+
+Cycle *n* is a **continuation** when the most recent prior cycle that left a
+retained result carries `status: continuation_required`. A cycle with no such
+prior result is an ordinary cycle, and a continuation artifact left over from an
+older chain does not make one. When the prior cycle did hand over, its evidence
+is required rather than optional: a missing, unparseable, schema-mismatched or
+member-short `${STORY}.continuation.json` refuses on the existing loud
+`NEEDS_HUMAN` path with reason `CONTINUATION_ARTIFACT_INVALID` and exit code 3,
+before anything is placed or launched. The artifact also names the story it
+belongs to. `story_id` — the story file's basename without its extension — is an
+additive member of `afk-continuation/1`: the schema id does not move, an
+artifact that carries it and names a **different** story is refused on that same
+path with detail `STORY_MISMATCH`, and an artifact that omits it is accepted and
+reported as the finding `CONTINUATION_ARTIFACT_UNBOUND`, because nothing then
+binds a file found by path to this story — there is nothing to resume from, and
+running anyway would silently restart the story under a stamp and a cap that
+both believe it is being continued.
+
+On a continuation the launcher:
+
+1. **counts the artifact in the pre-dispatch estimate.** Its content is written
+   into the generated prompt, which is already a declared payload input, so it
+   is counted through the prompt exactly once. Counting the file a second time
+   would over-report the one input a continuation adds and refuse stories that
+   would have fitted; the refusal marker still names the artifact and its byte
+   length, as a sub-line of the input it travels inside. The refusal and risk
+   thresholds are unchanged and apply to the larger payload as they would to any
+   other.
+2. **writes the artifact's content into the prompt as data**, under the fixed
+   heading `Continuation from cycle <n-1>`, after the persona and story
+   instructions and before the budget paragraph. It is data on the prompt's data
+   channel like the story is, never shell source, and the story remains the
+   authority wherever the two disagree.
+3. **records `budget.continuation_of`** — `{cycle, artifact_sha256, trigger,
+   usage_tokens, usage_ratio}` — where `trigger` is `WORKER_SIGNAL` when the
+   prior cycle published a continuation artifact identity and `USAGE_BAND` when
+   the kit reached the status from observed usage with the gates failed.
+4. **adds the finding `REPEATED_CONTINUATION`** and appends one dated
+   `CONTINUATION` line to the story's `## Dev Agent Record` through the same
+   locked, per-cycle-idempotent append `SIZING_RISK` uses, carrying the cycle
+   continued from, the artifact sha, the trigger and the usage evidence — so
+   trigger → usage → artifact identity is one readable chain in the story.
+
+The stamp is untouched. The frozen prelaunch revalidation runs on a continuation
+exactly as it runs on any cycle, and a stamp that fails it is refused with the
+validator's own exit code and reason. What a continuation adds is a
+`${STORY}.blocked` marker typed `CONTINUATION-STAMP:` carrying
+`reason=CONTINUATION_STAMP_REFRESH_REQUIRED` beside `validator_reason=<the
+validator's code>`, saying that the planner must call `POST /v1/route` again and
+mint a new stamp with `make-stamp.sh`. A continuation is never launched under a
+locally minted or locally edited stamp — that would be a routing decision taken
+after acceptance, and half-finished work makes it more tempting, not more
+permissible.
+
+**The cap.** `continuation_cap` in the declared policy bounds how many
+continuation cycles one story may consume. The count is the **length of the
+story's continuation ledger**, `${STORY}.continuations.json`, regardless of the
+cycle numbers in it.
+
+The ledger declares `schema: afk-continuation-ledger/1` and carries one entry
+per continuation **launch** — `{cycle, from_cycle, artifact_sha256, trigger, at,
+decision}`, where `decision` is the recorded authorisation or `null`. Each entry
+is appended under the same exclusive lock on the story that the record append
+holds, immediately before the launch and after everything that could still
+refuse the attempt, so an entry exists if and only if a continuation window was
+actually spent. It is never rewritten and never pruned. A ledger that does not
+parse, or that does not carry the declared schema id, refuses the dispatch: the
+cap is counted from it, and a count that cannot be read is not a count of zero.
+
+The first cycle's hand-over is not a consumption and is not counted — it never
+was, because no continuation had yet been launched for it.
+
+**The cap is decided before the story's own `max_cycles`.** `max_cycles` is a
+per-story cycle limit that says nothing about continuations; a capped story
+refused by it first would get an untyped message with no marker, no count, no
+cap and no way to authorise the cycle, and at the shipped default of 3 that is
+what a story handing over twice would get. The cap gate runs first, and
+`max_cycles` still applies to whatever it lets through — which is why the cap
+marker's suggested frontmatter carries both keys.
+
+At the cap the next continuation refuses fail-closed with a `${STORY}.blocked`
+marker typed `CONTINUATION-CAP:` carrying `reason=CONTINUATION_CAP_REACHED`, the
+count, the cap and the exact frontmatter that would authorise the cycle, and
+exit code 3. Nothing is placed, validated or launched and no result is written.
+It refuses in the same place, and for the same kind of reason, as an oversized
+story: a story that keeps needing another window is a planning finding.
+
+A continuation refused by the **sizing** gate instead — its payload, the
+artifact included, is at or past `continuation_ratio` — leaves the ordinary
+`STORY-SIZING:` marker and, additionally, one dated `CONTINUATION_REFUSED` line
+in the story's `## Dev Agent Record`, carrying the cycle it would have continued
+and the estimate, window and ratio. Without it a PM reading only the record
+could not see that the hand-over had been attempted and turned away. The line is
+appended after the estimate, so the story's own bytes are the same on a
+re-dispatch of that cycle as they were on the first and the estimate stays
+deterministic.
+
+A human authorises one more continuation by recording the decision in the
+story's own frontmatter:
+
+```yaml
+continuation_decision:
+  cycle: 4              # the ONE cycle this authorises
+  actor: <who decided>
+  at: <RFC3339>
+  reason: <why one more continuation is the right call>
+max_cycles: 4           # the story's own cycle limit must reach it too
+```
+
+Every member is required and the recorded cycle must be the cycle being run: a
+decision does not carry forward to a later one. The cycle is compared as a
+number however it was written, so `cycle: "4"` authorises cycle 4 rather than
+silently authorising nothing. An authorised cycle proceeds and
+records the decision verbatim in `budget.continuation_decision`.
+`REPEATED_CONTINUATION` is added to **every** continuation, authorised or not —
+the finding is the PM's story-sizing signal, not a complaint about the cap.
+
+Settlement is unchanged. A continuation worker is a fresh Orca-visible terminal
+exactly like any cycle, and the frozen Story 1.3 completion-watch, terminal
+cleanup and worktree/branch accounting contracts apply unmodified; the monitor
+reads `result.context_budget` from a continuation cycle's thin result exactly as
+it reads any other.
 
 ### The context budget on the dispatch monitor
 
