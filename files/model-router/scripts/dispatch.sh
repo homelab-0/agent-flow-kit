@@ -830,7 +830,8 @@ record_budget_line() { # <story> <cycle> <code> <detail>
 # compensate for, and it never blocks the other harness.
 usage_unobservable() { # <reason-code>
   jq -nc --arg r "$1" '{usage_tokens:null, window_tokens:null,
-                        provenance:"NOT_EVALUATED", observed_at:null, reason:$r}'
+                        provenance:"NOT_EVALUATED", observed_at:null,
+                        scope:null, reason:$r}'
 }
 
 # usage_adapter_claude — `claude -p --output-format json` writes ONE result
@@ -838,10 +839,24 @@ usage_unobservable() { # <reason-code>
 # stream-json, so mid-run usage does not exist to be read: the observation is
 # END_OF_RUN or it is nothing, and it is labelled as such.
 #
-# usage_tokens is the context actually HELD at the last request — input, cache
+# usage_tokens is what the envelope's `usage` object publishes — input, cache
 # reads and cache creation summed. Output tokens are not context the next turn
-# carries, so adding them would inflate the ratio against a window they never
-# occupied. window_tokens is CORROBORATION ONLY: the budget window is the
+# carries, so adding them would inflate any ratio against a window they never
+# occupied.
+#
+# What that sum MEASURES depends on how many API calls the run made, and the
+# envelope says so in `num_turns`. On a multi-turn run the members are the
+# TOTAL over every call in the run, not the context the final call held: an
+# 83-turn run reported 1,330,455 against a 65,536 window, a ratio of 20.30 for
+# a run that never occupied more than one window. So the adapter reports the
+# scope of its own figure. `num_turns == 1` is the only case in which the
+# envelope IS the single call's context (FINAL_CONTEXT) and the only case a
+# ratio may be computed from. Anything else — more turns, or an envelope that
+# publishes no turn count at all and so proves nothing about how many calls it
+# summed — is CUMULATIVE_RUN: reported as an informational figure with reason
+# USAGE_CUMULATIVE_ONLY, and never divided by a window.
+#
+# window_tokens is CORROBORATION ONLY: the budget window is the
 # catalog's on every path, and a harness that reports a different number is
 # recorded and left disagreeing, because reconciling two authorities by picking
 # one is how a kit starts inventing routed facts.
@@ -863,10 +878,12 @@ usage_adapter_claude() { # <result-file> <native-model>
       | (($u.input_tokens // 0) + ($u.cache_read_input_tokens // 0)
          + ($u.cache_creation_input_tokens // 0)) as $t
       | ((.modelUsage // {})[$m].contextWindow) as $w
+      | (if (.num_turns? // null) == 1 then "FINAL_CONTEXT" else "CUMULATIVE_RUN" end) as $scope
       | if ($observed | not) or ($t | type) != "number"
         then null
         else {usage_tokens:$t, window_tokens:(if ($w | type) == "number" then $w else null end),
-              provenance:"HARNESS_ENVELOPE", observed_at:"END_OF_RUN", reason:null}
+              provenance:"HARNESS_ENVELOPE", observed_at:"END_OF_RUN", scope:$scope,
+              reason:(if $scope == "FINAL_CONTEXT" then null else "USAGE_CUMULATIVE_ONLY" end)}
         end' "$f" 2>/dev/null || true)"
   if [[ -z "$obs" || "$obs" == "null" ]]; then usage_unobservable USAGE_UNOBSERVABLE; return 0; fi
   printf '%s' "$obs"
@@ -897,6 +914,7 @@ budget_evaluate_usage() { # <observation-json> <catalog-window>
   BUDGET_USAGE_TOKENS="$(jq -r '.usage_tokens // ""' <<<"$obs")"
   BUDGET_USAGE_PROVENANCE="$(jq -r '.provenance' <<<"$obs")"
   BUDGET_OBSERVED_AT="$(jq -r '.observed_at // ""' <<<"$obs")"
+  BUDGET_USAGE_SCOPE="$(jq -r '.scope // ""' <<<"$obs")"
   BUDGET_USAGE_RATIO="" BUDGET_USAGE_REASON="" BUDGET_USAGE_PPM=""
   rep="$(jq -r '.window_tokens // ""' <<<"$obs")"
   BUDGET_WINDOW_REPORTED="$rep"
@@ -935,6 +953,18 @@ budget_evaluate_usage() { # <observation-json> <catalog-window>
     log "budget: usage $BUDGET_USAGE_REASON for harness $HARNESS — the pre-dispatch verdict stands"
     return 0
   fi
+  # A figure that is not the context the run ENDED holding is not occupancy, so
+  # it is not divided by a window. It is published as what it is — the run's
+  # cumulative token total — and evaluates to nothing, on exactly the path an
+  # unobservable usage takes: no ratio, no band, no HIGH_USAGE, and the
+  # pre-dispatch verdict left standing. Dividing it anyway is the defect this
+  # gate exists for; a 20x ratio said CONTINUATION_REQUIRED about a run that
+  # occupied one window.
+  if [[ "$BUDGET_USAGE_SCOPE" != "FINAL_CONTEXT" ]]; then
+    BUDGET_USAGE_REASON="$(jq -r '.reason // "USAGE_CUMULATIVE_ONLY"' <<<"$obs")"
+    log "budget: observed usage $tok is $BUDGET_USAGE_SCOPE — the sum over the run's calls, not the context it ended holding, so no ratio is computed"
+    return 0
+  fi
   ppm="$(budget_ratio_ppm "$tok" "$win")" || \
     die "budget: observed usage $tok could not be divided by window $win" "$EX_CONFIG"
   BUDGET_USAGE_RATIO="$(budget_ratio_decimal "$ppm")"
@@ -948,6 +978,10 @@ budget_evaluate_usage() { # <observation-json> <catalog-window>
   fi
   # The PM's story-sizing signal (FR-105): a run that ENDED at or above the
   # checkpoint ratio was sized too close to its window, whatever it reported.
+  # "ENDED at" is literal, and it is why the gate above exists: the finding is
+  # asserted only from a FINAL_CONTEXT measurement — the context the run was
+  # actually holding when it stopped — never from a total summed across calls
+  # that were never in memory together.
   budget_crosses "$ppm" "$BUDGET_CHECKPOINT_PPM" && BUDGET_FINDINGS+=("HIGH_USAGE")
   log "budget: usage $tok / window $win = $BUDGET_USAGE_RATIO -> $BUDGET_STATE (observed $BUDGET_OBSERVED_AT, $BUDGET_USAGE_PROVENANCE)"
   return 0
@@ -1237,10 +1271,20 @@ EOF
 # limit, which defaults to 3 and would otherwise refuse the authorised cycle a
 # second time under a message that says nothing about continuations. A remedy
 # that does not actually unblock the cycle is worse than no remedy, so the
-# suggested value is the cycle being authorised — the smallest limit that
-# reaches it.
-refuse_continuation_cap() { # <marker> <cycle> <count> <cap> <policy>
-  local marker="$1" cycle="$2" count="$3" cap="$4" policy="$5"
+# suggested value reaches the cycle being authorised.
+#
+# It is the LARGER of the story's current limit and that cycle, never the cycle
+# alone: a story already allowed 8 cycles, refused at the cap on cycle 4, would
+# otherwise be handed a remedy that lowers its own limit to 4 — a marker that
+# takes a decision the story had already recorded, in the middle of telling a
+# human how to authorise one. Applying this block never lowers a limit.
+refuse_continuation_cap() { # <marker> <cycle> <count> <cap> <policy> <max-cycles>
+  local marker="$1" cycle="$2" count="$3" cap="$4" policy="$5" limit="${6:-}"
+  # A limit that is not a number is not a limit to compare against, so the
+  # suggestion falls back to the cycle — which is still the smallest value that
+  # unblocks it.
+  [[ "$limit" =~ ^[0-9]+$ ]] || limit="$cycle"
+  (( limit < cycle )) && limit="$cycle"
   rm -f "$marker"
   cat > "$marker" <<EOF
 CONTINUATION-CAP: reason=CONTINUATION_CAP_REACHED count=${count} cap=${cap} cycle=${cycle}
@@ -1262,13 +1306,15 @@ What a human can do:
         actor: <who decided>
         at: <RFC3339 timestamp>
         reason: <why one more continuation is the right call>
-      max_cycles: ${cycle}
+      max_cycles: ${limit}
 
     Both keys are needed. continuation_decision authorises the ONE cycle it
     names: every member is required, and a decision recorded for an earlier
     cycle does not carry forward. max_cycles is this story's own cycle limit —
     it defaults to 3 — and cycle ${cycle} is refused by that limit whatever the
-    decision says unless the limit reaches it; leave a larger value alone; or
+    decision says unless the limit reaches it; the value above is this story's
+    current limit or the cycle being authorised, whichever is larger, so
+    applying it never lowers the limit you already have; or
   - change continuation_cap in ${policy}, which is a policy decision and belongs
     to whoever owns that policy.
 EOF
@@ -1337,6 +1383,23 @@ never begin a line with it unless you are actually stopping, because a line
 that starts with it is read as the signal whatever the rest of the line says.
 Both artifacts are read by the kit and must be secret-free: record names,
 paths and states, never credential values.
+EOF
+}
+
+# worker_worktree_paragraph — the one thing about the ENVIRONMENT the worker
+# cannot read off the story: which directory it is standing in. The story is
+# mirrored into a worktree and names its own paths relative to a root it never
+# states, so a worker that reasons from the repository it remembers reaches for
+# the main checkout and is denied — 14 times on the run this comes from, every
+# one of them an absolute path into a sibling tree. The sentence is the
+# launcher's, written into the prompt as data beside the story's, and it is
+# derived from the launcher's own resolved directory rather than from anything
+# the story or the persona says, so neither can move it.
+worker_worktree_paragraph() { # <absolute repo root>
+  cat <<EOF
+
+The repository root is the current working directory ${1}; use relative paths,
+and absolute paths outside it are refused.
 EOF
 }
 
@@ -1570,7 +1633,7 @@ main() {
       [[ -n "$CONTINUATION_DECISION_JSON" ]] || CONTINUATION_DECISION_JSON=null
       if (( consumed >= BUDGET_CONTINUATION_CAP )) && [[ "$CONTINUATION_DECISION_JSON" == "null" ]]; then
         refuse_continuation_cap "${STORY}.blocked" "$CYCLE" "$consumed" \
-          "$BUDGET_CONTINUATION_CAP" "$BUDGET_POLICY_FILE"
+          "$BUDGET_CONTINUATION_CAP" "$BUDGET_POLICY_FILE" "$MAX_CYCLES"
         log "CONTINUATION REFUSED: reason=CONTINUATION_CAP_REACHED count=$consumed cap=$BUDGET_CONTINUATION_CAP"
         log "  nothing placed, nothing validated, nothing launched — see ${STORY}.blocked"
         exit "$EX_NEEDS_HUMAN"
@@ -1659,6 +1722,7 @@ re-run independently after you finish.
 If you hit a decision that genuinely needs a human, print one line starting with
 'NEEDS-HUMAN:' describing the question, then stop.
 EOF
+    worker_worktree_paragraph "$(realpath "$PWD")"
     [[ -n "$CONTINUATION_OF_CYCLE" ]] && \
       continuation_prompt_section "$CONTINUATION_FILE" "$CONTINUATION_OF_CYCLE"
     worker_discipline_paragraph "$STORY"
@@ -2022,15 +2086,19 @@ EOF
     log "budget: the run FINISHED at the continuation ratio — recorded as sizing (HIGH_USAGE), state $BUDGET_STATE"
   fi
 
-  # Observed usage at or past the continuation threshold, with the gates failed
-  # and no word from the worker, is the case where the kit can see that the
-  # attempt ran out of room but the worker never said so. Reporting it as a
-  # plain gate failure would invite a re-dispatch into the same wall; the kit
-  # says continuation instead, and never claims a completion it cannot see.
+  # `status: continuation_required` says there is a hand-over to resume FROM,
+  # and the only thing that produces one is a worker that wrote the artifact and
+  # signalled. A ratio never does: a status set from a band alone published
+  # `continuation_required` with no checkpoint and no continuation artifact
+  # anywhere, and a PM reading it would re-dispatch a continuation from nothing
+  # — which is exactly what happened on the run this rule comes from. So the
+  # gates decide the status here: failed is `gates_failed`, passed is `done`.
+  # A `CONTINUATION_REQUIRED` budget state (now reachable only from a
+  # FINAL_CONTEXT measurement) stands beside that status as a sizing note,
+  # together with HIGH_USAGE, and changes nothing about it.
   if [[ -z "$RESULT_STATUS" && "$GATES_OK" != true \
         && "$BUDGET_STATE" == "CONTINUATION_REQUIRED" ]]; then
-    RESULT_STATUS="continuation_required"
-    log "budget: usage reached the continuation band with gates failed and no worker signal"
+    log "budget: the run ended in the continuation band with the gates failed and no worker signal — recorded as sizing beside status gates_failed, not as a hand-over there is no artifact for"
   fi
   [[ -n "$RESULT_STATUS" ]] || \
     RESULT_STATUS="$([[ $GATES_OK == true ]] && echo 'done' || echo 'gates_failed')"
@@ -2059,6 +2127,7 @@ EOF
         --arg method "$BUDGET_METHOD" --arg ratio "$BUDGET_RATIO" \
         --arg ut "$BUDGET_USAGE_TOKENS" --arg ur "$BUDGET_USAGE_RATIO" \
         --arg up "$BUDGET_USAGE_PROVENANCE" --arg oa "$BUDGET_OBSERVED_AT" \
+        --arg uscope "${BUDGET_USAGE_SCOPE:-}" \
         --arg ureason "$BUDGET_USAGE_REASON" \
         --arg wr "$BUDGET_WINDOW_REPORTED" \
         --argjson cp "$BUDGET_CHECKPOINT_JSON" --argjson ct "$BUDGET_CONTINUATION_JSON" \
@@ -2073,6 +2142,7 @@ EOF
           usage_tokens:(if $ut == "" then null else ($ut|tonumber) end),
           usage_ratio:(if $ur == "" then null else ($ur|tonumber) end),
           usage_provenance:$up,
+          usage_scope:(if $uscope == "" then null else $uscope end),
           usage_reason:(if $ureason == "" then null else $ureason end),
           observed_at:(if $oa == "" then null else $oa end),
           window_reported_tokens:(if $wr == "" then null else ($wr|tonumber) end),

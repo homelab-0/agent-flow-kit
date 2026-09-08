@@ -419,3 +419,102 @@ SHA is reported in the worker_done body instead. Nothing pushed, no PR opened,
   `6d1315f` under the owner's standing merge grant. Host kit updated through
   the Git channel c89b302 → 6d1315f, `CONVERGED`, installed adapter
   byte-identical (`evidence/AFK-PORT-1.5B/host-update-*.json`).
+
+### External report and fix cycle (AFK-PORT-1.5B-FIX2)
+
+**The report.** On 2026-09-07 the ai-control-plane PM ran the first natural-route
+gateway-backed dispatch in that repository (story FU.1, `{claude,
+local-code-standard}` → qwen36-27b, 83 turns, 41.6 minutes) and read back a thin
+result that said the story needed a continuation. It did not. The usage adapter
+had summed `usage.input_tokens + cache_read_input_tokens +
+cache_creation_input_tokens` from the end-of-run envelope — 1,330,455 tokens —
+and divided by the routed 65,536 window for a ratio of 20.30. Those members are
+the total over every API call the run made, not the context its last call held.
+The band said `CONTINUATION_REQUIRED`, `HIGH_USAGE` was added, and because the
+gates had failed with no worker signal the status became
+`continuation_required` with no checkpoint and no continuation artifact
+anywhere: a PM acting on it would have re-dispatched a continuation from
+nothing. The coordinator reproduced the same shape on this kit's own M4R smoke
+envelope — 20 turns, ratio 3.8 on a run that occupied one window. Evidence:
+`evidence/AFK-PORT-1.5B-FIX2/fu1-claude-result-envelope.json` and
+`fu1-thin-result.json`; the envelope is now also a test fixture at
+`tests/fixtures/claude-result-envelope-multiturn.json` (secret-free — the
+`permission_denials` entries carry file paths only).
+
+**The ruling (coordinator, binding): option (a), no contract change.** The
+envelope publishes no per-turn or final-context figure, and the kit reads no
+terminal and no transcript, so the honest move is to label the figure rather
+than to change what is launched. Option (b) — `stream-json`, which would make
+mid-run usage observable — was refused: it changes a frozen launch command
+text. So a cumulative figure is now reported as information and never as
+occupancy, and the gates decide the status.
+
+**What changed.**
+
+- `usage_adapter_claude` reads `num_turns` and reports `usage_scope`.
+  `num_turns == 1` is `FINAL_CONTEXT`, the only scope a ratio is computed from;
+  anything else — more turns, or an envelope with no turn count, which proves
+  nothing about how many calls it summed — is `CUMULATIVE_RUN` with
+  `usage_reason: USAGE_CUMULATIVE_ONLY` and `usage_ratio: null`. The figure is
+  still published. `budget_evaluate_usage` returns on the cumulative path
+  exactly as it does for an unobservable one: no band, no `HIGH_USAGE`, the
+  pre-dispatch verdict left standing. `usage_scope` is an additive member of
+  the thin result's `budget`.
+- `status: continuation_required` is now published only from the worker's
+  signal plus a valid artifact. The arm that set it from a usage band with the
+  gates failed is gone; the band and `HIGH_USAGE` stand beside `gates_failed`
+  as sizing notes. Lane B's demotion on a passing-gate run is unchanged.
+- The generated prompt carries one launcher-owned sentence naming the worktree
+  as the working directory and refusing absolute paths outside it. FU.1
+  recorded 14 permission denials, every one an absolute path into the main
+  checkout. Its only input is the directory dispatch resolved for itself.
+- The cap marker's suggested `max_cycles` is the larger of the story's current
+  limit and the cycle being authorised, so applying the remedy never lowers a
+  limit; the contract states that `max_cycles` still bounds continuations the
+  cap lets through. (Lane C post-fix review N4, N2.)
+- `total_cost_usd` and `costUSD` are asserted absent from the launcher and from
+  the thin result: the envelope's figure is a client-side estimate
+  (`costBasis: "unknown"`) and on a `cost_class: free` route it is not money.
+- Contract: the observed-usage section, the phase-boundary decision table (two
+  rows changed, one added), the budget shape, the cap remedy and the
+  working-directory sentence.
+
+**Deferred, deliberately, and disclosed.**
+
+- **The `Edit` tool in the frozen claude launch text.** FU.1's worker had no
+  `Edit`, so every fix rewrote a whole file. Adding it changes a frozen launch
+  command text and its byte-identity oracle, and it widens what a dispatched
+  worker may do — an owner decision with contract evidence to update, out of
+  scope here.
+- **KServe cold start.** The gateway's first request on a cold pod pays a
+  startup cost the router's placement decision does not model. That is a
+  catalog/router matter, not a kit one; it is recorded here so the trail is not
+  lost.
+- **`evidence/AFK-PORT-1.5B-FIX2/external-report.md` does not exist.** The
+  brief names it; only the two JSON artifacts were provisioned. The fix story
+  carries the report's substance, so nothing was blocked — noted so a reader
+  chasing the citation does not think a file went missing.
+- **Fixture scope.** Only the FU.1 envelope was copied into `tests/fixtures/`.
+  The M4R corroboration was the coordinator's own check and is cited, not
+  re-fixtured.
+
+**Record (worker).**
+
+- Changes: `files/model-router/scripts/dispatch.sh`,
+  `docs/LIFECYCLE-CONTRACT.md`, `tests/run-tests.sh`,
+  `tests/fixtures/claude-result-envelope-multiturn.json`, this record.
+- Fixtures: the FU.1 envelope through the adapter yields
+  `scope: CUMULATIVE_RUN`, `reason: USAGE_CUMULATIVE_ONLY`,
+  `usage_tokens: 1330455`, `usage_ratio: null`, no `HIGH_USAGE`, and the
+  pre-dispatch state untouched; a single-turn envelope at 60000/65536 still
+  evaluates to `CONTINUATION_REQUIRED` with `HIGH_USAGE`.
+- Gates, run by the worker before the commit: `lifecycle-readiness-tests.sh`
+  290/0, `lifecycle-dispatch-tests.sh` 256/0, `lifecycle-tests.sh` 478/0,
+  `git diff --check` clean, and `run-tests.sh` last and once at 766 passed /
+  1 failed — the one red being the recorded `lifecycle concurrency gate`
+  aggregate (204 passed, 3 failed), which is the only tolerated red.
+- One commit on `jlengelbrecht/afk-port-1.5b-fix2b`, branched from `master`
+  @ `4b873ab`; the SHA is in the coordinator's log for this cycle. Nothing was
+  pushed and no PR was opened. The brief, the stamp, the route artifacts and
+  the FIX2 evidence directory are deliberately uncommitted — they belong to the
+  coordinator's record lane, as in the lanes before this one.
