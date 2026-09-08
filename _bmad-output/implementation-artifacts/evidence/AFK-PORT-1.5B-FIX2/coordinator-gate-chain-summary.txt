@@ -1,0 +1,9 @@
+FIX2 GATES: starting @ ffc2b2e
+FIX2 GATE: bash tests/lifecycle-readiness-tests.sh rc=0 283s 290 passed, 0 failed
+FIX2 GATE: bash tests/lifecycle-dispatch-tests.sh rc=0 204s 256 passed, 0 failed
+FIX2 GATE: bash tests/lifecycle-tests.sh rc=0 462s 478 passed, 0 failed
+FIX2 GATE: git diff --check rc=0 1s 
+FIX2 GATE: bash tests/run-tests.sh rc=1 2633s 766 passed, 1 failed
+FIX2 GATES: chain complete
+
+[exited with code 0]

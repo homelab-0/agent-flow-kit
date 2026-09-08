@@ -1,0 +1,311 @@
+
+[1m0. Readiness primitives (lib sourced, nothing executed)[0m
+  [32mPASS[0m the readiness vocabulary is non-empty
+  [32mPASS[0m every readiness code carries a specific message
+  [32mPASS[0m every readiness code carries a required action
+  [32mPASS[0m no duplicate readiness codes
+comm: file 1 is not in sorted order
+comm: file 2 is not in sorted order
+comm: input is not in sorted order
+  [32mPASS[0m the readiness half never collides with the base half
+  [32mPASS[0m the base dispatcher reaches a readiness message
+  [32mPASS[0m and it is not the generic fallback
+  [32mPASS[0m an unknown code still falls back exactly once
+  [32mPASS[0m claude + a vendor profile is launchable
+  [32mPASS[0m codex + a vendor profile is launchable
+  [32mPASS[0m claude + a free, unpooled placement-required profile is launchable
+  [32mPASS[0m codex + a placement-required profile has no launch contract
+  [32mPASS[0m a local profile stamped with a vendor pool has no launch contract
+  [32mPASS[0m a local profile stamped cost_class subscription has no launch contract
+  [32mPASS[0m an unknown harness has no launch contract at all
+  [32mPASS[0m a clean environment conflicts with nothing
+  [32mPASS[0m an API key conflicts with a claude subscription route
+  [32mPASS[0m the reported conflict is the NAME, never the value
+  [32mPASS[0m the same key does not touch a codex route
+  [32mPASS[0m an explicitly metered route is not blocked by credential shape
+  [32mPASS[0m nor is an explicitly API-backed entitlement
+  [32mPASS[0m a closed, complete stamp is valid
+  [32mPASS[0m a stamp mutated by 'del(.harness)' is refused
+  [32mPASS[0m a stamp mutated by 'del(.expires_at)' is refused
+  [32mPASS[0m a stamp mutated by '.metered = "no"' is refused
+  [32mPASS[0m a stamp mutated by '.expires_at = "tomorrow"' is refused
+  [32mPASS[0m a stamp mutated by 'del(.task)' is refused
+  [32mPASS[0m a stamp mutated by '.task = {}' is refused
+  [32mPASS[0m a stamp mutated by '.placement_required = "yes"' is refused
+  [32mPASS[0m a stamp mutated by '.extra_field = 1' is refused
+  [32mPASS[0m an RFC3339 UTC instant resolves to epoch seconds
+  [32mPASS[0m a fully wired target resolves
+  [32mPASS[0m with a stable reason
+  [32mPASS[0m and reports the recognized layout
+  [32mPASS[0m and a bounded wiring identity
+  [32mPASS[0m an absent target path is BROKEN
+  [32mPASS[0m with a stable reason
+  [32mPASS[0m directory presence alone is never compatibility
+  [32mPASS[0m with a stable reason
+  [32mPASS[0m target wiring case 'missing-linear' fails closed
+  [32mPASS[0m and never reports READY: missing-linear
+  [32mPASS[0m target wiring case 'missing-stamp' fails closed
+  [32mPASS[0m and never reports READY: missing-stamp
+  [32mPASS[0m target wiring case 'missing-persona' fails closed
+  [32mPASS[0m and never reports READY: missing-persona
+  [32mPASS[0m target wiring case 'missing-gates' fails closed
+  [32mPASS[0m and never reports READY: missing-gates
+  [32mPASS[0m target wiring case 'missing-max_cycles' fails closed
+  [32mPASS[0m and never reports READY: missing-max_cycles
+  [32mPASS[0m target wiring case 'retired-route' fails closed
+  [32mPASS[0m and never reports READY: retired-route
+  [32mPASS[0m target wiring case 'retired-local_gpu' fails closed
+  [32mPASS[0m and never reports READY: retired-local_gpu
+  [32mPASS[0m target wiring case 'no-frontmatter' fails closed
+  [32mPASS[0m and never reports READY: no-frontmatter
+  [32mPASS[0m target wiring case 'no-dev' fails closed
+  [32mPASS[0m and never reports READY: no-dev
+  [32mPASS[0m target wiring case 'no-pm' fails closed
+  [32mPASS[0m and never reports READY: no-pm
+  [32mPASS[0m target wiring case 'dangling-persona' fails closed
+  [32mPASS[0m and never reports READY: dangling-persona
+  [32mPASS[0m two disagreeing wiring copies are ownership ambiguity
+  [32mPASS[0m the skills layout resolves too
+  [32mPASS[0m and is reported as the layout it is
+  [32mPASS[0m an accepted trust decision is reported
+  [32mPASS[0m a path awaiting the prompt is reported
+  [32mPASS[0m reading the trust record never changes it
+  [32mPASS[0m an unknown path is unproven, never assumed
+  [32mPASS[0m the probe bound is at least one second
+
+[1m1. Offline route readiness: deterministic refusals, no live claim[0m
+  [32mPASS[0m a supplied stamp puts route readiness in scope
+  [32mPASS[0m offline evaluation never asserts a route is ready
+  [32mPASS[0m because the validator verdict is a live fact
+  [32mPASS[0m and host readiness stays unevaluated too
+  [32mPASS[0m the stamp is identified by a bounded identity
+  [32mPASS[0m no placement is selected by readiness
+  [32mPASS[0m placement is reported as out of scope
+  [32mPASS[0m with the ownership reason
+  [32mPASS[0m and the observation claims no launch authority
+  [32mPASS[0m the dispatch watch is not available on a fresh host
+  [32mPASS[0m with a stable reason
+  [32mPASS[0m and reading it never makes the command fail
+  [32mPASS[0m route refusal 'expired stamp' is FALSE
+  [32mPASS[0m route refusal 'expired stamp' says why
+  [32mPASS[0m route refusal 'expired stamp' exits 3
+  [32mPASS[0m route refusal 'effort outside the closed set' is FALSE
+  [32mPASS[0m route refusal 'effort outside the closed set' says why
+  [32mPASS[0m route refusal 'effort outside the closed set' exits 3
+  [32mPASS[0m route refusal 'placement-required profile on codex' is FALSE
+  [32mPASS[0m route refusal 'placement-required profile on codex' says why
+  [32mPASS[0m route refusal 'placement-required profile on codex' exits 3
+  [32mPASS[0m route refusal 'placement-required profile on a vendor pool' is FALSE
+  [32mPASS[0m route refusal 'placement-required profile on a vendor pool' says why
+  [32mPASS[0m route refusal 'placement-required profile on a vendor pool' exits 3
+  [32mPASS[0m route refusal 'unknown harness' is FALSE
+  [32mPASS[0m route refusal 'unknown harness' says why
+  [32mPASS[0m route refusal 'unknown harness' exits 3
+  [32mPASS[0m an unreadable stamp is refused
+  [32mPASS[0m a stamp outside the closed shape is refused
+  [32mPASS[0m a placement-required local route is no longer unsupported
+  [32mPASS[0m and readiness still proves nothing about it offline
+  [32mPASS[0m no placement is selected for it either
+  [32mPASS[0m a route decision never suggests a substitute
+  [32mPASS[0m and the accepted decision on disk is byte-identical afterwards
+  [32mPASS[0m a metered-path condition blocks the affected route
+  [32mPASS[0m and only the route scope
+  [32mPASS[0m installed integrity is untouched by it
+  [32mPASS[0m and no credential value is emitted anywhere
+  [32mPASS[0m the conflicting variable is reported by name
+  [32mPASS[0m credential shape alone never forbids an API-backed entitlement
+
+[1m2. Live host readiness, and its independence from the router[0m
+  [32mPASS[0m a complete host proves execution readiness
+  [32mPASS[0m with a stable reason
+  [32mPASS[0m Orca answered a read-only probe
+  [32mPASS[0m and declared every required capability
+  [32mPASS[0m the validator fixtures proved it is not always-success
+  [32mPASS[0m the router answered too
+  [32mPASS[0m so new work is ready as well
+  [32mPASS[0m a live observation is timestamped
+  [32mPASS[0m carries its bound
+  [32mPASS[0m declares its freshness window
+  [32mPASS[0m and is never launch authority
+  [32mPASS[0m the applied-state manifest carries no readiness or live section
+  [32mPASS[0m and no observation timestamp reached it
+  [32mPASS[0m an unreachable router leaves the host execution ready
+  [32mPASS[0m while new-work readiness becomes false
+  [32mPASS[0m with the transient reason
+  [32mPASS[0m the router fact is marked transient
+  [32mPASS[0m installed state is NOT made BROKEN by an outage
+  [32mPASS[0m installed integrity stays READY
+  [32mPASS[0m a live outage exits 5, distinctly from a deterministic 3
+  [32mPASS[0m and no route is invented in the router's place
+  [32mPASS[0m a non-200 router is unavailable, not incompatible
+  [32mPASS[0m and the host is still ready
+  [32mPASS[0m a 200 from something that is not the router is incompatible
+  [32mPASS[0m new-work readiness names the grounded incompatible-router blocker
+  [32mPASS[0m which still narrows new work only
+  [32mPASS[0m a valid router document larger than the evidence cap is parsed completely
+  [32mPASS[0m and the large healthy response permits new work
+  [32mPASS[0m the >4096-byte fixture still classifies the router available
+  [32mPASS[0m and the complete parse buffer is empty once classification completes
+  [32mPASS[0m the reset fixture exceeds the retention cap
+  [32mPASS[0m with retained evidence capped at 4096 bytes
+  [32mPASS[0m readiness reset clears the complete parse buffer
+  [32mPASS[0m and the capped probe evidence with it
+  [32mPASS[0m a router that does not answer in time reports a timeout
+  [32mPASS[0m distinctly from a deterministic failure
+  [32mPASS[0m and the host stays ready through it
+  [32mPASS[0m a plaintext router endpoint is refused
+  [32mPASS[0m and the caller token never reaches the output
+  [32mPASS[0m an unpopulated caller token is an owner action
+
+[1m3. Harnesses are individually optional; a route never substitutes[0m
+  [32mPASS[0m one unavailable harness does not block host readiness
+  [32mPASS[0m and the unavailable harness is reported independently
+  [32mPASS[0m scoped to nothing global
+  [32mPASS[0m a route selecting an unavailable harness is not ready
+  [32mPASS[0m with a stable reason
+  [32mPASS[0m while the host stays ready through the other approved path
+  [32mPASS[0m no usable harness means no host execution readiness
+  [32mPASS[0m with a stable reason
+  [32mPASS[0m and installation integrity is still reported independently
+  [32mPASS[0m status and offline verification stay usable
+  [32mPASS[0m a native subscription session is the approved funding class
+  [32mPASS[0m a stale session reports AUTH_REQUIRED
+  [32mPASS[0m as an owner action, never an automatic login
+  [32mPASS[0m an API-key session is classified, not treated as a subscription
+  [32mPASS[0m and the other harness can still carry the host
+  [32mPASS[0m an unclassifiable status is unproven, never assumed good
+  [32mPASS[0m a codex subscription reported only on stderr is still classified
+  [32mPASS[0m while the claude stdout auth path answers exactly as before
+  [32mPASS[0m a harness silent on both streams is unknown, never assumed good
+  [32mPASS[0m and carries the unproven reason
+  [32mPASS[0m a ChatGPT-naming warning cannot mask a logged-out status
+  [32mPASS[0m and the spoofed session is unavailable, not ready
+  [32mPASS[0m positive stderr text with a nonzero exit is never a subscription
+  [32mPASS[0m a harness that cannot prove its invocation contract is not ready
+
+[1m4. Orca and the validator gate host readiness, each on its own[0m
+  [32mPASS[0m an unreachable Orca blocks host execution
+  [32mPASS[0m with a stable reason
+  [32mPASS[0m while installation integrity remains independently reportable
+  [32mPASS[0m and status itself is still usable
+  [32mPASS[0m an Orca missing a required launch capability is incompatible
+  [32mPASS[0m which blocks host execution readiness
+  [32mPASS[0m an Orca with no capability contract cannot be proven
+  [32mPASS[0m host readiness names the grounded Orca capability blocker
+  [32mPASS[0m and does not contradict the resolved executable fact
+  [32mPASS[0m a genuinely unresolvable Orca keeps the resolution reason
+  [32mPASS[0m an undeclared router endpoint keeps its precondition reason
+  [32mPASS[0m an always-success validator fails the anti-vacuity check
+  [32mPASS[0m and blocks host execution readiness
+  [32mPASS[0m as a blocking finding
+  [32mPASS[0m a validator that rejects the known-valid fixture is unusable
+  [32mPASS[0m which is a deterministic refusal, not a transient one
+  [32mPASS[0m a validator declaring a newer contract major is incompatible
+  [32mPASS[0m no machine-readable contract is a warning, not a block
+  [32mPASS[0m because the fixture suite is the proof that decides
+  [32mPASS[0m a validator that cannot answer is unavailable, not a refusal
+  [32mPASS[0m and the observation is marked transient
+  [32mPASS[0m it still blocks host execution readiness
+  [32mPASS[0m and the run exits 5, not the deterministic 3
+  [32mPASS[0m a live evaluation writes nothing into HOME
+
+[1m5. Live route readiness is an intersection, and expires with the stamp[0m
+  [32mPASS[0m every authority answered, so the route is semantically ready
+  [32mPASS[0m with a stable reason
+  [32mPASS[0m and it still authorizes no launch
+  [32mPASS[0m no placement was selected on the way
+  [32mPASS[0m the observation is explicitly diagnostic only
+  [32mPASS[0m a ready route exits 0
+  [32mPASS[0m route readiness continues through a router outage
+  [32mPASS[0m while new work stops
+  [32mPASS[0m a validator refusal blocks the route
+  [32mPASS[0m and readiness never overrides it
+  [32mPASS[0m a validator that cannot answer leaves the route unproven
+  [32mPASS[0m and an uncheckable live dependency exits 5
+  [32mPASS[0m a route whose target does not resolve is blocked
+  [32mPASS[0m the target itself says why
+  [32mPASS[0m and the host is not poisoned by one target
+  [32mPASS[0m the target aggregate is FALSE over the registered set
+  [32mPASS[0m a path awaiting workspace trust blocks the route
+  [32mPASS[0m loudly, as an owner action
+  [32mPASS[0m which exits 2, not a not-ready 3
+  [32mPASS[0m and the trust record was read, never edited
+  [32mPASS[0m an accepted trust decision unblocks the route
+  [32mPASS[0m one wired target: the route is ready
+  [32mPASS[0m and the run is a success
+  [32mPASS[0m one unwired target: the route is blocked
+  [32mPASS[0m with the target reason
+  [32mPASS[0m and a deterministic not-ready exit
+  [32mPASS[0m an ambiguous target binding never reports the route ready
+  [32mPASS[0m with the target reason
+  [32mPASS[0m and a deterministic not-ready exit
+  [32mPASS[0m while the per-target verdicts stay independent of each other
+  [32mPASS[0m naming the wired target binds the route to it
+  [32mPASS[0m and naming the unwired one blocks the route
+  [32mPASS[0m a host with no registered target has no ready route
+  [32mPASS[0m with the target reason
+  [32mPASS[0m and the target scope reports the absence on its own
+  [32mPASS[0m trust withheld at arity one blocks the route
+  [32mPASS[0m as an owner action
+  [32mPASS[0m registering a second target does not make it launchable
+  [32mPASS[0m and the run is not reported as a success
+  [32mPASS[0m no route in this state is ever proven ready
+  [32mPASS[0m an undeterminable workspace is named, not left unprobed
+
+[1m6. The orchestration bridge is consumed, never owned[0m
+  [32mPASS[0m no orchestration state reports not available
+  [32mPASS[0m with a stable reason
+  [32mPASS[0m and it never makes ordinary readiness fail
+  [32mPASS[0m nor the command
+  [32mPASS[0m an inactive session is reported as inactive
+  [32mPASS[0m with its own reason
+  [32mPASS[0m and still does not fail readiness
+  [32mPASS[0m an active session is summarized
+  [32mPASS[0m with its mode
+  [32mPASS[0m its phase
+  [32mPASS[0m its task
+  [32mPASS[0m already-available worker counts
+  [32mPASS[0m and per-state counts
+  [32mPASS[0m the parent role is carried through as declared, not assumed
+  [32mPASS[0m and the parent identity with it
+  [32mPASS[0m the state document is consumed, never rewritten
+  [32mPASS[0m a pending human decision is surfaced loudly
+  [32mPASS[0m as an owner action
+  [32mPASS[0m but scoped to nothing, so lifecycle readiness does not fail for it
+  [32mPASS[0m and installed integrity is unaffected
+  [32mPASS[0m which is still a successful command
+  [32mPASS[0m an unreadable state document is reported, not guessed at
+  [32mPASS[0m and does not fail readiness
+  [32mPASS[0m a newer major state schema is refused, not interpreted
+  [32mPASS[0m an undeclared member of the state document is never passed through
+  [32mPASS[0m while the declared members still are
+
+[1m7. Live output stays safe, stable and completely projected[0m
+  [32mPASS[0m no secret reaches live machine output
+  [32mPASS[0m nor live human output
+  [32mPASS[0m nor stderr on a live run
+  [32mPASS[0m live human output projects every readiness, live and orchestration fact
+  [32mPASS[0m schema publishes the four budget states
+  [32mPASS[0m and they match the declared policy document exactly
+  [32mPASS[0m schema publishes the budget reason codes the policy declares
+  [32mPASS[0m schema publishes [USAGE_UNOBSERVABLE]
+  [32mPASS[0m schema publishes [HIGH_USAGE]
+  [32mPASS[0m schema publishes [CONTINUATION_ARTIFACT_INVALID]
+  [32mPASS[0m schema publishes [CHECKPOINT_ARTIFACT_STALE]
+  [32mPASS[0m schema publishes [WINDOW_UNCORROBORATED]
+  [32mPASS[0m schema publishes the dispatch result statuses, continuation included
+  [32mPASS[0m every reason code in a live result is published
+  [32mPASS[0m every readiness state is inside the published set
+  [32mPASS[0m every live-fact state is inside the published set
+  [32mPASS[0m every target state is inside the published set
+  [32mPASS[0m the reason sweep still FAILS on an unpublished code
+  [32mPASS[0m a published usage_reason passes the sweep
+  [32mPASS[0m the sweep FAILS on an unpublished usage_reason
+  [32mPASS[0m the readiness sweep still FAILS on an out-of-set state
+  [32mPASS[0m the live-fact sweep still FAILS on an out-of-set state
+  [32mPASS[0m the target sweep still FAILS on an out-of-set state
+  [32mPASS[0m default machine output is still byte-stable
+  [32mPASS[0m and still emits no timestamp
+  [32mPASS[0m while a live run does timestamp its observations
+
+[1m290 passed, 0 failed[0m

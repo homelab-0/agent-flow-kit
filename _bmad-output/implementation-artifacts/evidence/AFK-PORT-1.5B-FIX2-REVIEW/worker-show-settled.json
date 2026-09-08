@@ -1,0 +1,145 @@
+{
+  "id": "be81b881-477b-444b-bf54-9aacc5d68519",
+  "ok": true,
+  "result": {
+    "dispatch": {
+      "id": "ctx_0b20e6cb1020",
+      "task_id": "task_e86ed92aaac2",
+      "assignee_handle": "term_ba953b7e-d15e-4796-af8f-e8d91955b56e",
+      "assignee_pane_key": "b2927981-a589-440a-b826-bb14d2119c2c:4437b52f-0c39-4f49-b160-8d8a493c567b",
+      "status": "completed",
+      "failure_count": 0,
+      "last_failure": null,
+      "dispatched_at": "2026-09-08 05:55:13",
+      "completed_at": "2026-09-08 06:16:47",
+      "created_at": "2026-09-08 05:55:13",
+      "last_heartbeat_at": "2026-09-08T06:11:50Z",
+      "run_id": "run_cb472ab8640c",
+      "capability_hash": "e4b7b7ecab2a12fa66ce9b38755b892538dcbfe2026b6b4efe1d9b6c7e8810c0",
+      "process_incarnation": "5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5b-fix2b@@2d2f804e:b39e30a8-22d5-40c9-94cf-7aac8741c47b",
+      "capability_revoked_at": "2026-09-08 06:16:47",
+      "contract_version": 1,
+      "launch_token_hash": "445f15971e952921d178f3e033d225ea41adea1fb5240169315e20121891f100",
+      "termination_reason": null,
+      "depth": 1
+    },
+    "worker": {
+      "dispatch_id": "ctx_0b20e6cb1020",
+      "runtime_epoch": "ea1d57f6-4774-40f8-adad-824a66f35a86",
+      "state": "succeeded",
+      "stage": "settled",
+      "worktree_id": "5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5b-fix2b",
+      "agent_terminal_handle": "term_ba953b7e-d15e-4796-af8f-e8d91955b56e",
+      "setup_state": "not_applicable",
+      "effects": [
+        {
+          "kind": "worktree",
+          "action": "reused",
+          "id": "5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5b-fix2b"
+        },
+        {
+          "kind": "setup",
+          "action": "not_applicable",
+          "state": "not_applicable"
+        },
+        {
+          "kind": "terminal",
+          "role": "agent",
+          "action": "created",
+          "id": "term_ba953b7e-d15e-4796-af8f-e8d91955b56e",
+          "surface": "visible"
+        },
+        {
+          "kind": "dispatch_input",
+          "role": "agent",
+          "id": "term_ba953b7e-d15e-4796-af8f-e8d91955b56e",
+          "state": "accepted"
+        }
+      ],
+      "residual_resources": "[{\"kind\":\"terminal\",\"role\":\"agent\",\"action\":\"created\",\"id\":\"term_ba953b7e-d15e-4796-af8f-e8d91955b56e\",\"surface\":\"visible\"}]",
+      "start_options": "{\"worktree\":\"id:5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5b-fix2b\",\"resolvedWorktreeId\":\"5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5b-fix2b\",\"name\":null,\"repo\":null,\"baseBranch\":null,\"terminal\":null,\"agent\":\"claude\",\"launch\":{\"requested\":{\"agent\":\"claude\",\"model\":\"opus\",\"effort\":\"medium\"},\"effective\":{\"agent\":\"claude\",\"model\":\"opus\",\"effort\":\"medium\"}},\"timeoutMs\":180000,\"setup\":\"not_applicable\",\"setupSource\":\"existing_worktree\"}",
+      "last_error": null,
+      "created_at": "2026-09-08 05:55:13",
+      "updated_at": "2026-09-08 06:16:47",
+      "residualResources": [
+        {
+          "kind": "terminal",
+          "role": "agent",
+          "action": "created",
+          "id": "term_ba953b7e-d15e-4796-af8f-e8d91955b56e",
+          "surface": "visible"
+        }
+      ],
+      "startOptions": {
+        "worktree": "id:5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5b-fix2b",
+        "resolvedWorktreeId": "5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5b-fix2b",
+        "name": null,
+        "repo": null,
+        "baseBranch": null,
+        "terminal": null,
+        "agent": "claude",
+        "launch": {
+          "requested": {
+            "agent": "claude",
+            "model": "opus",
+            "effort": "medium"
+          },
+          "effective": {
+            "agent": "claude",
+            "model": "opus",
+            "effort": "medium"
+          }
+        },
+        "timeoutMs": 180000,
+        "setup": "not_applicable",
+        "setupSource": "existing_worktree"
+      }
+    },
+    "terminal": {
+      "handle": "term_ba953b7e-d15e-4796-af8f-e8d91955b56e",
+      "ptyId": "5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5b-fix2b@@2d2f804e",
+      "incarnationId": "b39e30a8-22d5-40c9-94cf-7aac8741c47b",
+      "orphaned": false,
+      "worktreeId": "5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5b-fix2b",
+      "worktreePath": "/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5b-fix2b",
+      "branch": "refs/heads/jlengelbrecht/afk-port-1.5b-fix2b",
+      "tabId": "b2927981-a589-440a-b826-bb14d2119c2c",
+      "leafId": "4437b52f-0c39-4f49-b160-8d8a493c567b",
+      "title": "✳ AFK-PORT-1.5B-FIX2 review",
+      "connected": true,
+      "writable": true,
+      "lastOutputAt": 1788848224847,
+      "preview": ": the brief names worktree\nHEAD daa00e9; HEAD is ffc2b2e, and daa00e9 is an earlier lineage's tip on no branch.\nReport: _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.5B-FIX2-REVIEW/REVIEW.md, with five probe scripts\nand their outputs beside it. Nothing outside that directory was written.",
+      "executionHostId": "local",
+      "agentIdentity": "claude",
+      "paneRuntimeId": -1,
+      "rendererGraphEpoch": 0,
+      "agentWait": null
+    },
+    "observation": {
+      "status": "live",
+      "exactWorker": true,
+      "agentWait": null
+    },
+    "terminalResource": {
+      "id": "wtr_9b9b8c5726cd",
+      "ownershipState": "owned",
+      "releaseState": "not_requested",
+      "retainedReason": null,
+      "terminalHandle": "term_ba953b7e-d15e-4796-af8f-e8d91955b56e",
+      "worktreeId": "5ef3dbc0-15ae-48d1-9481-a09f4dd957ab::/home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5b-fix2b",
+      "originDispatchId": "ctx_0b20e6cb1020",
+      "ownerDispatchId": "ctx_0b20e6cb1020",
+      "releaseRequestedAt": null,
+      "releaseCompletedAt": null,
+      "releaseError": null,
+      "archive": {
+        "source": null,
+        "status": null
+      }
+    }
+  },
+  "_meta": {
+    "runtimeId": "ea1d57f6-4774-40f8-adad-824a66f35a86"
+  }
+}

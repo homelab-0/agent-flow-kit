@@ -1,0 +1,34 @@
+fixtures
+lifecycle-concurrency-tests.sh
+lifecycle-dispatch-tests.sh
+lifecycle-mutation-tests.sh
+lifecycle-readiness-tests.sh
+lifecycle-tests.sh
+lockctl-helper.sh
+run-tests.sh
+=== lifecycle-readiness-tests.sh ===
+exit=0
+  PASS the target sweep still FAILS on an out-of-set state
+  PASS default machine output is still byte-stable
+  PASS and still emits no timestamp
+  PASS while a live run does timestamp its observations
+
+290 passed, 0 failed
+=== lifecycle-dispatch-tests.sh ===
+exit=0
+  PASS every reason code in a monitor result is published
+  PASS and the sweep still FAILS on an unpublished code
+  PASS every dispatch state is inside the published set
+  PASS every cleanup disposition is inside the published set
+
+256 passed, 0 failed
+=== lifecycle-tests.sh ===
+exit=0
+  PASS a synthetic route request without --live is a usage failure
+  PASS --target without the --stamp it binds is a usage failure
+  PASS --stamp without its path is a usage failure
+  PASS the refused verbs changed nothing at all
+
+478 passed, 0 failed
+
+[exited with code 0]

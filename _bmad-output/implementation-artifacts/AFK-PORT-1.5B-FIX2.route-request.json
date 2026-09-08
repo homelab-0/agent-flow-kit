@@ -1,0 +1,12 @@
+{
+  "story_id": "AFK-PORT-1.5B-FIX2",
+  "title": "Fix the claude usage adapter's cumulative-token measurement and status precedence (external report)",
+  "summary": "One bounded fix cycle in the kit's dispatch adapter answering an external report: the claude usage adapter divided the run's cumulative token sum by the context window (ratio 20 on an 83-turn run) and the resulting state overwrote a gates-failed outcome as continuation_required with no artifact. Under the frozen envelope, multi-turn usage becomes informational with a null ratio, single-turn usage keeps its ratio, status is decided by gates and a continuation status requires a valid artifact, the prompt names the working directory, cost is asserted never to be spend, plus a fixture test on the reported envelope. Frozen launch command texts unchanged.",
+  "touched_paths": ["files/model-router/scripts/dispatch.sh", "files/model-router/context-budget-policy.yaml", "docs/LIFECYCLE-CONTRACT.md", "tests/run-tests.sh", "tests/fixtures/", "_bmad-output/implementation-artifacts/AFK-PORT-1.5B.md", "_bmad-output/implementation-artifacts/AFK-PORT-1.5B-FIX2.md"],
+  "ambiguity": "low",
+  "blast_radius": "medium",
+  "volume_hint": "low",
+  "tags": ["tests", "docs"],
+  "repo": "agent-flow-kit",
+  "requester": "bmad-pm"
+}

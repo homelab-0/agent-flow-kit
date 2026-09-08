@@ -1,0 +1,31 @@
+{
+  "harness": "claude",
+  "model_profile": "claude/strong",
+  "effort": "medium",
+  "cost_class": "subscription",
+  "entitlement_pool": "anthropic-max",
+  "metered": false,
+  "placement_policy": "prefer-warm-local",
+  "placement_required": false,
+  "catalog_version": "sha256:c4d49d9a9db3b203cab02200dc0e335ae3b02934d91fe81b08975d5acc7cd027",
+  "expires_at": "2026-09-09T04:07:41Z",
+  "task": {
+    "story_id": "AFK-PORT-1.5B-FIX2",
+    "tags": [
+      "tests",
+      "docs"
+    ],
+    "title": "Fix the claude usage adapter's cumulative-token measurement and status precedence (external report)"
+  },
+  "override": {
+    "actor": "Josh (standing implementation-prefers-claude ruling; applied by the ORCH coordinator 2026-09-08)",
+    "at": "2026-09-08T04:07:42Z",
+    "original": {
+      "harness": "claude",
+      "model_profile": "claude/strong"
+    },
+    "reason": "Natural route claude/local-code-standard. This cycle fixes the usage adapter and status precedence in the dispatch adapter (~1700 lines) with a 45-minute gate; the Story 1.7 spike measured the local profile at 6/9 on trivial canaries with a path-resolution failure class — the very defect class this fix also addresses. Standing ruling: implementation dispatches prefer claude/strong. Fields from catalog 1.6.0; catalog_version and expires_at verbatim."
+  },
+  "created_at": "2026-09-08T04:07:42Z",
+  "catalog_document_version": "1.6.0"
+}

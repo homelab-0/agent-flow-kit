@@ -518,3 +518,32 @@ occupancy, and the gates decide the status.
   pushed and no PR was opened. The brief, the stamp, the route artifacts and
   the FIX2 evidence directory are deliberately uncommitted — they belong to the
   coordinator's record lane, as in the lanes before this one.
+
+### Coordinator log — external-report fix merged (2026-09-08) **[MERGE LOGGED]**
+
+- Reported by the ai-control-plane PM from that repository's first
+  natural-route gateway-backed dispatch (handoff retained beside this record).
+  Confirmed by the coordinator and found broader than reported: the kit's own
+  M4R smoke envelope (20 turns) would have reported a ratio of 3.8 by the same
+  arithmetic, so every multi-turn run on any claude class tripped it.
+- Ruling: option (a), no launch-contract change. Fix cycle
+  `AFK-PORT-1.5B-FIX2` (attempt 2, `ffc2b2e`) — multi-turn usage informational
+  with a null ratio, single-turn keeps `FINAL_CONTEXT`, gates decide the
+  status, `continuation_required` only with a valid artifact, the prompt names
+  the absolute working directory, cost asserted never to be spend, the cap
+  marker never lowers `max_cycles` (lane C residual N4), and the reported
+  envelope committed as `tests/fixtures/claude-result-envelope-multiturn.json`.
+- Attempt 1 (`ctx_3599c45fd45b`) was lost: removing an unrelated, idle
+  worktree in the same repository caused Orca to trash the live worker's
+  worktree and SIGKILL its agent, and dropped the coordinator's Run binding.
+  Recovered by re-binding (`run-use --id`), rebuilding the worktree and
+  re-dispatching. Standing rule adopted: never remove an Orca worktree in a
+  repository while a worker is active in it.
+- Diff-scoped review (`evidence/AFK-PORT-1.5B-FIX2-REVIEW/`): CLEAN, F1–F6 all
+  verified, including that the new assertions fail against the previous
+  adapter. Coordinator's independent gates 290/0, 256/0, 478/0, diff-check,
+  run-tests 766/1 (recorded aggregate only). PR #36 squash-merged as
+  `f9bffe0`; host kit updated e207314 → f9bffe0, `CONVERGED`.
+- Owner decision recorded: adding `Edit` to the frozen claude tool set is
+  APPROVED and queued after lane D, as its own story with coordinated
+  contract evidence in both repositories.

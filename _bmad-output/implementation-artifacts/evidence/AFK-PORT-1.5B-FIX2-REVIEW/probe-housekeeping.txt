@@ -1,0 +1,44 @@
+### commit message (plain, no trailers?)
+Report cumulative token totals as information, and let the gates decide the status
+
+The claude usage adapter summed the end-of-run envelope's input, cache-read and
+cache-creation tokens and divided by the routed window. Those members are the
+total over every API call a run made, not the context its last call held, so an
+83-turn run reported 1,330,455 against a 65,536 window: a ratio of 20.30 for a
+run that never occupied more than one window. The band said the story needed a
+continuation, and because the gates had failed with no worker signal the thin
+result said so too, with no checkpoint and no continuation artifact anywhere.
+
+The adapter now reads num_turns and reports the scope of its own figure. Only a
+single-turn envelope is that call's context, and only that scope is divided by a
+window; anything else - more turns, or an envelope with no turn count, which
+proves nothing about how many calls it summed - is published as a cumulative
+total with no ratio, no band and no HIGH_USAGE.
+
+status: continuation_required now comes only from a worker that signalled and
+left a valid artifact. A usage band beside failed gates is a sizing note, not a
+hand-over: there is nothing there to resume from.
+
+--- trailer scan ---
+3:The claude usage adapter summed the end-of-run envelope's input, cache-read and
+
+### git diff --check
+clean (exit 0)
+
+### diff surface vs the fix story's declared files
+_bmad-output/implementation-artifacts/AFK-PORT-1.5B.md
+docs/LIFECYCLE-CONTRACT.md
+files/model-router/scripts/dispatch.sh
+tests/fixtures/claude-result-envelope-multiturn.json
+tests/run-tests.sh
+
+### fixture secret scan (pattern)
+--- fixture free-text members ---
+{
+  "result": "## Story FU.1 — Final Status\n\n### Content: CORRECT\nAll 4 version comments changed from `# v5.0.0` to `# v5.1.0`. Verified via Grep:\n- `contract-checks.yaml:62` — `# v5.1.0` ✅ (untouched, was already correct)\n- `release.yaml:62` — `# v5.1.0` ✅\n- `build-agent-router.yaml:37,91,178` — `# v5.1.0` ✅\n- Zero `# v5.0.0` remaining across `.github/workflows/` ✅\n\n### Bugs fixed during work\n- Missing `#` comment prefix at build-agent-router.yaml:182 (YAML parse error)\n- Missing `;` in `if ! git diff --quiet; then` at build-agent-router.yaml:197 (shell syntax error)\n\n### Blockers — cannot declare done\n| Issue | Impact |\n|-------|--------|\n| **No bash access** (frozen tool set: Read/Glob/Grep/Write) | Cannot run gate commands (`actionlint`, diff checks), cannot `git add`/`git commit` |\n| **Diff not byte-minimal** | Used Write tool (full file rewrite) instead of `sed`. Gate requiring exactly 4a/4d will fail. |\n| **Out-of-scope files created** | `_bmad-output/` directory with story file — not in the declared file surface |\n\n### Recovery path for a worker with bash\n```bash\n# Restore originals, apply only the 4 comment changes\ngit checkout e262f39 -- .github/workflows/release.yaml .github/workflows/build-agent-router.yaml\nsed -i 's/ # v5\\.0\\.0/ # v5.1\\.0/g' .github/workflows/release.yaml .github/workflows/build-agent-router.yaml\n\n# Run gates\nactionlint .github/workflows/\ngrep -c 'fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0' .github/workflows/*.yaml  # expect 5\n! grep -rn 'v5.0.0' .github/workflows/\ngit diff --numstat main -- .github/workflows  # expect 4a/4d\n\n# Commit\ngit add .github/workflows/release.yaml .github/workflows/build-agent-router.yaml\ngit commit -m \"ci(workflows): correct actions/checkout version comments to v5.1.0\"\n```\n\nDev Agent Record written to the story file. The work is substantively correct but cannot pass gates or be committed without bash access.",
+  "session_id": "68a49224-6873-4e88-8ce5-04e7a0b8b8eb",
+  "uuid": "825b9928-9d1b-4f68-ba7d-ac07148f4b90",
+  "stop_reason": "end_turn",
+  "terminal_reason": "completed",
+  "permission_denials_len": 14
+}
