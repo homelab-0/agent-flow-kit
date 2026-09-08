@@ -1005,7 +1005,9 @@ Every threshold and the estimate method live in one machine-readable document,
 (`launcher.budget_policy`, or `$AGENT_FLOW_BUDGET_POLICY`), never from a story
 and never from a stamp. It declares `estimate_method`, `sizing_risk_ratio`,
 `checkpoint_ratio`, `continuation_ratio`, `continuation_cap`, the stable reason
-codes and the budget states.
+codes — including `CONTINUATION_CAP_REACHED`,
+`CONTINUATION_STAMP_REFRESH_REQUIRED` and `REPEATED_CONTINUATION` — and the
+budget states.
 
 There is no threshold constant in the launcher. A policy document that is
 unreadable, unparseable or missing a key refuses dispatch with
@@ -1068,6 +1070,9 @@ With an undeclared window neither action can fire.
            "window_reported_tokens": N|null,
            "checkpoint_artifact": {"path":..., "sha256":...}|null,
            "continuation_artifact": {"path":..., "sha256":...}|null,
+           "continuation_of": {"cycle":N, "artifact_sha256":..., "trigger":...,
+                               "usage_tokens":N|null, "usage_ratio":N|null}|null,
+           "continuation_decision": {"cycle":N, "actor":..., "at":..., "reason":...}|null,
            "findings": [...]}
 ```
 
@@ -1201,6 +1206,106 @@ artifact is, because the next cycle is meant to resume from them; freshness is
 proved by identity instead — the sha of each is captured before the launch, and
 a byte-identical file afterwards was not written by this worker. `continuation_required` is additive within the
 result schema major and exits as unfinished work (exit code 1), not a completion.
+
+### Continuation cycles, the cap, and the decision key
+
+A continuation is the **next cycle of the same story under the same accepted
+stamp**, launched through `dispatch.sh` exactly as any cycle is: setup gate,
+pre-dispatch sizing, `POST /v1/place`, fail-closed revalidation, launch guard,
+launch, gates, thin result. There is no second entry point and no local
+substitution of harness, model, profile or funding, and neither frozen launch
+command text changes. What a continuation changes is what the launcher puts
+into the prompt and what it refuses before launching.
+
+`${STORY}.result.json` is overwritten every cycle, so from this capability on
+the launcher also retains one copy per cycle at `${STORY}.result.c<n>.json`,
+written immediately after the thin result. The continuation chain and the cap
+are derived from those retained copies and from nothing else: no counter is
+stored, and nothing a workload can edit is consulted.
+
+Cycle *n* is a **continuation** when the most recent prior cycle that left a
+retained result carries `status: continuation_required`. A cycle with no such
+prior result is an ordinary cycle, and a continuation artifact left over from an
+older chain does not make one. When the prior cycle did hand over, its evidence
+is required rather than optional: a missing, unparseable, schema-mismatched or
+member-short `${STORY}.continuation.json` refuses on the existing loud
+`NEEDS_HUMAN` path with reason `CONTINUATION_ARTIFACT_INVALID` and exit code 3,
+before anything is placed or launched — there is nothing to resume from, and
+running anyway would silently restart the story under a stamp and a cap that
+both believe it is being continued.
+
+On a continuation the launcher:
+
+1. **counts the artifact in the pre-dispatch estimate.** Its content is written
+   into the generated prompt, which is already a declared payload input, so it
+   is counted through the prompt exactly once. Counting the file a second time
+   would over-report the one input a continuation adds and refuse stories that
+   would have fitted; the refusal marker still names the artifact and its byte
+   length, as a sub-line of the input it travels inside. The refusal and risk
+   thresholds are unchanged and apply to the larger payload as they would to any
+   other.
+2. **writes the artifact's content into the prompt as data**, under the fixed
+   heading `Continuation from cycle <n-1>`, after the persona and story
+   instructions and before the budget paragraph. It is data on the prompt's data
+   channel like the story is, never shell source, and the story remains the
+   authority wherever the two disagree.
+3. **records `budget.continuation_of`** — `{cycle, artifact_sha256, trigger,
+   usage_tokens, usage_ratio}` — where `trigger` is `WORKER_SIGNAL` when the
+   prior cycle published a continuation artifact identity and `USAGE_BAND` when
+   the kit reached the status from observed usage with the gates failed.
+4. **adds the finding `REPEATED_CONTINUATION`** and appends one dated
+   `CONTINUATION` line to the story's `## Dev Agent Record` through the same
+   locked, per-cycle-idempotent append `SIZING_RISK` uses, carrying the cycle
+   continued from, the artifact sha, the trigger and the usage evidence — so
+   trigger → usage → artifact identity is one readable chain in the story.
+
+The stamp is untouched. The frozen prelaunch revalidation runs on a continuation
+exactly as it runs on any cycle, and a stamp that fails it is refused with the
+validator's own exit code and reason. What a continuation adds is a
+`${STORY}.blocked` marker typed `CONTINUATION-STAMP:` carrying
+`reason=CONTINUATION_STAMP_REFRESH_REQUIRED` beside `validator_reason=<the
+validator's code>`, saying that the planner must call `POST /v1/route` again and
+mint a new stamp with `make-stamp.sh`. A continuation is never launched under a
+locally minted or locally edited stamp — that would be a routing decision taken
+after acceptance, and half-finished work makes it more tempting, not more
+permissible.
+
+**The cap.** `continuation_cap` in the declared policy bounds how many
+continuation cycles one story may consume. The count is the number of prior
+cycles whose retained result is both `continuation_required` **and** carries
+`budget.continuation_of` — that is, cycles that themselves consumed a hand-over.
+The first cycle's hand-over is not a consumption and is not counted; counting it
+would fire the cap one cycle early.
+
+At the cap the next continuation refuses fail-closed with a `${STORY}.blocked`
+marker typed `CONTINUATION-CAP:` carrying `reason=CONTINUATION_CAP_REACHED`, the
+count, the cap and the exact frontmatter that would authorise the cycle, and
+exit code 3. Nothing is placed, validated or launched and no result is written.
+It refuses in the same place, and for the same kind of reason, as an oversized
+story: a story that keeps needing another window is a planning finding.
+
+A human authorises one more continuation by recording the decision in the
+story's own frontmatter:
+
+```yaml
+continuation_decision:
+  cycle: 4              # the ONE cycle this authorises
+  actor: <who decided>
+  at: <RFC3339>
+  reason: <why one more continuation is the right call>
+```
+
+Every member is required and the recorded cycle must be the cycle being run: a
+decision does not carry forward to a later one. An authorised cycle proceeds and
+records the decision verbatim in `budget.continuation_decision`.
+`REPEATED_CONTINUATION` is added to **every** continuation, authorised or not —
+the finding is the PM's story-sizing signal, not a complaint about the cap.
+
+Settlement is unchanged. A continuation worker is a fresh Orca-visible terminal
+exactly like any cycle, and the frozen Story 1.3 completion-watch, terminal
+cleanup and worktree/branch accounting contracts apply unmodified; the monitor
+reads `result.context_budget` from a continuation cycle's thin result exactly as
+it reads any other.
 
 ### The context budget on the dispatch monitor
 

@@ -29,7 +29,10 @@ sizing_risk_ratio: 0.60     # >= this, dispatch proceeds and records SIZING_RISK
 checkpoint_ratio: 0.70      # >= this, a worker must checkpoint (lane B)
 continuation_ratio: 0.85    # >= this, pre-dispatch refuses; in flight, continue
 
-# How many continuations one story may consume before a human decides (lane C).
+# How many continuation CYCLES one story may consume before a human decides.
+# Counted from the retained per-cycle thin results, not from a stored counter.
+# At the cap the next continuation refuses unless the story carries a
+# `continuation_decision:` naming that cycle.
 continuation_cap: 2
 
 # The stable reason codes this policy's outcomes are reported under. Automation
@@ -48,6 +51,9 @@ reason_codes:
   - CHECKPOINT_ARTIFACT_STALE   # the checkpoint on disk is byte-identical to the one this attempt started with
   - CONTINUATION_ARTIFACT_INVALID # a continuation was signalled without valid evidence
   - WINDOW_UNCORROBORATED       # the envelope carries no window for the routed model
+  - CONTINUATION_CAP_REACHED    # the story has spent every continuation this policy allows
+  - CONTINUATION_STAMP_REFRESH_REQUIRED # a continuation's stamp no longer validates; the planner re-routes and re-stamps
+  - REPEATED_CONTINUATION       # this cycle is a continuation (the PM's story-sizing signal)
 
 # The bounded budget state a dispatch reports. All four are declared here and
 # published by `agent-flow-kit schema`; pre-dispatch produces only OK and

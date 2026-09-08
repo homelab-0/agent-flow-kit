@@ -2128,6 +2128,293 @@ CLAUDE_EXIT=0"
 
 
 # ===========================================================================
+head1 "3e. Continuation cycles, the cap, and settlement (lane C)"
+# ===========================================================================
+# A continuation is the NEXT CYCLE of the same story under the SAME stamp,
+# through this same dispatch.sh. Every case below runs the real launcher, so
+# what is proved is what dispatch actually did: the prompt it wrote, the
+# estimate it computed, the marker it left, and what it refused to launch.
+
+CAP="$(yq -r '.continuation_cap' "$BUDGET_POLICY_SHIPPED")"
+CONT_BODY="$(ckpt afk-continuation/1 "$CONT_EXTRA")"
+
+# retain — synthesise ONE retained per-cycle thin result, which is the only
+# evidence the chain and the cap are counted from.
+retain() { # <story-basename> <cycle> <continuation_of-json|null>
+  jq -n --arg s "$1.md" --argjson c "$2" --argjson cof "$3" \
+    '{story:$s, cycle:$c, status:"continuation_required",
+      budget:{state:"CONTINUATION_REQUIRED", usage_tokens:180000, usage_ratio:0.900000,
+              continuation_artifact:(if $cof == null
+                                     then {path:($s+".continuation.json"), sha256:"sha256:seed"}
+                                     else null end),
+              continuation_of:$cof}}' > "$WT/$1.md.result.c$2.json"
+}
+cont_story() { # <basename> [extra frontmatter]
+  write_story "$WT/$1.md" "persona: dev
+gates: [\"true\"]
+max_cycles: 8${2:-}"
+  write_stamp "$WT/$1.md.stamp.json" high false
+  printf '%s' "$CONT_BODY" > "$WT/$1.md.continuation.json"
+}
+
+# --- an ordinary cycle is unaffected, artifact on disk or not -------------
+# A continuation artifact left by an older chain does not make a cycle a
+# continuation: the evidence is the PRIOR CYCLE'S RESULT, and there is none.
+reset_stubs; spawn_reset
+cont_story s-c-ord
+rc="$(run_dispatch s-c-ord.md 1)"
+BR="$WT/s-c-ord.md.result.json"
+assert_eq "ordinary cycle: a stray artifact does not make it a continuation" "$rc" "0"
+assert_eq "ordinary cycle: continuation_of is null"  "$(bud '.budget.continuation_of|type' "$BR")" "null"
+assert_eq "ordinary cycle: no continuation_decision" "$(bud '.budget.continuation_decision|type' "$BR")" "null"
+assert_eq "ordinary cycle: no REPEATED_CONTINUATION finding" \
+  "$(bud '.budget.findings|length' "$BR")" "0"
+assert_absent "ordinary cycle: the prompt carries no continuation section" \
+  "$(cat "$WT/s-c-ord.md.prompt")" "Continuation from cycle"
+assert_absent "ordinary cycle: nothing was appended to the story record" \
+  "$(cat "$WT/s-c-ord.md")" "- budget: CONTINUATION "
+# --- the per-cycle result is retained ------------------------------------
+if [[ -f "$WT/s-c-ord.md.result.c1.json" ]]; then
+  ok "retention: a per-cycle copy of the thin result is kept"
+else bad "retention: a per-cycle copy of the thin result is kept"; fi
+assert_eq "retention: it is the same document the cycle published" \
+  "$(jq -S . "$WT/s-c-ord.md.result.c1.json")" "$(jq -S . "$BR")"
+# A later cycle whose prior cycles left no result at all, and one whose prior
+# result is `done`: both are ordinary, and neither is an error.
+reset_stubs
+cont_story s-c-gap
+rc="$(run_dispatch s-c-gap.md 3)"
+assert_eq "ordinary cycle: a cycle with no prior result at all still runs" "$rc" "0"
+assert_eq "ordinary cycle: and claims no continuation" \
+  "$(bud '.budget.continuation_of|type' "$WT/s-c-gap.md.result.json")" "null"
+reset_stubs
+rc="$(run_dispatch s-c-ord.md 2)"
+assert_eq "ordinary cycle: a prior cycle that finished is not a hand-over" \
+  "$(bud '.budget.continuation_of|type' "$WT/s-c-ord.md.result.json")" "null"
+
+# --- a real hand-over, then the continuation that consumes it -------------
+reset_stubs; spawn_reset
+cont_story s-c-run
+rm -f "$WT/s-c-run.md.continuation.json"          # the worker writes it, not us
+export STUB_TERMINAL_TAIL="working
+CONTINUATION-REQUIRED: the story is larger than one window
+CLAUDE_EXIT=0"
+export STUB_SPAWN_PATH1="$WT/s-c-run.md.continuation.json"
+STUB_SPAWN_BODY1="$CONT_BODY"; export STUB_SPAWN_BODY1
+export STUB_SPAWN_PATH2="$WT/s-c-run.md.claude-result.json"
+# The envelope carries BOTH halves of what cycle 1 leaves behind: the worker's
+# own signal (dispatch reads the result envelope, not the terminal, on claude)
+# and the usage that continuation_of has to carry forward.
+STUB_SPAWN_BODY2="$(envelope 100000 0 0 200000 opus \
+  | jq -c '.result = "working\nCONTINUATION-REQUIRED: the story is larger than one window"')"
+export STUB_SPAWN_BODY2
+rc="$(run_dispatch s-c-run.md 1)"
+assert_eq "chain: cycle 1 hands over" \
+  "$(bud .status "$WT/s-c-run.md.result.c1.json")" "continuation_required"
+C1_EST="$(bud .budget.estimate_tokens "$WT/s-c-run.md.result.json")"
+ART_SHA="sha256:$(sha256sum "$WT/s-c-run.md.continuation.json" | cut -d' ' -f1)"
+ART_BYTES="$(wc -c < "$WT/s-c-run.md.continuation.json" | tr -d ' ')"
+
+reset_stubs; spawn_reset
+export STUB_TERMINAL_TAIL="ok
+CLAUDE_EXIT=0"
+rc="$(run_dispatch s-c-run.md 2)"
+BR="$WT/s-c-run.md.result.json"
+assert_eq "continuation: cycle 2 runs, through the ordinary path" "$rc" "0"
+PROMPT2="$(cat "$WT/s-c-run.md.prompt")"
+assert_contains "continuation: the prompt carries the fixed heading" \
+  "$PROMPT2" "Continuation from cycle 1"
+assert_contains "continuation: with the artifact's own content, as data" \
+  "$PROMPT2" '"in_flight":"the gate run"'
+# Ordering is the contract: the artifact sits AFTER the story instructions and
+# BEFORE the launcher's budget paragraph.
+assert_eq "continuation: the section sits between the story and budget paragraphs" \
+  "$(awk '/^Execute the story file/{a=NR} /^Continuation from cycle/{b=NR} /^Context discipline/{c=NR}
+          END{print (a<b && b<c) ? "ordered" : "misordered"}' "$WT/s-c-run.md.prompt")" "ordered"
+C2_EST="$(bud .budget.estimate_tokens "$BR")"
+if (( C2_EST >= C1_EST + ART_BYTES / 4 )); then
+  ok "continuation: the artifact is counted in the estimate, through the prompt"
+else bad "continuation: the artifact is counted in the estimate, through the prompt" \
+  "cycle1 $C1_EST, cycle2 $C2_EST, artifact $ART_BYTES bytes"; fi
+assert_eq "continuation: continuation_of names the cycle continued" \
+  "$(bud .budget.continuation_of.cycle "$BR")" "1"
+assert_eq "continuation: and the artifact it consumed, by digest" \
+  "$(bud .budget.continuation_of.artifact_sha256 "$BR")" "$ART_SHA"
+assert_eq "continuation: the trigger is the worker's own signal" \
+  "$(bud .budget.continuation_of.trigger "$BR")" "WORKER_SIGNAL"
+assert_eq "continuation: the prior cycle's usage evidence travels with it" \
+  "$(bud '.budget.continuation_of.usage_tokens|type' "$BR")" "number"
+assert_contains "continuation: REPEATED_CONTINUATION is the PM's sizing signal" \
+  "$(jq -c '.budget.findings' "$BR")" "REPEATED_CONTINUATION"
+# --- the record chain (S4) -----------------------------------------------
+REC="$(grep -a '^- budget: CONTINUATION ' "$WT/s-c-run.md" || true)"
+assert_contains "record chain: one dated line, naming the cycle continued" "$REC" "from cycle 1"
+assert_contains "record chain: carrying the artifact identity"             "$REC" "$ART_SHA"
+assert_contains "record chain: and the trigger"                            "$REC" "trigger=WORKER_SIGNAL"
+assert_contains "record chain: and the usage evidence"                     "$REC" "usage=100000"
+assert_contains "record chain: written for this cycle"                     "$REC" "cycle 2"
+assert_eq "record chain: it lives in the Dev Agent Record" \
+  "$(sed -n '/^## Dev Agent Record/,$p' "$WT/s-c-run.md" | grep -ac '^- budget: CONTINUATION ')" "1"
+reset_stubs
+rc="$(run_dispatch s-c-run.md 2)"
+assert_eq "record chain: a re-dispatch of the SAME cycle does not duplicate" \
+  "$(grep -ac '^- budget: CONTINUATION ' "$WT/s-c-run.md")" "1"
+
+# --- the artifact can push the estimate past the refusal threshold --------
+# Lane A's path, unchanged: the window is the continuation estimate itself, so
+# the ratio is 1.0 by construction rather than by a magic byte count.
+awk -v w="$C2_EST" '{print} /^  "claude\/strong":[[:space:]]*$/ {print "    min_context: " w}' \
+  "$WORK/catalog.yaml" > "$WORK/catalog-cont.yaml"
+reset_stubs
+rm -f "$WT/s-c-run.md.blocked"
+rc="$(STUB_CATALOG="$WORK/catalog-cont.yaml"; export STUB_CATALOG; run_dispatch s-c-run.md 2)"
+assert_eq "continuation sizing: refuses on lane A's path, exit 8" "$rc" "8"
+SZM="$(cat "$WT/s-c-run.md.blocked")"
+assert_contains "continuation sizing: the same typed marker"  "$SZM" "STORY-SIZING: reason=SIZING_REFUSED"
+assert_contains "continuation sizing: the enumeration names the artifact" \
+  "$SZM" "s-c-run.md.continuation.json"
+assert_contains "continuation sizing: and says where it was counted" \
+  "$SZM" "inlined into the prompt"
+assert_empty_file "continuation sizing: nothing was placed"   "$STUB_STATE/curl-calls"
+assert_empty_file "continuation sizing: nothing was launched" "$STUB_STATE/terminal-creates"
+
+# --- a hand-over whose evidence is gone: loud, and pre-launch -------------
+reset_stubs; spawn_reset
+cont_story s-c-noart
+retain s-c-noart 1 null
+rm -f "$WT/s-c-noart.md.continuation.json" "$WT/s-c-noart.md.blocked"
+rc="$(run_dispatch s-c-noart.md 2)"
+assert_eq "no evidence: loud NEEDS-HUMAN exit" "$rc" "3"
+NAM="$(cat "$WT/s-c-noart.md.blocked")"
+assert_contains "no evidence: the stable reason code" "$NAM" "reason=CONTINUATION_ARTIFACT_INVALID"
+assert_contains "no evidence: naming the check that failed" "$NAM" "detail=ARTIFACT_MISSING"
+assert_contains "no evidence: naming the cycle it would have continued" "$NAM" "continuation_of=1"
+assert_no_file "no evidence: NO result artifact claims an outcome" "$WT/s-c-noart.md.result.json"
+assert_empty_file "no evidence: nothing was placed"   "$STUB_STATE/curl-calls"
+assert_empty_file "no evidence: nothing was launched" "$STUB_STATE/terminal-creates"
+# and a schema-mismatched artifact takes the same path
+reset_stubs
+printf '%s' "$(ckpt afk-checkpoint/1 "$CONT_EXTRA")" > "$WT/s-c-noart.md.continuation.json"
+rc="$(run_dispatch s-c-noart.md 2)"
+assert_eq "wrong schema: same loud path" "$rc" "3"
+assert_contains "wrong schema: named from the closed verdict vocabulary" \
+  "$(cat "$WT/s-c-noart.md.blocked")" "detail=ARTIFACT_SCHEMA_MISMATCH"
+
+# --- the cap (S3): two continuations proceed, the third refuses -----------
+reset_stubs; spawn_reset
+cont_story s-c-cap
+retain s-c-cap 1 null                                    # the hand-over
+rc="$(run_dispatch s-c-cap.md 2)"
+assert_eq "cap: continuation 1 of $CAP proceeds" "$rc" "0"
+assert_eq "cap: the kit read the prior cycle's usage-band trigger" \
+  "$(bud .budget.continuation_of.trigger "$WT/s-c-cap.md.result.json")" "WORKER_SIGNAL"
+jq -n --arg s s-c-cap --argjson c 2 \
+  '{story:$s, cycle:$c, status:"continuation_required",
+    budget:{state:"CONTINUATION_REQUIRED", usage_tokens:190000, usage_ratio:0.950000,
+            continuation_artifact:null, continuation_of:{cycle:1}}}' \
+  > "$WT/s-c-cap.md.result.c2.json"
+reset_stubs
+rc="$(run_dispatch s-c-cap.md 3)"
+assert_eq "cap: continuation $CAP of $CAP proceeds" "$rc" "0"
+assert_eq "cap: a prior cycle the KIT continued reads as USAGE_BAND" \
+  "$(bud .budget.continuation_of.trigger "$WT/s-c-cap.md.result.json")" "USAGE_BAND"
+jq -n --arg s s-c-cap --argjson c 3 \
+  '{story:$s, cycle:$c, status:"continuation_required",
+    budget:{state:"CONTINUATION_REQUIRED", usage_tokens:190000, usage_ratio:0.950000,
+            continuation_artifact:null, continuation_of:{cycle:2}}}' \
+  > "$WT/s-c-cap.md.result.c3.json"
+reset_stubs
+rm -f "$WT/s-c-cap.md.blocked"
+rc="$(run_dispatch s-c-cap.md 4)"
+assert_eq "cap: the next continuation refuses, fail-closed" "$rc" "3"
+CPM="$(cat "$WT/s-c-cap.md.blocked")"
+assert_contains "cap: marker typed CONTINUATION-CAP:" "$CPM" "CONTINUATION-CAP:"
+assert_contains "cap: carrying the stable reason code" "$CPM" "reason=CONTINUATION_CAP_REACHED"
+assert_contains "cap: the count it counted"           "$CPM" "count=$CAP"
+assert_contains "cap: and the cap it counted against" "$CPM" "cap=$CAP"
+assert_contains "cap: it prints the exact frontmatter to add" "$CPM" "continuation_decision:"
+assert_contains "cap: naming the ONE cycle it would authorise" "$CPM" "cycle: 4"
+assert_contains "cap: and names the policy that owns the number" \
+  "$CPM" "context-budget-policy.yaml"
+assert_no_file "cap: NO result artifact was written"   "$WT/s-c-cap.md.result.c4.json"
+assert_empty_file "cap: nothing was placed"   "$STUB_STATE/curl-calls"
+assert_empty_file "cap: nothing was launched" "$STUB_STATE/terminal-creates"
+
+# --- an authorised third continuation proceeds and records the decision ---
+reset_stubs
+write_story "$WT/s-c-cap.md" "persona: dev
+gates: [\"true\"]
+max_cycles: 8
+continuation_decision:
+  cycle: 4
+  actor: pm
+  at: 2026-09-07T00:00:00Z
+  reason: the remaining work is one gate run"
+rc="$(run_dispatch s-c-cap.md 4)"
+BR="$WT/s-c-cap.md.result.json"
+assert_eq "authorised: the cycle proceeds" "$rc" "0"
+assert_eq "authorised: the decision is recorded verbatim" \
+  "$(jq -c '.budget.continuation_decision' "$BR")" \
+  '{"cycle":4,"actor":"pm","at":"2026-09-07T00:00:00Z","reason":"the remaining work is one gate run"}'
+assert_contains "authorised: REPEATED_CONTINUATION fires anyway" \
+  "$(jq -c '.budget.findings' "$BR")" "REPEATED_CONTINUATION"
+# A decision naming a DIFFERENT cycle does not carry forward.
+reset_stubs
+jq -n --arg s s-c-cap --argjson c 4 \
+  '{story:$s, cycle:$c, status:"continuation_required",
+    budget:{state:"CONTINUATION_REQUIRED", continuation_artifact:null,
+            continuation_of:{cycle:3}}}' > "$WT/s-c-cap.md.result.c4.json"
+rm -f "$WT/s-c-cap.md.blocked"
+rc="$(run_dispatch s-c-cap.md 5)"
+assert_eq "authorised: a decision for cycle 4 does not authorise cycle 5" "$rc" "3"
+assert_contains "authorised: and says so with the same code" \
+  "$(cat "$WT/s-c-cap.md.blocked")" "reason=CONTINUATION_CAP_REACHED"
+
+# --- S2: the same stamp, revalidated; expired refuses with the refresh path
+reset_stubs; spawn_reset
+cont_story s-c-stamp
+retain s-c-stamp 1 null
+STAMP_BEFORE="$(sha256sum "$WT/s-c-stamp.md.stamp.json" | cut -d' ' -f1)"
+rm -f "$WT/s-c-stamp.md.blocked"
+rc="$(STUB_VALIDATOR_EXIT=1; export STUB_VALIDATOR_EXIT; run_dispatch s-c-stamp.md 2)"
+assert_eq "stamp: the validator's own refusal is unchanged (exit 4)" "$rc" "4"
+STM="$(cat "$WT/s-c-stamp.md.blocked")"
+assert_contains "stamp: marker typed CONTINUATION-STAMP:" "$STM" "CONTINUATION-STAMP:"
+assert_contains "stamp: carrying the stable reason code" \
+  "$STM" "reason=CONTINUATION_STAMP_REFRESH_REQUIRED"
+assert_contains "stamp: beside the validator's OWN reason, not instead of it" \
+  "$STM" "validator_reason=stamp_expired"
+assert_contains "stamp: it names the central decision as the way forward" "$STM" "POST /v1/route"
+assert_contains "stamp: and a NEW stamp minted by the planner"            "$STM" "make-stamp.sh"
+assert_contains "stamp: a local substitute is refused in so many words" \
+  "$STM" "locally minted or locally edited"
+assert_eq "stamp: the stamp itself is byte-identical afterwards" \
+  "$(sha256sum "$WT/s-c-stamp.md.stamp.json" | cut -d' ' -f1)" "$STAMP_BEFORE"
+assert_no_file "stamp: no result artifact was written" "$WT/s-c-stamp.md.result.c2.json"
+assert_empty_file "stamp: nothing was launched" "$STUB_STATE/terminal-creates"
+assert_absent "stamp: no substitute route was chosen" "$(cat "$WORK/err")" "fallback"
+# The control: the SAME continuation, with a stamp that validates, launches.
+reset_stubs
+rc="$(run_dispatch s-c-stamp.md 2)"
+assert_eq "stamp CONTROL: a valid stamp launches the same continuation" "$rc" "0"
+
+# --- S5: settlement is the frozen 1.3 path, unmodified -------------------
+if git -C "$KIT_ROOT" show master:lib/afk-monitor.sh 2>/dev/null \
+     | cmp -s - "$KIT_ROOT/lib/afk-monitor.sh"; then
+  ok "settlement: lib/afk-monitor.sh is byte-identical to master — nothing needed to change"
+else bad "settlement: lib/afk-monitor.sh is byte-identical to master — nothing needed to change" \
+  "$(git -C "$KIT_ROOT" diff --stat master -- lib/afk-monitor.sh)"; fi
+assert_eq "settlement: a continuation cycle's budget state is one of the declared four" \
+  "$(jq -r --argjson s "$(yq -o=json -I=0 '.budget_states' "$BUDGET_POLICY_SHIPPED")" \
+      '.budget.state as $st | ($s | index($st)) != null' "$WT/s-c-run.md.result.c2.json")" "true"
+assert_eq "settlement: and the retained copy carries the same status the monitor reads" \
+  "$(jq -r .status "$WT/s-c-cap.md.result.c4.json")" "continuation_required"
+
+spawn_reset
+export STUB_TERMINAL_TAIL="ok
+CLAUDE_EXIT=0"
+
+# ===========================================================================
 head1 "4. make-stamp.sh — expires_at verbatim, override is provenance only"
 # ===========================================================================
 

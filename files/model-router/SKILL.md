@@ -211,6 +211,28 @@ continuation gives the thin result `status: continuation_required`; a signalled
 continuation with a missing, unparseable or stale artifact is a loud
 `NEEDS-HUMAN` and writes no result at all.
 
+**A continuation is the next cycle of the same story, under the same stamp.**
+Dispatch the same story again with the next cycle number: it consumes
+`<story>.continuation.json` into the prompt and the estimate, records
+`budget.continuation_of`, and adds `REPEATED_CONTINUATION` — a story that needed
+a second window was sized for one it did not have. Two things need you. If the
+stamp has expired or been invalidated, the refusal names
+`CONTINUATION_STAMP_REFRESH_REQUIRED`: call `POST /v1/route` again, accept, and
+mint a NEW stamp with `make-stamp.sh` — never edit or locally substitute the one
+you have, however half-finished the work is. And when the story has consumed
+`continuation_cap` continuations, the next one refuses with
+`CONTINUATION_CAP_REACHED`; split the story, or authorise exactly one more cycle
+by recording the decision in the story's frontmatter, which the refusal marker
+prints verbatim:
+
+```yaml
+continuation_decision:
+  cycle: 4              # the ONE cycle this authorises; it does not carry forward
+  actor: <who decided>
+  at: <RFC3339>
+  reason: <why one more continuation is the right call>
+```
+
 ### 6. Dispatch — visibly, through Orca
 
 Orca owns worktrees, terminals, processes and native harness auth. The kit owns
