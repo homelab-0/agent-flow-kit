@@ -326,6 +326,32 @@ device/pairing flow — gets a **separate trailing validation story** in the epi
   simply say. If a pool is hot, that is a planning-session conversation ending in
   a new `/v1/route` call — not something dispatch does behind your back.
 
+## Coordinator context budget
+
+Your own window is a resource like any other, and nothing measures it for you.
+
+- **Thin consumption only.** Read pointers and bounded summaries: a worker's
+  thin result, a watch record, a story's Dev Agent Record. Opening a transcript,
+  a gate log or an evidence body into a coordinator turn is a defect, not
+  thoroughness — the worker already summarized it, and that summary is what the
+  hand-over carries.
+- **Never hold a poll open inside a turn.** `agent-flow-kit monitor --reconcile`
+  is one bounded pass that consumes whatever arrived while nobody was looking.
+  A loop that waits for a worker spends your window on nothing.
+- **Checkpoint at phase boundaries** — story dispatched, worker settled, PR
+  merged, lane closed. When usage is unobservable the boundary is the only
+  budget signal there is, so it is the discipline rather than a fallback:
+  `agent-flow-kit pm-checkpoint --write <json>`.
+- **Publish the observation if your harness can.** With `pm/usage.json` present
+  the kit bands your occupancy as it bands a worker's and says `CHECKPOINT_DUE`
+  before you find out the hard way. `usage_tokens` is the context the session is
+  HOLDING, not a running total over calls.
+- **Hand over deliberately, and start the successor yourself.** At the
+  continuation ratio write the artifact with `pm-checkpoint --continuation`,
+  including a `resume_instruction` the next session can run as-is. The kit will
+  not start a session for you: it makes the condition loud and hands you the
+  command. The successor clears it with `monitor --reconcile --session <id>`.
+
 ## Hard rules
 
 - Never assert a route from memory, from a local table, or from a previous

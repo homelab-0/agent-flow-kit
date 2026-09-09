@@ -659,6 +659,10 @@ afk_reason_message() { # <reason>
     ext="$(afk_monitor_reason_message "$1")"
     if [[ -n "$ext" ]]; then printf '%s' "$ext"; return 0; fi
   fi
+  if declare -F afk_pm_reason_message >/dev/null 2>&1; then
+    ext="$(afk_pm_reason_message "$1")"
+    if [[ -n "$ext" ]]; then printf '%s' "$ext"; return 0; fi
+  fi
   case "$1" in
     INSTALLATION_NOT_ADOPTED)          printf 'No agent-flow-kit state manifest exists, so no installed component has a proven owner or baseline.' ;;
     STATE_SCHEMA_UNRECOGNIZED)         printf 'The state manifest does not present a recognizable versioned shape.' ;;
@@ -769,6 +773,10 @@ afk_reason_action() { # <reason>
   fi
   if declare -F afk_monitor_reason_action >/dev/null 2>&1; then
     ext="$(afk_monitor_reason_action "$1")"
+    if [[ -n "$ext" ]]; then printf '%s' "$ext"; return 0; fi
+  fi
+  if declare -F afk_pm_reason_action >/dev/null 2>&1; then
+    ext="$(afk_pm_reason_action "$1")"
     if [[ -n "$ext" ]]; then printf '%s' "$ext"; return 0; fi
   fi
   case "$1" in
@@ -1183,6 +1191,16 @@ afk_render_human() { # <result-json-document>
       + "  local_branch=\((.cleanup.local_branch? // "-"))  remote_branch=\((.cleanup.remote_branch? // "-"))"'
   fi
   printf '    required action: %s\n' "$(afk_render_q -r '.dispatch_monitor.required_action // "-"')"
+
+  if [[ "$(afk_render_q -r 'if .extra.pm_budget then "y" else "n" end')" == "y" ]]; then
+    printf '\n  coordinator context budget (a PROVIDED observation; the kit measures nothing and launches nothing)\n'
+    afk_render_q -r '.extra.pm_budget |
+      (def id: if . == null then "-" else "\(.path) \(.sha256)" end;
+       "    state: \(.state) (\(.reason // "-"))  needs_human=\(.needs_human)\n"
+       + "    window=\(.window_tokens // "-") (\(.window_source))"
+       + "  usage=\(.usage_tokens // "-")  ratio=\(.usage_ratio // "-")\n"
+       + "    checkpoint=\(.checkpoint_artifact | id)  continuation=\(.continuation_artifact | id)")'
+  fi
 
   printf '\n  environment (names and presence only; values are never emitted)\n'
   afk_render_q -r '.environment[] |
