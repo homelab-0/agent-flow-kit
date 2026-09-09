@@ -1875,5 +1875,82 @@ run_afk not-a-command
 assert_eq "the refused verbs changed nothing at all" "$(fingerprint_tree "$HOMEDIR")" "$FP_BEFORE"
 
 # ===========================================================================
+head1 "14. The coordinator's own artifacts (lane D)"
+# ===========================================================================
+#
+# A PM artifact carries pointers and bounded summaries, is secret-free by rule,
+# and is settled atomically: a refused submission leaves what is on disk as it was.
+PMD="$HOMEDIR/.local/state/agent-flow-kit/pm"
+pm_doc() { # [extra jq object]  -> the submitted document
+  local extra="${1:-}"; [[ -n "$extra" ]] || extra='{}'
+  jq -nc "{schema:\"afk-pm-checkpoint/1\", decisions:[\"story dispatched\"], envelope_actions:[], open_escalations:[],
+           budget_state:{cycles:1}, in_flight_dispatches:[\"ctx_1\"], updated_at:\"2026-09-08T00:00:00Z\"} + $extra" > "$TMPROOT/pm-sub.json"
+}
+
+pm_doc
+run_afk pm-checkpoint --json --write "$TMPROOT/pm-sub.json"
+assert_eq "a valid checkpoint is accepted" "$RUN_RC" "0"
+assert_eq "and written where the contract says" \
+  "$(jq -r '.schema' "$PMD/checkpoint.json")" "afk-pm-checkpoint/1"
+assert_eq "the result names the artifact it wrote" \
+  "$(jget '.extra.pm_budget.checkpoint_artifact.path')" "$PMD/checkpoint.json"
+# Story 1.6 owns the envelope vocabulary; an empty list is valid until it does.
+assert_eq "an empty envelope_actions list is valid" \
+  "$(jq -r '.envelope_actions | length' "$PMD/checkpoint.json")" "0"
+GOOD="$(cat "$PMD/checkpoint.json")"
+
+# Thin consumption is enforced, not merely asked for, and a submission that
+# does not present the shape is refused whatever is wrong with it.
+while IFS='|' read -r extra label; do
+  if [[ "$extra" == "RAW" ]]; then printf 'not json' > "$TMPROOT/pm-sub.json"; else pm_doc "$extra"; fi
+  run_afk pm-checkpoint --write "$TMPROOT/pm-sub.json"
+  assert_eq "$label" "$RUN_RC" "1"
+done <<CASES
+{in_flight_dispatches:[{id:"ctx_1", transcript:"...the whole thing..."}]}|a dispatch BODY where an id belongs is refused
+{decisions:"not a list"}|so is a member with the wrong type
+{updated_at:""}|and one the contract requires but that carries nothing
+{schema:"afk-pm-continuation/1"}|a document declaring another schema is about something else
+RAW|and an unreadable submission
+CASES
+pm_doc
+run_afk pm-checkpoint --continuation --write "$TMPROOT/pm-sub.json"
+assert_eq "a continuation with no resume instruction is refused" "$RUN_RC" "1"
+assert_absent "no continuation artifact was written for it" \
+  "$(ls "$PMD" 2>/dev/null)" "continuation.json"
+
+# --- secret-free BY RULE ---------------------------------------------------
+pm_doc "{api_key:\"$SENTINEL\"}"
+run_afk pm-checkpoint --json --write "$TMPROOT/pm-sub.json"
+assert_eq "a secret-bearing member is refused, and not with a generic code" "$RUN_RC" "4"
+assert_absent "the refused value reaches no result document" "$RUN_OUT" "$SENTINEL"
+assert_absent "and no diagnostic"                            "$RUN_ERR" "$SENTINEL"
+# A credential the member NAME cannot betray is caught by its shape.
+pm_doc "{note:\"sk-$SENTINEL\"}"
+run_afk pm-checkpoint --json --write "$TMPROOT/pm-sub.json"
+assert_eq "a credential-shaped value under an innocent name is refused too" "$RUN_RC" "4"
+assert_absent "and it is not echoed either" "$RUN_ERR" "$SENTINEL"
+# And where one is likeliest: behind a flag in the resume command line, the one place a credential is never at the front of the value.
+pm_doc "{schema:\"afk-pm-continuation/1\", resume_instruction:\"claude --resume PM --token sk-$SENTINEL\"}"
+run_afk pm-checkpoint --json --continuation --write "$TMPROOT/pm-sub.json"
+assert_eq "a credential embedded in a command line is refused as well" "$RUN_RC" "4"
+assert_absent "without reaching the result document" "$RUN_OUT" "$SENTINEL"
+assert_absent "or any diagnostic"                    "$RUN_ERR" "$SENTINEL"
+assert_no_file "and no hand-over was written from it" "$PMD/continuation.json"
+
+# --- atomic: a refusal never half-replaces what is already there -----------
+assert_eq "every refusal above left the accepted artifact byte-identical" \
+  "$(cat "$PMD/checkpoint.json")" "$GOOD"
+assert_eq "and left no partial temporary behind" \
+  "$(find "$PMD" -name '*.afk-tmp' 2>/dev/null | wc -l | tr -d ' ')" "0"
+assert_eq "the artifact is readable by its owner alone" \
+  "$(stat -c '%a' "$PMD/checkpoint.json" 2>/dev/null || stat -f '%OLp' "$PMD/checkpoint.json")" "600"
+
+# The verb needs the submission it validates, and nothing else writes one.
+run_afk pm-checkpoint --json
+assert_eq "pm-checkpoint without --write is a usage failure" "$RUN_RC" "1"
+run_afk status --write "$TMPROOT/pm-sub.json"
+assert_eq "and --write means nothing to status" "$RUN_RC" "1"
+
+# ===========================================================================
 printf '\n\033[1m%d passed, %d failed\033[0m\n' "$PASS" "$FAIL"
 (( FAIL == 0 )) || exit 1
