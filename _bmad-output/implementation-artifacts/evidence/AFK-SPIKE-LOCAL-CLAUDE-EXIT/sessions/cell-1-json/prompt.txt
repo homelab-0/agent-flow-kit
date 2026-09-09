@@ -1,0 +1,8 @@
+Write a file at /home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5d/_bmad-output/implementation-artifacts/evidence/AFK-SPIKE-LOCAL-CLAUDE-EXIT/sessions/cell-1-json/work/canary.md whose entire contents are the single
+line:
+
+canary ok
+
+Then reply with exactly: DONE
+
+Do nothing else. Do not read or search any other file.

@@ -1,0 +1,16 @@
+Work in the directory /home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5d/_bmad-output/implementation-artifacts/evidence/AFK-SPIKE-LOCAL-CLAUDE-EXIT/sessions/cell-4-stream-json-multiturn/work.
+
+Do these steps strictly in order, one tool call at a time:
+
+1. Write /home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5d/_bmad-output/implementation-artifacts/evidence/AFK-SPIKE-LOCAL-CLAUDE-EXIT/sessions/cell-4-stream-json-multiturn/work/note-01.md containing the single line: note 01
+2. Write /home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5d/_bmad-output/implementation-artifacts/evidence/AFK-SPIKE-LOCAL-CLAUDE-EXIT/sessions/cell-4-stream-json-multiturn/work/note-02.md containing the single line: note 02
+3. Write /home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5d/_bmad-output/implementation-artifacts/evidence/AFK-SPIKE-LOCAL-CLAUDE-EXIT/sessions/cell-4-stream-json-multiturn/work/note-03.md containing the single line: note 03
+4. Write /home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5d/_bmad-output/implementation-artifacts/evidence/AFK-SPIKE-LOCAL-CLAUDE-EXIT/sessions/cell-4-stream-json-multiturn/work/note-04.md containing the single line: note 04
+5. Write /home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5d/_bmad-output/implementation-artifacts/evidence/AFK-SPIKE-LOCAL-CLAUDE-EXIT/sessions/cell-4-stream-json-multiturn/work/note-05.md containing the single line: note 05
+6. Write /home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5d/_bmad-output/implementation-artifacts/evidence/AFK-SPIKE-LOCAL-CLAUDE-EXIT/sessions/cell-4-stream-json-multiturn/work/note-06.md containing the single line: note 06
+7. Read each of the six files back, one Read call per file.
+8. Write /home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5d/_bmad-output/implementation-artifacts/evidence/AFK-SPIKE-LOCAL-CLAUDE-EXIT/sessions/cell-4-stream-json-multiturn/work/summary.md listing the six file names, one per line.
+
+Then reply with exactly: DONE
+
+Do nothing else. Do not read or search any file outside /home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.5d/_bmad-output/implementation-artifacts/evidence/AFK-SPIKE-LOCAL-CLAUDE-EXIT/sessions/cell-4-stream-json-multiturn/work.
