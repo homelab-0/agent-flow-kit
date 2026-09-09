@@ -1,0 +1,53 @@
+commit under review: da1c7bf1448898a6d36bacf7eaae0949bdadfb53
+
+=== scope, budget, commit ===
+files changed vs 32e94cc:
+  233	0	_bmad-output/implementation-artifacts/AFK-PORT-1.5D.md
+  59	4	bin/agent-flow-kit
+  87	0	docs/LIFECYCLE-CONTRACT.md
+  26	0	files/model-router/SKILL.md
+  315	3	lib/afk-commands.sh
+  18	0	lib/afk-common.sh
+  74	0	tests/lifecycle-dispatch-tests.sh
+  137	0	tests/lifecycle-readiness-tests.sh
+  77	0	tests/lifecycle-tests.sh
+  product added+deleted: 793+7=800
+  dispatch tests vs 2b7b29f: 0 bytes of diff
+  fix-cycle diff (2b7b29f..HEAD):
+    2	2	lib/afk-commands.sh
+    23	28	tests/lifecycle-readiness-tests.sh
+    9	4	tests/lifecycle-tests.sh
+  commits above base: 1
+  author/committer: jlengelbrecht <jlengelbrecht96@gmail.com> / jlengelbrecht <jlengelbrecht96@gmail.com>
+  prohibited trailers: 0
+  tracked modifications in the worktree: 0
+  hard stops untouched: 0 hits
+  docs/skill/bin/common identical to pre-fix 2b7b29f:
+    docs/LIFECYCLE-CONTRACT.md       YES
+    files/model-router/SKILL.md      YES
+    bin/agent-flow-kit               YES
+    lib/afk-common.sh                YES
+
+=== the prior review's residuals, re-run (expect: unchanged, neither fixed nor worsened) ===
+  R1 corrupt checkpoint read back: reason=PM_USAGE_UNOBSERVABLE checkpoint_artifact=present+digest
+  R2 budget_state with *_tokens members: rc=4 (4 = still refused as secret-bearing)
+  R3 secret refusal publishes the code: rc=4 result-bytes=0 PM_ARTIFACT_SECRET_BEARING=0
+  R4 launcher.budget_policy read by the kit: NO (unchanged)
+  R5 AFK_PM_SESSION exported: rc=1 (0 mentions in the usage block)
+  R12 open schema: extra members on disk = evidence_body,transcript
+
+=== the unaffected acceptance criteria, re-reproduced ===
+  AC-1 unparseable:      NOT_EVALUATED/PM_USAGE_UNOBSERVABLE
+  AC-1 no provenance:    NOT_EVALUATED/PM_USAGE_UNOBSERVABLE/NOT_EVALUATED
+  AC-1 unread schema:    NOT_EVALUATED/PM_USAGE_UNOBSERVABLE
+  AC-4 continuation write rc=2 (2 = loud owner action)
+  AC-4 status:           CONTINUATION_REQUIRED/PM_CONTINUATION_REQUIRED/needs_human=true
+  AC-4 finding evidence: owner_action | resume_instruction: claude --resume PM-2
+  AC-4 next_safe_action: Start the successor ORCH PM session yourself in Orca, then run: claude --resume PM-2
+  AC-4 launcher calls added anywhere in bin/ or lib/: 0
+  AC-5 reconcile rc=0
+  AC-5 recorded:         {"successor":"PM-2","sha":"sha256:213500c"}
+  AC-5 count:            1
+  AC-5 cleared:          NOT_EVALUATED/needs_human=false
+  AC-5 replay count:     1
+  AC-6 contract reason block == afk_pm_reason_table: IDENTICAL

@@ -231,3 +231,41 @@ the epic-budget input (FR-126) and nothing consumes it yet. The Story 1.8
 statusline hook remains the expected adapter writer for `pm/usage.json`; this
 lane accepts a hand-written file with `provenance: HUMAN` and defines the
 contract that hook will satisfy.
+
+### Coordinator log — merge (2026-09-09) **[MERGE LOGGED]**
+
+- Natural implementation routing returned
+  `{claude, local-code-standard, medium}`. The coordinator applied the owner's
+  standing `claude/strong` override because Story 1.7 measured the local
+  profile at 6/9 with a path-resolution failure class. An initial local launch
+  stopped before worker placement when the requested dev persona file was not
+  installed; it performed no implementation work and spent no provider
+  compute. The cloud attempt produced the complete lane.
+- The first independent review was NOT CLEAN. B1 found that credential shapes
+  inside `resume_instruction` were accepted and echoed unless they began the
+  value. B2 found that a named unusable PM stamp lost
+  `PM_STAMP_UNUSABLE` when usage was null. Twelve lower-severity residuals were
+  retained. The first bounded fix closed both blockers but crossed its path
+  boundary by compressing the worker-handoff test suite, so the coordinator
+  rejected that scope drift. A second bounded correction restored that suite
+  byte-for-byte and recovered the line budget only inside the declared
+  readiness surface.
+- Final product commit `da1c7bf` was one clean commit above base `32e94cc`,
+  exactly 793 additions and 7 deletions across the eight declared product
+  files. Post-fix independent review was CLEAN. It proved both new regression
+  blocks load-bearing against a scratch copy with the two fixed lines reverted
+  and reran readiness 359/0, worker handoff 274/0, lifecycle 503/0, and
+  `git diff --check` clean. Four non-blocking residuals were registered: glued
+  credential boundaries, widened false positives in prose, a weaker failure
+  diagnostic in the reason sweep, and expired but well-shaped PM stamps still
+  resolving a window.
+- PR #38 squash-merged to `master` as `b35e0c2` under the standing merge grant.
+  GitGuardian was clean, Devin reported its documented no-credit pass, and the
+  PR had zero reviews, comments, or unresolved threads. CodeRabbit and Sentry
+  did not attach to this repository or commit.
+- The installed host kit converged `f9bffe0` → `b35e0c2` from the exact merged
+  revision. Plan `sha256:1eb61228…` replaced only the managed model-router
+  component, preserved the machine-owned `subscriptions.yaml` at its exact
+  identity, and completed 11/11 offline verification checks. The final verify
+  reports the installed revision `CURRENT`; evidence is retained in
+  `evidence/AFK-PORT-1.5D/host-update-summary.md`.

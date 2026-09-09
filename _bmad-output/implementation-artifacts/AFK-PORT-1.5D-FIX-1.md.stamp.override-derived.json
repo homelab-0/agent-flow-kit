@@ -1,0 +1,31 @@
+{
+  "harness": "claude",
+  "model_profile": "claude/strong",
+  "effort": "medium",
+  "cost_class": "subscription",
+  "entitlement_pool": "anthropic-max",
+  "metered": false,
+  "placement_policy": "prefer-warm-local",
+  "placement_required": false,
+  "catalog_version": "sha256:a9322bda8daccc2003ee7a31e84a292501a70a7c89c2b9548f9934692ba6848b",
+  "expires_at": "2026-09-09T22:58:57Z",
+  "task": {
+    "story_id": "AFK-PORT-1.5D-FIX-1",
+    "tags": [
+      "security",
+      "tests"
+    ],
+    "title": "Close the two independent-review blockers in Story 1.5 lane D"
+  },
+  "override": {
+    "actor": "Josh (standing implementation-prefers-claude ruling; applied by ORCH coordinator 2026-09-08)",
+    "at": "2026-09-08T23:06:29Z",
+    "original": {
+      "harness": "claude",
+      "model_profile": "claude/strong"
+    },
+    "reason": "Natural route claude/local-code-standard is retained beside this artifact. Story 1.7 measured it at 6/9 on trivial canaries with a path-resolution failure class. This security-sensitive lane-D implementation fix follows the standing ruling; full profile fields come from trusted catalog 1.6.1 and router provenance remains verbatim."
+  },
+  "created_at": "2026-09-08T23:06:29Z",
+  "catalog_document_version": "1.6.1"
+}

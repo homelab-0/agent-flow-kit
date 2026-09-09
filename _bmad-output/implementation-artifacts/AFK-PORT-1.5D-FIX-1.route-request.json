@@ -1,0 +1,19 @@
+{
+  "story_id": "AFK-PORT-1.5D-FIX-1",
+  "title": "Close the two independent-review blockers in Story 1.5 lane D",
+  "summary": "Bounded security and precedence fix in the existing lane-D shell lifecycle change: detect supported credential shapes embedded inside continuation command strings before any artifact write or echo; preserve PM_STAMP_UNUSABLE over null or cumulative-only usage observations; add narrow regression rows; keep the final eight-file product diff at or below 800 added+changed lines; and amend the single lane commit to remove prohibited attribution/session trailers. Do not address the twelve residual findings or run the aggregate suite.",
+  "touched_paths": [
+    "lib/afk-commands.sh",
+    "tests/lifecycle-readiness-tests.sh",
+    "tests/lifecycle-tests.sh",
+    "_bmad-output/implementation-artifacts/AFK-PORT-1.5D.md",
+    "_bmad-output/implementation-artifacts/AFK-PORT-1.5D-FIX-1.md"
+  ],
+  "ambiguity": "low",
+  "blast_radius": "medium",
+  "context_size": 18000,
+  "volume_hint": "low",
+  "tags": ["security", "tests"],
+  "repo": "agent-flow-kit",
+  "requester": "bmad-pm"
+}

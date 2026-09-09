@@ -180,7 +180,7 @@ or control-plane surface. Story 1.4's live-render acceptance condition is the
 natural proving ground: a live PLAN-mode render and a populated statusline are
 the same demonstration.
 
-## Story 1.5 — Context Budgeting and Continuation (IN PROGRESS; lanes A, B and C merged; D and an external-report fix queued)
+## Story 1.5 — Context Budgeting and Continuation (IN PROGRESS; lanes A–D and the external-report fix merged; closure queued)
 
 Split into four sequential lanes by the coordinator (total scope preserved;
 FR coverage: A = FR-96–98 + FR-99 declaration; B = FR-99 evaluation, FR-100,
@@ -252,6 +252,23 @@ repository destroyed the live worktree and SIGKILLed its agent (~1h of
 uncommitted work lost) and dropped the coordinator's Run binding — never
 remove a worktree while the repository has a live worker; (36) `Edit` in the
 frozen claude tool set is owner-approved and queued after lane D.
+
+**Lane D merged** (PR #38, `b35e0c2`, 2026-09-09): the coordinator now accepts
+a final-context `pm/usage.json` observation, reports `pm_budget` through the
+same policy thresholds as workers, writes validated and redacted PM checkpoint
+or continuation artifacts atomically, raises a loud human-owned
+`PM_CONTINUATION_REQUIRED` without launching a session, and reconciles the
+successor by artifact digest with an idempotent continuation count. Review NOT
+CLEAN (embedded-credential echo and unusable-stamp precedence blockers) → two
+bounded fix passes, the second restoring an out-of-scope test rewrite →
+post-fix review CLEAN. Exact final checks: readiness 359/0, worker handoff
+274/0, lifecycle 503/0, diff-check clean; 800 reviewable lines across the eight
+declared product files. Host kit converged `f9bffe0` → `b35e0c2`, preserving
+the machine-owned subscription registry. Registry adds: (37) credentials
+glued directly to an alphanumeric, `_` or `-` boundary are still accepted;
+(38) the widened match also refuses ordinary `sk-`/`rk-` prose and costs a
+retry; (39) the reason-table sweep lost its per-code failure diagnostic; (40)
+an expired but well-shaped PM stamp still resolves a catalog window.
 
 ## Story 1.7 (Spike) — Persona Payload Viability on Local Profiles (COMPLETE 2026-09-07)
 
