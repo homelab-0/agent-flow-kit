@@ -62,10 +62,10 @@ precisely why the evidence could not have caught the error. Changing the member
 set would be its own decision, needing its own rationale and its own evidence;
 nothing in this bundle bears on it.
 
-The terminal envelope's
-`usage` for the same runs is cumulative across the session — 30,192 and 236,349
-— and cell 3's is 333,985, five times the window. The field envelopes are worse
-still: 2,301,235 and 1,433,412, or 35× and 22× the window. `stream-json` is the
+The terminal envelope's settled occupancy-member sum for the same runs is
+cumulative across the session — 30,050 and 234,843 — and cell 3's is 331,717,
+5.06 times the window. The field envelopes are worse still: 2,277,622 and
+1,407,404, or 34.8× and 21.5× the window. `stream-json` is the
 only retained format in which a real occupancy number exists at all. This
 directly answers the limitation the earlier external report raised.
 
@@ -97,8 +97,8 @@ ai-control-plane.
 **Corrected and narrowed.** Two things, no more.
 
 First, the cumulative `usage` in the `json` envelope must never be read as
-context occupancy; any sizing rule that does is wrong by 5× in the canary and
-by 22–35× in the field.
+context occupancy; any sizing rule that does is wrong by 5.06× in the canary and
+by 21.5–34.8× in the field.
 
 Second, deliverable shape predicts turn volume, and turn volume is what ran the
 field sessions past their bound: 142 turns for one document plus two schemas,
@@ -164,15 +164,16 @@ never divided by a window.
   accordingly); the result-file reader around `WORKER_TEXT` (read `.result` from
   the terminal event of a JSONL stream rather than a single object).
 - `tests/run-tests.sh` — the scope and budget assertions that encode the current
-  semantics: `:1766-1772` (a multi-turn envelope yields
+  semantics: `:1769-1771` (a multi-turn envelope yields
   `CUMULATIVE_RUN USAGE_CUMULATIVE_ONLY`) and `:1788-1800` (that a cumulative
   figure yields no ratio, no band, no `HIGH_USAGE`, and leaves the pre-dispatch
   verdict `OK`, against the `FINAL_CONTEXT` control immediately below). These
   stay as they are for cumulative-only inputs and gain a stream-fed case.
 - `tests/lifecycle-readiness-tests.sh` — the readiness rows that depend on
   `PM_USAGE_CUMULATIVE_ONLY`, `:1489-1490` and `:1520`.
-- `lib/afk-commands.sh:526` — the operator-facing `PM_USAGE_CUMULATIVE_ONLY`
-  reason row, if its wording no longer describes when the code is now reached.
+- `lib/afk-commands.sh:526` and `:638` — the operator-facing
+  `PM_USAGE_CUMULATIVE_ONLY` reason row and the observation-to-reason mapping,
+  if either no longer describes when the code is now reached.
 - `tests/` — new fixtures for the parsing boundary (listed below).
 
 **Frozen contract surfaces affected.** The claude launch contract's output

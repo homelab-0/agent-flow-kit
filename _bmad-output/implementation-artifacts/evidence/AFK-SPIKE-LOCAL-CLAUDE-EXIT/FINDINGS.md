@@ -159,14 +159,14 @@ The earlier external report's usage limitation reproduces exactly, and
 The terminal envelope's `usage` is **cumulative across all calls in the
 session**, and at multi-turn scale it exceeds the context window outright:
 
-| Cell | Envelope cumulative sum | Window | Final-call occupancy from the last assistant event |
+| Cell | Envelope cumulative occupancy-member sum | Window | Final-call occupancy from the last assistant event |
 | --- | --- | --- | --- |
-| 1 | 30,173 | 65,536 | not observable in `json` |
-| 2 | 30,192 | 65,536 | 15,134 |
-| 3 | 333,985 | 65,536 | not observable in `json` |
-| 4 | 236,349 | 65,536 | 17,842 |
+| 1 | 30,046 | 65,536 | not observable in `json` |
+| 2 | 30,050 | 65,536 | 15,134 |
+| 3 | 331,717 | 65,536 | not observable in `json` |
+| 4 | 234,843 | 65,536 | 17,842 |
 
-Cell 3's cumulative sum is five times the window. Read as occupancy it is
+Cell 3's cumulative occupancy-member sum is 5.06 times the window. Read as occupancy it is
 nonsense; that is the defect the earlier report named. In cells 2 and 4 the
 last `assistant` event carries a per-call `usage` object whose
 `input_tokens + cache_read_input_tokens + cache_creation_input_tokens` is a real
@@ -185,8 +185,8 @@ that `cache_creation_input_tokens` is **absent** from those assistant-event
 envelope. An absent optional member reads as zero.
 
 The two field envelopes confirm this at field scale, and far more starkly. Read
-as occupancy, story 4.6's envelope `usage` sums to 2,301,235 and story 4.4a's to
-1,433,412 — 35× and 22× the 65,536-token window each envelope itself declares in
+as occupancy, story 4.6's envelope occupancy members sum to 2,277,622 and story
+4.4a's to 1,407,404 — 34.8× and 21.5× the 65,536-token window each envelope itself declares in
 `modelUsage["qwen36-27b"].contextWindow` (`LATE-ENVELOPES.md`). Cell 3's 5× was
 the mild case.
 

@@ -34,7 +34,7 @@ cleanly at 2 turns (cell 1, 54s) and at 19 turns (cell 3, 157s), with a
 failure. `json`'s cost is progress blindness, not termination.
 
 One collateral finding is solid and useful: the terminal envelope's `usage` is
-cumulative across the session and reached 333,985 tokens against a
+cumulative across the session and reached 331,717 occupancy-member tokens against a
 65,536-token window (cell 3), while `stream-json`'s last `assistant` event
 carries a real final-call occupancy — 17,842 of 65,536 in cell 4. That answers
 the earlier external report's usage limitation.
@@ -94,9 +94,9 @@ sha256 of every stream are recorded in each cell's `meta.json` and `SUMMARY.md`.
 
 **Limitation, stated plainly.** `run-cell.sh` captures `stdout.raw` but performs
 no redaction, the redaction filter itself was not retained, and the raw streams
-are not committed. Pre- and post-redaction digests are both recorded, which
-establishes that the committed streams are the ones that were redacted — but no
-third party can reproduce the redaction step or independently verify that it
+are not committed. Pre- and post-redaction digests are both recorded, preserving
+the redaction step's own internal record — but no third party can reproduce the
+step, relate the raw and committed bytes independently, or verify that it
 preserved the fields the findings rest on. That matters most for the
 absent-`cache_creation_input_tokens` finding, which is a claim about a member
 *not* being present. Retaining the filter (not its output) would close this in

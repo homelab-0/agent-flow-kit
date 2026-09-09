@@ -294,10 +294,10 @@ not a non-exit: both field sessions exited successfully after the dispatcher
 timeout.
 
 The collateral finding is solid: the terminal envelope's `usage` is cumulative
-and reached 333,985 tokens against a 65,536-token window (cell 3), while
+and reached 331,717 occupancy-member tokens against a 65,536-token window (cell 3), while
 `stream-json`'s last `assistant` event exposes a real final-call occupancy —
 17,842 of 65,536 (cell 4). That answers the earlier external report's usage
-limitation, and the field envelopes confirm it at 35× and 22× the window.
+limitation, and the field envelopes confirm it at 34.8× and 21.5× the window.
 Context exhaustion near the window and long-session transport behaviour remain
 `NOT_TESTED`; neither is needed to explain the field reports any more.
 

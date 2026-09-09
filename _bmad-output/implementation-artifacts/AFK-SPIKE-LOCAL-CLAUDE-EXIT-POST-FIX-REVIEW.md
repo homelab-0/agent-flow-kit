@@ -91,3 +91,23 @@ changes the queued work.
 ### Gate
 
 `git diff --check` — exit 0, no output.
+
+### ORCH PM advisory disposition
+
+The review verdict remains `CLEAN`. Before packaging the record, the PM applied
+the report's three substantive editorial advisories as a mechanical follow-up:
+
+- B1: cumulative comparisons now use the same settled three-member occupancy
+  set as the adapter (30,046 / 30,050 / 331,717 / 234,843 in the canary;
+  2,277,622 / 1,407,404, or 34.8× / 21.5×, in the field).
+- B2: `lib/afk-commands.sh:638` is named beside `:526` as the second
+  `PM_USAGE_CUMULATIVE_ONLY` consumer.
+- B3: the redaction paragraph now says the two digests preserve the original
+  step's internal record, not that they independently prove a raw-to-redacted
+  relationship.
+
+B4 needed no semantic correction; one assertion range was narrowed to its
+exact lines. The PM recomputed every replacement from committed `meta.json`
+usage members, confirmed the retained stream digests are unchanged, found no
+remaining superseded figures outside this review's historical advisory text,
+and reran `git diff --check`.

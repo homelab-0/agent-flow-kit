@@ -47,8 +47,8 @@ session rather than final-call occupancy:
 | `cache_read_input_tokens` | 1,972,623 | 1,134,066 |
 | `cache_creation_input_tokens` | 0 | 0 |
 | `output_tokens` | 23,613 | 26,008 |
-| Sum read as occupancy | 2,301,235 | 1,433,412 |
-| Sum ÷ 65,536-token window | 35.1× | 21.9× |
+| Settled occupancy-member sum | 2,277,622 | 1,407,404 |
+| Sum ÷ 65,536-token window | 34.8× | 21.5× |
 
 ## Timeout delta
 
@@ -84,8 +84,8 @@ last model event against process exit.
   the dispatcher saw a zero-byte file and had no progress signal to distinguish
   "still working" from "hung".
 - The cumulative-`usage` finding reproduces at field scale and is far worse
-  there than in the canary: read as occupancy these sums are 35× and 22× the
-  window, against 5× in cell 3.
+  there than in the canary: the settled occupancy-member sums are 34.8× and
+  21.5× the window, against 5.06× in cell 3.
 
 **Does not follow.**
 

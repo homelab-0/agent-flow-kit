@@ -123,7 +123,7 @@ and the named assertions exist at `tests/run-tests.sh:1766-1772` and
   `input_tokens + cache_read_input_tokens + cache_creation_input_tokens` restored
   in `FIX-SCOPE.md` and `FINDINGS.md`, `output_tokens` excluded, the
   three-versus-four inconsistency resolved, and every proposed output-inclusive
-  formula removed. Blocker 3: the `FINAL_CONTEXT` switch, its budget and
+  formula and comparison removed. Blocker 3: the `FINAL_CONTEXT` switch, its budget and
   readiness consumers, and the affected assertions named in the expected surface
   and asserted in the acceptance criteria. The 15,134 and 17,842 figures are
   unchanged, as are all four cells and both envelopes.
