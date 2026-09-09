@@ -1,0 +1,15 @@
+{
+  "story_id": "AFK-SPIKE-LOCAL-CLAUDE-EXIT-POST-FIX-REVIEW",
+  "title": "Fresh post-fix review of the local Claude exit spike",
+  "summary": "Independently verify that commit 544bb84 closes the prior review's three specification blockers and bounded advisories without changing evidence or weakening fail-closed behavior. Evidence-only review; no live calls or production changes.",
+  "touched_paths": [
+    "_bmad-output/implementation-artifacts/AFK-SPIKE-LOCAL-CLAUDE-EXIT-POST-FIX-REVIEW.md",
+    "_bmad-output/implementation-artifacts/evidence/AFK-SPIKE-LOCAL-CLAUDE-EXIT-POST-FIX-REVIEW/"
+  ],
+  "ambiguity": "low",
+  "blast_radius": "low",
+  "volume_hint": "low",
+  "tags": ["research", "docs", "review"],
+  "repo": "agent-flow-kit",
+  "requester": "bmad-pm"
+}

@@ -1,0 +1,32 @@
+{
+  "harness": "claude",
+  "model_profile": "claude/strong",
+  "effort": "medium",
+  "cost_class": "subscription",
+  "entitlement_pool": "anthropic-max",
+  "metered": false,
+  "placement_policy": "prefer-warm-local",
+  "placement_required": false,
+  "catalog_version": "sha256:a9322bda8daccc2003ee7a31e84a292501a70a7c89c2b9548f9934692ba6848b",
+  "expires_at": "2026-09-10T01:45:16Z",
+  "task": {
+    "story_id": "AFK-SPIKE-LOCAL-CLAUDE-EXIT",
+    "tags": [
+      "research",
+      "tests",
+      "secrets"
+    ],
+    "title": "Diagnose successful gateway-backed Claude sessions that never exit"
+  },
+  "override": {
+    "actor": "Josh standing implementation-prefers-claude ruling, applied by ORCH PM",
+    "at": "2026-09-09T01:47:15Z",
+    "original": {
+      "harness": "claude",
+      "model_profile": "claude/strong"
+    },
+    "reason": "The fresh natural local-code-standard decision is retained beside this stamp. That profile is the defective system under test and Story 1.7 measured it at 6/9 on trivial canaries; a subscription-funded claude/strong investigator will run the bounded gateway experiment without dispatching the task to the defective path. Full final profile fields are from trusted catalog 1.6.1."
+  },
+  "created_at": "2026-09-09T01:47:15Z",
+  "catalog_document_version": "1.6.1"
+}
