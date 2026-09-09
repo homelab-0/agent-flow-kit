@@ -432,6 +432,7 @@ afk_cmd_status() { # <json-mode> <require-source> <allow-noncanonical> <allow-ro
   AFK_R_OPERATION='{"id": null, "mutating": false}'
   afk_evaluate_installation "$3" "$4"
   afk_apply_readiness_exit
+  afk_pm_apply
   afk_emit_result "$1"
 }
 
@@ -475,11 +476,13 @@ afk_cmd_monitor() { # <json-mode>
     register)
       afk_monitor_register "$AFK_MONITOR_DESCRIPTOR" || true ;;
     reconcile)
-      afk_monitor_reconcile ;;
+      afk_monitor_reconcile
+      afk_pm_reconcile ;;
     cleanup)
       # Settlement follows completion in one bounded pass: consuming the inbox
       # first is what makes a just-completed worker settlable in the same run.
       afk_monitor_reconcile
+      afk_pm_reconcile
       afk_monitor_cleanup ;;
     *) : ;;
   esac
@@ -493,7 +496,315 @@ afk_cmd_monitor() { # <json-mode>
   else
     AFK_R_NEXT_ACTION="No action required: every watched Dispatch is accounted for, and nothing was released that this host could not prove it owned."
   fi
+  # Last, so an outstanding coordinator hand-over speaks over the watch summary:
+  # the successor has to be started before any of it is acted on.
+  afk_pm_apply
   afk_emit_result "$1"
+}
+
+# --- the coordinator's own context budget -----------------------------------
+#
+# The kit cannot measure a human-started session's context and never tries: the
+# PM's window and usage arrive as a PROVIDED observation under the declared state
+# directory, judged by the arithmetic a worker's usage gets against thresholds
+# that exist only in the declared policy. Nothing here starts a session.
+
+AFK_PM_DIR="${AFK_PM_DIR:-${AFK_STATE_DIR:+$AFK_STATE_DIR/pm}}"
+AFK_PM_STAMP_FILE="${AFK_PM_STAMP_FILE:-}"
+AFK_PM_SESSION="${AFK_PM_SESSION:-}"
+AFK_PM_NEEDS_HUMAN="false"
+AFK_PM_RESUME=""
+AFK_PM_CONT_SCHEMA="afk-pm-continuation/1"
+
+# The third reason-vocabulary extension hook, on the same terms as the readiness
+# and monitor halves — but declared as DATA, because a code, the sentence that
+# explains it and the action that resolves it are one fact in three parts, and
+# three parallel case statements are three places for them to drift apart.
+afk_pm_reason_table() {
+  cat <<'CODES'
+PM_USAGE_UNOBSERVABLE|No readable coordinator usage observation exists, so the PM context budget is not evaluated rather than assumed healthy.|Checkpoint at the declared PM phase boundaries instead: with no observation the boundary is the only budget signal there is.
+PM_USAGE_CUMULATIVE_ONLY|The adapter could report only a cumulative total over the session calls, which is not the context the session holds, so no ratio is computed from it.|Read the figure as total consumption for sizing and keep checkpointing at phase boundaries; do not treat it as occupancy.
+PM_WINDOW_UNDECLARED|No PM execution stamp was supplied and the observation declares no window, so there is nothing to measure occupancy against.|Supply the coordinator window through --pm-stamp, or have the adapter report window_tokens in the observation.
+PM_STAMP_UNUSABLE|A PM execution stamp was supplied explicitly but its shape or its catalog window could not be resolved, so the budget reports nothing rather than measuring against a different authority.|Fix the supplied stamp or declare the trusted catalog through AFK_ROUTER_CATALOG; a stamp passed explicitly is never silently ignored.
+PM_BUDGET_POLICY_UNREADABLE|The declared context-budget policy could not be read or is missing a threshold, and a missing threshold is never a default.|Repair the declared context-budget policy document; tuning a threshold is a policy edit and the kit carries no fallback value.
+PM_CHECKPOINT_DUE|The coordinator session occupies at or past the declared checkpoint ratio of its window.|Write the coordinator checkpoint now: agent-flow-kit pm-checkpoint --write <json>
+PM_CONTINUATION_REQUIRED|The coordinator session must hand over to a successor: a continuation artifact is outstanding, or occupancy is at or past the declared continuation ratio.|Start the successor ORCH PM session yourself in Orca with the resume instruction the artifact carries; this kit launches no session.
+PM_CONTINUATION_RECONCILED|A successor coordinator session consumed the outstanding continuation artifact, so the hand-over is accounted for.|No action required: the successor is bound to the artifact it consumed.
+PM_CONTINUATION_ARTIFACT_INVALID|A PM continuation artifact is present but does not validate, so nothing can be proven to have been handed over.|Inspect the artifact by hand and rewrite it through pm-checkpoint --continuation; an unreadable hand-over is never treated as one.
+PM_ARTIFACT_SECRET_BEARING|A submitted PM artifact carries a secret-looking member, and a coordinator artifact is secret-free by rule.|Remove the secret-bearing member and resubmit; the refused value was never echoed and nothing was written.
+CODES
+}
+
+afk_pm_reason_codes()   { afk_pm_reason_table | cut -d '|' -f 1; }
+# Both print nothing for a code they do not own, keeping the unknown-code
+# fallback in afk-common.sh the single answer to one.
+afk_pm_reason_message() { afk_pm_reason_table | awk -F '|' -v c="$1" '$1 == c { print $2 }'; }
+afk_pm_reason_action()  { afk_pm_reason_table | awk -F '|' -v c="$1" '$1 == c { print $3 }'; }
+
+# The declared policy, read from the launcher's own path exactly as dispatch.sh
+# reads it. Unreadable or missing the key fails; nothing substitutes a number.
+afk_pm_policy_ppm() { # <threshold key> -> parts per million
+  local pol line value
+  pol="${AGENT_FLOW_BUDGET_POLICY:-${AFK_SKILLS_HOME:+$AFK_SKILLS_HOME/model-router/context-budget-policy.yaml}}"
+  [[ -n "$pol" && -r "$pol" ]] || return 1
+  line="$(grep -E "^${1}:[[:space:]]+[0-9]+(\.[0-9]+)?[[:space:]]*(#.*)?$" "$pol" 2>/dev/null | head -1)"
+  [[ -n "$line" ]] || return 1
+  value="${line#*:}"; value="${value%%#*}"; value="${value//[[:space:]]/}"
+  awk -v r="$value" 'BEGIN { printf "%d", (r * 1000000) + 0.5 }'
+}
+
+# A stamped profile's window is the trusted catalog's min_context, read from the
+# catalog the launcher declares. The kit holds no catalog and invents no window.
+afk_pm_catalog_window() { # <model profile> -> token count
+  local catalog window
+  catalog="${AFK_ROUTER_CATALOG:-${AGENT_STAMP_VALIDATE_CATALOG_PATH:-}}"
+  [[ -n "$catalog" && -r "$catalog" ]] || return 1
+  window="$(awk -v want="$1" '
+    /^profiles:[[:space:]]*$/ { inp = 1; next }
+    inp && /^[^[:space:]]/  { inp = 0 }
+    !inp                    { next }
+    { line = $0; sub(/[[:space:]]*#.*$/, "", line) }
+    line ~ /^  "?[^:]+"?:[[:space:]]*$/ {
+      key = line; sub(/^  "?/, "", key); sub(/"?:[[:space:]]*$/, "", key)
+      cur = (key == want); next }
+    cur && line ~ /^[[:space:]]+min_context:[[:space:]]*[0-9]+[[:space:]]*$/ {
+      sub(/^[^:]*:[[:space:]]*/, "", line); gsub(/[[:space:]]/, "", line)
+      print line; exit }' "$catalog" 2>/dev/null)"
+  [[ "$window" =~ ^[1-9][0-9]*$ ]] || return 1
+  printf '%s' "$window"
+}
+
+# Provenance is RECORDED, never inferred: a document that declares none is
+# malformed, not a hand-written observation by default.
+afk_pm_observation() {
+  [[ -n "$AFK_PM_DIR" && -f "$AFK_PM_DIR/usage.json" ]] || return 1
+  jq -ce 'def str: type == "string" and (length > 0);
+    select((type == "object") and (.schema == "afk-pm-usage/1") and (.harness | str)
+      and (.window_tokens | type == "number" or type == "null")
+      and (.usage_tokens  | type == "number" or type == "null")
+      and (.provenance | . == "HARNESS_ADAPTER" or . == "HUMAN")
+      and (.observed_at | str) and (.session | str))' \
+    "$AFK_PM_DIR/usage.json" 2>/dev/null
+}
+
+# The one shape both artifacts present; `continuation` adds the instruction the
+# human is handed. Validates a submission and reads one back.
+afk_pm_artifact_valid() { # <document> <schema> <continuation: true|false>
+  printf '%s' "$1" | jq -ce --arg schema "$2" --arg cont "$3" '
+    def str: type == "string" and (length > 0);
+    select((type == "object") and (.schema == $schema)
+      and ([.decisions, .envelope_actions, .open_escalations, .in_flight_dispatches]
+           | all(type == "array"))
+      and (.budget_state | type == "object")
+      and ([.in_flight_dispatches[] | select(type != "string")] | length == 0)
+      and (.updated_at | str)
+      and (if $cont == "true" then (.resume_instruction | str) else true end))' 2>/dev/null
+}
+
+afk_pm_identity() { # <path> -> {path, sha256} or null
+  [[ -n "${1:-}" && -f "$1" ]] || { printf 'null'; return 0; }
+  jq -nc --arg p "$1" --arg s "$(afk_sha256_file "$1")" '{path: $p, sha256: $s}'
+}
+
+# The window hierarchy is applied IN ORDER, and a stamp named on the command
+# line is never silently ignored: one that cannot be resolved reports itself
+# unusable rather than falling through to another authority, because the caller
+# who named it asked for THAT window and no other. The loud condition follows
+# from the same pass: an owner action naming the artifact by path and digest and
+# carrying the resume instruction verbatim, because the human starts the
+# successor and no verb here can.
+afk_pm_apply() {
+  local obs="" window="" src="NOT_EVALUATED" usage="null" ratio="null"
+  local state="NOT_EVALUATED" reason="PM_USAGE_UNOBSERVABLE"
+  local ck cont ppm profile doc sha rec cont_id
+
+  AFK_PM_NEEDS_HUMAN="false"; AFK_PM_RESUME=""
+  obs="$(afk_pm_observation)" || obs=""
+
+  if [[ -n "$AFK_PM_STAMP_FILE" ]]; then
+    if [[ -f "$AFK_PM_STAMP_FILE" ]] && afk_stamp_shape_is_valid "$AFK_PM_STAMP_FILE"; then
+      profile="$(jq -r '.model_profile' "$AFK_PM_STAMP_FILE" 2>/dev/null)" || profile=""
+      window="$(afk_pm_catalog_window "$profile")" || window=""
+    fi
+    if [[ -n "$window" ]]; then src="STAMP"; else reason="PM_STAMP_UNUSABLE"; fi
+  elif [[ -n "$obs" ]]; then
+    window="$(printf '%s' "$obs" | jq -r 'if (.window_tokens | type == "number") and (.window_tokens > 0) then (.window_tokens | floor) else "" end')"
+    if [[ -n "$window" ]]; then src="ADAPTER"; else reason="PM_WINDOW_UNDECLARED"; fi
+  fi
+
+  if [[ -n "$obs" ]]; then
+    usage="$(printf '%s' "$obs" | jq -r 'if (.usage_tokens | type == "number") and (.usage_tokens >= 0) then (.usage_tokens | floor) else "null" end')"
+    if [[ "$usage" == "null" && "$reason" != "PM_STAMP_UNUSABLE" ]]; then
+      reason="$(printf '%s' "$obs" | jq -r 'if .reason == "PM_USAGE_CUMULATIVE_ONLY" then "PM_USAGE_CUMULATIVE_ONLY" else "PM_USAGE_UNOBSERVABLE" end')"
+    fi
+  fi
+
+  # The same parts-per-million arithmetic and boundary equality as a worker's.
+  if [[ -n "$window" && "$usage" != "null" && "$reason" != "PM_STAMP_UNUSABLE" ]]; then
+    if ck="$(afk_pm_policy_ppm checkpoint_ratio)" && cont="$(afk_pm_policy_ppm continuation_ratio)" \
+       && [[ -n "$ck" && -n "$cont" ]]; then
+      ppm=$(( usage * 1000000 / window ))
+      ratio="$(awk -v p="$ppm" 'BEGIN { printf "%.6f", p / 1000000 }')"
+      if   (( ppm >= cont )); then state="CONTINUATION_REQUIRED"; reason="PM_CONTINUATION_REQUIRED"
+      elif (( ppm >= ck ));   then state="CHECKPOINT_DUE";        reason="PM_CHECKPOINT_DUE"
+      else state="OK"; reason="null"; fi
+    else
+      reason="PM_BUDGET_POLICY_UNREADABLE"
+    fi
+  fi
+
+  # An outstanding hand-over is loud on its own evidence, whatever a ratio says:
+  # the artifact validates and no successor has reconciled THAT artifact.
+  cont_id="$(afk_pm_identity "${AFK_PM_DIR:+$AFK_PM_DIR/continuation.json}")"
+  if [[ -n "$AFK_PM_DIR" && -f "$AFK_PM_DIR/continuation.json" ]]; then
+    doc="$(afk_pm_artifact_valid "$(cat "$AFK_PM_DIR/continuation.json" 2>/dev/null)" "$AFK_PM_CONT_SCHEMA" true)" || doc=""
+    if [[ -z "$doc" ]]; then
+      state="NOT_EVALUATED"; reason="PM_CONTINUATION_ARTIFACT_INVALID"
+    else
+      sha="$(afk_sha256_file "$AFK_PM_DIR/continuation.json")"
+      rec="$(jq -r '.artifact_sha256 // ""' "$AFK_PM_DIR/continuation.reconciled.json" 2>/dev/null)" || rec=""
+      if [[ "$rec" != "$sha" ]]; then
+        AFK_PM_RESUME="$(printf '%s' "$doc" | jq -r '.resume_instruction')"
+        state="CONTINUATION_REQUIRED"; reason="PM_CONTINUATION_REQUIRED"
+      fi
+    fi
+  fi
+  case "$reason" in
+    PM_CONTINUATION_REQUIRED|PM_CONTINUATION_ARTIFACT_INVALID) AFK_PM_NEEDS_HUMAN="true" ;;
+  esac
+
+  AFK_R_EXTRA="$(jq -nc --argjson window "${window:-null}" --arg src "$src" \
+    --argjson usage "$usage" --argjson ratio "$ratio" --arg state "$state" \
+    --arg reason "$reason" --argjson continuation "$cont_id" \
+    --argjson checkpoint "$(afk_pm_identity "${AFK_PM_DIR:+$AFK_PM_DIR/checkpoint.json}")" \
+    --arg needs_human "$AFK_PM_NEEDS_HUMAN" --argjson base "$AFK_R_EXTRA" \
+    '$base + {pm_budget: {window_tokens: $window, window_source: $src,
+      usage_tokens: $usage, usage_ratio: $ratio, state: $state,
+      reason: (if $reason == "null" then null else $reason end),
+      checkpoint_artifact: $checkpoint, continuation_artifact: $continuation,
+      needs_human: ($needs_human == "true")}}')" || return 0
+  [[ "$AFK_PM_NEEDS_HUMAN" == "true" ]] || return 0
+
+  afk_add_finding "orchestration" "KIT_STATE" "EXTERNAL_STATE" "$reason" \
+    "owner_action" "NEW_WORK_READY" "FILE_STRUCTURE" \
+    "no outstanding coordinator hand-over" \
+    "$(printf '%s' "$cont_id" | jq -r 'if . == null then "an occupancy at or past the declared continuation ratio" else "\(.path) \(.sha256)" end')" \
+    "true" "false" \
+    "$(if [[ -n "$AFK_PM_RESUME" ]]; then printf 'resume_instruction: %s' "$AFK_PM_RESUME"; else printf 'no valid continuation artifact carries a resume instruction'; fi)"
+
+  if [[ -z "$AFK_R_FORCED_EXIT" || "$AFK_R_FORCED_EXIT" == "$AFK_EXIT_OK" ]]; then
+    AFK_R_FORCED_EXIT="$AFK_EXIT_OWNER_ACTION"
+  fi
+  if [[ -n "$AFK_PM_RESUME" ]]; then
+    AFK_R_NEXT_ACTION="Start the successor ORCH PM session yourself in Orca, then run: $AFK_PM_RESUME"
+  else
+    AFK_R_NEXT_ACTION="Write the coordinator continuation artifact (agent-flow-kit pm-checkpoint --continuation --write <json>) and start the successor ORCH PM session yourself in Orca."
+  fi
+  return 0
+}
+
+# One additive step on the reconcile pass, reading and writing only under pm/ —
+# no watch record, delivery or worker resource is touched, which is what leaves
+# an in-flight watch unaffected by a coordinator hand-over.
+afk_pm_reconcile() {
+  local doc sha session count now
+  [[ -n "$AFK_PM_DIR" && -f "$AFK_PM_DIR/continuation.json" ]] || return 0
+  doc="$(afk_pm_artifact_valid "$(cat "$AFK_PM_DIR/continuation.json" 2>/dev/null)" "$AFK_PM_CONT_SCHEMA" true)" || doc=""
+  # An artifact that does not validate is reconciled by nothing. Reporting it is
+  # the evaluation's job, which runs on this same pass: a step that raised its
+  # own finding beside that one would report the single condition twice.
+  [[ -n "$doc" ]] || return 0
+  sha="$(afk_sha256_file "$AFK_PM_DIR/continuation.json")"
+  [[ "$(jq -r '.artifact_sha256 // ""' "$AFK_PM_DIR/continuation.reconciled.json" 2>/dev/null)" != "$sha" ]] || return 0
+
+  session="$AFK_PM_SESSION"
+  [[ -n "$session" ]] || session="$(afk_pm_observation | jq -r '.session // ""' 2>/dev/null)" || session=""
+  count="$(jq -r '.pm_continuations // 0' "$AFK_PM_DIR/budget-state.json" 2>/dev/null)"
+  [[ "$count" =~ ^[0-9]+$ ]] || count=0
+  count=$(( count + 1 ))
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+  afk_state_file_write "$AFK_PM_DIR/continuation.reconciled.json" \
+    "$(jq -nc --arg sha "$sha" --arg s "$session" --arg at "$now" \
+       '{schema: "afk-pm-continuation-reconciled/1", artifact_sha256: $sha,
+         successor_session: (if $s == "" then null else $s end), reconciled_at: $at}')" || return 0
+  afk_state_file_write "$AFK_PM_DIR/budget-state.json" \
+    "$(jq -nc --argjson n "$count" --arg at "$now" \
+       '{schema: "afk-pm-budget-state/1", pm_continuations: $n, updated_at: $at}')" || return 0
+
+  afk_add_finding "orchestration" "KIT_STATE" "EXTERNAL_STATE" \
+    "PM_CONTINUATION_RECONCILED" "info" "" "FILE_STRUCTURE" \
+    "an outstanding coordinator hand-over" "reconciled by ${session:-an unnamed successor session}" \
+    "true" "false" "pm_continuations=$count"
+  return 0
+}
+
+# Secret-free BY RULE, decided before anything is written, and the value is never
+# echoed: the member NAME's classification decides the first branch, and the
+# second is a shape match whose subject is never printed.
+afk_pm_secret_bearing() { # <document> -> 0 when it must be refused
+  local name
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    if [[ "$(afk_env_classification "$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')")" == "SECRET_BEARING" ]]; then
+      return 0
+    fi
+  done < <(printf '%s' "$1" | jq -r '[paths | .[] | select(type == "string")] | unique[]' 2>/dev/null)
+  printf '%s' "$1" | jq -e --arg p '(^|[^A-Za-z0-9_-])(sk|rk)-[A-Za-z0-9_-]{12,}|(^|[^A-Za-z0-9_-])(ghp|gho|ghu|ghs|github_pat)_[A-Za-z0-9_]{12,}|(^|[^A-Za-z0-9_-])xox[abprs]-[A-Za-z0-9-]{10,}|(^|[^A-Za-z0-9_-])AKIA[0-9A-Z]{12,}|-----BEGIN [A-Z ]*PRIVATE KEY-----' \
+    '[.. | strings | select(test($p))] | length > 0' >/dev/null 2>&1
+}
+
+# Validated first, then settled through the kit's atomic state writer, so a
+# refused submission leaves what is on disk byte-identical, never half-replaced.
+afk_cmd_pm_checkpoint() { # <json-mode> <submitted path> <continuation: true|false>
+  local json_mode="$1" path="$2" continuation="$3" schema target doc
+  AFK_R_COMMAND="pm-checkpoint"
+  AFK_R_REQUIRE_SOURCE="false"; AFK_R_FORCED_EXIT=""; AFK_R_NEXT_ACTION=""
+  AFK_R_EXTRA="{}"; AFK_R_OPERATION='{"id": null, "mutating": false}'
+
+  if [[ -z "$AFK_PM_DIR" ]]; then
+    afk_warn "no state directory is declared, so there is nowhere a coordinator artifact could be written"
+    return "$AFK_EXIT_USAGE"
+  fi
+  if [[ "$continuation" == "true" ]]; then
+    schema="$AFK_PM_CONT_SCHEMA"; target="$AFK_PM_DIR/continuation.json"
+  else
+    schema="afk-pm-checkpoint/1"; target="$AFK_PM_DIR/checkpoint.json"
+  fi
+
+  if [[ ! -f "$path" ]] || ! doc="$(jq -c '.' "$path" 2>/dev/null)" || [[ -z "$doc" ]]; then
+    afk_warn "the submitted coordinator artifact could not be read as JSON; nothing was written"
+    return "$AFK_EXIT_USAGE"
+  fi
+  # Refused BEFORE the shape check and before any write, so a secret cannot
+  # reach a diagnostic on its way to being rejected for some other reason.
+  if afk_pm_secret_bearing "$doc"; then
+    afk_warn "refused: the submitted coordinator artifact carries a secret-looking member. A PM artifact is secret-free by rule, the value reached no diagnostic, and nothing was written."
+    return "$AFK_EXIT_SOURCE_REFUSED"
+  fi
+  # A document declaring a different schema is a document about something else.
+  case "$(printf '%s' "$doc" | jq -r '.schema // ""')" in
+    ""|"$schema") doc="$(printf '%s' "$doc" | jq -c --arg s "$schema" '.schema = $s')" ;;
+    *) doc="" ;;
+  esac
+  if [[ -n "$doc" ]]; then doc="$(afk_pm_artifact_valid "$doc" "$schema" "$continuation")" || doc=""; fi
+  if [[ -z "$doc" ]]; then
+    afk_warn "the submitted coordinator artifact does not present the required shape; nothing was written"
+    return "$AFK_EXIT_USAGE"
+  fi
+  if ! afk_state_file_write "$target" "$doc"; then
+    afk_warn "the coordinator artifact could not be settled in the declared state directory"
+    return "$AFK_EXIT_USAGE"
+  fi
+
+  # The requested scope is the artifact, so its verdict decides the exit code:
+  # a host that has not been adopted has no bearing on whether the coordinator's
+  # own hand-over validated and was written. afk_pm_apply raises it to the
+  # owner-action code when what was written is an outstanding hand-over.
+  afk_evaluate_installation "false" "false"
+  AFK_R_FORCED_EXIT="$AFK_EXIT_OK"
+  afk_pm_apply
+  afk_emit_result "$json_mode"
 }
 
 # --- verification -----------------------------------------------------------
@@ -837,7 +1148,7 @@ afk_run_mutation() {
 
 afk_cmd_schema() {
   local reasons types actions dispositions results
-  reasons="$({ afk_reason_codes; afk_mutation_reason_codes; afk_readiness_reason_codes; afk_monitor_reason_codes; } \
+  reasons="$({ afk_reason_codes; afk_mutation_reason_codes; afk_readiness_reason_codes; afk_monitor_reason_codes; afk_pm_reason_codes; } \
     | jq -R -s -c 'split("\n") | map(select(length > 0))')" || return 1
   types="$(afk_adaptation_types | jq -R -s -c 'split("\n") | map(select(length > 0))')" || return 1
   actions="$(afk_plan_actions | jq -R -s -c 'split("\n") | map(select(length > 0))')" || return 1
@@ -871,7 +1182,8 @@ afk_cmd_schema() {
       supported_target_wiring_major: $wiring_major,
       supported_orchestration_state_major: $orch_major,
       supported_dispatch_schema_major: $dispatch_major,
-      commands: ["status", "adopt --inspect", "adopt", "update", "verify", "monitor", "schema"],
+      commands: ["status", "adopt --inspect", "adopt", "update", "verify", "monitor",
+                 "pm-checkpoint", "schema"],
       component_states: ["CURRENT", "UPDATE_AVAILABLE", "LOCAL_ADAPTATION", "LOCAL_DRIFT",
                          "EXTERNAL_STATE", "UNKNOWN", "BROKEN", "INCOMPATIBLE",
                          "MIGRATION_REQUIRED", "INTERRUPTED", "UNAVAILABLE", "NOT_EVALUATED",
