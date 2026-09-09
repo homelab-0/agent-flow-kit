@@ -1,0 +1,33 @@
+{
+  "cell": "cell-3-json-multiturn",
+  "output_args": "--output-format json",
+  "claude_version": "2.1.266 (Claude Code)",
+  "placement": "cachyos-7900xtx",
+  "started_at": "2026-09-09T01:55:02Z",
+  "ended_at": "2026-09-09T01:57:39Z",
+  "elapsed_seconds": 157,
+  "outer_timeout_seconds": 600,
+  "outer_timeout_fired": false,
+  "process_exit_status": 0,
+  "stdout_bytes": 1563,
+  "stdout_sha256": "dd25be53dd924b3f18e5979a8a5514d82cfcad13babd62a49539b3740f60d6ed",
+  "stderr_bytes": 269,
+  "stderr_sha256": "1b95d8519c36b423d9921f2104d3dca0e70fe42f48fdce8dffed2e2c284e94bf",
+  "declared_files_written": 7,
+  "stdout_redacted_sha256": "27e86303415332814edaccb7525dab18f4276736ba21d93a1dad257df37f6175",
+  "stderr_redacted_sha256": "1b95d8519c36b423d9921f2104d3dca0e70fe42f48fdce8dffed2e2c284e94bf",
+  "terminal_event_present": true,
+  "terminal_event_type": "result/success",
+  "num_turns": 19,
+  "is_error": false,
+  "result_text": "DONE",
+  "cumulative_usage": {
+    "input_tokens": 17491,
+    "output_tokens": 2268,
+    "cache_read_input_tokens": 314226,
+    "cache_creation_input_tokens": 0
+  },
+  "final_call_usage": null,
+  "context_window": 65536,
+  "tool_call_sequence": []
+}
