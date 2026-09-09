@@ -7,7 +7,13 @@ gates:
 max_cycles: 1
 ---
 
-# AFK-SPIKE-LOCAL-CLAUDE-EXIT: Diagnose successful gateway sessions that never exit
+# AFK-SPIKE-LOCAL-CLAUDE-EXIT: Diagnose gateway sessions reported as never exiting
+
+> The title as filed read "successful gateway sessions that never exit". The
+> diagnosis found no non-exit: both sessions ran to a normal end past the
+> dispatch bound. The heading is worded so it cannot be quoted as asserting
+> otherwise; see the correction below and
+> `evidence/AFK-SPIKE-LOCAL-CLAUDE-EXIT/LATE-ENVELOPES.md`.
 
 Raised from the ai-control-plane PM's second external report on 2026-09-08.
 This is a bounded, evidence-only live diagnostic. It precedes the already
@@ -207,6 +213,75 @@ redirection, or Python touched a repository file.
 
 **Gate.** `git diff --check` — exit 0, no output.
 
+### Correction, 2026-09-09 (AFK-SPIKE-LOCAL-CLAUDE-EXIT-FIX-2)
+
+A fresh-session adversarial review
+(`evidence/AFK-SPIKE-LOCAL-CLAUDE-EXIT-REVIEW/REVIEW.md`) returned
+`NOT CLEAN — 3 blockers`. It found the field diagnosis, the four-cell result and
+the fail-closed rule intact and recomputed every retained number successfully;
+all three blockers sat in `FIX-SCOPE.md` item 1's specification of the work to
+be queued. This pass corrects the specification. No recorded raw fact changed,
+no live cell was rerun, and no product, catalog, registry, contract or test file
+was touched.
+
+**Blocker 1 — the assistant-event `usage` shape.** The spec said
+`cache_creation_input_tokens` was observed as `null`. It is absent from all 28
+assistant events in cell 4 and all 4 in cell 2, appearing only on the terminal
+envelope. Absent and `null` take different branches in a parser, and the
+prescribed fixture exercised only the shape never observed. Corrected: the
+parser treats absent or explicit-null as zero, with fixtures for both and absent
+as the primary case.
+
+**Blocker 2 — the occupancy formula.** The spec prescribed
+`input_tokens + cache_read_input_tokens + output_tokens`, reversing the
+documented decision in the very function it directed the implementer to rewrite
+(`dispatch.sh:842-845`), which excludes output tokens as context no next turn
+carries. The evidence could not have caught it: `output_tokens` is `0` in every
+observed assistant event, so 15,134 and 17,842 hold under either formula.
+Corrected in `FIX-SCOPE.md` and `FINDINGS.md` to the shipped member set —
+`input_tokens + cache_read_input_tokens + cache_creation_input_tokens` — with
+the internal three-versus-four inconsistency resolved.
+
+**Blocker 3 — the flipped `scope` and its downstream surface.** Reading per-call
+usage makes a valid multi-turn stream `FINAL_CONTEXT` rather than
+`CUMULATIVE_RUN`/`USAGE_CUMULATIVE_ONLY`, which is the switch deciding whether a
+ratio is computed at all — so budget-band evaluation and PM readiness begin
+running for runs currently withheld from them. Item 1 was sized as a parsing
+change. Corrected: the budget-semantics effect is named, and
+`tests/run-tests.sh:1766-1772` and `:1788-1800`,
+`tests/lifecycle-readiness-tests.sh:1489-1490` and `:1520`, and
+`lib/afk-commands.sh:526` are added to the expected surface, with acceptance
+criteria for both the new `FINAL_CONTEXT` path and the unchanged
+cumulative-envelope path.
+
+**Also tightened.** The JSONL boundary now refuses any nonempty line that does
+not parse (no skipping past a malformed line to a later valid result), and zero
+or more than one terminal `result` event. A fixture covers repeated assistant
+events for one model message, so an implementation that sums instead of
+selecting the last is caught. The fixture list is seven.
+
+**Advisory items incorporated.** The reversed turn/duration pairing is corrected
+(142 turns / 93 minutes for 4.6; 106 turns / 96 minutes for 4.4a). `EXPERIMENT.md`
+gains an appended correction pointer for its superseded 30-87 minute range, with
+its predeclaration left unedited. This heading no longer asserts a non-exit.
+`duration_ms − duration_api_ms` — 17,244 ms and 12,623 ms — is recorded as a
+bound on in-harness idle that still does not date the last model event, so
+final-event-to-exit timing stays `NOT_TESTED`. `INDEX.md` states that the
+redaction filter was not retained, so redaction is not independently
+reproducible from the bundle; no filter was invented after the fact. Item 3's
+output-shape guidance is qualified as weak, qualitative evidence from two
+successful long runs, with the aborted larger 4.4 run noted as non-comparable
+and no numeric threshold introduced. Items 1 and 2 are stated to interact: a
+fenced run leaves its partial JSONL in place as diagnostic evidence, but only
+after the launcher-owned process is confirmed stopped, and it can never yield a
+thin success result.
+
+**Queue unchanged.** Still three independently testable items in the same order:
+the combined `Edit` + stream observability / final-context usage amendment,
+timeout fencing, then output-shaped planning.
+
+**Gate.** `git diff --check` — exit 0, no output.
+
 ### Outcome
 
 Four live cells, 337 seconds of gateway time against the 2400-second budget.
@@ -263,9 +338,19 @@ in `EXPERIMENT.md` Deviation 1. Stdin and tool set are `NOT_TESTED`.
   observed process exit, both, and keeps exit 2 otherwise. Cell 3 is retained
   precisely because its declared files existed before its envelope did.
 - **AC-5** — met for the usage change: `FIX-SCOPE.md` names the terminal event,
-  exit semantics, JSONL parsing boundary, final-call usage members (including
-  `cache_creation_input_tokens: null`), malformed and truncated stream
-  behaviour, and five fixtures. `stream-json` is NOT recommended as a
+  exit semantics, JSONL parsing boundary, final-call usage members, malformed
+  and truncated stream behaviour, and seven fixtures. The usage members are
+  `input_tokens`, `cache_read_input_tokens` and `cache_creation_input_tokens` —
+  the adapter's existing set, with `output_tokens` excluded because it is not
+  context the next turn carries. `cache_creation_input_tokens` is **absent**
+  from every observed assistant-event `usage` object, not `null`; the parser
+  treats absent or explicit-null as zero and both shapes have fixtures. The
+  fixtures also cover repeated assistant events for one message, so a summing
+  implementation is caught. Reading per-call usage makes a valid multi-turn
+  stream `scope: FINAL_CONTEXT` rather than `CUMULATIVE_RUN`, which turns on
+  budget-band evaluation and changes PM readiness reporting for those runs;
+  `FIX-SCOPE.md` names that surface and asserts it. `stream-json` is NOT
+  recommended as a
   termination fix, because no termination differential was observed and the
   field sessions terminated too. It is recommended for observability, combined
   with the approved `Edit` addition in one coordinated launch-contract

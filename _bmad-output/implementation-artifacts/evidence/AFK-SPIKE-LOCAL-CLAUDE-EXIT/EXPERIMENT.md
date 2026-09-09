@@ -120,3 +120,20 @@ controlled on exactly one variable. It differs from the cells 1-2 prompt, so
 cells 3-4 are NOT a controlled comparison against cells 1-2 on prompt content;
 they are compared with each other. Stdin and tool set are consequently
 `NOT_TESTED`.
+
+## Appended correction pointers
+
+This file is the predeclaration and is append-only: nothing above this line is
+edited after the fact. Where a figure recorded above was later superseded, the
+pointer sits here.
+
+### Deviation 1's "30-87 minutes"
+
+The reasoning above cites field sessions of "30-87 minutes". The 87 was the
+pre-correction belief about the two runs then thought never to have exited.
+Both did: 4.6 ran 5,604,632 ms (93m 24.6s, 142 turns) and 4.4a 5,743,774 ms
+(95m 43.8s, 106 turns), so the four field runs are 30, 42, 93 and 96 minutes.
+See `LATE-ENVELOPES.md` and `FINDINGS.md`. The retargeting decision the
+superseded range supported is unaffected — the field sessions were longer than
+believed, not shorter, so the canary held turn count further below the field
+condition than the predeclaration assumed.

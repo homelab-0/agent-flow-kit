@@ -77,8 +77,8 @@ normal end (`LATE-ENVELOPES.md`, sources sha256 `03965bc7…` and `8993d1fe…`)
 
 Stated at the narrowest level the evidence supports, the cause is a
 **workload/timeout mismatch**: a 90-minute launch bound against sessions that
-needed 106 and 142 turns and 93 and 96 minutes to finish their declared work.
-Two things compounded it.
+needed 142 turns and 93 minutes (4.6) and 106 turns and 96 minutes (4.4a) to
+finish their declared work. Two things compounded it.
 
 - **`json` buffering is progress blindness, not the termination cause.** Under
   `--output-format json` nothing reaches the redirect target until the end, so
@@ -92,6 +92,15 @@ Two things compounded it.
   gateway, and later wrote to a path the launcher had already abandoned.
   `duration_api_ms` is 99.7% and 99.8% of `duration_ms`, so that time was spent
   in model and tool round-trips, not idling.
+
+One bound is worth stating, because it sharpens the `NOT_TESTED` label rather
+than weakening it: `duration_ms − duration_api_ms` is 17,244 ms for 4.6 and
+12,623 ms for 4.4a, so within each harness's own measured lifetime there was at
+most ~17 s and ~13 s of non-API time in total. That is evidence against "the
+model stopped generating long before the process exited". It still does not
+timestamp the last model event against process exit — the envelope carries
+totals, not a timeline, and it measures only the harness's own lifetime — so
+final-event-to-exit timing remains `NOT_TESTED`.
 
 What this does **not** establish: when the last model event occurred relative
 to process exit (`NOT_TESTED`); that any smaller bound would have sufficed; or
@@ -160,9 +169,20 @@ session**, and at multi-turn scale it exceeds the context window outright:
 Cell 3's cumulative sum is five times the window. Read as occupancy it is
 nonsense; that is the defect the earlier report named. In cells 2 and 4 the
 last `assistant` event carries a per-call `usage` object whose
-`input_tokens + cache_read_input_tokens + output_tokens` is a real occupancy
-figure inside the window. `stream-json` is the only retained format in which
-that number is observable at all.
+`input_tokens + cache_read_input_tokens + cache_creation_input_tokens` is a real
+occupancy figure inside the window. `stream-json` is the only retained format in
+which that number is observable at all.
+
+**Corrected, post-review.** This sentence previously summed `output_tokens` in
+place of `cache_creation_input_tokens`. The member set above is the one
+`usage_adapter_claude` already uses, and output tokens stay excluded because
+they are not context the next turn carries. The figures do not move: every
+assistant event in both stream cells reports `output_tokens: 0`, so 15,134 and
+17,842 hold either way — which is exactly why the observation could not settle
+the question and why the member set is not this bundle's to redecide. Note also
+that `cache_creation_input_tokens` is **absent** from those assistant-event
+`usage` objects, not present as `null`; it appears only on the terminal
+envelope. An absent optional member reads as zero.
 
 The two field envelopes confirm this at field scale, and far more starkly. Read
 as occupancy, story 4.6's envelope `usage` sums to 2,301,235 and story 4.4a's to

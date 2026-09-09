@@ -61,7 +61,10 @@ The dispatcher stops waiting at 5,400,000 ms.
 
 `duration_api_ms` is 99.7% and 99.8% of `duration_ms` in the two runs, so
 essentially the whole wall time was spent in model or tool round-trips, not
-idle after the last one.
+idle after the last one. Stated as a bound: `duration_ms − duration_api_ms` is
+17,244 ms for 4.6 and 12,623 ms for 4.4a, the total non-API time inside each
+harness's own measured lifetime. It bounds in-harness idle; it does not date the
+last model event against process exit.
 
 ## What follows from this, and what does not
 
@@ -75,8 +78,9 @@ idle after the last one.
   returned exit 2 at 5,400,000 ms while the process kept running, kept calling
   the gateway, and later wrote to a path the dispatcher had already given up on.
 - The narrow cause of the reported defect is a workload/timeout mismatch: a
-  90-minute launch bound against 106- and 142-turn sessions that needed 93 and
-  96 minutes. Under `--output-format json` nothing is written until the end, so
+  90-minute launch bound against sessions that needed 142 turns and 93 minutes
+  (4.6) and 106 turns and 96 minutes (4.4a). Under `--output-format json`
+  nothing is written until the end, so
   the dispatcher saw a zero-byte file and had no progress signal to distinguish
   "still working" from "hung".
 - The cumulative-`usage` finding reproduces at field scale and is far worse

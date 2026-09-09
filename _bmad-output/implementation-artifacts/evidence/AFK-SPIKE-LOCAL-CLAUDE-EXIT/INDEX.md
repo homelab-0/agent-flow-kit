@@ -91,3 +91,13 @@ header, or environment dump appears in any retained artifact. Raw stdout/stderr
 were redacted before commit — session and message identifiers replaced,
 per-token `system` events collapsed — and the pre-redaction byte sizes and
 sha256 of every stream are recorded in each cell's `meta.json` and `SUMMARY.md`.
+
+**Limitation, stated plainly.** `run-cell.sh` captures `stdout.raw` but performs
+no redaction, the redaction filter itself was not retained, and the raw streams
+are not committed. Pre- and post-redaction digests are both recorded, which
+establishes that the committed streams are the ones that were redacted — but no
+third party can reproduce the redaction step or independently verify that it
+preserved the fields the findings rest on. That matters most for the
+absent-`cache_creation_input_tokens` finding, which is a claim about a member
+*not* being present. Retaining the filter (not its output) would close this in
+any future bundle. No filter is reconstructed after the fact here.
