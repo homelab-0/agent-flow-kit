@@ -24,12 +24,25 @@ All four reported runs used `{claude, local-code-standard}` with
 | --- | --- | --- |
 | FU.1 | four comment-line edits in two files | exited 0 after 42 minutes; incorrect whole-file rewrite; two of five gates failed |
 | 4.4 | three documents plus four schemas | exited 1 after 30 minutes with `rapid_refill_breaker`; no files |
-| 4.6 | one document plus two schemas | all files written around 87 minutes; process never exited; launch timed out at 5400 seconds |
-| 4.4a | one document plus one schema | all files written; process never exited; launch timed out at 5400 seconds |
+| 4.6 | one document plus two schemas | all files written; launch timed out at 5400 seconds; the session was still running and finished at 5,604,632 ms — corrected, see below |
+| 4.4a | one document plus one schema | all files written; launch timed out at 5400 seconds; the session was still running and finished at 5,743,774 ms — corrected, see below |
 
-For both non-exiting runs, `<story>.md.claude-result.json` existed but was
-zero bytes. No `CLAUDE_EXIT` marker, thin result, or gate rerun followed.
+For both timed-out runs, `<story>.md.claude-result.json` existed but was zero
+bytes at the moment the dispatcher gave up. No `CLAUDE_EXIT` marker, thin
+result, or gate rerun followed.
 `dispatch.sh` correctly returned `DISPATCH_EXIT=2` rather than guessing.
+
+> **Correction, 2026-09-09.** Rows 4.6 and 4.4a above are amended. As filed they
+> read "all files written around 87 minutes; process never exited; launch timed
+> out at 5400 seconds" and "all files written; process never exited; launch
+> timed out at 5400 seconds". The "never exited" part is false: both processes
+> ran to a normal end and wrote a `result/success` envelope into those same
+> zero-byte files after the dispatcher had stopped waiting — 4.6 at 5,604,632 ms
+> (142 turns), 4.4a at 5,743,774 ms (106 turns), 3m 24.6s and 5m 43.8s past the
+> 5,400,000 ms bound. Evidence and digests:
+> `evidence/AFK-SPIKE-LOCAL-CLAUDE-EXIT/LATE-ENVELOPES.md`. The refusal was
+> still correct: at the moment it was made, no terminal event had been observed
+> and the file was empty.
 
 The earlier external report is separate. It established that
 `--output-format json` exposes cumulative multi-turn usage rather than final
@@ -151,26 +164,73 @@ All deliverables live under
 
 ## Dev Agent Record
 
+### Correction, 2026-09-09 (AFK-SPIKE-LOCAL-CLAUDE-EXIT-FIX-1)
+
+The first pass was committed at `831564e` before the coordinator discovered
+that the two field runs' zero-byte `<story>.md.claude-result.json` files had
+since become complete `result/success` envelopes. This record is corrected in
+place; the four-cell live result is unchanged and nothing about it is hidden.
+
+**What changed.** The field sessions did not fail to exit. Story 4.6 finished
+142 turns in 5,604,632 ms and story 4.4a 106 turns in 5,743,774 ms, each
+writing a `result/success` envelope with `is_error: false` — 3m 24.6s and
+5m 43.8s past the 5,400,000 ms dispatch bound. The narrow cause is a
+workload/timeout mismatch: a 90-minute bound against 93- and 96-minute
+sessions. Two things compounded it — `--output-format json` writes nothing
+until the end, so the dispatcher had no progress signal and saw an empty file;
+and the launched process survived the timeout, kept calling the gateway, and
+wrote to a path the launcher had abandoned. `json` buffering is progress
+blindness, not a termination cause, and `stream-json` is not a speed or exit
+fix. When the last model event occurred relative to process exit is
+`NOT_TESTED`.
+
+**Where it is recorded.** `evidence/AFK-SPIKE-LOCAL-CLAUDE-EXIT/LATE-ENVELOPES.md`
+holds the retained secret-free metadata and the source digests
+(`03965bc7b687a4b0df5369528f40cc524c155e530bd042f3628bf35a23401898` and
+`8993d1feeaa64d380b257f8c6b6518bbe5b4c40c1b7002a30e45bc63846f3635`). Correction
+banners and marked passages are in `INDEX.md`, `FINDINGS.md` and `FIX-SCOPE.md`.
+No ai-control-plane file was modified and no result prose, identifier, or
+credential material was copied.
+
+**Scope replaced.** `FIX-SCOPE.md`'s single narrow story plus a larger
+reproduction spike is withdrawn — the reproduction spike is unnecessary — and
+replaced by three ordered, independently testable queue items: the frozen
+launch/adapter update (one coordinated `Edit` + `stream-json --verbose`
+amendment owed to ai-control-plane), timeout fencing, then output-shaped
+planning. The opencode spike follows all three.
+
+**First-attempt deviation disclosed.** The first pass's editing-method rule was
+not honoured: files in the `831564e` bundle were produced with shell
+redirection and heredocs rather than `apply_patch`. This correction pass used
+structured single-file patch edits only — no `sed -i`, heredocs, shell
+redirection, or Python touched a repository file.
+
+**Gate.** `git diff --check` — exit 0, no output.
+
 ### Outcome
 
 Four live cells, 337 seconds of gateway time against the 2400-second budget.
-The primary hypothesis is NOT SUPPORTED and the reported non-exit was NOT
-REPRODUCED. `--output-format json` terminated cleanly in the frozen gateway
-shape at 2 turns (cell 1, 54s) and at 19 turns (cell 3, 157s), each with a
-`result/success` envelope and exit 0. No outer timeout fired in any cell.
+The primary hypothesis is NOT SUPPORTED: `--output-format json` terminated
+cleanly in the frozen gateway shape at 2 turns (cell 1, 54s) and at 19 turns
+(cell 3, 157s), each with a `result/success` envelope and exit 0, and no outer
+timeout fired in any cell. Neither output format caused a failure. The reported
+non-exit was NOT REPRODUCED in the canary — and, per the correction above, was
+not a non-exit: both field sessions exited successfully after the dispatcher
+timeout.
 
 The collateral finding is solid: the terminal envelope's `usage` is cumulative
 and reached 333,985 tokens against a 65,536-token window (cell 3), while
 `stream-json`'s last `assistant` event exposes a real final-call occupancy —
 17,842 of 65,536 (cell 4). That answers the earlier external report's usage
-limitation. By elimination, context exhaustion near the window and long-session
-transport behaviour survive as hypotheses; both are `NOT_TESTED`.
+limitation, and the field envelopes confirm it at 35× and 22× the window.
+Context exhaustion near the window and long-session transport behaviour remain
+`NOT_TESTED`; neither is needed to explain the field reports any more.
 
 ### Evidence
 
 `_bmad-output/implementation-artifacts/evidence/AFK-SPIKE-LOCAL-CLAUDE-EXIT/`
-— `INDEX.md`, `EXPERIMENT.md`, `FINDINGS.md`, `FIX-SCOPE.md`, `run-cell.sh`,
-and `sessions/cell-{1..4}/`.
+— `INDEX.md`, `EXPERIMENT.md`, `FINDINGS.md`, `FIX-SCOPE.md`,
+`LATE-ENVELOPES.md`, `run-cell.sh`, and `sessions/cell-{1..4}/`.
 
 | Cell | Output format | Turns | Elapsed | Exit | Terminal envelope | Files |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -192,9 +252,13 @@ in `EXPERIMENT.md` Deviation 1. Stdin and tool set are `NOT_TESTED`.
   controlled comparison. Cells 3 and 4 are a second controlled pair.
 - **AC-2** — met. Every conclusion cites a retained cell; open questions are
   labelled `NOT_TESTED` in `FINDINGS.md` and `FIX-SCOPE.md`.
-- **AC-3** — met. The result is stated as "not a deterministic property of the
-  tuple", not as a protocol cause, and the non-reproduction is reported as a
-  negative result rather than an acquittal.
+- **AC-3** — met, and narrowed by the correction. The cell result is stated as
+  "not a deterministic property of the tuple", not as a protocol cause. The
+  field cause is now stated at its own narrowest level — a workload/timeout
+  mismatch compounded by `json` buffering and by the process surviving the
+  timeout — with `json` buffering named as progress blindness rather than a
+  termination cause, and `stream-json` claimed as neither a speed nor an exit
+  fix.
 - **AC-4** — met. `FIX-SCOPE.md` requires a parsed terminal event AND an
   observed process exit, both, and keeps exit 2 otherwise. Cell 3 is retained
   precisely because its declared files existed before its envelope did.
@@ -202,7 +266,10 @@ in `EXPERIMENT.md` Deviation 1. Stdin and tool set are `NOT_TESTED`.
   exit semantics, JSONL parsing boundary, final-call usage members (including
   `cache_creation_input_tokens: null`), malformed and truncated stream
   behaviour, and five fixtures. `stream-json` is NOT recommended as a
-  termination fix, because no termination differential was observed.
+  termination fix, because no termination differential was observed and the
+  field sessions terminated too. It is recommended for observability, combined
+  with the approved `Edit` addition in one coordinated launch-contract
+  amendment owed to ai-control-plane.
 - **AC-6** — met. Nothing under `files/`, `lib/`, `docs/`, `tests/`, the
   installed kit, the catalog, or ai-control-plane was modified. No metered
   provider was used; `ANTHROPIC_API_KEY` was never set or exported.
