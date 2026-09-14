@@ -1,0 +1,21 @@
+{
+  "story_id": "AFK-CLAUDE-NATIVE-HARDENING-PR41-TRIAGE2",
+  "title": "Reconcile PR 41 with master and qualify current PR evidence",
+  "summary": "Second bounded PR-triage round for agent-flow-kit PR 41 after the routed local Claude attempt failed from hidden harness context and exposed no Bash, GitHub CLI, or MCP tools. The reviewed PR hardens launcher settings and credential isolation, so a wrong conflict resolution or review correction can weaken a security boundary. Resolve the single docs/LIFECYCLE-CONTRACT.md overlap with current master while preserving both contracts; verify the approved launcher/verifier feature diff has no drift; run the complete offline suite and ShellCheck through Nix; push the non-force resolution to the existing PR branch; then inspect and disposition only current CI and review findings. Requires shell, Git, GitHub review context, and normal configured MCP access. No model-path probe, merge, deployment, ACP/prox mutation, credential inspection, or metered usage.",
+  "touched_paths": [
+    "_bmad-output/implementation-artifacts/",
+    "docs/LIFECYCLE-CONTRACT.md",
+    "files/model-router/scripts/dispatch.sh",
+    "files/model-router/scripts/verify-claude-evidence.sh",
+    "tests/claude-evidence-tests.sh",
+    "tests/fixtures/claude-evidence-expectations.json",
+    "tests/fixtures/claude-evidence-result.json",
+    "tests/run-tests.sh"
+  ],
+  "ambiguity": "medium",
+  "blast_radius": "high",
+  "volume_hint": "low",
+  "tags": ["pr-triage", "security", "docs", "tests", "github", "cross-provider-review"],
+  "repo": "agent-flow-kit",
+  "requester": "bmad-pm"
+}

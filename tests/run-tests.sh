@@ -34,6 +34,8 @@ DISPATCH="$KIT_ROOT/files/model-router/scripts/dispatch.sh"
 MAKE_STAMP="$KIT_ROOT/files/model-router/scripts/make-stamp.sh"
 USAGE_CHECK="$KIT_ROOT/files/model-router/scripts/usage-check.sh"
 GH_HEALTH="$KIT_ROOT/files/model-router/scripts/github-health.sh"
+CLAUDE_EVIDENCE_VERIFY="$KIT_ROOT/files/model-router/scripts/verify-claude-evidence.sh"
+CLAUDE_EVIDENCE_TESTS="$KIT_ROOT/tests/claude-evidence-tests.sh"
 
 TMPROOT="$(mktemp -d)"; trap 'rm -rf "$TMPROOT"' EXIT
 WORK_OLD="$TMPROOT/old"
@@ -123,7 +125,8 @@ sc_check() { # <path> [extra checker args...]
   esac
 }
 
-SC_SCRIPTS=("$DISPATCH" "$MAKE_STAMP" "$USAGE_CHECK" "$GH_HEALTH")
+SC_SCRIPTS=("$DISPATCH" "$MAKE_STAMP" "$USAGE_CHECK" "$GH_HEALTH" \
+            "$CLAUDE_EVIDENCE_VERIFY" "$CLAUDE_EVIDENCE_TESTS")
 # The lifecycle surface. Checked at warning level and above, with two codes
 # excluded for a structural reason rather than a stylistic one: the lifecycle
 # files are always sourced together and share one result model, so a variable
@@ -315,6 +318,8 @@ assert_absent "claude cmd: no Bash/shell tool granted"          "$CMD" "Bash"
 assert_absent "claude cmd: no permission bypass"                "$CMD" "dangerously"
 assert_absent "claude cmd: no bypassPermissions"                "$CMD" "bypassPermissions"
 assert_absent "claude cmd: --bare forbidden"                    "$CMD" "--bare"
+assert_absent "claude cmd: candidate fallback control is not in frozen recipe" \
+  "$CMD" "CLAUDE_CODE_NO_MODEL_FALLBACK"
 
 # Only ONE command substitution may appear, and it must be the prompt file read.
 subs="$(grep -o '\$(' <<<"$CMD" | wc -l)"
@@ -388,6 +393,8 @@ assert_absent "gateway cmd: no permission bypass"                "$GWCMD" "dange
 assert_absent "gateway cmd: --bare forbidden"                    "$GWCMD" "--bare"
 assert_absent "gateway cmd: no runtime \$HOME lookup"            "$GWCMD" '$HOME'
 assert_absent "gateway cmd: no runtime \$PATH lookup"            "$GWCMD" '$PATH'
+assert_absent "gateway cmd: candidate fallback control is not in frozen recipe" \
+  "$GWCMD" "CLAUDE_CODE_NO_MODEL_FALLBACK"
 
 # Exactly two command substitutions: the credential read and the prompt file.
 gw_subs="$(grep -o '\$(' <<<"$GWCMD" | wc -l)"
@@ -402,6 +409,92 @@ GW_TAIL="${GWCMD#*CLAUDE_CODE_MAX_CONTEXT_TOKENS=65536 }"
 GW_TAIL="${GW_TAIL%; unset ANTHROPIC_AUTH_TOKEN}"
 assert_eq "gateway cmd: the claude invocation is byte-identical to the native one" \
   "$GW_TAIL" "${GW_NATIVE_TWIN#*TERM=dumb }"
+
+# --- Claude settings preflight: all supported file layers fail closed -----
+head1 "   claude settings preflight — hermetic files only"
+
+SETTINGS_ROOT="$TMPROOT/settings-preflight"
+SETTINGS_HOME="$SETTINGS_ROOT/home"
+SETTINGS_PROJECT="$SETTINGS_ROOT/project"
+SETTINGS_MANAGED="$SETTINGS_ROOT/managed-settings.json"
+mkdir -p "$SETTINGS_HOME/.claude" "$SETTINGS_PROJECT/.claude"
+
+run_settings_preflight() { # <project-dir>
+  ( cd "$1" && claude_settings_preflight "$SETTINGS_HOME" "$SETTINGS_MANAGED" ) \
+    >"$SETTINGS_ROOT/out" 2>"$SETTINGS_ROOT/err"
+  echo $?
+}
+
+printf '%s\n' '{"model":"opus","effortLevel":"high"}' \
+  > "$SETTINGS_HOME/.claude/settings.json"
+assert_eq "settings: inert model and effort defaults remain compatible" \
+  "$(run_settings_preflight "$SETTINGS_PROJECT")" "0"
+rm -f "$SETTINGS_HOME/.claude/settings.json"
+
+for settings_key in apiKeyHelper env awsAuthRefresh awsCredentialExport \
+  gcpAuthRefresh forceLoginMethod fallbackModel modelOverrides availableModels \
+  autoCompactEnabled autoCompact maxOutputTokens maxThinkingTokens fastMode; do
+  jq -n --arg key "$settings_key" '{($key):"unsafe"}' \
+    > "$SETTINGS_HOME/.claude/settings.json"
+  assert_eq "settings: user layer refuses $settings_key" \
+    "$(run_settings_preflight "$SETTINGS_PROJECT")" "2"
+  assert_contains "settings: refusal names $settings_key" \
+    "$(cat "$SETTINGS_ROOT/err")" "$settings_key"
+done
+rm -f "$SETTINGS_HOME/.claude/settings.json"
+
+for settings_layer in user project local managed; do
+  case "$settings_layer" in
+    user) settings_file="$SETTINGS_HOME/.claude/settings.json" ;;
+    project) settings_file="$SETTINGS_PROJECT/.claude/settings.json" ;;
+    local) settings_file="$SETTINGS_PROJECT/.claude/settings.local.json" ;;
+    managed) settings_file="$SETTINGS_MANAGED" ;;
+  esac
+  printf '%s\n' '{"fallbackModel":"haiku"}' > "$settings_file"
+  assert_eq "settings: $settings_layer layer refuses before launch" \
+    "$(run_settings_preflight "$SETTINGS_PROJECT")" "2"
+  assert_contains "settings: $settings_layer refusal names its file" \
+    "$(cat "$SETTINGS_ROOT/err")" "$settings_file"
+  rm -f "$settings_file"
+done
+
+for settings_layer in user project local managed; do
+  case "$settings_layer" in
+    user) settings_file="$SETTINGS_HOME/.claude/settings.json" ;;
+    project) settings_file="$SETTINGS_PROJECT/.claude/settings.json" ;;
+    local) settings_file="$SETTINGS_PROJECT/.claude/settings.local.json" ;;
+    managed) settings_file="$SETTINGS_MANAGED" ;;
+  esac
+
+  printf '{bad json\n' > "$settings_file"
+  assert_eq "settings: malformed JSON in $settings_layer fails closed" \
+    "$(run_settings_preflight "$SETTINGS_PROJECT")" "2"
+  assert_contains "settings: malformed $settings_layer refusal names the file" \
+    "$(cat "$SETTINGS_ROOT/err")" "$settings_file"
+
+  printf '%s\n' '[]' > "$settings_file"
+  assert_eq "settings: non-object JSON in $settings_layer fails closed" \
+    "$(run_settings_preflight "$SETTINGS_PROJECT")" "2"
+
+  printf '%s\n' '{}' > "$settings_file"
+  chmod 000 "$settings_file"
+  if [[ -r "$settings_file" ]]; then
+    ok "settings: unreadable $settings_layer check skipped for privileged user"
+    ok "settings: unreadable $settings_layer prerequisite reported"
+  else
+    assert_eq "settings: unreadable JSON in $settings_layer fails closed" \
+      "$(run_settings_preflight "$SETTINGS_PROJECT")" "2"
+    assert_contains "settings: unreadable $settings_layer refusal is actionable" \
+      "$(cat "$SETTINGS_ROOT/err")" "unreadable"
+  fi
+  chmod 600 "$settings_file"
+  rm -f "$settings_file"
+done
+
+printf '%s\n%s\n' '{}' '{}' > "$SETTINGS_HOME/.claude/settings.json"
+assert_eq "settings: multiple top-level JSON values fail closed" \
+  "$(run_settings_preflight "$SETTINGS_PROJECT")" "2"
+rm -f "$SETTINGS_HOME/.claude/settings.json"
 
 # --- the generated codex command -------------------------------------------
 CCMD="$(build_codex_command "/wt/STORY.md.prompt" "gpt-5.6-sol" "xhigh")"
@@ -601,8 +694,12 @@ grep_absent() { # name file pattern  (raw: for prose files)
 # MATCH it — a grep that no longer matches the old code is a vacuous grep, and
 # would silently stop guarding anything.
 OLD_DISPATCH="$WORK_OLD/dispatch.old.sh"
+CURRENT_DISPATCH_CODE="$WORK_OLD/dispatch.current.code.sh"
+OLD_DISPATCH_CODE="$WORK_OLD/dispatch.old.code.sh"
 mkdir -p "$(dirname "$OLD_DISPATCH")"
+code_of "$DISPATCH" > "$CURRENT_DISPATCH_CODE"
 if git -C "$KIT_ROOT" show 02b18d0:files/model-router/scripts/dispatch.sh > "$OLD_DISPATCH" 2>/dev/null; then
+  code_of "$OLD_DISPATCH" > "$OLD_DISPATCH_CODE"
   HAVE_OLD=1
 else
   HAVE_OLD=0
@@ -610,11 +707,11 @@ fi
 
 grep_gone() { # name pattern — absent from the new code AND present in the old
   local name="$1" pat="$2"
-  if code_of "$DISPATCH" | grep -qE "$pat"; then
+  if grep -qE "$pat" "$CURRENT_DISPATCH_CODE"; then
     bad "$name" "still present in dispatch.sh"
     return
   fi
-  if (( HAVE_OLD )) && ! code_of "$OLD_DISPATCH" | grep -qE "$pat"; then
+  if (( HAVE_OLD )) && ! grep -qE "$pat" "$OLD_DISPATCH_CODE"; then
     bad "$name" "VACUOUS GREP: pattern '$pat' did not match the retired code either"
     return
   fi
@@ -828,7 +925,7 @@ run_dispatch() { # run_dispatch <story> [cycle] -> echoes exit code, stderr to $
       AGENT_ROUTER_URL="https://router.invalid" \
       AGENT_ROUTER_TOKEN="stub-token" \
       AGENT_ROUTER_TOKEN_ENV="AGENT_ROUTER_TOKEN" \
-      AGENT_DIR="" AGENT_FLOW_APPROVED_HOME="" AGENT_FLOW_APPROVED_PATH="" \
+      AGENT_DIR="" AGENT_FLOW_APPROVED_HOME="${STUB_APPROVED_HOME-}" AGENT_FLOW_APPROVED_PATH="" \
       AGENT_FLOW_LAUNCH_TIMEOUT=20 \
       AGENT_FLOW_GATEWAY_URL="${STUB_GATEWAY_URL-https://gateway.invalid}" \
       AGENT_FLOW_GATEWAY_TOKEN_REF="${STUB_TOKEN_REF-op://stubvault/agw-claude-code/credential}" \
@@ -837,6 +934,41 @@ run_dispatch() { # run_dispatch <story> [cycle] -> echoes exit code, stderr to $
       bash "$DISPATCH" "$1" "${2:-1}" ) >"$WORK/out" 2>"$WORK/err"
   echo $?
 }
+
+# Prove the preflight is on the real dispatch path before terminal creation.
+: > "$STUB_STATE/terminal-creates"
+mkdir -p "$WT/.claude"
+printf '{bad json\n' > "$WT/.claude/settings.json"
+write_story "$WT/s-settings.md" "persona: dev
+gates: [\"true\"]"
+write_stamp "$WT/s-settings.md.stamp.json" high false
+printf '{"stale":"last cycle"}' > "$WT/s-settings.md.claude-result.json"
+rc="$(run_dispatch s-settings.md)"
+assert_eq "settings integration: malformed project settings -> exit 2" "$rc" "2"
+assert_contains "settings integration: refusal names the responsible file" \
+  "$(cat "$WORK/err")" "$WT/.claude/settings.json"
+assert_empty_file "settings integration: no terminal created" "$STUB_STATE/terminal-creates"
+assert_no_file "settings integration: no result artifact" "$WT/s-settings.md.result.json"
+assert_no_file "settings integration: stale Claude result is removed" \
+  "$WT/s-settings.md.claude-result.json"
+rm -f "$WT/.claude/settings.json"
+
+# Exercise approved-home resolution through main, not only the pure helper.
+APPROVED_HOME="$WORK/approved-home"
+mkdir -p "$APPROVED_HOME/.claude"
+printf '%s\n' '{"fallbackModel":"haiku"}' > "$APPROVED_HOME/.claude/settings.json"
+write_story "$WT/s-user-settings.md" "persona: dev
+gates: [\"true\"]"
+write_stamp "$WT/s-user-settings.md.stamp.json" high false
+: > "$STUB_STATE/terminal-creates"
+rc="$(STUB_APPROVED_HOME="$APPROVED_HOME"; export STUB_APPROVED_HOME; run_dispatch s-user-settings.md)"
+assert_eq "settings integration: approved-home fallback -> exit 2" "$rc" "2"
+assert_contains "settings integration: approved-home refusal names the file" \
+  "$(cat "$WORK/err")" "$APPROVED_HOME/.claude/settings.json"
+assert_empty_file "settings integration: approved-home refusal creates no terminal" \
+  "$STUB_STATE/terminal-creates"
+assert_no_file "settings integration: approved-home refusal creates no Claude result" \
+  "$WT/s-user-settings.md.claude-result.json"
 
 # ---- empty gates fail closed ---------------------------------------------
 write_story "$WT/s-nogates.md" "persona: dev
@@ -3007,6 +3139,21 @@ if bash "$MAKE_STAMP" --response "$WORK/nullpool.json" --story-id X \
     "$(jq -r '.entitlement_pool | type' "$WORK/nullpool.stamp.json")" "null"
 else
   bad "null entitlement_pool is ACCEPTED (local execution draws on no pool)"
+fi
+
+# ===========================================================================
+head1 "4b. Offline Claude result-envelope qualification"
+# ===========================================================================
+
+if [[ -x "$CLAUDE_EVIDENCE_TESTS" ]]; then
+  if evidence_out="$(bash "$CLAUDE_EVIDENCE_TESTS" 2>&1)"; then
+    ok "Claude evidence verifier gate: $(tail -1 <<<"$evidence_out")"
+  else
+    bad "Claude evidence verifier gate" "$(tail -1 <<<"$evidence_out")"
+    printf '%s\n' "$evidence_out" | tail -40
+  fi
+else
+  bad "Claude evidence verifier gate present and executable" "missing: $CLAUDE_EVIDENCE_TESTS"
 fi
 
 # ===========================================================================

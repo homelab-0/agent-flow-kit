@@ -1436,19 +1436,34 @@ resolve_approved_home() {
 }
 
 # claude_settings_preflight — the env sanitizer cannot strip what lives in
-# FILES. Refuse when any settings layer declares a credential helper, an env
-# block, a forced login method or a provider/base-URL redirection.
+# FILES. Refuse when any settings layer is unreadable/malformed or declares a
+# control that can redirect auth/provider/model resolution, enable fallback,
+# or change the context/output contract. The optional managed path exists so
+# the hermetic test suite can exercise that layer without touching /etc; the
+# production caller always uses the frozen system path.
 claude_settings_preflight() {
-  local home="$1" f hit
+  local home="$1" managed="${2:-/etc/claude-code/managed-settings.json}" f hit
   for f in "$home/.claude/settings.json" \
            "$PWD/.claude/settings.json" \
            "$PWD/.claude/settings.local.json" \
-           /etc/claude-code/managed-settings.json; do
+           "$managed"; do
     [[ -f "$f" ]] || continue
-    hit="$(jq -r '[paths(scalars) as $p | $p[0]]
-                  | map(select(. == "apiKeyHelper" or . == "env" or . == "awsAuthRefresh"
-                               or . == "gcpAuthRefresh" or . == "forceLoginMethod"))
-                  | unique | join(",")' "$f" 2>/dev/null || true)"
+    [[ -r "$f" ]] || \
+      die "claude settings '$f' is unreadable — effective file-borne controls cannot be established; failing closed" "$EX_CONFIG"
+    if ! hit="$(jq -ers '
+        if length != 1 or (.[0] | type) != "object" then error("invalid settings")
+        else [.[0] | keys[] | select(
+                . == "apiKeyHelper" or . == "env" or
+                . == "awsAuthRefresh" or . == "awsCredentialExport" or
+                . == "gcpAuthRefresh" or . == "forceLoginMethod" or
+                . == "fallbackModel" or . == "modelOverrides" or
+                . == "availableModels" or . == "fastMode" or
+                . == "autoCompact" or . == "autoCompactEnabled" or
+                . == "maxOutputTokens" or . == "maxThinkingTokens"
+              )] | unique | join(",")
+        end' "$f" 2>/dev/null)"; then
+      die "claude settings '$f' is not one readable JSON object — invalid settings are silently ignored by claude -p; failing closed" "$EX_CONFIG"
+    fi
     [[ -n "$hit" ]] && die "claude settings '$f' declares $hit — the sanitizer cannot strip file-borne overrides; failing closed" "$EX_CONFIG"
   done
 }
@@ -1872,15 +1887,15 @@ EOF
     claude)
       local approved_home approved_path approved_user
       local gateway_url token_ref op_env_file placement_header max_context
-      approved_home="$(resolve_approved_home)"
-      claude_settings_preflight "$approved_home"
-      approved_path="$(cfg '.launcher.approved_path' AGENT_FLOW_APPROVED_PATH "$(dirname "$(command -v "$harness_bin")"):/usr/local/bin:/usr/bin:/bin")"
-      approved_user="$(id -un)"
       result_file="${STORY}.claude-result.json"
       # Removed BEFORE the preflights, not after them: a refusal that left last
       # cycle's artifact on disk would hand a reader that opens the file by name
       # a stale result for a launch that never happened.
       rm -f "$result_file"
+      approved_home="$(resolve_approved_home)"
+      claude_settings_preflight "$approved_home"
+      approved_path="$(cfg '.launcher.approved_path' AGENT_FLOW_APPROVED_PATH "$(dirname "$(command -v "$harness_bin")"):/usr/local/bin:/usr/bin:/bin")"
+      approved_user="$(id -un)"
       # Which of the two classes: the guard above already decided it, and this
       # reads the same stamp fact it decided on. A claude stamp that requires
       # placement and reached this line is a validated gateway-backed local

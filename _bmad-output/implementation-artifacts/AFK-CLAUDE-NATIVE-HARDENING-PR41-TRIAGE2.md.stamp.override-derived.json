@@ -1,0 +1,35 @@
+{
+  "harness": "codex",
+  "model_profile": "openai/strong",
+  "effort": "high",
+  "cost_class": "subscription",
+  "entitlement_pool": "openai-plus",
+  "metered": false,
+  "placement_policy": "prefer-warm-local",
+  "placement_required": false,
+  "catalog_version": "sha256:a9322bda8daccc2003ee7a31e84a292501a70a7c89c2b9548f9934692ba6848b",
+  "expires_at": "2026-09-15T02:14:54Z",
+  "task": {
+    "story_id": "AFK-CLAUDE-NATIVE-HARDENING-PR41-TRIAGE2",
+    "tags": [
+      "pr-triage",
+      "security",
+      "docs",
+      "tests",
+      "github",
+      "cross-provider-review"
+    ],
+    "title": "Reconcile PR 41 with master and qualify current PR evidence"
+  },
+  "override": {
+    "actor": "josh",
+    "at": "2026-09-14T02:16:55Z",
+    "original": {
+      "harness": "codex",
+      "model_profile": "openai/strong"
+    },
+    "reason": "Natural route claude/claude/strong is retained beside this stamp. Josh approved the router's first fallback codex/openai/strong after the local Claude attempt exceeded its 65536-token context and the frozen Claude adapter exposed no Bash, GitHub CLI, or MCP tools required for PR triage. Full pool, cost, and placement fields come verbatim from that fallback; catalog version and expiry remain verbatim from the natural response."
+  },
+  "created_at": "2026-09-14T02:16:55Z",
+  "catalog_document_version": "1.6.1"
+}
