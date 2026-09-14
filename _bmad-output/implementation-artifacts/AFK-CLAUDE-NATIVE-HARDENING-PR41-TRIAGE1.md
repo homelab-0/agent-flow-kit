@@ -1,6 +1,6 @@
 ---
 linear:
-stamp: AFK-CLAUDE-NATIVE-HARDENING-PR41-TRIAGE1.md.stamp.json
+stamp: _bmad-output/implementation-artifacts/AFK-CLAUDE-NATIVE-HARDENING-PR41-TRIAGE1.md.stamp.json
 persona: dev
 gates:
   - "bash tests/run-tests.sh"
@@ -79,4 +79,3 @@ Write the normal thin result with: merged `origin/master` commit, resolution
 summary, commit and push ref, gate counts, final feature diff paths and size,
 current PR check/review state, every finding disposition, and precise blockers.
 Distinguish local gate success from unavailable external review evidence.
-
