@@ -1,0 +1,24 @@
+{
+  "story_id": "AFK-PORT-1.5D-REVIEW",
+  "title": "Independent adversarial and senior review of Story 1.5 lane D",
+  "summary": "Evidence-only review of exact commit 2b7b29f against base 32e94cc and AFK-PORT-1.5D AC-1 through AC-7. Inspect an 800-line, eight-file cross-cutting shell lifecycle change for observation and stamp precedence, policy-only boundary arithmetic, closed and secret-free atomic artifacts, loud human-only coordinator continuation, idempotent successor reconciliation, worker-watch isolation, contract accuracy, test anti-vacuity, frozen launch-text preservation, and commit hygiene. Reproduce only reachable blockers; write review evidence but no production code, tests, docs, or git changes.",
+  "touched_paths": [
+    "bin/agent-flow-kit",
+    "lib/afk-common.sh",
+    "lib/afk-commands.sh",
+    "files/model-router/SKILL.md",
+    "docs/LIFECYCLE-CONTRACT.md",
+    "tests/lifecycle-readiness-tests.sh",
+    "tests/lifecycle-dispatch-tests.sh",
+    "tests/lifecycle-tests.sh",
+    "_bmad-output/implementation-artifacts/AFK-PORT-1.5D.md",
+    "_bmad-output/implementation-artifacts/AFK-PORT-1.5D-REVIEW.md",
+    "_bmad-output/implementation-artifacts/evidence/AFK-PORT-1.5D-REVIEW/"
+  ],
+  "ambiguity": "high",
+  "blast_radius": "medium",
+  "volume_hint": "low",
+  "tags": ["tests", "docs"],
+  "repo": "agent-flow-kit",
+  "requester": "bmad-pm"
+}

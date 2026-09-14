@@ -45,6 +45,7 @@ adopt
 update
 verify
 monitor
+pm-checkpoint
 schema
 ```
 <!-- end -->
@@ -1506,6 +1507,82 @@ All verdicts report subscription identity and liveness, quota, exhaustion, and
 paid extra usage as `NOT_EVALUATED`; `cost_fields_evaluated` is always false.
 Neither a qualified verdict nor process exit 0 establishes any of those facts.
 
+### The coordinator's own context budget
+
+The same model, applied to the ORCH PM session. It is human-started in Orca, is
+not necessarily stamped, and **this kit never launches one** — so a measured
+window and a launcher that can start the next attempt, the two things a worker
+gets for free, are exactly what the coordinator does not have.
+
+**The observation is PROVIDED.** Automatic context-window measurement by the kit
+is an explicit non-goal. `$AFK_PM_DIR/usage.json` (default `pm/usage.json` under
+the declared state directory) carries schema `afk-pm-usage/1`: `harness`,
+`window_tokens` and `usage_tokens` (each a number or null), `provenance`
+(`HARNESS_ADAPTER` or `HUMAN`), `observed_at`, an opaque `session`, `reason`.
+
+`usage_tokens` is the context the session HOLDS at observation time — final
+context occupancy, never a cumulative sum over calls, for the reason the worker
+half already gives: dividing a cumulative total by a window measures nothing. An
+adapter that can report only a cumulative figure reports `usage_tokens: null`
+with `reason: PM_USAGE_CUMULATIVE_ONLY`. Provenance is **recorded, never
+inferred**: a document declaring none is malformed, not a hand-written
+observation by default. Absent or unparseable is `NOT_EVALUATED` with
+`PM_USAGE_UNOBSERVABLE`.
+
+**The window hierarchy is applied in order.** `--pm-stamp <path>` takes the
+window from the trusted catalog's `min_context` for that stamp's profile, after
+the same stamp-shape check every other stamp gets, from the catalog the launcher
+declares (`AFK_ROUTER_CATALOG`, or `AGENT_STAMP_VALIDATE_CATALOG_PATH`).
+Otherwise the observation's own `window_tokens`. Otherwise nothing. A stamp named
+on the command line is **never silently ignored**: one whose shape or catalog
+window cannot be resolved reports `PM_STAMP_UNUSABLE` rather than falling through
+to the adapter, because the caller who named it asked for that window and no
+other.
+
+**The thresholds are the policy's.** `checkpoint_ratio` and
+`continuation_ratio` come from the declared document above, by the same
+parts-per-million arithmetic and the same boundary equality; a policy that
+cannot be read reports `PM_BUDGET_POLICY_UNREADABLE`, because there is no ratio
+constant in the kit either.
+
+`status` and `monitor` carry the result as `extra.pm_budget`, and the human
+rendering projects it: `window_tokens`, `window_source`
+(`STAMP`|`ADAPTER`|`NOT_EVALUATED`), `usage_tokens`, `usage_ratio`, `state` (the
+four declared budget states), `reason`, `checkpoint_artifact` and
+`continuation_artifact` (`{path, sha256}` or null), `needs_human`.
+
+**The artifacts.** `agent-flow-kit pm-checkpoint --write <path>` validates a
+submitted document and writes `pm/checkpoint.json` (`afk-pm-checkpoint/1`);
+`--continuation` writes `pm/continuation.json` (`afk-pm-continuation/1`), which
+additionally requires `resume_instruction`, a ready-to-use command line for the
+human. Both carry `decisions`, `envelope_actions`, `open_escalations`,
+`budget_state`, `in_flight_dispatches` and `updated_at`. `envelope_actions` is
+opaque here and an empty list is valid: the vocabulary is Story 1.6's to define.
+`in_flight_dispatches` holds **ids only** — a non-string member is refused,
+because a coordinator artifact carries pointers and bounded summaries, never
+transcripts or evidence bodies. Writing is validated first and settled through
+the kit's atomic state writer, so a refused submission leaves what is on disk
+byte-identical. A secret-looking member is refused with
+`PM_ARTIFACT_SECRET_BEARING` and exit code 4, and never reaches a diagnostic.
+
+**Continuation is loud, and nothing launches it.** When occupancy is at or past
+`continuation_ratio`, or a valid continuation artifact exists that no successor
+has reconciled, `status` carries the `owner_action` finding
+`PM_CONTINUATION_REQUIRED` with the artifact's path and digest and the
+`resume_instruction` verbatim, and `next_safe_action` tells the human to start
+the successor ORCH PM in Orca themselves. **No verb in this kit starts a
+session**; no PM path calls `orca terminal create` or `worker-start`, and a gate
+greps for both.
+
+**Reconciliation.** `monitor --reconcile` gains one additive step: a valid
+outstanding artifact is recorded in `pm/continuation.reconciled.json` (successor
+session from `--session` or from the observation, the time, and the artifact
+digest), the PM continuation count in `pm/budget-state.json` is incremented —
+the epic-budget input Story 1.6 consumes — and the condition clears. The step
+touches nothing outside `pm/`, so an in-flight worker watch is unaffected by a
+coordinator hand-over, and an artifact that does not validate is
+`PM_CONTINUATION_ARTIFACT_INVALID` rather than a hand-over.
+
 ## Compatibility declarations
 
 The router and its catalog own legal harness/profile relationships, model and
@@ -2176,6 +2253,16 @@ REMOTE_BRANCH_ABSENT
 REMOTE_BRANCH_RETAINED_UNAUTHORIZED
 CLEANUP_NEEDS_OWNER
 CLEANUP_COMPLETE
+PM_USAGE_UNOBSERVABLE
+PM_USAGE_CUMULATIVE_ONLY
+PM_WINDOW_UNDECLARED
+PM_STAMP_UNUSABLE
+PM_BUDGET_POLICY_UNREADABLE
+PM_CHECKPOINT_DUE
+PM_CONTINUATION_REQUIRED
+PM_CONTINUATION_RECONCILED
+PM_CONTINUATION_ARTIFACT_INVALID
+PM_ARTIFACT_SECRET_BEARING
 ```
 <!-- end -->
 

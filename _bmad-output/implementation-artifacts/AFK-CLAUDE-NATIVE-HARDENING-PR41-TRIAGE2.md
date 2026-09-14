@@ -88,3 +88,65 @@ Distinguish local gate success from unavailable external review evidence.
 - Gates: aggregate offline suite, Nix ShellCheck, and feature-range whitespace check
 - Post-development validation: verify scope, gate evidence, PR mergeability, check/review truthfulness, and absence of merge/deployment actions
 
+## Dev Agent Record
+
+### Status
+
+Continuation required before implementation. The execution-time `origin/master`
+fetch mandated by the story could not be performed because the environment had
+no working DNS/network path to GitHub. The stale local `origin/master` ref was
+not substituted for the required fetched ref.
+
+### Work completed
+
+- Read the story, routing skill, project memory, and binding operating policy.
+- Ran the planning-start usage check.
+- Confirmed the child branch was `afk-pr41-triage2` at `8db411f`, matching the
+  locally recorded `origin/afk-claude-native-hardening` ref.
+- Wrote the required checkpoint and continuation artifacts. No merge, conflict
+  resolution, product-code edit, commit, push, PR comment, or review reaction
+  was attempted.
+
+### Evidence
+
+- `/home/devbox/.agents/skills/model-router/scripts/usage-check.sh` — exit 0;
+  reported observations only.
+- `/home/devbox/.agents/skills/model-router/scripts/github-health.sh` — exit 2;
+  `githubstatus.com` was unreachable.
+- `getent hosts githubstatus.com github.com` — exit 0 with no address output.
+- Declared gates were not run because implementation never began; running them
+  would not satisfy the missing mandatory fetch, push, or PR-inspection work.
+
+### Diff and observations
+
+- Final worker-authored diff size: 3 files, 94 added lines (36 story record,
+  26 checkpoint, 32 continuation).
+- Deviation: none. Work stopped at the required boundary instead of widening
+  scope or using the stale local `origin/master` value
+  `77553236def86550e504fcc4bf2981dc5ba055b8`.
+- budget: CONTINUATION_REQUIRED sha256:92e760f1a3ea3f246d4035b650858006d87a36a375025d2e2421e17e06920344 cycle 1 2026-09-14T02:21:54Z
+
+### Owner-authorized coordinator continuation
+
+Josh authorized the coordinator to resolve the single PR conflict after both
+routed workers proved unable to perform the required GitHub operations. The
+coordinator fetched `origin/master` at
+`77553236def86550e504fcc4bf2981dc5ba055b8`, confirmed the PR head was
+`8db411f1220cf522048c80a9d1d96b4cac9573d2`, and merged without rebasing or
+force-pushing.
+
+The only conflict was in `docs/LIFECYCLE-CONTRACT.md`. Its resolution retains
+the complete offline Claude result-envelope qualification section from the PR
+and the complete coordinator context-budget section from `master`. No ACP or
+prox-ops file was changed.
+
+Local verification before commit:
+
+- `bash tests/run-tests.sh`: 839 passed, 0 failed. Component totals were
+  lifecycle 503/503, mutation 577/577, concurrency 207/207, readiness 359/359,
+  and dispatch 274/274.
+- `NIX_CONFIG='experimental-features = nix-command flakes' nix shell
+  nixpkgs#shellcheck --command shellcheck files/model-router/scripts/dispatch.sh
+  files/model-router/scripts/verify-claude-evidence.sh`: passed.
+- The exact feature-range whitespace gate is run after the merge commit so the
+  range includes the resolution and excludes unchanged `master` history.
