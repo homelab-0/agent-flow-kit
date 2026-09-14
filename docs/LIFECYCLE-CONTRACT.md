@@ -1459,6 +1459,54 @@ no result artifact at all. The list is the union a reader of either producer may
 meet, which is what the vocabulary is for; no thin result will ever be found
 carrying `needs_human`.
 
+## Offline Claude result-envelope qualification
+
+`files/model-router/scripts/verify-claude-evidence.sh RESULT EXPECTATIONS`
+qualifies an already-written Claude JSON result envelope without launching a
+harness or consulting credentials, the network, ACP, deployment state, or a
+catalog. It exits 0 for `QUALIFIED`, 1 for `REFUSED`, and 2 only for invocation
+or local dependency errors. Its stdout is deterministic `schema_version: 1.0`
+JSON containing bounded counts and numeric window evidence; it never copies
+prompt, result text, token content, credential material, or cost values.
+Both inputs must be readable regular files containing exactly one JSON value.
+
+The expectations document has schema
+`afk-claude-evidence-expectations/1` and declares:
+
+- `provider` and `primary_model` as non-empty strings;
+- optional `primary_model_usage_key`, which is the caller-owned binding from a
+  friendly alias to an exact `modelUsage` key;
+- unique `allowed_auxiliary_models` exact keys;
+- positive integral `required_context_tokens` and non-negative integral
+  `headroom_tokens`.
+
+Unknown expectation members fail closed. Without an explicit binding,
+`primary_model` itself must exactly equal a `modelUsage` key; the verifier does
+not infer a primary from ordering, volume, family, cost, or a lone entry. The
+primary must occur exactly once and every other entry must be explicitly
+allowed. Every accepted entry must carry the declared non-empty provider and a
+positive numeric `contextWindow`. The minimum acceptable window is the
+arithmetic sum of the two caller declarations. This observation is historical
+corroboration only: the trusted catalog remains the authority for routed
+profile capabilities.
+
+When an explicit binding maps a friendly primary alias to a different resolved
+usage key, an envelope containing both names is duplicate primary evidence and
+is refused rather than interpreting the alias as an auxiliary model.
+
+Refusal reasons are stable codes: `RESULT_UNREADABLE`,
+`EXPECTATIONS_UNREADABLE`, `RESULT_INVALID_JSON`,
+`EXPECTATIONS_INVALID_JSON`, `EXPECTATIONS_SCHEMA_UNSUPPORTED`,
+`EXPECTATIONS_INVALID`, `MODEL_USAGE_MALFORMED`,
+`PRIMARY_MODEL_MISSING`, `PRIMARY_MODEL_DUPLICATE`,
+`UNEXPECTED_MODEL_ENTRY`, `PROVIDER_MISSING`,
+`PROVIDER_MISMATCH`, `CONTEXT_WINDOW_MISSING`, `CONTEXT_WINDOW_INVALID`,
+`CONTEXT_WINDOW_INSUFFICIENT`, and `RESULT_EVALUATION_FAILED`.
+
+All verdicts report subscription identity and liveness, quota, exhaustion, and
+paid extra usage as `NOT_EVALUATED`; `cost_fields_evaluated` is always false.
+Neither a qualified verdict nor process exit 0 establishes any of those facts.
+
 ### The coordinator's own context budget
 
 The same model, applied to the ORCH PM session. It is human-started in Orca, is
