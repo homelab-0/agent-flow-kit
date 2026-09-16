@@ -138,6 +138,7 @@ SC_SCRIPTS=("$DISPATCH" "$MAKE_STAMP" "$USAGE_CHECK" "$GH_HEALTH" \
             "$KIT_ROOT/adapters/refresh-status-cache.sh" \
             "$KIT_ROOT/adapters/render-status.sh" \
             "$KIT_ROOT/adapters/runtime-scope.sh" \
+            "$KIT_ROOT/adapters/manage.sh" \
             "$KIT_ROOT/adapters/manage-core.sh" \
             "$KIT_ROOT/adapters/manage-transactions.sh" \
             "$KIT_ROOT/adapters/worker-context.sh" \
@@ -149,7 +150,8 @@ SC_SCRIPTS=("$DISPATCH" "$MAKE_STAMP" "$USAGE_CHECK" "$GH_HEALTH" \
             "$KIT_ROOT/tests/context-adapter-contract-tests.sh" \
             "$KIT_ROOT/tests/harness-start-contract-tests.sh" \
             "$KIT_ROOT/tests/release-reconciler-contract-tests.sh" \
-            "$KIT_ROOT/tests/session-gate-contract-tests.sh")
+            "$KIT_ROOT/tests/session-gate-contract-tests.sh" \
+            "$KIT_ROOT/tests/session-start-integration-tests.sh")
 # The lifecycle surface. Checked at warning level and above, with two codes
 # excluded for a structural reason rather than a stylistic one: the lifecycle
 # files are always sourced together and share one result model, so a variable
@@ -3464,7 +3466,8 @@ for adapter_gate in \
   "$KIT_ROOT/tests/context-adapter-contract-tests.sh" \
   "$KIT_ROOT/tests/harness-start-contract-tests.sh" \
   "$KIT_ROOT/tests/release-reconciler-contract-tests.sh" \
-  "$KIT_ROOT/tests/session-gate-contract-tests.sh"; do
+  "$KIT_ROOT/tests/session-gate-contract-tests.sh" \
+  "$KIT_ROOT/tests/session-start-integration-tests.sh"; do
   if [[ -f "$adapter_gate" ]]; then
     if adapter_out="$(bash "$adapter_gate" 2>&1)"; then
       ok "adapter contract gate: $(basename "$adapter_gate"): $(tail -1 <<<"$adapter_out")"
