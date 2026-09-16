@@ -77,17 +77,17 @@ afk_require_tools() {
   return 0
 }
 
-# A declared list is comma-separated and compared by EXACT string equality.
-# Word splitting is never used on a path list: a declared member containing a
-# space must not become two members, and a member containing a glob character
-# must not be expanded (FR-93).
+# A declared list is comma-separated and compared as exact path components.
+# A declared directory excludes that directory's bounded subtree (`item/...`),
+# but never a lookalike prefix such as `item-backup`. Word splitting is never
+# used: spaces and glob characters remain literal path bytes (FR-93).
 afk_excluded() { # <relative-path> <comma-separated exclusions>
   local rel="$1" list="${2:-}" item
   local -a items=()
   [[ -n "$list" ]] || return 1
   IFS=',' read -r -a items <<< "$list"
   for item in "${items[@]}"; do
-    if [[ "$item" == "$rel" ]]; then return 0; fi
+    if [[ "$item" == "$rel" || "$rel" == "$item/"* ]]; then return 0; fi
   done
   return 1
 }

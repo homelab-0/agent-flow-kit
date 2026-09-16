@@ -10,7 +10,9 @@
 # harness/model/effort — a different route requires a NEW /v1/route call and a
 # NEW stamp (ExecutionProfile invariant 2, planning-time immutability).
 #
-# Usage:   dispatch.sh <story.md> [cycle]
+# Usage:   dispatch.sh <story.md> [--cycle N]
+#          dispatch.sh --emit-context-event --state CHECKPOINT_DUE|CONTINUATION_REQUIRED [--phase NAME]
+#          dispatch.sh --consume-context-event <event.json> [--pm OWNER]
 # Deps:    yq (mikefarah v4+), jq, curl, orca, agent-stamp-validate,
 #          plus the harness binary the stamp names (claude | codex).
 #
@@ -61,6 +63,9 @@ readonly EX_SIZING_REFUSED=8
 # harness CLI's accepted set: `claude --effort` also accepts `max`, but no
 # catalog effort maps to it, so a stamp can never legitimately carry it.
 readonly STAMP_EFFORTS="low medium high xhigh"
+DEFAULT_BINDINGS_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/harness-bindings.yaml"
+readonly DEFAULT_BINDINGS_FILE
+BINDINGS_FILE="${AGENT_FLOW_HARNESS_BINDINGS:-$DEFAULT_BINDINGS_FILE}"
 
 log()  { printf 'dispatch: %s\n' "$*" >&2; }
 die()  { log "$1"; exit "${2:-$EX_CONFIG}"; }
@@ -74,11 +79,17 @@ sha256_of() {
   if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1
   else shasum -a 256 "$1" | cut -d' ' -f1; fi
 }
+sha256_text() {
+  if command -v sha256sum >/dev/null; then sha256sum | cut -d' ' -f1
+  else shasum -a 256 | cut -d' ' -f1; fi
+}
 passwd_home() {
   local u; u="$(id -un)"
   if command -v getent >/dev/null; then getent passwd "$u" | cut -d: -f6
   else dscl . -read "/Users/$u" NFSHomeDirectory 2>/dev/null | awk '{print $2}'; fi
 }
+stat_identity() { stat -Lc '%d:%i:%y' "$1" 2>/dev/null || stat -Lf '%d:%i:%Sm' -t '%Y-%m-%dT%H:%M:%S%z' "$1" 2>/dev/null; }
+stat_mode() { stat -Lc '%a' "$1" 2>/dev/null || stat -Lf '%Lp' "$1" 2>/dev/null; }
 
 # shq — encode a launcher-resolved value as a shell-safe LITERAL for embedding
 # in generated terminal command text. This is what lets the launcher put its own
@@ -112,6 +123,27 @@ remap_validator_exit() {
 # stays the authoritative catalog data (HARNESS-LAUNCH-*.md §4).
 native_model_arg() { printf '%s' "${1##*/}"; }
 
+# attempt_result_projection — derive the attempt fields that decide whether a
+# worker actually completed. Passing repository gates cannot turn a failed
+# harness process or an explicit harness error envelope into `done`. An
+# already-validated continuation remains authoritative: it names resumable
+# work, not a completed or failed attempt.
+attempt_result_projection() {
+  local current_status="${1:-}" gates_ok="${2:-false}" \
+        harness_exit="${3:-}" harness_error="${4:-false}" status
+  status=""
+  [[ "$current_status" == "continuation_required" ]] && status="$current_status"
+  if [[ -z "$status" ]]; then
+    if [[ "$gates_ok" == true && "$harness_exit" == 0 && "$harness_error" != true ]]; then
+      status="done"
+    else
+      status="gates_failed"
+    fi
+  fi
+  jq -nc --arg status "$status" --arg harness_exit "$harness_exit" \
+    '{status:$status, launch:{harness_exit:($harness_exit|tonumber?)}}'
+}
+
 # build_claude_command — the frozen claude launch, as generated terminal text.
 # Every launcher-owned value below is resolved and validated BEFORE this runs
 # and is baked in as a shell-safe literal. None of them is a runtime lookup:
@@ -120,11 +152,11 @@ native_model_arg() { printf '%s' "${1##*/}"; }
 # file, which is the sanctioned data channel for task/persona content.
 build_claude_command() {
   local home="$1" path="$2" user="$3" prompt_file="$4" model="$5" effort="$6" \
-        result_file="$7" persona_file="${8:-}"
+        result_file="$7" persona_file="${8:-}" worker_env="${9:-}"
   local persona_arg=""
   [[ -n "$persona_file" ]] && persona_arg=" --append-system-prompt-file $(shq "$persona_file")"
   printf '%s' \
-"env -i HOME=$(shq "$home") PATH=$(shq "$path") USER=$(shq "$user") LANG=C.UTF-8 TERM=dumb \
+"env -i HOME=$(shq "$home") PATH=$(shq "$path") USER=$(shq "$user") LANG=C.UTF-8 TERM=dumb ${worker_env:+$worker_env }AFK_WORKER_TERMINAL=\"\${ORCA_TERMINAL_HANDLE:-}\" \
 claude -p \"\$(cat -- $(shq "$prompt_file"))\" \
 --model $(shq "$model") --effort $(shq "$effort")${persona_arg} \
 --permission-mode acceptEdits --tools \"Read,Glob,Grep,Write\" \
@@ -164,7 +196,8 @@ echo \"CLAUDE_EXIT=\$?\""
 build_claude_gateway_command() {
   local home="$1" path="$2" user="$3" prompt_file="$4" model="$5" effort="$6" \
         result_file="$7" persona_file="$8" base_url="$9" token_ref="${10}" \
-        op_env_file="${11}" placement_header="${12}" max_context="${13}"
+        op_env_file="${11}" placement_header="${12}" max_context="${13}" \
+        worker_env="${14:-}"
   local persona_arg=""
   [[ -n "$persona_file" ]] && persona_arg=" --append-system-prompt-file $(shq "$persona_file")"
   printf '%s' \
@@ -173,7 +206,7 @@ ANTHROPIC_AUTH_TOKEN=\"\$(. $(shq "$op_env_file") && op read $(shq "$token_ref")
 [ -n \"\$ANTHROPIC_AUTH_TOKEN\" ] || { \
 echo 'dispatch: gateway credential resolved EMPTY; refusing to start claude unauthenticated' >&2; \
 exit 78; }; \
-env -i HOME=$(shq "$home") PATH=$(shq "$path") USER=$(shq "$user") LANG=C.UTF-8 TERM=dumb \
+env -i HOME=$(shq "$home") PATH=$(shq "$path") USER=$(shq "$user") LANG=C.UTF-8 TERM=dumb ${worker_env:+$worker_env }AFK_WORKER_TERMINAL=\"\${ORCA_TERMINAL_HANDLE:-}\" \
 ANTHROPIC_BASE_URL=$(shq "$base_url") ANTHROPIC_AUTH_TOKEN=\"\$ANTHROPIC_AUTH_TOKEN\" \
 ANTHROPIC_MODEL=$(shq "$model") \
 ANTHROPIC_CUSTOM_HEADERS=$(shq "x-placement: $placement_header") \
@@ -193,12 +226,377 @@ echo \"CLAUDE_EXIT=\$?\"; unset ANTHROPIC_AUTH_TOKEN"
 # the command, which is stricter than the codex contract's `"<task>"` sketch and
 # matches the claude contract's data/shell-source invariant.
 build_codex_command() {
-  local prompt_file="$1" model="$2" effort="$3"
+  local prompt_file="$1" model="$2" effort="$3" worker_env="${4:-}"
   printf '%s' \
 "env -u OPENAI_API_KEY -u CODEX_API_KEY -u ANTHROPIC_API_KEY \
+${worker_env:+$worker_env }AFK_WORKER_TERMINAL=\"\${ORCA_TERMINAL_HANDLE:-}\" \
 codex exec --model $(shq "$model") -c model_reasoning_effort=$(shq "$effort") \
 -s workspace-write \"\$(cat -- $(shq "$prompt_file"))\"; \
 echo \"CODEX_EXIT=\$?\""
+}
+
+build_opencode_command() {
+  local binary="$1" home="$2" path="$3" user="$4" config_dir="$5" data_dir="$6" cache_dir="$7" state_dir="$8" prompt_file="$9" model="${10}" variant="${11}" result_file="${12}" agent="${13}" worker_env="${14:-}"
+  local pure_arg="--pure"
+  # `--pure` disables every plugin, including the exact Hindsight plugin that
+  # prepare_worker_memory just qualified. The generated config already disables
+  # project/external configuration, so an audited required/advisory plugin is
+  # loaded from that isolated config while blind/off remain plugin-free.
+  [[ -n "${MEMORY_OPENCODE_PLUGIN:-}" ]] && pure_arg=""
+  printf '%s' "env -i HOME=$(shq "$home") PATH=$(shq "$path") USER=$(shq "$user") LANG=C.UTF-8 TERM=dumb ${worker_env:+$worker_env }AFK_WORKER_TERMINAL=\"\${ORCA_TERMINAL_HANDLE:-}\" XDG_CONFIG_HOME=$(shq "$config_dir") XDG_DATA_HOME=$(shq "$data_dir") XDG_CACHE_HOME=$(shq "$cache_dir") XDG_STATE_HOME=$(shq "$state_dir") OPENCODE_CONFIG=$(shq "$config_dir/opencode.json") OPENCODE_DISABLE_AUTOUPDATE=true OPENCODE_DISABLE_EXTERNAL_SKILLS=true OPENCODE_DISABLE_MODELS_FETCH=true OPENCODE_DISABLE_PROJECT_CONFIG=true OPENCODE_DISABLE_SHARE=true OPENCODE_DISABLE_CLAUDE_CODE=true OPENCODE_DISABLE_CLAUDE_CODE_PROMPT=true OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=true OPENCODE_DISABLE_LSP_DOWNLOAD=true $(shq "$binary") run ${pure_arg:+$pure_arg }--agent $(shq "$agent") --model $(shq "$model") --variant $(shq "$variant") --format json \"\$(cat -- $(shq "$prompt_file"))\" < /dev/null > $(shq "$result_file"); echo \"OPENCODE_EXIT=\$?\""
+}
+
+launch_binding_json() {
+  [[ -f "$BINDINGS_FILE" ]] || return 1
+  yq -o=json '.bindings' "$BINDINGS_FILE" 2>/dev/null | jq -ce --arg h "$1" --arg p "$2" --arg pool "$3" --arg cost "$4" '[.[]|select(.harness==$h and .model_profile==$p and ((.entitlement_pool // "")==$pool) and .cost_class==$cost)]|select(length==1)|.[0]'
+}
+
+opencode_launch_tuple() {
+  local row model variant provider kind funding
+  row="$(launch_binding_json opencode "$1" "$4" "$5" 2>/dev/null || true)"
+  [[ -n "$row" && "$(jq -r '.physical_model // ""' <<<"$row")" == "$2" ]] || return 1
+  model="$(jq -r --arg e "$3" '.efforts[$e].model // ""' <<<"$row")"; variant="$(jq -r --arg e "$3" '.efforts[$e].variant // ""' <<<"$row")"; provider="$(jq -r '.auth_provider // ""' <<<"$row")"; kind="$(jq -r '.auth_kind // ""' <<<"$row")"; funding="$(jq -r '.funding_attestation // ""' <<<"$row")"
+  [[ -n "$model" && -n "$variant" && -n "$provider" && -n "$kind" ]] || return 1
+  printf '%s\t%s\t%s:%s\t%s\n' "$model" "$variant" "$provider" "$kind" "$funding"
+}
+
+write_opencode_config() {
+  local plugin="${3:-}" plugins='[]'
+  [[ -n "$plugin" ]] && plugins="$(jq -nc --arg p "$plugin" '[$p]')"
+  jq -n --arg persona "{file:$2}" --argjson plugins "$plugins" '{"$schema":"https://opencode.ai/config.json",plugin:$plugins,provider:{"minimax-cn":{npm:"@ai-sdk/anthropic",name:"MiniMax Global Token Plan",options:{baseURL:"https://api.minimax.io/anthropic/v1"},models:{"MiniMax-M3":{name:"MiniMax-M3",limit:{context:1000000,output:65536},variants:{none:{thinking:{type:"disabled"}},thinking:{thinking:{type:"adaptive"}}}}}}},agent:{"afk-dev":{description:"Agent Flow Kit supervised BMAD DEV worker",mode:"primary",prompt:$persona,permission:{"*":"deny",read:"allow",edit:"allow",glob:"allow",grep:"allow",list:"allow",external_directory:"deny",bash:"deny",task:"deny",skill:"deny",webfetch:"deny",websearch:"deny",question:"deny"}}}}' >"$1"
+}
+
+parse_opencode_result_stream() { # <jsonl>
+  jq -c -s '
+    if length > 0 and all(.[]; type=="object") and
+       (.[-1].type=="step_finish" and .[-1].part.type=="step-finish" and .[-1].part.reason=="stop") and
+       (any(.[]; .type=="error" or has("error"))|not)
+    then {reported_error:false,
+          text:([.[] | select(.type=="text" and .part.type=="text" and (.part.text|type)=="string") | .part.text] | join("\n"))}
+    else error("invalid OpenCode terminal result stream")
+    end' "$1" 2>/dev/null
+}
+
+# ---------------------------------------------------------------------------
+# Worker memory and identity boundary.
+#
+# Hindsight remains host-owned. AFK only (a) verifies the already-installed
+# native wiring by fixed, non-secret path markers, (b) asks the existing status
+# helper for readiness, and (c) selects a config PATH at the child-process
+# boundary. It never installs a hook/plugin and never reads or copies a token.
+# ---------------------------------------------------------------------------
+
+memory_mode_is_valid() {
+  case "${1:-}" in advisory|required|blind|off) return 0 ;; *) return 1 ;; esac
+}
+
+hindsight_opencode_plugin() { # <home> <runtime-root>
+  local home="$1" runtime="$2" f found
+  for f in "$home/.config/opencode/opencode.jsonc" "$home/.config/opencode/opencode.json"; do
+    [[ -f "$f" && -r "$f" ]] || continue
+    found="$(node - "$f" "$runtime" <<'NODE' 2>/dev/null || true
+const fs = require("node:fs")
+const [path, runtime] = process.argv.slice(2)
+let source = fs.readFileSync(path, "utf8"), out = "", string = false, escape = false
+for (let i = 0; i < source.length; i++) {
+  const c = source[i], n = source[i + 1]
+  if (string) { out += c; if (escape) escape = false; else if (c === "\\") escape = true; else if (c === '"') string = false }
+  else if (c === '"') { string = true; out += c }
+  else if (c === "/" && n === "/") { out += "  "; i++; while (i + 1 < source.length && source[i + 1] !== "\n") { out += " "; i++ } }
+  else if (c === "/" && n === "*") { out += "  "; i++; while (i + 1 < source.length) { const x = source[++i], y = source[i + 1]; if (x === "*" && y === "/") { out += "  "; i++; break }; out += x === "\n" ? "\n" : " " } }
+  else out += c
+}
+out = out.replace(/,(\s*[}\]])/g, "$1")
+const parsed = JSON.parse(out)
+if (!parsed || !Array.isArray(parsed.plugin) || !parsed.plugin.every((v) => typeof v === "string")) process.exit(1)
+const matches = parsed.plugin.filter((v) => v === runtime || v === `file://${runtime}`)
+if (matches.length !== 1) process.exit(1)
+process.stdout.write(matches[0])
+NODE
+)"
+    if [[ -n "$found" ]]; then printf '%s' "$found"; return 0; fi
+  done
+  return 1
+}
+
+hindsight_wiring_present() { # <harness> <home> <runtime-root>
+  local harness="$1" home="$2" runtime="$3" f
+  case "$harness" in
+    claude)
+      f="$home/.claude/settings.json"
+      [[ -f "$f" && -r "$f" ]] && jq -e --arg s "$runtime/dist/claude-sessionstart-hook.js" \
+        --arg u "$runtime/dist/claude-hook.js" --arg x "$runtime/dist/claude-stop-hook.js" '
+          any(.hooks.SessionStart[]?.hooks[]? // .hooks.SessionStart[]?; (.command? // "")==$s) and
+          any(.hooks.UserPromptSubmit[]?.hooks[]? // .hooks.UserPromptSubmit[]?; (.command? // "")==$u) and
+          any(.hooks.Stop[]?.hooks[]? // .hooks.Stop[]?; (.command? // "")==$x)
+        ' "$f" >/dev/null 2>&1
+      ;;
+    codex)
+      f="$home/.codex/hooks.json"
+      [[ -f "$f" && -r "$f" ]] && jq -e --arg s "$runtime/dist/codex-sessionstart-hook.js" \
+        --arg u "$runtime/dist/codex-hook.js" --arg x "$runtime/dist/codex-stop-hook.js" '
+          any(.hooks.SessionStart[]?.hooks[]? // .hooks.SessionStart[]?; (.command? // "")==$s) and
+          any(.hooks.UserPromptSubmit[]?.hooks[]? // .hooks.UserPromptSubmit[]?; (.command? // "")==$u) and
+          any(.hooks.Stop[]?.hooks[]? // .hooks.Stop[]?; (.command? // "")==$x)
+        ' "$f" >/dev/null 2>&1
+      ;;
+    opencode)
+      MEMORY_OPENCODE_PLUGIN="$(hindsight_opencode_plugin "$home" "$runtime" 2>/dev/null || true)"
+      [[ -n "$MEMORY_OPENCODE_PLUGIN" ]]
+      ;;
+    # Hermes is a human front door, not a dispatchable worker. Keeping the
+    # closed answer here ensures a future launcher cannot silently claim it was
+    # memory-qualified without defining and testing native wiring first.
+    hermes) return 1 ;;
+    *) return 1 ;;
+  esac
+}
+
+prepare_worker_memory() { # <mode> <harness> <home> <path> <user> <repo> <state-dir> <helper>
+  local mode="$1" harness="$2" home="$3" path="$4" user="$5" repo="$6" state_dir="$7" helper="$8"
+  local result='' rc=0 state reason wiring=false disabled
+
+  MEMORY_OPENCODE_PLUGIN=''
+  MEMORY_HINDSIGHT_DISABLED=false
+  MEMORY_HINDSIGHT_CONFIG="${HINDSIGHT_CONFIG:-$home/.hindsight/coding-agent.json}"
+  MEMORY_RUNTIME="${HINDSIGHT_CODING_AGENTS_HOME:-$home/.hindsight/coding-agents}"
+
+  if [[ "$mode" == blind || "$mode" == off ]]; then
+    disabled="$state_dir/hindsight/disabled.json"
+    mkdir -p -- "$(dirname "$disabled")" || return 1
+    printf '{"disabled":true,"bankId":"afk-disabled"}\n' >"$disabled" || return 1
+    chmod 600 "$disabled"
+    # This exact two-key file is AFK-created, isolated per worker attempt and
+    # token-free by construction. Native host config is neither opened nor
+    # copied, and every harness receives both supported off switches.
+    jq -e 'type=="object" and keys==["bankId","disabled"] and .disabled==true and .bankId=="afk-disabled"' "$disabled" >/dev/null || return 1
+    MEMORY_HINDSIGHT_CONFIG="$disabled"
+    MEMORY_HINDSIGHT_DISABLED=true
+    log "memory: $mode — native Hindsight bypassed at the worker process boundary"
+    return 0
+  fi
+
+  if [[ -r "$helper" ]]; then
+    if result="$(env -i HOME="$home" PATH="$path" USER="$user" LANG=C.UTF-8 TERM=dumb \
+        AFK_STATE_DIR="$state_dir" HINDSIGHT_CONFIG="$MEMORY_HINDSIGHT_CONFIG" \
+        HINDSIGHT_CODING_AGENTS_HOME="$MEMORY_RUNTIME" \
+        /bin/bash -p "$helper" "$mode" "$repo" 2>/dev/null)"; then rc=0; else rc=$?; fi
+  else
+    rc=1
+  fi
+  state="$(jq -r --arg m "$mode" --arg p "$repo" '
+      select(.schema=="afk-memory-context/2" and .mode==$m and .project==$p and
+        .package=="@vectorize-io/hindsight-coding-agents" and .version=="0.6.0" and
+        .native_integration=="NOT_MUTATED" and .authoritative_evidence==true)
+      | .state // "NOT_EVALUATED"' <<<"$result" 2>/dev/null || printf NOT_EVALUATED)"
+  reason="$(jq -r '.reason // "MEMORY_STATUS_UNAVAILABLE"' <<<"$result" 2>/dev/null || printf MEMORY_STATUS_UNAVAILABLE)"
+  hindsight_wiring_present "$harness" "$home" "$MEMORY_RUNTIME" && wiring=true
+
+  if (( rc == 0 )) && [[ "$state" == READY && "$wiring" == true ]]; then
+    log "memory: $mode — native Hindsight READY and $harness wiring verified"
+    return 0
+  fi
+
+  [[ "$wiring" == true ]] || reason="MEMORY_NATIVE_WIRING_NOT_INSTALLED"
+  if [[ "$mode" == advisory ]]; then
+    log "memory: advisory outage — ${reason:-MEMORY_STATUS_UNAVAILABLE}; worker continues without a memory guarantee"
+    return 0
+  fi
+  MEMORY_REQUIRED_REASON="${reason:-MEMORY_STATUS_UNAVAILABLE}"
+  return 1
+}
+
+worker_environment_assignments() { # mode-independent resolved values
+  local run="$1" story="$2" story_path="$3" cycle="$4" dispatch="$5" owner="$6" delegating="$7" hook="$8" event_dir="$9"
+  local checkpoint_ppm="${10:-${BUDGET_CHECKPOINT_PPM:-}}" continuation_ppm="${11:-${BUDGET_CONTINUATION_PPM:-}}"
+  printf '%s' \
+    "AFK_WORKER_IDENTITY=$(shq "worker:$dispatch") AFK_RUN_ID=$(shq "$run") AFK_STORY_ID=$(shq "$story") AFK_STORY_PATH=$(shq "$story_path") AFK_CYCLE=$(shq "$cycle") AFK_DISPATCH_ID=$(shq "$dispatch") AFK_OWNING_PM=$(shq "$owner") AFK_DELEGATING_PM=$(shq "$delegating") AFK_CONTEXT_EVENT_HOOK=$(shq "$hook") AFK_CONTEXT_EVENT_DIR=$(shq "$event_dir") AFK_CONTEXT_CHECKPOINT_PPM=$(shq "$checkpoint_ppm") AFK_CONTEXT_CONTINUATION_PPM=$(shq "$continuation_ppm") AFK_MEMORY_MODE=$(shq "${MEMORY_MODE:-advisory}") HINDSIGHT_CONFIG=$(shq "$MEMORY_HINDSIGHT_CONFIG") HINDSIGHT_DISABLED=$(shq "$MEMORY_HINDSIGHT_DISABLED")"
+}
+
+# ---------------------------------------------------------------------------
+# Live context-pressure event channel.
+#
+# A harness hook/event calls the emitted command while the worker is alive.
+# The immutable event is durable on disk before best-effort Orca publication.
+# Only the owning PM may claim it. CHECKPOINT_DUE is consumed as a checkpoint
+# notification; only CONTINUATION_REQUIRED can reach canonical --cycle dispatch.
+# ---------------------------------------------------------------------------
+
+bounded_orca() {
+  local orca_bin="${ORCA_CLI_COMMAND:-${AFK_ORCA_BIN:-orca}}" bound='' seconds
+  seconds="${AFK_CONTEXT_ORCA_TIMEOUT_SECONDS:-3}"
+  [[ "$seconds" =~ ^[1-9][0-9]*$ ]] && (( seconds <= 10 )) || seconds=3
+  command -v timeout >/dev/null 2>&1 && bound=timeout
+  [[ -n "$bound" ]] || { command -v gtimeout >/dev/null 2>&1 && bound=gtimeout; }
+  [[ -n "$bound" ]] || return 127
+  "$bound" "$seconds" "$orca_bin" "$@"
+}
+
+context_event_emit() {
+  local state='' phase='unspecified' used=null window=null source='HARNESS_EVENT' checkpoint='' arg
+  while (( $# )); do
+    arg="$1"; shift
+    case "$arg" in
+      --state) state="${1:?}"; shift ;;
+      --phase) phase="${1:?}"; shift ;;
+      --used-tokens) used="${1:?}"; shift ;;
+      --window-tokens) window="${1:?}"; shift ;;
+      --source) source="${1:?}"; shift ;;
+      --checkpoint) checkpoint="${1:?}"; shift ;;
+      *) die "unknown context-event option: $arg" ;;
+    esac
+  done
+  case "$state" in CHECKPOINT_DUE|CONTINUATION_REQUIRED) : ;; *) die "context event state must be CHECKPOINT_DUE or CONTINUATION_REQUIRED" ;; esac
+  [[ "$used" == null || "$used" =~ ^[0-9]+$ ]] || die "--used-tokens must be a whole number"
+  [[ "$window" == null || "$window" =~ ^[1-9][0-9]*$ ]] || die "--window-tokens must be a positive whole number"
+  local run="${AFK_RUN_ID:?AFK_RUN_ID is required}" story_id="${AFK_STORY_ID:?AFK_STORY_ID is required}"
+  local cycle="${AFK_CYCLE:?AFK_CYCLE is required}" dispatch="${AFK_DISPATCH_ID:?AFK_DISPATCH_ID is required}"
+  local owner="${AFK_OWNING_PM:?AFK_OWNING_PM is required}" worker="${AFK_WORKER_IDENTITY:?AFK_WORKER_IDENTITY is required}"
+  local delegating="${AFK_DELEGATING_PM:?AFK_DELEGATING_PM is required}" worker_terminal="${AFK_WORKER_TERMINAL:-${ORCA_TERMINAL_HANDLE:-}}"
+  local event_dir="${AFK_CONTEXT_EVENT_DIR:?AFK_CONTEXT_EVENT_DIR is required}" story_path="${AFK_STORY_PATH:?AFK_STORY_PATH is required}"
+  [[ "$cycle" =~ ^[1-9][0-9]*$ ]] || die "AFK_CYCLE is not a positive whole number"
+  [[ "$owner" == "run:$run" ]] || die "AFK_OWNING_PM must name the durable Run mailbox (run:$run)"
+  local event_id event path tmp payload observed checkpoint_json=null checkpoint_sha=''
+  if [[ "$state" == CHECKPOINT_DUE ]]; then
+    checkpoint="${checkpoint:-${story_path}.checkpoint.json}"
+    [[ "$(artifact_verdict "$checkpoint" afk-checkpoint/1 completed current_state remaining_acceptance next_steps updated_at 2>/dev/null || true)" == VALID ]] \
+      || die "CHECKPOINT_DUE requires a valid phase checkpoint artifact at '$checkpoint'"
+    checkpoint_json="$(artifact_identity_json "$checkpoint")"
+    checkpoint_sha="$(jq -r .sha256 <<<"$checkpoint_json")"
+  fi
+  event_id="$(printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s' \
+    "$run" "$story_id" "$story_path" "$cycle" "$dispatch" "$owner" "$delegating" "$worker" "$worker_terminal" "$state" "$phase" "$checkpoint_sha" | sha256_text)"
+  observed="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  event="$(jq -nc --arg id "$event_id" --arg state "$state" --arg phase "$phase" --arg source "$source" \
+    --arg run "$run" --arg story "$story_id" --arg story_path "$story_path" --argjson cycle "$cycle" \
+    --arg dispatch "$dispatch" --arg owner "$owner" --arg delegating "$delegating" --arg worker "$worker" \
+    --arg worker_terminal "$worker_terminal" --arg at "$observed" --argjson checkpoint "$checkpoint_json" \
+    --argjson used "$used" --argjson window "$window" \
+    '{schema:"afk-worker-context-event/1",event_id:$id,state:$state,phase:$phase,source:$source,
+      observed_at:$at,usage:{used_tokens:$used,window_tokens:$window},checkpoint:$checkpoint,
+      binding:{run_id:$run,story_id:$story,story_path:$story_path,cycle:$cycle,
+        dispatch_id:$dispatch,owning_pm:$owner,delegating_terminal:$delegating,
+        worker_identity:$worker,worker_terminal:$worker_terminal}}')"
+  mkdir -p -- "$event_dir"; chmod 700 "$event_dir"
+  path="$event_dir/$event_id.json"
+  if [[ ! -e "$path" ]]; then
+    tmp="$path.tmp.$$"; printf '%s\n' "$event" >"$tmp"; chmod 600 "$tmp"; mv -f -- "$tmp" "$path"
+  fi
+  if [[ "${AFK_CONTEXT_EVENT_TRANSPORT:-orca}" != none ]]; then
+    payload="$(jq -c . "$path")"
+    local -a send_args=(orchestration send --run "$run" --subject "AFK worker context pressure" \
+      --type status --task-id "$story_id" --dispatch-id "$dispatch" --phase "$phase" --payload "$payload")
+    [[ -n "$worker_terminal" ]] && send_args+=(--from "$worker_terminal")
+    # Omitted --to is intentional: the durable owning Run mailbox survives a
+    # PM terminal rollover, while the delegating terminal in the payload is
+    # retained only as audit evidence.
+    bounded_orca "${send_args[@]}" >/dev/null 2>&1 \
+      || log "context event $event_id persisted, but Orca Run-mailbox publication was unavailable"
+  fi
+  printf '%s\n' "$path"
+}
+
+canonical_continuation_dispatch() { # <story> <next-cycle>
+  "${AFK_DISPATCH_SCRIPT:-${BASH_SOURCE[0]}}" "$1" --cycle "$2"
+}
+
+current_pm_run() { # <current-pm-terminal>
+  local raw
+  raw="$(bounded_orca orchestration run-current --from "$1" --json 2>/dev/null)" || return 1
+  jq -er '.result.run.id // .result.run.run_id // .result.runId // empty' <<<"$raw"
+}
+
+context_event_consume() {
+  local event="${1:?usage: --consume-context-event <event.json> [--pm CURRENT_TERMINAL]}"; shift
+  local pm="${AFK_PM_ID:-${ORCA_TERMINAL_HANDLE:-}}"
+  if [[ "${1:-}" == --pm ]]; then pm="${2:?}"; shift 2; fi
+  (( $# == 0 )) || die "unexpected context-event consumer arguments"
+  [[ -n "$pm" ]] || die "the consuming PM identity is required (--pm or AFK_PM_ID)"
+  jq -e 'select(.schema=="afk-worker-context-event/1")
+    | select(.state=="CHECKPOINT_DUE" or .state=="CONTINUATION_REQUIRED")
+    | select((.binding.run_id|type)=="string" and (.binding.story_id|type)=="string"
+      and (.binding.story_path|type)=="string" and (.binding.cycle|type)=="number"
+      and (.binding.dispatch_id|type)=="string" and (.binding.owning_pm|type)=="string"
+      and (.binding.delegating_terminal|type)=="string" and (.binding.worker_identity|type)=="string"
+      and (.binding.worker_terminal|type)=="string")' "$event" >/dev/null \
+    || die "context event is malformed"
+  local owner state story cycle story_id run dispatch worker phase delegating worker_terminal checkpoint_sha expected owned_run consumed lock lock_fd tmp next rc=0 launched=false
+  owner="$(jq -r '.binding.owning_pm' "$event")"
+  run="$(jq -r '.binding.run_id' "$event")"; dispatch="$(jq -r '.binding.dispatch_id' "$event")"
+  worker="$(jq -r '.binding.worker_identity' "$event")"; phase="$(jq -r .phase "$event")"
+  delegating="$(jq -r '.binding.delegating_terminal' "$event")"; worker_terminal="$(jq -r '.binding.worker_terminal' "$event")"
+  story="$(jq -r '.binding.story_path' "$event")"; story_id="$(jq -r '.binding.story_id' "$event")"
+  cycle="$(jq -r '.binding.cycle' "$event")"; state="$(jq -r .state "$event")"
+  checkpoint_sha="$(jq -r '.checkpoint.sha256 // ""' "$event")"
+  expected="$(printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s' \
+    "$run" "$story_id" "$story" "$cycle" "$dispatch" "$owner" "$delegating" "$worker" "$worker_terminal" "$state" "$phase" "$checkpoint_sha" | sha256_text)"
+  [[ "$(jq -r .event_id "$event")" == "$expected" ]] || die "context event binding digest does not match its contents" "$EX_NEEDS_HUMAN"
+  [[ "$owner" == "run:$run" ]] || die "context event does not name its durable Run mailbox" "$EX_NEEDS_HUMAN"
+  owned_run="$(current_pm_run "$pm" 2>/dev/null || true)"
+  [[ -n "$owned_run" && "$owned_run" == "$run" ]] || \
+    die "terminal '$pm' does not currently own Run '$run'; refusing event consumption" "$EX_NEEDS_HUMAN"
+  if [[ "$state" == CHECKPOINT_DUE ]]; then
+    [[ "$(artifact_identity_json "$(jq -r .checkpoint.path "$event")" 2>/dev/null || true)" == "$(jq -c .checkpoint "$event")" ]] \
+      || die "CHECKPOINT_DUE checkpoint artifact is missing or changed; refusing stale resumable state" "$EX_NEEDS_HUMAN"
+  fi
+  # The receipt is durable authority; the lock is only live mutual exclusion.
+  # flock is released by the kernel if a PM dies, so a crash cannot strand the
+  # event the way a persistent mkdir claim can. A legacy `.claim` directory is
+  # deliberately ignored. Receipt state is checked only after the lock is held.
+  command -v flock >/dev/null 2>&1 || die "flock is required for crash-recoverable context-event consumption" "$EX_NEEDS_HUMAN"
+  consumed="${event%.json}.consumed.json"; lock="${event%.json}.consume.lock"
+  exec {lock_fd}>"$lock" || die "cannot open context-event consumption lock" "$EX_NEEDS_HUMAN"
+  chmod 600 "$lock"
+  if ! flock -n "$lock_fd"; then
+    exec {lock_fd}>&-
+    log "context event is actively held by another PM incarnation"
+    return "$EX_NEEDS_HUMAN"
+  fi
+  if [[ -f "$consumed" ]]; then
+    printf 'ALREADY_CONSUMED:%s\n' "$consumed"
+    flock -u "$lock_fd"; exec {lock_fd}>&-
+    return 0
+  fi
+  if [[ "$state" == CONTINUATION_REQUIRED ]]; then
+    # Do not consume a pressure hint before the worker has completed the normal
+    # hand-over protocol. The retained result + artifact remain the canonical
+    # continuation evidence; this event never replaces or weakens them.
+    if [[ ! -f "$(retained_result_path "$story" "$cycle")" ]] \
+      || ! jq -e --arg d "$dispatch" --arg w "$worker" '
+          .status=="continuation_required" and .launch.dispatch_id==$d and
+          .launch.worker_identity==$w' "$(retained_result_path "$story" "$cycle")" >/dev/null 2>&1 \
+      || [[ "$(artifact_verdict "${story}.continuation.json" afk-continuation/1 completed current_state remaining_acceptance next_steps updated_at in_flight unretired_findings 2>/dev/null || true)" != VALID ]] \
+      || [[ "$(story_id_of "$story")" != "$story_id" ]] \
+      || [[ "$(continuation_story_verdict "${story}.continuation.json" "$story" 2>/dev/null || true)" != VALID ]]; then
+      log "continuation event is not ready: canonical result/artifact evidence is incomplete"
+      flock -u "$lock_fd"; exec {lock_fd}>&-
+      return "$EX_NEEDS_HUMAN"
+    fi
+    next=$(( cycle + 1 ))
+    if AFK_RUN_ID="$run" AFK_DELEGATING_PM="$pm" AFK_DISPATCH_ID='' \
+        canonical_continuation_dispatch "$story" "$next"; then rc=0; else rc=$?; fi
+    if [[ -f "$(retained_result_path "$story" "$next")" ]] \
+      || { continuation_ledger_entries "$story" 2>/dev/null | jq -e --argjson c "$next" \
+          'any(.[]; .cycle==$c and .launch_confirmed==true)' >/dev/null; }; then
+      launched=true
+    else
+      log "canonical continuation did not reach launch evidence; event remains pending"
+      flock -u "$lock_fd"; exec {lock_fd}>&-
+      return "$rc"
+    fi
+  fi
+  tmp="$consumed.tmp.$$"
+  jq -nc --arg schema afk-worker-context-consumption/1 --arg event_id "$(jq -r .event_id "$event")" \
+    --arg pm "$pm" --arg delegated "$delegating" --arg run "$run" --arg state "$state" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --argjson launched "$launched" --argjson rc "$rc" \
+    '{schema:$schema,event_id:$event_id,run_id:$run,delegating_terminal:$delegated,
+      consumed_by_current_pm:$pm,consumed_at:$at,state:$state,
+      action:(if $state=="CHECKPOINT_DUE" then "CHECKPOINT_ONLY" else "CANONICAL_NEXT_CYCLE" end),
+      continuation_launched:$launched,dispatch_exit:$rc}' >"$tmp"
+  chmod 600 "$tmp"; mv -f -- "$tmp" "$consumed"
+  flock -u "$lock_fd"; exec {lock_fd}>&-
+  printf 'CONSUMED:%s\n' "$consumed"
+  return "$rc"
 }
 
 # ---------------------------------------------------------------------------
@@ -327,15 +725,25 @@ orca_setup_policy_gate() {
 # command, so the "<HARNESS>_EXIT=" line is the only reliable completion signal
 # (both harness contracts §8). The echoed command line itself contains a literal
 # `$?`, so anchoring on a digit run cannot mistake it for the real result.
-orca_launch() {
-  local selector="$1" title="$2" command_text="$3" exit_marker="$4" timeout_s="$5"
-  local handle deadline raw status line
+orca_launch_create_raw() {
+  local selector="$1" title="$2" command_text="$3"
+  local handle
 
   handle="$(orca_json terminal create --worktree "id:$selector" --title "$title" \
-            --command "$command_text" | jq -r '.result.terminal.handle // ""')"
-  [[ -n "$handle" ]] || die "orca terminal create returned no handle" "$EX_CONFIG"
+            --command "$command_text" | jq -r '.result.terminal.handle // ""')" || return 1
+  [[ -n "$handle" ]] || return 1
   TERMINAL_HANDLE="$handle"
   log "launched in Orca terminal $handle — \"$title\""
+}
+
+orca_launch_create() {
+  orca_launch_create_raw "$@" || die "orca terminal create returned no handle" "$EX_CONFIG"
+}
+
+orca_launch_wait() {
+  local exit_marker="$1" timeout_s="$2"
+  local handle="$TERMINAL_HANDLE" deadline raw status line
+  [[ -n "$handle" ]] || die "cannot wait for an unconfirmed Orca launch" "$EX_CONFIG"
 
   deadline=$(( $(date +%s) + timeout_s ))
   while :; do
@@ -355,6 +763,11 @@ orca_launch() {
       die "no $exit_marker line after ${timeout_s}s — giving up rather than guessing the outcome" "$EX_CONFIG"
     sleep 5
   done
+}
+
+orca_launch() {
+  orca_launch_create "$@"
+  orca_launch_wait "$4" "$5"
 }
 
 # ---------------------------------------------------------------------------
@@ -516,6 +929,18 @@ unsupported_launch_reason() {
       native_family="openai/*"; native_pool="openai-plus"
       case "$profile" in openai/*) family_ok=1 ;; esac
       ;;
+    opencode)
+      if [[ "$placement_required" == true ]]; then
+        printf '%s' "OpenCode subscription workers cannot carry placement evidence"
+      elif [[ "$hosting" != vendor || "$cost_class" != subscription ]]; then
+        printf '%s' "OpenCode requires a trusted vendor-hosted subscription profile"
+      elif launch_binding_json opencode "$profile" "$pool" "$cost_class" >/dev/null 2>&1; then
+        return 0
+      else
+        printf '%s' "OpenCode has no exact declared subscription launch for profile '$profile' and pool '${pool:-<unset>}'"
+      fi
+      return 0
+      ;;
     *)
       # Unknown harnesses are refused later by the launch case; this guard
       # only declares capability for the contracts it implements.
@@ -652,6 +1077,9 @@ load_budget_policy() { # <policy-file>
   BUDGET_CONTINUATION_CAP="$(yq -r '.continuation_cap' "$f")"
   [[ "$BUDGET_CONTINUATION_CAP" =~ ^[0-9]+$ ]] || \
     die "BUDGET_POLICY_UNREADABLE: continuation_cap in '$f' is not a whole number of cycles" "$EX_CONFIG"
+  (( BUDGET_RISK_PPM >= 0 && BUDGET_RISK_PPM < BUDGET_CHECKPOINT_PPM &&
+     BUDGET_CHECKPOINT_PPM < BUDGET_CONTINUATION_PPM && BUDGET_CONTINUATION_PPM <= 1000000 )) || \
+    die "BUDGET_POLICY_UNREADABLE: thresholds in '$f' must satisfy 0 <= sizing_risk_ratio < checkpoint_ratio < continuation_ratio <= 1" "$EX_CONFIG"
   log "budget policy: $f (method $BUDGET_METHOD, risk $(budget_ratio_decimal "$BUDGET_RISK_PPM"), checkpoint $(budget_ratio_decimal "$BUDGET_CHECKPOINT_PPM"), continuation $(budget_ratio_decimal "$BUDGET_CONTINUATION_PPM"), cap $BUDGET_CONTINUATION_CAP)"
 }
 
@@ -787,9 +1215,9 @@ record_budget_line_unlocked() { # <story> <cycle> <code> <detail>
 # inode, so it covers the `cat` as well as the read.
 #
 # flock(1) is util-linux and is absent from a stock macOS, which the kit also
-# runs on. There it degrades to the previous unserialised behaviour and says so
-# rather than refusing to record the finding at all: a dispatch must not fail
-# because a host lacks the tool that makes a concurrent dispatch safe.
+# runs on. There an atomic mkdir is the lock primitive. A stale directory fails
+# closed until an owner removes it; it is never treated as permission to run an
+# unsafe critical section.
 #
 # The critical section itself is with_story_lock, so the continuation ledger can
 # be appended under the SAME lock on the SAME inode: two writers that serialise
@@ -797,20 +1225,36 @@ record_budget_line_unlocked() { # <story> <cycle> <code> <detail>
 # serialised at all.
 with_story_lock() { # <story> <command> [args...]
   local story="$1"; shift
-  local lk rc=0
-  if ! command -v flock >/dev/null 2>&1; then
-    log "budget: flock unavailable on this host — the story-record append runs unserialised"
-    "$@"
-    return $?
+  local lk lock_dir rc=0
+  if command -v flock >/dev/null 2>&1; then
+    if ! exec {lk}<"$story"; then
+      log "budget: cannot open $story to lock it — refusing the unsafe critical section"
+      return 1
+    fi
+    if ! flock -x "$lk"; then
+      exec {lk}<&-
+      log "budget: cannot lock $story — refusing the unsafe critical section"
+      return 1
+    fi
+    "$@" || rc=$?
+    exec {lk}<&-
+    return "$rc"
   fi
-  if ! exec {lk}<"$story"; then
-    log "budget: cannot open $story to lock it — the append runs unserialised"
-    "$@"
-    return $?
+
+  if ! command -v mkdir >/dev/null 2>&1 || ! command -v rmdir >/dev/null 2>&1; then
+    log "budget: no cross-process story-lock primitive is available"
+    return 1
   fi
-  flock -x "$lk"
+  lock_dir="${story}.afk-story.lock"
+  if ! mkdir -- "$lock_dir" 2>/dev/null; then
+    log "budget: story lock is held or unjudgeable at $lock_dir"
+    return 1
+  fi
   "$@" || rc=$?
-  exec {lk}<&-
+  if ! rmdir -- "$lock_dir" 2>/dev/null; then
+    log "budget: story lock at $lock_dir could not be released safely"
+    return 1
+  fi
   return "$rc"
 }
 
@@ -894,6 +1338,7 @@ usage_adapter_claude() { # <result-file> <native-model>
 # number exists is the terminal buffer, which FR-104 puts out of bounds. So the
 # honest answer is the whole adapter.
 usage_adapter_codex() { usage_unobservable USAGE_UNOBSERVABLE; }
+usage_adapter_opencode() { usage_unobservable USAGE_UNOBSERVABLE; }
 
 # harness_usage_observation — the ONE interface the core calls. Adding a harness
 # means adding an adapter and one case arm; nothing above this line changes.
@@ -901,6 +1346,7 @@ harness_usage_observation() { # <harness> <result-file> <native-model>
   case "$1" in
     claude) usage_adapter_claude "${2:-}" "${3:-}" ;;
     codex)  usage_adapter_codex ;;
+    opencode) usage_adapter_opencode ;;
     *)      usage_unobservable USAGE_UNOBSERVABLE ;;
   esac
 }
@@ -1096,9 +1542,10 @@ prior_result_cycle() { # <story> <cycle>
 # The continuation ledger.
 #
 # `<story>.continuations.json` is an APPEND-ONLY record of every continuation
-# cycle this story has ever LAUNCHED: one entry, written under the story's own
-# exclusive lock immediately before the launch, never rewritten and never
-# pruned. The cap is its length.
+# cycle this story has ever LAUNCHED: one entry written only after Orca returns
+# the exact terminal handle, never rewritten and never pruned. The cap is its
+# length. `launch_confirmed` distinguishes this durable evidence from legacy
+# entries that could have been written before terminal creation completed.
 #
 # It exists because the per-cycle thin results are not a count. They are written
 # by the cycle they describe, so re-dispatching a cycle number rewrites the
@@ -1122,16 +1569,16 @@ continuation_ledger_entries() { # <story>
 }
 
 # continuations_consumed — how many continuation cycles this story has already
-# spent: the ledger's LENGTH, regardless of the cycle numbers in it. Every entry
-# is one hand-over that was actually consumed by a launch, so a cycle that is
-# re-dispatched, renumbered or later refused cannot move the count.
+# spent: the count of atomically confirmed launches, regardless of cycle
+# numbers. Legacy/pre-confirmation entries remain audit evidence but cannot
+# consume a window or suppress a retry.
 continuations_consumed() { # <entries-json>
-  jq -r 'length' <<<"$1"
+  jq -r '[.[] | select(.launch_confirmed==true)] | length' <<<"$1"
 }
 
 # ledger_has_cycle — has this cycle number already consumed a continuation?
 ledger_has_cycle() { # <entries-json> <cycle>
-  [[ "$(jq -r --argjson c "$2" 'map(select(.cycle == $c)) | length' <<<"$1")" != "0" ]]
+  [[ "$(jq -r --argjson c "$2" '[.[] | select(.cycle==$c and .launch_confirmed==true)] | length' <<<"$1")" != "0" ]]
 }
 
 # next_free_cycle — the first cycle number at or after <cycle>+1 that has
@@ -1147,24 +1594,386 @@ next_free_cycle() { # <story> <cycle> <entries-json>
   printf '%s' "$(( $2 + 1 ))"
 }
 
-# continuation_ledger_append_unlocked — the append itself. Every caller reaches
-# it through continuation_ledger_append, which holds the story's lock for the
-# whole read-modify-write, exactly as the record append does.
-continuation_ledger_append_unlocked() { # <story> <cycle> <from> <sha> <trigger> <decision-json>
+# continuation_ledger_append_unlocked — the append itself. Callers must already
+# hold the story lock, either directly or via continuation_ledger_append.
+continuation_ledger_append_unlocked() { # <story> <cycle> <from> <sha> <trigger> <decision-json> <terminal> <command-sha> <create-id>
   local story="$1" f entries tmp
   f="$(continuation_ledger_path "$story")"
   entries="$(continuation_ledger_entries "$story")" || return 1
-  tmp="$(mktemp)"; TMPFILES+=("$tmp")
+  tmp="$(mktemp "$(dirname -- "$f")/.continuations.XXXXXX")" || return 1
+  TMPFILES+=("$tmp")
   jq -n --argjson entries "$entries" --argjson c "$2" --argjson from "$3" \
-        --arg sha "$4" --arg trigger "$5" --argjson dec "$6" \
+        --arg sha "$4" --arg trigger "$5" --argjson dec "$6" --arg terminal "$7" \
+        --arg command_sha "$8" --arg create_id "$9" \
         --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         '{schema:"afk-continuation-ledger/1",
           entries: ($entries + [{cycle:$c, from_cycle:$from, artifact_sha256:$sha,
-                                 trigger:$trigger, at:$at, decision:$dec}])}' > "$tmp" || return 1
-  cat "$tmp" > "$f"
+                                 trigger:$trigger, at:$at, decision:$dec,
+                                 launch_confirmed:true, terminal:$terminal,
+                                 command_sha256:$command_sha,create_id:$create_id}])}' > "$tmp" || return 1
+  chmod 600 "$tmp" && mv -f -- "$tmp" "$f" || return 1
+  jq -e --argjson c "$2" --arg terminal "$7" --arg sha "$4" --arg command_sha "$8" --arg create_id "$9" '
+    .schema=="afk-continuation-ledger/1" and
+    ([.entries[] | select(.cycle==$c and .launch_confirmed==true and .terminal==$terminal and
+      .artifact_sha256==$sha and .command_sha256==$command_sha and .create_id==$create_id)] | length)==1' \
+    "$f" >/dev/null 2>&1
 }
-continuation_ledger_append() { # <story> <cycle> <from> <sha> <trigger> <decision-json>
+continuation_ledger_append() { # <story> <cycle> <from> <sha> <trigger> <decision-json> <terminal> <command-sha> <create-id>
   with_story_lock "$1" continuation_ledger_append_unlocked "$@"
+}
+
+continuation_launch_intent_path() { printf '%s.continuation-launch.c%s.json' "$1" "$2"; }
+continuation_launch_attempt_path() { printf '%s.continuation-launch-attempt.c%s.json' "$1" "$2"; }
+continuation_launch_receipt_path() { printf '%s.continuation-launch-receipt.c%s.json' "$1" "$2"; }
+continuation_replacement_binding_path() { printf '%s.continuation-replacement-binding.c%s.json' "$1" "$2"; }
+continuation_replacement_receipt_path() { printf '%s.continuation-replacement-receipt.c%s.json' "$1" "$2"; }
+continuation_replacement_attempt_path() { printf '%s.continuation-replacement-attempt.c%s.json' "$1" "$2"; }
+continuation_replacement_consumed_path() { printf '%s.continuation-replacement-consumed.c%s.json' "$1" "$2"; }
+
+continuation_atomic_write_verified() { # <path> <json>
+  local target="$1" value="$2" tmp
+  tmp="$(mktemp "$(dirname -- "$target")/.continuation-evidence.XXXXXX")" || return 1
+  TMPFILES+=("$tmp")
+  printf '%s\n' "$value" >"$tmp" && chmod 600 "$tmp" && mv -f -- "$tmp" "$target" || return 1
+  jq -e --argjson expected "$value" '.==$expected' "$target" >/dev/null 2>&1
+}
+
+continuation_replacement_binding_json() { # <launch-intent-json> <source-terminal> <source-generation>
+  jq -c --arg terminal "$2" --argjson source_generation "$3" '
+    .schema="afk-continuation-replacement-binding/2" |
+    .+{terminal:$terminal,source_generation:$source_generation,
+      replacement_generation:($source_generation+1)}' <<<"$1"
+}
+
+continuation_replacement_attempt_json() { # <launch-intent-json> <replacement-binding-json>
+  jq -c --argjson binding "$2" '
+    .schema="afk-continuation-replacement-attempt/1" |
+    .+{source_terminal:$binding.terminal,source_generation:$binding.source_generation,
+      generation:$binding.replacement_generation}' <<<"$1"
+}
+
+continuation_replacement_consume_completed() { # <launch-receipt> <launch-intent> <binding-file> <close-receipt-file> <attempt-file> <consumed-file>
+  local launch_receipt="$1" intent="$2" binding_file="$3" close_file="$4" attempt_file="$5" consumed_file="$6"
+  local binding consumed expected_consumed expected_close close_receipt expected_attempt
+  if [[ -f "$consumed_file" ]]; then
+    consumed="$(jq -c . "$consumed_file" 2>/dev/null)" || return 1
+    binding="$(jq -c '.binding' <<<"$consumed" 2>/dev/null)" || return 1
+  elif [[ -f "$binding_file" ]]; then
+    binding="$(jq -c . "$binding_file" 2>/dev/null)" || return 1
+  else
+    [[ ! -e "$close_file" && ! -e "$attempt_file" ]]
+    return
+  fi
+  jq -e --argjson intent "$intent" '
+    (.terminal|type)=="string" and (.terminal|length)>0 and
+    (.source_generation|type)=="number" and (.source_generation|floor)==.source_generation and
+    .source_generation>=-1 and .replacement_generation==(.source_generation+1) and
+    del(.terminal,.source_generation,.replacement_generation)==($intent|.schema="afk-continuation-replacement-binding/2")' \
+    <<<"$binding" >/dev/null 2>&1 || return 1
+  # A binding for the receipt's source generation is still active.  Only the
+  # exact next generation may consume it.
+  jq -e --argjson binding "$binding" '
+    (.generation // 0)==$binding.replacement_generation' <<<"$launch_receipt" >/dev/null 2>&1 || return 0
+  expected_consumed="$(jq -nc --argjson binding "$binding" \
+    --arg terminal "$(jq -r .terminal <<<"$launch_receipt")" \
+    --argjson generation "$(jq -r '.generation // 0' <<<"$launch_receipt")" \
+    '{schema:"afk-continuation-replacement-consumed/1",binding:$binding,
+      successor_terminal:$terminal,generation:$generation}')" || return 1
+  if [[ -f "$consumed_file" ]]; then
+    jq -e --argjson expected "$expected_consumed" '.==$expected' "$consumed_file" >/dev/null 2>&1 || return 1
+    if [[ -f "$binding_file" ]]; then
+      jq -e --argjson expected "$binding" '.==$expected' "$binding_file" >/dev/null 2>&1 || return 1
+    fi
+  else
+    [[ -f "$binding_file" ]] || return 1
+  fi
+  expected_close="$(jq -c '.schema="afk-continuation-replacement-receipt/1" |
+    .+{closed:true,reobserved_absent:true}' <<<"$binding")" || return 1
+  if [[ -f "$close_file" ]]; then
+    close_receipt="$(jq -c . "$close_file" 2>/dev/null)" || return 1
+    jq -e --argjson expected "$expected_close" '.==$expected' <<<"$close_receipt" >/dev/null 2>&1 || return 1
+  elif [[ ! -f "$consumed_file" ]]; then
+    return 1
+  fi
+  if [[ -f "$attempt_file" ]]; then
+    expected_attempt="$(continuation_replacement_attempt_json "$intent" "$binding")" || return 1
+    jq -e --argjson expected "$expected_attempt" '.==$expected' "$attempt_file" >/dev/null 2>&1 || return 1
+  elif [[ ! -f "$consumed_file" ]]; then
+    return 1
+  fi
+  if [[ ! -f "$consumed_file" ]]; then
+    continuation_atomic_write_verified "$consumed_file" "$expected_consumed" || return 1
+  fi
+  # Marker first and marker last: every interrupted cleanup remains bound to
+  # the exact source and successor generation until all stale files are gone.
+  rm -f -- "$attempt_file" || return 1
+  rm -f -- "$close_file" || return 1
+  rm -f -- "$binding_file" || return 1
+  rm -f -- "$consumed_file" || return 1
+}
+
+continuation_terminal_list_valid() { # <terminal-list-json>
+  jq -e '
+    type=="object" and
+    ((has("ok")|not) or .ok==true) and
+    ((has("error")|not) or .error==null) and
+    (.result|type)=="object" and
+    (.result.terminals|type)=="array" and
+    all(.result.terminals[];
+      if type=="object" then
+        if (.handle|type)=="string" and (.title|type)=="string" then
+          (.handle|length)>0 and (.title|length)>0
+        else false end
+      else false end)' <<<"$1" >/dev/null 2>&1
+}
+
+continuation_terminal_show_released() { # <terminal-show-json>
+  jq -e '
+    type=="object" and .ok==false and (.error|type)=="object" and
+    .error.code=="terminal_handle_stale" and
+    ((has("result")|not) or .result==null) and
+    ((has("terminal")|not) or .terminal==null)' <<<"$1" >/dev/null 2>&1
+}
+
+continuation_terminal_observation() { # <handle> <title> <worktree-id> <worktree-path>
+  local shown
+  shown="$(orca_json terminal show --terminal "$1")" || return 1
+  jq -ce --arg handle "$1" --arg title "$2" --arg wi "$3" --arg wp "$4" '
+    select(type=="object" and ((has("ok")|not) or .ok==true) and
+      ((has("error")|not) or .error==null)) |
+    (.result.terminal // .terminal // empty) |
+    select(.handle==$handle and .title==$title and
+      (.worktreeId // .worktree.id // "")==$wi and
+      (.worktreePath // .worktree.path // "")==$wp)' <<<"$shown" 2>/dev/null
+}
+
+continuation_terminal_live() { # <terminal-json>
+  jq -e 'if has("connected") then .connected==true and (.orphaned // false)==false
+    else ((.status // "")|ascii_downcase|IN("running","active","idle","waiting","awaiting_answer","busy","ready","connected")) end' \
+    <<<"$1" >/dev/null 2>&1
+}
+
+continuation_terminal_dead() { # <terminal-json>
+  jq -e 'if has("connected") then .connected==false or (.orphaned // false)==true
+    else ((.status // "")|ascii_downcase|IN("exited","closed","dead","failed","terminated","stopped","complete","completed")) end' \
+    <<<"$1" >/dev/null 2>&1
+}
+
+continuation_terminal_close_bound() { # <handle> <title> <worktree-id> <worktree-path> <binding-file> <receipt-file> <binding-json>
+  local listed shown show_rc=0 terminal_json close_receipt
+  close_receipt="$(jq -c '.schema="afk-continuation-replacement-receipt/1" |
+    . + {closed:true,reobserved_absent:true}' <<<"$7")" || return 1
+  if [[ -f "$5" ]]; then
+    jq -e --argjson expected "$7" '.==$expected' "$5" >/dev/null 2>&1 || return 1
+  else
+    terminal_json="$(continuation_terminal_observation "$1" "$2" "$3" "$4")" || return 1
+    continuation_terminal_dead "$terminal_json" || return 1
+    continuation_atomic_write_verified "$5" "$7" || return 1
+  fi
+  if [[ -f "$6" ]]; then
+    jq -e --argjson expected "$close_receipt" '.==$expected' "$6" >/dev/null 2>&1 || return 1
+    return 0
+  fi
+  listed="$(orca_json terminal list --worktree "id:$3")" || return 1
+  continuation_terminal_list_valid "$listed" || return 1
+  if ! jq -e --arg handle "$1" '.result.terminals[]? | select(.handle==$handle)' \
+    <<<"$listed" >/dev/null 2>&1; then
+    shown="$(orca_json terminal show --terminal "$1")" || show_rc=$?
+    if (( show_rc != 0 )); then
+      continuation_terminal_show_released "$shown" || return 1
+      continuation_atomic_write_verified "$6" "$close_receipt"
+      return
+    fi
+  fi
+  # The outer dead observation is not authority to close after a race. The
+  # handle must still resolve exactly and still be dead immediately before the
+  # globally addressed close request.
+  terminal_json="$(continuation_terminal_observation "$1" "$2" "$3" "$4")" || return 1
+  continuation_terminal_dead "$terminal_json" || return 1
+  orca_json terminal close --terminal "$1" --tab >/dev/null || return 1
+  listed="$(orca_json terminal list --worktree "id:$3")" || return 1
+  continuation_terminal_list_valid "$listed" || return 1
+  jq -e --arg handle "$1" '[.result.terminals[]? | select(.handle==$handle)]|length==0' \
+    <<<"$listed" >/dev/null 2>&1 || return 1
+  shown="$(orca_json terminal show --terminal "$1")" || show_rc=$?
+  (( show_rc != 0 )) && continuation_terminal_show_released "$shown" || return 1
+  continuation_atomic_write_verified "$6" "$close_receipt"
+}
+
+# Serialize the external create with the ledger check and confirmation write.
+# The launch intent closes the crash window between Orca creating the terminal
+# and this process receiving/persisting its handle: a replay rediscovers only
+# that exact intent title in the exact worktree and never creates a duplicate.
+continuation_launch_create_unlocked() { # story cycle from sha trigger decision selector title command marker timeout worktree-path
+  local story="$1" cycle="$2" entries intent intent_file attempt_file attempt receipt_file receipt expected_receipt
+  local replacement_binding_file replacement_receipt_file replacement_attempt_file replacement_consumed_file
+  local replacement_binding expected_replacement_attempt recovery_terminal current_generation replacement_generation=""
+  local listed matches count terminal list_handle terminal_json tmp command_sha create_id launch_title
+  local replacement_authorized=false intent_preexisting=false
+  entries="$(continuation_ledger_entries "$story")" || return 1
+  if ledger_has_cycle "$entries" "$cycle"; then return 75; fi
+  intent_file="$(continuation_launch_intent_path "$story" "$cycle")"
+  attempt_file="$(continuation_launch_attempt_path "$story" "$cycle")"
+  receipt_file="$(continuation_launch_receipt_path "$story" "$cycle")"
+  replacement_binding_file="$(continuation_replacement_binding_path "$story" "$cycle")"
+  replacement_receipt_file="$(continuation_replacement_receipt_path "$story" "$cycle")"
+  replacement_attempt_file="$(continuation_replacement_attempt_path "$story" "$cycle")"
+  replacement_consumed_file="$(continuation_replacement_consumed_path "$story" "$cycle")"
+  command_sha="sha256:$(printf '%s' "$9" | sha256_text)"
+  create_id="sha256:$(printf '%s\0%s\0%s\0%s\0%s' "$cycle" "$4" "$7" "$8" "$command_sha" | sha256_text)"
+  launch_title="$8 [afk:${create_id#sha256:}]"
+  intent="$(jq -nc --argjson c "$cycle" --arg selector "$7" --arg wp "${12}" --arg title "$launch_title" \
+    --arg artifact "$4" --arg command_sha "$command_sha" --arg create_id "$create_id" \
+    '{schema:"afk-continuation-launch-intent/1",cycle:$c,worktree_selector:$selector,worktree_path:$wp,
+      title:$title,artifact_sha256:$artifact,command_sha256:$command_sha,create_id:$create_id}')" || return 1
+  if [[ -f "$intent_file" ]]; then
+    jq -e --argjson expected "$intent" '.==$expected' "$intent_file" >/dev/null 2>&1 || return 1
+    intent_preexisting=true
+  else
+    listed="$(orca_json terminal list --worktree "id:$7")" || return 1
+    continuation_terminal_list_valid "$listed" || return 1
+    matches="$(jq -c --arg title "$launch_title" '[.result.terminals[]? | select(.title==$title)]' <<<"$listed" 2>/dev/null)" || return 1
+    [[ "$(jq -r 'length' <<<"$matches")" == 0 ]] || return 76
+    tmp="$(mktemp "$(dirname "$intent_file")/.continuation-launch.XXXXXX")" || return 1
+    TMPFILES+=("$tmp")
+    printf '%s\n' "$intent" >"$tmp" && chmod 600 "$tmp" && mv -f -- "$tmp" "$intent_file" || return 1
+    jq -e --argjson expected "$intent" '.==$expected' "$intent_file" >/dev/null 2>&1 || return 1
+  fi
+
+  attempt="$(jq -nc --argjson c "$cycle" --arg selector "$7" --arg wp "${12}" --arg title "$launch_title" \
+    --arg artifact "$4" --arg command_sha "$command_sha" --arg create_id "$create_id" \
+    '{schema:"afk-continuation-launch-attempt/1",cycle:$c,worktree_selector:$selector,worktree_path:$wp,
+      title:$title,artifact_sha256:$artifact,command_sha256:$command_sha,create_id:$create_id}')" || return 1
+  if [[ -f "$attempt_file" ]]; then
+    jq -e --argjson expected "$attempt" '.==$expected' "$attempt_file" >/dev/null 2>&1 || return 1
+  fi
+
+  listed="$(orca_json terminal list --worktree "id:$7")" || return 1
+  continuation_terminal_list_valid "$listed" || return 1
+  matches="$(jq -c --arg title "$launch_title" '[.result.terminals[]? | select(.title==$title)]' <<<"$listed" 2>/dev/null)" || return 1
+  count="$(jq -r 'length' <<<"$matches")"
+  (( count <= 1 )) || return 1
+
+  receipt=""
+  if [[ -f "$receipt_file" ]]; then
+    receipt="$(jq -c . "$receipt_file" 2>/dev/null)" || return 1
+    jq -e --argjson c "$cycle" --arg selector "$7" --arg wp "${12}" --arg title "$launch_title" \
+      --arg artifact "$4" --arg command_sha "$command_sha" --arg create_id "$create_id" '
+      .schema=="afk-continuation-launch-receipt/1" and .cycle==$c and .worktree_selector==$selector and
+      .worktree_path==$wp and .title==$title and .artifact_sha256==$artifact and
+      .command_sha256==$command_sha and .create_id==$create_id and
+      (.terminal|type)=="string" and (.terminal|length)>0 and
+      ((.generation // 0)|type)=="number" and ((.generation // 0)|floor)==(.generation // 0) and
+      (.generation // 0)>=0' <<<"$receipt" >/dev/null 2>&1 || return 1
+    terminal="$(jq -r .terminal <<<"$receipt")"
+    current_generation="$(jq -r '.generation // 0' <<<"$receipt")"
+    continuation_replacement_consume_completed "$receipt" "$intent" \
+      "$replacement_binding_file" "$replacement_receipt_file" \
+      "$replacement_attempt_file" "$replacement_consumed_file" || return 1
+    if (( count == 1 )); then
+      list_handle="$(jq -r '.[0].handle // empty' <<<"$matches")"
+      [[ "$list_handle" == "$terminal" ]] || return 1
+    fi
+    replacement_binding="$(continuation_replacement_binding_json "$intent" "$terminal" "$current_generation")" || return 1
+    if (( count == 0 )) && [[ -f "$replacement_binding_file" || -f "$replacement_receipt_file" ]]; then
+      continuation_terminal_close_bound "$terminal" "$launch_title" "$7" "${12}" \
+        "$replacement_binding_file" "$replacement_receipt_file" "$replacement_binding" || return 1
+      rm -f -- "$receipt_file"
+      count=0; replacement_authorized=true
+      replacement_generation="$(jq -r .replacement_generation <<<"$replacement_binding")"
+    else
+      terminal_json="$(continuation_terminal_observation "$terminal" "$launch_title" "$7" "${12}")" || return 1
+      if continuation_terminal_live "$terminal_json"; then
+        TERMINAL_HANDLE="$terminal"
+        count=1
+        log "recovered confirmed Orca terminal $terminal — \"$8\""
+      elif continuation_terminal_dead "$terminal_json"; then
+        continuation_terminal_close_bound "$terminal" "$launch_title" "$7" "${12}" \
+          "$replacement_binding_file" "$replacement_receipt_file" "$replacement_binding" || return 1
+        rm -f -- "$receipt_file"
+        count=0; replacement_authorized=true
+        replacement_generation="$(jq -r .replacement_generation <<<"$replacement_binding")"
+      else
+        return 1
+      fi
+    fi
+  elif (( count == 1 )); then
+    # A persisted replacement attempt means this title may be the create side
+    # effect whose receipt was lost.  Visibility is not idempotency evidence.
+    [[ ! -e "$replacement_attempt_file" ]] || return 76
+    terminal="$(jq -r '.[0].handle // empty' <<<"$matches")"
+    [[ -n "$terminal" ]] || return 1
+    terminal_json="$(continuation_terminal_observation "$terminal" "$launch_title" "$7" "${12}")" || return 1
+    if continuation_terminal_dead "$terminal_json"; then
+      replacement_binding="$(continuation_replacement_binding_json "$intent" "$terminal" -1)" || return 1
+      continuation_terminal_close_bound "$terminal" "$launch_title" "$7" "${12}" \
+        "$replacement_binding_file" "$replacement_receipt_file" "$replacement_binding" || return 1
+      count=0; replacement_authorized=true
+      replacement_generation="$(jq -r .replacement_generation <<<"$replacement_binding")"
+    else
+      # A live title match with no persisted create receipt is not provenance.
+      return 76
+    fi
+  elif [[ -f "$replacement_binding_file" || -f "$replacement_receipt_file" ]]; then
+    replacement_binding="$(jq -c . "$replacement_binding_file" 2>/dev/null)" || return 1
+    recovery_terminal="$(jq -r '.terminal // empty' <<<"$replacement_binding")" || return 1
+    [[ -n "$recovery_terminal" ]] || return 1
+    jq -e --argjson expected "$(continuation_replacement_binding_json "$intent" "$recovery_terminal" \
+      "$(jq -r '.source_generation // empty' <<<"$replacement_binding")")" \
+      '.==$expected' <<<"$replacement_binding" >/dev/null 2>&1 || return 1
+    continuation_terminal_close_bound "$recovery_terminal" "$launch_title" "$7" "${12}" \
+      "$replacement_binding_file" "$replacement_receipt_file" "$replacement_binding" || return 1
+    count=0; replacement_authorized=true
+    replacement_generation="$(jq -r .replacement_generation <<<"$replacement_binding")"
+  elif [[ -e "$replacement_attempt_file" || -e "$replacement_consumed_file" ]]; then
+    return 76
+  fi
+  if (( count == 0 )); then
+    # Once a create attempt is durable, an empty scoped list may only be lag.
+    # Replays wait for attributable evidence instead of creating a duplicate.
+    if [[ "$replacement_authorized" == true ]]; then
+      expected_replacement_attempt="$(continuation_replacement_attempt_json "$intent" "$replacement_binding")" || return 1
+      if [[ -f "$replacement_attempt_file" ]]; then
+        jq -e --argjson expected "$expected_replacement_attempt" '.==$expected' \
+          "$replacement_attempt_file" >/dev/null 2>&1 || return 1
+        return 76
+      fi
+      continuation_atomic_write_verified "$replacement_attempt_file" "$expected_replacement_attempt" || return 1
+    else
+      [[ ! -e "$replacement_attempt_file" ]] || return 76
+      if [[ "$intent_preexisting" == true || -f "$attempt_file" ]]; then return 76; fi
+      continuation_atomic_write_verified "$attempt_file" "$attempt" || return 1
+    fi
+    orca_launch_create_raw "$7" "$launch_title" "$9" || return 74
+    terminal="$TERMINAL_HANDLE"
+    terminal_json="$(continuation_terminal_observation "$terminal" "$launch_title" "$7" "${12}")" || return 1
+    continuation_terminal_live "$terminal_json" || return 1
+    if [[ "$replacement_authorized" == true ]]; then
+      expected_receipt="$(jq -nc --argjson c "$cycle" --arg selector "$7" --arg wp "${12}" --arg title "$launch_title" \
+        --arg artifact "$4" --arg command_sha "$command_sha" --arg create_id "$create_id" --arg terminal "$terminal" \
+        --argjson generation "$replacement_generation" \
+        '{schema:"afk-continuation-launch-receipt/1",cycle:$c,worktree_selector:$selector,worktree_path:$wp,
+          title:$title,artifact_sha256:$artifact,command_sha256:$command_sha,create_id:$create_id,
+          terminal:$terminal,generation:$generation}')" || return 1
+    else
+      expected_receipt="$(jq -nc --argjson c "$cycle" --arg selector "$7" --arg wp "${12}" --arg title "$launch_title" \
+        --arg artifact "$4" --arg command_sha "$command_sha" --arg create_id "$create_id" --arg terminal "$terminal" \
+        '{schema:"afk-continuation-launch-receipt/1",cycle:$c,worktree_selector:$selector,worktree_path:$wp,
+          title:$title,artifact_sha256:$artifact,command_sha256:$command_sha,create_id:$create_id,
+          terminal:$terminal,generation:0}')" || return 1
+    fi
+    continuation_atomic_write_verified "$receipt_file" "$expected_receipt" || return 1
+    continuation_replacement_consume_completed "$expected_receipt" "$intent" \
+      "$replacement_binding_file" "$replacement_receipt_file" \
+      "$replacement_attempt_file" "$replacement_consumed_file" || return 1
+  fi
+  continuation_ledger_append_unlocked "$story" "$cycle" "$3" "$4" "$5" "$6" \
+    "$TERMINAL_HANDLE" "$command_sha" "$create_id" || return 1
+  rm -f -- "$intent_file"
+}
+
+continuation_launch_create() { # same arguments as continuation_launch_create_unlocked
+  with_story_lock "$1" continuation_launch_create_unlocked "$@"
 }
 
 # story_id_of — the story file's basename without its extension. It is the only
@@ -1383,6 +2192,12 @@ never begin a line with it unless you are actually stopping, because a line
 that starts with it is read as the signal whatever the rest of the line says.
 Both artifacts are read by the kit and must be secret-free: record names,
 paths and states, never credential values.
+The launcher also exposes AFK_CONTEXT_EVENT_HOOK and the complete AFK
+run/story/cycle/dispatch/owner identity tuple. A harness-native pressure event
+may invoke that hook after the phase checkpoint is durable, with
+\`--emit-context-event --state CHECKPOINT_DUE\`, or with
+\`--state CONTINUATION_REQUIRED\`; the event is a notification only. It never
+launches another worker and never replaces the checkpoint/continuation files.
 EOF
 }
 
@@ -1413,6 +2228,8 @@ EOF
 # PATH rather than dispatch.sh's own keeps the answer about the environment the
 # launch actually runs in. The subshell is what stops the probe PATH leaking.
 approved_path_has() { # <binary> <PATH>
+  # The PATH override is intentionally confined to this probe subshell.
+  # shellcheck disable=SC2030
   ( PATH="$2"; command -v "$1" >/dev/null 2>&1 )
 }
 
@@ -1468,21 +2285,56 @@ claude_settings_preflight() {
   done
 }
 
+resolve_opencode_home() {
+  local home
+  home="$(cfg '.launcher.opencode.approved_home' AGENT_FLOW_OPENCODE_HOME '')"; [[ -n "$home" ]] || home="$(passwd_home)"
+  [[ -n "$home" && -d "$home" && -O "$home" ]] || die "could not resolve an invoking-user-owned HOME for OpenCode" "$EX_CONFIG"
+  printf '%s' "$home"
+}
+
+resolve_opencode_data_home() {
+  local data_home
+  data_home="$(cfg '.launcher.opencode.data_home' AGENT_FLOW_OPENCODE_DATA_HOME "$1/.local/share")"
+  [[ -d "$data_home" && -O "$data_home" && -f "$data_home/opencode/auth.json" && -O "$data_home/opencode/auth.json" ]] || die "OpenCode has no invoking-user-owned auth store" "$EX_CONFIG"
+  printf '%s' "$data_home"
+}
+
+opencode_auth_preflight() {
+  local raw clean provider kind count
+  raw="$(env -i HOME="$2" PATH="$3" USER="$4" LANG=C.UTF-8 TERM=dumb XDG_DATA_HOME="$5" NO_COLOR=1 "$1" auth list --pure 2>/dev/null)" || die "OpenCode auth inventory failed; no model call was made" "$EX_CONFIG"
+  clean="$(printf '%s' "$raw" | sed -E $'s/\033\\[[0-9;]*[[:alpha:]]//g')"; provider="${6%%:*}"; kind="${6##*:}"
+  count="$(grep -F "$provider" <<<"$clean" | grep -Ec "[[:space:]]${kind}([[:space:]]|$)" || true)"
+  [[ "$count" == 1 ]] || die "OpenCode needs exactly one declared provider/auth-class match (observed $count); no model call was made" "$EX_CONFIG"
+}
+
+opencode_funding_preflight() {
+  local auth_store="$1/opencode/auth.json" attestation mode expected actual
+  attestation="$(cfg '.launcher.opencode.minimax_token_plan_attestation' AGENT_FLOW_OPENCODE_MINIMAX_ATTESTATION "$1/opencode/afk-minimax-token-plan.attestation.json")"
+  [[ -f "$attestation" && -O "$attestation" ]] || die "MiniMax Token Plan route requires a non-secret funding attestation" "$EX_CONFIG"
+  mode="$(stat_mode "$attestation" || true)"; [[ "$mode" == 600 ]] || die "MiniMax funding attestation must have mode 600" "$EX_CONFIG"
+  expected="$(stat_identity "$auth_store" || true)"; actual="$(jq -er 'select(.schema=="afk-opencode-funding-attestation/1" and .provider=="minimax-cn" and .entitlement_pool=="minimax-max" and .credential_class=="token-plan")|.auth_store_identity' "$attestation" 2>/dev/null || true)"
+  [[ -n "$expected" && "$actual" == "$expected" ]] || die "MiniMax funding attestation is invalid or stale" "$EX_CONFIG"
+}
+
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
 main() {
-  STORY="${1:?usage: dispatch.sh <story.md> [cycle]}"
-  CYCLE="${2:-1}"
+  STORY="${1:?usage: dispatch.sh <story.md> [--cycle N]}"; shift
+  CYCLE=1
+  if [[ "${1:-}" == --cycle ]]; then CYCLE="${2:?--cycle requires a number}"; shift 2
+  elif [[ -n "${1:-}" ]]; then CYCLE="$1"; shift; fi # legacy positional cycle
+  (( $# == 0 )) || die "unexpected dispatch arguments: $*"
+  [[ "$CYCLE" =~ ^[1-9][0-9]*$ ]] || die "cycle must be a positive whole number"
 
   local router_dir
   router_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   CONFIG_FILE="${AGENT_FLOW_CONFIG:-${SUBSCRIPTIONS_FILE:-$router_dir/subscriptions.yaml}}"
 
-  TMPFILES=()
+  TMPFILES=(); TMPDIRS=()
   TERMINAL_HANDLE="" TERMINAL_TAIL="" HARNESS_EXIT=""
-  trap 'rm -f "${TMPFILES[@]:-}"' EXIT
+  trap 'rm -f "${TMPFILES[@]:-}"; for d in "${TMPDIRS[@]:-}"; do case "$d" in /tmp/afk-worker.*) rm -rf -- "$d" ;; esac; done' EXIT
 
   for dep in yq jq curl orca; do
     command -v "$dep" >/dev/null || die "missing dependency: $dep"
@@ -1504,6 +2356,7 @@ main() {
   CALLER_TOKEN_ENV="$(cfg '.launcher.caller_token_env' AGENT_ROUTER_TOKEN_ENV 'AGENT_ROUTER_TOKEN')"
   AGENT_DIR="$(cfg '.launcher.agent_dir' AGENT_DIR '_bmad/bmm/agents')"
   LAUNCH_TIMEOUT="$(cfg '.launcher.launch_timeout_seconds' AGENT_FLOW_LAUNCH_TIMEOUT '5400')"
+  MEMORY_HELPER="$(cfg '.launcher.hindsight_helper' AGENT_FLOW_HINDSIGHT_HELPER "$(cd "$router_dir/../.." && pwd)/adapters/hindsight.sh")"
 
   command -v "$VALIDATOR" >/dev/null || die "missing stamp validator: $VALIDATOR"
   [[ -n "$CATALOG_PATH" && -f "$CATALOG_PATH" ]] || \
@@ -1522,6 +2375,9 @@ main() {
   fm() { yq --front-matter=extract -r "$1 // \"\"" "$STORY"; }
 
   PERSONA="$(fm '.persona')"
+  MEMORY_MODE="$(fm '.memory_mode')"; MEMORY_MODE="${MEMORY_MODE:-advisory}"
+  memory_mode_is_valid "$MEMORY_MODE" || \
+    die "story memory_mode must be one of advisory|required|blind|off (observed '$MEMORY_MODE')"
   MAX_CYCLES="$(fm '.max_cycles')"; MAX_CYCLES="${MAX_CYCLES:-3}"
   STAMP_FILE="$(fm '.stamp')"; STAMP_FILE="${STAMP_FILE:-${STORY}.stamp.json}"
   mapfile -t GATES < <(yq --front-matter=extract -r '.gates[]?' "$STORY")
@@ -1675,6 +2531,18 @@ main() {
   STAMP_EXPIRES_AT="$(jq -r '.expires_at // ""' "$STAMP_FILE")"
   STAMP_DIGEST="sha256:$(sha256_of "$STAMP_FILE")"
 
+  # Every frozen child gets a complete identity tuple. Orca-supervised callers
+  # should supply the real run/owner ids; direct legacy dispatches remain
+  # explicit local runs rather than silently carrying empty bindings.
+  WORKER_STORY_ID="$(story_id_of "$STORY")"
+  WORKER_STORY_PATH="$(realpath "$STORY")"
+  WORKER_RUN_ID="${AFK_RUN_ID:-${ORCA_RUN_ID:-local:$(printf '%s\0%s' "$(realpath "$PWD")" "$STAMP_DIGEST" | sha256_text)}}"
+  WORKER_DELEGATING_PM="${AFK_DELEGATING_PM:-${ORCA_TERMINAL_HANDLE:-local-pm:$PPID}}"
+  WORKER_OWNING_PM="run:$WORKER_RUN_ID"
+  WORKER_DISPATCH_ID="${AFK_DISPATCH_ID:-dispatch:$(printf '%s\0%s\0%s\0%s' "$WORKER_RUN_ID" "$WORKER_STORY_ID" "$CYCLE" "$STAMP_DIGEST" | sha256_text)}"
+  WORKER_CONTEXT_HOOK="$(realpath "${BASH_SOURCE[0]}")"
+  WORKER_CONTEXT_DIR="${AFK_CONTEXT_EVENT_DIR:-${STORY}.context-events}"
+
   [[ -n "$HARNESS" && -n "$MODEL_PROFILE" && -n "$EFFORT" ]] || \
     die "stamp is missing harness/model_profile/effort" "$EX_STAMP_UNCHECKABLE"
 
@@ -1716,7 +2584,7 @@ main() {
     log "persona: none stamped"
   fi
 
-  log "[$STORY] cycle $CYCLE/$MAX_CYCLES -> $HARNESS $MODEL_PROFILE ($NATIVE_MODEL) effort=$EFFORT"
+  log "[$STORY] cycle $CYCLE/$MAX_CYCLES -> $HARNESS $MODEL_PROFILE ($NATIVE_MODEL) effort=$EFFORT memory=$MEMORY_MODE"
   log "stamp: $STAMP_FILE $STAMP_DIGEST expires=$STAMP_EXPIRES_AT catalog=$STAMP_CATALOG_VERSION"
 
   # ---- the prompt is DATA, written by the launcher, never shell source -----
@@ -1876,8 +2744,11 @@ EOF
   fi
 
   # ---- launch -------------------------------------------------------------
-  local title command_text exit_marker result_file=""
+  local title command_text exit_marker result_file="" worker_env memory_state_dir
   title="$(basename "$STORY") ${HARNESS} ${MODEL_PROFILE} ${EFFORT} c${CYCLE}"
+
+  memory_state_dir="$(mktemp -d /tmp/afk-worker.XXXXXXXX)"; TMPDIRS+=("$memory_state_dir")
+  chmod 700 "$memory_state_dir"
 
   local harness_bin
   harness_bin="$(cfg ".launcher.harness_binaries.$HARNESS" "" "$HARNESS")"
@@ -1896,6 +2767,15 @@ EOF
       claude_settings_preflight "$approved_home"
       approved_path="$(cfg '.launcher.approved_path' AGENT_FLOW_APPROVED_PATH "$(dirname "$(command -v "$harness_bin")"):/usr/local/bin:/usr/bin:/bin")"
       approved_user="$(id -un)"
+      if ! prepare_worker_memory "$MEMORY_MODE" claude "$approved_home" "$approved_path" "$approved_user" \
+          "$(realpath "$PWD")" "$memory_state_dir" "$MEMORY_HELPER"; then
+        printf 'NEEDS-HUMAN: reason=MEMORY_REQUIRED_UNAVAILABLE detail=%s mode=required harness=claude\n' \
+          "${MEMORY_REQUIRED_REASON:-MEMORY_STATUS_UNAVAILABLE}" >"${STORY}.blocked"
+        die "required Hindsight readiness was not proved (${MEMORY_REQUIRED_REASON:-MEMORY_STATUS_UNAVAILABLE}); nothing launched" "$EX_NEEDS_HUMAN"
+      fi
+      worker_env="$(worker_environment_assignments "$WORKER_RUN_ID" "$WORKER_STORY_ID" "$WORKER_STORY_PATH" \
+        "$CYCLE" "$WORKER_DISPATCH_ID" "$WORKER_OWNING_PM" "$WORKER_DELEGATING_PM" "$WORKER_CONTEXT_HOOK" "$WORKER_CONTEXT_DIR" \
+        "$BUDGET_CHECKPOINT_PPM" "$BUDGET_CONTINUATION_PPM")"
       # Which of the two classes: the guard above already decided it, and this
       # reads the same stamp fact it decided on. A claude stamp that requires
       # placement and reached this line is a validated gateway-backed local
@@ -1927,39 +2807,93 @@ EOF
           die "catalog profile '$MODEL_PROFILE' declares no min_context, so the session's real context window is unknown and the launch is refused rather than run at the harness default" "$EX_CONFIG"
         command_text="$(build_claude_gateway_command "$approved_home" "$approved_path" "$approved_user" \
                          "$PROMPT_FILE" "$NATIVE_MODEL" "$EFFORT" "$result_file" "$PERSONA_FILE" \
-                         "$gateway_url" "$token_ref" "$op_env_file" "$placement_header" "$max_context")"
+                         "$gateway_url" "$token_ref" "$op_env_file" "$placement_header" "$max_context" "$worker_env")"
         log "launch class: gateway-backed local ($MODEL_PROFILE -> $NATIVE_MODEL at $gateway_url, x-placement $placement_header, context $max_context)"
       else
         command_text="$(build_claude_command "$approved_home" "$approved_path" "$approved_user" \
-                         "$PROMPT_FILE" "$NATIVE_MODEL" "$EFFORT" "$result_file" "$PERSONA_FILE")"
+                         "$PROMPT_FILE" "$NATIVE_MODEL" "$EFFORT" "$result_file" "$PERSONA_FILE" "$worker_env")"
         log "launch class: native vendor subscription"
       fi
       exit_marker="CLAUDE_EXIT"
       ;;
+    opencode)
+      local approved_home approved_path approved_user approved_opencode data_home runtime_dir tuple
+      local opencode_model opencode_variant auth_requirement funding_requirement expected_version actual_version
+      approved_home="$(resolve_opencode_home)"
+      approved_path="$(cfg '.launcher.approved_path' AGENT_FLOW_APPROVED_PATH "$(dirname "$(command -v "$harness_bin" 2>/dev/null || printf /usr/bin/opencode)"):/usr/local/bin:/usr/bin:/bin")"
+      approved_opencode="$(PATH="$approved_path" command -v "$harness_bin" 2>/dev/null || true)"
+      [[ -n "$approved_opencode" ]] || die "OpenCode is not resolvable on the approved PATH" "$EX_CONFIG"
+      expected_version="$(cfg '.launcher.opencode.exact_version' AGENT_FLOW_OPENCODE_VERSION 1.18.31)"; actual_version="$("$approved_opencode" --version 2>/dev/null || true)"
+      [[ "$actual_version" == "$expected_version" ]] || die "OpenCode version does not match the declared exact version" "$EX_CONFIG"
+      approved_user="$(id -un)"; data_home="$(resolve_opencode_data_home "$approved_home")"
+      if ! prepare_worker_memory "$MEMORY_MODE" opencode "$approved_home" "$approved_path" "$approved_user" \
+          "$(realpath "$PWD")" "$memory_state_dir" "$MEMORY_HELPER"; then
+        printf 'NEEDS-HUMAN: reason=MEMORY_REQUIRED_UNAVAILABLE detail=%s mode=required harness=opencode\n' \
+          "${MEMORY_REQUIRED_REASON:-MEMORY_STATUS_UNAVAILABLE}" >"${STORY}.blocked"
+        die "required Hindsight readiness was not proved (${MEMORY_REQUIRED_REASON:-MEMORY_STATUS_UNAVAILABLE}); nothing launched" "$EX_NEEDS_HUMAN"
+      fi
+      worker_env="$(worker_environment_assignments "$WORKER_RUN_ID" "$WORKER_STORY_ID" "$WORKER_STORY_PATH" \
+        "$CYCLE" "$WORKER_DISPATCH_ID" "$WORKER_OWNING_PM" "$WORKER_DELEGATING_PM" "$WORKER_CONTEXT_HOOK" "$WORKER_CONTEXT_DIR" \
+        "$BUDGET_CHECKPOINT_PPM" "$BUDGET_CONTINUATION_PPM")"
+      tuple="$(opencode_launch_tuple "$MODEL_PROFILE" "$PHYSICAL_MODEL" "$EFFORT" "$ENTITLEMENT_POOL" "$STAMP_COST_CLASS")" || die "no trusted OpenCode model/variant mapping for the stamped tuple" "$EX_CONFIG"
+      IFS=$'\t' read -r opencode_model opencode_variant auth_requirement funding_requirement <<<"$tuple"
+      opencode_auth_preflight "$approved_opencode" "$approved_home" "$approved_path" "$approved_user" "$data_home" "$auth_requirement"
+      case "$funding_requirement" in "") : ;; minimax-token-plan) opencode_funding_preflight "$data_home" ;; *) die "unsupported OpenCode funding attestation" "$EX_CONFIG" ;; esac
+      runtime_dir="$(mktemp -d /tmp/afk-worker.XXXXXXXX)"; TMPDIRS+=("$runtime_dir")
+      mkdir -p "$runtime_dir/config" "$runtime_dir/cache" "$runtime_dir/state"; chmod 700 "$runtime_dir" "$runtime_dir/config" "$runtime_dir/cache" "$runtime_dir/state"
+      write_opencode_config "$runtime_dir/config/opencode.json" "$(realpath "$PERSONA_FILE")" "$MEMORY_OPENCODE_PLUGIN"; chmod 600 "$runtime_dir/config/opencode.json"
+      result_file="$runtime_dir/opencode-result.jsonl"
+      command_text="$(build_opencode_command "$approved_opencode" "$approved_home" "$approved_path" "$approved_user" "$runtime_dir/config" "$data_home" "$runtime_dir/cache" "$runtime_dir/state" "$PROMPT_FILE" "$opencode_model" "$opencode_variant" "$result_file" afk-dev "$worker_env")"
+      NATIVE_MODEL="$opencode_model"; exit_marker="OPENCODE_EXIT"
+      ;;
     codex)
-      command_text="$(build_codex_command "$PROMPT_FILE" "$NATIVE_MODEL" "$EFFORT")"
+      local codex_home codex_path codex_user
+      codex_home="${HOME:-$(passwd_home)}"
+      # approved_path_has changes PATH only in its own subshell.
+      # shellcheck disable=SC2031
+      codex_path="${PATH:-/usr/local/bin:/usr/bin:/bin}"
+      codex_user="$(id -un)"
+      if ! prepare_worker_memory "$MEMORY_MODE" codex "$codex_home" "$codex_path" "$codex_user" \
+          "$(realpath "$PWD")" "$memory_state_dir" "$MEMORY_HELPER"; then
+        printf 'NEEDS-HUMAN: reason=MEMORY_REQUIRED_UNAVAILABLE detail=%s mode=required harness=codex\n' \
+          "${MEMORY_REQUIRED_REASON:-MEMORY_STATUS_UNAVAILABLE}" >"${STORY}.blocked"
+        die "required Hindsight readiness was not proved (${MEMORY_REQUIRED_REASON:-MEMORY_STATUS_UNAVAILABLE}); nothing launched" "$EX_NEEDS_HUMAN"
+      fi
+      worker_env="$(worker_environment_assignments "$WORKER_RUN_ID" "$WORKER_STORY_ID" "$WORKER_STORY_PATH" \
+        "$CYCLE" "$WORKER_DISPATCH_ID" "$WORKER_OWNING_PM" "$WORKER_DELEGATING_PM" "$WORKER_CONTEXT_HOOK" "$WORKER_CONTEXT_DIR" \
+        "$BUDGET_CHECKPOINT_PPM" "$BUDGET_CONTINUATION_PPM")"
+      command_text="$(build_codex_command "$PROMPT_FILE" "$NATIVE_MODEL" "$EFFORT" "$worker_env")"
       exit_marker="CODEX_EXIT"
       ;;
     *)
-      die "no frozen launch contract for harness '$HARNESS'. Only claude and codex have one; adding another requires its own live validation and contract." ;;
+      die "no frozen launch contract for harness '$HARNESS'. Only claude, codex and opencode have one; adding another requires its own live validation and contract." ;;
   esac
 
-  # ---- the continuation ledger: one entry per continuation LAUNCH ---------
-  # Written HERE, under the story's own exclusive lock, immediately before the
-  # launch and after everything that could still refuse this attempt — sizing,
-  # placement, revalidation, the launch-contract guard, every harness
-  # preflight. An entry therefore exists if and only if a continuation window
-  # was actually spent, and it is appended, never rewritten and never pruned:
-  # the cap is its length.
+  # Create first, then durably record the returned terminal handle as launch
+  # confirmation before waiting for the worker. A failed create therefore
+  # leaves no continuation consumption behind and the same cycle is retryable;
+  # an in-flight or completed worker has explicit ledger evidence immediately.
   if [[ -n "$CONTINUATION_OF_CYCLE" ]]; then
-    continuation_ledger_append "$STORY" "$CYCLE" "$CONTINUATION_OF_CYCLE" \
+    local launch_rc=0
+    continuation_launch_create "$STORY" "$CYCLE" "$CONTINUATION_OF_CYCLE" \
       "$(jq -r .artifact_sha256 <<<"$CONTINUATION_OF_JSON")" \
-      "$(jq -r .trigger <<<"$CONTINUATION_OF_JSON")" "$CONTINUATION_DECISION_JSON" || \
-      die "the continuation ledger $(continuation_ledger_path "$STORY") could not be appended to. The cap is counted from it, so a continuation that cannot be recorded is not launched." "$EX_NEEDS_HUMAN"
-    log "continuation ledger: cycle $CYCLE recorded as consumption $(( $(continuations_consumed "$LEDGER_ENTRIES") + 1 )) of $BUDGET_CONTINUATION_CAP"
+      "$(jq -r .trigger <<<"$CONTINUATION_OF_JSON")" "$CONTINUATION_DECISION_JSON" \
+      "$selector" "$title" "$command_text" "$exit_marker" "$LAUNCH_TIMEOUT" \
+      "$(realpath "$PWD")" || launch_rc=$?
+    if (( launch_rc == 75 )); then
+      LEDGER_ENTRIES="$(continuation_ledger_entries "$STORY")" || die "the continuation ledger became unreadable while launching" "$EX_NEEDS_HUMAN"
+      refuse_cycle_retained "${STORY}.blocked" "$CYCLE" \
+        "$(next_free_cycle "$STORY" "$CYCLE" "$LEDGER_ENTRIES")" \
+        "an entry in the continuation ledger"
+      die "continuation cycle $CYCLE was already confirmed by another dispatcher; no duplicate terminal was launched" "$EX_NEEDS_HUMAN"
+    elif (( launch_rc != 0 )); then
+      die "the continuation launch could not be confirmed in $(continuation_ledger_path "$STORY"); the cycle remains retryable." "$EX_NEEDS_HUMAN"
+    fi
+    log "continuation ledger: cycle $CYCLE confirmed in terminal $TERMINAL_HANDLE as consumption $(( $(continuations_consumed "$LEDGER_ENTRIES") + 1 )) of $BUDGET_CONTINUATION_CAP"
+  else
+    orca_launch_create "$selector" "$title" "$command_text"
   fi
-
-  orca_launch "$selector" "$title" "$command_text" "$exit_marker" "$LAUNCH_TIMEOUT"
+  orca_launch_wait "$exit_marker" "$LAUNCH_TIMEOUT"
 
   # ---- post-launch honesty checks ----------------------------------------
   # `--effort` fails OPEN. The warning is a FAILURE even on exit 0: the run
@@ -1971,10 +2905,37 @@ EOF
   fi
 
   WORKER_TEXT=""
+  HARNESS_REPORTED_ERROR=false
   if [[ "$HARNESS" == "claude" && -f "$result_file" ]]; then
-    WORKER_TEXT="$(jq -r '.result // ""' "$result_file" 2>/dev/null || true)"
-    if [[ "$(jq -r '.is_error // false' "$result_file" 2>/dev/null || echo false)" == "true" ]]; then
-      log "claude reported is_error=true (subtype is NOT a status field — gating on is_error)"
+    local claude_envelope
+    if claude_envelope="$(jq -c -s '
+        if length == 1
+           and (.[0] | if type == "object"
+                         then .type == "result"
+                              and has("is_error")
+                              and (.is_error | type == "boolean")
+                              and (.result | type == "string")
+                         else false end)
+        then .[0]
+        else error("invalid Claude result envelope")
+        end' "$result_file" 2>/dev/null)"; then
+      WORKER_TEXT="$(jq -r '.result // ""' <<<"$claude_envelope")"
+      HARNESS_REPORTED_ERROR="$(jq -r .is_error <<<"$claude_envelope")"
+      if [[ "$HARNESS_REPORTED_ERROR" == true ]]; then
+        log "claude reported is_error=true (subtype is NOT a status field — gating on is_error)"
+      fi
+    else
+      HARNESS_REPORTED_ERROR=true
+      log "claude emitted an invalid result envelope — treating the attempt as a harness error"
+    fi
+  elif [[ "$HARNESS" == opencode && -f "$result_file" ]]; then
+    local opencode_envelope
+    if opencode_envelope="$(parse_opencode_result_stream "$result_file")"; then
+      WORKER_TEXT="$(jq -r .text <<<"$opencode_envelope")"
+    else
+      HARNESS_REPORTED_ERROR=true
+      WORKER_TEXT=""
+      log "OpenCode emitted an error or non-terminal result stream — treating the attempt as a harness error"
     fi
   else
     WORKER_TEXT="$TERMINAL_TAIL"
@@ -2115,8 +3076,10 @@ EOF
         && "$BUDGET_STATE" == "CONTINUATION_REQUIRED" ]]; then
     log "budget: the run ended in the continuation band with the gates failed and no worker signal — recorded as sizing beside status gates_failed, not as a hand-over there is no artifact for"
   fi
-  [[ -n "$RESULT_STATUS" ]] || \
-    RESULT_STATUS="$([[ $GATES_OK == true ]] && echo 'done' || echo 'gates_failed')"
+  local attempt_result_json
+  attempt_result_json="$(attempt_result_projection \
+    "$RESULT_STATUS" "$GATES_OK" "$HARNESS_EXIT" "$HARNESS_REPORTED_ERROR")"
+  RESULT_STATUS="$(jq -r .status <<<"$attempt_result_json")"
 
   # ---- thin result the PM can read without loading the transcript ---------
   local placement_json='{"required":false}'
@@ -2133,8 +3096,9 @@ EOF
     --arg persona "$PERSONA" \
     --arg digest "$STAMP_DIGEST" --arg expires "$STAMP_EXPIRES_AT" \
     --arg catalog "$STAMP_CATALOG_VERSION" \
-    --arg terminal "$TERMINAL_HANDLE" --arg hexit "$HARNESS_EXIT" \
-    --arg status "$RESULT_STATUS" \
+    --arg terminal "$TERMINAL_HANDLE" \
+    --arg dispatch "$WORKER_DISPATCH_ID" --arg worker "worker:$WORKER_DISPATCH_ID" \
+    --argjson attempt "$attempt_result_json" \
     --argjson placement "$placement_json" \
     --argjson budget "$(jq -n \
         --arg st "$BUDGET_STATE" --arg rs "$BUDGET_REASON" \
@@ -2167,14 +3131,14 @@ EOF
     --argjson gates "$(for k in "${!GATE_RESULTS[@]}"; do
                          jq -n --arg k "$k" --arg v "${GATE_RESULTS[$k]}" '{($k):$v}'
                        done | jq -s 'add // {}')" \
-    '{story:$story, cycle:($cycle|tonumber), status:$status,
+    '{story:$story, cycle:($cycle|tonumber), status:$attempt.status,
       route:{harness:$harness, model_profile:$profile, native_model:$model,
              effort:$effort, persona:$persona},
       stamp:{digest:$digest, expires_at:$expires, catalog_version:$catalog,
              validated:true},
       placement:$placement,
       budget:$budget,
-      launch:{orca_terminal:$terminal, harness_exit:($hexit|tonumber?)},
+      launch:({orca_terminal:$terminal,dispatch_id:$dispatch,worker_identity:$worker} + $attempt.launch),
       gates:$gates}' > "${STORY}.result.json"
 
   # The per-cycle copy. `${STORY}.result.json` is what a reader opens by name
@@ -2183,8 +3147,14 @@ EOF
   # derived from evidence rather than from a counter something could edit.
   cp -- "${STORY}.result.json" "$(retained_result_path "$STORY" "$CYCLE")"
 
+  local attempt_badge
+  case "$RESULT_STATUS" in
+    done)                  attempt_badge="✓done" ;;
+    continuation_required) attempt_badge="↻continue" ;;
+    *)                     attempt_badge="✗attempt" ;;
+  esac
   orca terminal rename --terminal "$TERMINAL_HANDLE" \
-    --title "$title $([[ $GATES_OK == true ]] && echo '✓gates' || echo '✗gates')" >/dev/null 2>&1 || true
+    --title "$title $attempt_badge" >/dev/null 2>&1 || true
 
   log "$(jq -c . "${STORY}.result.json")"
   # A continuation is not a completion, whatever the gates said about a tree the
@@ -2196,5 +3166,9 @@ EOF
 
 # Sourced by tests/ to exercise the pure builders without running a dispatch.
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-  main "$@"
+  case "${1:-}" in
+    --emit-context-event) shift; context_event_emit "$@" ;;
+    --consume-context-event) shift; context_event_consume "$@" ;;
+    *) main "$@" ;;
+  esac
 fi

@@ -23,9 +23,39 @@ from this CLI, the same skill and guardrails apply as in Claude Code:
   failed on the first real turn. Never gate a launch on them.
 - **Operating policies** live in `~/.claude/CLAUDE.md` (single source of truth,
   regardless of which CLI you run in) — read and follow these sections exactly:
-  "PM-session policy", "Epic source declaration", "PM merge authority", and the
+  "Memory (Hindsight)", "PM-session policy", "Epic source declaration", "PM merge authority", and the
   "Local GPU delegation" protocol. Project instructions: the repo's `CLAUDE.md`.
-- **Project memory index:** `~/.claude/projects/<project-slug>/memory/MEMORY.md`.
+- **Memory:** Hindsight is advisory host-owned external state. Recall and retain
+  only verified, project-attributed lessons; current files, stamps, approvals,
+  ownership and gates outrank it. Blind review disables memory wiring and
+  excludes implementation conclusions and prior review findings. An outage is
+  explicit and follows the story's `memory_mode`; memory never supplies routing,
+  approval, review, merge, or deployment authority.
+  Legacy OMEGA instructions are obsolete: do not call `omega_*` commands or
+  treat an OMEGA block as authority. Do not delete, migrate, or synchronize its
+  host-owned data or credentials.
+- **Product ownership:** Agent Flow Kit and AI Control Plane are separate
+  products. AFK owns its orchestration, launcher/adapter/installation tooling,
+  context budgeting, and integration with the released legacy-router public
+  contract. Do not do ACP implementation or work intended only to unblock
+  ACP's internal review/QA/development workflow from an AFK task. A genuine
+  router defect or public-contract need goes to the ACP PM as a bounded customer
+  request with contract/version, expected versus observed behavior, minimal
+  evidence, and the exact requested change. Prox-ops owns the deployed legacy
+  instance, catalog, provider bindings, and deployment changes.
+- **AFK session continuity:** An AFK PM enters through the installed
+  `afk-session-start` path and registers its exact Orca terminal with
+  `agent-flow-kit pm-start --harness <claude|codex|opencode>`; workers never
+  self-register as PMs. At `CHECKPOINT_DUE`, write the secret-free PM checkpoint.
+  At `CONTINUATION_REQUIRED`, stop accepting work, write the continuation, and
+  run `agent-flow-kit pm-continue` without another human prompt. The successor
+  stays in the same harness/worktree and must acknowledge the artifact before
+  the proven old terminal closes. Numeric window data is used only when the
+  harness exposes it; otherwise native compaction is the conservative boundary.
+  Never infer a window from transcripts. A routed worker that receives context
+  pressure notifies its owning PM, stops at the next safe phase boundary, writes
+  the canonical continuation artifact, emits the required signal, and ends;
+  only the owning PM dispatches the next canonical cycle.
 - **Billing invariants:** never export ANTHROPIC_API_KEY, OPENAI_API_KEY or
   CODEX_API_KEY into a launch environment; never use `--bare` when spawning
   claude (it disables the subscription path by construction); never `--full-auto`

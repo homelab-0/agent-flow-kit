@@ -293,7 +293,7 @@ git_commit_all() { git -C "$1" add -A >/dev/null 2>&1
 
 make_checkout() {
   local d="$1"
-  mkdir -p "$d/lifecycle" "$d/files/model-router/scripts" "$d/files/humanizer/skills/humanizer"
+  mkdir -p "$d/adapters" "$d/bin" "$d/lib" "$d/lifecycle" "$d/files/model-router/scripts" "$d/files/humanizer/skills/humanizer"
   cat > "$d/lifecycle/kit.json" <<'JSON'
 {
   "kit_id": "agent-flow-kit",
@@ -301,7 +301,7 @@ make_checkout() {
   "state_schema_version": "1.0",
   "result_schema_version": "1.0",
   "default_branch": "master",
-  "managed_inputs": ["files", "lifecycle"]
+  "managed_inputs": ["adapters", "bin", "lib", "files", "lifecycle"]
 }
 JSON
   printf 'model-router skill v1\n' > "$d/files/model-router/SKILL.md"
@@ -312,6 +312,10 @@ JSON
   printf 'humanizer inner skill v1\n' > "$d/files/humanizer/skills/humanizer/SKILL.md"
   printf 'policy line one\npolicy line two\n' > "$d/files/claude-global-CLAUDE.md"
   printf 'codex guidance v1\n' > "$d/files/codex-AGENTS.md"
+  printf 'runtime adapter v1\n' > "$d/adapters/README"
+  printf 'runtime executable v1\n' > "$d/bin/agent-flow-kit"
+  printf 'runtime library v1\n' > "$d/lib/afk-common.sh"
+  printf '{"schema":"test-release-policy/1"}\n' > "$d/lifecycle/release-policy.json"
   git init -q "$d" >/dev/null 2>&1
   git -C "$d" symbolic-ref HEAD refs/heads/master >/dev/null 2>&1
   git_commit_all "$d" "canonical v1"
@@ -323,6 +327,11 @@ section_end()   { printf '# <<< agent-flow-kit managed section: %s <<<' "$1"; }
 install_kit() {
   local h="$1" c="$2"
   mkdir -p "$h/.agents/skills" "$h/.claude/skills" "$h/.codex"
+  cp -R "$c/adapters" "$h/.agents/skills/afk-runtime"
+  mkdir -p "$h/.agents/skills/afk-runtime/bin" "$h/.agents/skills/afk-runtime/lib" "$h/.agents/skills/afk-runtime/lifecycle"
+  cp -R "$c/bin/." "$h/.agents/skills/afk-runtime/bin/"
+  cp -R "$c/lib/." "$h/.agents/skills/afk-runtime/lib/"
+  cp "$c/lifecycle/release-policy.json" "$h/.agents/skills/afk-runtime/lifecycle/release-policy.json"
   cp -R "$c/files/model-router" "$h/.agents/skills/model-router"
   cp -R "$c/files/humanizer" "$h/.agents/skills/humanizer"
   ln -s "$h/.agents/skills/model-router" "$h/.claude/skills/model-router"
@@ -1442,6 +1451,11 @@ head1 "9. The coordinator's own context budget (Story 1.5 lane D)"
 
 # shellcheck source=../lib/afk-commands.sh
 . "$KIT_ROOT/lib/afk-commands.sh"
+# The collision check below spans all published vocabulary owners. Commands
+# does not source the monitor implementation, so load its definitions here
+# rather than letting an absent function make the assertion vacuously pass.
+# shellcheck source=../lib/afk-monitor.sh
+. "$KIT_ROOT/lib/afk-monitor.sh"
 
 BAD=0
 while IFS= read -r code; do
@@ -1459,10 +1473,16 @@ assert_contains "and the verb that writes the artifacts" "$(printf '%s' "$RUN_OU
 
 PMD="$HOMEDIR/.local/state/agent-flow-kit/pm"
 mkdir -p "$PMD"
+# This section deliberately owns one synthetic PM fixture.  Pin its path so
+# the assertions exercise the public override instead of depending on the
+# caller terminal/worktree namespace selected by the runtime default.
+export AFK_PM_DIR="$PMD"
 export AGENT_FLOW_BUDGET_POLICY="$KIT_ROOT/files/model-router/context-budget-policy.yaml"
 pm_obs() { # <window|null> <usage|null> [reason] [provenance]
-  jq -nc --argjson w "$1" --argjson u "$2" --arg r "${3-}" --arg p "${4-HUMAN}" \
-    '{schema:"afk-pm-usage/1", harness:"claude", window_tokens:$w, usage_tokens:$u, provenance:$p, observed_at:"2026-09-08T00:00:00Z", session:"pm-1"} + (if $r == "" then {} else {reason:$r} end)' > "$PMD/usage.json"
+  local epoch; epoch="$(date +%s)"
+  jq -nc --arg p "$KIT_ROOT" --argjson e "$epoch" '{schema:"afk-pm-ownership/2",owned:true,role:"PM",harness:"claude",session:"pm-1",terminal:"pm-terminal",worktree:{id:"pm-worktree",path:$p},run_id:null,observed_at:"now",observed_epoch:$e,freshness_seconds:120,transition_id:null,previous:null}' > "$PMD/ownership.json"
+  jq -nc --argjson w "$1" --argjson u "$2" --arg r "${3-}" --arg p "${4-HARNESS_ADAPTER}" --arg wp "$KIT_ROOT" --argjson e "$epoch" \
+    '{schema:"afk-pm-usage/2",harness:"claude",window_tokens:$w,usage_tokens:$u,provenance:$p,observed_at:"now",observed_epoch:$e,freshness_seconds:120,session:"pm-1",terminal:"pm-terminal",worktree:{id:"pm-worktree",path:$wp}} + (if $r == "" then {} else {reason:$r} end)' > "$PMD/usage.json"
 }
 pmb() { printf '%s' "$RUN_OUT" | jq -r ".extra.pm_budget.$1"; }
 pm_case() { # <label> <state> <reason> <window_source>
@@ -1479,7 +1499,7 @@ rm -f "$PMD/usage.json"
 pm_case "absent, so nothing is assumed healthy" NOT_EVALUATED PM_USAGE_UNOBSERVABLE NOT_EVALUATED
 printf 'not json at all' > "$PMD/usage.json"
 pm_case "unparseable" NOT_EVALUATED PM_USAGE_UNOBSERVABLE NOT_EVALUATED
-jq -nc '{schema:"afk-pm-usage/1", harness:"claude", window_tokens:1000, usage_tokens:900, observed_at:"x", session:"pm-1"}' > "$PMD/usage.json"
+jq -nc '{schema:"afk-pm-usage/2", harness:"claude", window_tokens:1000, usage_tokens:900, observed_at:"x", session:"pm-1"}' > "$PMD/usage.json"
 pm_case "declaring no provenance" NOT_EVALUATED PM_USAGE_UNOBSERVABLE NOT_EVALUATED
 jq -nc '{schema:"afk-pm-usage/9", harness:"claude", window_tokens:1000, usage_tokens:900, provenance:"HUMAN", observed_at:"x", session:"pm-1"}' > "$PMD/usage.json"
 pm_case "declaring a schema this kit does not read" NOT_EVALUATED PM_USAGE_UNOBSERVABLE NOT_EVALUATED
@@ -1547,11 +1567,11 @@ assert_eq "and the run says so in its exit code"     "$RUN_RC" "2"
 assert_eq "the loud finding is an owner action" \
   "$(printf '%s' "$RUN_OUT" | jq -r '[.findings[] | select(.reason == "PM_CONTINUATION_REQUIRED" and .severity == "owner_action")] | length')" "1"
 # No hand-over has been written yet, so the action is to write one and then
-# start the successor — never a verb that would start it for them.
+# advance the durable handoff explicitly.
 assert_contains "next_safe_action asks for the hand-over the ratio demands" \
   "$(jget '.next_safe_action')" "pm-checkpoint --continuation"
-assert_contains "and sends the human to Orca to start the successor themselves" \
-  "$(jget '.next_safe_action')" "start the successor ORCH PM session yourself in Orca"
+assert_contains "and names the one explicit continuation command" \
+  "$(jget '.next_safe_action')" "agent-flow-kit pm-continue"
 
 # There is no threshold constant in the kit: an unreadable policy bands nothing
 # rather than falling back to a number nobody declared.
@@ -1559,6 +1579,16 @@ pm_obs 1000000 900000
 AGENT_FLOW_BUDGET_POLICY="$TMPROOT/no-such-policy.yaml" run_afk status --json
 assert_eq "an unreadable policy is never a default" "$(pmb reason)" "PM_BUDGET_POLICY_UNREADABLE"
 assert_eq "and nothing is banded without one"       "$(pmb state)" "NOT_EVALUATED"
+
+for invalid_policy in reversed above-one; do
+  if [[ "$invalid_policy" == reversed ]]; then checkpoint=0.90; continuation=0.80
+  else checkpoint=0.70; continuation=1.10; fi
+  printf 'checkpoint_ratio: %s\ncontinuation_ratio: %s\n' "$checkpoint" "$continuation" \
+    >"$TMPROOT/pm-policy-$invalid_policy.yaml"
+  AGENT_FLOW_BUDGET_POLICY="$TMPROOT/pm-policy-$invalid_policy.yaml" run_afk status --json
+  assert_eq "$invalid_policy PM thresholds are not banded" "$(pmb state)" "NOT_EVALUATED"
+  assert_eq "$invalid_policy PM thresholds report policy failure" "$(pmb reason)" "PM_BUDGET_POLICY_UNREADABLE"
+done
 
 pm_obs 200000 100000
 run_afk status --json
@@ -1568,6 +1598,7 @@ assert_eq "the pm_budget block presents exactly the declared members" \
 run_afk status
 assert_contains "and the human rendering projects it too" "$RUN_OUT" "coordinator context budget"
 unset AGENT_FLOW_BUDGET_POLICY
+unset AFK_PM_DIR
 rm -f "$PMD/usage.json"
 
 # ===========================================================================

@@ -1,0 +1,153 @@
+# Transactional release updates
+
+AFK's release client follows one immutable trust path:
+
+- remote: `https://github.com/jlengelbrecht/agent-flow-kit.git`
+- ref: `refs/heads/master`
+- repository root: `d74e7f9542cfe2731e09a0ff5c5e1b4cf325062f`
+
+Those values are compiled into `bin/afk-release-reconcile`. The adjacent
+`lifecycle/release-policy.json` must repeat them exactly or the client refuses
+to run. Neither command-line flags nor environment variables can replace a
+trust anchor.
+
+## What an update does
+
+`afk-release-reconcile --apply` creates an AFK-owned bare mirror below the
+declared state directory, performs a bounded fetch of the exact trusted ref,
+and resolves it to a commit. It rejects shallow or differently configured
+mirrors, an unexpected root, incompatible lifecycle declarations, and any
+candidate that is not a forward descendant of the installed revision.
+Every Git invocation starts from a minimal clean environment; ambient work-tree,
+index, object-directory, configuration, credential-helper, askpass, SSH, and
+transport controls cannot redirect release reads, writes, or helper execution.
+
+The client checks out the commit on `master` in a fresh isolated candidate
+directory. It never pulls, resets, stashes, switches, cleans, or otherwise
+changes the user's development clone. A candidate must pass its fast release
+qualification inside the qualified Linux `bwrap` sandbox. The client then
+snapshots the already-installed lifecycle driver and its fixed library set into
+private release state. Before any copied driver is parsed or executed, the
+client computes the complete private snapshot `bin` and `lib` tree identities
+and requires exact matches with the accepted-release identities recorded in
+`state.json`. Copy-time mutation and syntactically valid local drift are refused,
+and a mismatched private snapshot is removed.
+That trusted snapshot plans, applies, and verifies with
+the clean candidate as canonical input; candidate lifecycle executables and
+libraries are not run on the host before acceptance. Only a zero-approval,
+zero-conflict `NO_CHANGE` or
+`MUTATION_REQUIRED` plan with exact prior and target revisions is eligible.
+The lifecycle engine then performs its normal plan/apply/verify transaction.
+The release client does not use an approval bypass.
+
+Examples:
+
+```sh
+bin/afk-release-reconcile --plan
+bin/afk-release-reconcile --apply --cohort canary
+```
+
+Planning may refresh the AFK-owned mirror, candidate cache, and attempt log,
+but cannot mutate installed lifecycle state. Applying records a candidate as
+last-good only after lifecycle verification succeeds.
+
+## Session and workflow start
+
+Enrolled launchers should enter through the lifecycle-installed stable command
+`$AFK_SKILLS_HOME/afk-runtime/bin/afk-session-start`. It reconciles before
+running the requested command and can idempotently compose an adapter for the
+harness being launched:
+
+```sh
+$AFK_SKILLS_HOME/afk-runtime/bin/afk-session-start --adapter claude -- claude
+$AFK_SKILLS_HOME/afk-runtime/bin/afk-session-start --adapter codex -- codex
+$AFK_SKILLS_HOME/afk-runtime/bin/afk-session-start --adapter opencode -- opencode
+```
+
+Adapter composition derives `manage.sh` from the installed session entrypoint's
+canonical sibling runtime. Ambient `AFK_SKILLS_HOME` cannot redirect it; the
+variable is rebound only for that verified installed runtime. Hook commands
+never point into the candidate cache. The session, release, and Hindsight
+entrypoints start with fixed privileged Bash and clear startup-file influence;
+their bootstrap helpers use only validated system paths. A separately
+canonicalized caller `PATH` is retained for the requested harness and adapter
+tools, so relative `codex`, `opencode`, or user-installed `yq` commands still
+work without joining the trusted bootstrap surface. On Linux, Claude and Codex each receive one synchronous,
+30-second `SessionStart` command hook for that exact stable updater. Codex orders it
+before AFK's session publisher; its pre-compact hook remains presentation-only.
+Adapter installation writes these registrations but never executes the updater,
+so composing an adapter cannot recursively start reconciliation. Repeated
+composition verifies the owned hook shape and does not add another copy.
+
+Existing unrelated Claude settings and Codex hooks—including Hindsight, Orca,
+and user hooks—keep their relative order and are preserved on removal. A
+conflicting owner-controlled field causes an owner-action failure; it is never
+overwritten. If the stable updater later becomes unavailable, the native
+synchronous hook fails visibly instead of falling through to an unverified
+candidate. The updater does not inspect or copy secret files, environment
+values, credentials, or command output into its attempt records.
+
+OpenCode's single installed plugin awaits one bounded call to the same stable
+updater on Linux when the plugin starts, before registering normal AFK event work. A
+missing, failed, or timed-out updater produces an `AFK UNAVAILABLE[...]`
+warning toast; updater output and environment values are not copied into that
+message. Event callbacks do not rerun reconciliation.
+
+Darwin currently has no qualified candidate-sandbox backend. Claude and Codex
+still install their AFK presentation and context-pressure hooks but omit the
+blocking release-reconcile hook. OpenCode emits
+`AFK UNAVAILABLE[MACOS_SANDBOX_PENDING]`, skips startup reconciliation, and
+continues normal status events. An explicit `afk-session-start` on macOS leaves
+installed state unchanged, reports retention only when matching last-good and
+applied revisions are actually recorded, refuses with the same reason, and
+never synthesizes verification or runs unconfined candidate code. This is usable
+degraded operation, not a macOS auto-update qualification claim.
+
+Hermes is still a remote presentation-only surface and has no qualified native
+hook on this host. A remote launcher may explicitly adopt the wrapper contract:
+
+```sh
+$AFK_SKILLS_HOME/afk-runtime/hermes/session-start.sh -- hermes
+```
+
+The wrapper delegates to the stable updater before the supplied command and
+fails visibly if that installed entry is absent. This wrapper contract does not
+change `manage.sh install hermes`: local native integration remains
+`HARNESS_NOT_INSTALLED`/unqualified until it is tested on a Hermes host.
+
+When the fetch is offline or times out, a session continues only if
+`current.json` names the exact installed revision, its isolated checkout is
+still clean, and that candidate's offline lifecycle verification succeeds.
+The release result then says `RETAINED`, `FETCH_UNAVAILABLE`, and
+`last_good_verified: true`. With no such proof, the session is blocked.
+
+`afk-session-freshness` is deliberately cheaper and weaker: it only describes
+local recorded state for prompts or status lines and always reports
+`launch_authoritative: false`.
+
+## Locking, attempts, and rollout meaning
+
+One release-client lock serializes fetch, qualification, and reconciliation on
+a Linux host. Its owner record binds host, boot, PID, process-start identity, a
+random incarnation, and any ACTIVE child process group. A command is held behind
+a start gate until that group is atomically published. A leader exit does not
+clear the record while descendants survive, and a killed parent cannot make the
+lock reclaimable until the recorded group is gone. A demonstrably dead
+same-host owner can be recovered using an atomic arbitration marker; live,
+foreign, incomplete, or ambiguous owners are retained for owner action.
+
+Repeated session starts inside `check_interval_seconds` skip the network only
+after re-proving the recorded last-good candidate against installed state.
+`afk-release-reconcile --force-check --apply` bypasses that throttle.
+
+Secret-free attempt summaries are written with mode `0600` below
+`$AFK_STATE_DIR/releases/attempts`, with the latest summary at
+`releases/latest.json`. `releases/current.json` is advanced only after a
+verified success. Failure to persist a required attempt or latest summary is a
+blocking reconciliation failure even when the underlying lifecycle operation
+already completed; a later start must re-prove durable state before launching.
+
+The `canary` and `wave` cohort names are honest observation metadata, not a
+promotion gate. `rollout_authoritative` is always false and all enrolled hosts
+automatically follow the same canonical ref. AFK does not claim that this
+client provides centralized canary promotion.

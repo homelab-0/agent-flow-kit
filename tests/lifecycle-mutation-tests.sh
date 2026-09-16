@@ -70,7 +70,7 @@ git_commit_all() { # <dir> <message>
 
 make_checkout() { # <dir>
   local d="$1"
-  mkdir -p "$d/lifecycle" "$d/files/model-router/scripts" "$d/files/humanizer/skills/humanizer"
+  mkdir -p "$d/adapters" "$d/bin" "$d/lib" "$d/lifecycle" "$d/files/model-router/scripts" "$d/files/humanizer/skills/humanizer"
   cat > "$d/lifecycle/kit.json" <<'JSON'
 {
   "kit_id": "agent-flow-kit",
@@ -78,7 +78,7 @@ make_checkout() { # <dir>
   "state_schema_version": "1.0",
   "result_schema_version": "1.0",
   "default_branch": "master",
-  "managed_inputs": ["files", "lifecycle"]
+  "managed_inputs": ["adapters", "bin", "lib", "files", "lifecycle"]
 }
 JSON
   printf 'model-router skill v1\n' > "$d/files/model-router/SKILL.md"
@@ -89,6 +89,10 @@ JSON
   printf 'humanizer inner skill v1\n' > "$d/files/humanizer/skills/humanizer/SKILL.md"
   printf 'policy line one\npolicy line two\n' > "$d/files/claude-global-CLAUDE.md"
   printf 'codex guidance v1\n' > "$d/files/codex-AGENTS.md"
+  printf 'runtime adapter v1\n' > "$d/adapters/README"
+  printf 'runtime executable v1\n' > "$d/bin/agent-flow-kit"
+  printf 'runtime library v1\n' > "$d/lib/afk-common.sh"
+  printf '{"schema":"test-release-policy/1"}\n' > "$d/lifecycle/release-policy.json"
   git init -q "$d" >/dev/null 2>&1
   git -C "$d" symbolic-ref HEAD refs/heads/master >/dev/null 2>&1
   git_commit_all "$d" "canonical v1"
@@ -99,6 +103,11 @@ JSON
 install_kit() { # <home> <checkout>
   local h="$1" c="$2"
   mkdir -p "$h/.agents/skills" "$h/.claude/skills" "$h/.codex"
+  cp -R "$c/adapters" "$h/.agents/skills/afk-runtime"
+  mkdir -p "$h/.agents/skills/afk-runtime/bin" "$h/.agents/skills/afk-runtime/lib" "$h/.agents/skills/afk-runtime/lifecycle"
+  cp -R "$c/bin/." "$h/.agents/skills/afk-runtime/bin/"
+  cp -R "$c/lib/." "$h/.agents/skills/afk-runtime/lib/"
+  cp "$c/lifecycle/release-policy.json" "$h/.agents/skills/afk-runtime/lifecycle/release-policy.json"
   cp -R "$c/files/model-router" "$h/.agents/skills/model-router"
   cp -R "$c/files/humanizer" "$h/.agents/skills/humanizer"
   ln -s "$h/.agents/skills/model-router" "$h/.claude/skills/model-router"
@@ -550,7 +559,7 @@ PLAN_ONE="$RUN_OUT"
 assert_eq "a computable plan exits 0"                 "$RUN_RC" "0"
 assert_eq "the plan declares its command"             "$(jget '.extra.plan.command')" "update"
 assert_eq "the plan carries a stable identity"        "$(jget '.extra.plan.plan_identity | startswith("sha256:")')" "true"
-assert_eq "the plan covers every declared component"  "$(jget '.extra.plan.components | length')" "7"
+assert_eq "the plan covers every declared component"  "$(jget '.extra.plan.components | length')" "11"
 assert_eq "the plan says what must change"            "$(jget '.extra.plan.required_mutations')" "2"
 assert_eq "the changed managed copy is planned for replacement" \
   "$(plan_field model-router action)" "REPLACE"
@@ -577,7 +586,7 @@ assert_eq "the plan binds to the manifest state" \
   "$(jget '.extra.plan.binding.manifest_state_identity')" \
   "sha256:$(hash_of_file "$(manifest_path)")"
 assert_eq "the plan binds to every destination observation" \
-  "$(jget '.extra.plan.binding.components | length')" "7"
+  "$(jget '.extra.plan.binding.components | length')" "11"
 assert_eq "the plan binds to the prior revision" \
   "$(jget '.extra.plan.prior_revision')" "$(manifest_get '.applied_revision')"
 assert_eq "computing a plan changes nothing at all" "$(fingerprint_tree "$HOMEDIR")" "$FP_BEFORE"
@@ -622,7 +631,7 @@ BINDING_ONE="$AFK_PLAN_BINDING"
 # and would then also compare equal to itself at the mutation boundary, however
 # far the installation moved. So the coverage is asserted before the stability.
 assert_eq "the binding covers every declared component" \
-  "$(printf '%s' "$BINDING_ONE" | jq -r '.components | length')" "7"
+  "$(printf '%s' "$BINDING_ONE" | jq -r '.components | length')" "11"
 assert_eq "and every bound component carries its path observation" \
   "$(printf '%s' "$BINDING_ONE" | jq -r '[.components[] | select(.path_observation == null)] | length')" "0"
 afk_plan_binding_compute
@@ -660,7 +669,7 @@ assert_eq "the manifest records the repository identity" \
   "$(manifest_get '.repository.identity')" \
   "rootcommit:$(git -C "$CHECKOUT" rev-list --max-parents=0 HEAD | tail -n1)"
 assert_eq "every observable managed component is now owned" \
-  "$(manifest_get '.components | keys | length')" "6"
+  "$(manifest_get '.components | keys | length')" "10"
 assert_eq "machine-local state is NOT claimed as kit content" \
   "$(manifest_get '.components["model-router-config"] // "absent"')" "absent"
 assert_eq "adopting changed no managed content" \
@@ -1437,7 +1446,7 @@ if git init -q --object-format=sha256 "$SC/sha256co" >/dev/null 2>&1; then
   mkdir -p "$CHECKOUT"
   GIT_DEFAULT_HASH=sha256 git init -q --object-format=sha256 "$CHECKOUT" >/dev/null 2>&1
   # Rebuild the canonical content inside the sha256 repository.
-  mkdir -p "$CHECKOUT/lifecycle" "$CHECKOUT/files/model-router/scripts" \
+  mkdir -p "$CHECKOUT/adapters" "$CHECKOUT/bin" "$CHECKOUT/lib" "$CHECKOUT/lifecycle" "$CHECKOUT/files/model-router/scripts" \
            "$CHECKOUT/files/humanizer/skills/humanizer"
   cat > "$CHECKOUT/lifecycle/kit.json" <<'JSON'
 {
@@ -1446,7 +1455,7 @@ if git init -q --object-format=sha256 "$SC/sha256co" >/dev/null 2>&1; then
   "state_schema_version": "1.0",
   "result_schema_version": "1.0",
   "default_branch": "master",
-  "managed_inputs": ["files", "lifecycle"]
+  "managed_inputs": ["adapters", "bin", "lib", "files", "lifecycle"]
 }
 JSON
   printf 'model-router skill v1\n' > "$CHECKOUT/files/model-router/SKILL.md"
@@ -1457,6 +1466,10 @@ JSON
   printf 'humanizer inner skill v1\n' > "$CHECKOUT/files/humanizer/skills/humanizer/SKILL.md"
   printf 'policy line one\npolicy line two\n' > "$CHECKOUT/files/claude-global-CLAUDE.md"
   printf 'codex guidance v1\n' > "$CHECKOUT/files/codex-AGENTS.md"
+  printf 'runtime adapter v1\n' > "$CHECKOUT/adapters/README"
+  printf 'runtime executable v1\n' > "$CHECKOUT/bin/agent-flow-kit"
+  printf 'runtime library v1\n' > "$CHECKOUT/lib/afk-common.sh"
+  printf '{"schema":"test-release-policy/1"}\n' > "$CHECKOUT/lifecycle/release-policy.json"
   git -C "$CHECKOUT" symbolic-ref HEAD refs/heads/master >/dev/null 2>&1
   git_commit_all "$CHECKOUT" "canonical v1"
   HEAD_LEN="$(git -C "$CHECKOUT" rev-parse HEAD | tr -d '\n' | wc -c | tr -d ' ')"
