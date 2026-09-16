@@ -137,7 +137,8 @@ SC_SCRIPTS=("$DISPATCH" "$MAKE_STAMP" "$USAGE_CHECK" "$GH_HEALTH" \
             "$KIT_ROOT/adapters/publish-runtime.sh" \
             "$KIT_ROOT/adapters/refresh-status-cache.sh" \
             "$KIT_ROOT/adapters/render-status.sh" \
-            "$KIT_ROOT/adapters/runtime-scope.sh")
+            "$KIT_ROOT/adapters/runtime-scope.sh" \
+            "$KIT_ROOT/adapters/manage-core.sh")
 # The lifecycle surface. Checked at warning level and above, with two codes
 # excluded for a structural reason rather than a stylistic one: the lifecycle
 # files are always sourced together and share one result model, so a variable
