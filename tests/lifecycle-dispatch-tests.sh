@@ -61,9 +61,45 @@ assert_contains() { if [[ "$2" == *"$3"* ]]; then ok "$1"; else bad "$1" "missin
 assert_file()     { if [[ -e "$2" ]]; then ok "$1"; else bad "$1" "missing: $2"; fi; }
 assert_no_file()  { if [[ -e "$2" ]]; then bad "$1" "still present: $2"; else ok "$1"; fi; }
 
+attempt_projection() {
+  bash -c '. "$1"; attempt_result_projection "$2" "$3" "$4" "$5"' \
+    _ "$KIT_ROOT/files/model-router/scripts/dispatch.sh" "$@"
+}
+
 # ===========================================================================
 head1 "0. Monitor primitives (lib sourced, nothing executed)"
 # ===========================================================================
+
+# The dispatcher result is a conjunction, not a synonym for its repository
+# gates. Exercise the production projection in a subprocess because sourcing
+# dispatch.sh here would enable `set -e` for the rest of this scenario suite.
+ATTEMPT="$(attempt_projection "" true 1 false)"
+assert_eq "a nonzero harness exit cannot become done when gates pass" \
+  "$(jq -r .status <<<"$ATTEMPT")" "gates_failed"
+assert_eq "the failed harness exit is retained in the thin result" \
+  "$(jq -r .launch.harness_exit <<<"$ATTEMPT")" "1"
+
+ATTEMPT="$(attempt_projection "" true 0 true)"
+assert_eq "an explicit harness error cannot become done when gates pass" \
+  "$(jq -r .status <<<"$ATTEMPT")" "gates_failed"
+assert_eq "the error-envelope path retains the zero process exit" \
+  "$(jq -r .launch.harness_exit <<<"$ATTEMPT")" "0"
+
+ATTEMPT="$(attempt_projection "" true 0 false)"
+assert_eq "zero exit plus no harness error plus passing gates is done" \
+  "$(jq -r .status <<<"$ATTEMPT")" "done"
+assert_eq "the successful process exit is retained in the thin result" \
+  "$(jq -r .launch.harness_exit <<<"$ATTEMPT")" "0"
+
+ATTEMPT="$(attempt_projection continuation_required true 1 true)"
+assert_eq "a validated continuation remains continuation_required" \
+  "$(jq -r .status <<<"$ATTEMPT")" "continuation_required"
+assert_eq "continuation still retains the observed harness exit" \
+  "$(jq -r .launch.harness_exit <<<"$ATTEMPT")" "1"
+
+ATTEMPT="$(attempt_projection done true 9 true)"
+assert_eq "an unvalidated preexisting status cannot bypass attempt failure" \
+  "$(jq -r .status <<<"$ATTEMPT")" "gates_failed"
 
 # shellcheck source=../lib/afk-common.sh
 . "$KIT_ROOT/lib/afk-common.sh"
@@ -156,7 +192,7 @@ git_commit_all() { git -C "$1" add -A >/dev/null 2>&1
 
 make_checkout() {
   local d="$1"
-  mkdir -p "$d/lifecycle" "$d/files/model-router/scripts" "$d/files/humanizer/skills/humanizer"
+  mkdir -p "$d/adapters" "$d/bin" "$d/lib" "$d/lifecycle" "$d/files/model-router/scripts" "$d/files/humanizer/skills/humanizer"
   cat > "$d/lifecycle/kit.json" <<'JSON'
 {
   "kit_id": "agent-flow-kit",
@@ -164,7 +200,7 @@ make_checkout() {
   "state_schema_version": "1.0",
   "result_schema_version": "1.0",
   "default_branch": "master",
-  "managed_inputs": ["files", "lifecycle"]
+  "managed_inputs": ["adapters", "bin", "lib", "files", "lifecycle"]
 }
 JSON
   printf 'model-router skill v1\n' > "$d/files/model-router/SKILL.md"
@@ -175,6 +211,10 @@ JSON
   printf 'humanizer inner skill v1\n' > "$d/files/humanizer/skills/humanizer/SKILL.md"
   printf 'policy line one\n' > "$d/files/claude-global-CLAUDE.md"
   printf 'codex guidance v1\n' > "$d/files/codex-AGENTS.md"
+  printf 'runtime adapter v1\n' > "$d/adapters/README"
+  printf 'runtime executable v1\n' > "$d/bin/agent-flow-kit"
+  printf 'runtime library v1\n' > "$d/lib/afk-common.sh"
+  printf '{"schema":"test-release-policy/1"}\n' > "$d/lifecycle/release-policy.json"
   git init -q "$d" >/dev/null 2>&1
   git -C "$d" symbolic-ref HEAD refs/heads/master >/dev/null 2>&1
   git_commit_all "$d" "canonical v1"
@@ -259,13 +299,14 @@ durable_close_requested() { # <handle> -> 0 when the durable close intent was re
   grep -q -x -F -- "$1" "$STUB_CLOSED" 2>/dev/null
 }
 
-HOMEDIR=""; STATE=""; WATCH=""; INBOX=""; RESULTS=""
+HOMEDIR=""; STATE=""; WATCH=""; INBOX=""; RESULTS=""; MESSAGES=""
 new_scenario() { # <name> — a fresh HOME, and therefore a fresh dispatch watch
   HOMEDIR="$TMPROOT/sc-$1/home"
   STATE="$HOMEDIR/.local/state/agent-flow-kit"
   WATCH="$STATE/dispatch/watch"
   INBOX="$STATE/dispatch/inbox"
   RESULTS="$STATE/dispatch/results"
+  MESSAGES="$STATE/dispatch/messages"
   mkdir -p "$HOMEDIR"
 }
 
@@ -474,6 +515,33 @@ assert_eq "the reconciled record carries the worker's budget state" \
 assert_eq "and the status rendering projects it per Dispatch" \
   "$(printf '%s' "$RUN_OUT" | jq -r '.dispatch_monitor.dispatches[]
      | select(.id == "d-bud") | .context_budget')" "CHECKPOINT_DUE"
+assert_file "worker pressure reaches the PM through a durable message" \
+  "$MESSAGES/d-bud.del-b.json"
+assert_eq "the pressure message resumes only by canonical dispatch" \
+  "$(jq -r '.kind+":"+.budget_state+":"+.continuation_dispatch' "$MESSAGES/d-bud.del-b.json")" \
+  "WORKER_CONTEXT_PRESSURE:CHECKPOINT_DUE:canonical"
+deliver del-b d-bud worker_done gates_failed CHECKPOINT_DUE
+run_afk monitor --json --reconcile
+assert_eq "a replay cannot enqueue a duplicate pressure message" \
+  "$(count_files "$MESSAGES" '*.json')" "1"
+new_scenario budget_message_failure
+register "$(descriptor d-bud-fail TASK-BF term-bud-fail - - - - - false false false)"
+rm -rf -- "$MESSAGES"; printf 'not a directory\n' >"$MESSAGES"
+deliver del-bf d-bud-fail worker_done gates_failed CONTINUATION_REQUIRED
+run_afk monitor --json --reconcile
+assert_eq "pressure write failure leaves the watch unacknowledged" \
+  "$(rec d-bud-fail '.acknowledged')" "false"
+assert_eq "pressure write failure leaves delivery retryable" \
+  "$(count_files "$INBOX" '*.json')" "1"
+assert_eq "pressure write failure is loud" "$(count_findings RESULT_NOT_RETAINED)" "1"
+rm -f -- "$MESSAGES"; mkdir -p "$MESSAGES"
+run_afk monitor --json --reconcile
+assert_eq "pressure retry acknowledges only after durable message" \
+  "$(rec d-bud-fail '.acknowledged')" "true"
+assert_eq "pressure retry removes delivery after acknowledgement" \
+  "$(count_files "$INBOX" '*.json')" "0"
+assert_file "pressure retry retained exact durable message" \
+  "$MESSAGES/d-bud-fail.del-bf.json"
 new_scenario budget_bounded
 register "$(descriptor d-bud2 TASK-B2 term-bud2 - - - - - false false false)"
 deliver del-b2 d-bud2 worker_done done BANANA
@@ -604,6 +672,20 @@ assert_eq "a delivery for an unknown Dispatch is loud" "$(count_findings DISPATC
 assert_no_file "and no watch record is invented from it" "$WATCH/d-nobody.json"
 assert_file "the delivery stays on disk for its owner" "$INBOX/del-orphan.json"
 assert_eq "and the pass that could not place it still needs a human" "$RUN_RC" "2"
+
+# delivery_id is an untrusted path fragment just like dispatch_id. Reject it
+# before constructing a pressure-message path or retaining any result.
+new_scenario unsafe-delivery-id
+register "$(descriptor d-unsafe-delivery TASK-unsafe term-unsafe - - - - - false false false)"
+mkdir -p "$INBOX"
+jq -nc '{schema_version:"1.0",delivery_id:"../escape",dispatch_id:"d-unsafe-delivery",
+  kind:"worker_done",result:{status:"done",budget:{state:"CHECKPOINT_DUE"}}}' >"$INBOX/del-unsafe.json"
+run_afk monitor --json --reconcile
+assert_eq "unsafe delivery id is rejected before path construction" "$(count_findings DELIVERY_UNREADABLE)" "1"
+assert_eq "unsafe delivery id cannot acknowledge its Dispatch" "$(rec d-unsafe-delivery '.acknowledged')" "false"
+assert_no_file "unsafe delivery id retains no result" "$RESULTS/d-unsafe-delivery.result.json"
+assert_file "unsafe delivery stays retryable for its owner" "$INBOX/del-unsafe.json"
+assert_eq "unsafe delivery id leaves no pressure message" "$(count_files "$STATE/dispatch/messages" '*.json')" "0"
 
 # Escalation completes the watch and hands the decision to a human.
 new_scenario escalation
@@ -1238,12 +1320,11 @@ assert_eq "every cleanup disposition is inside the published set" \
        | . as $d | select(($s | index($d)) == null)] | length')" "0"
 
 # ===========================================================================
-head1 "10. The coordinator's hand-over on the monitor pass (lane D)"
+head1 "10. The coordinator's hand-over is isolated from the monitor pass"
 # ===========================================================================
 #
-# A PM continuation is a LOUD owner action and never a launch. The reconcile
-# pass gains one additive step that reads and writes only under pm/, so the
-# worker watch it runs beside is provably untouched by it.
+# A PM continuation is a LOUD owner action and never a launch. The worker
+# monitor has no generic authority to reconcile it.
 
 # AC-4, grep half: the half that catches a launcher creeping back onto a path
 # no scenario reaches. The behavioural half is the whole scenario below.
@@ -1251,11 +1332,15 @@ PM_SRC="$(sed -n "/coordinator.s own context budget/,/^# --- verification/p" "$K
 PM_SRC="$PM_SRC$(sed -n '/pm-checkpoint)/,/return \$?/p' "$KIT_ROOT/bin/agent-flow-kit")"
 assert_ne "the PM engine is really the text being searched" "$(printf '%s' "$PM_SRC" | wc -l | tr -d ' ')" "0"
 for launcher in 'terminal create' 'worker-start' 'worker_start' 'terminal_create'; do
-  assert_absent "no PM path calls [$launcher]" "$PM_SRC" "$launcher"
+  assert_eq "no PM path calls [$launcher]" "$(grep -F -c -- "$launcher" <<<"$PM_SRC" || true)" "0"
 done
 
 new_scenario pm
 PMD="$STATE/pm"; mkdir -p "$PMD"
+# This lane asserts monitor/PM separation against one synthetic handoff. Keep
+# its historical fixture path through the explicit override rather than the
+# production worktree-scoped default.
+export AFK_PM_DIR="$PMD"
 RESUME='agent-flow-kit status --json  # then resume AFK-PORT-1.5 lane D'
 jq -nc --arg r "$RESUME" '{schema:"afk-pm-continuation/1", decisions:["lane closed"],
   envelope_actions:[], open_escalations:[], budget_state:{pm_continuations:0},
@@ -1279,23 +1364,13 @@ assert_contains "and carries the resume instruction verbatim" "$PMF" "$RESUME"
 assert_contains "next_safe_action hands the human the command, and no verb runs it" \
   "$(jget '.next_safe_action')" "$RESUME"
 
-# --- AC-5: the successor reconciles it -------------------------------------
-run_afk monitor --json --reconcile --session pm-successor-2
-assert_eq "the reconcile pass records the hand-over" \
-  "$(count_findings PM_CONTINUATION_RECONCILED)" "1"
-assert_eq "binding the successor session that consumed it" \
-  "$(jq -r '.successor_session' "$PMD/continuation.reconciled.json")" "pm-successor-2"
-assert_eq "against the digest of the artifact it consumed" \
-  "$(jq -r '.artifact_sha256' "$PMD/continuation.reconciled.json")" \
-  "sha256:$(sha256sum "$PMD/continuation.json" | cut -d' ' -f1)"
-assert_eq "and counts it toward the epic budget Story 1.6 consumes" \
-  "$(jq -r '.pm_continuations' "$PMD/budget-state.json")" "1"
-run_afk status --json
-assert_eq "the condition is cleared"            "$(count_findings PM_CONTINUATION_REQUIRED)" "0"
-assert_eq "and status stops demanding an owner" "$(jget '.extra.pm_budget.needs_human')" "false"
-run_afk monitor --json --reconcile --session pm-successor-3
-assert_eq "reconciling again counts nothing twice" \
-  "$(jq -r '.pm_continuations' "$PMD/budget-state.json")" "1"
+# Only the successor-bound pm-continue transition may reconcile it.
+run_afk monitor --json --reconcile
+assert_eq "monitor does not reconcile a PM hand-over" "$(count_findings PM_CONTINUATION_RECONCILED)" "0"
+assert_eq "monitor leaves the continuation outstanding" "$(count_findings PM_CONTINUATION_REQUIRED)" "1"
+assert_no_file "monitor wrote no PM reconciliation" "$PMD/continuation.reconciled.json"
+run_afk monitor --json --reconcile --session no-longer-supported
+assert_eq "the generic successor-session surface is rejected" "$RUN_RC" "1"
 
 # The whole coordinator hand-over left the worker watch exactly as it was.
 assert_eq "the in-flight worker watch record is byte-identical throughout" \
@@ -1309,7 +1384,8 @@ run_afk monitor --json --reconcile
 assert_eq "an invalid continuation artifact is refused, not reconciled" \
   "$(count_findings PM_CONTINUATION_ARTIFACT_INVALID)" "1"
 assert_eq "and nothing was counted for it" \
-  "$(jq -r '.pm_continuations' "$PMD/budget-state.json")" "1"
+  "$(jq -r '.pm_continuations // 0' "$PMD/budget-state.json" 2>/dev/null || printf 0)" "0"
+unset AFK_PM_DIR
 
 # ===========================================================================
 if (( SKIPPED > 0 )); then
