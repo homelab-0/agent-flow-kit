@@ -1,0 +1,20 @@
+{
+  "schema": "afk-release-policy/2",
+  "trust": {
+    "remote_url": "https://github.com/jlengelbrecht/agent-flow-kit.git",
+    "ref": "refs/heads/master",
+    "default_branch": "master",
+    "repository_root_commit": "d74e7f9542cfe2731e09a0ff5c5e1b4cf325062f"
+  },
+  "fetch_timeout_seconds": 20,
+  "qualification_timeout_seconds": 30,
+  "check_interval_seconds": 900,
+  "offline_fallback": "RETAIN_PROVEN_LAST_GOOD",
+  "rollout": {
+    "mode": "cohort_metadata_only",
+    "cohorts": ["canary", "wave"],
+    "authoritative_promotion": false,
+    "explanation": "Every enrolled host follows the same canonical ref automatically. Cohort is retained as honest observation metadata; this client does not claim that a canary gates a later wave."
+  },
+  "automatic_rollback_bypass": false
+}

@@ -74,7 +74,7 @@ git_commit_all() { # <dir> <message>
 # source inputs, and a real Git history.
 make_checkout() {
   local d="$1" ver="${2:-1.0}"
-  mkdir -p "$d/lifecycle" "$d/files/model-router/scripts" "$d/files/humanizer/skills/humanizer"
+  mkdir -p "$d/adapters" "$d/bin" "$d/lib" "$d/lifecycle" "$d/files/model-router/scripts" "$d/files/humanizer/skills/humanizer"
   cat > "$d/lifecycle/kit.json" <<JSON
 {
   "kit_id": "agent-flow-kit",
@@ -82,7 +82,7 @@ make_checkout() {
   "state_schema_version": "1.0",
   "result_schema_version": "1.0",
   "default_branch": "master",
-  "managed_inputs": ["files", "lifecycle"]
+  "managed_inputs": ["adapters", "bin", "lib", "files", "lifecycle"]
 }
 JSON
   printf 'model-router skill v1\n' > "$d/files/model-router/SKILL.md"
@@ -93,6 +93,10 @@ JSON
   printf 'humanizer inner skill v1\n' > "$d/files/humanizer/skills/humanizer/SKILL.md"
   printf 'policy line one\npolicy line two\n' > "$d/files/claude-global-CLAUDE.md"
   printf 'codex guidance v1\n' > "$d/files/codex-AGENTS.md"
+  printf 'runtime adapter v1\n' > "$d/adapters/README"
+  printf 'runtime executable v1\n' > "$d/bin/agent-flow-kit"
+  printf 'runtime library v1\n' > "$d/lib/afk-common.sh"
+  printf '{"schema":"test-release-policy/1"}\n' > "$d/lifecycle/release-policy.json"
   git init -q "$d" >/dev/null 2>&1
   git -C "$d" symbolic-ref HEAD refs/heads/master >/dev/null 2>&1
   git_commit_all "$d" "canonical v1"
@@ -134,6 +138,11 @@ new_scenario() { # <name>
 install_kit() {
   local h="$1" c="$2"
   mkdir -p "$h/.agents/skills" "$h/.claude/skills" "$h/.codex"
+  cp -R "$c/adapters" "$h/.agents/skills/afk-runtime"
+  mkdir -p "$h/.agents/skills/afk-runtime/bin" "$h/.agents/skills/afk-runtime/lib" "$h/.agents/skills/afk-runtime/lifecycle"
+  cp -R "$c/bin/." "$h/.agents/skills/afk-runtime/bin/"
+  cp -R "$c/lib/." "$h/.agents/skills/afk-runtime/lib/"
+  cp "$c/lifecycle/release-policy.json" "$h/.agents/skills/afk-runtime/lifecycle/release-policy.json"
   cp -R "$c/files/model-router" "$h/.agents/skills/model-router"
   cp -R "$c/files/humanizer" "$h/.agents/skills/humanizer"
   ln -s "$h/.agents/skills/model-router" "$h/.claude/skills/model-router"
@@ -474,7 +483,7 @@ assert_eq "kit declaration read"                 "$(jget '.checkout.kit_id')" "a
 assert_eq "the declaration is complete"          "$(jget '.checkout.declaration')" "COMPLETE"
 assert_eq "clean checkout is an eligible source" "$(jget '.source_eligibility.state')" "ELIGIBLE"
 assert_eq "clean checkout allows mutation"       "$(jget '.source_eligibility.mutation_allowed')" "true"
-assert_eq "managed inputs are carried as a list" "$(jget '.checkout.managed_inputs | length')" "2"
+assert_eq "managed inputs are carried as a list" "$(jget '.checkout.managed_inputs | length')" "5"
 
 # Directory naming is not evidence of identity (FR-29).
 REAL_CHECKOUT="$CHECKOUT"
@@ -1881,6 +1890,10 @@ head1 "14. The coordinator's own artifacts (lane D)"
 # A PM artifact carries pointers and bounded summaries, is secret-free by rule,
 # and is settled atomically: a refused submission leaves what is on disk as it was.
 PMD="$HOMEDIR/.local/state/agent-flow-kit/pm"
+# This section intentionally owns one synthetic artifact location. Pin it so
+# the assertions verify the explicit override contract rather than depending
+# on the caller worktree namespace selected by the production default.
+export AFK_PM_DIR="$PMD"
 pm_doc() { # [extra jq object]  -> the submitted document
   local extra="${1:-}"; [[ -n "$extra" ]] || extra='{}'
   jq -nc "{schema:\"afk-pm-checkpoint/1\", decisions:[\"story dispatched\"], envelope_actions:[], open_escalations:[],
@@ -1950,6 +1963,7 @@ run_afk pm-checkpoint --json
 assert_eq "pm-checkpoint without --write is a usage failure" "$RUN_RC" "1"
 run_afk status --write "$TMPROOT/pm-sub.json"
 assert_eq "and --write means nothing to status" "$RUN_RC" "1"
+unset AFK_PM_DIR
 
 # ===========================================================================
 printf '\n\033[1m%d passed, %d failed\033[0m\n' "$PASS" "$FAIL"

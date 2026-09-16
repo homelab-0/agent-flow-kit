@@ -1,11 +1,12 @@
 # HANDOFF: set up the agent flow on this machine
 
-You are a Claude Code session (frontier model preferred) installing a portable
-autonomous-development flow. It works with **any project that uses BMAD** — nothing
+You are an onboarding session in Claude Code, Codex, or OpenCode installing a
+portable autonomous-development flow. It works with **any project that uses BMAD** — nothing
 in it is tied to one product. Be idempotent — re-running must be safe. Verify before
-acting; never guess. Where this machine differs from the reference environments
-(Linux devbox, macOS nix-managed Mac mini — both proven), adapt and record the
-difference in the final report.
+acting; never guess. Linux lifecycle and automatic release reconciliation are
+proven on the reference devbox. macOS presentation is supported, but its
+automatic updater remains blocked on a qualified candidate-sandbox backend;
+adapt and record the difference in the final report.
 
 ## Ground rules (billing/safety invariants — never bend these)
 
@@ -30,12 +31,17 @@ difference in the final report.
 
 ## Phase 0 — preflight (report, fix nothing except yq)
 
-1. `command -v yq jq curl claude codex orca agent-stamp-validate op bunx uvx` —
-   note missing. yq must be mikefarah v4+ (installing yq to a PATH dir IS yours
+1. `command -v yq jq curl claude codex opencode hermes orca agent-stamp-validate op bunx uvx bwrap flock node realpath sha256sum timeout` —
+   note missing. Claude Code, Codex, and OpenCode are first-class coding harnesses;
+   Hermes is the remote human front door and is not a dispatchable worker. yq
+   must be mikefarah v4+ (installing yq to a PATH dir IS yours
    to do if absent). `agent-stamp-validate` is built from the control-plane repo
    (`services/agent-router`); without it dispatch cannot validate a stamp and
    will refuse every launch, which is the correct behaviour, not a workaround
-   to route around.
+   to route around. Linux release qualification also requires `bwrap`, `flock`,
+   `node`, `realpath`, a SHA-256 tool, and GNU `timeout`. macOS presentation
+   requires Homebrew `gtimeout` when `/usr/bin/timeout` is absent; automatic
+   release reconciliation remains unqualified there regardless.
 2. Auth MODE — **not liveness.** `claude auth status` (expect `authMethod:
    claude.ai`, `apiProvider: firstParty`); `codex doctor` (auth section).
    These report what kind of credential record EXISTS. They do NOT prove it
@@ -65,19 +71,58 @@ difference in the final report.
    into any file in this kit — `subscriptions.yaml` names the environment
    variable, never its value.
 
-## Phase 1 — install the model-router kit
+## Phase 1 — enroll the lifecycle and runtime
 
-    cp -r files/model-router ~/.agents/skills/model-router
-    ln -s ~/.agents/skills/model-router ~/.claude/skills/model-router   # if absent
-    chmod +x ~/.agents/skills/model-router/scripts/*.sh
+Use a clean checkout of this repository. Let the lifecycle engine inspect the
+existing machine and compute one complete plan; do not copy individual files over
+an existing installation:
 
-Scripts shipped: `dispatch.sh` (validate → place → Orca-visible launch → gates →
-thin result), `make-stamp.sh` (accepted `/v1/route` decision → immutable stamp),
-`usage-check.sh` (observability only), `github-health.sh`.
+    bash bin/agent-flow-kit adopt --inspect
+    bash bin/agent-flow-kit adopt --plan
+    bash bin/agent-flow-kit adopt --approve-plan sha256:<exact-plan-identity>
+    bash bin/agent-flow-kit verify
 
-`~/.agents/skills` is the universal-skills home (codex reads it too); `~/.claude/
-skills` entries are symlinks by convention. If a copy already exists, diff first —
-the owner's local edits win; flag conflicts.
+Adoption installs the router skill plus the stable AFK runtime under
+`~/.agents/skills/afk-runtime`. It preserves machine-local router configuration,
+existing hooks, Hindsight configuration, Orca configuration, and credential
+delivery. A conflict is reported for owner action; it is never overwritten.
+
+Compose only the harnesses actually installed on this machine:
+
+    ~/.agents/skills/afk-runtime/manage.sh install claude
+    ~/.agents/skills/afk-runtime/manage.sh install codex
+    ~/.agents/skills/afk-runtime/manage.sh install opencode
+
+These registrations add the AFK status/session-start surfaces without duplicating
+or replacing Hindsight and user-owned hooks/plugins. On Linux, Claude and Codex
+SessionStart and OpenCode startup call the stable `afk-session-start` gate. It
+checks AFK's fixed public `master` ref, qualifies a clean isolated candidate,
+applies and verifies the exact lifecycle plan, then starts work. It never pulls,
+resets, stashes, or switches a development clone. Offline work continues only
+from a locally re-proven last-good release and reports the outage explicitly.
+On macOS the status and context-pressure surfaces remain installed, but Claude
+and Codex omit the blocking updater hook and OpenCode reports
+`MACOS_SANDBOX_PENDING` without spawning it. Do not claim macOS auto-update is
+qualified or execute candidate code outside a sandbox.
+
+An AFK PM starts each coordinator session from its installed runtime and records
+the exact current Orca terminal before accepting work:
+
+    ~/.agents/skills/afk-runtime/bin/afk-session-start --harness <claude|codex|opencode>
+    agent-flow-kit pm-start --harness <claude|codex|opencode>
+
+The next native harness event binds that registration to the exact session.
+Thereafter the installed policy makes the PM checkpoint at `CHECKPOINT_DUE` and
+invoke `pm-continue` at `CONTINUATION_REQUIRED` without another human prompt.
+Only an acknowledged same-harness successor can close the proven old terminal.
+Routed workers receive their immutable context thresholds from `dispatch.sh`;
+they notify the owning PM and stop at a canonical continuation boundary instead
+of launching a successor themselves.
+
+Scripts shipped with the router include `dispatch.sh` (validate → place →
+Orca-visible launch → gates → thin result), `make-stamp.sh` (accepted
+`/v1/route` decision → immutable stamp), `usage-check.sh` (observability only),
+and `github-health.sh`.
 
 ## Phase 2 — humanizer skill (required by the PR language law)
 
@@ -123,6 +168,10 @@ overwrite — the machine may have its own content, and machine-specific blocks
 owned by other tools (e.g. memory systems) must not be copied. Sections that MUST
 land verbatim (they are the flow's law):
 
+- "Memory (Hindsight)" — this supersedes legacy OMEGA behavior without
+  deleting, migrating, or synchronizing host-owned OMEGA data or credentials
+- "Product ownership"
+- "AFK session continuity"
 - "Model & effort routing (BMAD flow)" — incl. PM-session policy + handoff templates
 - "Epic source declaration"
 - "PM merge authority (ACTIVE)" — incl. Post-PR triage loop, PR language law,
@@ -169,6 +218,11 @@ no re-registration needed.
        # The named file MUST exist under the launcher's agent_dir or dispatch
        # refuses — persona injection never silently no-ops.
        persona: dev
+       # memory_mode = advisory (default) | required | blind | off.
+       # Use blind for an independent reviewer that must not receive prior
+       # implementation/review memory. Hindsight never outranks current files,
+       # route stamps, approvals, or gate evidence.
+       memory_mode: advisory
        # gates: the exact commands that define done. An EMPTY list is INVALID:
        # it cannot tell done from claimed-done, and dispatch refuses to run.
        gates:
@@ -209,11 +263,12 @@ no re-registration needed.
 
 ## Phase 9 — smoke tests
 
-1. **Kit self-tests (no network, no harness launch):** `tests/run-tests.sh` from
+1. **Kit self-tests (no provider call, no harness launch):** `tests/run-tests.sh` from
    the kit checkout. It shellchecks every script, asserts the generated harness
    commands against both frozen launch contracts, and drives dispatch.sh through
-   every refusal path with stubbed orca/validator/router binaries. All green is
-   the bar; investigate any failure before installing.
+   every refusal path with stubbed orca/validator/router binaries. The release
+   tests use a local fake Git remote; they do not contact the canonical repo. All
+   green is the bar; investigate any failure before installing.
 2. **Router round-trip (read-only):** POST a throwaway RouteRequest and inspect
    the recommendation without stamping it:
    `curl -sS -X POST "$ROUTER/v1/route" -H "Authorization: Bearer $AGENT_ROUTER_TOKEN"

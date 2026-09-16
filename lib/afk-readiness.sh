@@ -70,11 +70,12 @@ AFK_SUPPORTED_VALIDATOR_CONTRACT_MAJOR="1"
 AFK_SUPPORTED_TARGET_WIRING_MAJOR="1"
 AFK_SUPPORTED_ORCH_STATE_MAJOR="1"
 
-# Harnesses this kit knows how to launch. Both are first class and both are
+# Harnesses this kit knows how to launch. All are first class and are
 # individually optional (FR-52): one healthy complete path is enough for the
 # host, and an unavailable harness blocks only the routes that selected it.
 AFK_APPROVED_HARNESSES="claude
-codex"
+codex
+opencode"
 
 # The Orca capabilities a supervised launch actually depends on (FR-68).
 AFK_REQUIRED_ORCA_CAPABILITIES="worktree-ownership
@@ -108,9 +109,13 @@ OPENAI_BASE_URL"
 AFK_ORCA_BIN="${AFK_ORCA_BIN:-orca}"
 AFK_CLAUDE_BIN="${AFK_CLAUDE_BIN:-claude}"
 AFK_CODEX_BIN="${AFK_CODEX_BIN:-codex}"
+AFK_OPENCODE_BIN="${AFK_OPENCODE_BIN:-opencode}"
 AFK_VALIDATOR_BIN="${AFK_VALIDATOR_BIN:-agent-stamp-validate}"
 AFK_CURL_BIN="${AFK_CURL_BIN:-curl}"
 AFK_ROUTER_TOKEN_ENV="${AFK_ROUTER_TOKEN_ENV:-AGENT_ROUTER_TOKEN}"
+AFK_READINESS_KIT_ROOT="${AFK_KIT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+AFK_HARNESS_INVENTORY_BIN="${AFK_HARNESS_INVENTORY_BIN:-$AFK_READINESS_KIT_ROOT/files/model-router/scripts/harness-inventory.sh}"
+AFK_HARNESS_BINDINGS="${AGENT_FLOW_HARNESS_BINDINGS:-${AFK_HARNESS_BINDINGS:-$AFK_READINESS_KIT_ROOT/files/model-router/harness-bindings.yaml}}"
 
 # The orchestration state document is CONSUMED, never produced (FR-90). The
 # lifecycle neither creates nor repairs it.
@@ -157,7 +162,9 @@ AFK_RD_ORCA="NOT_EVALUATED"
 AFK_RD_VALIDATOR="NOT_EVALUATED"
 AFK_RD_CLAUDE_PATH="NOT_EVALUATED"
 AFK_RD_CODEX_PATH="NOT_EVALUATED"
+AFK_RD_OPENCODE_PATH="NOT_EVALUATED"
 AFK_RD_ROUTER="NOT_EVALUATED"
+AFK_BINDING_INVENTORY_JSON='{}'
 
 # Whether a transient live dependency was observed unavailable during this run.
 # It is the difference between "we proved not-ready" and "we could not look".
@@ -196,7 +203,9 @@ afk_readiness_reset() {
   AFK_RD_VALIDATOR="NOT_EVALUATED"
   AFK_RD_CLAUDE_PATH="NOT_EVALUATED"
   AFK_RD_CODEX_PATH="NOT_EVALUATED"
+  AFK_RD_OPENCODE_PATH="NOT_EVALUATED"
   AFK_RD_ROUTER="NOT_EVALUATED"
+  AFK_BINDING_INVENTORY_JSON='{}'
   AFK_RD_LIVE_UNAVAILABLE="false"
   AFK_PROBE_UNBOUNDED_REPORTED="false"
   AFK_PROBE_OUT=""; AFK_PROBE_PARSE_OUT=""
@@ -439,6 +448,7 @@ afk_harness_binary() { # <harness>
   case "$1" in
     claude) printf '%s' "$AFK_CLAUDE_BIN" ;;
     codex)  printf '%s' "$AFK_CODEX_BIN" ;;
+    opencode) printf '%s' "$AFK_OPENCODE_BIN" ;;
     *)      printf '' ;;
   esac
 }
@@ -600,8 +610,11 @@ afk_live_facts_declared() {
     router_synthetic_route \
     claude_native_session \
     codex_native_session \
+    opencode_native_session \
     claude_capability \
     codex_capability \
+    opencode_capability \
+    harness_binding_inventory \
     claude_workspace_trust \
     orca_runtime \
     orca_capability \
@@ -641,12 +654,13 @@ afk_resolve_executable() { # <binary> -> prints the resolved path
 
 afk_evaluate_executables() {
   local name bin resolved
-  for name in orca validator claude codex; do
+  for name in orca validator claude codex opencode; do
     case "$name" in
       orca)      bin="$AFK_ORCA_BIN" ;;
       validator) bin="$AFK_VALIDATOR_BIN" ;;
       claude)    bin="$AFK_CLAUDE_BIN" ;;
       codex)     bin="$AFK_CODEX_BIN" ;;
+      opencode)  bin="$AFK_OPENCODE_BIN" ;;
       *)         bin="" ;;
     esac
     if resolved="$(afk_resolve_executable "$bin")"; then
@@ -1004,7 +1018,8 @@ afk_load_stamp() {
 # It answers only "can THIS executor drive that pair", never "is that pair
 # allowed" — the catalog already answered the second question.
 #
-# The adapter implements two classes and this mirrors both: native vendor
+# The adapter implements native vendor execution, Claude gateway execution,
+# and exact OpenCode bindings from the launcher capability registry.
 # subscription execution on either approved harness, and gateway-backed local
 # execution on claude — a placement-required profile that draws on no
 # entitlement pool and is free. Readiness judges those two conditions from the
@@ -1013,10 +1028,30 @@ afk_load_stamp() {
 # only at dispatch, where the trusted document is in hand. Readiness therefore
 # never claims launch authority for this pair, and never did: ROUTE_READY stays
 # NOT_EVALUATED offline and the adapter revalidates immediately before launch.
+afk_binding_declared() { # <harness> <profile> <pool> <cost> [effort]
+  [[ -f "$AFK_HARNESS_BINDINGS" ]] || return 1
+  yq -o=json '.bindings' "$AFK_HARNESS_BINDINGS" 2>/dev/null | jq -e \
+    --arg h "$1" --arg p "$2" --arg pool "$3" --arg cost "$4" --arg effort "${5:-}" '
+      [.[] | select(.harness==$h and .model_profile==$p and ((.entitlement_pool // "")==$pool)
+        and .cost_class==$cost and (($effort=="") or (.efforts[$effort].model|type)=="string")
+        and (($effort=="") or (.efforts[$effort].variant|type)=="string"))] | length == 1
+    ' >/dev/null
+}
+
 afk_launch_contract_reason() { # <harness> <profile> <placement_required> [pool] [cost_class]
   local pool="${4:-}" cost_class="${5:-}"
   if ! afk_list_contains "$1" "$AFK_APPROVED_HARNESSES"; then
     printf 'no launch contract for harness %s' "$1"
+    return 0
+  fi
+  if [[ "$1" == opencode ]]; then
+    if [[ "$3" == true ]]; then
+      printf 'profile %s requires placement; OpenCode declarations cover non-placement subscription execution only' "$2"
+    elif afk_binding_declared "$1" "$2" "$pool" "$cost_class" "$AFK_STAMP_EFFORT"; then
+      printf ''
+    else
+      printf 'no exact OpenCode launch binding for profile %s, pool %s, cost class %s' "$2" "${pool:-<none>}" "${cost_class:-<unset>}"
+    fi
     return 0
   fi
   if [[ "$3" == "true" ]]; then
@@ -1497,6 +1532,63 @@ afk_probe_harness() {
   esac
 }
 
+# OpenCode is multi-provider, so readiness consumes the exact short-lived
+# binding inventory instead of flattening it into one login boolean. The full
+# report contains classes and identities only; credential values are never read.
+afk_probe_binding_inventory() {
+  local report available now_epoch
+  if [[ ! -x "$AFK_HARNESS_INVENTORY_BIN" ]] || ! afk_probe_run "$AFK_HARNESS_INVENTORY_BIN" --full; then
+    AFK_RD_OPENCODE_PATH="FALSE"
+    [[ "$AFK_PROBE_STATUS" == TIMEOUT ]] && AFK_RD_LIVE_UNAVAILABLE="true"
+    afk_live_fact "opencode_capability" "UNKNOWN" "HARNESS_CAPABILITY_UNPROVEN" "CAPABILITY_PROBE" "true" "true" "${AFK_PROBE_STATUS:-inventory unavailable}"
+    afk_live_fact "opencode_native_session" "NOT_EVALUATED" "AUTH_STATUS_UNPROVEN" "AUTH_STATUS_PROBE" "false" "false" ""
+    afk_live_fact "harness_binding_inventory" "UNAVAILABLE" "HARNESS_CAPABILITY_UNPROVEN" "CAPABILITY_PROBE" "true" "true" ""
+    return 1
+  fi
+  report="$AFK_PROBE_PARSE_OUT"; AFK_PROBE_PARSE_OUT=""; AFK_PROBE_OUT=""
+  now_epoch="$(date -u +%s)"
+  if ! jq -e --argjson now "$now_epoch" '
+    keys == ["bindings","expires_at","harnesses","launch_authoritative","liveness","observed_at","schema"]
+    and .schema=="afk-harness-inventory-report/1" and .launch_authoritative==false and .liveness=="NOT_EVALUATED"
+    and ((.observed_at|fromdateiso8601) <= $now) and ((.expires_at|fromdateiso8601) > $now)
+    and (((.expires_at|fromdateiso8601)-(.observed_at|fromdateiso8601)) == 300)
+    and (.bindings|type)=="array" and (.harnesses|type)=="array"
+    and ([.harnesses[].name]|sort)==["claude","codex","devin","opencode"]
+    and all(.harnesses[]; keys==["adapter_state","binary_state","capability_state","name"]
+      and (.binary_state|IN("ABSENT","PRESENT")) and (.adapter_state|IN("SUPPORTED","UNSUPPORTED"))
+      and (.capability_state|IN("ABSENT","COMPATIBLE","INCOMPATIBLE","NOT_EVALUATED","UNKNOWN")))
+    and ([.bindings[] | [.harness,.model_profile,(.entitlement_pool // "<null>")] | @json] | unique | length)==(.bindings|length)
+    and all(.bindings[];
+      ((keys-["auth_kind","auth_provider","cost_class","efforts","entitlement_pool","funding_attestation","harness","launch_class","liveness","model_profile","physical_model","reason","state"])|length)==0
+      and (.harness|type)=="string" and (.harness|length)>0
+      and (.model_profile|type)=="string" and (.model_profile|length)>0 and has("entitlement_pool")
+      and (.state|IN("AVAILABLE","UNAVAILABLE","UNKNOWN")) and (.reason|type)=="string" and (.reason|length)>0
+      and .liveness=="NOT_EVALUATED")
+  ' <<<"$report" >/dev/null 2>&1; then
+    AFK_RD_OPENCODE_PATH="FALSE"
+    afk_live_fact "opencode_capability" "UNKNOWN" "HARNESS_CAPABILITY_UNPROVEN" "CAPABILITY_PROBE" "true" "false" "malformed inventory"
+    afk_live_fact "harness_binding_inventory" "UNKNOWN" "HARNESS_CAPABILITY_UNPROVEN" "CAPABILITY_PROBE" "true" "false" "malformed inventory"
+    return 1
+  fi
+  AFK_BINDING_INVENTORY_JSON="$(jq -c '{schema:"afk-harness-inventory/1",observed_at,expires_at,bindings:[.bindings[]|select(.state=="AVAILABLE")|{harness,model_profile,entitlement_pool}]}' <<<"$report")"
+  available="$(jq '[.bindings[]|select(.harness=="opencode" and .state=="AVAILABLE")]|length' <<<"$report")"
+  afk_live_fact "harness_binding_inventory" "AVAILABLE" "HARNESS_CAPABILITY_PROVEN" "AUTH_STATUS_PROBE" "true" "false" "$available OpenCode binding(s) available"
+  if jq -e '.harnesses[]|select(.name=="opencode" and .binary_state=="PRESENT" and .adapter_state=="SUPPORTED" and .capability_state=="COMPATIBLE")' <<<"$report" >/dev/null && (( available > 0 )); then
+    AFK_RD_OPENCODE_PATH="TRUE"
+    afk_live_fact "opencode_capability" "COMPATIBLE" "HARNESS_CAPABILITY_PROVEN" "CAPABILITY_PROBE" "true" "false" ""
+    afk_live_fact "opencode_native_session" "AVAILABLE" "AUTH_NATIVE_SUBSCRIPTION" "AUTH_STATUS_PROBE" "true" "false" "$available configured binding(s)"
+    return 0
+  fi
+  AFK_RD_OPENCODE_PATH="FALSE"
+  afk_live_fact "opencode_capability" "UNAVAILABLE" "HARNESS_CAPABILITY_UNPROVEN" "CAPABILITY_PROBE" "true" "false" ""
+  afk_live_fact "opencode_native_session" "UNAVAILABLE" "AUTH_REQUIRED" "AUTH_STATUS_PROBE" "true" "false" ""
+  return 1
+}
+
+afk_inventory_has_binding() {
+  jq -e --arg h "$1" --arg p "$2" --arg pool "$3" '[.bindings[]?|select(.harness==$h and .model_profile==$p and ((.entitlement_pool // "")==$pool))]|length==1' <<<"$AFK_BINDING_INVENTORY_JSON" >/dev/null 2>&1
+}
+
 # --- router live readiness (FR-57) ------------------------------------------
 
 afk_probe_router() {
@@ -1714,6 +1806,10 @@ afk_evaluate_route_readiness() {
     case "$AFK_STAMP_HARNESS" in
       claude) harness_state="$AFK_RD_CLAUDE_PATH" ;;
       codex)  harness_state="$AFK_RD_CODEX_PATH" ;;
+      opencode)
+        harness_state="$AFK_RD_OPENCODE_PATH"
+        if [[ "$harness_state" == TRUE ]] && ! afk_inventory_has_binding "$AFK_STAMP_HARNESS" "$AFK_STAMP_PROFILE" "$AFK_STAMP_ENTITLEMENT_POOL"; then harness_state="FALSE"; fi
+        ;;
       *)      harness_state="FALSE" ;;
     esac
     if [[ "$harness_state" != "TRUE" ]]; then
@@ -1828,7 +1924,7 @@ afk_aggregate_host_readiness() {
     reason="$(afk_live_fact_reason validator_fixtures)"
     [[ -n "$reason" ]] || reason="$(afk_live_fact_reason validator_contract)"
     AFK_RD_HOST_REASON="${reason:-VALIDATOR_NOT_RESOLVED}"
-  elif [[ "$AFK_RD_CLAUDE_PATH" == "TRUE" || "$AFK_RD_CODEX_PATH" == "TRUE" ]]; then
+  elif [[ "$AFK_RD_CLAUDE_PATH" == "TRUE" || "$AFK_RD_CODEX_PATH" == "TRUE" || "$AFK_RD_OPENCODE_PATH" == "TRUE" ]]; then
     # One complete centrally approved path is the bar. The other harness is
     # reported independently and is never globally mandatory (FR-52).
     AFK_RD_HOST_STATE="TRUE"
@@ -1930,6 +2026,7 @@ afk_readiness_evaluate() {
     afk_probe_validator
     if afk_probe_harness claude; then AFK_RD_CLAUDE_PATH="TRUE"; else AFK_RD_CLAUDE_PATH="FALSE"; fi
     if afk_probe_harness codex;  then AFK_RD_CODEX_PATH="TRUE";  else AFK_RD_CODEX_PATH="FALSE"; fi
+    afk_probe_binding_inventory || true
     afk_probe_router
   fi
 

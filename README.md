@@ -4,7 +4,7 @@ A portable autonomous development flow for **any project that uses BMAD**, drive
 a central routing control plane. One PM session plans epics and describes each story
 to the router; a human accepts or deliberately overrides the recommendation; the
 decision is frozen into an immutable execution stamp; disposable worker sessions
-(Claude / Codex CLIs) execute them in visible Orca worktrees with BMAD personas
+(Claude Code, Codex, and OpenCode) execute them in visible Orca worktrees with BMAD personas
 injected at spawn; deterministic gates verify; a post-PR triage loop works every PR
 to clean; the PM merges under explicit guardrails. Humans decide only what policy
 says humans decide — and every route is one of those things.
@@ -20,8 +20,12 @@ var NAME, catalog path, harness binaries).
 
 ## Contents
 
+For the cross-harness status, continuation, onboarding, update, and live
+qualification contract, see [`docs/RUNTIME-EXPERIENCE.md`](docs/RUNTIME-EXPERIENCE.md).
+
 - `HANDOFF.md` — executable setup instructions for a fresh agent on a new machine.
-  Idempotent; adapts per-OS (Linux/macOS both proven).
+  Idempotent; presentation adapts across Linux/macOS, while automatic release
+  reconciliation is currently qualified only on Linux.
 - `bin/agent-flow-kit` — the lifecycle entry point. Explains what is installed on a
   host, who owns it, which revision it came from, what has drifted, whether this
   checkout is eligible to change it — and converges it when it is.
@@ -108,8 +112,11 @@ authorizes nothing until you approve exactly that plan:
 The identity covers every input the plan was computed from, so an approval never
 carries over to a plan recomputed after anything changed.
 
-Git is never touched: nothing here fetches, pulls, merges, rebases or switches
-branches. Selecting the revision to converge from stays with the operator.
+The lifecycle transaction never changes a development clone: it does not pull,
+reset, stash, merge, rebase, clean, or switch the user's branch. The separate
+release client maintains its own bare mirror and isolated candidate checkout from
+AFK's fixed public `master` ref, then hands an immutable revision to that lifecycle
+transaction.
 
 Exit codes are coarse and stable: `0` the requested scope succeeded, `1` a command,
 internal or usage failure, `2` owner action or conflict, `3` deterministic
@@ -117,8 +124,19 @@ not-ready, `4` a source or precondition refusal, `5` a live dependency unavailab
 
 ## Update discipline
 
-This repo is the sync channel between machines. When the kit or policies evolve
-anywhere, push here; pull everywhere else. Keep files portable (BSD+GNU); keep
-machine-specific facts in machine-local notes, not in canonical files. Never
-commit secrets — credentials live in 1Password, fetched at runtime via a
-service account.
+This repo is the release channel between machines. After initial enrollment on
+Linux, `afk-session-start` checks the fixed public `master` ref before harness work,
+qualifies a clean isolated candidate, applies the exact approved lifecycle plan,
+verifies it, and composes the installed harness adapter. Repeated starts use a
+locally re-proven last-good release during the check interval; an outage is explicit
+and can continue only from that verified last-good state. No agent needs to `git
+pull` its working clone. macOS keeps the status/context surfaces but omits the
+blocking auto-update hook until its candidate sandbox is qualified; an explicit
+start leaves recorded last-good untouched and refuses with
+`MACOS_SANDBOX_PENDING`. See
+[`docs/RELEASE-UPDATE.md`](docs/RELEASE-UPDATE.md).
+
+Keep files portable (BSD+GNU), and keep machine-specific facts in machine-local
+notes rather than canonical files. Never commit or synchronize secrets:
+credentials remain in their native stores (including 1Password delivery) and AFK
+records only non-secret state and references.

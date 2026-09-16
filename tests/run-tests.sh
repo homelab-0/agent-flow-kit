@@ -126,7 +126,34 @@ sc_check() { # <path> [extra checker args...]
 }
 
 SC_SCRIPTS=("$DISPATCH" "$MAKE_STAMP" "$USAGE_CHECK" "$GH_HEALTH" \
-            "$CLAUDE_EVIDENCE_VERIFY" "$CLAUDE_EVIDENCE_TESTS")
+            "$CLAUDE_EVIDENCE_VERIFY" "$CLAUDE_EVIDENCE_TESTS" \
+            "$KIT_ROOT/files/model-router/scripts/harness-inventory.sh" \
+            "$KIT_ROOT/bin/afk-release-reconcile" "$KIT_ROOT/bin/afk-session-freshness" \
+            "$KIT_ROOT/bin/afk-session-start" \
+            "$KIT_ROOT/adapters/runtime-scope.sh" \
+            "$KIT_ROOT/adapters/render-status.sh" "$KIT_ROOT/adapters/manage.sh" \
+            "$KIT_ROOT/adapters/manage-core.sh" "$KIT_ROOT/adapters/manage-transactions.sh" \
+            "$KIT_ROOT/adapters/hindsight.sh" "$KIT_ROOT/adapters/publish-runtime.sh" \
+            "$KIT_ROOT/adapters/refresh-status-cache.sh" "$KIT_ROOT/adapters/orca-title.sh" \
+            "$KIT_ROOT/adapters/worker-context.sh" \
+            "$KIT_ROOT/adapters/pm-session.sh" "$KIT_ROOT/adapters/orca-pm-bootstrap.sh" \
+            "$KIT_ROOT/adapters/orca-pm-successor.sh" "$KIT_ROOT/adapters/orca-pm-close.sh" \
+            "$KIT_ROOT/adapters/claude/statusline.sh" "$KIT_ROOT/adapters/codex/publish.sh" \
+            "$KIT_ROOT/adapters/codex/status.sh" "$KIT_ROOT/adapters/opencode/status.sh" \
+            "$KIT_ROOT/adapters/hermes/status-card.sh" \
+            "$KIT_ROOT/adapters/hermes/session-start.sh" \
+            "$KIT_ROOT/tests/runtime-experience-tests.sh" \
+            "$KIT_ROOT/tests/orca-visible-status-tests.sh" \
+            "$KIT_ROOT/tests/worker-memory-continuity-tests.sh" \
+            "$KIT_ROOT/tests/release-update-tests.sh" \
+            "$KIT_ROOT/tests/session-start-integration-tests.sh" \
+            "$KIT_ROOT/tests/worker-pressure-integration-tests.sh" \
+            "$KIT_ROOT/tests/adapter-manager-modules-tests.sh" \
+            "$KIT_ROOT/tests/context-adapter-contract-tests.sh" \
+            "$KIT_ROOT/tests/harness-start-contract-tests.sh" \
+            "$KIT_ROOT/tests/release-reconciler-contract-tests.sh" \
+            "$KIT_ROOT/tests/release-support-contract-tests.sh" \
+            "$KIT_ROOT/tests/session-gate-contract-tests.sh")
 # The lifecycle surface. Checked at warning level and above, with two codes
 # excluded for a structural reason rather than a stylistic one: the lifecycle
 # files are always sourced together and share one result model, so a variable
@@ -293,6 +320,8 @@ assert_contains "claude cmd: HOME is a launcher literal"        "$CMD" "HOME=/ho
 assert_contains "claude cmd: PATH is a launcher literal"        "$CMD" "PATH=/usr/bin:/bin"
 assert_contains "claude cmd: USER is a launcher literal"        "$CMD" "USER=op"
 assert_contains "claude cmd: LANG/TERM pinned"                  "$CMD" "LANG=C.UTF-8 TERM=dumb"
+assert_contains "claude cmd: worker terminal identity bridged at process boundary" \
+  "$CMD" 'AFK_WORKER_TERMINAL="${ORCA_TERMINAL_HANDLE:-}"'
 assert_contains "claude cmd: stamped model passed explicitly"   "$CMD" "--model opus"
 assert_contains "claude cmd: stamped effort passed explicitly"  "$CMD" "--effort xhigh"
 assert_contains "claude cmd: explicit least-privilege tools"    "$CMD" '--tools "Read,Glob,Grep,Write"'
@@ -360,7 +389,7 @@ GW_ENV_NAMES="$(tr ' ' '\n' <<<"$GW_ENV_SEGMENT" \
                 | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' | tr '\n' ' ')"
 assert_eq "gateway cmd: env -i allowlist is EXACTLY the contract" \
   "$GW_ENV_NAMES" \
-  "HOME PATH USER LANG TERM ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL ANTHROPIC_CUSTOM_HEADERS CLAUDE_CODE_MAX_CONTEXT_TOKENS "
+  "HOME PATH USER LANG TERM AFK_WORKER_TERMINAL ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL ANTHROPIC_CUSTOM_HEADERS CLAUDE_CODE_MAX_CONTEXT_TOKENS "
 
 assert_contains "gateway cmd: the native sanitizer prefix is unchanged" \
   "$GWCMD" "env -i HOME=/home/op PATH=/usr/bin:/bin USER=op LANG=C.UTF-8 TERM=dumb "
@@ -407,8 +436,9 @@ GW_NATIVE_TWIN="$(build_claude_command "/home/op" "/usr/bin:/bin" "op" \
                    "/wt/STORY.md.claude-result.json" "/wt/_bmad/bmm/agents/dev.md")"
 GW_TAIL="${GWCMD#*CLAUDE_CODE_MAX_CONTEXT_TOKENS=65536 }"
 GW_TAIL="${GW_TAIL%; unset ANTHROPIC_AUTH_TOKEN}"
+GW_NATIVE_TAIL="claude -p${GW_NATIVE_TWIN#* claude -p}"
 assert_eq "gateway cmd: the claude invocation is byte-identical to the native one" \
-  "$GW_TAIL" "${GW_NATIVE_TWIN#*TERM=dumb }"
+  "$GW_TAIL" "$GW_NATIVE_TAIL"
 
 # --- Claude settings preflight: all supported file layers fail closed -----
 head1 "   claude settings preflight — hermetic files only"
@@ -637,13 +667,19 @@ if grep -qE '^[[:space:]]*(sizing_risk_ratio|checkpoint_ratio|continuation_ratio
   ok "policy: every threshold and the method are declared in the policy document"
 else bad "policy: every threshold and the method are declared in the policy document"; fi
 
-# --- AC-7, byte-identity of both frozen launch command texts ---------------
-# Proved against master's own builders rather than against a transcription of
-# them, with a control so a vacuous "both empty" comparison cannot pass.
-head1 "   the frozen launch command texts are byte-identical to master"
+# --- AC-7, frozen launch text plus the intentional terminal identity bridge -
+# The only master delta accepted by this comparison is the exact, once-only
+# AFK_WORKER_TERMINAL assignment. Everything else stays byte-identical, with a
+# control so a vacuous normalization cannot pass.
+head1 "   frozen launch texts differ from master only by worker terminal identity"
 MASTER_DISPATCH="$TMPROOT/master-dispatch.sh"
 if git -C "$KIT_ROOT" show master:files/model-router/scripts/dispatch.sh > "$MASTER_DISPATCH" 2>/dev/null; then
   emit_from() { bash -c 'set -uo pipefail; . "$1"; shift; "$@"' _emit "$@"; }
+  strip_worker_terminal() {
+    # The literal contains shell syntax that must not be expanded here.
+    # shellcheck disable=SC2001
+    sed 's/ AFK_WORKER_TERMINAL="${ORCA_TERMINAL_HANDLE:-}"//g' <<<"$1"
+  }
   BI_ARGS=(/home/op /usr/bin:/bin op /wt/S.md.prompt claude-opus-5 high /wt/S.md.claude-result.json /wt/agents/dev.md)
   BI_GW=(/home/op /usr/bin:/bin op /wt/S.md.prompt qwen36-27b high /wt/S.md.claude-result.json /wt/agents/dev.md \
          https://gw.invalid op://v/i/credential /home/op/.op-agent-env workstation 65536)
@@ -655,14 +691,17 @@ if git -C "$KIT_ROOT" show master:files/model-router/scripts/dispatch.sh > "$MAS
     # shellcheck disable=SC2086
     h="$(emit_from "$DISPATCH" $probe)"
     nm="${probe%% *}"
+    bridge_count="$(grep -oF 'AFK_WORKER_TERMINAL="${ORCA_TERMINAL_HANDLE:-}"' <<<"$h" | wc -l | tr -d ' ')"
+    normalized="$(strip_worker_terminal "$h")"
     if [[ -z "$m" ]]; then bad "byte-identity: $nm" "master produced nothing — the probe is broken"
-    elif [[ "$m" == "$h" ]]; then ok "byte-identity: $nm unchanged from master"
-    else bad "byte-identity: $nm unchanged from master" "$(diff <(printf '%s\n' "$m") <(printf '%s\n' "$h") | head -4)"; fi
+    elif [[ "$bridge_count" != 1 ]]; then bad "byte-identity: $nm" "worker terminal bridge count=$bridge_count, expected 1"
+    elif [[ "$m" == "$normalized" ]]; then ok "byte-identity: $nm only adds the exact worker terminal bridge"
+    else bad "byte-identity: $nm only adds the exact worker terminal bridge" "$(diff <(printf '%s\n' "$m") <(printf '%s\n' "$normalized") | head -4)"; fi
   done
   # CONTROL — the comparison must be able to see a difference.
   if [[ "$(emit_from "$MASTER_DISPATCH" build_claude_command "${BI_ARGS[@]}")" \
-        != "$(emit_from "$DISPATCH" build_claude_command /home/op /usr/bin:/bin op \
-              /wt/S.md.prompt claude-opus-5 medium /wt/S.md.claude-result.json /wt/agents/dev.md)" ]]; then
+        != "$(strip_worker_terminal "$(emit_from "$DISPATCH" build_claude_command /home/op /usr/bin:/bin op \
+              /wt/S.md.prompt claude-opus-5 medium /wt/S.md.claude-result.json /wt/agents/dev.md)")" ]]; then
     ok "byte-identity CONTROL: a perturbed effort IS detected as different"
   else bad "byte-identity CONTROL: a perturbed effort IS detected as different"; fi
 else
@@ -800,6 +839,7 @@ awk -v w=200000 '{print} /^  "claude\/strong":[[:space:]]*$/ {print "    min_con
 cat > "$BIN/orca" <<'STUB'
 #!/usr/bin/env bash
 sub="$1 $2"; shift 2 || true
+terminal_state="$STUB_STATE/terminal.json"
 case "$sub" in
   "worktree list")
     jq -n --arg p "$STUB_WT_PATH" --arg id "$STUB_WT_ID" \
@@ -807,14 +847,35 @@ case "$sub" in
   "repo list")
     jq -n --arg id "$STUB_REPO_ID" --arg pol "${STUB_SETUP_POLICY:-start-immediately}" \
       '{ok:true,result:{repos:[{id:$id,hookSettings:{setupAgentStartupPolicy:$pol}}]}}' ;;
-  "terminal create")
+  "terminal list")
+    if [[ -s "$terminal_state" ]]; then
+      jq -c '{ok:true,result:{terminals:[.]}}' "$terminal_state"
+    else
+      jq -nc '{ok:true,result:{terminals:[]}}'
+    fi ;;
+  "terminal show")
+    handle=""
     while (( $# )); do
       case "$1" in
-        --command) printf '%s' "$2" > "$STUB_STATE/last-command.txt"; shift 2 ;;
-        --title)   printf '%s' "$2" > "$STUB_STATE/last-title.txt"; shift 2 ;;
+        --terminal) handle="$2"; shift 2 ;;
         *) shift ;;
       esac
     done
+    [[ -s "$terminal_state" ]] || exit 1
+    jq -ec --arg h "$handle" 'select(.handle==$h)|{ok:true,result:{terminal:.}}' "$terminal_state" ;;
+  "terminal create")
+    title=""; worktree_id=""
+    while (( $# )); do
+      case "$1" in
+        --command) printf '%s' "$2" > "$STUB_STATE/last-command.txt"; shift 2 ;;
+        --title)   title="$2"; printf '%s' "$2" > "$STUB_STATE/last-title.txt"; shift 2 ;;
+        --worktree) worktree_id="${2#id:}"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    jq -nc --arg title "$title" --arg wi "$worktree_id" --arg wp "$STUB_WT_PATH" \
+      '{handle:"term_stub",title:$title,connected:true,orphaned:false,worktreeId:$wi,worktreePath:$wp}' \
+      > "$terminal_state"
     echo created >> "$STUB_STATE/terminal-creates"
     # The terminal is what actually produces the worker's files. A case that
     # needs a result envelope or a lifecycle artifact to exist declares it
@@ -831,7 +892,26 @@ case "$sub" in
     jq -n --arg t "${STUB_TERMINAL_TAIL:-}" --arg s "${STUB_TERMINAL_STATUS:-running}" \
       '{ok:true,result:{terminal:{handle:"term_stub",status:$s,
         tail:($t|split("\n"))}}}' ;;
-  "terminal rename") jq -n '{ok:true}' ;;
+  "terminal rename")
+    while (( $# )); do
+      case "$1" in
+        --title) printf '%s' "$2" > "$STUB_STATE/last-title.txt"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    jq -n '{ok:true}' ;;
+  "terminal close")
+    handle=""
+    while (( $# )); do
+      case "$1" in
+        --terminal) handle="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    if [[ -s "$terminal_state" ]] && jq -e --arg h "$handle" '.handle==$h' "$terminal_state" >/dev/null; then
+      rm -f -- "$terminal_state"
+    fi
+    jq -nc '{ok:true}' ;;
   *) jq -n '{ok:true,result:{}}' ;;
 esac
 STUB
@@ -1068,6 +1148,88 @@ else
   bad "result.json written"
 fi
 
+# ---- harness completion is part of success, independent of gates ---------
+# These are production-path fixtures: the Orca stub writes the same result
+# file the frozen Claude command names, the real dispatcher parses it, writes
+# the thin result, and returns its public exit status.
+write_story "$WT/s-harness-nonzero.md" "persona: dev
+gates: [\"true\"]"
+write_stamp "$WT/s-harness-nonzero.md.stamp.json" high false
+export STUB_TERMINAL_TAIL="worker failed
+CLAUDE_EXIT=1"
+export STUB_SPAWN_PATH1="$WT/s-harness-nonzero.md.claude-result.json"
+export STUB_SPAWN_BODY1='{"type":"result","is_error":false,"result":"failed"}'
+rc="$(run_dispatch s-harness-nonzero.md)"
+RES="$WT/s-harness-nonzero.md.result.json"
+assert_eq "harness nonzero: passing gates still return dispatch exit 1" "$rc" "1"
+assert_eq "harness nonzero: thin status is gates_failed" "$(jq -r .status "$RES")" "gates_failed"
+assert_eq "harness nonzero: thin result retains harness exit" "$(jq -r .launch.harness_exit "$RES")" "1"
+assert_contains "harness nonzero: Orca title reports failed attempt" \
+  "$(cat "$STUB_STATE/last-title.txt")" "✗attempt"
+
+write_story "$WT/s-harness-envelope-error.md" "persona: dev
+gates: [\"true\"]"
+write_stamp "$WT/s-harness-envelope-error.md.stamp.json" high false
+export STUB_TERMINAL_TAIL="worker envelope reported error
+CLAUDE_EXIT=0"
+export STUB_SPAWN_PATH1="$WT/s-harness-envelope-error.md.claude-result.json"
+export STUB_SPAWN_BODY1='{"type":"result","is_error":true,"result":"context overflow"}'
+rc="$(run_dispatch s-harness-envelope-error.md)"
+RES="$WT/s-harness-envelope-error.md.result.json"
+assert_eq "harness envelope error: passing gates still return dispatch exit 1" "$rc" "1"
+assert_eq "harness envelope error: thin status is gates_failed" "$(jq -r .status "$RES")" "gates_failed"
+assert_eq "harness envelope error: thin result retains zero process exit" "$(jq -r .launch.harness_exit "$RES")" "0"
+assert_contains "harness envelope error: Orca title reports failed attempt" \
+  "$(cat "$STUB_STATE/last-title.txt")" "✗attempt"
+
+write_story "$WT/s-harness-envelope-invalid.md" "persona: dev
+gates: [\"true\"]"
+write_stamp "$WT/s-harness-envelope-invalid.md.stamp.json" high false
+export STUB_TERMINAL_TAIL="worker emitted malformed evidence
+CLAUDE_EXIT=0"
+export STUB_SPAWN_PATH1="$WT/s-harness-envelope-invalid.md.claude-result.json"
+export STUB_SPAWN_BODY1='{not-json'
+rc="$(run_dispatch s-harness-envelope-invalid.md)"
+RES="$WT/s-harness-envelope-invalid.md.result.json"
+assert_eq "invalid harness envelope: passing gates still return dispatch exit 1" "$rc" "1"
+assert_eq "invalid harness envelope: thin status fails closed" "$(jq -r .status "$RES")" "gates_failed"
+assert_eq "invalid harness envelope: thin result retains zero process exit" "$(jq -r .launch.harness_exit "$RES")" "0"
+assert_contains "invalid harness envelope: Orca title reports failed attempt" \
+  "$(cat "$STUB_STATE/last-title.txt")" "✗attempt"
+
+write_story "$WT/s-harness-envelope-wrong-shape.md" "persona: dev
+gates: [\"true\"]"
+write_stamp "$WT/s-harness-envelope-wrong-shape.md.stamp.json" high false
+export STUB_TERMINAL_TAIL="worker emitted the wrong JSON shape
+CLAUDE_EXIT=0"
+export STUB_SPAWN_PATH1="$WT/s-harness-envelope-wrong-shape.md.claude-result.json"
+export STUB_SPAWN_BODY1='{"type":"message","is_error":false,"result":{}}'
+rc="$(run_dispatch s-harness-envelope-wrong-shape.md)"
+RES="$WT/s-harness-envelope-wrong-shape.md.result.json"
+assert_eq "wrong-shape harness envelope: passing gates still return dispatch exit 1" "$rc" "1"
+assert_eq "wrong-shape harness envelope: thin status fails closed" "$(jq -r .status "$RES")" "gates_failed"
+assert_eq "wrong-shape harness envelope: thin result retains zero process exit" "$(jq -r .launch.harness_exit "$RES")" "0"
+assert_contains "wrong-shape harness envelope: Orca title reports failed attempt" \
+  "$(cat "$STUB_STATE/last-title.txt")" "✗attempt"
+
+write_story "$WT/s-harness-envelope-ok.md" "persona: dev
+gates: [\"true\"]"
+write_stamp "$WT/s-harness-envelope-ok.md.stamp.json" high false
+export STUB_TERMINAL_TAIL="worker succeeded
+CLAUDE_EXIT=0"
+export STUB_SPAWN_PATH1="$WT/s-harness-envelope-ok.md.claude-result.json"
+export STUB_SPAWN_BODY1='{"type":"result","is_error":false,"result":"complete"}'
+rc="$(run_dispatch s-harness-envelope-ok.md)"
+RES="$WT/s-harness-envelope-ok.md.result.json"
+assert_eq "harness envelope control: dispatch succeeds" "$rc" "0"
+assert_eq "harness envelope control: thin status is done" "$(jq -r .status "$RES")" "done"
+assert_eq "harness envelope control: thin result retains zero process exit" "$(jq -r .launch.harness_exit "$RES")" "0"
+assert_contains "harness envelope control: Orca title reports completion" \
+  "$(cat "$STUB_STATE/last-title.txt")" "✓done"
+unset STUB_SPAWN_PATH1 STUB_SPAWN_BODY1
+export STUB_TERMINAL_TAIL="worker output here
+CLAUDE_EXIT=0"
+
 # ---- the launched command is the frozen one, with no task text ----------
 LAUNCHED="$(cat "$STUB_STATE/last-command.txt" 2>/dev/null || true)"
 assert_contains "launched cmd: env -i sanitizer"       "$LAUNCHED" "env -i "
@@ -1259,7 +1421,7 @@ GW_L_NAMES="$(tr ' ' '\n' <<<"$GW_L_SEGMENT" \
               | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' | tr '\n' ' ')"
 assert_eq "gateway: the LAUNCHED allowlist is exactly the contract" \
   "$GW_L_NAMES" \
-  "HOME PATH USER LANG TERM ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL ANTHROPIC_CUSTOM_HEADERS CLAUDE_CODE_MAX_CONTEXT_TOKENS "
+  "HOME PATH USER LANG TERM AFK_WORKER_IDENTITY AFK_RUN_ID AFK_STORY_ID AFK_STORY_PATH AFK_CYCLE AFK_DISPATCH_ID AFK_OWNING_PM AFK_DELEGATING_PM AFK_CONTEXT_EVENT_HOOK AFK_CONTEXT_EVENT_DIR AFK_CONTEXT_CHECKPOINT_PPM AFK_CONTEXT_CONTINUATION_PPM AFK_MEMORY_MODE HINDSIGHT_CONFIG HINDSIGHT_DISABLED AFK_WORKER_TERMINAL ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL ANTHROPIC_CUSTOM_HEADERS CLAUDE_CODE_MAX_CONTEXT_TOKENS "
 assert_contains "gateway: launched with the configured endpoint" \
   "$GW_LAUNCHED" "ANTHROPIC_BASE_URL=https://gateway.invalid"
 assert_contains "gateway: launched pinned to the catalog physical model" \
@@ -1293,6 +1455,8 @@ assert_absent "gateway: ANTHROPIC_API_KEY never appears" "$GW_LAUNCHED" "ANTHROP
 # are structural. Their runtime counterparts (the terminal shell, its children,
 # xtrace, /proc) are covered by the reviewer's attack-03 in
 # _bmad-output/implementation-artifacts/evidence/AFK-PORT-1.4-LV-REVIEW/.
+# This fixture is generated above and intentionally discovered at runtime.
+# shellcheck disable=SC1091
 GW_RESOLVED="$( . "$WORK/op-env" && "$BIN/op" read "op://stubvault/agw-claude-code/credential" )"
 assert_eq "gateway: the configured reference really resolves to the credential" \
   "$GW_RESOLVED" "$GW_SENTINEL"
@@ -1602,6 +1766,8 @@ rm -f "$WT/s-bud-refuse.md.result.json" "$WT/s-bud-refuse.md.blocked"
 awk -v w="$REFUSE_EST" '{print} /^  "claude\/strong":[[:space:]]*$/ {print "    min_context: " w}' \
   "$WORK/catalog.yaml" > "$WORK/catalog-tiny.yaml"
 reset_stubs
+# This assignment is intentionally scoped to the captured dispatch subprocess.
+# shellcheck disable=SC2030
 rc="$(STUB_CATALOG="$WORK/catalog-tiny.yaml"; export STUB_CATALOG; run_dispatch s-bud-refuse.md)"
 assert_eq "sizing refusal: distinct exit code 8" "$rc" "8"
 SZM="$(cat "$WT/s-bud-refuse.md.blocked" 2>/dev/null || true)"
@@ -1638,6 +1804,8 @@ write_story "$WT/s-bud-risk.md" "persona: dev
 gates: [\"true\"]"
 printf '\n## Dev Agent Record\n\n(worker fills in)\n' >> "$WT/s-bud-risk.md"
 write_stamp "$WT/s-bud-risk.md.stamp.json" high false
+# The later fixture deliberately replaces the subprocess-local catalog.
+# shellcheck disable=SC2031
 export STUB_CATALOG="$WORK/catalog-risk.yaml"
 rc="$(run_dispatch s-bud-risk.md 1)"
 assert_eq "sizing risk: dispatch is NOT blocked" "$rc" "0"
@@ -1830,6 +1998,51 @@ else
   bad "AC-6: make-stamp round trip on a story with a sizing estimate"
 fi
 
+# The released router request is a compatibility boundary. Local capability
+# inventory remains useful, but it is not added to POST /v1/route unless that
+# extension was explicitly negotiated with the server.
+cat > "$WORK/reqbin/inventory-must-not-run" <<'STUB'
+#!/usr/bin/env bash
+exit 99
+STUB
+chmod +x "$WORK/reqbin/inventory-must-not-run"
+rm -f "$STUB_STATE/route-request-body.json" "$WORK/route-default.stamp.json"
+if PATH="$WORK/reqbin:$PATH" STUB_ROUTE_RESPONSE="$WORK/route-response-ac6.json" \
+   AGENT_FLOW_CONFIG="$WORK/nonexistent.yaml" SUBSCRIPTIONS_FILE="" \
+   AGENT_FLOW_HARNESS_INVENTORY="$WORK/reqbin/inventory-must-not-run" \
+   AGENT_ROUTER_URL="https://router.invalid" AGENT_ROUTER_TOKEN=t \
+   bash "$MAKE_STAMP" --request "$WORK/sized-request.json" \
+     --out "$WORK/route-default.stamp.json" >/dev/null 2>&1; then
+  assert_eq "route request: default omits available_bindings" \
+    "$(jq -r 'has("available_bindings")' "$STUB_STATE/route-request-body.json")" "false"
+  if cmp "$WORK/sized-request.json" "$STUB_STATE/route-request-body.json" >/dev/null; then
+    ok "route request: default POST preserves caller JSON bytes"
+  else
+    bad "route request: default POST preserves caller JSON bytes"
+  fi
+else
+  bad "route request: default contract does not invoke inventory"
+fi
+
+cat > "$WORK/reqbin/inventory-opt-in" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' '{"schema":"afk-harness-inventory/1","observed_at":"2098-01-01T00:00:00Z","expires_at":"2098-01-01T00:05:00Z","bindings":[{"harness":"opencode","model_profile":"openai/gpt-5.3-codex","entitlement_pool":"openai-codex"}]}'
+STUB
+chmod +x "$WORK/reqbin/inventory-opt-in"
+rm -f "$STUB_STATE/route-request-body.json" "$WORK/route-opt-in.stamp.json"
+if PATH="$WORK/reqbin:$PATH" STUB_ROUTE_RESPONSE="$WORK/route-response-ac6.json" \
+   AGENT_FLOW_CONFIG="$WORK/nonexistent.yaml" SUBSCRIPTIONS_FILE="" \
+   AGENT_FLOW_HARNESS_INVENTORY="$WORK/reqbin/inventory-opt-in" \
+   AFK_ROUTE_AVAILABLE_BINDINGS_CONTRACT=1 \
+   AGENT_ROUTER_URL="https://router.invalid" AGENT_ROUTER_TOKEN=t \
+   bash "$MAKE_STAMP" --request "$WORK/sized-request.json" \
+     --out "$WORK/route-opt-in.stamp.json" >/dev/null 2>&1; then
+  assert_eq "route request: negotiated opt-in includes available_bindings" \
+    "$(jq -r '.available_bindings.bindings[0].harness' "$STUB_STATE/route-request-body.json")" "opencode"
+else
+  bad "route request: negotiated available_bindings opt-in"
+fi
+
 
 # ===========================================================================
 head1 "3d. Context budget — observed usage, phase-boundary artifacts (lane B)"
@@ -1992,7 +2205,9 @@ HARNESS=claude; BUDGET_FINDINGS=(); BUDGET_STATE="NOT_EVALUATED"; BUDGET_REASON=
 budget_evaluate_usage "$(usage_adapter_claude "$UF" opus)" "" 2>/dev/null
 assert_eq "usage band: an observed usage with NO window evaluates nothing" \
   "$BUDGET_USAGE_REASON" "CONTEXT_WINDOW_UNDECLARED"
-# The reported window CORROBORATES; it never becomes the divisor.
+# The reported window CORROBORATES; it never becomes the divisor. HARNESS is
+# consumed dynamically by the sourced dispatch helpers.
+# shellcheck disable=SC2034
 HARNESS=claude; BUDGET_FINDINGS=()
 budget_evaluate_usage "$(usage_adapter_claude "$UF" opus)" 65536 2>/dev/null
 assert_eq "window disagreement: recorded as a finding of its own" \
@@ -2445,7 +2660,9 @@ ledger() { # <story-basename> <cycle>...
   for c in "$@"; do
     arr="$(jq -c --argjson c "$c" \
       '. + [{cycle:$c, from_cycle:($c - 1), artifact_sha256:"sha256:seed",
-             trigger:"WORKER_SIGNAL", at:"2026-09-07T00:00:00Z", decision:null}]' <<<"$arr")"
+             trigger:"WORKER_SIGNAL", at:"2026-09-07T00:00:00Z", decision:null,
+             launch_confirmed:true,terminal:("fixture-"+($c|tostring)),
+             command_sha256:"sha256:fixture",create_id:("sha256:fixture-"+($c|tostring))}]' <<<"$arr")"
   done
   jq -n --argjson e "$arr" '{schema:"afk-continuation-ledger/1", entries:$e}' \
     > "$WT/$name.md.continuations.json"
@@ -2934,12 +3151,13 @@ reset_stubs
 rc="$(run_dispatch s-c-stamp.md 2)"
 assert_eq "stamp CONTROL: a valid stamp launches the same continuation" "$rc" "0"
 
-# --- S5: settlement is the frozen 1.3 path, unmodified -------------------
-if git -C "$KIT_ROOT" show master:lib/afk-monitor.sh 2>/dev/null \
-     | cmp -s - "$KIT_ROOT/lib/afk-monitor.sh"; then
-  ok "settlement: lib/afk-monitor.sh is byte-identical to master — nothing needed to change"
-else bad "settlement: lib/afk-monitor.sh is byte-identical to master — nothing needed to change" \
-  "$(git -C "$KIT_ROOT" diff --stat master -- lib/afk-monitor.sh)"; fi
+# --- S5: settlement preserves the existing result while durably notifying
+# the owning PM about context pressure. The dispatch gate below proves replay
+# idempotence against real watch and inbox fixture files.
+assert_contains "settlement: context pressure becomes a durable PM message" \
+  "$(<"$KIT_ROOT/lib/afk-monitor.sh")" 'schema:"afk-monitor-message/1"'
+assert_contains "settlement: the pressure message requires canonical continuation" \
+  "$(<"$KIT_ROOT/lib/afk-monitor.sh")" 'continuation_dispatch:"canonical"'
 assert_eq "settlement: a continuation cycle's budget state is one of the declared four" \
   "$(jq -r --argjson s "$(yq -o=json -I=0 '.budget_states' "$BUDGET_POLICY_SHIPPED")" \
       '.budget.state as $st | ($s | index($st)) != null' "$WT/s-c-run.md.result.c2.json")" "true"
@@ -3354,6 +3572,118 @@ if [[ -f "$DISPATCH_TESTS" ]]; then
 else
   bad "lifecycle dispatch gate present" "missing: $DISPATCH_TESTS"
 fi
+
+# ===========================================================================
+head1 "11. AFK runtime experience gate"
+# ===========================================================================
+RUNTIME_TESTS="$KIT_ROOT/tests/runtime-experience-tests.sh"
+if [[ -f "$RUNTIME_TESTS" ]]; then
+  if runtime_out="$(bash "$RUNTIME_TESTS" 2>&1)"; then
+    ok "runtime experience gate: $(tail -1 <<<"$runtime_out")"
+  else
+    bad "runtime experience gate" "$(tail -1 <<<"$runtime_out")"
+    printf '%s\n' "$runtime_out" | tail -40
+  fi
+else
+  bad "runtime experience gate present" "missing: $RUNTIME_TESTS"
+fi
+
+# ===========================================================================
+head1 "12. Orca-visible status gate"
+# ===========================================================================
+VISIBLE_STATUS_TESTS="$KIT_ROOT/tests/orca-visible-status-tests.sh"
+if [[ -f "$VISIBLE_STATUS_TESTS" ]]; then
+  if visible_status_out="$(bash "$VISIBLE_STATUS_TESTS" 2>&1)"; then
+    ok "Orca-visible status gate: $(tail -1 <<<"$visible_status_out")"
+  else
+    bad "Orca-visible status gate" "$(tail -1 <<<"$visible_status_out")"
+    printf '%s\n' "$visible_status_out" | tail -40
+  fi
+else
+  bad "Orca-visible status gate present" "missing: $VISIBLE_STATUS_TESTS"
+fi
+
+# ===========================================================================
+head1 "13. Worker memory and continuation gate"
+# ===========================================================================
+WORKER_MEMORY_TESTS="$KIT_ROOT/tests/worker-memory-continuity-tests.sh"
+if [[ -f "$WORKER_MEMORY_TESTS" ]]; then
+  if worker_memory_out="$(bash "$WORKER_MEMORY_TESTS" 2>&1)"; then
+    ok "worker memory and continuation gate: $(tail -1 <<<"$worker_memory_out")"
+  else
+    bad "worker memory and continuation gate" "$(tail -1 <<<"$worker_memory_out")"
+    printf '%s\n' "$worker_memory_out" | tail -40
+  fi
+else
+  bad "worker memory and continuation gate present" "missing: $WORKER_MEMORY_TESTS"
+fi
+
+# ===========================================================================
+head1 "14. Release update gate"
+# ===========================================================================
+RELEASE_UPDATE_TESTS="$KIT_ROOT/tests/release-update-tests.sh"
+if [[ -f "$RELEASE_UPDATE_TESTS" ]]; then
+  if release_update_out="$(bash "$RELEASE_UPDATE_TESTS" 2>&1)"; then
+    ok "release update gate: $(tail -1 <<<"$release_update_out")"
+  else
+    bad "release update gate" "$(tail -1 <<<"$release_update_out")"
+    printf '%s\n' "$release_update_out" | tail -40
+  fi
+else
+  bad "release update gate present" "missing: $RELEASE_UPDATE_TESTS"
+fi
+
+# ===========================================================================
+head1 "15. Harness session-start integration gate"
+# ===========================================================================
+SESSION_START_TESTS="$KIT_ROOT/tests/session-start-integration-tests.sh"
+if [[ -f "$SESSION_START_TESTS" ]]; then
+  if session_start_out="$(bash "$SESSION_START_TESTS" 2>&1)"; then
+    ok "harness session-start integration gate: $(tail -1 <<<"$session_start_out")"
+  else
+    bad "harness session-start integration gate" "$(tail -1 <<<"$session_start_out")"
+    printf '%s\n' "$session_start_out" | tail -40
+  fi
+else
+  bad "harness session-start integration gate present" "missing: $SESSION_START_TESTS"
+fi
+
+# ===========================================================================
+head1 "16. Native worker/PM pressure integration gate"
+# ===========================================================================
+WORKER_PRESSURE_TESTS="$KIT_ROOT/tests/worker-pressure-integration-tests.sh"
+if [[ -f "$WORKER_PRESSURE_TESTS" ]]; then
+  if worker_pressure_out="$(bash "$WORKER_PRESSURE_TESTS" 2>&1)"; then
+    ok "native worker/PM pressure gate: $(tail -1 <<<"$worker_pressure_out")"
+  else
+    bad "native worker/PM pressure gate" "$(tail -1 <<<"$worker_pressure_out")"
+    printf '%s\n' "$worker_pressure_out" | tail -40
+  fi
+else
+  bad "native worker/PM pressure gate present" "missing: $WORKER_PRESSURE_TESTS"
+fi
+
+# ===========================================================================
+head1 "17. Modular runtime contract gates"
+# ===========================================================================
+for modular_gate in \
+  "$KIT_ROOT/tests/adapter-manager-modules-tests.sh" \
+  "$KIT_ROOT/tests/context-adapter-contract-tests.sh" \
+  "$KIT_ROOT/tests/harness-start-contract-tests.sh" \
+  "$KIT_ROOT/tests/release-reconciler-contract-tests.sh" \
+  "$KIT_ROOT/tests/release-support-contract-tests.sh" \
+  "$KIT_ROOT/tests/session-gate-contract-tests.sh"; do
+  if [[ -f "$modular_gate" ]]; then
+    if modular_out="$(bash "$modular_gate" 2>&1)"; then
+      ok "modular runtime gate: $(basename "$modular_gate"): $(tail -1 <<<"$modular_out")"
+    else
+      bad "modular runtime gate: $(basename "$modular_gate")" "$(tail -1 <<<"$modular_out")"
+      printf '%s\n' "$modular_out" | tail -40
+    fi
+  else
+    bad "modular runtime gate present" "missing: $modular_gate"
+  fi
+done
 
 # ===========================================================================
 if (( SKIPPED > 0 )); then

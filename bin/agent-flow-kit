@@ -2,11 +2,11 @@
 # agent-flow-kit — the one lifecycle entry point (FR-22).
 #
 # Read-only:  status, adopt --inspect, verify, schema, monitor, and any --plan.
-# Mutating:   adopt, update, and the monitor's own action verbs, which write
-#             only inside the declared state directory.
+# Mutating:   adopt, update, pm-continue, and the monitor's own action verbs.
 #
-# Git fetching, pulling, branch switching, route selection, orchestration
-# activation and every external authority remain outside this executable
+# Git fetching, pulling, branch switching, route selection, and every external
+# authority remain outside this executable. pm-continue may call the declared
+# Orca presentation adapter after it durably records the handoff transition
 # (FR-28, FR-34).
 #
 # Default evaluation is deterministic and offline: no process is executed and
@@ -16,6 +16,13 @@
 # path.
 
 set -uo pipefail
+
+# Libraries are sourced before local path defaults are resolved and preserve
+# any AFK_STATE_DIR already supplied by the caller. Remember whether PM scope
+# itself was explicitly declared so a library-time legacy default cannot mask
+# the worktree-scoped default resolved below.
+_afk_pm_dir_was_declared=false
+[[ -v AFK_PM_DIR ]] && _afk_pm_dir_was_declared=true
 
 AFK_SELF="${BASH_SOURCE[0]}"
 AFK_BIN_DIR="$(cd -P -- "$(dirname -- "$AFK_SELF")" && pwd -P)"
@@ -110,11 +117,24 @@ AFK_DISPATCH_DIR="${AFK_DISPATCH_DIR:-${AFK_STATE_DIR:+$AFK_STATE_DIR/dispatch}}
 AFK_DISPATCH_WATCH_DIR="${AFK_DISPATCH_WATCH_DIR:-${AFK_DISPATCH_DIR:+$AFK_DISPATCH_DIR/watch}}"
 AFK_DISPATCH_INBOX_DIR="${AFK_DISPATCH_INBOX_DIR:-${AFK_DISPATCH_DIR:+$AFK_DISPATCH_DIR/inbox}}"
 AFK_DISPATCH_RESULT_DIR="${AFK_DISPATCH_RESULT_DIR:-${AFK_DISPATCH_DIR:+$AFK_DISPATCH_DIR/results}}"
+AFK_DISPATCH_MESSAGE_DIR="${AFK_DISPATCH_MESSAGE_DIR:-${AFK_DISPATCH_DIR:+$AFK_DISPATCH_DIR/messages}}"
 
 # The coordinator's own budget subtree: the provided usage observation and the
 # PM checkpoint, continuation and reconciliation artifacts. Read-only input and
 # kit-owned output, in the declared state directory like everything else.
-AFK_PM_DIR="${AFK_PM_DIR:-${AFK_STATE_DIR:+$AFK_STATE_DIR/pm}}"
+_afk_scope_helper="$AFK_INSTALL_ROOT/runtime-scope.sh"
+[[ -r "$_afk_scope_helper" ]] || _afk_scope_helper="$AFK_INSTALL_ROOT/adapters/runtime-scope.sh"
+if [[ -r "$_afk_scope_helper" ]]; then
+  # shellcheck disable=SC1090
+  . "$_afk_scope_helper"
+  _afk_default_pm_dir="$(afk_default_pm_dir 2>/dev/null || true)"
+else
+  _afk_default_pm_dir=""
+fi
+if [[ "$_afk_pm_dir_was_declared" != true ]]; then
+  AFK_PM_DIR="$_afk_default_pm_dir"
+fi
+unset _afk_scope_helper _afk_default_pm_dir _afk_pm_dir_was_declared
 
 afk_require_declared_paths() {
   local v
@@ -196,9 +216,18 @@ agent-flow-kit — lifecycle entry point
   agent-flow-kit pm-checkpoint --write <path> [options]
       Validate and write the coordinator's own checkpoint artifact, or with
       --continuation the hand-over artifact that makes a successor session a
-      loud owner action. Secret-free by rule, atomic, and starting no session:
-      a continuation is handed to a human, never launched.
+      loud owner action. Secret-free by rule and atomic; pm-checkpoint itself
+      never starts a session.
       Options: --json --write <path> --continuation
+
+  agent-flow-kit pm-start --harness claude|codex|opencode [--json]
+      Authorize the next exact harness event in this Orca terminal and resolved
+      worktree to register the initial PM session. It never starts a harness.
+
+  agent-flow-kit pm-continue [--ack <path>] [--json]
+      Advance the durable PM handoff state machine. It checkpoints before one
+      successor launch, requires that successor's acknowledgement, reconciles
+      ownership, and only then durably closes the proven old terminal.
 
   agent-flow-kit schema
       The documented machine contract: schema version, state, reason and
@@ -243,8 +272,8 @@ command you ran is a usage failure, not a silently ignored word.
                                 is this stamp profile's catalog min_context. One
                                 that cannot be resolved reports
                                 PM_STAMP_UNUSABLE, never falling through.
-  --session <id>                monitor --reconcile only: the successor that
-                                consumed the continuation artifact.
+  --harness <name>              pm-start only: the PM harness whose next exact
+                                event may claim the fresh registration intent.
   --write <path>                pm-checkpoint only: the submitted artifact.
   --continuation                pm-checkpoint only: write the hand-over
                                 artifact rather than the checkpoint.
@@ -277,6 +306,8 @@ Environment (declared local configuration)
   AFK_DISPATCH_RESULT_DIR AFK_MONITOR_POLL_SECONDS AFK_PM_DIR AFK_ROUTER_CATALOG
   AFK_MONITOR_BACKOFF_CEILING_SECONDS AFK_MONITOR_HEARTBEAT_SECONDS
   AFK_MONITOR_PROTECTED_BRANCHES
+  AFK_PM_SUCCESSOR_LAUNCHER AFK_PM_TERMINAL_CLOSER AFK_PM_ACK_FILE
+  AFK_PM_SESSION_ADAPTER
 USAGE
 }
 
@@ -306,12 +337,16 @@ afk_option_allowed() { # <command> <option>
       esac ;;
     monitor)
       case "$2" in
-        --json|--live|--register|--reconcile|--cleanup|--pm-stamp|--session) return 0 ;;
+        --json|--live|--register|--reconcile|--cleanup|--pm-stamp) return 0 ;;
       esac ;;
+    pm-start)
+      case "$2" in --json|--harness) return 0 ;; esac ;;
     pm-checkpoint)
       case "$2" in
         --json|--write|--continuation) return 0 ;;
       esac ;;
+    pm-continue)
+      case "$2" in --json|--ack) return 0 ;; esac ;;
   esac
   return 1
 }
@@ -321,7 +356,7 @@ afk_main() {
   local allow_noncanonical="false" allow_rollback="false"
   local inspect="false" plan_only="false" approval=""
   local monitor_verbs=0
-  local pm_write="" pm_continuation="false"
+  local pm_write="" pm_continuation="false" pm_harness=""
 
   cmd="${1:-help}"
   if (( $# > 0 )); then shift; fi
@@ -379,18 +414,21 @@ afk_main() {
             AFK_STAMP_FILE="$2"
             shift ;;
           --continuation)              pm_continuation="true" ;;
-          --pm-stamp|--session|--write)
+          --ack)
+            if (( $# < 2 )); then afk_warn "--ack requires a successor acknowledgement document"; return "$AFK_EXIT_USAGE"; fi
+            AFK_PM_ACK_FILE="$2"; shift ;;
+          --pm-stamp|--write|--harness)
             # The VALUE is a path or an id and is never echoed back in a
             # diagnostic; the option name is closed vocabulary, so it is.
             if (( $# < 2 )); then
-              afk_warn "$1 requires its value: the coordinator's execution stamp, the successor session id, or the artifact to validate and write"
+              afk_warn "$1 requires its declared value"
               afk_usage >&2
               return "$AFK_EXIT_USAGE"
             fi
             case "$1" in
               --pm-stamp) AFK_PM_STAMP_FILE="$2" ;;
-              --session)  AFK_PM_SESSION="$2" ;;
               --write)    pm_write="$2" ;;
+              --harness)  pm_harness="$2" ;;
             esac
             shift ;;
           --target)
@@ -441,8 +479,8 @@ afk_main() {
     afk_warn "pm-checkpoint validates and writes one submitted artifact, so it needs the --write path that carries it."
     return "$AFK_EXIT_USAGE"
   fi
-  if [[ -n "$AFK_PM_SESSION" && "$AFK_MONITOR_MODE" != "reconcile" && "$AFK_MONITOR_MODE" != "cleanup" ]]; then
-    afk_warn "--session names the successor that consumed a continuation artifact, which only the reconciling pass can record: pass --reconcile."
+  if [[ "$cmd" == pm-start && "$pm_harness" != claude && "$pm_harness" != codex && "$pm_harness" != opencode ]]; then
+    afk_warn "pm-start requires --harness claude, codex, or opencode"
     return "$AFK_EXIT_USAGE"
   fi
   if (( monitor_verbs > 1 )); then
@@ -494,6 +532,14 @@ afk_main() {
     pm-checkpoint)
       afk_require_declared_paths || return "$AFK_EXIT_USAGE"
       afk_cmd_pm_checkpoint "$json_mode" "$pm_write" "$pm_continuation"
+      return $? ;;
+    pm-start)
+      afk_require_declared_paths || return "$AFK_EXIT_USAGE"
+      afk_cmd_pm_start "$json_mode" "$pm_harness"
+      return $? ;;
+    pm-continue)
+      afk_require_declared_paths || return "$AFK_EXIT_USAGE"
+      afk_cmd_pm_continue "$json_mode"
       return $? ;;
     schema)
       afk_cmd_schema || return "$AFK_EXIT_USAGE"
