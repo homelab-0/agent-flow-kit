@@ -70,6 +70,8 @@ for dep in jq curl; do command -v "$dep" >/dev/null || die "missing dependency: 
 
 ROUTER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG_FILE="${AGENT_FLOW_CONFIG:-${SUBSCRIPTIONS_FILE:-$ROUTER_DIR/subscriptions.yaml}}"
+INVENTORY_BIN="${AGENT_FLOW_HARNESS_INVENTORY:-$ROUTER_DIR/scripts/harness-inventory.sh}"
+AVAILABLE_BINDINGS_CONTRACT="${AFK_ROUTE_AVAILABLE_BINDINGS_CONTRACT:-0}"
 yq_cfg() { [[ -f "$CONFIG_FILE" ]] && command -v yq >/dev/null && yq -r "$1 // \"\"" "$CONFIG_FILE" 2>/dev/null || true; }
 
 ROUTER_URL="${AGENT_ROUTER_URL:-$(yq_cfg '.launcher.router_endpoint')}"
@@ -79,19 +81,51 @@ TOKEN_ENV="${TOKEN_ENV:-AGENT_ROUTER_TOKEN}"
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 PROFILE="$TMP/profile.json"
+INVENTORY="$TMP/available-bindings.json"
+ROUTE_REQUEST="$TMP/route-request.json"
 
 # ---- obtain the ExecutionProfile ------------------------------------------
 
 if [[ -n "$REQUEST" ]]; then
   [[ -f "$REQUEST" ]] || die "no such route request: $REQUEST" 2
   jq -e . "$REQUEST" >/dev/null || die "route request is not valid JSON"
+  jq -e 'has("available_bindings") | not' "$REQUEST" >/dev/null \
+    || die "route request already contains available_bindings — this extension is launcher-owned and capability-gated" 2
   [[ -n "$ROUTER_URL" ]] || die "no router endpoint (AGENT_ROUTER_URL or launcher.router_endpoint)" 2
   token="${!TOKEN_ENV:-}"
   [[ -n "$token" ]] || die "\$$TOKEN_ENV is empty — the caller token is never stored in config" 2
 
+  case "$AVAILABLE_BINDINGS_CONTRACT" in
+    0|false|off|'')
+      # The deployed POST /v1/route contract is the public compatibility
+      # boundary. Preserve the caller's document exactly unless the server
+      # capability has been explicitly negotiated out of band.
+      cp -- "$REQUEST" "$ROUTE_REQUEST"
+      ;;
+    1|true|on)
+      [[ -x "$INVENTORY_BIN" ]] || die "harness inventory is not executable" 2
+      "$INVENTORY_BIN" --route >"$INVENTORY" \
+        || die "harness inventory could not establish a current availability snapshot"
+      jq -se '
+        length == 1 and (.[0] |
+          keys == ["bindings","expires_at","observed_at","schema"]
+          and .schema == "afk-harness-inventory/1"
+          and (.observed_at|type)=="string" and (.expires_at|type)=="string"
+          and (.bindings|type)=="array"
+          and all(.bindings[]; keys == ["entitlement_pool","harness","model_profile"]
+            and (.harness|type)=="string" and (.harness|length)>0
+            and (.model_profile|type)=="string" and (.model_profile|length)>0
+            and ((.entitlement_pool==null) or ((.entitlement_pool|type)=="string" and (.entitlement_pool|length)>0))))
+      ' "$INVENTORY" >/dev/null || die "harness inventory returned a malformed availability snapshot"
+      jq --slurpfile available "$INVENTORY" '. + {available_bindings:$available[0]}' "$REQUEST" >"$ROUTE_REQUEST"
+      log "attached negotiated harness inventory ($(jq '.bindings | length' "$INVENTORY") exact binding(s))"
+      ;;
+    *) die "AFK_ROUTE_AVAILABLE_BINDINGS_CONTRACT must be 0/off or 1/on" 2 ;;
+  esac
+
   http="$(curl -sS -o "$PROFILE" -w '%{http_code}' -X POST "$ROUTER_URL/v1/route" \
           -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
-          --max-time 30 -d @"$REQUEST" || true)"
+          --max-time 30 -d @"$ROUTE_REQUEST" || true)"
   if [[ "$http" != "200" ]]; then
     log "POST /v1/route returned HTTP ${http:-000}:"
     jq -r '"  \(.code // "?"): \(.message // .detail // "no detail")"' "$PROFILE" >&2 2>/dev/null \

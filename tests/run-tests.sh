@@ -1841,6 +1841,51 @@ else
   bad "AC-6: make-stamp round trip on a story with a sizing estimate"
 fi
 
+# The released router request is a compatibility boundary. Local capability
+# inventory remains useful, but it is not added to POST /v1/route unless that
+# extension was explicitly negotiated with the server.
+cat > "$WORK/reqbin/inventory-must-not-run" <<'STUB'
+#!/usr/bin/env bash
+exit 99
+STUB
+chmod +x "$WORK/reqbin/inventory-must-not-run"
+rm -f "$STUB_STATE/route-request-body.json" "$WORK/route-default.stamp.json"
+if PATH="$WORK/reqbin:$PATH" STUB_ROUTE_RESPONSE="$WORK/route-response-ac6.json" \
+   AGENT_FLOW_CONFIG="$WORK/nonexistent.yaml" SUBSCRIPTIONS_FILE="" \
+   AGENT_FLOW_HARNESS_INVENTORY="$WORK/reqbin/inventory-must-not-run" \
+   AGENT_ROUTER_URL="https://router.invalid" AGENT_ROUTER_TOKEN=t \
+   bash "$MAKE_STAMP" --request "$WORK/sized-request.json" \
+     --out "$WORK/route-default.stamp.json" >/dev/null 2>&1; then
+  assert_eq "route request: default omits available_bindings" \
+    "$(jq -r 'has("available_bindings")' "$STUB_STATE/route-request-body.json")" "false"
+  if cmp "$WORK/sized-request.json" "$STUB_STATE/route-request-body.json" >/dev/null; then
+    ok "route request: default POST preserves caller JSON bytes"
+  else
+    bad "route request: default POST preserves caller JSON bytes"
+  fi
+else
+  bad "route request: default contract does not invoke inventory"
+fi
+
+cat > "$WORK/reqbin/inventory-opt-in" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' '{"schema":"afk-harness-inventory/1","observed_at":"2098-01-01T00:00:00Z","expires_at":"2098-01-01T00:05:00Z","bindings":[{"harness":"opencode","model_profile":"openai/gpt-5.3-codex","entitlement_pool":"openai-codex"}]}'
+STUB
+chmod +x "$WORK/reqbin/inventory-opt-in"
+rm -f "$STUB_STATE/route-request-body.json" "$WORK/route-opt-in.stamp.json"
+if PATH="$WORK/reqbin:$PATH" STUB_ROUTE_RESPONSE="$WORK/route-response-ac6.json" \
+   AGENT_FLOW_CONFIG="$WORK/nonexistent.yaml" SUBSCRIPTIONS_FILE="" \
+   AGENT_FLOW_HARNESS_INVENTORY="$WORK/reqbin/inventory-opt-in" \
+   AFK_ROUTE_AVAILABLE_BINDINGS_CONTRACT=1 \
+   AGENT_ROUTER_URL="https://router.invalid" AGENT_ROUTER_TOKEN=t \
+   bash "$MAKE_STAMP" --request "$WORK/sized-request.json" \
+     --out "$WORK/route-opt-in.stamp.json" >/dev/null 2>&1; then
+  assert_eq "route request: negotiated opt-in includes available_bindings" \
+    "$(jq -r '.available_bindings.bindings[0].harness' "$STUB_STATE/route-request-body.json")" "opencode"
+else
+  bad "route request: negotiated available_bindings opt-in"
+fi
+
 
 # ===========================================================================
 head1 "3d. Context budget — observed usage, phase-boundary artifacts (lane B)"
