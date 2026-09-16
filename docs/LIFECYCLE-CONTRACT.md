@@ -33,6 +33,7 @@ away from the executable that implements it.
 | `verify` | Verification of installed state against the applied-state manifest. Observes and proves; never repairs. Offline unless `--live` is requested. |
 | `monitor` | The durable worker-completion watch and the provenance-bound release of the resources a settled worker owned. One bounded pass per invocation; read-only without an action verb. |
 | `pm-continue` | Advances one durable PM handoff transition. It launches at most one successor, accepts only a matching acknowledgement, reconciles ownership, and closes only the proven old terminal. |
+| `pm-start` | Writes one exact-terminal PM registration intent for Claude, Codex, or OpenCode; the next supported native session event must claim it. |
 | `schema` | Emits this contract's vocabularies as JSON. |
 
 `--plan` turns `adopt` or `update` into a computation: it emits the complete
@@ -47,6 +48,7 @@ update
 verify
 monitor
 pm-checkpoint
+pm-start
 pm-continue
 schema
 ```

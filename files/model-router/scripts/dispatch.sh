@@ -237,7 +237,13 @@ echo \"CODEX_EXIT=\$?\""
 
 build_opencode_command() {
   local binary="$1" home="$2" path="$3" user="$4" config_dir="$5" data_dir="$6" cache_dir="$7" state_dir="$8" prompt_file="$9" model="${10}" variant="${11}" result_file="${12}" agent="${13}" worker_env="${14:-}"
-  printf '%s' "env -i HOME=$(shq "$home") PATH=$(shq "$path") USER=$(shq "$user") LANG=C.UTF-8 TERM=dumb ${worker_env:+$worker_env }AFK_WORKER_TERMINAL=\"\${ORCA_TERMINAL_HANDLE:-}\" XDG_CONFIG_HOME=$(shq "$config_dir") XDG_DATA_HOME=$(shq "$data_dir") XDG_CACHE_HOME=$(shq "$cache_dir") XDG_STATE_HOME=$(shq "$state_dir") OPENCODE_CONFIG=$(shq "$config_dir/opencode.json") OPENCODE_DISABLE_AUTOUPDATE=true OPENCODE_DISABLE_EXTERNAL_SKILLS=true OPENCODE_DISABLE_MODELS_FETCH=true OPENCODE_DISABLE_PROJECT_CONFIG=true OPENCODE_DISABLE_SHARE=true OPENCODE_DISABLE_CLAUDE_CODE=true OPENCODE_DISABLE_CLAUDE_CODE_PROMPT=true OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=true OPENCODE_DISABLE_LSP_DOWNLOAD=true $(shq "$binary") run --pure --agent $(shq "$agent") --model $(shq "$model") --variant $(shq "$variant") --format json \"\$(cat -- $(shq "$prompt_file"))\" < /dev/null > $(shq "$result_file"); echo \"OPENCODE_EXIT=\$?\""
+  local pure_arg="--pure"
+  # `--pure` disables every plugin, including the exact Hindsight plugin that
+  # prepare_worker_memory just qualified. The generated config already disables
+  # project/external configuration, so an audited required/advisory plugin is
+  # loaded from that isolated config while blind/off remain plugin-free.
+  [[ -n "${MEMORY_OPENCODE_PLUGIN:-}" ]] && pure_arg=""
+  printf '%s' "env -i HOME=$(shq "$home") PATH=$(shq "$path") USER=$(shq "$user") LANG=C.UTF-8 TERM=dumb ${worker_env:+$worker_env }AFK_WORKER_TERMINAL=\"\${ORCA_TERMINAL_HANDLE:-}\" XDG_CONFIG_HOME=$(shq "$config_dir") XDG_DATA_HOME=$(shq "$data_dir") XDG_CACHE_HOME=$(shq "$cache_dir") XDG_STATE_HOME=$(shq "$state_dir") OPENCODE_CONFIG=$(shq "$config_dir/opencode.json") OPENCODE_DISABLE_AUTOUPDATE=true OPENCODE_DISABLE_EXTERNAL_SKILLS=true OPENCODE_DISABLE_MODELS_FETCH=true OPENCODE_DISABLE_PROJECT_CONFIG=true OPENCODE_DISABLE_SHARE=true OPENCODE_DISABLE_CLAUDE_CODE=true OPENCODE_DISABLE_CLAUDE_CODE_PROMPT=true OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=true OPENCODE_DISABLE_LSP_DOWNLOAD=true $(shq "$binary") run ${pure_arg:+$pure_arg }--agent $(shq "$agent") --model $(shq "$model") --variant $(shq "$variant") --format json \"\$(cat -- $(shq "$prompt_file"))\" < /dev/null > $(shq "$result_file"); echo \"OPENCODE_EXIT=\$?\""
 }
 
 launch_binding_json() {
@@ -257,7 +263,18 @@ opencode_launch_tuple() {
 write_opencode_config() {
   local plugin="${3:-}" plugins='[]'
   [[ -n "$plugin" ]] && plugins="$(jq -nc --arg p "$plugin" '[$p]')"
-  jq -n --arg persona "{file:$2}" --argjson plugins "$plugins" '{"$schema":"https://opencode.ai/config.json",plugin:$plugins,provider:{"minimax-cn":{npm:"@ai-sdk/anthropic",name:"MiniMax Global Token Plan",options:{baseURL:"https://api.minimax.io/anthropic/v1"},models:{"MiniMax-M3":{name:"MiniMax-M3",limit:{context:1000000},variants:{none:{thinking:{type:"disabled"}},thinking:{thinking:{type:"adaptive"}}}}}}},agent:{"afk-dev":{description:"Agent Flow Kit supervised BMAD DEV worker",mode:"primary",prompt:$persona,permission:{"*":"deny",read:"allow",edit:"allow",glob:"allow",grep:"allow",list:"allow",external_directory:"deny",bash:"deny",task:"deny",skill:"deny",webfetch:"deny",websearch:"deny",question:"deny"}}}}' >"$1"
+  jq -n --arg persona "{file:$2}" --argjson plugins "$plugins" '{"$schema":"https://opencode.ai/config.json",plugin:$plugins,provider:{"minimax-cn":{npm:"@ai-sdk/anthropic",name:"MiniMax Global Token Plan",options:{baseURL:"https://api.minimax.io/anthropic/v1"},models:{"MiniMax-M3":{name:"MiniMax-M3",limit:{context:1000000,output:65536},variants:{none:{thinking:{type:"disabled"}},thinking:{thinking:{type:"adaptive"}}}}}}},agent:{"afk-dev":{description:"Agent Flow Kit supervised BMAD DEV worker",mode:"primary",prompt:$persona,permission:{"*":"deny",read:"allow",edit:"allow",glob:"allow",grep:"allow",list:"allow",external_directory:"deny",bash:"deny",task:"deny",skill:"deny",webfetch:"deny",websearch:"deny",question:"deny"}}}}' >"$1"
+}
+
+parse_opencode_result_stream() { # <jsonl>
+  jq -c -s '
+    if length > 0 and all(.[]; type=="object") and
+       (.[-1].type=="step_finish" and .[-1].part.type=="step-finish" and .[-1].part.reason=="stop") and
+       (any(.[]; .type=="error" or has("error"))|not)
+    then {reported_error:false,
+          text:([.[] | select(.type=="text" and .part.type=="text" and (.part.text|type)=="string") | .part.text] | join("\n"))}
+    else error("invalid OpenCode terminal result stream")
+    end' "$1" 2>/dev/null
 }
 
 # ---------------------------------------------------------------------------
@@ -276,13 +293,28 @@ memory_mode_is_valid() {
 hindsight_opencode_plugin() { # <home> <runtime-root>
   local home="$1" runtime="$2" f found
   for f in "$home/.config/opencode/opencode.jsonc" "$home/.config/opencode/opencode.json"; do
-    [[ -r "$f" ]] || continue
-    found="$(jq -r --arg r "$runtime" '.plugin[]? | strings | select(. == $r or . == ("file://" + $r))' "$f" 2>/dev/null | head -1)"
+    [[ -f "$f" && -r "$f" ]] || continue
+    found="$(node - "$f" "$runtime" <<'NODE' 2>/dev/null || true
+const fs = require("node:fs")
+const [path, runtime] = process.argv.slice(2)
+let source = fs.readFileSync(path, "utf8"), out = "", string = false, escape = false
+for (let i = 0; i < source.length; i++) {
+  const c = source[i], n = source[i + 1]
+  if (string) { out += c; if (escape) escape = false; else if (c === "\\") escape = true; else if (c === '"') string = false }
+  else if (c === '"') { string = true; out += c }
+  else if (c === "/" && n === "/") { out += "  "; i++; while (i + 1 < source.length && source[i + 1] !== "\n") { out += " "; i++ } }
+  else if (c === "/" && n === "*") { out += "  "; i++; while (i + 1 < source.length) { const x = source[++i], y = source[i + 1]; if (x === "*" && y === "/") { out += "  "; i++; break }; out += x === "\n" ? "\n" : " " } }
+  else out += c
+}
+out = out.replace(/,(\s*[}\]])/g, "$1")
+const parsed = JSON.parse(out)
+if (!parsed || !Array.isArray(parsed.plugin) || !parsed.plugin.every((v) => typeof v === "string")) process.exit(1)
+const matches = parsed.plugin.filter((v) => v === runtime || v === `file://${runtime}`)
+if (matches.length !== 1) process.exit(1)
+process.stdout.write(matches[0])
+NODE
+)"
     if [[ -n "$found" ]]; then printf '%s' "$found"; return 0; fi
-    # The native installer accepts JSONC. If jq cannot parse it, prove only the
-    # exact quoted runtime entry; never print or copy any other config member.
-    if grep -Fq "\"$runtime\"" "$f"; then printf '%s' "$runtime"; return 0; fi
-    if grep -Fq "\"file://$runtime\"" "$f"; then printf 'file://%s' "$runtime"; return 0; fi
   done
   return 1
 }
@@ -292,17 +324,21 @@ hindsight_wiring_present() { # <harness> <home> <runtime-root>
   case "$harness" in
     claude)
       f="$home/.claude/settings.json"
-      [[ -r "$f" ]] \
-        && grep -Fq "$runtime/dist/claude-sessionstart-hook.js" "$f" \
-        && grep -Fq "$runtime/dist/claude-hook.js" "$f" \
-        && grep -Fq "$runtime/dist/claude-stop-hook.js" "$f"
+      [[ -f "$f" && -r "$f" ]] && jq -e --arg s "$runtime/dist/claude-sessionstart-hook.js" \
+        --arg u "$runtime/dist/claude-hook.js" --arg x "$runtime/dist/claude-stop-hook.js" '
+          any(.hooks.SessionStart[]?.hooks[]? // .hooks.SessionStart[]?; (.command? // "")==$s) and
+          any(.hooks.UserPromptSubmit[]?.hooks[]? // .hooks.UserPromptSubmit[]?; (.command? // "")==$u) and
+          any(.hooks.Stop[]?.hooks[]? // .hooks.Stop[]?; (.command? // "")==$x)
+        ' "$f" >/dev/null 2>&1
       ;;
     codex)
       f="$home/.codex/hooks.json"
-      [[ -r "$f" ]] \
-        && grep -Fq "$runtime/dist/codex-sessionstart-hook.js" "$f" \
-        && grep -Fq "$runtime/dist/codex-hook.js" "$f" \
-        && grep -Fq "$runtime/dist/codex-stop-hook.js" "$f"
+      [[ -f "$f" && -r "$f" ]] && jq -e --arg s "$runtime/dist/codex-sessionstart-hook.js" \
+        --arg u "$runtime/dist/codex-hook.js" --arg x "$runtime/dist/codex-stop-hook.js" '
+          any(.hooks.SessionStart[]?.hooks[]? // .hooks.SessionStart[]?; (.command? // "")==$s) and
+          any(.hooks.UserPromptSubmit[]?.hooks[]? // .hooks.UserPromptSubmit[]?; (.command? // "")==$u) and
+          any(.hooks.Stop[]?.hooks[]? // .hooks.Stop[]?; (.command? // "")==$x)
+        ' "$f" >/dev/null 2>&1
       ;;
     opencode)
       MEMORY_OPENCODE_PLUGIN="$(hindsight_opencode_plugin "$home" "$runtime" 2>/dev/null || true)"
@@ -344,11 +380,15 @@ prepare_worker_memory() { # <mode> <harness> <home> <path> <user> <repo> <state-
     if result="$(env -i HOME="$home" PATH="$path" USER="$user" LANG=C.UTF-8 TERM=dumb \
         AFK_STATE_DIR="$state_dir" HINDSIGHT_CONFIG="$MEMORY_HINDSIGHT_CONFIG" \
         HINDSIGHT_CODING_AGENTS_HOME="$MEMORY_RUNTIME" \
-        bash "$helper" "$mode" "$repo" 2>/dev/null)"; then rc=0; else rc=$?; fi
+        /bin/bash -p "$helper" "$mode" "$repo" 2>/dev/null)"; then rc=0; else rc=$?; fi
   else
     rc=1
   fi
-  state="$(jq -r 'select(.schema=="afk-memory-context/2")|.state // "NOT_EVALUATED"' <<<"$result" 2>/dev/null || printf NOT_EVALUATED)"
+  state="$(jq -r --arg m "$mode" --arg p "$repo" '
+      select(.schema=="afk-memory-context/2" and .mode==$m and .project==$p and
+        .package=="@vectorize-io/hindsight-coding-agents" and .version=="0.6.0" and
+        .native_integration=="NOT_MUTATED" and .authoritative_evidence==true)
+      | .state // "NOT_EVALUATED"' <<<"$result" 2>/dev/null || printf NOT_EVALUATED)"
   reason="$(jq -r '.reason // "MEMORY_STATUS_UNAVAILABLE"' <<<"$result" 2>/dev/null || printf MEMORY_STATUS_UNAVAILABLE)"
   hindsight_wiring_present "$harness" "$home" "$MEMORY_RUNTIME" && wiring=true
 
@@ -522,7 +562,9 @@ context_event_consume() {
     # hand-over protocol. The retained result + artifact remain the canonical
     # continuation evidence; this event never replaces or weakens them.
     if [[ ! -f "$(retained_result_path "$story" "$cycle")" ]] \
-      || [[ "$(jq -r '.status // ""' "$(retained_result_path "$story" "$cycle")" 2>/dev/null)" != continuation_required ]] \
+      || ! jq -e --arg d "$dispatch" --arg w "$worker" '
+          .status=="continuation_required" and .launch.dispatch_id==$d and
+          .launch.worker_identity==$w' "$(retained_result_path "$story" "$cycle")" >/dev/null 2>&1 \
       || [[ "$(artifact_verdict "${story}.continuation.json" afk-continuation/1 completed current_state remaining_acceptance next_steps updated_at in_flight unretired_findings 2>/dev/null || true)" != VALID ]] \
       || [[ "$(story_id_of "$story")" != "$story_id" ]] \
       || [[ "$(continuation_story_verdict "${story}.continuation.json" "$story" 2>/dev/null || true)" != VALID ]]; then
@@ -1035,6 +1077,9 @@ load_budget_policy() { # <policy-file>
   BUDGET_CONTINUATION_CAP="$(yq -r '.continuation_cap' "$f")"
   [[ "$BUDGET_CONTINUATION_CAP" =~ ^[0-9]+$ ]] || \
     die "BUDGET_POLICY_UNREADABLE: continuation_cap in '$f' is not a whole number of cycles" "$EX_CONFIG"
+  (( BUDGET_RISK_PPM >= 0 && BUDGET_RISK_PPM < BUDGET_CHECKPOINT_PPM &&
+     BUDGET_CHECKPOINT_PPM < BUDGET_CONTINUATION_PPM && BUDGET_CONTINUATION_PPM <= 1000000 )) || \
+    die "BUDGET_POLICY_UNREADABLE: thresholds in '$f' must satisfy 0 <= sizing_risk_ratio < checkpoint_ratio < continuation_ratio <= 1" "$EX_CONFIG"
   log "budget policy: $f (method $BUDGET_METHOD, risk $(budget_ratio_decimal "$BUDGET_RISK_PPM"), checkpoint $(budget_ratio_decimal "$BUDGET_CHECKPOINT_PPM"), continuation $(budget_ratio_decimal "$BUDGET_CONTINUATION_PPM"), cap $BUDGET_CONTINUATION_CAP)"
 }
 
@@ -2884,7 +2929,14 @@ EOF
       log "claude emitted an invalid result envelope — treating the attempt as a harness error"
     fi
   elif [[ "$HARNESS" == opencode && -f "$result_file" ]]; then
-    WORKER_TEXT="$(jq -rs '[.[] | .. | strings] | join("\n")' "$result_file" 2>/dev/null)" || die "OpenCode emitted an invalid result stream" "$EX_CONFIG"
+    local opencode_envelope
+    if opencode_envelope="$(parse_opencode_result_stream "$result_file")"; then
+      WORKER_TEXT="$(jq -r .text <<<"$opencode_envelope")"
+    else
+      HARNESS_REPORTED_ERROR=true
+      WORKER_TEXT=""
+      log "OpenCode emitted an error or non-terminal result stream — treating the attempt as a harness error"
+    fi
   else
     WORKER_TEXT="$TERMINAL_TAIL"
   fi
@@ -3045,6 +3097,7 @@ EOF
     --arg digest "$STAMP_DIGEST" --arg expires "$STAMP_EXPIRES_AT" \
     --arg catalog "$STAMP_CATALOG_VERSION" \
     --arg terminal "$TERMINAL_HANDLE" \
+    --arg dispatch "$WORKER_DISPATCH_ID" --arg worker "worker:$WORKER_DISPATCH_ID" \
     --argjson attempt "$attempt_result_json" \
     --argjson placement "$placement_json" \
     --argjson budget "$(jq -n \
@@ -3085,7 +3138,7 @@ EOF
              validated:true},
       placement:$placement,
       budget:$budget,
-      launch:({orca_terminal:$terminal} + $attempt.launch),
+      launch:({orca_terminal:$terminal,dispatch_id:$dispatch,worker_identity:$worker} + $attempt.launch),
       gates:$gates}' > "${STORY}.result.json"
 
   # The per-cycle copy. `${STORY}.result.json` is what a reader opens by name

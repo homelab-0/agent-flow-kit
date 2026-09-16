@@ -97,13 +97,13 @@ render_v2_migration_live() { # source destination
   case "$HARNESS" in
     claude)
       jq --slurpfile owner "$record" --arg c "$claude_command" --arg u "$(jq -r .updater "$record")" \
-        --argjson enabled "$(jq -r .auto_update "$record")" \
+        --argjson enabled "$(jq -r .auto_update "$record")" --argjson ut "$session_start_timeout" \
         --arg p "$claude_compact" --arg i "$claude_instruction" --arg q "$claude_prompt" '
         ($owner[0].migration.legacy) as $o
         | .statusLine.command=$c
         | .hooks.SessionStart = [(.hooks.SessionStart // [])[]
             | .hooks = [(.hooks // [])[]
-                | if .command==$o.updater then (if $enabled then .command=$u else empty end)
+                | if .command==$o.updater then (if $enabled then .command=$u | .timeout=$ut else empty end)
                   elif .command==$o.instruction then .command=$i else . end]
             | select((.hooks|length)>0)]
         | .hooks.PreCompact = [(.hooks.PreCompact // [])[]
@@ -113,11 +113,11 @@ render_v2_migration_live() { # source destination
         "$source" >"$destination" ;;
     codex)
       jq --slurpfile owner "$record" --arg c "$codex_command" --arg u "$(jq -r .updater "$record")" \
-        --argjson enabled "$(jq -r .auto_update "$record")" --arg i "$codex_instruction" '
+        --argjson enabled "$(jq -r .auto_update "$record")" --argjson ut "$session_start_timeout" --arg i "$codex_instruction" '
         ($owner[0].migration.legacy) as $o
         | .hooks.SessionStart = [(.hooks.SessionStart // [])[]
             | .hooks = [(.hooks // [])[]
-                | if .command==$o.updater then (if $enabled then .command=$u else empty end)
+                | if .command==$o.updater then (if $enabled then .command=$u | .timeout=$ut else empty end)
                   elif .command==$o.command then .command=$c
                   elif .command==$o.instruction then .command=$i else . end]
             | select((.hooks|length)>0)]
@@ -376,10 +376,10 @@ migrate_v2_record() {
       atomic_json "$src" "$backup"; digest="$(file_sha256 "$backup")" || migration_conflict
       tmp="$(mktemp "${target}.afk-v2.XXXXXX")" || migration_conflict
       jq --slurpfile owner "$record" --arg c "$claude_command" --arg u "$updater" --argjson enabled "$auto_update" \
-        --arg p "$claude_compact" --arg i "$claude_instruction" --arg q "$claude_prompt" '
+        --argjson ut "$session_start_timeout" --arg p "$claude_compact" --arg i "$claude_instruction" --arg q "$claude_prompt" '
         ($owner[0]) as $o | .statusLine.command=$c
         | .hooks.SessionStart=[(.hooks.SessionStart//[])[]
-            | .hooks=[(.hooks//[])[] | if .command==$o.updater then (if $enabled then .command=$u else empty end) elif .command==$o.instruction then .command=$i else . end]
+            | .hooks=[(.hooks//[])[] | if .command==$o.updater then (if $enabled then .command=$u | .timeout=$ut else empty end) elif .command==$o.instruction then .command=$i else . end]
             | select((.hooks|length)>0)]
         | .hooks.PreCompact=[(.hooks.PreCompact//[])[] | .hooks=[(.hooks//[])[] | if .command==$o.compact then .command=$p else . end]]
         | .hooks.UserPromptSubmit=[(.hooks.UserPromptSubmit//[])[] | .hooks=[(.hooks//[])[] | if .command==$o.prompt then .command=$q else . end]]' "$target" >"$tmp" || migration_conflict
@@ -430,10 +430,10 @@ migrate_v2_record() {
         || migration_conflict
       atomic_json "$src" "$backup"; digest="$(file_sha256 "$backup")" || migration_conflict
       tmp="$(mktemp "${hooks}.afk-v2.XXXXXX")" || migration_conflict
-      jq --slurpfile owner "$record" --arg c "$codex_command" --arg u "$updater" --argjson enabled "$auto_update" --arg i "$codex_instruction" '
+      jq --slurpfile owner "$record" --arg c "$codex_command" --arg u "$updater" --argjson enabled "$auto_update" --argjson ut "$session_start_timeout" --arg i "$codex_instruction" '
         ($owner[0]) as $o
         | .hooks.SessionStart=[(.hooks.SessionStart//[])[]
-            | .hooks=[(.hooks//[])[] | if .command==$o.updater then (if $enabled then .command=$u else empty end) elif .command==$o.command then .command=$c elif .command==$o.instruction then .command=$i else . end]
+            | .hooks=[(.hooks//[])[] | if .command==$o.updater then (if $enabled then .command=$u | .timeout=$ut else empty end) elif .command==$o.command then .command=$c elif .command==$o.instruction then .command=$i else . end]
             | select((.hooks|length)>0)]
         | .hooks.PreCompact=[(.hooks.PreCompact//[])[] | .hooks=[(.hooks//[])[] | if .command==$o.command then .command=$c else . end]]' "$hooks" >"$tmp" || migration_conflict
       old_identity="$(file_sha256 "$hooks")"; new_identity="$(file_sha256 "$tmp")"; rm -f -- "$tmp"
@@ -558,7 +558,7 @@ rollback_pending_install() {
         recovery_tmp "$hooks" \
           || { rm -f -- "${tmp:-}"; printf 'adapter-manager: RECOVERY_VERIFICATION_FAILED\n' >&2; exit 3; }
         tmp2="$RECOVERY_TMP_PATH"; tmp2_inode="$RECOVERY_TMP_INODE"
-        jq --slurpfile o "$record" --slurpfile prior "$backup" --argjson ut 30 '
+        jq --slurpfile o "$record" --slurpfile prior "$backup" --argjson ut "$session_start_timeout" '
           ($o[0]) as $r
           | ({hooks:[{type:"command",command:$r.updater,timeout:$ut}]}) as $u
           | ({hooks:[{type:"command",command:$r.command,timeout:3}]}) as $p

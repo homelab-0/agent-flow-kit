@@ -943,9 +943,18 @@ qualify_candidate() {
     --arg branch "$TRUST_BRANCH" --arg root "$TRUST_ROOT" '
       .schema=="afk-release-policy/2" and .trust.remote_url==$remote and
       .trust.ref==$ref and .trust.default_branch==$branch and
-      .trust.repository_root_commit==$root and .automatic_rollback_bypass==false
+      .trust.repository_root_commit==$root and
+      (.fetch_timeout_seconds|type=="number" and .>=1 and .<=300) and
+      (.qualification_timeout_seconds|type=="number" and .>=1 and .<=600) and
+      (.check_interval_seconds|type=="number" and .>=0 and .<=86400) and
+      .offline_fallback=="RETAIN_PROVEN_LAST_GOOD" and
+      .rollout.mode=="cohort_metadata_only" and .rollout.authoritative_promotion==false and
+      .automatic_rollback_bypass==false
     ' "$path/lifecycle/release-policy.json" >/dev/null 2>&1 || return 1
   qualify_candidate_behavior "$path" "$bound" "$seconds" || return 1
+  candidate_sandbox_command "$path" "$release_root" "$bound" "$seconds" \
+    /bin/bash -p /candidate/tests/release-update-tests.sh --candidate-smoke /candidate \
+    >/dev/null 2>&1 || return 1
   candidate_is_clean "$path" || return 1
   QUALIFIED_CANDIDATE_ID="$(candidate_identity "$path")"
   [[ -n "$QUALIFIED_CANDIDATE_ID" ]]
@@ -993,6 +1002,14 @@ prove_last_good() {
   "$JQ_EXEC" -e '.kind=="lifecycle_result" and .overall.exit_code==0 and .extra.verification.verified==true' <<<"$verified" >/dev/null 2>&1 || return 1
   LAST_GOOD=true; LAST_GOOD_VERIFIED=true; APPLIED_REVISION="$revision"
   return 0
+}
+
+retain_last_good_or_block() { # <reason> [blocked-exit]
+  local reason="$1" blocked_exit="${2:-2}"
+  if [[ "$MODE" == apply ]] && prove_last_good; then
+    finish RETAINED "$reason" 0
+  fi
+  finish BLOCKED "$reason" "$blocked_exit"
 }
 
 validate_plan() {
@@ -1076,31 +1093,31 @@ fetch_candidate_revision
 fetch_rc=$?
 if [[ $fetch_rc -ne 0 ]]; then
   case "$fetch_rc" in
-    10) finish BLOCKED REQUIRED_BOUND_UNAVAILABLE 2 ;;
-    11) finish BLOCKED RELEASE_MIRROR_UNUSABLE 2 ;;
-    17) finish BLOCKED SOURCE_NOT_FORWARD_ANCESTOR 2 ;;
-    15|16) finish BLOCKED FETCHED_HISTORY_UNTRUSTED 2 ;;
-    12|13) finish BLOCKED RELEASE_MIRROR_UNTRUSTED 2 ;;
+    10) retain_last_good_or_block REQUIRED_BOUND_UNAVAILABLE ;;
+    11) retain_last_good_or_block RELEASE_MIRROR_UNUSABLE ;;
+    17) retain_last_good_or_block SOURCE_NOT_FORWARD_ANCESTOR ;;
+    15|16) retain_last_good_or_block FETCHED_HISTORY_UNTRUSTED ;;
+    12|13) retain_last_good_or_block RELEASE_MIRROR_UNTRUSTED ;;
     14)
       if prove_last_good; then finish RETAINED FETCH_UNAVAILABLE 0; fi
       finish BLOCKED FETCH_UNAVAILABLE_NO_PROVEN_LAST_GOOD 2
       ;;
-    *) finish BLOCKED FETCH_FAILED_UNCLASSIFIED 2 ;;
+    *) retain_last_good_or_block FETCH_FAILED_UNCLASSIFIED ;;
   esac
 fi
 
-candidate="$(materialize_candidate)" || finish BLOCKED CANDIDATE_CHECKOUT_FAILED 2
+candidate="$(materialize_candidate)" || retain_last_good_or_block CANDIDATE_CHECKOUT_FAILED
 qualify_candidate "$candidate"
 qualification_rc=$?
 case "$qualification_rc" in
   0) : ;;
-  2) finish BLOCKED CANDIDATE_SANDBOX_UNAVAILABLE 2 ;;
-  *) finish BLOCKED CANDIDATE_QUALIFICATION_FAILED 2 ;;
+  2) retain_last_good_or_block CANDIDATE_SANDBOX_UNAVAILABLE ;;
+  *) retain_last_good_or_block CANDIDATE_QUALIFICATION_FAILED ;;
 esac
 
 trusted_lifecycle_capture "$candidate" update --json --plan 2>/dev/null || true
 plan_doc="$CAPTURED_OUTPUT"
-validate_plan "$plan_doc" || finish BLOCKED PLAN_NOT_SAFE_TO_APPLY 2
+validate_plan "$plan_doc" || retain_last_good_or_block PLAN_NOT_SAFE_TO_APPLY
 disposition="$("$JQ_EXEC" -r '.extra.plan.disposition' <<<"$plan_doc")"
 if [[ "$MODE" == plan ]]; then
   [[ "$disposition" == NO_CHANGE ]] && finish CURRENT PLAN_VERIFIED_NO_CHANGE 0

@@ -66,7 +66,7 @@ APPROVED_HOME="$(cfg '.launcher.approved_home' AGENT_FLOW_APPROVED_HOME "$(passw
 CONFIGURED_PATH="$(cfg '.launcher.approved_path' AGENT_FLOW_APPROVED_PATH '')"
 default_path_for() { local p d=""; p="$(command -v -- "$1" 2>/dev/null || true)"; [[ -n "$p" ]] && d="$(dirname "$p")"; printf '%s' "${d:+$d:}/usr/local/bin:/usr/bin:/bin"; }
 CLAUDE_BIN="$(cfg '.launcher.harness_binaries.claude' AFK_CLAUDE_BIN claude)"
-CODEX_BIN=codex
+CODEX_BIN="$(cfg '.launcher.harness_binaries.codex' AFK_CODEX_BIN codex)"
 OPENCODE_BIN="$(cfg '.launcher.harness_binaries.opencode' AFK_OPENCODE_BIN opencode)"
 CLAUDE_PATHS="${CONFIGURED_PATH:-$(default_path_for "$CLAUDE_BIN")}"; CODEX_PATHS="${CONFIGURED_PATH:-$(default_path_for "$CODEX_BIN")}"; OPENCODE_PATHS="${CONFIGURED_PATH:-$(default_path_for "$OPENCODE_BIN")}"; DEVIN_PATHS="${CONFIGURED_PATH:-$(default_path_for devin)}"
 APPROVED_USER="$(id -un)"

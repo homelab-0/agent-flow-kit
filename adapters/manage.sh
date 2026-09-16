@@ -56,7 +56,7 @@ session_start="$ADAPTER_ROOT/bin/afk-session-start"
 if [[ ! -e "$session_start" && -x "$ADAPTER_ROOT/../bin/afk-session-start" ]]; then
   session_start="$(cd "$ADAPTER_ROOT/.." && pwd -P)/bin/afk-session-start"
 fi
-session_start_timeout=30
+session_start_timeout=120
 afk_auto_update_supported() { [[ "${OSTYPE:-}" == linux* ]]; }
 auto_update=false
 afk_auto_update_supported && auto_update=true
@@ -74,6 +74,7 @@ RECOVERED_PENDING=false
 migrate_v2_record
 recover_v2_migration
 recover_pending_install
+upgrade_legacy_updater_timeout || { printf 'adapter-manager: USER_CONFIG_CONFLICT\n' >&2; exit 3; }
 if [[ "$RECOVERED_PENDING" == true && "$ACTION" == remove ]]; then printf 'remove:%s:OK\n' "$HARNESS"; exit 0; fi
 
 if [[ "$HARNESS" == claude ]]; then

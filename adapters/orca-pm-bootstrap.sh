@@ -61,4 +61,4 @@ export AFK_RUNTIME_ROLE=PM AFK_PM_TRANSITION_ID="$tid" AFK_PM_DIR="$pm_dir"
 export ORCA_WORKTREE_ID="$observed_id" ORCA_WORKTREE_PATH="$observed_path"
 [[ -z "$run_id" ]] || export ORCA_RUN_ID="$run_id"
 if [[ "$harness" == opencode ]]; then exec "$harness_bin" --prompt "$resume"; fi
-exec "$harness_bin" "$resume"
+exec "$harness_bin" -- "$resume"

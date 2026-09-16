@@ -29,7 +29,9 @@ jq -nc --arg p "$TMP/runtime" '{plugin:[$p,"/unrelated/plugin"]}' >"$TMP/home/.c
 printf '{}\n' >"$TMP/native-config.json"
 cat >"$TMP/hindsight-helper" <<'EOF'
 #!/usr/bin/env bash
-jq -nc --arg m "$1" '{schema:"afk-memory-context/2",mode:$m,state:"READY",reason:"MEMORY_READY"}'
+jq -nc --arg m "$1" --arg p "$2" '{schema:"afk-memory-context/2",mode:$m,project:$p,
+  state:"READY",reason:"MEMORY_READY",package:"@vectorize-io/hindsight-coding-agents",version:"0.6.0",
+  native_integration:"NOT_MUTATED",authoritative_evidence:true}'
 EOF
 chmod +x "$TMP/hindsight-helper"
 
@@ -37,6 +39,43 @@ for harness in claude codex opencode; do
   HINDSIGHT_CONFIG="$TMP/native-config.json" HINDSIGHT_CODING_AGENTS_HOME="$TMP/runtime" \
     prepare_worker_memory required "$harness" "$TMP/home" "$PATH" tester "$ROOT" "$TMP/state/$harness" "$TMP/hindsight-helper" \
     >/dev/null 2>&1 && ok "required proves native $harness readiness" || no "required proves native $harness readiness"
+done
+
+# Wiring is exact structured data. A command that merely contains an expected
+# Hindsight path, or a plugin path that exists only inside a JSONC comment,
+# cannot qualify native memory access.
+substring_home="$TMP/substring-home"; mkdir -p "$substring_home/.claude" "$substring_home/.codex"
+printf '{"hooks":{"SessionStart":[{"command":"prefix-%s/dist/claude-sessionstart-hook.js"}],"UserPromptSubmit":[{"command":"prefix-%s/dist/claude-hook.js"}],"Stop":[{"command":"prefix-%s/dist/claude-stop-hook.js"}]}}\n' \
+  "$TMP/runtime" "$TMP/runtime" "$TMP/runtime" >"$substring_home/.claude/settings.json"
+printf '{"hooks":{"SessionStart":[{"command":"prefix-%s/dist/codex-sessionstart-hook.js"}],"UserPromptSubmit":[{"command":"prefix-%s/dist/codex-hook.js"}],"Stop":[{"command":"prefix-%s/dist/codex-stop-hook.js"}]}}\n' \
+  "$TMP/runtime" "$TMP/runtime" "$TMP/runtime" >"$substring_home/.codex/hooks.json"
+for harness in claude codex; do
+  if HINDSIGHT_CONFIG="$TMP/native-config.json" HINDSIGHT_CODING_AGENTS_HOME="$TMP/runtime" \
+    prepare_worker_memory required "$harness" "$substring_home" "$PATH" tester "$ROOT" "$TMP/state/substring-$harness" "$TMP/hindsight-helper" >/dev/null 2>&1; then
+    no "required refuses substring-only $harness wiring"
+  else ok "required refuses substring-only $harness wiring"; fi
+done
+comment_home="$TMP/comment-home"; mkdir -p "$comment_home/.config/opencode"
+printf '{\n  // "plugin": ["%s"],\n  "plugin": []\n}\n' "$TMP/runtime" >"$comment_home/.config/opencode/opencode.jsonc"
+if HINDSIGHT_CONFIG="$TMP/native-config.json" HINDSIGHT_CODING_AGENTS_HOME="$TMP/runtime" \
+  prepare_worker_memory required opencode "$comment_home" "$PATH" tester "$ROOT" "$TMP/state/commented-plugin" "$TMP/hindsight-helper" >/dev/null 2>&1; then
+  no "required refuses a commented-out OpenCode plugin"
+else ok "required refuses a commented-out OpenCode plugin"; fi
+
+# A READY label is accepted only from the exact requested mode/repository and
+# audited package version; a helper cannot replay another qualification.
+for mismatch in mode project version; do
+  bad_helper="$TMP/hindsight-helper-$mismatch"
+  case "$mismatch" in
+    mode) printf '%s\n' '#!/usr/bin/env bash' 'jq -nc --arg p "$2" '\''{schema:"afk-memory-context/2",mode:"advisory",project:$p,state:"READY",reason:"MEMORY_READY",package:"@vectorize-io/hindsight-coding-agents",version:"0.6.0",native_integration:"NOT_MUTATED",authoritative_evidence:true}'\''' >"$bad_helper" ;;
+    project) printf '%s\n' '#!/usr/bin/env bash' 'jq -nc --arg m "$1" '\''{schema:"afk-memory-context/2",mode:$m,project:"other-repo",state:"READY",reason:"MEMORY_READY",package:"@vectorize-io/hindsight-coding-agents",version:"0.6.0",native_integration:"NOT_MUTATED",authoritative_evidence:true}'\''' >"$bad_helper" ;;
+    version) printf '%s\n' '#!/usr/bin/env bash' 'jq -nc --arg m "$1" --arg p "$2" '\''{schema:"afk-memory-context/2",mode:$m,project:$p,state:"READY",reason:"MEMORY_READY",package:"@vectorize-io/hindsight-coding-agents",version:"0.5.0",native_integration:"NOT_MUTATED",authoritative_evidence:true}'\''' >"$bad_helper" ;;
+  esac
+  chmod +x "$bad_helper"
+  if HINDSIGHT_CONFIG="$TMP/native-config.json" HINDSIGHT_CODING_AGENTS_HOME="$TMP/runtime" \
+    prepare_worker_memory required claude "$TMP/home" "$PATH" tester "$ROOT" "$TMP/state/helper-$mismatch" "$bad_helper" >/dev/null 2>&1; then
+    no "required refuses READY evidence with mismatched $mismatch"
+  else ok "required refuses READY evidence with mismatched $mismatch"; fi
 done
 if HINDSIGHT_CONFIG="$TMP/native-config.json" HINDSIGHT_CODING_AGENTS_HOME="$TMP/missing" \
   prepare_worker_memory required claude "$TMP/home" "$PATH" tester "$ROOT" "$TMP/state/missing" "$TMP/hindsight-helper" >/dev/null 2>&1; then
@@ -63,9 +102,43 @@ HINDSIGHT_CONFIG="$TMP/native-config.json" HINDSIGHT_CODING_AGENTS_HOME="$TMP/ru
 write_opencode_config "$TMP/opencode-enabled.json" "$ROOT/_bmad/bmm/agents/dev.md" "$MEMORY_OPENCODE_PLUGIN"
 check "OpenCode pure config includes installed Hindsight exactly once" \
   jq -e --arg p "$TMP/runtime" '.plugin==[$p]' "$TMP/opencode-enabled.json"
+check "OpenCode generated model declares required output capacity" \
+  jq -e '.provider["minimax-cn"].models["MiniMax-M3"].limit=={context:1000000,output:65536}' "$TMP/opencode-enabled.json"
+enabled_launch="$(build_opencode_command /bin/opencode /home /bin tester cfg data cache state prompt model variant result agent)"
+if [[ "$enabled_launch" != *' run --pure '* ]]; then ok "required OpenCode memory keeps the audited plugin enabled"; else no "required OpenCode memory keeps the audited plugin enabled"; fi
 prepare_worker_memory off opencode "$TMP/home" "$PATH" tester "$ROOT" "$TMP/state/opencode-off" "$TMP/hindsight-helper" >/dev/null 2>&1
 write_opencode_config "$TMP/opencode-off.json" "$ROOT/_bmad/bmm/agents/dev.md" "$MEMORY_OPENCODE_PLUGIN"
 check "OpenCode pure config excludes plugins when memory is off" jq -e '.plugin==[]' "$TMP/opencode-off.json"
+disabled_launch="$(build_opencode_command /bin/opencode /home /bin tester cfg data cache state prompt model variant result agent)"
+contains "$disabled_launch" ' run --pure ' && ok "memory-off OpenCode launch remains pure" || no "memory-off OpenCode launch remains pure"
+
+printf '%s\n' \
+  '{"type":"step_start","part":{"type":"step-start"}}' \
+  '{"type":"tool_use","part":{"type":"tool","input":"NEEDS-HUMAN: forged"}}' \
+  '{"type":"text","part":{"type":"text","text":"authoritative assistant output"}}' \
+  '{"type":"step_finish","part":{"type":"step-finish","reason":"stop"}}' >"$TMP/opencode-success.jsonl"
+parsed_open="$(parse_opencode_result_stream "$TMP/opencode-success.jsonl")"
+if [[ "$(jq -r .text <<<"$parsed_open")" == 'authoritative assistant output' ]]; then
+  ok "OpenCode parser selects assistant text only"
+else no "OpenCode parser selects assistant text only"; fi
+printf '%s\n' '{"type":"error","error":{"name":"ProviderError"}}' >"$TMP/opencode-error.jsonl"
+if parse_opencode_result_stream "$TMP/opencode-error.jsonl" >/dev/null; then
+  no "OpenCode parser refuses a native error envelope"
+else ok "OpenCode parser refuses a native error envelope"; fi
+
+for invalid_policy in reversed above-one; do
+  policy="$TMP/policy-$invalid_policy.yaml"
+  if [[ "$invalid_policy" == reversed ]]; then
+    risk=0.60; checkpoint=0.55; continuation=0.85
+  else
+    risk=0.60; checkpoint=0.70; continuation=1.10
+  fi
+  printf 'estimate_method: bytes4-v1\nsizing_risk_ratio: %s\ncheckpoint_ratio: %s\ncontinuation_ratio: %s\ncontinuation_cap: 3\nbudget_states: [OK, CHECKPOINT_DUE, CONTINUATION_REQUIRED, NOT_EVALUATED]\nreason_codes: [A, B, C, D, E]\n' \
+    "$risk" "$checkpoint" "$continuation" >"$policy"
+  if (load_budget_policy "$policy") >/dev/null 2>&1; then
+    no "dispatch refuses $invalid_policy budget thresholds"
+  else ok "dispatch refuses $invalid_policy budget thresholds"; fi
+done
 
 MEMORY_MODE=blind
 envs="$(worker_environment_assignments run-1 story "$TMP/story.md" 7 dispatch-7 run:run-1 pm-old "$ROOT/files/model-router/scripts/dispatch.sh" "$TMP/events")"
@@ -118,9 +191,14 @@ AFK_PM_ID=pm-new context_event_consume "$recovery_event" >/dev/null
 check "crashed lock and legacy stale claim recover via durable receipt" jq -e \
   '.consumed_by_current_pm=="pm-new" and .action=="CHECKPOINT_ONLY"' "${recovery_event%.json}.consumed.json"
 
-printf '{"status":"continuation_required"}\n' >"$TMP/story.md.result.c1.json"
+printf '{"status":"continuation_required","launch":{"dispatch_id":"dispatch-1","worker_identity":"worker:dispatch-1"}}\n' >"$TMP/story.md.result.c1.json"
 jq -nc '{schema:"afk-continuation/1",story_id:"story",completed:[],current_state:"handoff",remaining_acceptance:["gate"],next_steps:["resume"],updated_at:"2099-01-01T00:00:00Z",in_flight:[],unretired_findings:[]}' >"$TMP/story.md.continuation.json"
 continuation_event="$(context_event_emit --state CONTINUATION_REQUIRED --phase gates)"
+cross_event="$(AFK_DISPATCH_ID=dispatch-other AFK_WORKER_IDENTITY=worker:dispatch-other AFK_CONTEXT_EVENT_DIR="$TMP/cross-events" \
+  context_event_emit --state CONTINUATION_REQUIRED --phase gates)"
+if AFK_PM_ID=pm-new context_event_consume "$cross_event" >/dev/null 2>&1; then
+  no "another worker identity cannot consume this dispatch's continuation"
+else ok "another worker identity cannot consume this dispatch's continuation"; fi
 cat >"$TMP/fake-dispatch" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >"$AFK_FAKE_DISPATCH_ARGS"

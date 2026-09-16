@@ -31,14 +31,17 @@ adapt and record the difference in the final report.
 
 ## Phase 0 — preflight (report, fix nothing except yq)
 
-1. `command -v yq jq curl claude codex opencode hermes orca agent-stamp-validate op bunx uvx` —
+1. `command -v yq jq curl claude codex opencode hermes orca agent-stamp-validate op bunx uvx bwrap flock node realpath sha256sum timeout` —
    note missing. Claude Code, Codex, and OpenCode are first-class coding harnesses;
    Hermes is the remote human front door and is not a dispatchable worker. yq
    must be mikefarah v4+ (installing yq to a PATH dir IS yours
    to do if absent). `agent-stamp-validate` is built from the control-plane repo
    (`services/agent-router`); without it dispatch cannot validate a stamp and
    will refuse every launch, which is the correct behaviour, not a workaround
-   to route around.
+   to route around. Linux release qualification also requires `bwrap`, `flock`,
+   `node`, `realpath`, a SHA-256 tool, and GNU `timeout`. macOS presentation
+   requires Homebrew `gtimeout` when `/usr/bin/timeout` is absent; automatic
+   release reconciliation remains unqualified there regardless.
 2. Auth MODE — **not liveness.** `claude auth status` (expect `authMethod:
    claude.ai`, `apiProvider: firstParty`); `codex doctor` (auth section).
    These report what kind of credential record EXISTS. They do NOT prove it

@@ -32,7 +32,13 @@ if [[ -n "$prior" && "$prior" != "$0" ]]; then
   bound=""; command -v timeout >/dev/null 2>&1 && bound=timeout
   [[ -z "$bound" ]] && command -v gtimeout >/dev/null 2>&1 && bound=gtimeout
   if [[ -n "$bound" ]]; then
-    prior_out="$(AFK_CLAUDE_COMPOSING=1 "$bound" "${AFK_CLAUDE_PRIOR_TIMEOUT_SECONDS:-2}" bash -lc "$prior" <"$input" 2>/dev/null || true)"
+    prior_out="$(AFK_CLAUDE_COMPOSING=1 "$bound" "${AFK_CLAUDE_PRIOR_TIMEOUT_SECONDS:-2}" /bin/sh -c "$prior" <"$input" 2>/dev/null || true)"
+  else
+    # Claude stores a shell command string and normally executes it with the
+    # platform shell. Preserve that contract even where GNU timeout is absent;
+    # the owner-supplied command retains the same blocking behavior it had
+    # before AFK composition instead of being silently dropped.
+    prior_out="$(AFK_CLAUDE_COMPOSING=1 /bin/sh -c "$prior" <"$input" 2>/dev/null || true)"
   fi
 fi
 if [[ -n "$prior_out" ]]; then printf '%s | %s\n' "$afk" "$prior_out"; else printf '%s\n' "$afk"; fi

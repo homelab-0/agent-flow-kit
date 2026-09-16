@@ -28,8 +28,8 @@ function sessionEnvironment(session) {
 }
 
 function startupTimeout() {
-  const configured = Number.parseInt(process.env.AFK_SESSION_START_TIMEOUT_MS || "30000", 10)
-  return Number.isFinite(configured) ? Math.min(Math.max(configured, 1000), 120000) : 30000
+  const configured = Number.parseInt(process.env.AFK_SESSION_START_TIMEOUT_MS || "120000", 10)
+  return Number.isFinite(configured) ? Math.min(Math.max(configured, 1000), 180000) : 120000
 }
 function showUpdateFailure(client, reason) {
   try {
@@ -46,28 +46,42 @@ function reconcileAtStartup(client) {
     showUpdateFailure(client, platform === "darwin" ? "MACOS_SANDBOX_PENDING" : "AUTO_UPDATE_PLATFORM_UNSUPPORTED")
     return Promise.resolve()
   }
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let finished = false
+    let timedOut = false
     let timer
+    let killTimer
     const finish = (reason) => {
       if (finished) return
       finished = true
       if (timer) clearTimeout(timer)
+      if (killTimer) clearTimeout(killTimer)
       if (reason) showUpdateFailure(client, reason)
-      resolve()
+      if (reason) reject(Object.assign(new Error(`AFK startup refused: ${reason}`), { code: reason }))
+      else resolve()
     }
     try {
       const detached = process.platform !== "win32"
       const child = spawn(sessionStart, [], { detached, stdio: "ignore", windowsHide: true })
       child.unref()
       child.once("error", (error) => finish(error.code === "ENOENT" ? "UPDATER_UNAVAILABLE" : "UPDATER_FAILED"))
-      child.once("exit", (code) => finish(code === 0 ? null : "UPDATER_FAILED"))
+      child.once("exit", (code) => finish(timedOut ? "UPDATER_TIMEOUT" : (code === 0 ? null : "UPDATER_FAILED")))
       timer = setTimeout(() => {
+        timedOut = true
         try {
-          if (detached && child.pid) process.kill(-child.pid, "SIGKILL")
-          else child.kill("SIGKILL")
+          if (detached && child.pid) process.kill(-child.pid, "SIGTERM")
+          else child.kill("SIGTERM")
         } catch {}
-        finish("UPDATER_TIMEOUT")
+        // The reconciler traps TERM and retires its separately tracked child
+        // process-group before exiting. KILL is only the bounded last resort;
+        // startup never resumes successfully after either timeout path.
+        killTimer = setTimeout(() => {
+          try {
+            if (detached && child.pid) process.kill(-child.pid, "SIGKILL")
+            else child.kill("SIGKILL")
+          } catch {}
+          finish("UPDATER_TIMEOUT")
+        }, 2000)
       }, startupTimeout())
     } catch {
       finish("UPDATER_UNAVAILABLE")
@@ -101,6 +115,9 @@ function publish(event) {
   const provider = info.providerID || info.model?.providerID || info.provider?.id || (typeof info.provider === "string" ? info.provider : null)
   const session = info.sessionID || info.session_id || event?.properties?.sessionID || event?.properties?.session?.id ||
     ((event?.type === "session.created" || event?.type === "session.updated") ? info.id : null)
+  // Sparse global/plugin events carry no session authority. They must not
+  // replace a terminal-scoped observation from the active session.
+  if (!session) return
   const cacheDir = sessionCacheDir(session)
   if (!cacheDir) return
   const target = join(cacheDir, "runtime-opencode.json")

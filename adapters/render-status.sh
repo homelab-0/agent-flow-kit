@@ -30,7 +30,7 @@ done
 
 unavailable() { printf 'AFK UNAVAILABLE[%s]\n' "$1"; }
 [[ "$NOW" =~ ^[0-9]+$ ]] || { unavailable STATUS_CONTRACT_INVALID; exit 0; }
-[[ -r "$POLICY" ]] || { unavailable STATUS_CONTRACT_INVALID; exit 0; }
+[[ -f "$POLICY" && -r "$POLICY" ]] || { unavailable STATUS_CONTRACT_INVALID; exit 0; }
 
 read -r _BUDGET_MS _REFRESH_S STALE_S < <(jq -er '
   select(keys == ["reason_codes","refresh_interval_seconds","render_budget_ms","schema","staleness_threshold_seconds"])
@@ -39,9 +39,14 @@ read -r _BUDGET_MS _REFRESH_S STALE_S < <(jq -er '
   | [.render_budget_ms,.refresh_interval_seconds,.staleness_threshold_seconds] | @tsv
 ' "$POLICY" 2>/dev/null) || { unavailable STATUS_CONTRACT_INVALID; exit 0; }
 
+BOUND="$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)"
+[[ -n "$BOUND" ]] || { unavailable STATUS_TIMEOUT; exit 0; }
+BUDGET_SECONDS="$(awk -v ms="$_BUDGET_MS" 'BEGIN { printf "%.3f", ms / 1000 }')"
+bounded_jq() { "$BOUND" "$BUDGET_SECONDS" jq "$@"; }
+
 mtime() { stat -Lc %Y "$1" 2>/dev/null || stat -Lf %m "$1" 2>/dev/null || printf 0; }
 valid_status() {
-  jq -e 'type == "object" and .kind == "lifecycle_result"
+  [[ -f "$1" && -r "$1" ]] && bounded_jq -e 'type == "object" and .kind == "lifecycle_result"
     and (.schema_version | type == "string")
     and (.orchestration | type == "object")
     and (.dispatch_monitor | type == "object")' "$1" >/dev/null 2>&1
@@ -65,11 +70,18 @@ else
 fi
 
 runtime="$RUNTIME_CACHE_DIR/runtime-${HARNESS}.json"
+# jq programs below are single-quoted deliberately; their `$now`, `$stale`,
+# `$harness`, and `$runtime` names are jq variables, not shell expansion.
 runtime_json='{}'
-if [[ -r "$runtime" ]] && jq -e '.schema=="afk-runtime-observation/1"' "$runtime" >/dev/null 2>&1; then
+# shellcheck disable=SC2016
+if [[ -f "$runtime" && -r "$runtime" ]] && bounded_jq -e --argjson now "$NOW" --argjson stale "$STALE_S" '
+    .schema=="afk-runtime-observation/1" and
+    ((.observed_at|fromdateiso8601) as $seen | $now >= $seen and ($now-$seen) <= $stale)
+  ' "$runtime" >/dev/null 2>&1; then
   runtime_json="$(<"$runtime")"
 fi
-segment="$(jq -r --arg harness "$HARNESS" --argjson runtime "$runtime_json" '
+# shellcheck disable=SC2016
+segment="$(bounded_jq -r --arg harness "$HARNESS" --argjson runtime "$runtime_json" '
   def v($x): if ($x == null or $x == "" or $x == "-") then "NOT_EVALUATED" else ($x|tostring) end;
   def count_states($names): [.dispatch_monitor.dispatches[]? | select((.state // "") as $s | $names | index($s))] | length;
   (.orchestration.session.mode // null) as $mode |
@@ -100,7 +112,7 @@ segment="$(jq -r --arg harness "$HARNESS" --argjson runtime "$runtime_json" '
   + " sub=" + v(.runtime.subscription.state // .extra.runtime.subscription.state // null)
   + " reset=" + v(.runtime.subscription.reset_at // .extra.runtime.subscription.reset_at // null)
   + (if $needs then " !NEEDS_HUMAN!" else "" end)
-' "$DOC" 2>/dev/null)" || { unavailable STATUS_CONTRACT_INVALID; exit 0; }
+' "$DOC" 2>/dev/null)" || { unavailable STATUS_TIMEOUT; exit 0; }
 
 if [[ "$SOURCE" == "STALE" ]]; then
   printf 'STALE[%ss] %s\n' "$AGE" "$segment"

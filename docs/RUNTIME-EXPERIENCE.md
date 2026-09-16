@@ -13,7 +13,8 @@ state, and subscription/reset data. `refresh-status-cache.sh` is the separate
 slow producer: harness hooks/plugins start it in the background and it writes
 atomically. A render never runs the known multi-second lifecycle status command.
 Default cache paths are scoped by a hash of the exact Orca terminal handle; if
-no handle is present they are scoped by the canonical working-directory path.
+no handle is present they require a harness-provided session ID and are scoped
+by that ID. Without either identity the adapter publishes no default cache.
 The hash is a namespace, not authority. Explicit `AFK_STATUS_CACHE` and
 `AFK_STATUS_CACHE_DIR` paths retain their declared meaning. This prevents two
 concurrent harness sessions from exchanging model, context, or status data.
@@ -68,15 +69,18 @@ registers one local plugin beside the existing Hindsight and Orca plugins. It
 awaits one bounded stable-runtime reconcile before normal event callbacks on
 Linux,
 publishes message/session metadata, and shows an event-driven AFK toast. An
-updater failure is a visible warning and is never retried by later events. On
+updater failure is a visible warning and refuses plugin startup, so an
+unverified Linux session cannot continue through the AFK entrypoint. It is not
+retried by later events because no callbacks are registered. On
 macOS it skips that reconcile, shows `AFK UNAVAILABLE[MACOS_SANDBOX_PENDING]`,
 and continues registering normal status events. OpenCode
 v1 documents no persistent custom status-line API, so that surface is explicitly
 not qualified. Removal filters only AFK's exact hook/plugin and restores the
 prior native status-line value. Credential references are not changed.
-Valid OpenCode configuration that contains JSON-with-comments is detected but
-not rewritten by this release; installation refuses with
-`USER_CONFIG_UNREADABLE` instead of stripping comments or corrupting the file.
+Valid OpenCode JSON-with-comments is edited structurally while retaining owner
+comments, trailing commas, ordering, and unrelated plugins. Removal restores
+the exact pre-install bytes. Ambiguous or duplicate plugin members refuse with
+`USER_CONFIG_UNREADABLE` or `USER_CONFIG_CONFLICT` rather than guessing.
 
 Hermes presentation uses `adapters/hermes/status-card.sh`. When invoked inside
 an Orca-managed Hermes terminal it schedules the same persistent tab-title
@@ -133,9 +137,10 @@ a no-op rather than an invented context estimate.
 
 ## Host updates
 
-`bin/afk-session-freshness` is the cheap offline session-start check. It compares
-the source revision with the applied revision and reports `CURRENT`,
-`UPDATE_AVAILABLE`, or an explicit unavailable reason.
+`bin/afk-session-freshness` is the cheap, non-authoritative offline observation.
+It compares the locally accepted revision with the applied revision and reports
+`ACCEPTED_LOCALLY`, `UNPROVEN`, `MISMATCH`, or `NOT_EVALUATED`; it never fetches
+and therefore cannot claim that the remote source is current.
 
 `bin/afk-release-reconcile --plan` and `bin/afk-release-reconcile --apply` are
 the Linux host-scoped reconciliation modes. The remote, ref, and trust root are

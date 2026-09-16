@@ -677,7 +677,7 @@ afk_pm_apply() {
   # The same parts-per-million arithmetic and boundary equality as a worker's.
   if [[ -n "$window" && "$usage" != "null" && "$reason" != "PM_STAMP_UNUSABLE" ]]; then
     if ck="$(afk_pm_policy_ppm checkpoint_ratio)" && cont="$(afk_pm_policy_ppm continuation_ratio)" \
-       && [[ -n "$ck" && -n "$cont" ]]; then
+       && [[ -n "$ck" && -n "$cont" ]] && (( ck >= 0 && ck < cont && cont <= 1000000 )); then
       ppm=$(( usage * 1000000 / window ))
       ratio="$(awk -v p="$ppm" 'BEGIN { printf "%.6f", p / 1000000 }')"
       if   (( ppm >= cont )); then state="CONTINUATION_REQUIRED"; reason="PM_CONTINUATION_REQUIRED"
@@ -981,7 +981,7 @@ afk_pm_secret_bearing() { # <document> -> 0 when it must be refused
 
 # Validated first, then settled through the kit's atomic state writer, so a
 # refused submission leaves what is on disk byte-identical, never half-replaced.
-afk_cmd_pm_checkpoint() { # <json-mode> <submitted path> <continuation: true|false>
+afk_cmd_pm_checkpoint_locked() { # <json-mode> <submitted path> <continuation: true|false>
   local json_mode="$1" path="$2" continuation="$3" schema target doc handoff candidate_sha
   AFK_R_COMMAND="pm-checkpoint"
   AFK_R_REQUIRE_SOURCE="false"; AFK_R_FORCED_EXIT=""; AFK_R_NEXT_ACTION=""
@@ -1041,6 +1041,22 @@ afk_cmd_pm_checkpoint() { # <json-mode> <submitted path> <continuation: true|fal
   AFK_R_FORCED_EXIT="$AFK_EXIT_OK"
   afk_pm_apply
   afk_emit_result "$json_mode"
+}
+
+afk_cmd_pm_checkpoint() { # <json-mode> <submitted path> <continuation: true|false>
+  local lock_rc=0 command_rc
+  afk_lock_acquire || lock_rc=$?
+  if (( lock_rc != 0 )); then
+    afk_warn "the host lifecycle lock is held or cannot be judged; the PM artifact was not changed"
+    return "$AFK_EXIT_OWNER_ACTION"
+  fi
+  afk_cmd_pm_checkpoint_locked "$@"
+  command_rc=$?
+  afk_lock_release || {
+    afk_warn "the PM artifact was processed but its lifecycle lock could not be released safely"
+    return "$AFK_EXIT_OWNER_ACTION"
+  }
+  return "$command_rc"
 }
 
 # --- verification -----------------------------------------------------------
@@ -1419,7 +1435,7 @@ afk_cmd_schema() {
       supported_orchestration_state_major: $orch_major,
       supported_dispatch_schema_major: $dispatch_major,
       commands: ["status", "adopt --inspect", "adopt", "update", "verify", "monitor",
-                 "pm-checkpoint", "pm-continue", "schema"],
+                 "pm-checkpoint", "pm-start", "pm-continue", "schema"],
       component_states: ["CURRENT", "UPDATE_AVAILABLE", "LOCAL_ADAPTATION", "LOCAL_DRIFT",
                          "EXTERNAL_STATE", "UNKNOWN", "BROKEN", "INCOMPATIBLE",
                          "MIGRATION_REQUIRED", "INTERRUPTED", "UNAVAILABLE", "NOT_EVALUATED",

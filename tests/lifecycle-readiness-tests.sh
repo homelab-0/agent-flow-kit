@@ -1580,6 +1580,16 @@ AGENT_FLOW_BUDGET_POLICY="$TMPROOT/no-such-policy.yaml" run_afk status --json
 assert_eq "an unreadable policy is never a default" "$(pmb reason)" "PM_BUDGET_POLICY_UNREADABLE"
 assert_eq "and nothing is banded without one"       "$(pmb state)" "NOT_EVALUATED"
 
+for invalid_policy in reversed above-one; do
+  if [[ "$invalid_policy" == reversed ]]; then checkpoint=0.90; continuation=0.80
+  else checkpoint=0.70; continuation=1.10; fi
+  printf 'checkpoint_ratio: %s\ncontinuation_ratio: %s\n' "$checkpoint" "$continuation" \
+    >"$TMPROOT/pm-policy-$invalid_policy.yaml"
+  AGENT_FLOW_BUDGET_POLICY="$TMPROOT/pm-policy-$invalid_policy.yaml" run_afk status --json
+  assert_eq "$invalid_policy PM thresholds are not banded" "$(pmb state)" "NOT_EVALUATED"
+  assert_eq "$invalid_policy PM thresholds report policy failure" "$(pmb reason)" "PM_BUDGET_POLICY_UNREADABLE"
+done
+
 pm_obs 200000 100000
 run_afk status --json
 assert_eq "the pm_budget block presents exactly the declared members" \

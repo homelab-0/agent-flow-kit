@@ -33,6 +33,19 @@ out_a="$(env -u AFK_STATUS_CACHE -u AFK_STATUS_CACHE_DIR XDG_CACHE_HOME="$scope_
 out_b="$(env -u AFK_STATUS_CACHE -u AFK_STATUS_CACHE_DIR XDG_CACHE_HOME="$scope_cache" ORCA_TERMINAL_HANDLE=terminal-b "$ROOT/adapters/render-status.sh" --harness claude)"
 if [[ "$out_a" == *'cli=claude/Alpha'* && "$out_b" == *'cli=claude/Beta'* ]]; then ok; else no "terminal render selected another terminal's observation"; fi
 
+# Runtime observations age independently from the lifecycle cache. A stale or
+# non-regular harness observation cannot masquerade as the active model/context
+# or block the status renderer.
+jq '.observed_at="2000-01-01T00:00:00Z"|.model.value="Expired"' "$cache_a/runtime-claude.json" >"$TMP/expired-runtime.json"
+mv "$TMP/expired-runtime.json" "$cache_a/runtime-claude.json"
+out_a="$(env -u AFK_STATUS_CACHE -u AFK_STATUS_CACHE_DIR XDG_CACHE_HOME="$scope_cache" ORCA_TERMINAL_HANDLE=terminal-a "$ROOT/adapters/render-status.sh" --harness claude)"
+if [[ "$out_a" == *'cli=claude/gpt'* && "$out_a" != *Expired* ]]; then ok; else no "stale runtime observation is not presented as current"; fi
+rm -f "$cache_a/runtime-claude.json"; mkfifo "$cache_a/runtime-claude.json"
+if timeout 2 env -u AFK_STATUS_CACHE -u AFK_STATUS_CACHE_DIR XDG_CACHE_HOME="$scope_cache" ORCA_TERMINAL_HANDLE=terminal-a \
+  "$ROOT/adapters/render-status.sh" --harness claude >"$TMP/fifo-render.out"; then
+  [[ "$(<"$TMP/fifo-render.out")" == *'cli=claude/gpt'* ]] && ok || no "FIFO runtime observation falls back safely"
+else no "FIFO runtime observation cannot block rendering"; fi
+
 # Outside Orca, native hook session IDs replace the former worktree-global
 # fallback; an event with no terminal or session receives no default cache.
 non_orca_cache="$TMP/non-orca-cache"
@@ -95,7 +108,8 @@ prior="$TMP/prior-status"; received="$TMP/prior-input"
 # The generated fixture expands this at runtime.
 # shellcheck disable=SC2016
 printf '#!/usr/bin/env bash\ntee "$AFK_PRIOR_RECEIVED" >/dev/null\nprintf PRIOR-STATUS\n' >"$prior"; chmod +x "$prior"
-jq -nc --arg c "$prior" '{statusLine:{type:"command",command:$c,padding:3,refreshInterval:7,hideVimModeIndicator:true},hooks:{keep:true,SessionStart:[],PreCompact:[],UserPromptSubmit:[]}}' >"$home/.claude/settings.json"
+prior_command="$prior | sed 's/PRIOR/OWNER/'"
+jq -nc --arg c "$prior_command" '{statusLine:{type:"command",command:$c,padding:3,refreshInterval:7,hideVimModeIndicator:true},hooks:{keep:true,SessionStart:[],PreCompact:[],UserPromptSubmit:[]}}' >"$home/.claude/settings.json"
 cp "$home/.claude/settings.json" "$TMP/claude-before.json"
 "$ROOT/adapters/manage.sh" install claude --home "$home" --state-dir "$state" --adapter-root "$ROOT/adapters" >/dev/null || no "Claude install"
 "$ROOT/adapters/manage.sh" install claude --home "$home" --state-dir "$state" --adapter-root "$ROOT/adapters" >/dev/null || no "Claude reinstall"
@@ -105,7 +119,7 @@ claude_input="$TMP/claude-input.json"
 jq -nc '{session_id:"session-1",model:{id:"claude-opus",display_name:"Opus"},context_window:{total_input_tokens:42,total_output_tokens:7,context_window_size:200000,used_percentage:12},rate_limits:{five_hour:{used_percentage:21},seven_day:{used_percentage:31}}}' >"$claude_input"
 touch "$TMP/cache.json"
 out="$(AFK_STATE_DIR="$state" AFK_STATUS_CACHE="$TMP/cache.json" AFK_STATUS_CACHE_DIR="$TMP/runtime-cache" AFK_STATUS_REFRESH_SECONDS=999999 AFK_PRIOR_RECEIVED="$received" "$ROOT/adapters/claude/statusline.sh" <"$claude_input")"
-if [[ "$out" == *'cli=claude/Opus'* && "$out" == *'PRIOR-STATUS'* ]]; then ok; else no "Claude composed status"; fi
+if [[ "$out" == *'cli=claude/Opus'* && "$out" == *'OWNER-STATUS'* ]]; then ok; else no "Claude composed status preserves owner shell semantics"; fi
 if cmp "$claude_input" "$received" >/dev/null; then ok; else no "Claude prior command received exact stdin"; fi
 eq "Claude prior invoked once" "$(wc -l <"$received" | tr -d ' ')" 1
 "$ROOT/adapters/manage.sh" remove claude --home "$home" --state-dir "$state" --adapter-root "$ROOT/adapters" >/dev/null || no "Claude removal"
@@ -1500,6 +1514,21 @@ printf '[]\n' >"$orca_terminals"; printf '[]\n' >"$orca_bound"
 } >"$fake_orca"; chmod +x "$fake_orca"
 orca_env=(AFK_ORCA_BIN="$fake_orca" AFK_FAKE_ORCA_LOG="$TMP/orca-log" AFK_FAKE_WORKTREE_PATH="$ROOT" AFK_FAKE_TERMINALS="$orca_terminals" AFK_FAKE_BOUND="$orca_bound" AFK_FAKE_COMMAND="$TMP/orca-command")
 
+# Exercise the installed public PM entrypoint, not only its adapter. The command
+# must write the exact registration intent and identify itself in the lifecycle
+# result coordinators consume.
+public_pm="$TMP/public-pm"; public_pm_state="$TMP/public-pm-state"; mkdir -p "$public_pm"
+env -u CODEX_THREAD_ID "${orca_env[@]}" HOME="$home" AFK_STATE_DIR="$public_pm_state" AFK_PM_DIR="$public_pm" \
+  AFK_PM_SESSION_ADAPTER="$ROOT/adapters/pm-session.sh" ORCA_TERMINAL_HANDLE=public-pm-terminal \
+  "$ROOT/bin/agent-flow-kit" pm-start --harness codex --json >"$TMP/public-pm-result.json" \
+  || no "public pm-start succeeds"
+eq "public pm-start writes the registration intent" \
+  "$(jq -r '.schema+":"+.harness+":"+.terminal' "$public_pm/registration-intent.json")" \
+  'afk-pm-registration-intent/1:codex:public-pm-terminal'
+eq "public pm-start emits its lifecycle command" \
+  "$(jq -r '.command+":"+.extra.pm_registration.state' "$TMP/public-pm-result.json")" \
+  'pm-start:WAITING_FOR_EXACT_SESSION_EVENT'
+
 # Initial ownership always needs a fresh, explicit pm-start intent. Ambient
 # parent worktree ids are ignored, and an unlocked stale flock file is harmless.
 for harness in claude codex opencode; do
@@ -1862,6 +1891,14 @@ if env "${orca_env[@]}" AFK_FAKE_WORKTREE_ID=other-worktree AFK_OPENCODE_BIN="$T
   "$ROOT/adapters/orca-pm-bootstrap.sh" --intent "$bootstrap_pm/intent.json" >/dev/null 2>&1; then
   no "bootstrap refuses copied worktree identity"
 else ok "bootstrap refuses copied worktree identity"; fi
+
+# Claude/Codex resume text is data even when it begins with an option marker.
+option_pm="$TMP/option-pm"; mkdir -p "$option_pm"
+jq -nc --arg p "$ROOT" --arg pm "$option_pm" '{schema:"afk-pm-bootstrap-intent/1",transition_id:"pm-option",harness:"codex",resume_instruction:"--dangerous",continuation_sha256:"sha256:option",worktree:{id:"child-worktree-id",path:$p},run_id:null,pm_dir:$pm}' >"$option_pm/intent.json"
+jq -nc --arg p "$ROOT" '{schema:"afk-pm-handoff/2",transition_id:"pm-option",state:"SUCCESSOR_LAUNCHED",continuation_sha256:"sha256:option",old:{session:"o",terminal:"old",harness:"codex",worktree:{id:"child-worktree-id",path:$p}},successor:{terminal:"option-terminal",harness:"codex",worktree:{id:"child-worktree-id",path:$p}}}' >"$option_pm/handoff.json"
+env "${orca_env[@]}" AFK_CODEX_BIN="$TMP/fake-opencode" AFK_FAKE_HARNESS_ARGS="$TMP/option-harness-args" ORCA_TERMINAL_HANDLE=option-terminal \
+  "$ROOT/adapters/orca-pm-bootstrap.sh" --intent "$option_pm/intent.json"
+eq "Codex leading-dash resume is positional data" "$(<"$TMP/option-harness-args")" '2:--:--dangerous'
 
 # Durable handoff: launch once, reject spoofed/old ACK, transfer on an exact
 # successor event, recover a crash after close, and reconcile once.

@@ -169,6 +169,28 @@ record_identity_valid() { # record
         and .backup==$b and .command==$p' "$1" >/dev/null 2>&1 ;;
   esac
 }
+
+upgrade_legacy_updater_timeout() {
+  local target tmp updater_count
+  [[ "$ACTION" == install && "$session_start_timeout" != 30 && -r "$record" ]] || return 0
+  jq -e '.schema=="afk-adapter-install/3" and .phase=="active" and .auto_update==true' "$record" >/dev/null 2>&1 || return 0
+  record_identity_valid "$record" && restoration_metadata_valid "$record" || return 0
+  case "$HARNESS" in
+    claude) target="$HOME_ROOT/.claude/settings.json" ;;
+    codex) target="$HOME_ROOT/.codex/hooks.json" ;;
+    *) return 0 ;;
+  esac
+  [[ -f "$target" && ! -L "$target" ]] || return 0
+  updater_count="$(jq --arg u "$session_start" '[.hooks.SessionStart[]?.hooks[]?|select(.command==$u)]|length' "$target" 2>/dev/null || true)"
+  [[ "$updater_count" == 1 ]] || return 0
+  jq -e --arg u "$session_start" 'any(.hooks.SessionStart[]?.hooks[]?; .command==$u and .type=="command" and .timeout==30 and (has("async")|not))' "$target" >/dev/null 2>&1 || return 0
+  tmp="${target}.afk-timeout.$$"
+  jq --arg u "$session_start" --argjson t "$session_start_timeout" '
+    .hooks.SessionStart |= map(.hooks |= map(if .command==$u and .type=="command" and .timeout==30 then .timeout=$t else . end))
+  ' "$target" >"$tmp" || { rm -f -- "$tmp"; return 1; }
+  chmod --reference="$target" "$tmp" 2>/dev/null || chmod 600 "$tmp"
+  mv -f -- "$tmp" "$target"
+}
 restoration_metadata_valid() { # record
   local prior digest actual
   prior="$(jq -r '.backup // empty' "$1")"; digest="$(jq -r '.backup_sha256 // empty' "$1")"
@@ -416,13 +438,14 @@ verify_recovery_tmp() { # temp inode target
     && "$(dirname "$1")" == "$(dirname "$3")" ]]
 }
 claude_pending_safe() { # source owner-record prior-record [require-all]
-  jq -e --slurpfile owner "$2" --slurpfile prior "$3" --argjson require_all "${4:-false}" '
+  jq -e --slurpfile owner "$2" --slurpfile prior "$3" --argjson require_all "${4:-false}" --argjson current_ut "$session_start_timeout" '
     ($owner[0]) as $o
     | (if $prior[0].present and ($prior[0].value|type)=="object"
        then ($prior[0].value | .command=$o.command)
        else {type:"command",command:$o.command,refreshInterval:5} end) as $installed
     | ($o.auto_update // (($o.updater // "") != "")) as $enabled
-    | ({hooks:[{type:"command",command:$o.updater,timeout:30}]}) as $updater
+    | (if $o.schema=="afk-adapter-install/2" then 30 else $current_ut end) as $ut
+    | ({hooks:[{type:"command",command:$o.updater,timeout:$ut}]}) as $updater
     | ({matcher:"compact",hooks:[{type:"command",command:$o.instruction,timeout:3}]}) as $instruction
     | ({hooks:[{type:"command",command:$o.compact,timeout:3}]}) as $compact
     | ({hooks:[{type:"command",command:$o.prompt,timeout:3}]}) as $prompt
@@ -447,10 +470,11 @@ claude_pending_safe() { # source owner-record prior-record [require-all]
       else true end)' "$1" >/dev/null 2>&1
 }
 claude_strip_owned() { # source destination owner-record prior-record
-  jq --slurpfile owner "$3" --slurpfile prior "$4" '
+  jq --slurpfile owner "$3" --slurpfile prior "$4" --argjson current_ut "$session_start_timeout" '
     ($owner[0]) as $o
     | ($o.auto_update // (($o.updater // "") != "")) as $enabled
-    | ({hooks:[{type:"command",command:$o.updater,timeout:30}]}) as $updater
+    | (if $o.schema=="afk-adapter-install/2" then 30 else $current_ut end) as $ut
+    | ({hooks:[{type:"command",command:$o.updater,timeout:$ut}]}) as $updater
     | ({matcher:"compact",hooks:[{type:"command",command:$o.instruction,timeout:3}]}) as $instruction
     | ({hooks:[{type:"command",command:$o.compact,timeout:3}]}) as $compact
     | ({hooks:[{type:"command",command:$o.prompt,timeout:3}]}) as $prompt
@@ -468,9 +492,10 @@ claude_strip_owned() { # source destination owner-record prior-record
     | if (($prior[0].hooks_preexisting|not) and .hooks=={}) then del(.hooks) else . end' "$1" >"$2"
 }
 codex_hooks_safe() { # hooks owner-record require-all
-  jq -e --slurpfile owner "$2" --argjson require_all "$3" --argjson ut "$session_start_timeout" '
+  jq -e --slurpfile owner "$2" --argjson require_all "$3" --argjson current_ut "$session_start_timeout" '
     ($owner[0]) as $o
     | ($o.auto_update // (($o.updater // "") != "")) as $enabled
+    | (if $o.schema=="afk-adapter-install/2" then 30 else $current_ut end) as $ut
     | ({hooks:[{type:"command",command:$o.updater,timeout:$ut}]}) as $updater
     | ({hooks:[{type:"command",command:$o.command,timeout:3}]}) as $publisher
     | ({matcher:"compact",hooks:[{type:"command",command:$o.instruction,timeout:3}]}) as $instruction

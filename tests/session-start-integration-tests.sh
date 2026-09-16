@@ -123,6 +123,47 @@ else
   not_ok 'session start ignores PATH Bash, BASH_ENV, and ambient skills-root poisoning'
 fi
 
+# Executable launch-gate matrix: acceptable labels are insufficient unless the
+# reconciler succeeded and explicitly re-proved last-good. Rejected cases reach
+# neither adapter convergence nor the requested command.
+cat >"$SECURE_RUNTIME/bin/afk-release-reconcile" <<'EOF'
+#!/bin/bash -p
+printf '%s\n' "${AFK_TEST_RECONCILE_DOCUMENT:?}"
+exit "${AFK_TEST_RECONCILE_RC:-0}"
+EOF
+chmod +x "$SECURE_RUNTIME/bin/afk-release-reconcile"
+gate_case() { # label state verified reconciler-rc expected-rc expected-effects
+  local label="$1" state="$2" verified="$3" reconciler_rc="$4" expected_rc="$5" effects="$6"
+  local case_root="$TMP/gate-$label" case_state manage_marker command_marker
+  case_state="$case_root/state"; manage_marker="$case_root/managed"; command_marker="$case_root/command"
+  mkdir -p "$case_state/adapters" "$case_root/home"
+  printf '%s\n' '{"harness":"codex","phase":"active"}' >"$case_state/adapters/codex.json"
+  set +e
+  PATH="/usr/bin:/bin" HOME="$case_root/home" AFK_STATE_DIR="$case_state" \
+    AFK_TEST_RECONCILE_RC="$reconciler_rc" \
+    AFK_TEST_RECONCILE_DOCUMENT="$(jq -nc --arg s "$state" --argjson v "$verified" '{state:$s,last_good_verified:$v}')" \
+    AFK_TEST_SKILLS_ROOT_MARKER="$case_root/skills" AFK_TEST_MANAGE_MARKER="$manage_marker" \
+    AFK_TEST_COMMAND_MARKER="$command_marker" \
+    "$SECURE_RUNTIME/bin/afk-session-start" -- /bin/sh -c 'printf invoked >"$AFK_TEST_COMMAND_MARKER"' \
+    >/dev/null 2>&1
+  actual_rc=$?
+  set -e
+  assert_eq "$label returns the declared gate result" "$actual_rc" "$expected_rc"
+  if [[ "$effects" == yes && -e "$manage_marker" && -e "$command_marker" ]]; then
+    ok "$label reaches adapter and command only after verification"
+  elif [[ "$effects" == no && ! -e "$manage_marker" && ! -e "$command_marker" ]]; then
+    ok "$label refuses before adapter and command"
+  else
+    not_ok "$label launch side effects match the gate verdict"
+  fi
+}
+gate_case current-verified CURRENT true 0 0 yes
+gate_case retained-verified RETAINED true 0 0 yes
+gate_case current-unverified CURRENT false 0 3 no
+gate_case retained-unverified RETAINED false 0 3 no
+gate_case reconciler-failed CURRENT true 2 3 no
+gate_case blocked-label BLOCKED true 0 3 no
+
 # Claude: keep existing status and hook ownership, add one stable synchronous
 # updater hook, and remove only AFK's exact fields.
 CLAUDE_HOME="$TMP/claude-home"; CLAUDE_STATE="$TMP/claude-state"
@@ -139,7 +180,7 @@ AFK_TEST_TRACE="$TRACE" "$RUNTIME/manage.sh" install claude --home "$CLAUDE_HOME
 CLAUDE_SETTINGS="$CLAUDE_HOME/.claude/settings.json"
 UPDATER="$RUNTIME/bin/afk-session-start"
 assert_eq 'Claude installs one stable updater hook' "$(jq --arg u "$UPDATER" '[.hooks.SessionStart[]?.hooks[]?|select(.command==$u)]|length' "$CLAUDE_SETTINGS")" 1
-assert_eq 'Claude updater hook is synchronous and bounded' "$(jq --arg u "$UPDATER" '[.hooks.SessionStart[]?.hooks[]?|select(.command==$u)][0] | [.type,.timeout,has("async")]|@tsv' -r "$CLAUDE_SETTINGS")" $'command\t30\tfalse'
+assert_eq 'Claude updater hook is synchronous and bounded' "$(jq --arg u "$UPDATER" '[.hooks.SessionStart[]?.hooks[]?|select(.command==$u)][0] | [.type,.timeout,has("async")]|@tsv' -r "$CLAUDE_SETTINGS")" $'command\t120\tfalse'
 assert_eq 'Claude preserves Hindsight hook position' "$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$CLAUDE_SETTINGS")" 'hindsight recall'
 assert_eq 'Claude preserves user SessionStart hook' "$(jq '[.hooks.SessionStart[]?.hooks[]?|select(.command=="owner-start")]|length' "$CLAUDE_SETTINGS")" 1
 assert_eq 'adapter installation never runs the updater' "$(wc -l <"$TRACE" 2>/dev/null || printf 0)" 0
@@ -372,12 +413,12 @@ fi
 for scoped_case in 'open-a:Alpha' 'open-b:Beta'; do
   scoped_terminal="${scoped_case%%:*}"; scoped_model="${scoped_case#*:}"
   XDG_CACHE_HOME="$TMP/open-scoped-cache" ORCA_TERMINAL_HANDLE="$scoped_terminal" \
-    AFK_TEST_MODEL="$scoped_model" AFK_TEST_PLUGIN="$RUNTIME/opencode/plugin.js" \
+    AFK_TEST_TRACE="$TRACE" AFK_TEST_MODEL="$scoped_model" AFK_TEST_SESSION="session-$scoped_terminal" AFK_TEST_PLUGIN="$RUNTIME/opencode/plugin.js" \
     node --input-type=module <<'NODE'
 import { pathToFileURL } from "node:url"
 const pluginModule = await import(pathToFileURL(process.env.AFK_TEST_PLUGIN))
 const plugin = await pluginModule.default({ client: { tui: { showToast: async () => {} } } })
-await plugin.event({ event: { type: "message.updated", properties: { info: { modelID: process.env.AFK_TEST_MODEL } } } })
+await plugin.event({ event: { type: "message.updated", properties: { info: { sessionID: process.env.AFK_TEST_SESSION, modelID: process.env.AFK_TEST_MODEL } } } })
 await new Promise((resolve) => setTimeout(resolve, 100))
 NODE
 done
@@ -389,7 +430,7 @@ assert_eq 'OpenCode terminal caches retain their own model' "$(jq -rs 'map(.mode
 # sessions in one worktree must never share sparse-event carry-forward.
 mkdir -p "$TMP/open-worktree"
 (cd "$TMP/open-worktree" && env -u ORCA_TERMINAL_HANDLE XDG_CACHE_HOME="$TMP/open-worktree-cache" \
-  AFK_TEST_PLUGIN="$RUNTIME/opencode/plugin.js" node --input-type=module <<'NODE'
+  AFK_TEST_TRACE="$TRACE" AFK_TEST_PLUGIN="$RUNTIME/opencode/plugin.js" node --input-type=module <<'NODE'
 import { pathToFileURL } from "node:url"
 const pluginModule = await import(pathToFileURL(process.env.AFK_TEST_PLUGIN))
 const plugin = await pluginModule.default({ client: { tui: { showToast: async () => {} } } })
@@ -406,28 +447,32 @@ assert_eq 'OpenCode never carries model state across sessions' \
   'session-a:AVAILABLE:Alpha|session-b:NOT_EVALUATED:-'
 
 rm -f -- "$RUNTIME/bin/afk-session-start"; : >"$TOASTS"
-AFK_TEST_TRACE="$TRACE" AFK_TEST_TOASTS="$TOASTS" AFK_TEST_PLUGIN="$RUNTIME/opencode/plugin.js" \
+AFK_TEST_TRACE="$TRACE" AFK_TEST_TOASTS="$TOASTS" AFK_TEST_REFUSAL="$TMP/open-missing-refusal" AFK_TEST_PLUGIN="$RUNTIME/opencode/plugin.js" \
   node --input-type=module <<'NODE'
 import { appendFileSync } from "node:fs"
 import { pathToFileURL } from "node:url"
 const pluginModule = await import(pathToFileURL(process.env.AFK_TEST_PLUGIN))
 const client = { tui: { showToast: async (payload) => appendFileSync(process.env.AFK_TEST_TOASTS, JSON.stringify(payload) + "\n") } }
-await pluginModule.default({ client })
+try { await pluginModule.default({ client }) }
+catch (error) { appendFileSync(process.env.AFK_TEST_REFUSAL, String(error.code || "")) }
 NODE
 assert_eq 'OpenCode missing updater is explicitly visible' "$(jq -r '.body.message' "$TOASTS")" 'AFK UNAVAILABLE[UPDATER_UNAVAILABLE]'
+assert_eq 'OpenCode missing updater refuses plugin startup' "$(<"$TMP/open-missing-refusal")" 'UPDATER_UNAVAILABLE'
 
 write_updater; : >"$TOASTS"; : >"$TRACE"
 START_EPOCH="$(date +%s)"
-AFK_TEST_TRACE="$TRACE" AFK_TEST_UPDATER_MODE=timeout AFK_SESSION_START_TIMEOUT_MS=1000 AFK_TEST_TOASTS="$TOASTS" AFK_TEST_PLUGIN="$RUNTIME/opencode/plugin.js" \
+AFK_TEST_TRACE="$TRACE" AFK_TEST_UPDATER_MODE=timeout AFK_SESSION_START_TIMEOUT_MS=1000 AFK_TEST_TOASTS="$TOASTS" AFK_TEST_REFUSAL="$TMP/open-timeout-refusal" AFK_TEST_PLUGIN="$RUNTIME/opencode/plugin.js" \
   node --input-type=module <<'NODE'
 import { appendFileSync } from "node:fs"
 import { pathToFileURL } from "node:url"
 const pluginModule = await import(pathToFileURL(process.env.AFK_TEST_PLUGIN))
 const client = { tui: { showToast: async (payload) => appendFileSync(process.env.AFK_TEST_TOASTS, JSON.stringify(payload) + "\n") } }
-await pluginModule.default({ client })
+try { await pluginModule.default({ client }) }
+catch (error) { appendFileSync(process.env.AFK_TEST_REFUSAL, String(error.code || "")) }
 NODE
 ELAPSED=$(( $(date +%s) - START_EPOCH ))
 assert_eq 'OpenCode bounded timeout is explicitly visible' "$(jq -r '.body.message' "$TOASTS")" 'AFK UNAVAILABLE[UPDATER_TIMEOUT]'
+assert_eq 'OpenCode timeout refuses plugin startup' "$(<"$TMP/open-timeout-refusal")" 'UPDATER_TIMEOUT'
 if (( ELAPSED < 4 )); then ok 'OpenCode startup timeout is bounded'; else not_ok "OpenCode startup timeout is bounded (elapsed=${ELAPSED}s)"; fi
 "$RUNTIME/manage.sh" remove opencode --home "$OPEN_HOME" --state-dir "$OPEN_STATE" --adapter-root "$RUNTIME" >/dev/null
 assert_json_eq 'OpenCode removal restores plugins and credential reference' "$TMP/opencode-before.json" "$OPEN_HOME/.config/opencode/opencode.json"

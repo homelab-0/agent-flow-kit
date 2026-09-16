@@ -177,6 +177,23 @@ case "$state" in
   *) printf '%s\n' "$result"; exit 3 ;;
 esac
 
+# Native startup hooks intentionally invoke this gate without adapter flags.
+# Reconcile every adapter AFK already owns so a release that changes hook or
+# plugin shape converges the existing registration before the session starts.
+if (( ${#ADAPTERS[@]} == 0 )); then
+  for discovered in claude codex opencode hermes; do
+    record="$STATE_DIR/adapters/$discovered.json"
+    [[ -e "$record" ]] || continue
+    # shellcheck disable=SC2016 # $h is a jq variable.
+    if [[ ! -f "$record" || ! -r "$record" ]] || ! "$JQ_EXEC" -e --arg h "$discovered" '
+        .harness==$h and ((.phase // "active")=="active")' "$record" >/dev/null 2>&1; then
+      printf 'afk-session-start: adapter ownership record is unreadable: %s\n' "$discovered" >&2
+      exit 3
+    fi
+    ADAPTERS+=("$discovered")
+  done
+fi
+
 runtime=""
 if (( ${#ADAPTERS[@]} || ${#COMMAND[@]} )); then
   validate_launch_path \
