@@ -144,12 +144,15 @@ SC_SCRIPTS=("$DISPATCH" "$MAKE_STAMP" "$USAGE_CHECK" "$GH_HEALTH" \
             "$KIT_ROOT/adapters/worker-context.sh" \
             "$KIT_ROOT/adapters/pm-session.sh" \
             "$KIT_ROOT/adapters/hermes/session-start.sh" \
+            "$KIT_ROOT/adapters/hindsight.sh" \
             "$KIT_ROOT/bin/afk-release-reconcile" \
             "$KIT_ROOT/bin/afk-session-start" \
+            "$KIT_ROOT/bin/afk-session-freshness" \
             "$KIT_ROOT/tests/adapter-manager-modules-tests.sh" \
             "$KIT_ROOT/tests/context-adapter-contract-tests.sh" \
             "$KIT_ROOT/tests/harness-start-contract-tests.sh" \
             "$KIT_ROOT/tests/release-reconciler-contract-tests.sh" \
+            "$KIT_ROOT/tests/release-support-contract-tests.sh" \
             "$KIT_ROOT/tests/session-gate-contract-tests.sh" \
             "$KIT_ROOT/tests/session-start-integration-tests.sh")
 # The lifecycle surface. Checked at warning level and above, with two codes
@@ -3466,6 +3469,7 @@ for adapter_gate in \
   "$KIT_ROOT/tests/context-adapter-contract-tests.sh" \
   "$KIT_ROOT/tests/harness-start-contract-tests.sh" \
   "$KIT_ROOT/tests/release-reconciler-contract-tests.sh" \
+  "$KIT_ROOT/tests/release-support-contract-tests.sh" \
   "$KIT_ROOT/tests/session-gate-contract-tests.sh" \
   "$KIT_ROOT/tests/session-start-integration-tests.sh"; do
   if [[ -f "$adapter_gate" ]]; then
