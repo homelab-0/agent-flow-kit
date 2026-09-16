@@ -141,7 +141,11 @@ SC_SCRIPTS=("$DISPATCH" "$MAKE_STAMP" "$USAGE_CHECK" "$GH_HEALTH" \
             "$KIT_ROOT/adapters/manage-core.sh" \
             "$KIT_ROOT/adapters/manage-transactions.sh" \
             "$KIT_ROOT/adapters/worker-context.sh" \
-            "$KIT_ROOT/adapters/pm-session.sh")
+            "$KIT_ROOT/adapters/pm-session.sh" \
+            "$KIT_ROOT/adapters/hermes/session-start.sh" \
+            "$KIT_ROOT/tests/adapter-manager-modules-tests.sh" \
+            "$KIT_ROOT/tests/context-adapter-contract-tests.sh" \
+            "$KIT_ROOT/tests/harness-start-contract-tests.sh")
 # The lifecycle surface. Checked at warning level and above, with two codes
 # excluded for a structural reason rather than a stylistic one: the lifecycle
 # files are always sourced together and share one result model, so a variable
@@ -3446,6 +3450,26 @@ if [[ -f "$VISIBLE_STATUS_TESTS" ]]; then
 else
   bad "Orca-visible status gate present" "missing: $VISIBLE_STATUS_TESTS"
 fi
+
+# ===========================================================================
+head1 "13. Runtime adapter contract gates"
+# ===========================================================================
+
+for adapter_gate in \
+  "$KIT_ROOT/tests/adapter-manager-modules-tests.sh" \
+  "$KIT_ROOT/tests/context-adapter-contract-tests.sh" \
+  "$KIT_ROOT/tests/harness-start-contract-tests.sh"; do
+  if [[ -f "$adapter_gate" ]]; then
+    if adapter_out="$(bash "$adapter_gate" 2>&1)"; then
+      ok "adapter contract gate: $(basename "$adapter_gate"): $(tail -1 <<<"$adapter_out")"
+    else
+      bad "adapter contract gate: $(basename "$adapter_gate")" "$(tail -1 <<<"$adapter_out")"
+      printf '%s\n' "$adapter_out" | tail -40
+    fi
+  else
+    bad "adapter contract gate present" "missing: $adapter_gate"
+  fi
+done
 
 # ===========================================================================
 if (( SKIPPED > 0 )); then
