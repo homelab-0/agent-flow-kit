@@ -127,6 +127,7 @@ sc_check() { # <path> [extra checker args...]
 
 SC_SCRIPTS=("$DISPATCH" "$MAKE_STAMP" "$USAGE_CHECK" "$GH_HEALTH" \
             "$CLAUDE_EVIDENCE_VERIFY" "$CLAUDE_EVIDENCE_TESTS" \
+            "$KIT_ROOT/files/model-router/scripts/harness-inventory.sh" \
             "$KIT_ROOT/adapters/claude/statusline.sh" \
             "$KIT_ROOT/adapters/codex/publish.sh" \
             "$KIT_ROOT/adapters/codex/status.sh" \
