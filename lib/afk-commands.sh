@@ -476,13 +476,11 @@ afk_cmd_monitor() { # <json-mode>
     register)
       afk_monitor_register "$AFK_MONITOR_DESCRIPTOR" || true ;;
     reconcile)
-      afk_monitor_reconcile
-      afk_pm_reconcile ;;
+      afk_monitor_reconcile ;;
     cleanup)
       # Settlement follows completion in one bounded pass: consuming the inbox
       # first is what makes a just-completed worker settlable in the same run.
       afk_monitor_reconcile
-      afk_pm_reconcile
       afk_monitor_cleanup ;;
     *) : ;;
   esac
@@ -507,11 +505,12 @@ afk_cmd_monitor() { # <json-mode>
 # The kit cannot measure a human-started session's context and never tries: the
 # PM's window and usage arrive as a PROVIDED observation under the declared state
 # directory, judged by the arithmetic a worker's usage gets against thresholds
-# that exist only in the declared policy. Nothing here starts a session.
+# that exist only in the declared policy. Only the explicit pm-continue command
+# may invoke a configured successor adapter; read-only evaluation never does.
 
 AFK_PM_DIR="${AFK_PM_DIR:-${AFK_STATE_DIR:+$AFK_STATE_DIR/pm}}"
 AFK_PM_STAMP_FILE="${AFK_PM_STAMP_FILE:-}"
-AFK_PM_SESSION="${AFK_PM_SESSION:-}"
+AFK_PM_ACK_FILE="${AFK_PM_ACK_FILE:-}"
 AFK_PM_NEEDS_HUMAN="false"
 AFK_PM_RESUME=""
 AFK_PM_CONT_SCHEMA="afk-pm-continuation/1"
@@ -528,7 +527,7 @@ PM_WINDOW_UNDECLARED|No PM execution stamp was supplied and the observation decl
 PM_STAMP_UNUSABLE|A PM execution stamp was supplied explicitly but its shape or its catalog window could not be resolved, so the budget reports nothing rather than measuring against a different authority.|Fix the supplied stamp or declare the trusted catalog through AFK_ROUTER_CATALOG; a stamp passed explicitly is never silently ignored.
 PM_BUDGET_POLICY_UNREADABLE|The declared context-budget policy could not be read or is missing a threshold, and a missing threshold is never a default.|Repair the declared context-budget policy document; tuning a threshold is a policy edit and the kit carries no fallback value.
 PM_CHECKPOINT_DUE|The coordinator session occupies at or past the declared checkpoint ratio of its window.|Write the coordinator checkpoint now: agent-flow-kit pm-checkpoint --write <json>
-PM_CONTINUATION_REQUIRED|The coordinator session must hand over to a successor: a continuation artifact is outstanding, or occupancy is at or past the declared continuation ratio.|Start the successor ORCH PM session yourself in Orca with the resume instruction the artifact carries; this kit launches no session.
+PM_CONTINUATION_REQUIRED|The coordinator session must hand over to a successor: a continuation artifact is outstanding, or occupancy is at or past the declared continuation ratio.|Write the continuation artifact if needed, then run agent-flow-kit pm-continue; it persists the transition before requesting one successor.
 PM_CONTINUATION_RECONCILED|A successor coordinator session consumed the outstanding continuation artifact, so the hand-over is accounted for.|No action required: the successor is bound to the artifact it consumed.
 PM_CONTINUATION_ARTIFACT_INVALID|A PM continuation artifact is present but does not validate, so nothing can be proven to have been handed over.|Inspect the artifact by hand and rewrite it through pm-checkpoint --continuation; an unreadable hand-over is never treated as one.
 PM_ARTIFACT_SECRET_BEARING|A submitted PM artifact carries a secret-looking member, and a coordinator artifact is secret-free by rule.|Remove the secret-bearing member and resubmit; the refused value was never echoed and nothing was written.
@@ -576,15 +575,45 @@ afk_pm_catalog_window() { # <model profile> -> token count
 
 # Provenance is RECORDED, never inferred: a document that declares none is
 # malformed, not a hand-written observation by default.
+afk_pm_owner_json() {
+  local now
+  [[ -n "$AFK_PM_DIR" && -f "$AFK_PM_DIR/ownership.json" ]] || return 1
+  now="$(date +%s)"
+  jq -ce --argjson now "$now" 'def s: type=="string" and length>0;
+    select(.schema=="afk-pm-ownership/2" and .owned==true and .role=="PM" and
+      (.harness|IN("claude","codex","opencode")) and (.session|s) and (.terminal|s) and
+      (.worktree.id|s) and (.worktree.path|s) and (.observed_epoch|type)=="number" and
+      (.freshness_seconds|type)=="number" and $now>=.observed_epoch and
+      ($now-.observed_epoch)<=.freshness_seconds)' "$AFK_PM_DIR/ownership.json" 2>/dev/null
+}
+
 afk_pm_observation() {
-  [[ -n "$AFK_PM_DIR" && -f "$AFK_PM_DIR/usage.json" ]] || return 1
-  jq -ce 'def str: type == "string" and (length > 0);
-    select((type == "object") and (.schema == "afk-pm-usage/1") and (.harness | str)
-      and (.window_tokens | type == "number" or type == "null")
-      and (.usage_tokens  | type == "number" or type == "null")
-      and (.provenance | . == "HARNESS_ADAPTER" or . == "HUMAN")
-      and (.observed_at | str) and (.session | str))' \
-    "$AFK_PM_DIR/usage.json" 2>/dev/null
+  local owner now
+  owner="$(afk_pm_owner_json)" || return 1
+  [[ -f "$AFK_PM_DIR/usage.json" ]] || return 1
+  now="$(date +%s)"
+  jq -ce --argjson owner "$owner" --argjson now "$now" 'def s: type=="string" and length>0;
+    select(.schema=="afk-pm-usage/2" and (.harness|s) and (.session|s) and (.terminal|s) and
+      .provenance=="HARNESS_ADAPTER" and (.observed_epoch|type)=="number" and
+      (.freshness_seconds|type)=="number" and $now>=.observed_epoch and
+      ($now-.observed_epoch)<=.freshness_seconds and .harness==$owner.harness and
+      .session==$owner.session and .terminal==$owner.terminal and
+      .worktree.id==$owner.worktree.id and .worktree.path==$owner.worktree.path and
+      ((.window_tokens|type)=="number" or .window_tokens==null) and
+      ((.usage_tokens|type)=="number" or .usage_tokens==null))' "$AFK_PM_DIR/usage.json" 2>/dev/null
+}
+
+afk_pm_pressure() {
+  local owner now
+  owner="$(afk_pm_owner_json)" || return 1
+  [[ -f "$AFK_PM_DIR/pressure.json" ]] || return 1
+  now="$(date +%s)"
+  jq -ce --argjson owner "$owner" --argjson now "$now" '
+    select(.schema=="afk-pm-pressure/1" and .kind=="COMPACTION" and
+      (.observed_epoch|type)=="number" and (.freshness_seconds|type)=="number" and
+      $now>=.observed_epoch and ($now-.observed_epoch)<=.freshness_seconds and
+      .harness==$owner.harness and .session==$owner.session and .terminal==$owner.terminal and
+      .worktree.id==$owner.worktree.id and .worktree.path==$owner.worktree.path)' "$AFK_PM_DIR/pressure.json" 2>/dev/null
 }
 
 # The one shape both artifacts present; `continuation` adds the instruction the
@@ -611,8 +640,8 @@ afk_pm_identity() { # <path> -> {path, sha256} or null
 # unusable rather than falling through to another authority, because the caller
 # who named it asked for THAT window and no other. The loud condition follows
 # from the same pass: an owner action naming the artifact by path and digest and
-# carrying the resume instruction verbatim, because the human starts the
-# successor and no verb here can.
+  # carrying the resume instruction verbatim. Status remains read-only; the
+  # explicit pm-continue command is the only path allowed to request a launch.
 afk_pm_apply() {
   local obs="" window="" src="NOT_EVALUATED" usage="null" ratio="null"
   local state="NOT_EVALUATED" reason="PM_USAGE_UNOBSERVABLE"
@@ -637,6 +666,12 @@ afk_pm_apply() {
     if [[ "$usage" == "null" && "$reason" != "PM_STAMP_UNUSABLE" ]]; then
       reason="$(printf '%s' "$obs" | jq -r 'if .reason == "PM_USAGE_CUMULATIVE_ONLY" then "PM_USAGE_CUMULATIVE_ONLY" else "PM_USAGE_UNOBSERVABLE" end')"
     fi
+  fi
+
+  # Harness-native compaction is an identity-bound pressure signal for
+  # harnesses whose occupancy is not observable. It is never itself a launch.
+  if afk_pm_pressure >/dev/null 2>&1; then
+    state="CONTINUATION_REQUIRED"; reason="PM_CONTINUATION_REQUIRED"
   fi
 
   # The same parts-per-million arithmetic and boundary equality as a worker's.
@@ -683,6 +718,7 @@ afk_pm_apply() {
       reason: (if $reason == "null" then null else $reason end),
       checkpoint_artifact: $checkpoint, continuation_artifact: $continuation,
       needs_human: ($needs_human == "true")}}')" || return 0
+  AFK_R_EXTRA="$(jq -nc --argjson base "$AFK_R_EXTRA" --argjson handoff "$(afk_pm_handoff_json)" '$base + {pm_handoff:$handoff}')" || return 0
   [[ "$AFK_PM_NEEDS_HUMAN" == "true" ]] || return 0
 
   afk_add_finding "orchestration" "KIT_STATE" "EXTERNAL_STATE" "$reason" \
@@ -696,9 +732,9 @@ afk_pm_apply() {
     AFK_R_FORCED_EXIT="$AFK_EXIT_OWNER_ACTION"
   fi
   if [[ -n "$AFK_PM_RESUME" ]]; then
-    AFK_R_NEXT_ACTION="Start the successor ORCH PM session yourself in Orca, then run: $AFK_PM_RESUME"
+    AFK_R_NEXT_ACTION="Run agent-flow-kit pm-continue to advance the persisted handoff for: $AFK_PM_RESUME"
   else
-    AFK_R_NEXT_ACTION="Write the coordinator continuation artifact (agent-flow-kit pm-checkpoint --continuation --write <json>) and start the successor ORCH PM session yourself in Orca."
+    AFK_R_NEXT_ACTION="Write the coordinator continuation artifact (agent-flow-kit pm-checkpoint --continuation --write <json>), then run agent-flow-kit pm-continue."
   fi
   return 0
 }
@@ -706,37 +742,226 @@ afk_pm_apply() {
 # One additive step on the reconcile pass, reading and writing only under pm/ —
 # no watch record, delivery or worker resource is touched, which is what leaves
 # an in-flight watch unaffected by a coordinator hand-over.
-afk_pm_reconcile() {
-  local doc sha session count now
-  [[ -n "$AFK_PM_DIR" && -f "$AFK_PM_DIR/continuation.json" ]] || return 0
-  doc="$(afk_pm_artifact_valid "$(cat "$AFK_PM_DIR/continuation.json" 2>/dev/null)" "$AFK_PM_CONT_SCHEMA" true)" || doc=""
-  # An artifact that does not validate is reconciled by nothing. Reporting it is
-  # the evaluation's job, which runs on this same pass: a step that raised its
-  # own finding beside that one would report the single condition twice.
-  [[ -n "$doc" ]] || return 0
-  sha="$(afk_sha256_file "$AFK_PM_DIR/continuation.json")"
-  [[ "$(jq -r '.artifact_sha256 // ""' "$AFK_PM_DIR/continuation.reconciled.json" 2>/dev/null)" != "$sha" ]] || return 0
-
-  session="$AFK_PM_SESSION"
-  [[ -n "$session" ]] || session="$(afk_pm_observation | jq -r '.session // ""' 2>/dev/null)" || session=""
-  count="$(jq -r '.pm_continuations // 0' "$AFK_PM_DIR/budget-state.json" 2>/dev/null)"
-  [[ "$count" =~ ^[0-9]+$ ]] || count=0
-  count=$(( count + 1 ))
+afk_pm_finalize_reconciliation() {
+  local handoff sha session count prior_count now transition_id transition_dir reconciled reconciliation
+  local rec_file rec_doc budget_doc
+  handoff="$(afk_pm_handoff_json)" || return 1
+  [[ "$handoff" != null && "$(jq -r .state <<<"$handoff")" == OLD_CLOSED ]] || return 1
+  sha="$(jq -r .continuation_sha256 <<<"$handoff")"
+  [[ "$sha" == "$(afk_sha256_file "$AFK_PM_DIR/continuation.json" 2>/dev/null)" ]] || return 1
+  session="$(jq -r '.successor.session // empty' <<<"$handoff")"
+  [[ -n "$session" ]] || return 1
+  transition_id="$(jq -r .transition_id <<<"$handoff")"
+  transition_dir="$AFK_PM_DIR/transitions/$transition_id"
+  reconciled="$transition_dir/reconciled.json"
+  if [[ -e "$reconciled" ]]; then
+    jq -e --arg id "$transition_id" --arg sha "$sha" --arg s "$session" '
+      .schema=="afk-pm-continuation-reconciled/2" and .artifact_sha256==$sha and
+      .successor_session==$s and ((.transition_id // $id)==$id)' "$reconciled" >/dev/null 2>&1 || return 1
+  fi
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-  afk_state_file_write "$AFK_PM_DIR/continuation.reconciled.json" \
-    "$(jq -nc --arg sha "$sha" --arg s "$session" --arg at "$now" \
-       '{schema: "afk-pm-continuation-reconciled/1", artifact_sha256: $sha,
-         successor_session: (if $s == "" then null else $s end), reconciled_at: $at}')" || return 0
+  reconciliation="$(jq -nc --arg id "$transition_id" --arg sha "$sha" --arg s "$session" --arg at "$now" \
+       '{schema: "afk-pm-continuation-reconciled/2", artifact_sha256: $sha,
+         transition_id: $id, successor_session: $s, reconciled_at: $at}')"
+  # The per-transition receipt is the durable counted fact. Always continue
+  # through the global summary and counter so a crash after any one write is
+  # healed by replay rather than mistaken for complete reconciliation.
+  afk_state_file_write "$reconciled" "$reconciliation" || return 1
+  jq -e --argjson expected "$reconciliation" '.==$expected' "$reconciled" >/dev/null 2>&1 || return 1
+  afk_state_file_write "$AFK_PM_DIR/continuation.reconciled.json" "$reconciliation" || return 1
+  jq -e --argjson expected "$reconciliation" '.==$expected' "$AFK_PM_DIR/continuation.reconciled.json" >/dev/null 2>&1 || return 1
+
+  count=0
+  for rec_file in "$AFK_PM_DIR"/transitions/*/reconciled.json; do
+    [[ -f "$rec_file" ]] || continue
+    rec_doc="$(jq -ce 'select(.schema=="afk-pm-continuation-reconciled/2" and
+      (.artifact_sha256|type)=="string" and (.artifact_sha256|length)>0 and
+      (.successor_session|type)=="string" and (.successor_session|length)>0)' "$rec_file" 2>/dev/null)" || return 1
+    [[ -n "$rec_doc" ]] || return 1
+    count=$((count + 1))
+  done
+  prior_count=0
+  if [[ -e "$AFK_PM_DIR/budget-state.json" ]]; then
+    budget_doc="$(jq -ce 'select(.schema=="afk-pm-budget-state/1" and
+      (.pm_continuations|type)=="number" and .pm_continuations>=0 and (.pm_continuations|floor)==.pm_continuations)' \
+      "$AFK_PM_DIR/budget-state.json" 2>/dev/null)" || return 1
+    prior_count="$(jq -r .pm_continuations <<<"$budget_doc")"
+    (( prior_count <= count )) || return 1
+  fi
   afk_state_file_write "$AFK_PM_DIR/budget-state.json" \
     "$(jq -nc --argjson n "$count" --arg at "$now" \
-       '{schema: "afk-pm-budget-state/1", pm_continuations: $n, updated_at: $at}')" || return 0
+       '{schema: "afk-pm-budget-state/1", pm_continuations: $n, updated_at: $at}')" || return 1
+  jq -e --argjson n "$count" '.schema=="afk-pm-budget-state/1" and .pm_continuations==$n' \
+    "$AFK_PM_DIR/budget-state.json" >/dev/null 2>&1 || return 1
 
   afk_add_finding "orchestration" "KIT_STATE" "EXTERNAL_STATE" \
     "PM_CONTINUATION_RECONCILED" "info" "" "FILE_STRUCTURE" \
     "an outstanding coordinator hand-over" "reconciled by ${session:-an unnamed successor session}" \
     "true" "false" "pm_continuations=$count"
   return 0
+}
+
+afk_pm_handoff_json() {
+  local f="${AFK_PM_DIR:+$AFK_PM_DIR/handoff.json}"
+  [[ -n "$f" ]] || { printf null; return 0; }
+  [[ -e "$f" ]] || { printf null; return 0; }
+  jq -ce 'def s:type=="string" and length>0;
+    select(.schema=="afk-pm-handoff/2" and (.transition_id|s) and (.continuation_sha256|s) and
+      (.state|IN("OBSERVED","CHECKPOINTED","SUCCESSOR_LAUNCHED","ACKED","OLD_CLOSED")) and
+      (.old.session|s) and (.old.terminal|s) and (.old.harness|s) and
+      (.old.worktree.id|s) and (.old.worktree.path|s))' "$f" 2>/dev/null
+}
+
+afk_pm_handoff_write() { afk_state_file_write "$AFK_PM_DIR/handoff.json" "$1"; }
+
+# Advance the persisted PM handoff. Every effect is recorded before the next
+# one is eligible. Replaying the command resumes the same transition and never
+# launches a second successor or closes an old terminal before acknowledgement.
+afk_cmd_pm_continue_locked() { # <json-mode>
+  local json_mode="$1" artifact="$AFK_PM_DIR/continuation.json" doc sha tid state handoff owner now
+  local launcher receipt ack ack_file closer close_receipt intent_file close_intent current_path caller_session transition_dir
+  [[ -f "$artifact" ]] || { afk_warn "no coordinator continuation artifact exists"; return "$AFK_EXIT_USAGE"; }
+  doc="$(afk_pm_artifact_valid "$(cat "$artifact" 2>/dev/null)" "$AFK_PM_CONT_SCHEMA" true)" || doc=""
+  [[ -n "$doc" ]] || { afk_warn "the coordinator continuation artifact is invalid"; return "$AFK_EXIT_USAGE"; }
+  sha="$(afk_sha256_file "$artifact")"; tid="pm-${sha#sha256:}"; tid="${tid:0:67}"; now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  transition_dir="$AFK_PM_DIR/transitions/$tid"
+  if [[ -e "$AFK_PM_DIR/handoff.json" ]]; then
+    handoff="$(afk_pm_handoff_json)" || { afk_warn "the active PM handoff is corrupt; it was not replaced"; return "$AFK_EXIT_USAGE"; }
+  else handoff=null; fi
+  if [[ "$handoff" != null && "$(jq -r .transition_id <<<"$handoff")" != "$tid" && "$(jq -r .state <<<"$handoff")" != OLD_CLOSED ]]; then
+    afk_warn "a different PM handoff is active; only its exact transition may advance"
+    return "$AFK_EXIT_OWNER_ACTION"
+  fi
+  if [[ "$handoff" == null || "$(jq -r .transition_id <<<"$handoff")" != "$tid" ]]; then
+    owner="$(afk_pm_owner_json)" || { afk_warn "no fresh, identity-bound PM owner can authorize this handoff"; return "$AFK_EXIT_OWNER_ACTION"; }
+    current_path="$(pwd -P 2>/dev/null || true)"
+    [[ "${ORCA_TERMINAL_HANDLE:-}" == "$(jq -r .terminal <<<"$owner")" && "$current_path" == "$(jq -r .worktree.path <<<"$owner")" ]] \
+      || { afk_warn "this terminal does not own the current PM session"; return "$AFK_EXIT_OWNER_ACTION"; }
+    handoff="$(jq -nc --arg id "$tid" --arg sha "$sha" --arg at "$now" --argjson old "$owner" \
+      '{schema:"afk-pm-handoff/2",transition_id:$id,state:"OBSERVED",continuation_sha256:$sha,
+        old:($old|{session,terminal,harness,worktree,run_id}),successor:null,observed_at:$at,updated_at:$at}')"
+    afk_pm_handoff_write "$handoff" || return "$AFK_EXIT_USAGE"
+  fi
+  state="$(jq -r .state <<<"$handoff")"
+  if [[ "$state" == OBSERVED ]]; then
+    handoff="$(jq -c --arg at "$now" '.state="CHECKPOINTED"|.checkpoint_sha256=.continuation_sha256|.updated_at=$at' <<<"$handoff")"; afk_pm_handoff_write "$handoff" || return "$AFK_EXIT_USAGE"; state=CHECKPOINTED
+  fi
+  if [[ "$state" == CHECKPOINTED ]]; then
+    intent_file="$transition_dir/bootstrap-intent.json"
+    intent="$(jq -nc --arg id "$tid" --arg pm "$AFK_PM_DIR" --arg resume "$(jq -r .resume_instruction <<<"$doc")" \
+      --arg continuation_sha "$sha" \
+      --argjson old "$(jq -c .old <<<"$handoff")" \
+      '{schema:"afk-pm-bootstrap-intent/1",transition_id:$id,harness:$old.harness,
+        resume_instruction:$resume,continuation_sha256:$continuation_sha,
+        worktree:$old.worktree,run_id:$old.run_id,pm_dir:$pm}')"
+    if [[ -e "$intent_file" ]]; then
+      jq -e --argjson expected "$intent" '.==$expected' "$intent_file" >/dev/null 2>&1 \
+        || { afk_warn "the PM bootstrap intent conflicts with the active transition"; return "$AFK_EXIT_USAGE"; }
+    else afk_state_file_write "$intent_file" "$intent" || return "$AFK_EXIT_USAGE"; fi
+    launcher="${AFK_PM_SUCCESSOR_LAUNCHER:-${AFK_SKILLS_HOME:+$AFK_SKILLS_HOME/afk-runtime/orca-pm-successor.sh}}"
+    if [[ -x "$launcher" ]]; then
+      receipt="$($launcher "$intent_file" "$tid" 2>/dev/null || true)"
+      if jq -e --arg id "$tid" --arg sha "$sha" --argjson old "$(jq -c .old <<<"$handoff")" '
+        .schema=="afk-pm-launch-receipt/2" and .transition_id==$id and .accepted==true and
+        (.terminal|type)=="string" and (.terminal|length)>0 and .harness==$old.harness and
+        .worktree.id==$old.worktree.id and .worktree.path==$old.worktree.path and .run_id==$old.run_id and
+        .continuation_sha256==$sha and (.command_sha256|type)=="string" and (.command_sha256|startswith("sha256:")) and
+        (.create_id|type)=="string" and (.create_id|startswith("sha256:"))' <<<"$receipt" >/dev/null 2>&1; then
+        afk_state_file_write "$transition_dir/launch-receipt.json" "$receipt" || return "$AFK_EXIT_USAGE"
+        jq -e --argjson expected "$receipt" '.==$expected' "$transition_dir/launch-receipt.json" >/dev/null 2>&1 || return "$AFK_EXIT_USAGE"
+        handoff="$(jq -c --arg at "$now" --argjson r "$receipt" '.state="SUCCESSOR_LAUNCHED"|
+          .successor={session:null,terminal:$r.terminal,harness:$r.harness,worktree:$r.worktree,run_id:$r.run_id}|.updated_at=$at' <<<"$handoff")"
+        afk_pm_handoff_write "$handoff" || return "$AFK_EXIT_USAGE"; state=SUCCESSOR_LAUNCHED
+      fi
+    fi
+  fi
+  ack_file="${AFK_PM_ACK_FILE:-$transition_dir/successor-ack.json}"
+  if [[ "$state" == SUCCESSOR_LAUNCHED && -f "$ack_file" ]]; then
+    ack="$(jq -c . "$ack_file" 2>/dev/null || true)"
+    caller_session="${AFK_PM_CALLER_SESSION:-}"
+    current_path="$(pwd -P 2>/dev/null || true)"
+    owner="$(afk_pm_owner_json || true)"
+    if [[ -n "$owner" && -n "$caller_session" && "${ORCA_TERMINAL_HANDLE:-}" == "$(jq -r .terminal <<<"$ack" 2>/dev/null)" &&
+      "$current_path" == "$(jq -r .worktree.path <<<"$ack" 2>/dev/null)" ]] &&
+      jq -e --arg id "$tid" --arg s "$caller_session" --argjson successor "$(jq -c .successor <<<"$handoff")" --argjson owner "$owner" '
+        .schema=="afk-pm-successor-ack/2" and .transition_id==$id and .acknowledged==true and .session==$s and
+        .terminal==$successor.terminal and .harness==$successor.harness and .worktree==$successor.worktree and
+        .run_id==$successor.run_id and $owner.session==.session and $owner.terminal==.terminal and
+        $owner.harness==.harness and $owner.worktree==.worktree and $owner.transition_id==$id' <<<"$ack" >/dev/null 2>&1; then
+      afk_state_file_write "$transition_dir/successor-ack.json" "$ack" || return "$AFK_EXIT_USAGE"
+      jq -e --argjson expected "$ack" '.==$expected' "$transition_dir/successor-ack.json" >/dev/null 2>&1 || return "$AFK_EXIT_USAGE"
+      handoff="$(jq -c --arg at "$now" --arg s "$caller_session" '.state="ACKED"|.successor.session=$s|.updated_at=$at' <<<"$handoff")"
+      afk_pm_handoff_write "$handoff" || return "$AFK_EXIT_USAGE"; state=ACKED
+    fi
+  fi
+  if [[ "$state" == ACKED ]]; then
+    owner="$(afk_pm_owner_json || true)"; current_path="$(pwd -P 2>/dev/null || true)"
+    closer="${AFK_PM_TERMINAL_CLOSER:-${AFK_SKILLS_HOME:+$AFK_SKILLS_HOME/afk-runtime/orca-pm-close.sh}}"
+    if [[ -n "$owner" && -n "${AFK_PM_CALLER_SESSION:-}" && "${AFK_PM_CALLER_SESSION:-}" == "$(jq -r .successor.session <<<"$handoff")" &&
+      "${ORCA_TERMINAL_HANDLE:-}" == "$(jq -r .successor.terminal <<<"$handoff")" && "$current_path" == "$(jq -r .successor.worktree.path <<<"$handoff")" ]] &&
+      jq -e --argjson h "$handoff" '.session==$h.successor.session and .terminal==$h.successor.terminal and
+        .harness==$h.successor.harness and .worktree==$h.successor.worktree and .transition_id==$h.transition_id and
+        .previous.session==$h.old.session and .previous.terminal==$h.old.terminal' <<<"$owner" >/dev/null 2>&1; then
+      intent_file="$transition_dir/close-intent.json"
+      close_intent="$(jq -nc --arg id "$tid" --arg at "$now" --argjson old "$(jq -c .old <<<"$handoff")" \
+        '{schema:"afk-pm-close-intent/1",transition_id:$id,authorized:true,old:$old,authorized_at:$at}')"
+      if [[ -e "$intent_file" ]]; then jq -e --argjson expected "$close_intent" 'del(.authorized_at)==($expected|del(.authorized_at))' "$intent_file" >/dev/null 2>&1 \
+        || { afk_warn "the PM close intent conflicts with the active transition"; return "$AFK_EXIT_USAGE"; }
+      else afk_state_file_write "$intent_file" "$close_intent" || return "$AFK_EXIT_USAGE"; fi
+      close_receipt="$($closer "$intent_file" 2>/dev/null || true)"
+      if jq -e --arg id "$tid" --arg t "$(jq -r .old.terminal <<<"$handoff")" --argjson old "$(jq -c .old <<<"$handoff")" '.schema=="afk-pm-close-receipt/2" and
+        .transition_id==$id and .terminal==$t and .closed==true and (.observed_before|type)=="boolean" and
+        .worktree==$old.worktree and
+        .close_requested==true and .reobserved_absent==true and
+        .recovered_after_close==(.observed_before|not)' <<<"$close_receipt" >/dev/null 2>&1; then
+        afk_state_file_write "$transition_dir/close-receipt.json" "$close_receipt" || return "$AFK_EXIT_USAGE"
+        jq -e --argjson expected "$close_receipt" '.==$expected' "$transition_dir/close-receipt.json" >/dev/null 2>&1 || return "$AFK_EXIT_USAGE"
+        handoff="$(jq -c --arg at "$now" '.state="OLD_CLOSED"|.updated_at=$at' <<<"$handoff")"; afk_pm_handoff_write "$handoff" || return "$AFK_EXIT_USAGE"
+        state=OLD_CLOSED
+      fi
+    fi
+  fi
+  [[ "$state" != OLD_CLOSED ]] || afk_pm_finalize_reconciliation || return "$AFK_EXIT_USAGE"
+  AFK_R_COMMAND="pm-continue"; AFK_R_REQUIRE_SOURCE="false"; AFK_R_OPERATION='{"id":null,"mutating":true}'; AFK_R_EXTRA="{}"
+  afk_evaluate_installation "false" "false"; AFK_R_FORCED_EXIT="$AFK_EXIT_OK"; afk_pm_apply
+  [[ "$state" == OLD_CLOSED ]] || AFK_R_FORCED_EXIT="$AFK_EXIT_OWNER_ACTION"
+  afk_emit_result "$json_mode"
+}
+
+afk_cmd_pm_continue() { # <json-mode>
+  local json_mode="$1" lock_rc=0 command_rc
+  afk_lock_acquire || lock_rc=$?
+  if (( lock_rc != 0 )); then
+    afk_warn "the host lifecycle lock is held or cannot be judged; the PM handoff was not advanced"
+    return "$AFK_EXIT_OWNER_ACTION"
+  fi
+  afk_cmd_pm_continue_locked "$json_mode"
+  command_rc=$?
+  afk_lock_release || {
+    afk_warn "the PM handoff completed but its lifecycle lock could not be released safely"
+    return "$AFK_EXIT_OWNER_ACTION"
+  }
+  return "$command_rc"
+}
+
+afk_cmd_pm_start() { # <json-mode> <harness>
+  local json_mode="$1" harness="$2" adapter rc=0 lock_rc=0
+  adapter="${AFK_PM_SESSION_ADAPTER:-${AFK_SKILLS_HOME:+$AFK_SKILLS_HOME/afk-runtime/pm-session.sh}}"
+  [[ -x "$adapter" ]] || { afk_warn "the PM session registration adapter is unavailable"; return "$AFK_EXIT_USAGE"; }
+  afk_lock_acquire || lock_rc=$?
+  if ((lock_rc != 0)); then
+    afk_warn "the host lifecycle lock is held or cannot be judged; no PM registration intent was written"
+    return "$AFK_EXIT_OWNER_ACTION"
+  fi
+  "$adapter" start --harness "$harness" || rc=$?
+  afk_lock_release || return "$AFK_EXIT_OWNER_ACTION"
+  ((rc == 0)) || { afk_warn "the current terminal/worktree could not be bound to a PM registration intent"; return "$AFK_EXIT_OWNER_ACTION"; }
+  AFK_R_COMMAND="pm-start"; AFK_R_REQUIRE_SOURCE="false"; AFK_R_OPERATION='{"id":null,"mutating":true}'
+  AFK_R_EXTRA="$(jq -nc --arg h "$harness" --arg p "$AFK_PM_DIR/registration-intent.json" '{pm_registration:{harness:$h,intent:$p,state:"WAITING_FOR_EXACT_SESSION_EVENT"}}')"
+  afk_evaluate_installation "false" "false"; AFK_R_FORCED_EXIT="$AFK_EXIT_OK"
+  AFK_R_NEXT_ACTION="Continue in this exact $harness session; its next supported event will claim PM ownership."
+  afk_emit_result "$json_mode"
 }
 
 # Secret-free BY RULE, decided before anything is written, and the value is never
@@ -757,7 +982,7 @@ afk_pm_secret_bearing() { # <document> -> 0 when it must be refused
 # Validated first, then settled through the kit's atomic state writer, so a
 # refused submission leaves what is on disk byte-identical, never half-replaced.
 afk_cmd_pm_checkpoint() { # <json-mode> <submitted path> <continuation: true|false>
-  local json_mode="$1" path="$2" continuation="$3" schema target doc
+  local json_mode="$1" path="$2" continuation="$3" schema target doc handoff candidate_sha
   AFK_R_COMMAND="pm-checkpoint"
   AFK_R_REQUIRE_SOURCE="false"; AFK_R_FORCED_EXIT=""; AFK_R_NEXT_ACTION=""
   AFK_R_EXTRA="{}"; AFK_R_OPERATION='{"id": null, "mutating": false}'
@@ -791,6 +1016,17 @@ afk_cmd_pm_checkpoint() { # <json-mode> <submitted path> <continuation: true|fal
   if [[ -z "$doc" ]]; then
     afk_warn "the submitted coordinator artifact does not present the required shape; nothing was written"
     return "$AFK_EXIT_USAGE"
+  fi
+  if [[ "$continuation" == true && -e "$AFK_PM_DIR/handoff.json" ]]; then
+    handoff="$(afk_pm_handoff_json)" || {
+      afk_warn "the active PM handoff is corrupt; the continuation artifact was not changed"
+      return "$AFK_EXIT_USAGE"
+    }
+    candidate_sha="$(printf '%s\n' "$doc" | afk_sha256_stdin)" || return "$AFK_EXIT_USAGE"
+    if [[ "$(jq -r .state <<<"$handoff")" != OLD_CLOSED && "$(jq -r .continuation_sha256 <<<"$handoff")" != "$candidate_sha" ]]; then
+      afk_warn "a different continuation is bound to the active PM handoff; nothing was written"
+      return "$AFK_EXIT_OWNER_ACTION"
+    fi
   fi
   if ! afk_state_file_write "$target" "$doc"; then
     afk_warn "the coordinator artifact could not be settled in the declared state directory"
@@ -1183,7 +1419,7 @@ afk_cmd_schema() {
       supported_orchestration_state_major: $orch_major,
       supported_dispatch_schema_major: $dispatch_major,
       commands: ["status", "adopt --inspect", "adopt", "update", "verify", "monitor",
-                 "pm-checkpoint", "schema"],
+                 "pm-checkpoint", "pm-continue", "schema"],
       component_states: ["CURRENT", "UPDATE_AVAILABLE", "LOCAL_ADAPTATION", "LOCAL_DRIFT",
                          "EXTERNAL_STATE", "UNKNOWN", "BROKEN", "INCOMPATIBLE",
                          "MIGRATION_REQUIRED", "INTERRUPTED", "UNAVAILABLE", "NOT_EVALUATED",
@@ -1234,7 +1470,7 @@ afk_cmd_schema() {
       journal_states: ["NONE", "PREPARING", "IN_PROGRESS", "ROLLING_BACK", "ROLLED_BACK",
                        "ROLLBACK_INCOMPLETE", "COMMITTED", "UNREADABLE", "UNSAFE"],
       verification_results: ["PASS", "FAIL", "WARN", "SKIP"],
-      approved_harnesses: ["claude", "codex"],
+      approved_harnesses: ["claude", "codex", "opencode"],
       reason_codes: $reason_codes,
       exit_codes: ({}
         | .[$e_ok]       = "requested scope succeeded (includes READY_WITH_WARNINGS and READY_WITH_ADAPTATION)"

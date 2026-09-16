@@ -48,6 +48,10 @@ AFK_INVENTORY_SOURCED=1
 
 afk_component_table() {
   cat <<EOF
+afk-runtime-adapters|MANAGED_COPY_TREE|tree|adapters|dir|$AFK_SKILLS_HOME/afk-runtime|bin,lib,lifecycle|false|$AFK_SKILLS_HOME|$AFK_SKILLS_HOME
+afk-runtime-bin|MANAGED_COPY_TREE|tree|bin|dir|$AFK_SKILLS_HOME/afk-runtime/bin||false|$AFK_SKILLS_HOME|$AFK_SKILLS_HOME
+afk-runtime-lib|MANAGED_COPY_TREE|tree|lib|dir|$AFK_SKILLS_HOME/afk-runtime/lib||false|$AFK_SKILLS_HOME|$AFK_SKILLS_HOME
+afk-runtime-release-policy|MANAGED_COPY_FILE|file|lifecycle/release-policy.json|file|$AFK_SKILLS_HOME/afk-runtime/lifecycle/release-policy.json||false|$AFK_SKILLS_HOME|$AFK_SKILLS_HOME
 model-router|MANAGED_COPY_TREE|tree|files/model-router|dir|$AFK_SKILLS_HOME/model-router|subscriptions.yaml|true|$AFK_SKILLS_HOME|$AFK_SKILLS_HOME
 model-router-config|MACHINE_LOCAL|none||file|$AFK_SKILLS_HOME/model-router/subscriptions.yaml||false|$AFK_SKILLS_HOME|$AFK_SKILLS_HOME
 model-router-claude-link|MANAGED_LINK|none||link|$AFK_CLAUDE_HOME/skills/model-router|$AFK_SKILLS_HOME/model-router|true|$AFK_CLAUDE_HOME|$AFK_SKILLS_HOME

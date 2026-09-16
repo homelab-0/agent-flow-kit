@@ -947,8 +947,16 @@ afk_write_managed_tree() {
     IFS=',' read -r -a items <<< "$excl"
     for item in "${items[@]}"; do
       [[ -n "$item" ]] || continue
-      if [[ -f "$dest/$item" && ! -L "$dest/$item" ]]; then
-        cp -p -- "$dest/$item" "$stage/$item" 2>/dev/null || return 1
+      case "$item" in
+        /*|.|..|./*|../*|*/./*|*/../*|*/.|*/..) return 1 ;;
+      esac
+      if [[ -e "$dest/$item" && ! -L "$dest/$item" ]]; then
+        # Exclusions may be bounded child trees owned by their own component
+        # (the installed runtime's bin/ and lib/ siblings). Preserve the whole
+        # declared member before replacing the parent, then let its component
+        # converge independently. Symlinks remain refused by the tree guard.
+        rm -rf -- "${stage:?}/$item" 2>/dev/null || return 1
+        cp -R -p -- "$dest/$item" "$stage/$item" 2>/dev/null || return 1
       fi
     done
   fi
