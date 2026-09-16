@@ -99,6 +99,7 @@ AFK_DISPATCH_DIR="${AFK_DISPATCH_DIR:-${AFK_STATE_DIR:+$AFK_STATE_DIR/dispatch}}
 AFK_DISPATCH_WATCH_DIR="${AFK_DISPATCH_WATCH_DIR:-${AFK_DISPATCH_DIR:+$AFK_DISPATCH_DIR/watch}}"
 AFK_DISPATCH_INBOX_DIR="${AFK_DISPATCH_INBOX_DIR:-${AFK_DISPATCH_DIR:+$AFK_DISPATCH_DIR/inbox}}"
 AFK_DISPATCH_RESULT_DIR="${AFK_DISPATCH_RESULT_DIR:-${AFK_DISPATCH_DIR:+$AFK_DISPATCH_DIR/results}}"
+AFK_DISPATCH_MESSAGE_DIR="${AFK_DISPATCH_MESSAGE_DIR:-${AFK_DISPATCH_DIR:+$AFK_DISPATCH_DIR/messages}}"
 
 # The bounded watch budget. These are carried ON the record so the scheduler
 # that drives the next pass reads them from the same place the monitor wrote
@@ -600,7 +601,7 @@ afk_monitor_reconcile_delivery() { # <delivery path>
   dispatch_id="$(afk_monitor_jget "$doc" '.dispatch_id // ""')"
   did="$(afk_monitor_jget "$doc" '.delivery_id // ""')"
   kind="$(afk_monitor_jget "$doc" '.kind // ""')"
-  if ! afk_dispatch_id_is_safe "$dispatch_id" || [[ -z "$did" ]]; then
+  if ! afk_dispatch_id_is_safe "$dispatch_id" || ! afk_dispatch_id_is_safe "$did"; then
     afk_monitor_needs_human
     afk_add_finding "dispatch-delivery" "KIT_STATE" "UNKNOWN" "DELIVERY_UNREADABLE" \
       "owner_action" "" "FILE_STRUCTURE" "a delivery naming its Dispatch and itself" \
@@ -728,6 +729,33 @@ afk_monitor_reconcile_delivery() { # <delivery path>
     (.result.budget.state // "") as $s
     | if ["OK","CHECKPOINT_DUE","CONTINUATION_REQUIRED","NOT_EVALUATED"] | index($s)
       then $s else "NOT_EVALUATED" end' 2>/dev/null)" || context_budget="NOT_EVALUATED"
+
+  # Pressure publication is part of reconciliation, not a best-effort side
+  # effect after acknowledgement. Prove the deterministic message is durable
+  # before the watch record can say acknowledged or the inbox delivery can be
+  # removed. A conflicting/unwritable message leaves the delivery retryable.
+  if [[ "$context_budget" == CHECKPOINT_DUE || "$context_budget" == CONTINUATION_REQUIRED ]]; then
+    local message_path message message_ok=false
+    message_path="$AFK_DISPATCH_MESSAGE_DIR/$dispatch_id.$did.json"
+    message="$(jq -nc --arg id "$dispatch_id" --arg delivery "$did" --arg state "$context_budget" --arg status "$status" '{schema:"afk-monitor-message/1",idempotency_key:($id+":"+$delivery),dispatch_id:$id,delivery_id:$delivery,kind:"WORKER_CONTEXT_PRESSURE",budget_state:$state,result_status:$status,continuation_dispatch:"canonical"}')"
+    if mkdir -p -- "$AFK_DISPATCH_MESSAGE_DIR" && chmod 700 "$AFK_DISPATCH_MESSAGE_DIR"; then
+      if [[ -f "$message_path" ]]; then
+        jq -e --argjson expected "$message" '.==$expected' "$message_path" >/dev/null 2>&1 && message_ok=true
+      elif afk_state_file_write "$message_path" "$message" \
+        && jq -e --argjson expected "$message" '.==$expected' "$message_path" >/dev/null 2>&1; then
+        message_ok=true
+      fi
+    fi
+    if [[ "$message_ok" != true ]]; then
+      rec="$(afk_monitor_fault "$rec" "RESULT_NOT_RETAINED")"
+      if [[ -n "$rec" ]]; then afk_monitor_record_write "$rpath" "$rec" || true; fi
+      afk_monitor_needs_human
+      afk_add_finding "dispatch-watch" "KIT_STATE" "UNKNOWN" "RESULT_NOT_RETAINED" \
+        "owner_action" "" "FILE_STRUCTURE" "a durable exact pressure message" "not retained" \
+        "false" "false" "$dispatch_id"
+      return 1
+    fi
+  fi
 
   rec="$(printf '%s' "$rec" | jq -c \
     --arg d "$did" --arg st "$status" --arg id "$identity" --arg rp "$resfile" \

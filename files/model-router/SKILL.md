@@ -149,6 +149,9 @@ stamp: STORY-041-3.md.stamp.json
 # BMAD persona injected at dispatch. Named file must exist under the launcher's
 # agent_dir or dispatch REFUSES — persona injection never silently no-ops.
 persona: dev
+# Worker-memory policy. Legacy stories with no field default to advisory; all
+# newly planned stories declare one of advisory|required|blind|off explicitly.
+memory_mode: advisory
 # The exact commands that define done. Copy them from the acceptance criteria,
 # never invent them. An EMPTY gate list is invalid: it cannot distinguish done
 # from claimed-done, and dispatch refuses to run without one.
@@ -200,10 +203,11 @@ The estimate is advisory kit policy. It is not sent to `/v1/route`, it is not a
 **After the run, the budget is what the harness actually published.** `claude`
 publishes one end-of-run result envelope, so its usage adapter reads that and
 nothing else — the kit scrapes no terminal and no transcript — and reports
-`HARNESS_ENVELOPE` / `END_OF_RUN`; `codex exec` publishes none, so its adapter
-reports `NOT_EVALUATED` / `USAGE_UNOBSERVABLE`, which never becomes fallback
-logic in the core and never blocks the other harness. Mid-run usage being
-unobservable, the checkpoint discipline is deterministic instead: the generated
+`HARNESS_ENVELOPE` / `END_OF_RUN`; `codex exec` and the frozen OpenCode JSONL
+launch publish no qualified current-occupancy field, so their adapters report
+`NOT_EVALUATED` / `USAGE_UNOBSERVABLE`. That honest absence never becomes a
+made-up estimate or fallback logic in the core. Mid-run usage being
+unobservable on those paths, the checkpoint discipline is deterministic instead: the generated
 prompt tells the worker to write `<story>.checkpoint.json` at declared phase
 boundaries, and to stop at the next boundary with `<story>.continuation.json`
 and one `CONTINUATION-REQUIRED:` line when it cannot finish. A valid
@@ -212,7 +216,7 @@ continuation with a missing, unparseable or stale artifact is a loud
 `NEEDS-HUMAN` and writes no result at all.
 
 **A continuation is the next cycle of the same story, under the same stamp.**
-Dispatch the same story again with the next cycle number: it consumes
+Dispatch the same story again with `dispatch.sh <story> --cycle <next>`: it consumes
 `<story>.continuation.json` into the prompt and the estimate, records
 `budget.continuation_of`, and adds `REPEATED_CONTINUATION` — a story that needed
 a second window was sized for one it did not have. Two things need you. If the
@@ -366,3 +370,70 @@ Your own window is a resource like any other, and nothing measures it for you.
   preflight that gates on them will wave a dead session into a run.
 - If the router is unreachable, stop and say so. Do not route blind, and do not
   fall back to a local table — there is no longer one to fall back to.
+
+### Memory boundary
+
+`memory_mode: advisory | required | blind | off` is launcher-owned story
+frontmatter. It is deliberately outside the closed ExecutionStamp and never
+enters `/v1/route`, placement, or stamp validation. Invalid values refuse
+locally; an omitted field defaults to `advisory` only for legacy stories.
+
+- `advisory` verifies the already-installed native Hindsight runtime and the
+  selected harness's native wiring. A ready installation is used. Missing,
+  unsynced, or unqualified memory is logged as an explicit advisory outage and
+  the worker continues.
+- `required` performs the same secret-free readiness and native-wiring proof
+  before the harness starts. Failure writes `MEMORY_REQUIRED_UNAVAILABLE` and
+  refuses the launch; it never degrades to advisory.
+- `blind` and `off` are process boundaries. Every worker receives
+  `HINDSIGHT_DISABLED=true` and a per-attempt, mode-600 `HINDSIGHT_CONFIG` whose
+  complete content is `{"disabled":true,"bankId":"afk-disabled"}`. The native
+  config and credentials are never read or copied.
+
+Claude, Codex, and OpenCode receive the same memory environment. The helper
+also defines the fail-closed Hermes answer, but Hermes remains a human front
+door and is not dispatchable. AFK never installs or duplicates native
+Hindsight hooks/plugins. OpenCode's ephemeral `--pure` config includes the
+exact already-installed Hindsight plugin reference once for advisory/required,
+and an explicit empty plugin list for blind/off.
+
+Every frozen worker launch also receives `AFK_WORKER_IDENTITY`, `AFK_RUN_ID`,
+`AFK_STORY_ID`, `AFK_STORY_PATH`, `AFK_CYCLE`, `AFK_DISPATCH_ID`, and
+`AFK_OWNING_PM` (the durable `run:<id>` mailbox), plus
+`AFK_DELEGATING_PM` for audit. A harness-native pressure hook/event can publish
+while the worker is alive, after writing the phase checkpoint, with:
+
+```bash
+"$AFK_CONTEXT_EVENT_HOOK" --emit-context-event \
+  --state CHECKPOINT_DUE --phase implementation \
+  --used-tokens 120000 --window-tokens 200000
+```
+
+The hook first persists an immutable `afk-worker-context-event/1` bound to the
+whole identity tuple, the actual worker terminal when available, the delegating
+PM terminal, and the checkpoint's path/content digest. A `CHECKPOINT_DUE`
+without a valid `afk-checkpoint/1` artifact refuses emission. The hook then
+best-effort publishes the same payload from the actual worker terminal to the
+owning Run mailbox (no terminal `--to` target), so PM rollover cannot strand it.
+Both send and Run-ownership lookup use a small validated timeout through
+`ORCA_CLI_COMMAND`/`AFK_ORCA_BIN`; a stalled CLI cannot consume the worker or
+PM's remaining context. Publication failure does not erase the durable file. The current PM consumes a
+file with `dispatch.sh --consume-context-event <event.json> --pm <its-terminal>`;
+dispatch verifies with Orca that this terminal currently owns the same Run.
+The old delegating terminal is audit evidence, never authorization. An atomic
+`flock` plus a durable consumption receipt makes consumption exactly once
+across PM rollover: receipt state is rechecked while the lock is held, and a
+crashed PM releases the lock automatically for its successor. `CHECKPOINT_DUE` rechecks the checkpoint digest, records
+`CHECKPOINT_ONLY`, and never launches anything.
+`CONTINUATION_REQUIRED` is not launch authority by itself: the consumer first
+requires the ordinary retained `continuation_required` result and valid,
+story-bound continuation artifact, then invokes the one canonical next-cycle
+path, `dispatch.sh <story> --cycle <cycle+1>`. Existing continuation ledger,
+cap, same-stamp revalidation, and refusal semantics remain authoritative.
+
+Codex/OpenCode current occupancy remains honestly unobservable until a
+qualified native event supplies it. Their worker prompt therefore still
+requires checkpoints after story-read, after implementation/before gates, and
+before report. That deterministic phase-boundary discipline is active policy,
+not a fabricated usage signal. Hindsight is always external context, never
+routing, approval, review, or gate authority; current project artifacts win.

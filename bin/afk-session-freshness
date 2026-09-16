@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Cheap local observation for prompts/status lines. This command never fetches,
+# executes a candidate, installs an adapter, or authorizes a session launch.
+set -uo pipefail
+
+STATE_BASE="${XDG_STATE_HOME:-${HOME:+$HOME/.local/state}}"
+STATE_DIR="${AFK_STATE_DIR:-${STATE_BASE:+$STATE_BASE/agent-flow-kit}}"
+if [[ "${1:-}" == --state-dir && $# -eq 2 ]]; then STATE_DIR="$2"
+elif (( $# != 0 )); then printf 'usage: afk-session-freshness [--state-dir DIR]\n' >&2; exit 2
+fi
+
+applied="$(jq -r '.applied_revision // ""' "$STATE_DIR/state.json" 2>/dev/null || true)"
+accepted="$(jq -r '.revision // ""' "$STATE_DIR/releases/current.json" 2>/dev/null || true)"
+latest_state="$(jq -r '.state // ""' "$STATE_DIR/releases/latest.json" 2>/dev/null || true)"
+latest_reason="$(jq -r '.reason // ""' "$STATE_DIR/releases/latest.json" 2>/dev/null || true)"
+latest_target="$(jq -r '.target_revision // ""' "$STATE_DIR/releases/latest.json" 2>/dev/null || true)"
+
+state=NOT_EVALUATED; reason=INSTALLATION_NOT_ADOPTED
+if [[ "$applied" =~ ^[0-9a-f]{40}$ ]]; then
+  if [[ "$accepted" == "$applied" ]]; then state=ACCEPTED_LOCALLY; reason=RECORDED_LAST_GOOD
+  elif [[ -z "$accepted" ]]; then state=UNPROVEN; reason=NO_ACCEPTED_RELEASE
+  else state=MISMATCH; reason=APPLIED_REVISION_DIFFERS_FROM_ACCEPTED_RELEASE; fi
+fi
+
+jq -nc --arg state "$state" --arg reason "$reason" --arg applied "$applied" \
+  --arg accepted "$accepted" --arg latest_state "$latest_state" \
+  --arg latest_reason "$latest_reason" --arg latest_target "$latest_target" \
+  '{schema:"afk-session-freshness/2",state:$state,reason:$reason,
+    applied_revision:(if $applied=="" then null else $applied end),
+    accepted_revision:(if $accepted=="" then null else $accepted end),
+    latest_attempt:{state:(if $latest_state=="" then null else $latest_state end),
+      reason:(if $latest_reason=="" then null else $latest_reason end),
+      target_revision:(if $latest_target=="" then null else $latest_target end)},
+    offline:true,launch_authoritative:false,last_good_verified:false}'

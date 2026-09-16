@@ -1,0 +1,223 @@
+#!/bin/bash -p
+# Session/workflow gate: reconcile first, then compose requested harness
+# adapters, then start the caller's command. No work starts from an unproven
+# offline installation.
+set -uo pipefail
+CALLER_PATH="${PATH:-}"
+
+# Bash imports exported functions before this script starts. Clear that ambient
+# executable surface with explicit builtins, then constrain all later PATH use.
+builtin mapfile -t _afk_imported_functions < <(builtin compgen -A function)
+for _afk_imported_function in "${_afk_imported_functions[@]}"; do
+  builtin unset -f -- "$_afk_imported_function"
+done
+builtin unset _afk_imported_functions _afk_imported_function
+PATH=/usr/bin:/bin
+export PATH
+builtin hash -r
+
+readonly REALPATH_BIN='/usr/bin/realpath'
+readonly STAT_BIN='/usr/bin/stat'
+readonly BASH_BIN='/bin/bash'
+case "${OSTYPE:-}" in
+  darwin*)
+    readonly STAT_STYLE='bsd'
+    readonly -a JQ_CANDIDATES=(/usr/bin/jq /opt/homebrew/bin/jq /usr/local/bin/jq)
+    ;;
+  *)
+    readonly STAT_STYLE='gnu'
+    readonly -a JQ_CANDIDATES=(/usr/bin/jq)
+    ;;
+esac
+JQ_EXEC=""
+BASH_EXEC=""
+REALPATH_EXEC=""
+LAUNCH_PATH=""
+
+_self_parent="${BASH_SOURCE[0]%/*}"
+[[ "$_self_parent" != "${BASH_SOURCE[0]}" ]] || _self_parent=.
+SELF_DIR="$(cd -P -- "$_self_parent" && pwd -P)"
+unset _self_parent
+RECONCILER="$SELF_DIR/afk-release-reconcile"
+STATE_BASE="${XDG_STATE_HOME:-${HOME:+$HOME/.local/state}}"
+STATE_DIR="${AFK_STATE_DIR:-${STATE_BASE:+$STATE_BASE/agent-flow-kit}}"
+POLICY="$SELF_DIR/../lifecycle/release-policy.json"
+COHORT=canary
+HOME_ROOT="${HOME:-}"
+ADAPTERS=()
+COMMAND=()
+afk_is_darwin() { [[ "${OSTYPE:-}" == darwin* ]]; }
+
+bootstrap_stat() {
+  if [[ "$STAT_STYLE" == gnu ]]; then "$STAT_BIN" -c "$1" "$2"
+  else "$STAT_BIN" -f "$1" "$2"; fi
+}
+
+bootstrap_trusted_tool() {
+  local requested="$1" resolved owner permissions cursor parent
+  [[ "$requested" == /* && -e "$requested" ]] || return 1
+  resolved="$("$REALPATH_BIN" -e -- "$requested" 2>/dev/null)" || return 1
+  [[ -f "$resolved" && -x "$resolved" ]] || return 1
+  cursor="$resolved"
+  while :; do
+    owner="$(bootstrap_stat %u "$cursor" 2>/dev/null)" || return 1
+    if [[ "$STAT_STYLE" == gnu ]]; then
+      permissions="$(bootstrap_stat %a "$cursor" 2>/dev/null)" || return 1
+    else
+      permissions="$(bootstrap_stat %Lp "$cursor" 2>/dev/null)" || return 1
+    fi
+    [[ "$owner" == 0 && "$permissions" =~ ^[0-7]{3,4}$ ]] || return 1
+    (( (8#$permissions & 8#22) == 0 )) || return 1
+    [[ "$cursor" == / ]] && { printf '%s\n' "$resolved"; return 0; }
+    parent="${cursor%/*}"; [[ -n "$parent" ]] || parent=/
+    cursor="$parent"
+  done
+}
+
+validate_session_tools() {
+  local candidate
+  REALPATH_EXEC="$(bootstrap_trusted_tool "$REALPATH_BIN")" || return 1
+  bootstrap_trusted_tool "$STAT_BIN" >/dev/null || return 1
+  BASH_EXEC="$(bootstrap_trusted_tool "$BASH_BIN")" || return 1
+  for candidate in "${JQ_CANDIDATES[@]}"; do
+    JQ_EXEC="$(bootstrap_trusted_tool "$candidate" 2>/dev/null)" || continue
+    return 0
+  done
+  return 1
+}
+
+validate_launch_path() {
+  local remaining="$CALLER_PATH" entry resolved joined=""
+  [[ -n "$remaining" ]] || return 1
+  [[ "$remaining" != :* && "$remaining" != *: && "$remaining" != *::* ]] || return 1
+  while :; do
+    if [[ "$remaining" == *:* ]]; then
+      entry="${remaining%%:*}"
+      remaining="${remaining#*:}"
+    else
+      entry="$remaining"
+      remaining=""
+    fi
+    [[ -n "$entry" && "$entry" == /* ]] || return 1
+    # Missing absolute entries are common in portable user PATH values. Omit
+    # them from the launch environment so they cannot appear later through a
+    # create-after-validation race.
+    if [[ -d "$entry" ]]; then
+      resolved="$("$REALPATH_EXEC" -e -- "$entry" 2>/dev/null)" || return 1
+      [[ "$resolved" == /* && -d "$resolved" ]] || return 1
+      if [[ ":$joined:" != *":$resolved:"* ]]; then
+        joined="${joined:+$joined:}$resolved"
+      fi
+    fi
+    [[ -z "$remaining" ]] && break
+  done
+  [[ -n "$joined" ]] || return 1
+  LAUNCH_PATH="$joined"
+}
+
+darwin_recorded_last_good() {
+  local current applied
+  [[ -n "$JQ_EXEC" && -r "$STATE_DIR/releases/current.json" &&
+     -r "$STATE_DIR/state.json" ]] || return 1
+  current="$("$JQ_EXEC" -r \
+    'if .schema=="afk-release-current/1" then (.revision // "") else "" end' \
+    "$STATE_DIR/releases/current.json" 2>/dev/null)" || return 1
+  applied="$("$JQ_EXEC" -r '.applied_revision // ""' \
+    "$STATE_DIR/state.json" 2>/dev/null)" || return 1
+  [[ "$current" =~ ^[0-9a-f]{40}$ && "$applied" == "$current" ]]
+}
+
+usage() {
+  printf '%s\n' \
+    'usage: afk-session-start [--state-dir DIR] [--policy FILE]' \
+    '                         [--cohort canary|wave]' \
+    '                         [--adapter claude|codex|opencode|hermes]...' \
+    '                         [-- command [args...]]'
+}
+
+while (( $# )); do
+  case "$1" in
+    --state-dir) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; STATE_DIR="$2"; shift 2 ;;
+    --policy) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; POLICY="$2"; shift 2 ;;
+    --cohort) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; COHORT="$2"; shift 2 ;;
+    --adapter) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; ADAPTERS+=("$2"); shift 2 ;;
+    --) shift; COMMAND=("$@"); break ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+done
+
+[[ -n "$STATE_DIR" ]] || { printf 'afk-session-start: updater unavailable\n' >&2; exit 3; }
+if ! validate_session_tools; then
+  if afk_is_darwin; then
+    printf '%s\n' '{"schema":"afk-release-result/2","state":"BLOCKED","reason":"MACOS_SANDBOX_PENDING","last_good_retained":false,"last_good_verified":false}'
+  else
+    printf 'afk-session-start: updater unavailable\n' >&2
+  fi
+  exit 3
+fi
+if afk_is_darwin; then
+  # Matching recorded revision fields cannot re-prove candidate bytes or the
+  # prior verification after drift. Leave installed state untouched and refuse
+  # rather than synthesize last_good_verified without a Darwin sandbox backend.
+  retained=false
+  darwin_recorded_last_good && retained=true
+  printf '{"schema":"afk-release-result/2","state":"BLOCKED","reason":"MACOS_SANDBOX_PENDING","last_good_retained":%s,"last_good_verified":false}\n' "$retained"
+  exit 3
+else
+  [[ -x "$RECONCILER" ]] || { printf 'afk-session-start: updater unavailable\n' >&2; exit 3; }
+  result="$($RECONCILER --apply --state-dir "$STATE_DIR" --policy "$POLICY" --cohort "$COHORT")"
+  reconcile_rc=$?
+fi
+state="$("$JQ_EXEC" -r '.state // ""' <<<"$result" 2>/dev/null)"
+verified="$("$JQ_EXEC" -r '.last_good_verified // false' <<<"$result" 2>/dev/null)"
+case "$state" in
+  CONVERGED|CURRENT) [[ "$reconcile_rc" -eq 0 && "$verified" == true ]] || { printf '%s\n' "$result"; exit 3; } ;;
+  RETAINED) [[ "$reconcile_rc" -eq 0 && "$verified" == true ]] || { printf '%s\n' "$result"; exit 3; } ;;
+  *) printf '%s\n' "$result"; exit 3 ;;
+esac
+
+# Native startup hooks intentionally invoke this gate without adapter flags.
+# Reconcile every adapter AFK already owns so a release that changes hook or
+# plugin shape converges the existing registration before the session starts.
+if (( ${#ADAPTERS[@]} == 0 )); then
+  for discovered in claude codex opencode hermes; do
+    record="$STATE_DIR/adapters/$discovered.json"
+    [[ -e "$record" ]] || continue
+    # shellcheck disable=SC2016 # $h is a jq variable.
+    if [[ ! -f "$record" || ! -r "$record" ]] || ! "$JQ_EXEC" -e --arg h "$discovered" '
+        .harness==$h and ((.phase // "active")=="active")' "$record" >/dev/null 2>&1; then
+      printf 'afk-session-start: adapter ownership record is unreadable: %s\n' "$discovered" >&2
+      exit 3
+    fi
+    ADAPTERS+=("$discovered")
+  done
+fi
+
+runtime=""
+if (( ${#ADAPTERS[@]} || ${#COMMAND[@]} )); then
+  validate_launch_path \
+    || { printf 'afk-session-start: launch PATH unavailable\n' >&2; exit 3; }
+fi
+if (( ${#ADAPTERS[@]} )); then
+  runtime="$("$REALPATH_EXEC" -e -- "$SELF_DIR/.." 2>/dev/null)" || runtime=""
+  [[ -n "$runtime" && "$runtime/bin" == "$SELF_DIR" && -f "$runtime/manage.sh" &&
+     -x "$runtime/manage.sh" && ! -L "$runtime/manage.sh" ]] \
+    || { printf 'afk-session-start: stable installed adapter runtime unavailable\n' >&2; exit 3; }
+fi
+
+for adapter in "${ADAPTERS[@]}"; do
+  case "$adapter" in claude|codex|opencode|hermes) : ;; *) printf 'afk-session-start: unsupported adapter: %s\n' "$adapter" >&2; exit 2 ;; esac
+  PATH="$LAUNCH_PATH" BASH_ENV='' ENV='' AFK_SKILLS_HOME="${runtime%/*}" \
+    HOME="$HOME_ROOT" AFK_STATE_DIR="$STATE_DIR" \
+    "$BASH_EXEC" -p "$runtime/manage.sh" install "$adapter" \
+    --home "$HOME_ROOT" --state-dir "$STATE_DIR" --adapter-root "$runtime" >/dev/null \
+    || { printf 'afk-session-start: adapter installation requires owner action: %s\n' "$adapter" >&2; exit 3; }
+done
+
+if (( ${#COMMAND[@]} )); then
+  PATH="$LAUNCH_PATH" BASH_ENV='' ENV='' exec "${COMMAND[@]}"
+  printf 'afk-session-start: requested command unavailable\n' >&2
+  exit 3
+fi
+printf '%s\n' "$result"

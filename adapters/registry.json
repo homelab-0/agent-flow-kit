@@ -1,0 +1,37 @@
+{
+  "schema": "afk-adapter-registry/1",
+  "adapters": [
+    {
+      "id": "claude",
+      "role": "coding_harness",
+      "presentation": "statusline_command",
+      "persistent_orca_surface": "exact_terminal_title",
+      "observation": "harness_adapter",
+      "launchability": "CONTRACT_GATED"
+    },
+    {
+      "id": "codex",
+      "role": "coding_harness",
+      "presentation": "native_tui_status_line",
+      "persistent_orca_surface": "exact_terminal_title",
+      "observation": "harness_adapter",
+      "launchability": "CONTRACT_GATED"
+    },
+    {
+      "id": "opencode",
+      "role": "coding_harness",
+      "presentation": "event_toast",
+      "persistent_orca_surface": "exact_terminal_title",
+      "observation": "harness_adapter",
+      "launchability": "CONTRACT_GATED"
+    },
+    {
+      "id": "hermes",
+      "role": "remote_human_front_door",
+      "presentation": "NOT_QUALIFIED",
+      "persistent_orca_surface": "exact_terminal_title_when_orca_managed",
+      "observation": "none",
+      "launchability": "NOT_APPLICABLE"
+    }
+  ]
+}
