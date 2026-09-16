@@ -32,6 +32,7 @@ away from the executable that implements it.
 | `update` | Deterministic convergence for an adopted host: plan, backup, journal, write, verify, commit — or refuse. |
 | `verify` | Verification of installed state against the applied-state manifest. Observes and proves; never repairs. Offline unless `--live` is requested. |
 | `monitor` | The durable worker-completion watch and the provenance-bound release of the resources a settled worker owned. One bounded pass per invocation; read-only without an action verb. |
+| `pm-continue` | Advances one durable PM handoff transition. It launches at most one successor, accepts only a matching acknowledgement, reconciles ownership, and closes only the proven old terminal. |
 | `schema` | Emits this contract's vocabularies as JSON. |
 
 `--plan` turns `adopt` or `update` into a computation: it emits the complete
@@ -46,6 +47,7 @@ update
 verify
 monitor
 pm-checkpoint
+pm-continue
 schema
 ```
 <!-- end -->
@@ -810,6 +812,10 @@ REGISTERED_ADAPTATION
 | `humanizer-claude-link` | `MANAGED_LINK` | `$AFK_CLAUDE_HOME/skills/humanizer` → `$AFK_SKILLS_HOME/humanizer` | `$AFK_CLAUDE_HOME` | no |
 | `claude-global-policy` | `MANAGED_SECTION` | `$AFK_CLAUDE_HOME/CLAUDE.md` | `$AFK_CLAUDE_HOME` | yes |
 | `codex-global-guidance` | `MANAGED_COPY_FILE` | `$AFK_CODEX_HOME/AGENTS.md` | `$AFK_CODEX_HOME` | no |
+| `afk-runtime-adapters` | `MANAGED_COPY_TREE` | `$AFK_SKILLS_HOME/afk-runtime` (excluding `bin`, `lib`, and `lifecycle`) | `$AFK_SKILLS_HOME` | no |
+| `afk-runtime-bin` | `MANAGED_COPY_TREE` | `$AFK_SKILLS_HOME/afk-runtime/bin` | `$AFK_SKILLS_HOME` | no |
+| `afk-runtime-lib` | `MANAGED_COPY_TREE` | `$AFK_SKILLS_HOME/afk-runtime/lib` | `$AFK_SKILLS_HOME` | no |
+| `afk-runtime-release-policy` | `MANAGED_COPY_FILE` | `$AFK_SKILLS_HOME/afk-runtime/lifecycle/release-policy.json` | `$AFK_SKILLS_HOME` | no |
 
 A non-critical component's problem is scoped to itself: it can refuse to be
 overwritten without making the whole host `NOT_READY`.
@@ -1515,8 +1521,9 @@ window and a launcher that can start the next attempt, the two things a worker
 gets for free, are exactly what the coordinator does not have.
 
 **The observation is PROVIDED.** Automatic context-window measurement by the kit
-is an explicit non-goal. `$AFK_PM_DIR/usage.json` (default `pm/usage.json` under
-the declared state directory) carries schema `afk-pm-usage/1`: `harness`,
+is an explicit non-goal. `$AFK_PM_DIR/usage.json` (by default inside the
+current worktree's hashed directory under `pm/scopes`) carries schema
+`afk-pm-usage/1`: `harness`,
 `window_tokens` and `usage_tokens` (each a number or null), `provenance`
 (`HARNESS_ADAPTER` or `HUMAN`), `observed_at`, an opaque `session`, `reason`.
 
@@ -1552,8 +1559,9 @@ four declared budget states), `reason`, `checkpoint_artifact` and
 `continuation_artifact` (`{path, sha256}` or null), `needs_human`.
 
 **The artifacts.** `agent-flow-kit pm-checkpoint --write <path>` validates a
-submitted document and writes `pm/checkpoint.json` (`afk-pm-checkpoint/1`);
-`--continuation` writes `pm/continuation.json` (`afk-pm-continuation/1`), which
+submitted document and writes `$AFK_PM_DIR/checkpoint.json`
+(`afk-pm-checkpoint/1`); `--continuation` writes
+`$AFK_PM_DIR/continuation.json` (`afk-pm-continuation/1`), which
 additionally requires `resume_instruction`, a ready-to-use command line for the
 human. Both carry `decisions`, `envelope_actions`, `open_escalations`,
 `budget_state`, `in_flight_dispatches` and `updated_at`. `envelope_actions` is
@@ -1565,23 +1573,74 @@ the kit's atomic state writer, so a refused submission leaves what is on disk
 byte-identical. A secret-looking member is refused with
 `PM_ARTIFACT_SECRET_BEARING` and exit code 4, and never reaches a diagnostic.
 
-**Continuation is loud, and nothing launches it.** When occupancy is at or past
+**Continuation is durable and replay-safe.** When occupancy is at or past
 `continuation_ratio`, or a valid continuation artifact exists that no successor
 has reconciled, `status` carries the `owner_action` finding
-`PM_CONTINUATION_REQUIRED` with the artifact's path and digest and the
-`resume_instruction` verbatim, and `next_safe_action` tells the human to start
-the successor ORCH PM in Orca themselves. **No verb in this kit starts a
-session**; no PM path calls `orca terminal create` or `worker-start`, and a gate
-greps for both.
+`PM_CONTINUATION_REQUIRED` with the artifact path, digest, and resume
+instruction. `pm-continue` keys a durable transition by that digest and advances
+only in order through `OBSERVED`, `CHECKPOINTED`, `SUCCESSOR_LAUNCHED`, `ACKED`,
+and `OLD_CLOSED`. Replaying a transition uses the recorded successor receipt and
+does not launch another terminal. Acknowledgement must name the transition and
+successor session; ownership must name that same successor before cleanup; and
+the configured closer must prove the old terminal absent before the final state
+is committed. Any failed step leaves the old PM visible and the transition
+recoverable.
 
-**Reconciliation.** `monitor --reconcile` gains one additive step: a valid
-outstanding artifact is recorded in `pm/continuation.reconciled.json` (successor
-session from `--session` or from the observation, the time, and the artifact
-digest), the PM continuation count in `pm/budget-state.json` is incremented —
-the epic-budget input Story 1.6 consumes — and the condition clears. The step
-touches nothing outside `pm/`, so an in-flight worker watch is unaffected by a
-coordinator hand-over, and an artifact that does not validate is
-`PM_CONTINUATION_ARTIFACT_INVALID` rather than a hand-over.
+**Reconciliation.** On `OLD_CLOSED`, the transition is recorded in
+`pm/continuation.reconciled.json` (successor session, time, artifact digest), the
+PM continuation count in `pm/budget-state.json` is incremented, and the
+condition clears. Coordinator state remains under `pm/`, so an in-flight worker
+watch is unaffected by handoff. Worker threshold events are separately written
+as durable monitor messages and identify canonical continuation dispatch; an
+invalid continuation artifact is `PM_CONTINUATION_ARTIFACT_INVALID`, never a
+handoff.
+
+## Cross-harness runtime status and release reconciliation
+
+Presentation adapters call the cache-only renderer under `adapters/`; it never
+executes lifecycle status. Harness hooks/plugins start a separate throttled
+background publisher, which atomically refreshes the normalized cache. The
+five-second publisher interval and 30-second stale boundary live in
+`adapters/status-policy.json`. Adapter installation is idempotent and removal
+changes only the exact AFK integration; unrelated user configuration and all
+credential references remain untouched.
+
+The default presentation cache is namespaced by the exact Orca terminal handle
+and falls back to the canonical working-directory path outside Orca. The
+namespace is a SHA-256 identifier and carries no authority. Runtime observations
+from two terminals therefore cannot overwrite one another. Coordinator
+ownership is instead namespaced by canonical worktree path under `pm/scopes`,
+because a successor terminal must consume the same durable handoff while a PM
+in another worktree must not. Explicit cache and `AFK_PM_DIR` declarations keep
+their caller-supplied scope.
+
+OpenCode capability is published through the same exact local binding inventory
+used by readiness and dispatch. Binary detection alone never makes a route
+legal. The released `POST /v1/route` payload remains unchanged by default;
+`available_bindings` is included only when the caller explicitly enables the
+negotiated extension with `AFK_ROUTE_AVAILABLE_BINDINGS_CONTRACT=1`.
+Hermes is a presentation-only remote front door and cannot select routes or
+create workers.
+
+The Linux host release reconciler takes a host-scoped lock and accepts only a clean,
+locally available immutable revision on forward ancestry. Candidate behavior is
+qualified in `bwrap`; no Darwin sandbox backend is currently accepted. The lock
+owner record includes an atomically published ACTIVE child process group, so a
+leader exit or killed parent cannot release/reclaim the lock while a descendant
+survives. It obtains an exact
+lifecycle plan, applies that plan through the existing transaction, and verifies
+the committed result. Dirt, divergence, an unavailable revision, an ambiguous
+plan, or any gate failure retains the last-good revision with an explicit
+reason. Offline session freshness never fetches or mutates, and rollback remains
+an explicit lifecycle operation rather than an automatic bypass.
+
+On Darwin, adapter installation retains presentation and context-pressure
+surfaces but does not register the blocking updater. OpenCode similarly skips
+startup reconciliation. Explicit session start leaves any installed last-good
+untouched but refuses with
+`MACOS_SANDBOX_PENDING`; it does not synthesize verification. Candidate
+execution and automatic release advancement remain blocked until a sandbox
+backend is qualified.
 
 ## Compatibility declarations
 
@@ -1601,6 +1660,7 @@ it can drive.
 ```
 claude
 codex
+opencode
 ```
 <!-- end -->
 

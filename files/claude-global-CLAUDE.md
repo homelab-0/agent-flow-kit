@@ -1,35 +1,71 @@
-<!-- OMEGA:BEGIN — managed by omega setup, do not edit this block -->
-## Memory (OMEGA)
+## Memory (Hindsight)
 
-You have OMEGA persistent memory. At session start:
-1. Call `omega_welcome()` for context briefing
-2. Call `omega_protocol()` for your operating instructions — it's your coordination playbook
-3. Follow the protocol it returns
+Hindsight is optional, host-owned external state. The kit never installs,
+copies, syncs, backs up, hashes, or discloses its runtime, configuration,
+harness wiring, banks, or credential. Current repository files, task scope,
+route stamps, approvals, Orca ownership, and gate evidence always outrank
+memory.
 
-Quick reference (protocol has full details):
-- `[MEMORY]`/`[HANDOFF]`/`[COORD]` blocks from hooks = ground truth
-- Before non-trivial tasks: `omega_query()` for prior context
-- After completing tasks: `omega_store(content, "decision")` for key outcomes
-- User says "remember": `omega_store(text, "user_preference")`
-- Context getting full: `omega_checkpoint` to save state
-- Load user context: `omega_profile()` after welcome/protocol
-- Before architecture decisions: `omega_reflect(action="evolution", topic=<domain>)` to check prior thinking
-- After `omega_store`: check `omega_memory(similar)` and link related memories to build the knowledge graph
+Every dispatched story declares `memory_mode: advisory | required | blind |
+off`. Advisory mode recalls relevant project-attributed lessons and continues
+memorylessly with `MEMORY_NOT_EVALUATED` when unavailable. Required mode
+refuses before launch when readiness cannot be proven. Blind mode disables the
+memory configuration and hooks at the process boundary, excluding prior
+implementation conclusions and review findings; `off` merely disables recall.
 
-### Multi-Agent Coordination
-- Check `omega_inbox()` for unread peer messages early in sessions
-- Announce intent: `omega_intent_announce(description="<goal>")` before starting work
-- Before editing shared files: `omega_file_check(file_path=...)` for conflicts
-- After significant work: `omega_task_complete(task_id=..., result="summary")`
-- Before deploy/force-push: `omega_action_check()` then `omega_action_claim()` (atomic gate)
-- Never `git add .` — always `git add <specific files>`
+Retain only verified, reusable lessons with explicit project attribution.
+Never retain approvals, credentials, raw logs/transcripts, temporary fixtures,
+speculation, or superseded instructions. Memory never routes, coordinates,
+approves, merges, reviews, or deploys. If it is unavailable, report that
+separately and continue only when the declared mode permits it.
 
-If OMEGA is unavailable, use basic coordination:
-- Before state changes: check `git log` and ask before deploying
-- Never send emails, post tweets, or take externally-visible actions without explicit approval
-- Commit only files you modified; `git add <files>` never `git add .`
-- After tasks: store decisions with `omega_store()`
-<!-- OMEGA:END -->
+Legacy OMEGA instructions are obsolete on AFK-managed machines. Do not call
+`omega_*` commands or treat an OMEGA block as coordination or memory authority.
+AFK does not delete, migrate, or synchronize OMEGA data or credentials; any
+host-owned remnants stay untouched until the owner removes them separately.
+
+## Product ownership
+
+Agent Flow Kit and AI Control Plane are separate products with separate PMs,
+roadmaps, priorities, and acceptance decisions. AFK owns its orchestration,
+launcher/adapter/installation tooling, context budgeting, and consumer
+integration with the released legacy-router public contract. Do not perform
+ACP implementation or work intended only to unblock ACP's internal review,
+QA, or development workflow from an AFK task.
+
+When AFK encounters a legacy-router defect or needs a public contract change,
+send the ACP PM a bounded customer request naming the contract/version,
+expected versus observed behavior, minimal reproduction/evidence, and the
+specific requested fix or clarification. ACP owns acceptance and release of
+that work. Prox-ops owns the deployed legacy instance, catalog, provider
+bindings, and deployment changes; AFK does not edit or activate them.
+
+## AFK session continuity
+
+At the start of an AFK PM session, enter through the installed
+`afk-session-start` path and register the exact current Orca terminal with
+`agent-flow-kit pm-start --harness <claude|codex|opencode>`. Ordinary workers
+never register themselves as PMs. Treat the normalized AFK status as the
+runtime signal: authoritative numeric window/usage data is used when the
+harness exposes it, and native compaction events are the conservative boundary
+when it does not. Never invent a window size or scrape a transcript to estimate
+one.
+
+When AFK reports `CHECKPOINT_DUE`, immediately write a secret-free coordinator
+checkpoint through `agent-flow-kit pm-checkpoint`. When it reports
+`CONTINUATION_REQUIRED`, stop taking new work, write the continuation artifact,
+and run `agent-flow-kit pm-continue` without waiting for another human prompt.
+That command persists the handoff and requests exactly one successor in the
+same harness/worktree. The successor acknowledges the artifact before it closes
+the proven old Orca terminal. If any identity, acknowledgement, or close proof
+is ambiguous, remain visible and report `NEEDS HUMAN`; never launch a substitute
+or close a terminal by guesswork.
+
+Routed workers follow the launcher-provided checkpoint/continuation contract.
+On harness context pressure they notify the owning PM, stop at the next safe
+phase boundary, write the canonical continuation artifact, emit the required
+signal, and end. Only the owning PM may consume that event and dispatch the
+next canonical cycle.
 
 ## Local GPU delegation (junior-dev protocol)
 
