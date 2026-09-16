@@ -1442,6 +1442,11 @@ head1 "9. The coordinator's own context budget (Story 1.5 lane D)"
 
 # shellcheck source=../lib/afk-commands.sh
 . "$KIT_ROOT/lib/afk-commands.sh"
+# The collision check below spans all published vocabulary owners. Commands
+# does not source the monitor implementation, so load its definitions here
+# rather than letting an absent function make the assertion vacuously pass.
+# shellcheck source=../lib/afk-monitor.sh
+. "$KIT_ROOT/lib/afk-monitor.sh"
 
 BAD=0
 while IFS= read -r code; do
