@@ -126,7 +126,17 @@ sc_check() { # <path> [extra checker args...]
 }
 
 SC_SCRIPTS=("$DISPATCH" "$MAKE_STAMP" "$USAGE_CHECK" "$GH_HEALTH" \
-            "$CLAUDE_EVIDENCE_VERIFY" "$CLAUDE_EVIDENCE_TESTS")
+            "$CLAUDE_EVIDENCE_VERIFY" "$CLAUDE_EVIDENCE_TESTS" \
+            "$KIT_ROOT/adapters/claude/statusline.sh" \
+            "$KIT_ROOT/adapters/codex/publish.sh" \
+            "$KIT_ROOT/adapters/codex/status.sh" \
+            "$KIT_ROOT/adapters/hermes/status-card.sh" \
+            "$KIT_ROOT/adapters/opencode/status.sh" \
+            "$KIT_ROOT/adapters/orca-title.sh" \
+            "$KIT_ROOT/adapters/publish-runtime.sh" \
+            "$KIT_ROOT/adapters/refresh-status-cache.sh" \
+            "$KIT_ROOT/adapters/render-status.sh" \
+            "$KIT_ROOT/adapters/runtime-scope.sh")
 # The lifecycle surface. Checked at warning level and above, with two codes
 # excluded for a structural reason rather than a stylistic one: the lifecycle
 # files are always sourced together and share one result model, so a variable
@@ -3353,6 +3363,38 @@ if [[ -f "$DISPATCH_TESTS" ]]; then
   fi
 else
   bad "lifecycle dispatch gate present" "missing: $DISPATCH_TESTS"
+fi
+
+# ===========================================================================
+head1 "11. Runtime status gate — tests/runtime-experience-tests.sh"
+# ===========================================================================
+
+RUNTIME_STATUS_TESTS="$KIT_ROOT/tests/runtime-experience-tests.sh"
+if [[ -f "$RUNTIME_STATUS_TESTS" ]]; then
+  if runtime_status_out="$(bash "$RUNTIME_STATUS_TESTS" 2>&1)"; then
+    ok "runtime status gate: $(tail -1 <<<"$runtime_status_out")"
+  else
+    bad "runtime status gate" "$(tail -1 <<<"$runtime_status_out")"
+    printf '%s\n' "$runtime_status_out" | tail -40
+  fi
+else
+  bad "runtime status gate present" "missing: $RUNTIME_STATUS_TESTS"
+fi
+
+# ===========================================================================
+head1 "12. Orca-visible status gate — tests/orca-visible-status-tests.sh"
+# ===========================================================================
+
+VISIBLE_STATUS_TESTS="$KIT_ROOT/tests/orca-visible-status-tests.sh"
+if [[ -f "$VISIBLE_STATUS_TESTS" ]]; then
+  if visible_status_out="$(bash "$VISIBLE_STATUS_TESTS" 2>&1)"; then
+    ok "Orca-visible status gate: $(tail -1 <<<"$visible_status_out")"
+  else
+    bad "Orca-visible status gate" "$(tail -1 <<<"$visible_status_out")"
+    printf '%s\n' "$visible_status_out" | tail -40
+  fi
+else
+  bad "Orca-visible status gate present" "missing: $VISIBLE_STATUS_TESTS"
 fi
 
 # ===========================================================================
