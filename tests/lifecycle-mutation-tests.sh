@@ -2724,5 +2724,180 @@ assert_no_file "R11f and released its lock on the way out" "$(lock_path)"
 assert_eq "R11f with nothing left of the release" "$(lock_residue)" ""
 
 # ===========================================================================
+head1 "13. AFK-LC-1 — nested components sharing a root converge in one run"
+# ===========================================================================
+
+# The empty-tree predicate is the discriminator FR-26 leans on: an empty
+# scaffold owns nothing, a root with even one non-excluded file owns content.
+LC="$TMPROOT/lc1"; mkdir -p "$LC"
+
+mkdir -p "$LC/emptytree"
+assert_eq "an empty directory reads as an empty managed tree" \
+  "$(afk_managed_tree_empty "$LC/emptytree" ""; printf '%s' "$?")" "0"
+
+mkdir -p "$LC/excludedonly/bin" "$LC/excludedonly/lifecycle"
+printf 'x\n' > "$LC/excludedonly/bin/thing"
+assert_eq "a root holding only excluded members is still empty" \
+  "$(afk_managed_tree_empty "$LC/excludedonly" "bin,lib,lifecycle"; printf '%s' "$?")" "0"
+
+mkdir -p "$LC/hasfile"
+printf 'stray\n' > "$LC/hasfile/STRAY"
+assert_eq "a root with a non-excluded file is NOT empty (FR-26)" \
+  "$(afk_managed_tree_empty "$LC/hasfile" "bin,lib,lifecycle"; printf '%s' "$?")" "1"
+
+mkdir -p "$LC/haslink"
+ln -s /dev/null "$LC/haslink/LINK"
+assert_eq "a root with a non-excluded symlink is NOT empty" \
+  "$(afk_managed_tree_empty "$LC/haslink" ""; printf '%s' "$?")" "1"
+
+assert_eq "a directory that does not exist is not an empty tree" \
+  "$(afk_managed_tree_empty "$LC/nope" ""; printf '%s' "$?")" "1"
+
+# afk_mkdir_tracked records exactly what it creates, and the scaffold remover
+# takes back exactly that — empty-only, so nothing with content is ever removed.
+mkdir -p "$LC/base/keepdir"
+printf 'mine\n' > "$LC/base/keepdir/mine.txt"
+BASE_FP="$(fingerprint_tree "$LC/base")"
+AFK_OP_CREATED_DIRS=""
+afk_mkdir_tracked "$LC/base/afk-runtime/lifecycle"
+assert_file "the nested scaffold now exists" "$LC/base/afk-runtime/lifecycle"
+assert_eq "the created root is recognized as operation-created" \
+  "$(afk_op_created_dir "$LC/base/afk-runtime"; printf '%s' "$?")" "0"
+assert_eq "the nested scaffold is recognized as operation-created" \
+  "$(afk_op_created_dir "$LC/base/afk-runtime/lifecycle"; printf '%s' "$?")" "0"
+assert_eq "a pre-existing directory is NOT claimed as operation-created" \
+  "$(afk_op_created_dir "$LC/base/keepdir"; printf '%s' "$?")" "1"
+afk_remove_created_scaffold
+assert_no_file "the scaffold is fully removed on abort" "$LC/base/afk-runtime"
+assert_eq "and pre-existing content is byte-for-byte untouched" \
+  "$(fingerprint_tree "$LC/base")" "$BASE_FP"
+
+# The safety of using rmdir: a "created" directory that ended up holding content
+# is never removed, so a real write can never be deleted by the cleanup.
+AFK_OP_CREATED_DIRS=""
+afk_mkdir_tracked "$LC/base/afk-runtime/lifecycle"
+printf 'a write landed here\n' > "$LC/base/afk-runtime/lifecycle/written"
+afk_remove_created_scaffold
+assert_file "a created dir that gained content survives the cleanup" \
+  "$LC/base/afk-runtime/lifecycle/written"
+rm -rf "$LC/base/afk-runtime"
+AFK_OP_CREATED_DIRS=""
+
+# --- AC-1: a nested install completes in one run --------------------------
+new_scenario nestedinstall
+install_kit "$HOMEDIR" "$CHECKOUT"
+# Remove the runtime BEFORE adoption so its four components — the shared root
+# and the bin/lib/lifecycle members that live inside it — are absent AND
+# unrecorded: exactly the shape that used to abort "stale before its first
+# write" the moment the backup phase created the shared parent.
+rm -rf "$HOMEDIR/.agents/skills/afk-runtime"
+adopt_host
+run_afk update --json
+assert_eq "the nested install converges in a single run"  "$RUN_RC" "0"
+assert_eq "and reports itself converged"                  "$(jget '.operation.result')" "CONVERGED"
+assert_eq "the shared root is installed"                  "$(plan_field afk-runtime-adapters action)" "INSTALL"
+assert_eq "the bin member is installed"                   "$(plan_field afk-runtime-bin action)" "INSTALL"
+assert_eq "the lib member is installed"                   "$(plan_field afk-runtime-lib action)" "INSTALL"
+assert_eq "the nested release-policy file is installed"   "$(plan_field afk-runtime-release-policy action)" "INSTALL"
+assert_file "the shared root exists afterwards"           "$HOMEDIR/.agents/skills/afk-runtime/README"
+assert_file "the bin member exists"                       "$HOMEDIR/.agents/skills/afk-runtime/bin/agent-flow-kit"
+assert_file "the lib member exists"                       "$HOMEDIR/.agents/skills/afk-runtime/lib/afk-common.sh"
+assert_file "the nested file exists"                      "$HOMEDIR/.agents/skills/afk-runtime/lifecycle/release-policy.json"
+assert_eq "the applied state was committed"               "$(jget '.operation.applied_state_committed')" "true"
+run_afk verify --json
+assert_eq "and every installed component verifies"        "$(jget '.extra.verification.verified')" "true"
+run_afk status --json
+assert_eq "the shared root reports CURRENT"               "$(component_field afk-runtime-adapters .state)" "CURRENT"
+assert_eq "the nested member reports CURRENT"             "$(component_field afk-runtime-release-policy .state)" "CURRENT"
+
+# --- AC-3: an abort after the shared root is scaffolded leaves nothing -----
+new_scenario nestedrollback
+install_kit "$HOMEDIR" "$CHECKOUT"
+rm -rf "$HOMEDIR/.agents/skills/afk-runtime"
+adopt_host
+GOOD_SHA="$(manifest_get '.applied_revision')"
+BEFORE_FP="$(fingerprint_tree "$HOMEDIR/.agents/skills")"
+# The same deterministic write failure the rollback scenario uses, planted in a
+# runtime member: the transaction opens, the backup phase scaffolds the shared
+# root, the root and its earlier siblings write, and this member then refuses to
+# converge. The abort must leave no trace of the scaffold it created.
+mkdir -p "$SC/faraway"; printf 'far away\n' > "$SC/faraway/thing.md"
+ln -s "$SC/faraway/thing.md" "$CHECKOUT/lib/escape"
+git_commit_all "$CHECKOUT" "a runtime member gains an escaping link"
+run_afk update --json
+assert_eq "the failed nested install is rolled back"      "$(jget '.operation.result')" "ROLLED_BACK"
+assert_eq "restoration completed"                         "$(jget '.operation.rollback_state')" "COMPLETE"
+assert_no_file "no shared-root scaffold survives the abort" \
+  "$HOMEDIR/.agents/skills/afk-runtime"
+assert_eq "the skills tree is byte-for-byte as before the attempt" \
+  "$(fingerprint_tree "$HOMEDIR/.agents/skills")" "$BEFORE_FP"
+assert_eq "the applied revision never moved"              "$(manifest_get '.applied_revision')" "$GOOD_SHA"
+run_afk verify --json
+assert_eq "the untouched installation still verifies"     "$(jget '.extra.verification.verified')" "true"
+
+# --- AC-4: an empty leftover root is planned as an install, not blocked ----
+new_scenario emptyleftover
+install_kit "$HOMEDIR" "$CHECKOUT"
+rm -rf "$HOMEDIR/.agents/skills/afk-runtime"
+adopt_host
+# The 2026-09-17 shape: an earlier aborted op left an empty shared root behind.
+# Unrecorded and holding no file, it must plan as an install rather than block
+# every later plan with COMPONENT_NOT_RECORDED.
+mkdir -p "$HOMEDIR/.agents/skills/afk-runtime/lifecycle"
+run_afk update --plan --json
+assert_eq "the empty leftover root is planned as an install" \
+  "$(plan_field afk-runtime-adapters action)" "INSTALL"
+assert_eq "with the not-installed reason, never COMPONENT_NOT_RECORDED" \
+  "$(plan_field afk-runtime-adapters reason)" "COMPONENT_NOT_INSTALLED"
+run_afk update --json
+assert_eq "and the leftover no longer blocks convergence"  "$RUN_RC" "0"
+assert_eq "the run converges"                              "$(jget '.operation.result')" "CONVERGED"
+assert_file "the shared root now carries canonical content" \
+  "$HOMEDIR/.agents/skills/afk-runtime/README"
+
+# --- AC-4 / FR-26: a non-empty unowned root still blocks ------------------
+new_scenario nonemptyunowned
+install_kit "$HOMEDIR" "$CHECKOUT"
+rm -rf "$HOMEDIR/.agents/skills/afk-runtime"
+adopt_host
+# A root that CONTAINS an unowned file is content this kit may not claim: it
+# stays BLOCKED, exactly as before, so the fix never widens what gets written.
+mkdir -p "$HOMEDIR/.agents/skills/afk-runtime"
+printf 'not ours to overwrite\n' > "$HOMEDIR/.agents/skills/afk-runtime/STRAY"
+STRAY_ID="$(hash_of_file "$HOMEDIR/.agents/skills/afk-runtime/STRAY")"
+run_afk update --plan --json
+assert_eq "a non-empty unowned root is refused"           "$(plan_field afk-runtime-adapters action)" "BLOCKED"
+assert_eq "with COMPONENT_NOT_RECORDED (FR-26)"           "$(plan_field afk-runtime-adapters reason)" "COMPONENT_NOT_RECORDED"
+run_afk update --json
+assert_ne "the refused plan performs no mutation"         "$RUN_RC" "0"
+assert_eq "and the unowned file is left byte-for-byte"    "$(hash_of_file "$HOMEDIR/.agents/skills/afk-runtime/STRAY")" "$STRAY_ID"
+
+# --- AC-2 NEGATIVE: the op-created-dir exclusion must not blind the guard --
+# The positive path above proves an empty root the operation created is excused.
+# This pins the other side of the same seam: a GENUINE external file lands in
+# that op-created shared root before the root component's write, so the root is
+# no longer empty. afk_managed_tree_empty must then return false, the exclusion
+# must NOT fire, and afk_component_prewrite_ok must raise
+# PLAN_STALE_DESTINATION_CHANGED — mutation refused, unowned content not claimed.
+# Injected deterministically through the same function seam the unit tests above
+# use, not a concurrent process. If this assertion fails (result ":0:"), the
+# exclusion is blinding the freshness guard and the fix is unsafe.
+NEG_SAVED_SKILLS="$AFK_SKILLS_HOME"; NEG_SAVED_KIT="$AFK_KIT_ROOT"
+AFK_SKILLS_HOME="$LC/neg/skills"; AFK_KIT_ROOT="$LC/neg/checkout"
+mkdir -p "$AFK_SKILLS_HOME" "$AFK_KIT_ROOT/adapters"
+printf 'canonical adapter\n' > "$AFK_KIT_ROOT/adapters/README"
+AFK_OP_CREATED_DIRS=""
+afk_mkdir_tracked "$AFK_SKILLS_HOME/afk-runtime"          # the transaction's own scaffold
+printf 'planted by someone else\n' > "$AFK_SKILLS_HOME/afk-runtime/INTRUDER"
+NEG_ROW="$(afk_component_row afk-runtime-adapters)"
+afk_observe_component "$NEG_ROW"                          # to read the declared type
+NEG_ENTRY="$(jq -nc --arg c afk-runtime-adapters --arg t "$AFK_OB_WANT" \
+  '{component:$c, expected_destination_identity:null, guard:{expected_type:$t}}')"
+NEG_RESULT="$(afk_component_prewrite_ok "$NEG_ENTRY"; printf ':%s:%s' "$?" "$AFK_STEP_REASON")"
+assert_eq "AC-2 negative: a genuine external file in the op-created root is NOT excused — stale is raised" \
+  "$NEG_RESULT" ":1:PLAN_STALE_DESTINATION_CHANGED"
+AFK_SKILLS_HOME="$NEG_SAVED_SKILLS"; AFK_KIT_ROOT="$NEG_SAVED_KIT"; AFK_OP_CREATED_DIRS=""
+
+# ===========================================================================
 printf '\n\033[1m%d passed, %d failed\033[0m\n' "$PASS" "$FAIL"
 (( FAIL == 0 )) || exit 1

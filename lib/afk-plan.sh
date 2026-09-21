@@ -234,6 +234,34 @@ afk_observe_component() { # <declared row>
   return 0
 }
 
+# afk_managed_tree_empty <dir> <comma-separated exclusions>
+#
+# True (0) when <dir> is a real directory that holds no file or symlink outside
+# the declared exclusions — an empty scaffold that OWNS NOTHING. It is the exact
+# discriminator FR-26 needs: an empty component root is not content a plan could
+# be claiming, so it is treated as absent, while a root that CONTAINS even one
+# non-excluded file is never mistaken for one this kit may write over. The find
+# idiom mirrors afk_tree_identity, so "empty" here means the same thing the
+# identity does: a listing with no records. A find that cannot complete fails
+# closed (returns non-zero / "not empty"), because an unprovable tree must never
+# read as safe to install into.
+afk_managed_tree_empty() {
+  local root="$1" excl="${2:-}" entry rel
+  [[ -d "$root" && ! -L "$root" ]] || return 1
+  while IFS= read -r -d '' entry; do
+    case "$entry" in
+      FINDRC=0) break ;;
+      FINDRC=*) return 1 ;;
+    esac
+    rel="${entry#"$root"/}"
+    if [[ "$rel" == "$entry" ]]; then rel="${entry##*/}"; fi
+    afk_excluded "$rel" "$excl" && continue
+    return 1
+  done < <(find "$root" \( -type f -o -type l \) -print0 2>/dev/null
+           printf 'FINDRC=%s\0' "$?")
+  return 0
+}
+
 # --- the binding (FR-91) ----------------------------------------------------
 #
 # Recomputed identically at plan time and immediately before the first write.
@@ -495,6 +523,23 @@ afk_plan_component_update() {
   fi
 
   if [[ -z "$AFK_OB_APPLIED" ]]; then
+    # An empty component root owns no content. It is the leftover an earlier
+    # operation left when it created a shared parent directory and then aborted
+    # (AFK-LC-1, the 2026-09-17 shape): present, unrecorded, holding no file.
+    # Owning nothing, it is PATH_ABSENT-equivalent — installing into it
+    # overwrites nothing — so it is planned as an INSTALL rather than refused as
+    # COMPONENT_NOT_RECORDED, and a single stray directory can no longer block
+    # every later plan. The reason names it as not-installed (distinct from a
+    # recorded-and-gone COMPONENT_MISSING above), and the guard below still
+    # holds: a root that CONTAINS even one non-excluded file is never emptied of
+    # meaning here — it falls through to COMPONENT_NOT_RECORDED, exactly as
+    # FR-26 requires, because that content is not this kit's to claim.
+    if [[ "$ownership" == "MANAGED_COPY_TREE" ]] \
+       && afk_managed_tree_empty "$AFK_OB_DEST" "$AFK_OB_EXTRA"; then
+      afk_plan_note_disposition MUTATION_REQUIRED
+      afk_plan_entry INSTALL COMPONENT_NOT_INSTALLED "$AFK_OB_CANONICAL" "CURRENT" false false
+      return 0
+    fi
     # Installed, differing from canonical, and owned by nobody. Claiming it
     # here would be exactly the silent claim FR-26 forbids.
     afk_plan_note_disposition REFUSED
