@@ -1890,11 +1890,22 @@ BLOCKED
 | Action | Meaning |
 |---|---|
 | `NONE` | Already at the target identity. Nothing is written. |
-| `INSTALL` | The destination does not exist and nothing owns it, so creating it overwrites nothing. |
+| `INSTALL` | The destination does not exist — or exists only as an empty directory that holds no file — and nothing owns it, so creating it overwrites nothing. |
 | `REPLACE` | The destination still matches its recognized applied state, so kit-owned content may be replaced deterministically. |
 | `PRESERVE` | Declared machine-local state, or a `PRESERVE` adaptation. Never written. |
 | `CLAIM` | Adoption records ownership of what is already installed. No content changes. |
 | `BLOCKED` | A conflict. One blocked component refuses the whole plan: convergence is never partial. |
+
+An installed component that differs from canonical and that the manifest does
+not record is unowned content: claiming it would be the silent claim FR-26
+forbids, so it is `BLOCKED` with `COMPONENT_NOT_RECORDED`. The one directory
+this does NOT describe is an empty tree — a shared root a prior aborted
+operation left behind, present but holding no file. It owns no content, so it is
+PATH_ABSENT-equivalent for planning: an `INSTALL` with `COMPONENT_NOT_INSTALLED`
+rather than a block, which is what stops a single stray directory from blocking
+every later plan. FR-26 is unchanged for anything with content: a root that
+holds even one non-excluded file is still `COMPONENT_NOT_RECORDED` (AFK-LC-1,
+AC-4).
 
 <!-- machine-checkable: plan_dispositions -->
 ```
@@ -1929,7 +1940,25 @@ approve. `--approve-plan <identity>` authorizes exactly that plan.
 Immediately before the first managed write, the binding is recomputed and
 compared. Any material difference is `PLAN_STALE_SOURCE_CHANGED`,
 `PLAN_STALE_MANIFEST_CHANGED` or `PLAN_STALE_DESTINATION_CHANGED`, and
-execution stops without silently recomputing under the earlier approval.
+execution stops without silently recomputing under the earlier approval. Each
+component's own guards are then revalidated a second time, immediately before
+its own write, because a change planted between two writes of the same
+transaction is a real one this boundary check cannot have seen.
+
+That per-write revalidation must not, however, count the operation's OWN
+scaffolding as an external change. When nested components share a directory
+root — the runtime's shared root and the `bin`, `lib` and `lifecycle` members
+that live inside it — the parent a later member needs is created while an
+earlier member is prepared, which makes the shared root read as
+present-and-empty when the member that OWNS that root is checked, even though
+the plan observed nothing there. The check resolves this by exclusion, not by
+taking observations once: a directory this operation itself created is excluded
+from the re-observation, and only while it still holds no file — an empty
+scaffold owns nothing, so installing into it overwrites nothing, whereas a root
+that has gained real content since the plan still stops the write. Taking a
+single observation for the whole operation would defeat the between-writes
+guard above, so the narrower exclusion is the choice the contract makes
+(AFK-LC-1, AC-2).
 
 ## The mutation transaction
 
@@ -1952,7 +1981,11 @@ Order is the contract:
    directory **before** that directory is filled, so recovery material never
    exists without a record that references it. Every required backup is then
    made and the journal moves to `IN_PROGRESS` — all of it before the first
-   managed write.
+   managed write. A nested component whose parent directory does not yet exist
+   has that parent created in this phase; the directories the operation creates
+   are recorded, and any abort **before the first managed write** removes
+   exactly them (empty-only, so nothing that gained content is ever touched),
+   leaving the tree byte-for-byte as it was found (AFK-LC-1, AC-3).
 5. Each component is written after its own guards and expected identity are
    revalidated, and each write is proven to have produced the identity the plan
    predicted — including the destination's own mode and ownership, which belong
