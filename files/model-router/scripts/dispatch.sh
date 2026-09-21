@@ -123,6 +123,60 @@ remap_validator_exit() {
 # stays the authoritative catalog data (HARNESS-LAUNCH-*.md §4).
 native_model_arg() { printf '%s' "${1##*/}"; }
 
+# catalog_native_model — the name the harness receives for a physical model,
+# and the rule that named it, from the SAME trusted catalog `PHYSICAL_MODEL`
+# came from. The catalog's `models.<model_id>.upstream_model_id` wins when it
+# is a non-empty string: it is the vendor's exact id (say `claude-opus-4-8`),
+# where the alias the harness would otherwise get (`opus`) is documented as
+# "the latest model" and names whatever the vendor ships that day. A null or
+# absent value keeps the alias rule above. Anything else is a malformed
+# catalog entry: it returns 1 with a marker on stderr and never falls back
+# silently, because a model the harness resolves on its own is exactly what
+# the operator asked this field to stop. The kit pins nothing and allows
+# nothing here; which model is acceptable is the catalog's decision.
+#
+# A placement-requiring stamp is a gateway-backed local launch or nothing
+# (the launch guard refuses every other pairing), and that class keeps the
+# alias whatever the catalog declares: for a local model the catalog's
+# `model_id` IS the gateway-facing name its per-model policy compares
+# against, while `upstream_model_id` is the string agentgateway forwards to
+# the upstream server. The catalog says the two must not be swapped, and
+# this adapter talks to the gateway. The entry is still validated first: a
+# malformed trusted catalog refuses every class.
+# Prints "<model>\t<UPSTREAM_ID|ALIAS>".
+catalog_native_model() { # <catalog> <physical-model> [placement-required]
+  local catalog="$1" physical="$2" placement="${3:-false}" kind upstream
+  kind="$(yq -r ".models.\"$physical\".upstream_model_id | type" "$catalog" 2>/dev/null || true)"
+  case "$kind" in
+    '!!null') upstream="" ;;
+    '!!str')
+      upstream="$(yq -r ".models.\"$physical\".upstream_model_id" "$catalog")"
+      # One printable token, or nothing: an empty, blank or whitespace-bearing
+      # value would launch a truncated or padded name, not refuse.
+      if [[ ! "$upstream" =~ ^[[:graph:]]+$ ]]; then
+        log "UPSTREAM_MODEL_ID_MALFORMED: catalog model '$physical' declares an upstream_model_id that is not one non-empty printable token"
+        return 1
+      fi ;;
+    *)
+      log "UPSTREAM_MODEL_ID_MALFORMED: catalog model '$physical' declares upstream_model_id of type '${kind:-unreadable}', not a string"
+      return 1 ;;
+  esac
+  if [[ -z "$upstream" || "$placement" == "true" ]]; then
+    printf '%s\t%s' "$(native_model_arg "$physical")" ALIAS
+  else
+    printf '%s\t%s' "$upstream" UPSTREAM_ID
+  fi
+}
+
+# route_result_json — the thin result's `route` object: what ran, and which
+# rule named the model the harness was handed, so a run can prove it.
+route_result_json() { # <harness> <profile> <native-model> <resolution> <effort> <persona>
+  jq -nc --arg harness "$1" --arg profile "$2" --arg model "$3" \
+         --arg resolution "$4" --arg effort "$5" --arg persona "$6" \
+    '{harness:$harness, model_profile:$profile, native_model:$model,
+      model_resolution:$resolution, effort:$effort, persona:$persona}'
+}
+
 # attempt_result_projection — derive the attempt fields that decide whether a
 # worker actually completed. Passing repository gates cannot turn a failed
 # harness process or an explicit harness error envelope into `done`. An
@@ -2555,7 +2609,15 @@ main() {
   PHYSICAL_MODEL="$(yq -r ".profiles.\"$MODEL_PROFILE\".physical[0].model_id // \"\"" "$CATALOG_PATH")"
   [[ -n "$PHYSICAL_MODEL" && "$PHYSICAL_MODEL" != "null" ]] || \
     die "catalog has no physical model for profile '$MODEL_PROFILE'" "$EX_STAMP_UNCHECKABLE"
-  NATIVE_MODEL="$(native_model_arg "$PHYSICAL_MODEL")"
+  # The harness's model name and the rule that produced it, from that same
+  # document — never the stamp, the story or the environment. A malformed
+  # `upstream_model_id` refuses here, before anything is placed or launched;
+  # the placement flag only selects the gateway-facing alias for the
+  # gateway-backed local class (see catalog_native_model).
+  local resolved
+  resolved="$(catalog_native_model "$CATALOG_PATH" "$PHYSICAL_MODEL" "$PLACEMENT_REQUIRED")" || \
+    die "UPSTREAM_MODEL_ID_MALFORMED — the trusted catalog's entry for '$PHYSICAL_MODEL' cannot name a model; refusing to launch rather than fall back to an alias the harness would resolve on its own" "$EX_STAMP_UNCHECKABLE"
+  IFS=$'\t' read -r NATIVE_MODEL MODEL_RESOLUTION <<<"$resolved"
 
   # Hosting is the launch-class discriminator's catalog half, and it comes from
   # the same trusted document — never from the stamp, which a workload could
@@ -2584,7 +2646,7 @@ main() {
     log "persona: none stamped"
   fi
 
-  log "[$STORY] cycle $CYCLE/$MAX_CYCLES -> $HARNESS $MODEL_PROFILE ($NATIVE_MODEL) effort=$EFFORT memory=$MEMORY_MODE"
+  log "[$STORY] cycle $CYCLE/$MAX_CYCLES -> $HARNESS $MODEL_PROFILE ($NATIVE_MODEL, $MODEL_RESOLUTION) effort=$EFFORT memory=$MEMORY_MODE"
   log "stamp: $STAMP_FILE $STAMP_DIGEST expires=$STAMP_EXPIRES_AT catalog=$STAMP_CATALOG_VERSION"
 
   # ---- the prompt is DATA, written by the launcher, never shell source -----
@@ -2844,7 +2906,9 @@ EOF
       write_opencode_config "$runtime_dir/config/opencode.json" "$(realpath "$PERSONA_FILE")" "$MEMORY_OPENCODE_PLUGIN"; chmod 600 "$runtime_dir/config/opencode.json"
       result_file="$runtime_dir/opencode-result.jsonl"
       command_text="$(build_opencode_command "$approved_opencode" "$approved_home" "$approved_path" "$approved_user" "$runtime_dir/config" "$data_home" "$runtime_dir/cache" "$runtime_dir/state" "$PROMPT_FILE" "$opencode_model" "$opencode_variant" "$result_file" afk-dev "$worker_env")"
-      NATIVE_MODEL="$opencode_model"; exit_marker="OPENCODE_EXIT"
+      # OpenCode's name comes from the trusted harness-bindings tuple, neither
+      # rule above; the thin result says so rather than carrying a stale label.
+      NATIVE_MODEL="$opencode_model"; MODEL_RESOLUTION="LAUNCH_BINDING"; exit_marker="OPENCODE_EXIT"
       ;;
     codex)
       local codex_home codex_path codex_user
@@ -3091,9 +3155,8 @@ EOF
 
   jq -n \
     --arg story "$STORY" --arg cycle "$CYCLE" \
-    --arg harness "$HARNESS" --arg profile "$MODEL_PROFILE" \
-    --arg model "$NATIVE_MODEL" --arg effort "$EFFORT" \
-    --arg persona "$PERSONA" \
+    --argjson route "$(route_result_json "$HARNESS" "$MODEL_PROFILE" "$NATIVE_MODEL" \
+                         "$MODEL_RESOLUTION" "$EFFORT" "$PERSONA")" \
     --arg digest "$STAMP_DIGEST" --arg expires "$STAMP_EXPIRES_AT" \
     --arg catalog "$STAMP_CATALOG_VERSION" \
     --arg terminal "$TERMINAL_HANDLE" \
@@ -3132,8 +3195,7 @@ EOF
                          jq -n --arg k "$k" --arg v "${GATE_RESULTS[$k]}" '{($k):$v}'
                        done | jq -s 'add // {}')" \
     '{story:$story, cycle:($cycle|tonumber), status:$attempt.status,
-      route:{harness:$harness, model_profile:$profile, native_model:$model,
-             effort:$effort, persona:$persona},
+      route:$route,
       stamp:{digest:$digest, expires_at:$expires, catalog_version:$catalog,
              validated:true},
       placement:$placement,

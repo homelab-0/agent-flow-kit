@@ -60,6 +60,7 @@ assert_lt()       { if (( $2 < $3 )); then ok "$1"; else bad "$1" "expected less
 assert_contains() { if [[ "$2" == *"$3"* ]]; then ok "$1"; else bad "$1" "missing substring: $3"; fi; }
 assert_file()     { if [[ -e "$2" ]]; then ok "$1"; else bad "$1" "missing: $2"; fi; }
 assert_no_file()  { if [[ -e "$2" ]]; then bad "$1" "still present: $2"; else ok "$1"; fi; }
+assert_absent()   { if [[ "$2" != *"$3"* ]]; then ok "$1"; else bad "$1" "should NOT contain: $3"; fi; }
 
 attempt_projection() {
   bash -c '. "$1"; attempt_result_projection "$2" "$3" "$4" "$5"' \
@@ -1386,6 +1387,131 @@ assert_eq "an invalid continuation artifact is refused, not reconciled" \
 assert_eq "and nothing was counted for it" \
   "$(jq -r '.pm_continuations // 0' "$PMD/budget-state.json" 2>/dev/null || printf 0)" "0"
 unset AFK_PM_DIR
+
+# ===========================================================================
+head1 "11. The harness is handed the catalog's model name, and the result proves which rule named it"
+# ===========================================================================
+
+# dispatch.sh is sourced in a subprocess, as section 0 does, because sourcing
+# it here would enable `set -e` for the rest of this suite. The physical model
+# is read through the SAME yq path main() uses, so the chain under test is the
+# production one: profile -> physical model -> catalog entry -> launch text.
+in_dispatch() { bash -c '. "$1"; shift; "$@"' _ "$KIT_ROOT/files/model-router/scripts/dispatch.sh" "$@"; }
+physical_of() { yq -r ".profiles.\"$2\".physical[0].model_id" "$1"; }
+resolve() { # <catalog> <profile> [placement-required] -> RES_MODEL RES_RULE RES_RC RES_ERR
+  local out
+  out="$(in_dispatch catalog_native_model "$1" "$(physical_of "$1" "$2")" "${3:-false}" 2>"$TMPROOT/resolve.err")"; RES_RC=$?
+  RES_ERR="$(cat "$TMPROOT/resolve.err")"
+  IFS=$'\t' read -r RES_MODEL RES_RULE <<<"$out"
+}
+claude_text() { in_dispatch build_claude_command /home/op /usr/bin:/bin op /wt/S.md.prompt "$1" high /wt/S.md.claude-result.json /wt/dev.md; }
+codex_text()  { in_dispatch build_codex_command /wt/S.md.prompt "$1" high; }
+route_of()    { in_dispatch route_result_json "$1" "$2" "$RES_MODEL" "$RES_RULE" high dev; }
+
+MR="$TMPROOT/model-resolution"; mkdir -p "$MR"
+PROFILES='schema_version: 1
+profiles:
+  "claude/strong":
+    hosting: vendor
+    physical:
+      - model_id: "claude/opus"
+        placement: null
+  "openai/strong":
+    hosting: vendor
+    physical:
+      - model_id: "openai/gpt-5.6-sol"
+        placement: null'
+# The catalog the operator asked for: the vendor's exact ids declared. The
+# local profile mirrors the shipped catalog, where the gateway-facing model_id
+# and the upstream id genuinely differ.
+printf '%s\n  local-code-standard:\n    hosting: local\n    physical:\n      - model_id: qwen36-27b\n        placement: cachyos-7900xtx\nmodels:\n  "claude/opus": {hosting: vendor, upstream_model_id: claude-opus-4-8}\n  "openai/gpt-5.6-sol": {hosting: vendor, upstream_model_id: gpt-5.6-sol-2026-08-01}\n  qwen36-27b: {hosting: local, upstream_model_id: qwen3.6-27b}\n' \
+  "$PROFILES" > "$MR/upstream.yaml"
+# The catalog as shipped today: `upstream_model_id: null, resolved_by: harness`.
+printf '%s\nmodels:\n  "claude/opus": {hosting: vendor, upstream_model_id: null, resolved_by: harness}\n  "openai/gpt-5.6-sol": {hosting: vendor, upstream_model_id: null, resolved_by: harness}\n' \
+  "$PROFILES" > "$MR/null.yaml"
+# A catalog with no models table at all, the shape the other suites' fixtures use.
+printf '%s\n' "$PROFILES" > "$MR/bare.yaml"
+# Present but unable to name a model: a number, a map, a boolean, an empty
+# string, a whitespace-only string, and a string with a tab inside — the last
+# two would not be empty, they would be a padded or truncated --model value.
+printf '%s\n  "n/int": {physical: [{model_id: "n/int"}]}\n  "n/map": {physical: [{model_id: "n/map"}]}\n  "n/bool": {physical: [{model_id: "n/bool"}]}\n  "n/empty": {physical: [{model_id: "n/empty"}]}\n  "n/ws": {physical: [{model_id: "n/ws"}]}\n  "n/tab": {physical: [{model_id: "n/tab"}]}\nmodels:\n  "n/int": {upstream_model_id: 48}\n  "n/map": {upstream_model_id: {id: claude-opus-4-8}}\n  "n/bool": {upstream_model_id: true}\n  "n/empty": {upstream_model_id: ""}\n  "n/ws": {upstream_model_id: "   "}\n  "n/tab": {upstream_model_id: "claude-opus-4-8\\tUPSTREAM_ID"}\n' \
+  "$PROFILES" > "$MR/malformed.yaml"
+
+# The alias launches are the frozen texts every other suite asserts on; they
+# are the byte-identity oracles here, and the upstream launch must differ from
+# its alias twin in exactly the one model token.
+CLAUDE_ALIAS_ORACLE="$(claude_text opus)"
+CODEX_ALIAS_ORACLE="$(codex_text gpt-5.6-sol)"
+
+# --- AC-1: claude ----------------------------------------------------------
+resolve "$MR/null.yaml" claude/strong
+assert_eq "a null upstream_model_id keeps the alias rule" "$RES_MODEL|$RES_RULE|$RES_RC" "opus|ALIAS|0"
+NULL_TEXT="$(claude_text "$RES_MODEL")"
+assert_eq "and the claude launch text is byte-identical to the frozen alias launch" "$NULL_TEXT" "$CLAUDE_ALIAS_ORACLE"
+assert_contains "carrying --model opus unchanged" "$NULL_TEXT" "--model opus "
+assert_eq "the route object records ALIAS beside the model (AC-3)" \
+  "$(route_of claude claude/strong | jq -r '[.native_model, .model_resolution] | join("|")')" "opus|ALIAS"
+
+resolve "$MR/bare.yaml" claude/strong
+assert_eq "a catalog with no models table is the same alias case" "$RES_MODEL|$RES_RULE|$RES_RC" "opus|ALIAS|0"
+assert_eq "and produces the same bytes" "$(claude_text "$RES_MODEL")" "$CLAUDE_ALIAS_ORACLE"
+
+resolve "$MR/upstream.yaml" claude/strong
+assert_eq "a string upstream_model_id names the model" "$RES_MODEL|$RES_RULE|$RES_RC" "claude-opus-4-8|UPSTREAM_ID|0"
+UP_TEXT="$(claude_text "$RES_MODEL")"
+assert_contains "the claude launch carries --model claude-opus-4-8" "$UP_TEXT" "--model claude-opus-4-8 "
+assert_absent   "and no longer the alias" "$UP_TEXT" "--model opus"
+assert_eq "and differs from the alias launch in exactly that token" \
+  "$UP_TEXT" "${CLAUDE_ALIAS_ORACLE/--model opus /--model claude-opus-4-8 }"
+assert_eq "the route object records UPSTREAM_ID beside the model (AC-3)" \
+  "$(route_of claude claude/strong | jq -r '[.native_model, .model_resolution] | join("|")')" "claude-opus-4-8|UPSTREAM_ID"
+assert_eq "and the route object still carries every field it did before" \
+  "$(route_of claude claude/strong | jq -r 'keys | join(",")')" \
+  "effort,harness,model_profile,model_resolution,native_model,persona"
+
+# --- AC-2: codex -----------------------------------------------------------
+resolve "$MR/null.yaml" openai/strong
+assert_eq "codex on the current catalog resolves by the alias rule" "$RES_MODEL|$RES_RULE|$RES_RC" "gpt-5.6-sol|ALIAS|0"
+assert_eq "and its launch text is byte-identical to the frozen codex launch" "$(codex_text "$RES_MODEL")" "$CODEX_ALIAS_ORACLE"
+assert_eq "the codex route object records ALIAS (AC-3)" "$(route_of codex openai/strong | jq -r .model_resolution)" "ALIAS"
+
+resolve "$MR/upstream.yaml" openai/strong
+assert_eq "a codex upstream_model_id wins over the alias" "$RES_MODEL|$RES_RULE|$RES_RC" "gpt-5.6-sol-2026-08-01|UPSTREAM_ID|0"
+CODEX_UP_TEXT="$(codex_text "$RES_MODEL")"
+assert_contains "the codex launch carries the upstream id" "$CODEX_UP_TEXT" "--model gpt-5.6-sol-2026-08-01 "
+assert_eq "and differs from the alias launch in exactly that token" \
+  "$CODEX_UP_TEXT" "${CODEX_ALIAS_ORACLE/--model gpt-5.6-sol /--model gpt-5.6-sol-2026-08-01 }"
+assert_eq "the codex route object records UPSTREAM_ID (AC-3)" "$(route_of codex openai/strong | jq -r .model_resolution)" "UPSTREAM_ID"
+
+# --- gateway-backed local: the gateway-facing name, never the upstream one --
+resolve "$MR/upstream.yaml" local-code-standard true
+assert_eq "a placement-required launch keeps the gateway-facing alias despite a set upstream_model_id" \
+  "$RES_MODEL|$RES_RULE|$RES_RC" "qwen36-27b|ALIAS|0"
+resolve "$MR/upstream.yaml" local-code-standard false
+assert_eq "and only the placement flag makes that difference" "$RES_MODEL|$RES_RULE|$RES_RC" "qwen3.6-27b|UPSTREAM_ID|0"
+resolve "$MR/upstream.yaml" claude/strong true
+assert_eq "the flag selects the alias for any model, it invents nothing" "$RES_MODEL|$RES_RULE|$RES_RC" "opus|ALIAS|0"
+
+# --- AC-4: present but not a non-empty string refuses, never falls back ----
+assert_eq "the tab fixture really carries a tab" \
+  "$(yq -r '.models."n/tab".upstream_model_id' "$MR/malformed.yaml" | od -An -c | tr -d ' \n')" 'claude-opus-4-8\tUPSTREAM_ID\n'
+for shape in n/int n/map n/bool n/empty n/ws n/tab; do
+  resolve "$MR/malformed.yaml" "$shape"
+  assert_ne "upstream_model_id '$shape' is refused" "$RES_RC" "0"
+  assert_eq "and names no model at all" "${RES_MODEL:-}|${RES_RULE:-}" "|"
+  assert_contains "with the marker" "$RES_ERR" "UPSTREAM_MODEL_ID_MALFORMED"
+  assert_contains "naming the catalog entry" "$RES_ERR" "'$shape'"
+  resolve "$MR/malformed.yaml" "$shape" true
+  assert_ne "and the gateway-backed class refuses '$shape' too" "$RES_RC" "0"
+done
+# main() turns that refusal into a die with the same marker, before placement
+# or launch, at the uncheckable-stamp exit rather than as a silent alias. A
+# text proxy: driving main() to that line needs the stubbed-host harness of
+# tests/run-tests.sh, which this suite does not carry.
+assert_eq "main refuses under the same marker (helper: two shapes, main: the die)" \
+  "$(grep -c 'UPSTREAM_MODEL_ID_MALFORMED' "$KIT_ROOT/files/model-router/scripts/dispatch.sh")" "3"
+assert_eq "at the uncheckable-stamp exit" \
+  "$(grep -c 'UPSTREAM_MODEL_ID_MALFORMED.*"\$EX_STAMP_UNCHECKABLE"' "$KIT_ROOT/files/model-router/scripts/dispatch.sh")" "1"
 
 # ===========================================================================
 if (( SKIPPED > 0 )); then
