@@ -54,6 +54,13 @@ AFK_OP_COMMITTED="false"
 AFK_OP_PRIOR_REVISION=""
 AFK_OP_APPLIED_REVISION=""
 AFK_OP_TARGET_REVISION=""
+# Directories THIS operation brought into existence while scaffolding the shared
+# parent of a nested component (newline-separated, shallowest-first). Two things
+# read it: the freshness check, which must not mistake a directory the operation
+# itself created for an external change (FR-91), and the abort path, which must
+# be able to remove exactly what the operation created so a run that writes
+# nothing leaves the tree byte-for-byte as it found it (FR-23).
+AFK_OP_CREATED_DIRS=""
 
 afk_operation_results() {
   printf 'NO_CHANGE\nCONVERGED\nADOPTED\nPLAN_ONLY\nAPPROVAL_REQUIRED\nREFUSED\nSTALE_PLAN\nROLLED_BACK\nUNRECOVERABLE\nRECOVERED\n'
@@ -891,6 +898,67 @@ afk_parent_writable() { # <path>
   [[ -d "$parent" && -w "$parent" ]]
 }
 
+# afk_mkdir_tracked <dir>
+#
+# Create <dir> and every missing ancestor, recording each directory this call
+# actually brought into existence in AFK_OP_CREATED_DIRS (shallowest-first). It
+# stands in for the bare `mkdir -p` the backup phase used to run: the parent of
+# a nested component has to exist before that component can be backed up and
+# written, but a directory the operation creates for one component flips a
+# SIBLING's observation from absent to present-and-empty, which the freshness
+# check would otherwise read as an external change. Recording what we create
+# lets the freshness check exclude exactly those directories, and lets an abort
+# remove exactly them.
+afk_mkdir_tracked() { # <dir>
+  local dir="$1" ancestor missing="" d
+  [[ -n "$dir" ]] || return 1
+  ancestor="$dir"
+  while [[ -n "$ancestor" && "$ancestor" != "/" && "$ancestor" != "." ]]; do
+    if [[ -e "$ancestor" || -L "$ancestor" ]]; then break; fi
+    missing="$ancestor"$'\n'"$missing"
+    ancestor="$(dirname -- "$ancestor")"
+  done
+  mkdir -p -- "$dir" 2>/dev/null || return 1
+  while IFS= read -r d; do
+    [[ -n "$d" ]] || continue
+    [[ -d "$d" && ! -L "$d" ]] || continue
+    AFK_OP_CREATED_DIRS="${AFK_OP_CREATED_DIRS}${d}"$'\n'
+  done <<< "$missing"
+  return 0
+}
+
+# afk_op_created_dir <path>
+# True when <path> is one of the directories this operation created.
+afk_op_created_dir() {
+  local d
+  [[ -n "$AFK_OP_CREATED_DIRS" ]] || return 1
+  while IFS= read -r d; do
+    [[ "$d" == "$1" ]] && return 0
+  done < <(printf '%s' "$AFK_OP_CREATED_DIRS")
+  return 1
+}
+
+# afk_remove_created_scaffold
+#
+# Remove the directories this operation created, deepest-first, using `rmdir` —
+# which removes ONLY an empty directory. That is the whole safety of it: a
+# directory that ended up holding a write, a preserved member, or any foreign
+# content is left exactly where it is, so this can never delete anything but the
+# empty scaffold the operation itself put down. Called on every path that aborts
+# before content the operation wrote is settled, so a run that changed nothing
+# leaves nothing behind (FR-23 / AFK-LC-1 AC-3).
+afk_remove_created_scaffold() {
+  local d
+  [[ -n "$AFK_OP_CREATED_DIRS" ]] || return 0
+  while IFS= read -r d; do
+    [[ -n "$d" ]] || continue
+    [[ -d "$d" && ! -L "$d" ]] || continue
+    rmdir -- "$d" 2>/dev/null || true
+  done < <(printf '%s' "$AFK_OP_CREATED_DIRS" | afk_reverse_lines)
+  AFK_OP_CREATED_DIRS=""
+  return 0
+}
+
 afk_cat_terminated() { # <file> — the file's bytes, guaranteed newline-terminated
   [[ -s "$1" ]] || return 0
   cat -- "$1" || return 1
@@ -1320,6 +1388,21 @@ afk_component_prewrite_ok() {
       AFK_STEP_DETAIL=""
       return 0
     fi
+    # One exception, and it is this operation's own doing rather than an
+    # external change: when nested components share a root, the directory this
+    # operation created to hold one component makes a SIBLING'S root read as
+    # present-and-empty here even though the plan observed nothing. Excluding a
+    # directory the operation itself created — and only while it still holds no
+    # content, so an empty scaffold, never real bytes — lets the sibling
+    # converge in the same run. An empty tree owns nothing, so installing into
+    # it overwrites nothing (FR-23); a root that gained real content still trips
+    # the change below (AFK-LC-1 AC-2).
+    if [[ "$AFK_OB_OWNERSHIP" == "MANAGED_COPY_TREE" && "$AFK_OB_GUARD" == "PATH_OK" ]] \
+       && afk_op_created_dir "$AFK_OB_DEST" \
+       && afk_managed_tree_empty "$AFK_OB_DEST" "$AFK_OB_EXTRA"; then
+      AFK_STEP_DETAIL=""
+      return 0
+    fi
     AFK_STEP_REASON="PLAN_STALE_DESTINATION_CHANGED"
     return 1
   fi
@@ -1717,6 +1800,7 @@ afk_transaction_execute() { # <command: adopt|update>
 
   AFK_OP_STEPS=""
   AFK_OP_POST_ENTRIES=""
+  AFK_OP_CREATED_DIRS=""
   AFK_OP_MUTATED="false"
   AFK_OP_COMMITTED="false"
   AFK_OP_ROLLBACK_STATE="NOT_REQUIRED"
@@ -1770,11 +1854,16 @@ afk_transaction_execute() { # <command: adopt|update>
     id="$(printf '%s' "$entry" | jq -r '.component')"
     dest="$(printf '%s' "$entry" | jq -r '.destination')"
     if ! afk_parent_writable "$dest"; then
-      mkdir -p -- "$(dirname -- "$dest")" 2>/dev/null
+      # Tracked, not a bare mkdir: a nested component's parent has to exist
+      # before it can be backed up, but creating it must not later read as an
+      # external change, and it must be removable if this run aborts before it
+      # writes anything (AFK-LC-1).
+      afk_mkdir_tracked "$(dirname -- "$dest")" 2>/dev/null
       if ! afk_parent_writable "$dest"; then
         AFK_OP_RESULT="REFUSED"
         AFK_OP_REASON="PERMISSION_PREREQUISITE_UNMET"
         AFK_OP_DETAIL="$id"
+        afk_remove_created_scaffold
         return 1
       fi
     fi
@@ -1782,6 +1871,7 @@ afk_transaction_execute() { # <command: adopt|update>
       AFK_OP_RESULT="REFUSED"
       AFK_OP_REASON="BACKUP_PREREQUISITE_UNMET"
       AFK_OP_DETAIL="$id"
+      afk_remove_created_scaffold
       return 1
     fi
   done < <(printf '%s' "$AFK_PLAN_ENTRIES")
@@ -1790,6 +1880,7 @@ afk_transaction_execute() { # <command: adopt|update>
     AFK_OP_RESULT="REFUSED"
     AFK_OP_REASON="BACKUP_PREREQUISITE_UNMET"
     AFK_OP_DETAIL="the recovery journal could not be written"
+    afk_remove_created_scaffold
     return 1
   fi
 
@@ -1913,12 +2004,20 @@ afk_transaction_finish_failure() {
     esac
     afk_journal_write "ROLLED_BACK" || true
     afk_journal_mark_committed || true
+    # Nothing was written, so any directory this operation created was pure
+    # scaffold: remove it (empty-only) so an abort before the first write leaves
+    # the tree byte-for-byte as it was found (AFK-LC-1 AC-3).
+    afk_remove_created_scaffold
     rm -rf -- "$AFK_OP_BACKUP_DIR" "$AFK_OP_STAGE_DIR" 2>/dev/null
     afk_sweep_orphan_recovery_material "$AFK_OP_ID"
     return 0
   fi
   if afk_transaction_rollback; then
     afk_journal_mark_committed || true
+    # Restoration returned every touched destination to its prior state; a
+    # directory the operation created for a component it then rolled back is now
+    # empty scaffold too, so it is removed (empty-only) for the same reason.
+    afk_remove_created_scaffold
     rm -rf -- "$AFK_OP_BACKUP_DIR" "$AFK_OP_STAGE_DIR" 2>/dev/null
     afk_sweep_orphan_recovery_material "$AFK_OP_ID"
     return 0
