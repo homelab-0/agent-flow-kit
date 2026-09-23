@@ -113,8 +113,9 @@ subscriptions_note:
     and never pass --bare: either silently moves the session to metered API
     billing, and --bare disables the subscription path by construction.
   openai: >-
-    ChatGPT Plus. Separate weekly/5h Codex limits, independent of the Claude
-    pool, and the smallest paid pool here. An authenticated run transports over
+    ChatGPT Pro. Separate weekly/5h Codex limits, independent of the Claude
+    pool, shared by both Codex and opencode — gpt-6-astra, reached through
+    opencode, draws from this same pool. An authenticated run transports over
     the ChatGPT subscription endpoint; an unauthenticated one falls through to
     api.openai.com and is refused, which is the signal that a run used the
     subscription rather than API billing.

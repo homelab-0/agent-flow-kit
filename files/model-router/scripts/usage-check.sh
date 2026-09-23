@@ -43,7 +43,7 @@ fi
 # codex writes rate_limits into token_count events: primary = 5h window,
 # secondary = weekly, each with used_percent + resets_in_seconds. Same data as
 # TUI /status, zero network. --probe-codex forces a fresh snapshot via one tiny
-# luna call (costs a sliver of the Plus pool — use sparingly).
+# luna call (costs a sliver of the Pro pool — use sparingly).
 codex_home="${CODEX_HOME:-}"
 # shellcheck disable=SC2012  # deliberate: -d on a glob of KNOWN Orca-managed
 # account dirs (uuid-named, never exotic). `find` here would need two -path
@@ -59,23 +59,51 @@ fi
 # sorting by basename is chronological
 newest_session="$(find "$codex_home/sessions" "$HOME/.codex/sessions" -name 'rollout-*.jsonl' 2>/dev/null | awk -F/ '{print $NF" "$0}' | sort | tail -1 | cut -d' ' -f2-)"
 if [[ -n "$newest_session" ]]; then
-  # schema note (verified 2026-08-16, codex 0.145/plus): windows are labeled by
-  # window_minutes (~300 = 5h, ~10080 = weekly); on Plus, primary IS the weekly
-  # window and secondary is null. resets_at is epoch seconds.
+  # schema note (verified 2026-08-16, codex 0.145/pro): windows are labeled by
+  # window_minutes (~300 = 5h, ~10080 = weekly); on Pro, primary IS the weekly
+  # window and secondary is null. resets_at is epoch seconds. plan_type lives
+  # alongside rate_limits in the same object (e.g. "pro") — read it, never assume it.
   rl_json="$(grep -a '"rate_limits"' "$newest_session" 2>/dev/null | tail -1 \
     | jq -c '[.. | objects | select(has("rate_limits")) | .rate_limits] | last // empty' 2>/dev/null)"
   c5h="$(jq -r '[.primary, .secondary] | map(select(. != null and .window_minutes != null)) | map(select(.window_minutes < 1000))  | (first.used_percent // "?")' <<<"$rl_json" 2>/dev/null)"
   cwk="$(jq -r '[.primary, .secondary] | map(select(. != null and .window_minutes != null)) | map(select(.window_minutes >= 1000)) | (first.used_percent // "?")' <<<"$rl_json" 2>/dev/null)"
   wk_reset="$(jq -r '[.primary, .secondary] | map(select(. != null and .window_minutes != null)) | map(select(.window_minutes >= 1000)) | (first.resets_at // empty)' <<<"$rl_json" 2>/dev/null)"
   [[ -n "$wk_reset" ]] && wk_reset=" | weekly resets $(date -d "@$wk_reset" '+%a %H:%M' 2>/dev/null)"
+  codex_plan="$(jq -r '.plan_type // empty' <<<"$rl_json" 2>/dev/null)"
+  codex_plan="${codex_plan:-unknown}"
   age_min=$(( ( $(date +%s) - $(stat -c %Y "$newest_session") ) / 60 ))
   if [[ -n "$rl_json" ]]; then
-    echo "codex:   5h ${c5h:-?}% | weekly ${cwk:-?}%${wk_reset:-} | snapshot ${age_min}min old   (ChatGPT Plus \$20/mo — SMALL pool: diversity/fallback, not bulk)"
+    echo "codex:   plan=${codex_plan}  5h ${c5h:-?}% | weekly ${cwk:-?}%${wk_reset:-} | snapshot ${age_min}min old   (ChatGPT — pool shared with opencode/gpt-6-astra)"
   else
     echo "codex:   snapshot found but no rate_limits parsed (${newest_session##*/}) — treat as unknown"
   fi
 else
-  echo "codex:   no local snapshot yet — appears after the first codex run, or force one with: usage-check.sh --probe-codex   (ChatGPT Plus — SMALL pool)"
+  echo "codex:   no local snapshot yet — appears after the first codex run, or force one with: usage-check.sh --probe-codex   (ChatGPT — pool shared with opencode/gpt-6-astra)"
+fi
+
+# --- opencode: 7-day assistant-message token totals by model, from its local db ---
+# opencode has no usage/quota API. Its local sqlite store (message.data JSON:
+# role, modelID, tokens.total, time.created epoch ms) at least shows how much it
+# has drawn per model recently — e.g. gpt-6-astra riding the same ChatGPT pool
+# Codex reports above. Read-only query; never writes.
+opencode_db="$HOME/.local/share/opencode/opencode.db"
+if ! command -v sqlite3 >/dev/null; then
+  echo "opencode: unknown (sqlite3 not on PATH)"
+elif [[ ! -f "$opencode_db" ]]; then
+  echo "opencode: unknown (no local db at $opencode_db)"
+else
+  oc_rows="$(timeout 30 sqlite3 -readonly "$opencode_db" \
+    "select json_extract(data,'\$.modelID'), sum(json_extract(data,'\$.tokens.total'))
+     from message
+     where json_extract(data,'\$.role')='assistant'
+       and json_extract(data,'\$.time.created') >= (strftime('%s','now')-7*86400)*1000
+     group by 1 order by 2 desc;" 2>/dev/null)"
+  if [[ -n "$oc_rows" ]]; then
+    oc_summary="$(echo "$oc_rows" | awk -F'|' '{printf "%s%s %s tok", (NR>1?", ":""), $1, $2}')"
+    echo "opencode: last 7d — ${oc_summary}   (draws the same ChatGPT pool via gpt-6-astra)"
+  else
+    echo "opencode: unknown (no assistant messages in the last 7 days)"
+  fi
 fi
 
 # --- devin: v3 org API (service user) + app billing status (CLI key) -----------
