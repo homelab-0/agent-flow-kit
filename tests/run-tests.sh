@@ -3686,6 +3686,26 @@ for modular_gate in \
 done
 
 # ===========================================================================
+head1 "18. Usage-report gate — tests/lifecycle-usage-tests.sh"
+# ===========================================================================
+# `agent-flow-kit usage-report` (lib/afk-usage.sh) is observability only and
+# has its own isolated deterministic gate, runnable standalone. Aggregated the
+# same way as the other lifecycle gates: its own process, its output tail
+# surfaced on failure.
+
+USAGE_TESTS="$KIT_ROOT/tests/lifecycle-usage-tests.sh"
+if [[ -f "$USAGE_TESTS" ]]; then
+  if usage_out="$(bash "$USAGE_TESTS" 2>&1)"; then
+    ok "usage-report gate: $(tail -1 <<<"$usage_out")"
+  else
+    bad "usage-report gate" "$(tail -1 <<<"$usage_out")"
+    printf '%s\n' "$usage_out" | tail -40
+  fi
+else
+  bad "usage-report gate present" "missing: $USAGE_TESTS"
+fi
+
+# ===========================================================================
 if (( SKIPPED > 0 )); then
   printf '\n\033[1m%d passed, %d failed, %d skipped\033[0m\n' "$PASS" "$FAIL" "$SKIPPED"
   printf '\033[33mskipped checks computed no verdict — they are not passes\033[0m\n'
