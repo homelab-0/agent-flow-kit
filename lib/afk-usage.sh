@@ -31,6 +31,34 @@ AFK_USAGE_CLAUDE_PROJECTS_DIR="${AFK_USAGE_CLAUDE_PROJECTS_DIR:-${HOME:-}/.claud
 AFK_USAGE_CODEX_HOMES="${AFK_USAGE_CODEX_HOMES:-}"   # colon-separated; auto-detected when empty
 AFK_USAGE_OPENCODE_DB="${AFK_USAGE_OPENCODE_DB:-${HOME:-}/.local/share/opencode/opencode.db}"
 AFK_USAGE_NOW_EPOCH="${AFK_USAGE_NOW_EPOCH:-$(date +%s)}"
+AFK_USAGE_ORCA_WORKSPACES_DIR="${AFK_USAGE_ORCA_WORKSPACES_DIR:-${HOME:-}/orca/workspaces}"
+
+# A Claude project dir under orca-workspaces encodes the full absolute path
+# "/home/<user>/orca/workspaces/<repo>/<workspace>" with "/" turned into "-",
+# so there is no lossless way back to a bare workspace name from that string
+# alone (both <repo> and <workspace> can contain dashes). What IS reliable is
+# the real repo directory names under AFK_USAGE_ORCA_WORKSPACES_DIR: the
+# longest one whose "orca-workspaces-<repo>-" marker appears in the string
+# names the split point. Falls back to the naive suffix-after-marker split
+# when no repo directory is known (e.g. a host with no orca/workspaces yet).
+afk_usage_workspace_name() { # <raw claude project dir string> -> bare workspace name
+  local proj="$1" d repo marker best="" best_len=0
+  if [[ -d "$AFK_USAGE_ORCA_WORKSPACES_DIR" ]]; then
+    for d in "$AFK_USAGE_ORCA_WORKSPACES_DIR"/*/; do
+      [[ -d "$d" ]] || continue
+      repo="$(basename "$d")"
+      marker="orca-workspaces-$repo-"
+      if [[ "$proj" == *"$marker"* && ${#marker} -gt $best_len ]]; then
+        best="$marker"; best_len=${#marker}
+      fi
+    done
+  fi
+  if [[ -n "$best" ]]; then
+    printf '%s' "${proj##*"$best"}"
+  else
+    printf '%s' "${proj##*orca-workspaces-}"
+  fi
+}
 
 # --- prices: declared, never a constant in code (AC-3) ----------------------
 # The YAML table is a top-level `model:` key with 2-space-indented
@@ -71,14 +99,16 @@ afk_usage_prices_json() { # -> JSON object {model: {input,output,cache_read,cach
 # subagents/ dir or the record carries agentId/isSidechain; `worker` when the
 # project dir name contains "orca-workspaces"; `interactive` otherwise.
 afk_usage_claude_calls() { # <cutoff ISO8601> -> JSONL of call records on stdout
-  local dir="$AFK_USAGE_CLAUDE_PROJECTS_DIR" cutoff="$1" f rel proj is_sub
+  local dir="$AFK_USAGE_CLAUDE_PROJECTS_DIR" cutoff="$1" f rel proj is_sub workspace
   [[ -d "$dir" ]] || return 0
   while IFS= read -r f; do
     rel="${f#"$dir"/}"
     proj="${rel%%/*}"
     is_sub=false
     [[ "$rel" == */subagents/* ]] && is_sub=true
-    jq -c --arg proj "$proj" --arg cutoff "$cutoff" --argjson is_sub "$is_sub" '
+    workspace="$proj"
+    [[ "$proj" == *orca-workspaces* ]] && workspace="$(afk_usage_workspace_name "$proj")"
+    jq -c --arg proj "$proj" --arg workspace "$workspace" --arg cutoff "$cutoff" --argjson is_sub "$is_sub" '
       select(.message.usage != null) |
       select((.timestamp // "0000") >= $cutoff) |
       {
@@ -95,7 +125,7 @@ afk_usage_claude_calls() { # <cutoff ISO8601> -> JSONL of call records on stdout
         class: (if ($is_sub or .isSidechain == true or .agentId != null) then "subagent"
                 elif ($proj | test("orca-workspaces")) then "worker"
                 else "interactive" end),
-        workspace: $proj
+        workspace: $workspace
       }' "$f" 2>/dev/null
   done < <(find "$dir" -name '*.jsonl' -type f 2>/dev/null)
 }
@@ -327,9 +357,9 @@ afk_usage_render_human() { # <report json>
   jq -r '
     "agent-flow-kit usage-report — last \(.window_days) day(s)\n" +
     "\n== per harness x model ==\n" +
-    (.by_harness_model[] | "\(.harness)/\(.model): sessions=\(.sessions) calls=\(.calls) input=\(.input) cache_read=\(.cache_read) cache_write=\(.cache_write) output=\(.output) cost=\(.cost)") + "\n" +
+    ((.by_harness_model // []) | if length == 0 then "(none)" else (map("\(.harness)/\(.model): sessions=\(.sessions) calls=\(.calls) input=\(.input) cache_read=\(.cache_read) cache_write=\(.cache_write) output=\(.output) cost=\(.cost)") | join("\n")) end) + "\n" +
     "\n== per session class x model (claude) ==\n" +
-    (.by_class_model[] | "\(.class)/\(.model): sessions=\(.sessions) calls=\(.calls) input=\(.input) output=\(.output)") + "\n" +
+    ((.by_class_model // []) | if length == 0 then "(none)" else (map("\(.class)/\(.model): sessions=\(.sessions) calls=\(.calls) input=\(.input) output=\(.output)") | join("\n")) end) + "\n" +
     "\n== context-at-call histogram ==\n" +
     "under 50k: \(.context_histogram.under_50k)  50-150k: \(.context_histogram."50k_150k")  150-300k: \(.context_histogram."150k_300k")  300-500k: \(.context_histogram."300k_500k")  over 500k: \(.context_histogram.over_500k)\n" +
     "\n== waste signals ==\n" +
