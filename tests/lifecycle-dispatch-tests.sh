@@ -1514,6 +1514,126 @@ assert_eq "at the uncheckable-stamp exit" \
   "$(grep -c 'UPSTREAM_MODEL_ID_MALFORMED.*"\$EX_STAMP_UNCHECKABLE"' "$KIT_ROOT/files/model-router/scripts/dispatch.sh")" "1"
 
 # ===========================================================================
+head1 "12. The claude launch carries Edit and stream-json, and the stream is read fail-closed"
+# ===========================================================================
+# Fixtures are hand-built in the observed shape of the local-launch spike's
+# stream cells: per-call `usage` on assistant events, one message's usage
+# repeated once per content block, cache creation ABSENT from per-call usage.
+CS="$KIT_ROOT/tests/fixtures/claude-stream"
+gw_text() { in_dispatch build_claude_gateway_command /home/op /usr/bin:/bin op /wt/S.md.prompt qwen36-27b high \
+              /wt/S.md.claude-result.json /wt/dev.md https://gw.invalid op://v/i/c /home/op/.op-env kserve-a5000 65536; }
+envelope_of() { in_dispatch claude_result_envelope "$1"; }
+usage_of()    { in_dispatch usage_adapter_claude "$1" qwen36-27b; }
+# <stream> -> "scope ratio state findings" after the post-run budget half.
+band_of() {
+  bash -c '. "$1"; load_budget_policy "$3" >/dev/null 2>&1
+    HARNESS=claude; BUDGET_FINDINGS=(); BUDGET_STATE=OK; BUDGET_REASON=""
+    budget_evaluate_usage "$(usage_adapter_claude "$2" qwen36-27b)" 65536 2>/dev/null
+    printf "%s %s %s %s" "$BUDGET_USAGE_SCOPE" "${BUDGET_USAGE_RATIO:-none}" "$BUDGET_STATE" "${BUDGET_FINDINGS[*]-}"' \
+    _ "$KIT_ROOT/files/model-router/scripts/dispatch.sh" "$1" "$KIT_ROOT/files/model-router/context-budget-policy.yaml"
+}
+
+# --- AC-1: both launch classes, together ------------------------------------
+for cls in claude gw; do
+  t="$("${cls}_text" qwen36-27b)"
+  assert_contains "$cls launch: the tool set is Read,Glob,Grep,Write,Edit" "$t" '--tools "Read,Glob,Grep,Write,Edit" '
+  assert_contains "$cls launch: output is stream-json --verbose into the result file" \
+    "$t" '--output-format stream-json --verbose < /dev/null > /wt/S.md.claude-result.json; '
+  assert_absent "$cls launch: the single-envelope json output is gone" "$t" '--output-format json '
+  assert_absent "$cls launch: still no shell tool" "$t" "Bash"
+done
+
+# --- AC-2: exactly one terminal result event, or nothing -------------------
+assert_eq "complete stream: the result event is the envelope" \
+  "$(envelope_of "$CS/1-ok-cache-creation-absent.jsonl" | jq -r '[.result, .is_error] | map(tostring) | join(" ")')" "DONE false"
+assert_eq "is_error:true is carried through as the failure flag" \
+  "$(envelope_of "$CS/4-result-is-error.jsonl" | jq -r '[.subtype, .is_error] | map(tostring) | join(" ")')" \
+  "error_during_execution true"
+{ cat "$CS/1-ok-cache-creation-absent.jsonl"; echo '{"type":"system","subtype":"hook_response"}'; } > "$TMPROOT/after-result.jsonl"
+assert_eq "the result need not be the last line" \
+  "$(envelope_of "$TMPROOT/after-result.jsonl" | jq -r .result)" "DONE"
+for fx in 5-truncated-no-result 6-unparseable-line 7-two-results; do
+  out="$(envelope_of "$CS/$fx.jsonl")"; rc=$?
+  assert_eq "$fx: refused — no envelope and a nonzero reader status" "${out:-<none>}|$((rc != 0))" "<none>|1"
+  assert_eq "$fx: and the usage adapter reads nothing out of it" \
+    "$(usage_of "$CS/$fx.jsonl" | jq -r '.provenance + " " + .reason')" "NOT_EVALUATED USAGE_UNOBSERVABLE"
+done
+# The unparseable-line fixture's result event is itself valid: the refusal is
+# the poisoned line, not a missing result.
+assert_eq "6-unparseable-line CONTROL: without the poisoned line it parses" \
+  "$(grep -v '^{"type":"assistant","message":$' "$CS/6-unparseable-line.jsonl" > "$TMPROOT/unpoisoned.jsonl"
+     envelope_of "$TMPROOT/unpoisoned.jsonl" | jq -r .result)" "DONE"
+printf '{"type":"result","is_error":false,"result":"a"} {"type":"result","is_error":false,"result":"a"}\n' > "$TMPROOT/two-on-a-line.jsonl"
+assert_eq "two objects on one line are not one event" "$(envelope_of "$TMPROOT/two-on-a-line.jsonl" || echo refused)" "refused"
+: > "$TMPROOT/empty.jsonl"
+assert_eq "an empty stream (the zero-byte redirect) is refused" "$(envelope_of "$TMPROOT/empty.jsonl" || echo refused)" "refused"
+
+# --- AC-3: final-call occupancy from the LAST assistant usage --------------
+assert_eq "multi-turn stream: final-call occupancy, FINAL_CONTEXT, no reason" \
+  "$(usage_of "$CS/1-ok-cache-creation-absent.jsonl" | jq -r '[.usage_tokens, .scope, .reason, .window_tokens] | map(tostring) | join(" ")')" \
+  "15134 FINAL_CONTEXT null 65536"
+assert_eq "an explicit-null cache creation reads as zero, like an absent one" \
+  "$(usage_of "$CS/2-ok-cache-creation-null.jsonl" | jq -r .usage_tokens)" "15134"
+assert_eq "one message's repeated usage is selected, never summed (48000, not 96000)" \
+  "$(usage_of "$CS/3-repeated-final-usage.jsonl" | jq -r '[.usage_tokens, .scope] | map(tostring) | join(" ")')" "48000 FINAL_CONTEXT"
+assert_eq "output tokens stay outside the member set" \
+  "$(jq -s '[.[] | select(.type == "result")][0].usage.output_tokens' "$CS/3-repeated-final-usage.jsonl")|$(usage_of "$CS/3-repeated-final-usage.jsonl" | jq -r .usage_tokens)" "90|48000"
+assert_eq "a multi-turn stream now yields a ratio and a band" \
+  "$(band_of "$CS/1-ok-cache-creation-absent.jsonl")" "FINAL_CONTEXT 0.230926 OK "
+assert_eq "and a high final call reaches the checkpoint band with HIGH_USAGE" \
+  "$(band_of "$CS/3-repeated-final-usage.jsonl")" "FINAL_CONTEXT 0.732421 CHECKPOINT_DUE HIGH_USAGE"
+# Cumulative-only inputs keep their semantics: no per-call usage to read means
+# the result's own usage, and a multi-turn total is never divided.
+jq -c 'if .type == "assistant" then del(.message.usage) else . end' \
+  "$CS/1-ok-cache-creation-absent.jsonl" > "$TMPROOT/no-call-usage.jsonl"
+assert_eq "no per-call usage: CUMULATIVE_RUN / USAGE_CUMULATIVE_ONLY as before" \
+  "$(usage_of "$TMPROOT/no-call-usage.jsonl" | jq -r '[.usage_tokens, .scope, .reason] | map(tostring) | join(" ")')" \
+  "45449 CUMULATIVE_RUN USAGE_CUMULATIVE_ONLY"
+assert_eq "and it yields no ratio and leaves the pre-dispatch verdict" \
+  "$(band_of "$TMPROOT/no-call-usage.jsonl")" "CUMULATIVE_RUN none OK "
+# The LAST usage decides. One with no context member is not replaced by an
+# earlier call's figure, which would be a different call's context.
+jq -c 'if .type == "assistant" and .message.id == "m3" then .message.usage = {output_tokens:5} else . end' \
+  "$CS/1-ok-cache-creation-absent.jsonl" > "$TMPROOT/last-usage-empty.jsonl"
+assert_eq "an unreadable last call falls back to the cumulative scope, not an earlier call" \
+  "$(usage_of "$TMPROOT/last-usage-empty.jsonl" | jq -r '.scope')" "CUMULATIVE_RUN"
+# A `<synthetic>` stand-in (API error / "Prompt is too long", all-zero usage)
+# is not a call: reporting it would be a fabricated empty context in exactly
+# the overflow case. The real call before it is the final context.
+assert_eq "real call -> zero-usage <synthetic> -> result: the real call, never 0" \
+  "$(usage_of "$CS/8-synthetic-after-real-call.jsonl" | jq -r '[.usage_tokens, .scope] | map(tostring) | join(" ")')" \
+  "62000 FINAL_CONTEXT"
+jq -c 'if .type == "assistant" then .message.usage |= with_entries(.value = 0) else . end' \
+  "$CS/1-ok-cache-creation-absent.jsonl" > "$TMPROOT/all-zero.jsonl"
+assert_eq "an all-zero per-call stream is never FINAL_CONTEXT 0 — it falls back" \
+  "$(usage_of "$TMPROOT/all-zero.jsonl" | jq -r '[.usage_tokens, .scope] | map(tostring) | join(" ")')" \
+  "45449 CUMULATIVE_RUN"
+jq -c 'if .type == "assistant" and .message.id == "m3" then .message.usage = {cache_creation_input_tokens:0} else . end' \
+  "$CS/1-ok-cache-creation-absent.jsonl" > "$TMPROOT/no-input-tokens.jsonl"
+assert_eq "a last call without a numeric input_tokens is not FINAL_CONTEXT" \
+  "$(usage_of "$TMPROOT/no-input-tokens.jsonl" | jq -r .scope)" "CUMULATIVE_RUN"
+jq -c '., if .type == "assistant" and .message.id == "m3" then {type:"assistant", parent_tool_use_id:"t9",
+         message:{id:"sub", model:"qwen36-27b", content:[{type:"text",text:"sub"}],
+                  usage:{input_tokens:1, cache_read_input_tokens:1}}} else empty end' \
+  "$CS/1-ok-cache-creation-absent.jsonl" > "$TMPROOT/subagent-last.jsonl"
+assert_eq "a subagent's event (parent_tool_use_id set) is never the selected call" \
+  "$(usage_of "$TMPROOT/subagent-last.jsonl" | jq -r .usage_tokens)" "15134"
+
+# --- AC-4: Edit is a tool call like any other ------------------------------
+assert_eq "the fixture really carries an Edit call" \
+  "$(jq -r 'select(.type == "assistant") | .message.content[] | select(.type == "tool_use") | .name' \
+       "$CS/1-ok-cache-creation-absent.jsonl" | tr '\n' ' ')" "Read Edit "
+sed 's/"name":"Edit"/"name":"Write"/' "$CS/1-ok-cache-creation-absent.jsonl" > "$TMPROOT/edit-as-write.jsonl"
+assert_eq "a stream with Edit reads exactly as the same stream with Write" \
+  "$(envelope_of "$CS/1-ok-cache-creation-absent.jsonl")$(usage_of "$CS/1-ok-cache-creation-absent.jsonl")" \
+  "$(envelope_of "$TMPROOT/edit-as-write.jsonl")$(usage_of "$TMPROOT/edit-as-write.jsonl")"
+
+# --- AC-6: no claim that the output format shortens a session --------------
+assert_eq "no source or doc claims stream-json makes sessions finish sooner" \
+  "$(grep -niE 'stream-json[^.]*(finish|terminat|exit)s? (sooner|faster|earlier)|(sooner|faster)[^.]*stream-json' \
+       "$KIT_ROOT/files/model-router/scripts/dispatch.sh" "$KIT_ROOT/docs/LIFECYCLE-CONTRACT.md" | wc -l | tr -d ' ')" "0"
+
+# ===========================================================================
 if (( SKIPPED > 0 )); then
   printf '\n\033[33mskipped checks computed no verdict — they are not passes\033[0m\n'
   printf '\033[1m%d passed, %d failed, %d skipped\033[0m\n' "$PASS" "$FAIL" "$SKIPPED"

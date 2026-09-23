@@ -1111,23 +1111,49 @@ publishes and never reconstructs a number from a terminal buffer or a
 transcript. Each approved harness has a named adapter, the core calls one
 interface, and adding a harness means adding an adapter.
 
-Under its frozen launch text `claude` publishes one end-of-run result envelope
-(`--output-format json`), so its adapter reports `usage_tokens` from that
-envelope's `usage` — input plus cache reads plus cache creation — with
+Both claude launch classes run with this frozen tail, amended together:
+
+```
+--permission-mode acceptEdits --tools "Read,Glob,Grep,Write,Edit"
+--strict-mcp-config --output-format stream-json --verbose < /dev/null > <result>
+```
+
+The amendment from `--tools "Read,Glob,Grep,Write"` and `--output-format json`
+adds `Edit` (no shell tool is granted) and makes the result file a JSONL stream
+written while the session runs, so a running session is observable. It changes
+nothing about what counts as completion: a parsed terminal `result` event AND
+an observed `CLAUDE_EXIT=` line, never either alone.
+
+The stream is read fail-closed. Every nonempty line must parse as exactly one
+JSON object, and the stream must carry exactly one `{"type":"result"}` event
+(not necessarily on the last line). An unparseable line, a truncated stream,
+or zero or two result events is an invalid envelope, handled exactly as an
+invalid single envelope always was: a harness error, never `status: done`, and
+no usage read out of it. A result file with no observed process exit is still
+refused before any of this, with exit 2 and no thin result.
+
+The adapter reports `usage_tokens` — input plus cache reads plus cache
+creation, an absent or null member counting as zero — with
 `usage_provenance: HARNESS_ENVELOPE` and `observed_at: END_OF_RUN`.
 
 **What that figure measures is `usage_scope`, and only one scope is
-occupancy.** The envelope's `usage` members are the SUM over every API call the
-run made, not the context its final call held, and the envelope publishes the
-call count in `num_turns`. So:
+occupancy.**
 
-- `num_turns == 1` — the envelope *is* that one call's context.
-  `usage_scope: FINAL_CONTEXT`, and the ratio is computed from it.
-- anything else — more turns, or an envelope that publishes no turn count and
-  therefore proves nothing about how many calls it summed —
-  `usage_scope: CUMULATIVE_RUN`, `usage_reason: USAGE_CUMULATIVE_ONLY`,
-  `usage_ratio: null`. The figure is still published, as information about the
-  run's total consumption; it is never divided by a window.
+- The LAST top-level `assistant` event carrying a `usage` object is the final
+  API call's own context: `usage_scope: FINAL_CONTEXT`, and the ratio is
+  computed from it. Subagent events and `<synthetic>` stand-in messages (an
+  API error's all-zero usage) are not calls, and the chosen call must carry a
+  numeric `input_tokens` and a nonzero sum, or the adapter falls back below.
+  Assistant events repeat one message's usage once per content block, so the
+  last one is selected and never summed across events.
+- With no readable per-call usage, the `result` event's `usage` is the SUM over
+  every API call the run made, and the event publishes the call count in
+  `num_turns`. `num_turns == 1` is that one call's context (`FINAL_CONTEXT`);
+  anything else — more turns, or no turn count, which proves nothing about how
+  many calls it summed — is `usage_scope: CUMULATIVE_RUN`,
+  `usage_reason: USAGE_CUMULATIVE_ONLY`, `usage_ratio: null`. The figure is
+  still published, as information about the run's total consumption; it is
+  never divided by a window.
 
 A cumulative observation evaluates to nothing, on exactly the path an
 unobservable one takes: no band, no `HIGH_USAGE`, and the pre-dispatch verdict
@@ -1137,13 +1163,13 @@ asserted **only from a `FINAL_CONTEXT` measurement** — which is what "the run
 a cumulative total is how an 83-turn run that never occupied more than one
 window reported a ratio of 20.30 against it.
 
-The envelope carries no per-turn or final-context figure of its own, and the
-kit reads no terminal and no transcript, so `FINAL_CONTEXT` is the only
-occupancy this contract can honestly observe. `codex exec` runs without `--json` and publishes
-nothing machine-readable, so its adapter reports `NOT_EVALUATED`, reason
-`USAGE_UNOBSERVABLE`. Neither launch command text changes to make usage
-observable; both are frozen. So under `claude` there is no mid-run usage to
-read, and `NOT_EVALUATED` on `codex` is an answer rather than a gap the core
+The kit reads no terminal and no session transcript — only the result stream
+its own launch redirects to a file — so `FINAL_CONTEXT` is the only
+occupancy this contract can honestly observe, and it reads the stream only
+after the run: there is no mid-run usage reading. `codex exec` runs without
+`--json` and publishes nothing machine-readable, so its adapter reports
+`NOT_EVALUATED`, reason `USAGE_UNOBSERVABLE`; its launch text is frozen and
+unchanged. `NOT_EVALUATED` on `codex` is an answer rather than a gap the core
 compensates for: it never becomes fallback logic and never blocks the other
 harness.
 

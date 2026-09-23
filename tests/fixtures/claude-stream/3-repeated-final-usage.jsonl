@@ -1,0 +1,8 @@
+{"type":"system","subtype":"hook_started"}
+{"type":"system","subtype":"init","tools":["Read","Glob","Grep","Write","Edit"]}
+{"type":"system","subtype":"thinking_tokens","tokens":12}
+{"type":"assistant","message":{"id":"m1","role":"assistant","model":"qwen36-27b","content":[{"type":"tool_use","id":"t1","name":"Write","input":{"file_path":"b.txt","content":"z"}}],"usage":{"input_tokens":900,"cache_read_input_tokens":30000,"output_tokens":0}}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}
+{"type":"assistant","message":{"id":"m2","role":"assistant","model":"qwen36-27b","content":[{"type":"thinking","thinking":""}],"usage":{"input_tokens":1000,"cache_read_input_tokens":45000,"cache_creation_input_tokens":2000,"output_tokens":0}}}
+{"type":"assistant","message":{"id":"m2","role":"assistant","model":"qwen36-27b","content":[{"type":"text","text":"DONE"}],"usage":{"input_tokens":1000,"cache_read_input_tokens":45000,"cache_creation_input_tokens":2000,"output_tokens":0}}}
+{"type":"result","subtype":"success","is_error":false,"num_turns":2,"result":"DONE","usage":{"input_tokens":1900,"cache_read_input_tokens":75000,"cache_creation_input_tokens":2000,"output_tokens":90},"modelUsage":{"qwen36-27b":{"contextWindow":65536,"maxOutputTokens":32000}}}
