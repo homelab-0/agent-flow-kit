@@ -324,7 +324,8 @@ assert_contains "claude cmd: worker terminal identity bridged at process boundar
   "$CMD" 'AFK_WORKER_TERMINAL="${ORCA_TERMINAL_HANDLE:-}"'
 assert_contains "claude cmd: stamped model passed explicitly"   "$CMD" "--model opus"
 assert_contains "claude cmd: stamped effort passed explicitly"  "$CMD" "--effort xhigh"
-assert_contains "claude cmd: explicit least-privilege tools"    "$CMD" '--tools "Read,Glob,Grep,Write"'
+assert_contains "claude cmd: explicit least-privilege tools"    "$CMD" '--tools "Read,Glob,Grep,Write,Edit" '
+assert_contains "claude cmd: stream-json result stream"         "$CMD" "--output-format stream-json --verbose < /dev/null"
 assert_contains "claude cmd: --strict-mcp-config mandatory"     "$CMD" "--strict-mcp-config"
 assert_contains "claude cmd: permission mode acceptEdits"       "$CMD" "--permission-mode acceptEdits"
 assert_contains "claude cmd: stdin redirected"                  "$CMD" "< /dev/null"
@@ -667,18 +668,18 @@ if grep -qE '^[[:space:]]*(sizing_risk_ratio|checkpoint_ratio|continuation_ratio
   ok "policy: every threshold and the method are declared in the policy document"
 else bad "policy: every threshold and the method are declared in the policy document"; fi
 
-# --- AC-7, frozen launch text plus the intentional terminal identity bridge -
-# The only master delta accepted by this comparison is the exact, once-only
-# AFK_WORKER_TERMINAL assignment. Everything else stays byte-identical, with a
-# control so a vacuous normalization cannot pass.
-head1 "   frozen launch texts differ from master only by worker terminal identity"
+# --- AC-7, frozen launch text plus the reviewed claude amendment -----------
+# The only master delta accepted is the claude launch amendment (Edit in the
+# tool set, stream-json --verbose output) on both claude classes; codex is
+# byte-identical. The amendment is applied to master's text rather than
+# stripped from this one, and it is idempotent, so the oracle holds whether or
+# not master already carries it. A control proves the comparison can fail.
+head1 "   frozen launch texts differ from master only by the claude launch amendment"
 MASTER_DISPATCH="$TMPROOT/master-dispatch.sh"
 if git -C "$KIT_ROOT" show master:files/model-router/scripts/dispatch.sh > "$MASTER_DISPATCH" 2>/dev/null; then
   emit_from() { bash -c 'set -uo pipefail; . "$1"; shift; "$@"' _emit "$@"; }
-  strip_worker_terminal() {
-    # The literal contains shell syntax that must not be expanded here.
-    # shellcheck disable=SC2001
-    sed 's/ AFK_WORKER_TERMINAL="${ORCA_TERMINAL_HANDLE:-}"//g' <<<"$1"
+  amend_claude() {
+    sed 's/--tools "Read,Glob,Grep,Write" /--tools "Read,Glob,Grep,Write,Edit" /; s/--output-format json </--output-format stream-json --verbose </' <<<"$1"
   }
   BI_ARGS=(/home/op /usr/bin:/bin op /wt/S.md.prompt claude-opus-5 high /wt/S.md.claude-result.json /wt/agents/dev.md)
   BI_GW=(/home/op /usr/bin:/bin op /wt/S.md.prompt qwen36-27b high /wt/S.md.claude-result.json /wt/agents/dev.md \
@@ -691,17 +692,18 @@ if git -C "$KIT_ROOT" show master:files/model-router/scripts/dispatch.sh > "$MAS
     # shellcheck disable=SC2086
     h="$(emit_from "$DISPATCH" $probe)"
     nm="${probe%% *}"
+    what="is byte-identical to master"
+    [[ "$nm" == build_claude* ]] && { m="$(amend_claude "$m")"; what="differs from master only by the claude launch amendment"; }
     bridge_count="$(grep -oF 'AFK_WORKER_TERMINAL="${ORCA_TERMINAL_HANDLE:-}"' <<<"$h" | wc -l | tr -d ' ')"
-    normalized="$(strip_worker_terminal "$h")"
     if [[ -z "$m" ]]; then bad "byte-identity: $nm" "master produced nothing — the probe is broken"
     elif [[ "$bridge_count" != 1 ]]; then bad "byte-identity: $nm" "worker terminal bridge count=$bridge_count, expected 1"
-    elif [[ "$m" == "$normalized" ]]; then ok "byte-identity: $nm only adds the exact worker terminal bridge"
-    else bad "byte-identity: $nm only adds the exact worker terminal bridge" "$(diff <(printf '%s\n' "$m") <(printf '%s\n' "$normalized") | head -4)"; fi
+    elif [[ "$m" == "$h" ]]; then ok "byte-identity: $nm $what"
+    else bad "byte-identity: $nm $what" "$(diff <(printf '%s\n' "$m") <(printf '%s\n' "$h") | head -4)"; fi
   done
   # CONTROL — the comparison must be able to see a difference.
-  if [[ "$(emit_from "$MASTER_DISPATCH" build_claude_command "${BI_ARGS[@]}")" \
-        != "$(strip_worker_terminal "$(emit_from "$DISPATCH" build_claude_command /home/op /usr/bin:/bin op \
-              /wt/S.md.prompt claude-opus-5 medium /wt/S.md.claude-result.json /wt/agents/dev.md)")" ]]; then
+  if [[ "$(amend_claude "$(emit_from "$MASTER_DISPATCH" build_claude_command "${BI_ARGS[@]}")")" \
+        != "$(emit_from "$DISPATCH" build_claude_command /home/op /usr/bin:/bin op \
+              /wt/S.md.prompt claude-opus-5 medium /wt/S.md.claude-result.json /wt/agents/dev.md)" ]]; then
     ok "byte-identity CONTROL: a perturbed effort IS detected as different"
   else bad "byte-identity CONTROL: a perturbed effort IS detected as different"; fi
 else
@@ -1435,8 +1437,8 @@ assert_contains "gateway: x-placement comes verbatim from the place evidence" \
 assert_contains "gateway: the catalog's min_context is the session window" \
   "$GW_LAUNCHED" "CLAUDE_CODE_MAX_CONTEXT_TOKENS=65536"
 assert_contains "gateway: stamped effort still passed explicitly" "$GW_LAUNCHED" "--effort high"
-assert_contains "gateway: least-privilege tool set unchanged" \
-  "$GW_LAUNCHED" '--tools "Read,Glob,Grep,Write"'
+assert_contains "gateway: least-privilege tool set, the same as native" \
+  "$GW_LAUNCHED" '--tools "Read,Glob,Grep,Write,Edit" '
 assert_contains "gateway: --strict-mcp-config unchanged" "$GW_LAUNCHED" "--strict-mcp-config"
 assert_contains "gateway: acceptEdits unchanged" "$GW_LAUNCHED" "--permission-mode acceptEdits"
 assert_contains "gateway: stdin redirect unchanged" "$GW_LAUNCHED" "< /dev/null"
@@ -2048,10 +2050,10 @@ fi
 head1 "3d. Context budget — observed usage, phase-boundary artifacts (lane B)"
 # ===========================================================================
 # Usage is whatever the harness PUBLISHES under its frozen launch text, and
-# nothing else. Both frozen texts are unchanged by this section, so the claude
-# adapter sees one end-of-run envelope and the codex adapter sees nothing —
-# and the discipline that carries a worker across a boundary is therefore
-# deterministic policy in the prompt rather than a usage reading.
+# nothing else. The claude adapter reads the run's result stream after the run
+# (a one-line envelope is the degenerate stream) and the codex adapter sees
+# nothing — and the discipline that carries a worker across a boundary is
+# therefore deterministic policy in the prompt rather than a usage reading.
 
 # --- the adapters, called directly (AC-1) ---------------------------------
 # num_turns defaults to 1: the single-call envelope IS that call's context, and
@@ -2283,6 +2285,45 @@ assert_eq "usage e2e: and carries the PM's sizing signal" \
   "$(jq -c '.budget.findings' "$BR")" '["HIGH_USAGE"]'
 assert_eq "usage e2e: status is unaffected by a checkpoint-band budget" \
   "$(bud .status "$BR")" "done"
+
+# --- the stream-json result stream, end to end ------------------------------
+# A valid multi-turn stream is a final-call measurement: it reaches the thin
+# result with a ratio. A truncated one takes the invalid-envelope path it always
+# took, and a complete stream with no observed process exit is still a launch
+# that did not complete: exit 2 and no thin result at all.
+CS="$KIT_ROOT/tests/fixtures/claude-stream"
+for s in s-stream s-stream-trunc s-stream-noexit; do
+  write_story "$WT/$s.md" "persona: dev
+gates: [\"true\"]"
+  write_stamp "$WT/$s.md.stamp.json" high false
+done
+reset_stubs; spawn_reset
+export STUB_SPAWN_PATH1="$WT/s-stream.md.claude-result.json"
+STUB_SPAWN_BODY1="$(cat "$CS/1-ok-cache-creation-absent.jsonl")"; export STUB_SPAWN_BODY1
+rc="$(STUB_CATALOG="$WORK/catalog-windowed.yaml"; export STUB_CATALOG; run_dispatch s-stream.md)"
+BR="$WT/s-stream.md.result.json"
+assert_eq "stream e2e: a valid multi-turn stream completes" "$rc|$(bud .status "$BR")" "0|done"
+assert_eq "stream e2e: final-call occupancy reaches the thin result as FINAL_CONTEXT, with a ratio" \
+  "$(jq -r '[.budget.usage_tokens, .budget.usage_scope, .budget.usage_ratio] | map(tostring) | join(" ")' "$BR")" \
+  "15134 FINAL_CONTEXT 0.075670"
+reset_stubs; spawn_reset
+export STUB_SPAWN_PATH1="$WT/s-stream-trunc.md.claude-result.json"
+STUB_SPAWN_BODY1="$(cat "$CS/5-truncated-no-result.jsonl")"; export STUB_SPAWN_BODY1
+rc="$(run_dispatch s-stream-trunc.md)"
+BR="$WT/s-stream-trunc.md.result.json"
+assert_eq "stream e2e: a truncated stream is never done — the invalid-envelope path" \
+  "$rc|$(bud .status "$BR")|$(bud .budget.usage_provenance "$BR")" "1|gates_failed|NOT_EVALUATED"
+reset_stubs; spawn_reset
+export STUB_SPAWN_PATH1="$WT/s-stream-noexit.md.claude-result.json"
+STUB_SPAWN_BODY1="$(cat "$CS/1-ok-cache-creation-absent.jsonl")"; export STUB_SPAWN_BODY1
+export STUB_TERMINAL_STATUS="exited" STUB_TERMINAL_TAIL="worker output, no exit marker"
+rc="$(run_dispatch s-stream-noexit.md)"
+assert_eq "stream e2e: a complete stream without an observed exit is refused (exit 2)" "$rc" "2"
+assert_contains "stream e2e: with the unchanged wording" "$(cat "$WORK/err")" "did not complete honestly"
+assert_no_file "stream e2e: and no thin result" "$WT/s-stream-noexit.md.result.json"
+unset STUB_TERMINAL_STATUS; spawn_reset
+export STUB_TERMINAL_TAIL="ok
+CLAUDE_EXIT=0"
 
 reset_stubs; spawn_reset
 export STUB_TERMINAL_TAIL="ok
