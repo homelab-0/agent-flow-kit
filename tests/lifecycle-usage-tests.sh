@@ -45,13 +45,20 @@ export AFK_USAGE_CLAUDE_PROJECTS_DIR="$FIXTURES/claude"
 export AFK_USAGE_CODEX_HOMES="$FIXTURES/codex"
 export AFK_USAGE_PRICES_FILE="$KIT_ROOT/files/model-router/usage-prices.yaml"
 
+# Repo-aware workspace-name stripping (regression: worker_sessions_per_story
+# used to print the raw encoded project-dir string). Real orca/workspaces
+# layout is <repo>/<workspace>; a throwaway one here proves the split.
+mkdir -p "$TMPROOT/orca-workspaces/agent-flow-kit/afk-te-4-review" \
+         "$TMPROOT/orca-workspaces/agent-flow-kit/afk-te-4"
+export AFK_USAGE_ORCA_WORKSPACES_DIR="$TMPROOT/orca-workspaces"
+
 head1 "AC-1: bash + jq only; sqlite3 optional"
 # opencode reporting "ok" when sqlite3 IS present is exercised by AC-2 below
 # (it seeds and reads the opencode.db fixture). Here: force the "no sqlite3"
 # path regardless of host, by hiding it on PATH.
 NOSQLITE_BIN="$TMPROOT/nosqlite-bin"
 mkdir -p "$NOSQLITE_BIN"
-for t in bash jq date awk sed grep find sort head tail tr wc cat mktemp printf dirname rm; do
+for t in bash jq date awk sed grep find sort head tail tr wc cat mktemp printf dirname rm basename; do
   p="$(command -v "$t" 2>/dev/null)"; [[ -n "$p" ]] && ln -sf "$p" "$NOSQLITE_BIN/$t"
 done
 out_nosqlite="$(PATH="$NOSQLITE_BIN" bash -c '
@@ -85,7 +92,9 @@ assert_eq "opencode reports ok when sqlite3 and the db are present" \
 
 head1 "AC-2: session classification"
 assert_eq "interactive class present for the repos-path session" \
-  "$(jq -r '.by_class_model[] | select(.class=="interactive") | .model' "$TMPROOT/report.json")" "claude-opus-5"
+  "$(jq -r '.by_class_model[] | select(.class=="interactive" and .model=="claude-opus-5") | .model' "$TMPROOT/report.json")" "claude-opus-5"
+assert_eq "interactive class also covers the second real model" \
+  "$(jq -r '.by_class_model[] | select(.class=="interactive" and .model=="claude-fable-5") | .model' "$TMPROOT/report.json")" "claude-fable-5"
 assert_eq "worker class total calls (2 workspaces, 1 call each)" \
   "$(jq -r '[.by_class_model[] | select(.class=="worker") | .calls] | add' "$TMPROOT/report.json")" "2"
 assert_eq "subagent class is distinguished from worker even under orca-workspaces" \
@@ -103,9 +112,14 @@ assert_eq "one Edit call recorded" "$(jq -r '.waste.edit_calls' "$TMPROOT/report
 assert_eq "the interactive session spans over 4h (10:00 to 15:30)" \
   "$(jq -r '.waste.sessions_over_4h' "$TMPROOT/report.json")" "1"
 
-head1 "AC-2: worker sessions per story (suffix stripped)"
+head1 "AC-2: worker sessions per story (repo-stripped, suffix-stripped)"
+# Regression: this used to be the raw encoded project-dir string
+# (-home-devbox-orca-workspaces-agent-flow-kit-afk-te-4-review), not the bare
+# story id. Exact match, not endswith, so a regression cannot hide again.
+assert_eq "story key is the bare workspace name, not the raw project dir" \
+  "$(jq -r '.worker_sessions_per_story[] | select(.sessions == 2) | .story' "$TMPROOT/report.json")" "afk-te-4"
 assert_eq "afk-te-4 story combines the -review and base workspaces" \
-  "$(jq -r '.worker_sessions_per_story[] | select(.story | endswith("afk-te-4")) | .sessions' "$TMPROOT/report.json")" "2"
+  "$(jq -r '.worker_sessions_per_story[] | select(.story == "afk-te-4") | .sessions' "$TMPROOT/report.json")" "2"
 
 head1 "AC-2: oversized tool result waste signal (generated at run time, not committed)"
 TOOLRESULT_DIR="$TMPROOT/toolresult-claude/-home-devbox-repos-jlengelbrecht-agent-flow-kit"
@@ -163,6 +177,25 @@ human="$(afk_usage_report --days 7)"
 case "$human" in
   *"observations, not routing guidance"*) ok "human output carries the disclaimer" ;;
   *) bad "human output carries the disclaimer" "got: $human" ;;
+esac
+
+head1 "regression: human rendering does not fan out into one report per row"
+# Bug: .by_harness_model[] used as a bare generator inside a string-concat
+# pipeline reran the WHOLE report once per model, each copy showing only that
+# one row. The fixtures now carry 4+ distinct claude models plus a
+# "<synthetic>" one, so a collapse back to a single row is caught here.
+assert_eq "the report header appears exactly once" \
+  "$(grep -c '^agent-flow-kit usage-report' <<<"$human")" "1"
+model_lines="$(awk '/== per harness x model ==/{f=1;next} /^$/{f=0} f' <<<"$human" | grep -c .)"
+json_models="$(jq -r '.by_harness_model | length' "$TMPROOT/report.json")"
+assert_eq "human 'per harness x model' line count matches the JSON group count" "$model_lines" "$json_models"
+case "$human" in
+  *"claude-fable-5"*) ok "a second real model (claude-fable-5) appears in human output" ;;
+  *) bad "a second real model (claude-fable-5) appears in human output" "got: $human" ;;
+esac
+case "$human" in
+  *"claude-sonnet-5"*) ok "codex and opencode rows are not crowded out (claude-sonnet-5 present)" ;;
+  *) bad "codex and opencode rows are not crowded out (claude-sonnet-5 present)" "got: $human" ;;
 esac
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
