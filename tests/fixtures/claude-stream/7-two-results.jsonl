@@ -1,0 +1,13 @@
+{"type":"system","subtype":"hook_started"}
+{"type":"system","subtype":"init","tools":["Read","Glob","Grep","Write","Edit"]}
+{"type":"system","subtype":"thinking_tokens","tokens":12}
+{"type":"assistant","message":{"id":"m1","role":"assistant","model":"qwen36-27b","content":[{"type":"thinking","thinking":""}],"usage":{"input_tokens":517,"cache_read_input_tokens":14399,"output_tokens":0}}}
+{"type":"assistant","message":{"id":"m1","role":"assistant","model":"qwen36-27b","content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"a.txt"}}],"usage":{"input_tokens":517,"cache_read_input_tokens":14399,"output_tokens":0}}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}
+{"type":"assistant","message":{"id":"m2","role":"assistant","model":"qwen36-27b","content":[{"type":"tool_use","id":"t2","name":"Edit","input":{"file_path":"a.txt","old_string":"x","new_string":"y"}}],"usage":{"input_tokens":80,"cache_read_input_tokens":14800,"output_tokens":0}}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"ok"}]}}
+{"type":"system","subtype":"thinking_tokens","tokens":3}
+{"type":"assistant","message":{"id":"m3","role":"assistant","model":"qwen36-27b","content":[{"type":"thinking","thinking":""}],"usage":{"input_tokens":94,"cache_read_input_tokens":15040,"output_tokens":0}}}
+{"type":"assistant","message":{"id":"m3","role":"assistant","model":"qwen36-27b","content":[{"type":"text","text":"DONE"}],"usage":{"input_tokens":94,"cache_read_input_tokens":15040,"output_tokens":0}}}
+{"type":"result","subtype":"success","is_error":false,"num_turns":3,"result":"DONE","usage":{"input_tokens":611,"cache_creation_input_tokens":0,"cache_read_input_tokens":44838,"output_tokens":142},"modelUsage":{"qwen36-27b":{"contextWindow":65536,"maxOutputTokens":32000}}}
+{"type":"result","subtype":"success","is_error":false,"num_turns":3,"result":"DONE AGAIN","usage":{"input_tokens":611,"cache_creation_input_tokens":0,"cache_read_input_tokens":44838,"output_tokens":142},"modelUsage":{"qwen36-27b":{"contextWindow":65536,"maxOutputTokens":32000}}}

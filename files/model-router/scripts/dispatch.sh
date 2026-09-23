@@ -204,6 +204,12 @@ attempt_result_projection() {
 # an ambient $HOME/$PATH/$USER would reintroduce exactly the inherited-state
 # dependency `env -i` exists to remove. The only runtime read is the prompt
 # file, which is the sanctioned data channel for task/persona content.
+#
+# The tool set is Read,Glob,Grep,Write,Edit — still no shell — and the output
+# is `stream-json --verbose`: JSONL written as the session runs, so a running
+# session is observable, ending in one terminal `result` event. Completion is
+# still that parsed event AND the in-band exit line, never either alone
+# (claude_result_envelope). Both launch classes carry this text together.
 build_claude_command() {
   local home="$1" path="$2" user="$3" prompt_file="$4" model="$5" effort="$6" \
         result_file="$7" persona_file="${8:-}" worker_env="${9:-}"
@@ -213,8 +219,8 @@ build_claude_command() {
 "env -i HOME=$(shq "$home") PATH=$(shq "$path") USER=$(shq "$user") LANG=C.UTF-8 TERM=dumb ${worker_env:+$worker_env }AFK_WORKER_TERMINAL=\"\${ORCA_TERMINAL_HANDLE:-}\" \
 claude -p \"\$(cat -- $(shq "$prompt_file"))\" \
 --model $(shq "$model") --effort $(shq "$effort")${persona_arg} \
---permission-mode acceptEdits --tools \"Read,Glob,Grep,Write\" \
---strict-mcp-config --output-format json < /dev/null > $(shq "$result_file"); \
+--permission-mode acceptEdits --tools \"Read,Glob,Grep,Write,Edit\" \
+--strict-mcp-config --output-format stream-json --verbose < /dev/null > $(shq "$result_file"); \
 echo \"CLAUDE_EXIT=\$?\""
 }
 
@@ -223,7 +229,7 @@ echo \"CLAUDE_EXIT=\$?\""
 # profile, exactly as catalog 1.6.0 records it for local-code-standard
 # (STORY-036-1, R1-R17). Everything the native launch freezes is preserved:
 # the env -i allowlist sanitizer, the prompt file as the only data channel, the
-# model and effort flags, acceptEdits, the four-tool set, --strict-mcp-config,
+# model and effort flags, acceptEdits, the five-tool set, --strict-mcp-config,
 # the stdin redirect, the result-file redirect and the in-band exit line. The
 # only difference is five per-process variables inside that allowlist.
 #
@@ -267,8 +273,8 @@ ANTHROPIC_CUSTOM_HEADERS=$(shq "x-placement: $placement_header") \
 CLAUDE_CODE_MAX_CONTEXT_TOKENS=$(shq "$max_context") \
 claude -p \"\$(cat -- $(shq "$prompt_file"))\" \
 --model $(shq "$model") --effort $(shq "$effort")${persona_arg} \
---permission-mode acceptEdits --tools \"Read,Glob,Grep,Write\" \
---strict-mcp-config --output-format json < /dev/null > $(shq "$result_file"); \
+--permission-mode acceptEdits --tools \"Read,Glob,Grep,Write,Edit\" \
+--strict-mcp-config --output-format stream-json --verbose < /dev/null > $(shq "$result_file"); \
 echo \"CLAUDE_EXIT=\$?\"; unset ANTHROPIC_AUTH_TOKEN"
 }
 
@@ -318,6 +324,36 @@ write_opencode_config() {
   local plugin="${3:-}" plugins='[]'
   [[ -n "$plugin" ]] && plugins="$(jq -nc --arg p "$plugin" '[$p]')"
   jq -n --arg persona "{file:$2}" --argjson plugins "$plugins" '{"$schema":"https://opencode.ai/config.json",plugin:$plugins,provider:{"minimax-cn":{npm:"@ai-sdk/anthropic",name:"MiniMax Global Token Plan",options:{baseURL:"https://api.minimax.io/anthropic/v1"},models:{"MiniMax-M3":{name:"MiniMax-M3",limit:{context:1000000,output:65536},variants:{none:{thinking:{type:"disabled"}},thinking:{thinking:{type:"adaptive"}}}}}}},agent:{"afk-dev":{description:"Agent Flow Kit supervised BMAD DEV worker",mode:"primary",prompt:$persona,permission:{"*":"deny",read:"allow",edit:"allow",glob:"allow",grep:"allow",list:"allow",external_directory:"deny",bash:"deny",task:"deny",skill:"deny",webfetch:"deny",websearch:"deny",question:"deny"}}}}' >"$1"
+}
+
+# CLAUDE_STREAM_EVENTS_JQ — the one reader of the claude result file, shared
+# by the worker-text reader and the usage adapter so they cannot disagree about
+# what a valid stream is. `--output-format stream-json` is JSONL: one event
+# object per line, and exactly one `{"type":"result"}` event, which need not be
+# the last line. Emits the events as one array, or fails. Every nonempty line
+# must parse as exactly one JSON object; an unparseable line is NOT skipped
+# because a later line parses, since a stream that could not be read in full
+# is one whose completeness nobody can vouch for. A truncated stream (a partial
+# last line, or no result event) did not complete, and two result events are
+# not a choice to make between them: all three fail.
+CLAUDE_STREAM_EVENTS_JQ='
+  [split("\n")[] | select(length > 0) | [fromjson]
+   | if length == 1 and (.[0] | type) == "object" then .[0]
+     else error("invalid Claude result stream line") end]
+  | if ([.[] | select(.type == "result")] | length) == 1 then .
+    else error("invalid Claude result stream: result event count") end'
+# claude_result_envelope — the stream's one `result` event, holding the shape
+# the worker-text reader needs, or fail: is_error is the authoritative failure
+# flag (subtype is not a status field) and .result carries the worker text.
+claude_result_envelope() { # <jsonl>
+  jq -R -s -c "$CLAUDE_STREAM_EVENTS_JQ"'
+    | [.[] | select(.type == "result")][0]
+    | if has("is_error")
+         and (.is_error | type == "boolean")
+         and (.result | type == "string")
+      then .
+      else error("invalid Claude result envelope")
+      end' "$1" 2>/dev/null
 }
 
 parse_opencode_result_stream() { # <jsonl>
@@ -1332,52 +1368,65 @@ usage_unobservable() { # <reason-code>
                         scope:null, reason:$r}'
 }
 
-# usage_adapter_claude — `claude -p --output-format json` writes ONE result
-# envelope when the turn ends. Under the frozen launch text there is no
-# stream-json, so mid-run usage does not exist to be read: the observation is
-# END_OF_RUN or it is nothing, and it is labelled as such.
+# usage_adapter_claude — the frozen launch writes a `stream-json` result stream
+# (CLAUDE_STREAM_EVENTS_JQ). The adapter reads it after the run, so the
+# observation is END_OF_RUN or it is nothing, and it is labelled as such. A
+# stream that reader refuses — unparseable, truncated, or with zero or
+# two result events — is unobservable: nothing is read out of it.
 #
-# usage_tokens is what the envelope's `usage` object publishes — input, cache
-# reads and cache creation summed. Output tokens are not context the next turn
-# carries, so adding them would inflate any ratio against a window they never
-# occupied.
+# usage_tokens is input + cache reads + cache creation. Output tokens are not
+# context the next turn carries, so adding them would inflate any ratio against
+# a window they never occupied. An absent or null member counts as zero; a
+# `usage` object carrying none of the three is not a run that used zero
+# context, it is one whose context was never published, and is unobservable.
 #
-# What that sum MEASURES depends on how many API calls the run made, and the
-# envelope says so in `num_turns`. On a multi-turn run the members are the
-# TOTAL over every call in the run, not the context the final call held: an
-# 83-turn run reported 1,330,455 against a 65,536 window, a ratio of 20.30 for
-# a run that never occupied more than one window. So the adapter reports the
-# scope of its own figure. `num_turns == 1` is the only case in which the
-# envelope IS the single call's context (FINAL_CONTEXT) and the only case a
-# ratio may be computed from. Anything else — more turns, or an envelope that
-# publishes no turn count at all and so proves nothing about how many calls it
-# summed — is CUMULATIVE_RUN: reported as an informational figure with reason
-# USAGE_CUMULATIVE_ONLY, and never divided by a window.
+# Which `usage` is read decides what the figure MEASURES, and the adapter
+# reports that as `scope`:
+#   - the LAST `assistant` event carrying a `usage` object is the final API
+#     call's own context: FINAL_CONTEXT, and a ratio may be computed from it.
+#     Assistant events repeat one message's usage once per content block, so
+#     the last one is SELECTED, never summed across events. Only top-level
+#     calls count (a subagent's events carry a parent_tool_use_id), and a
+#     `<synthetic>` stand-in message — what an API error or "Prompt is too
+#     long" leaves, with all-zero usage — is not a call. The selected call
+#     must carry a numeric input_tokens and a nonzero sum: a zero reading at
+#     the end of a run is exactly the overflow case, and reporting it as an
+#     empty context would be a fabricated OK. Otherwise the adapter falls back.
+#   - with no readable per-call usage, the result event's `usage` is the TOTAL
+#     over every call in the run: an 83-turn run reported 1,330,455 against a
+#     65,536 window. It is FINAL_CONTEXT only when `num_turns == 1`; anything
+#     else — more turns, or no turn count at all — is CUMULATIVE_RUN, reported
+#     as information with reason USAGE_CUMULATIVE_ONLY and never divided.
 #
-# window_tokens is CORROBORATION ONLY: the budget window is the
-# catalog's on every path, and a harness that reports a different number is
-# recorded and left disagreeing, because reconciling two authorities by picking
-# one is how a kit starts inventing routed facts.
+# window_tokens is CORROBORATION ONLY, from the result event's modelUsage by an
+# EXACT key match on the stamped model: the budget window is the catalog's on
+# every path, and a harness that reports a different number is recorded and
+# left disagreeing, because reconciling two authorities by picking one is how a
+# kit starts inventing routed facts.
 usage_adapter_claude() { # <result-file> <native-model>
   local f="${1:-}" model="${2:-}" obs
   [[ -f "$f" ]] || { usage_unobservable USAGE_UNOBSERVABLE; return 0; }
-  # The adapter reports only what it saw. A `usage` object carrying none of the
-  # three context members is not a run that used zero context, it is a run whose
-  # context was never published — so it is unobservable, and `usage_tokens: 0`
-  # with an OK band is precisely the confident number this lane exists not to
-  # invent. Window corroboration is an EXACT key match on the stamped model:
-  # adopting the one entry that happens to be present would corroborate against
-  # a model that did not run the turn.
-  obs="$(jq -c --arg m "$model" '
-      (.usage // {}) as $u
-      | (($u | type) == "object"
-         and ($u | has("input_tokens") or has("cache_read_input_tokens")
-                or has("cache_creation_input_tokens"))) as $observed
+  obs="$(jq -R -s -c --arg m "$model" "$CLAUDE_STREAM_EVENTS_JQ"'
+      | def context_members: (type == "object")
+          and (has("input_tokens") or has("cache_read_input_tokens")
+               or has("cache_creation_input_tokens"));
+      . as $e
+      | ($e[] | select(.type == "result")) as $r
+      | ([$e[] | select(.type == "assistant" and (.parent_tool_use_id? // null) == null
+                        and .message.model? != "<synthetic>")
+               | .message.usage? | select(type == "object")] | last) as $call
+      | (if ($call | context_members) and ($call.input_tokens | type) == "number"
+            and (($call.input_tokens + ($call.cache_read_input_tokens // 0)
+                  + ($call.cache_creation_input_tokens // 0)) > 0)
+         then {u:$call, scope:"FINAL_CONTEXT"}
+         else {u:($r.usage // {}),
+               scope:(if ($r.num_turns? // null) == 1 then "FINAL_CONTEXT" else "CUMULATIVE_RUN" end)}
+         end) as $src
+      | $src.u as $u | $src.scope as $scope
       | (($u.input_tokens // 0) + ($u.cache_read_input_tokens // 0)
          + ($u.cache_creation_input_tokens // 0)) as $t
-      | ((.modelUsage // {})[$m].contextWindow) as $w
-      | (if (.num_turns? // null) == 1 then "FINAL_CONTEXT" else "CUMULATIVE_RUN" end) as $scope
-      | if ($observed | not) or ($t | type) != "number"
+      | (($r.modelUsage // {})[$m].contextWindow) as $w
+      | if ($u | context_members | not) or ($t | type) != "number"
         then null
         else {usage_tokens:$t, window_tokens:(if ($w | type) == "number" then $w else null end),
               provenance:"HARNESS_ENVELOPE", observed_at:"END_OF_RUN", scope:$scope,
@@ -2972,17 +3021,9 @@ EOF
   HARNESS_REPORTED_ERROR=false
   if [[ "$HARNESS" == "claude" && -f "$result_file" ]]; then
     local claude_envelope
-    if claude_envelope="$(jq -c -s '
-        if length == 1
-           and (.[0] | if type == "object"
-                         then .type == "result"
-                              and has("is_error")
-                              and (.is_error | type == "boolean")
-                              and (.result | type == "string")
-                         else false end)
-        then .[0]
-        else error("invalid Claude result envelope")
-        end' "$result_file" 2>/dev/null)"; then
+    # An unreadable, truncated or ambiguous stream is an invalid envelope,
+    # handled exactly as an invalid single envelope always was.
+    if claude_envelope="$(claude_result_envelope "$result_file")"; then
       WORKER_TEXT="$(jq -r '.result // ""' <<<"$claude_envelope")"
       HARNESS_REPORTED_ERROR="$(jq -r .is_error <<<"$claude_envelope")"
       if [[ "$HARNESS_REPORTED_ERROR" == true ]]; then
