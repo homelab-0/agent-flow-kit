@@ -36,7 +36,7 @@ AFK_LIB_DIR="${AFK_LIB_DIR:-$AFK_INSTALL_ROOT/lib}"
 # A missing or unreadable library is an internal failure with a stable message
 # and the usage exit code — never a partially loaded lifecycle that answers
 # questions with whichever functions happened to load.
-for _afk_lib in afk-common afk-source afk-inventory afk-readiness afk-monitor afk-commands afk-plan afk-mutate; do
+for _afk_lib in afk-common afk-source afk-inventory afk-readiness afk-monitor afk-commands afk-plan afk-mutate afk-usage; do
   if [[ ! -r "$AFK_LIB_DIR/$_afk_lib.sh" ]]; then
     printf 'agent-flow-kit: internal error: required library %s.sh is missing or unreadable under %s\n' \
       "$_afk_lib" "$AFK_LIB_DIR" >&2
@@ -69,6 +69,9 @@ unset _afk_lib
 # shellcheck source=lib/afk-mutate.sh
 # shellcheck disable=SC1090,SC1091
 . "$AFK_LIB_DIR/afk-mutate.sh"
+# shellcheck source=lib/afk-usage.sh
+# shellcheck disable=SC1090,SC1091
+. "$AFK_LIB_DIR/afk-usage.sh"
 
 if ! declare -F afk_cmd_status >/dev/null 2>&1 \
    || ! declare -F afk_render_human >/dev/null 2>&1 \
@@ -76,7 +79,8 @@ if ! declare -F afk_cmd_status >/dev/null 2>&1 \
    || ! declare -F afk_readiness_evaluate >/dev/null 2>&1 \
    || ! declare -F afk_monitor_reconcile >/dev/null 2>&1 \
    || ! declare -F afk_cmd_pm_checkpoint >/dev/null 2>&1 \
-   || ! declare -F afk_plan_compute >/dev/null 2>&1; then
+   || ! declare -F afk_plan_compute >/dev/null 2>&1 \
+   || ! declare -F afk_usage_report >/dev/null 2>&1; then
   printf 'agent-flow-kit: internal error: the lifecycle libraries under %s did not load completely\n' \
     "$AFK_LIB_DIR" >&2
   exit 1
@@ -229,6 +233,14 @@ agent-flow-kit — lifecycle entry point
       successor launch, requires that successor's acknowledgement, reconciles
       ownership, and only then durably closes the proven old terminal.
 
+  agent-flow-kit usage-report [options]
+      OBSERVABILITY ONLY, same posture as usage-check.sh: what the pools spent
+      over a rolling window, by harness, model, session class and story, from
+      local transcripts (Claude, Codex, opencode). Read-only; a missing source
+      reports unknown rather than failing. Emits no routing guidance and is
+      not a routing input.
+      Options: --json --days <n>
+
   agent-flow-kit schema
       The documented machine contract: schema version, state, reason and
       ownership vocabularies, plan and operation vocabularies, and exit
@@ -279,6 +291,8 @@ command you ran is a usage failure, not a silently ignored word.
                                 artifact rather than the checkpoint.
   --plan                        Compute and print the complete plan; write
                                 nothing. The plan carries a stable identity.
+  --days <n>                    usage-report only: the rolling window in
+                                days. Default 7.
   --approve-plan <identity>     Authorize exactly the plan with that identity.
                                 An approval never transfers to a plan that any
                                 authority-relevant input has changed.
@@ -347,6 +361,8 @@ afk_option_allowed() { # <command> <option>
       esac ;;
     pm-continue)
       case "$2" in --json|--ack) return 0 ;; esac ;;
+    usage-report)
+      case "$2" in --json|--days) return 0 ;; esac ;;
   esac
   return 1
 }
@@ -357,6 +373,7 @@ afk_main() {
   local inspect="false" plan_only="false" approval=""
   local monitor_verbs=0
   local pm_write="" pm_continuation="false" pm_harness=""
+  local usage_days=""
 
   cmd="${1:-help}"
   if (( $# > 0 )); then shift; fi
@@ -414,6 +431,14 @@ afk_main() {
             AFK_STAMP_FILE="$2"
             shift ;;
           --continuation)              pm_continuation="true" ;;
+          --days)
+            if (( $# < 2 )); then
+              afk_warn "--days requires the rolling window in days"
+              afk_usage >&2
+              return "$AFK_EXIT_USAGE"
+            fi
+            usage_days="$2"
+            shift ;;
           --ack)
             if (( $# < 2 )); then afk_warn "--ack requires a successor acknowledgement document"; return "$AFK_EXIT_USAGE"; fi
             AFK_PM_ACK_FILE="$2"; shift ;;
@@ -540,6 +565,12 @@ afk_main() {
     pm-continue)
       afk_require_declared_paths || return "$AFK_EXIT_USAGE"
       afk_cmd_pm_continue "$json_mode"
+      return $? ;;
+    usage-report)
+      local -a usage_args=()
+      [[ "$json_mode" == "true" ]] && usage_args+=(--json)
+      [[ -n "$usage_days" ]] && usage_args+=(--days "$usage_days")
+      afk_usage_report "${usage_args[@]}"
       return $? ;;
     schema)
       afk_cmd_schema || return "$AFK_EXIT_USAGE"
