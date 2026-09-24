@@ -26,8 +26,13 @@ AFK_AU_TIMEOUT_SECONDS=600
 
 afk_au_paths() {
   AFK_AU_POLICY="${AFK_RELEASE_POLICY:-$AFK_INSTALL_ROOT/lifecycle/release-policy.json}"
-  AFK_AU_KEY="${AFK_RELEASE_DEPLOY_KEY:-${HOME:+$HOME/.config/agent-flow-kit/deploy-key/agent-flow-kit_ed25519}}"
   AFK_AU_CONFIG="${AFK_AUTO_UPDATE_CONFIG:-${HOME:+$HOME/.config/agent-flow-kit/auto-update.json}}"
+  # An explicit key wins, then the path enrollment recorded, then the default.
+  AFK_AU_KEY="${AFK_RELEASE_DEPLOY_KEY:-}"
+  if [[ -z "$AFK_AU_KEY" && -n "$AFK_AU_CONFIG" && -r "$AFK_AU_CONFIG" ]]; then
+    AFK_AU_KEY="$(jq -r '.key_path | strings | select(startswith("/"))' "$AFK_AU_CONFIG" 2>/dev/null)"
+  fi
+  AFK_AU_KEY="${AFK_AU_KEY:-${HOME:+$HOME/.config/agent-flow-kit/deploy-key/agent-flow-kit_ed25519}}"
   AFK_AU_CHECK_STATE="$AFK_STATE_DIR/auto-update-check.json"
   AFK_AU_RUNTIME_BIN="$AFK_SKILLS_HOME/afk-runtime/bin"
   AFK_AU_SYSTEMD_DIR="${AFK_SYSTEMD_USER_DIR:-${XDG_CONFIG_HOME:-${HOME:-}/.config}/systemd/user}"
@@ -44,6 +49,20 @@ afk_au_interval() {
   local v
   v="$(jq -r '.check_interval_seconds // empty' "$AFK_AU_POLICY" 2>/dev/null)"
   if [[ "$v" =~ ^[0-9]+$ ]] && (( v >= 60 )); then printf '%s\n' "$v"; else printf '900\n'; fi
+}
+
+# afk_au_ready — what the scheduled job will run must already be installed:
+# the release client (Linux) or the kit command (macOS), the policy and the
+# pinned known-hosts file. Checked before the key or any scheduler is touched.
+afk_au_ready() {
+  local missing="" runner="afk-release-reconcile"
+  [[ "$AFK_AU_PLATFORM" == darwin ]] && runner="agent-flow-kit"
+  [[ -x "$AFK_AU_RUNTIME_BIN/$runner" ]] || missing+=" $AFK_AU_RUNTIME_BIN/$runner"
+  [[ -r "$AFK_AU_POLICY" ]] || missing+=" $AFK_AU_POLICY"
+  [[ -s "$AFK_AU_RUNTIME_BIN/afk-release-known-hosts" ]] || missing+=" $AFK_AU_RUNTIME_BIN/afk-release-known-hosts"
+  [[ -z "$missing" ]] && return 0
+  afk_warn "enroll-auto-update: NOT_READY: missing or not executable:$missing (run agent-flow-kit update first); nothing was changed"
+  return 1
 }
 
 # afk_au_put <path> <content> [umask] — write only when the content differs.
@@ -219,17 +238,42 @@ afk_au_enable_linux() { # <interval>
   fi
 }
 
-afk_au_enable_darwin() { # <interval>
-  local domain; domain="gui/$(id -u)"
-  launchctl bootout "$domain/$AFK_AU_LABEL" >/dev/null 2>&1 || true
-  if ! { afk_au_put "$AFK_AU_SCHEDULER" "$(afk_au_launchd_plist "$1")" \
-         && launchctl bootstrap "$domain" "$AFK_AU_SCHEDULER" >/dev/null 2>&1 \
-         && afk_au_scheduler_enabled; }; then
-    afk_au_unschedule
-    afk_warn "enroll-auto-update: SCHEDULER_UNAVAILABLE: launchctl could not load $AFK_AU_LABEL; the agent was removed"
+# afk_au_darwin_load <domain> <plist-text> — bootout is asynchronous, so wait
+# (bounded) until the old agent is gone, then bootstrap with bounded retries.
+afk_au_darwin_load() {
+  local i
+  launchctl bootout "$1/$AFK_AU_LABEL" >/dev/null 2>&1 </dev/null || true
+  for (( i = 0; i < 20; i++ )); do
+    launchctl print "$1/$AFK_AU_LABEL" >/dev/null 2>&1 </dev/null || break
+    sleep 0.5
+  done
+  afk_au_put "$AFK_AU_SCHEDULER" "$2" || return 1
+  for (( i = 0; i < 3; i++ )); do
+    (( i == 0 )) || sleep 1
+    if launchctl bootstrap "$1" "$AFK_AU_SCHEDULER" >/dev/null 2>&1 </dev/null && afk_au_scheduler_enabled; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+afk_au_enable_darwin() { # <interval> — sets AFK_AU_RESTORED when the previous agent was put back
+  local domain prev=""
+  domain="gui/$(id -u)"
+  AFK_AU_RESTORED=""
+  [[ -f "$AFK_AU_SCHEDULER" ]] && prev="$(cat -- "$AFK_AU_SCHEDULER")"
+  if afk_au_darwin_load "$domain" "$(afk_au_launchd_plist "$1")"; then
+    AFK_AU_NOTE="check-only (MACOS_SANDBOX_PENDING: apply with agent-flow-kit update)"
+    return 0
+  fi
+  if [[ -n "$prev" ]] && afk_au_darwin_load "$domain" "$prev"; then
+    AFK_AU_RESTORED=y
+    afk_warn "enroll-auto-update: SCHEDULER_UNAVAILABLE: launchctl could not load the new $AFK_AU_LABEL; the previous agent and config were restored"
     return 1
   fi
-  AFK_AU_NOTE="check-only (MACOS_SANDBOX_PENDING: apply with agent-flow-kit update)"
+  afk_au_unschedule
+  afk_warn "enroll-auto-update: SCHEDULER_UNAVAILABLE: launchctl could not load $AFK_AU_LABEL; the agent was removed"
+  return 1
 }
 
 # afk_au_check — compare the trusted ref with the applied revision and record
@@ -272,7 +316,11 @@ afk_au_remove() {
 }
 
 afk_cmd_enroll_auto_update() { # <enroll|check|remove> <key-ref> <key-file>
-  local interval first
+  local interval first out rc=0
+  if [[ "$1" != enroll && ( -n "$2" || -n "$3" ) ]]; then
+    afk_warn "enroll-auto-update: --key-ref and --key-file apply only to enrollment; --$1 uses the key path enrollment recorded"
+    return "$AFK_EXIT_USAGE"
+  fi
   [[ -n "$3" ]] && AFK_RELEASE_DEPLOY_KEY="$3"
   afk_au_paths
   if [[ -z "${HOME:-}" || -z "$AFK_AU_CONFIG" || -z "$AFK_AU_KEY" ]]; then
@@ -289,26 +337,31 @@ afk_cmd_enroll_auto_update() { # <enroll|check|remove> <key-ref> <key-file>
     afk_warn "enroll-auto-update requires --key-ref op://<vault>/<item>/<field>"; return "$AFK_EXIT_USAGE"
   fi
   afk_au_key_path_valid || return "$AFK_EXIT_USAGE"
+  afk_au_ready || return "$AFK_EXIT_SOURCE_REFUSED"
   interval="$(afk_au_interval)"
   AFK_AU_KEY_ACTION="$(afk_au_install_key "$2")" || return "$AFK_EXIT_SOURCE_REFUSED"
-  # The config is written only once the scheduler is really enabled, and a
-  # failed enable leaves neither units nor a config from an earlier enrollment.
+  # The config is written only once the scheduler is really enabled. A failed
+  # enable leaves neither units nor an earlier config, unless macOS put the
+  # previous agent back, in which case its config stays with it.
   if [[ "$AFK_AU_PLATFORM" == linux ]]; then
     afk_au_enable_linux "$interval" || { rm -f -- "$AFK_AU_CONFIG"; return "$AFK_EXIT_LIVE_UNAVAILABLE"; }
-  else
-    afk_au_enable_darwin "$interval" || { rm -f -- "$AFK_AU_CONFIG"; return "$AFK_EXIT_LIVE_UNAVAILABLE"; }
+  elif ! afk_au_enable_darwin "$interval"; then
+    [[ -n "$AFK_AU_RESTORED" ]] || rm -f -- "$AFK_AU_CONFIG"
+    return "$AFK_EXIT_LIVE_UNAVAILABLE"
   fi
   afk_au_write_config "$2" || {
     afk_au_unschedule; rm -f -- "$AFK_AU_CONFIG"
     afk_warn "enroll-auto-update: the machine-local config could not be written; the scheduler was removed"
     return "$AFK_EXIT_USAGE"; }
   if [[ "$AFK_AU_PLATFORM" == linux ]]; then
-    if [[ -x "$AFK_AU_RUNTIME_BIN/afk-release-reconcile" ]]; then
-      first="$(AFK_RELEASE_DEPLOY_KEY="$AFK_AU_KEY" "$AFK_AU_RUNTIME_BIN/afk-release-reconcile" --apply 2>/dev/null </dev/null \
-        | jq -r '"\(.state // "UNKNOWN")/\(.reason // "-")"' 2>/dev/null)"
-      first="${first:-NO_RESULT}"
+    # Same bound as the unit; captured first, so no pipeline hides the status.
+    out="$(AFK_RELEASE_DEPLOY_KEY="$AFK_AU_KEY" timeout "$AFK_AU_TIMEOUT_SECONDS" \
+      "$AFK_AU_RUNTIME_BIN/afk-release-reconcile" --apply 2>/dev/null </dev/null)" || rc=$?
+    if (( rc == 124 )); then
+      first="TIMED_OUT"
     else
-      first="RELEASE_CLIENT_NOT_INSTALLED (run agent-flow-kit update)"
+      first="$(jq -r '"\(.state // "UNKNOWN")/\(.reason // "-")"' <<<"$out" 2>/dev/null)"
+      first="${first:-NO_RESULT}"
     fi
   else
     first="$(afk_au_check)"
@@ -321,6 +374,8 @@ afk_cmd_enroll_auto_update() { # <enroll|check|remove> <key-ref> <key-file>
 # --- status ------------------------------------------------------------------
 
 afk_auto_update_status_json() {
+  # update_available compares the saved check with the revision status loaded,
+  # so a check taken before the last apply is never reported.
   local last="null" config="{}"
   afk_au_paths
   [[ -r "$AFK_AU_CONFIG" ]] && config="$(jq -c '.' "$AFK_AU_CONFIG" 2>/dev/null || printf '{}')"
@@ -334,11 +389,15 @@ afk_auto_update_status_json() {
     --arg has_config "$([[ -f "$AFK_AU_CONFIG" ]] && echo y)" \
     --arg has_sched "$(afk_au_scheduler_enabled && echo y)" \
     --arg has_key "$([[ -f "$AFK_AU_KEY" ]] && echo y)" \
+    --arg applied "${AFK_APPLIED_REVISION:-}" \
     '{enrolled: ($has_config == "y" and $has_sched == "y"), platform: $platform,
       scheduler: (if $has_sched == "y" then $sched else null end),
       key_ref: ($config.key_ref // null), key_present: ($has_key == "y"),
       last_result: $last,
-      update_available: ($last != null and $last.state == "UPDATE_AVAILABLE")}'
+      update_available: ($platform == "darwin" and $last != null
+        and $last.state == "UPDATE_AVAILABLE"
+        and ($last.remote_revision | type == "string")
+        and $last.remote_revision != $applied)}'
 }
 
 afk_auto_update_apply_status() {

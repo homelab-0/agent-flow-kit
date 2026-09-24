@@ -58,14 +58,35 @@ case "$2" in
   is-enabled) if [[ -f "$HOME/.stub-timer-enabled" ]]; then echo enabled; else echo disabled; exit 1; fi ;;
 esac
 SH
+# Like launchd, bootout finishes asynchronously (the agent is gone only after
+# two more prints), bootstrap fails while the agent is still loaded, and
+# .stub-bootstrap-fails makes the next N bootstraps fail. The loaded file is a
+# copy of the plist launchd loaded.
 cat >"$STUBS/launchctl" <<'SH'
 #!/usr/bin/env bash
 printf 'launchctl %s\n' "$*" >>"$AFK_TEST_LOG"
+L="$HOME/.stub-agent-loaded" P="$HOME/.stub-bootout-pending" F="$HOME/.stub-bootstrap-fails"
 case "$1" in
-  bootstrap) : >"$HOME/.stub-agent-loaded" ;;
-  bootout)   rm -f "$HOME/.stub-agent-loaded" ;;
-  print)     [[ -f "$HOME/.stub-agent-loaded" ]] ;;
+  bootstrap)
+    n="$(cat "$F" 2>/dev/null || echo 0)"
+    if (( n > 0 )); then echo $((n - 1)) >"$F"; exit 5; fi
+    [[ ! -f "$L" ]] || exit 5
+    cp "$3" "$L" ;;
+  bootout) [[ ! -f "$L" ]] || echo 2 >"$P" ;;
+  print)
+    if [[ -f "$P" ]]; then
+      n="$(cat "$P")"
+      if (( n <= 1 )); then rm -f "$P" "$L"; else echo $((n - 1)) >"$P"; fi
+    fi
+    [[ -f "$L" ]] ;;
 esac
+SH
+REAL_TIMEOUT="$(command -v timeout)"
+cat >"$STUBS/timeout" <<SH
+#!/usr/bin/env bash
+printf 'timeout %s\n' "\$*" >>"$LOG"
+[[ -z "\${AFK_TEST_TIMEOUT_EXPIRE:-}" ]] || exit 124
+exec "$REAL_TIMEOUT" "\$@"
 SH
 printf '#!/usr/bin/env bash\nprintf "no\\n"\n' >"$STUBS/loginctl"
 cat >"$STUBS/git" <<SH
@@ -86,7 +107,9 @@ new_home() { # <name> -> path; a home with a stub installed release client
 printf '%s\n' "${AFK_RELEASE_DEPLOY_KEY:-unset}" >"$HOME/.first-attempt-key"
 printf '%s\n' '{"schema":"afk-release-result/2","state":"APPLIED","reason":"NO_CHANGE"}'
 SH
-  chmod +x "$h/.agents/skills/afk-runtime/bin/afk-release-reconcile"
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$h/.agents/skills/afk-runtime/bin/agent-flow-kit"
+  printf 'github.com ssh-ed25519 AAAAstub\n' >"$h/.agents/skills/afk-runtime/bin/afk-release-known-hosts"
+  chmod +x "$h/.agents/skills/afk-runtime/bin/afk-release-reconcile" "$h/.agents/skills/afk-runtime/bin/agent-flow-kit"
   printf '%s\n' "$h"
 }
 
@@ -98,6 +121,7 @@ run_afk() { # <home> <platform> <out-name> args... ; sets RC
     AFK_AUTO_UPDATE_PLATFORM="$p" AFK_OP_BIN="${AFK_TEST_OP:-$STUBS/op}" \
     AFK_RELEASE_POLICY="${AFK_TEST_POLICY:-$POLICY}" \
     AFK_TEST_PINNED="$PINNED" AFK_TEST_LOG="$LOG" AFK_TEST_SYSTEMCTL_FAIL="${AFK_TEST_SYSTEMCTL_FAIL:-}" \
+    AFK_TEST_TIMEOUT_EXPIRE="${AFK_TEST_TIMEOUT_EXPIRE:-}" \
     bash "$AFK" "$@" >"$OUT/$o.out" 2>"$OUT/$o.err"
   RC=$?
 }
@@ -142,6 +166,37 @@ for bad_path in "$H/keys/has space" "$H/keys/pct%key" "$H/keys/dollar\$key" "$H/
 done
 assert_missing "unsafe --key-file: nothing installed" "$H/keys"
 
+head1 "Conflicting modes and options are refused"
+H="$(new_home modes)"
+run_afk "$H" linux both enroll-auto-update --check --remove
+assert_eq "--check with --remove refused (exit 1)" "$RC" "1"
+assert_contains "--check with --remove is named" "$(cat "$OUT/both.err")" "cannot be combined"
+run_afk "$H" linux tworefs enroll-auto-update --key-ref op://v/good/a --key-ref op://v/good/b
+assert_eq "--key-ref twice with different values refused" "$RC" "1"
+run_afk "$H" linux samerefs enroll-auto-update --key-ref op://v/good/a --key-ref op://v/good/a
+assert_eq "--key-ref twice with the same value is accepted" "$RC" "0"
+run_afk "$H" linux remove-ref enroll-auto-update --remove --key-ref op://v/good/a
+assert_eq "--remove with --key-ref refused" "$RC" "1"
+run_afk "$H" linux check-file enroll-auto-update --check --key-file "$H/k"
+assert_eq "--check with --key-file refused" "$RC" "1"
+assert_contains "the refusal says why" "$(cat "$OUT/check-file.err")" "apply only to enrollment"
+
+head1 "Nothing is installed before the runtime is ready"
+H="$(new_home notready)"
+rm -f "$H/.agents/skills/afk-runtime/bin/afk-release-known-hosts"
+run_afk "$H" linux notready enroll-auto-update --key-ref op://develop/good/notesPlain
+assert_eq "missing known-hosts refuses (exit 4)" "$RC" "4"
+assert_contains "not ready is named" "$(cat "$OUT/notready.err")" "NOT_READY"
+assert_absent "not ready never reports ENROLLED" "$(cat "$OUT/notready.out")" "ENROLLED"
+assert_missing "not ready: no key installed" "$H/$KEY_REL"
+assert_missing "not ready: no config recorded" "$H/.config/agent-flow-kit/auto-update.json"
+assert_missing "not ready: no timer installed" "$H/$UNIT_REL.timer"
+H="$(new_home notready2)"
+chmod -x "$H/.agents/skills/afk-runtime/bin/afk-release-reconcile"
+run_afk "$H" linux notready2 enroll-auto-update --key-ref op://develop/good/notesPlain
+assert_eq "a non-executable release client refuses (exit 4)" "$RC" "4"
+assert_missing "non-executable client: no key installed" "$H/$KEY_REL"
+
 head1 "Something other than a file at the key path"
 H="$(new_home occupied)"
 mkdir -p "$H/$KEY_REL"
@@ -184,6 +239,8 @@ ENROLL1="$(cat "$OUT/enroll1.out")"
 assert_eq "one summary line" "$(wc -l <"$OUT/enroll1.out" | tr -d ' ')" "1"
 assert_contains "summary reports the state" "$ENROLL1" "auto-update: ENROLLED platform=linux interval=900s"
 assert_contains "summary reports the first attempt" "$ENROLL1" "first_attempt=APPLIED/NO_CHANGE"
+assert_contains "first attempt runs under timeout" "$(cat "$LOG")" \
+  "timeout 600 $H/.agents/skills/afk-runtime/bin/afk-release-reconcile --apply"
 assert_contains "no linger: says how to enable it" "$ENROLL1" "sudo loginctl enable-linger tester"
 assert_absent "never runs sudo itself" "$(cat "$LOG")" "sudo"
 assert_eq "config records the reference" \
@@ -195,6 +252,10 @@ assert_eq "re-run succeeds" "$RC" "0"
 assert_contains "re-run leaves the key unchanged" "$(cat "$OUT/enroll2.out")" "(unchanged)"
 assert_eq "re-run leaves the timer byte-identical" "$(cksum <"$H/$UNIT_REL.timer")" "$TIMER_SUM"
 assert_eq "re-run leaves one key file" "$(find "$H/.config/agent-flow-kit/deploy-key" -type f | wc -l | tr -d ' ')" "1"
+
+AFK_TEST_TIMEOUT_EXPIRE=1 run_afk "$H" linux timedout enroll-auto-update --key-ref op://develop/good/notesPlain
+assert_eq "a timed-out first attempt still enrolls" "$RC" "0"
+assert_contains "a timed-out first attempt reports TIMED_OUT" "$(cat "$OUT/timedout.out")" "first_attempt=TIMED_OUT"
 
 jq '.check_interval_seconds = 1800' "$POLICY" >"$TMPROOT/policy-1800.json"
 AFK_TEST_POLICY="$TMPROOT/policy-1800.json" run_afk "$H" linux enroll3 enroll-auto-update --key-ref op://develop/good/notesPlain
@@ -228,6 +289,13 @@ SERVICE="$(cat "$H/$UNIT_REL.service" 2>/dev/null)"
 assert_contains "service passes the --key-file key" "$SERVICE" "AFK_RELEASE_DEPLOY_KEY=$CUSTOM_KEY\""
 assert_contains "% in a unit value is escaped" "$SERVICE" "pct%%home/.local/state"
 assert_absent "no unescaped % in the unit" "$SERVICE" "pct%home/"
+run_afk "$H" linux keyfile-status status --json
+assert_eq "status finds the recorded key path" "$(jq -r .extra.auto_update.key_present "$OUT/keyfile-status.out" 2>/dev/null)" "true"
+: >"$LOG"
+run_afk "$H" linux keyfile-check enroll-auto-update --check
+assert_contains "--check uses the recorded key path" "$(cat "$LOG")" "-i '$CUSTOM_KEY'"
+run_afk "$H" linux keyfile-remove enroll-auto-update --remove
+assert_contains "--remove names the recorded key path" "$(cat "$OUT/keyfile-remove.out")" "deploy key at $CUSTOM_KEY"
 
 head1 "macOS: a check-only agent"
 H="$(new_home mac)"
@@ -248,6 +316,34 @@ assert_eq "check state records the update" "$(jq -r .state "$CHECK")" "UPDATE_AV
 assert_eq "check state never applies" "$(jq -r .applies "$CHECK")" "false"
 run_afk "$H" darwin mac-status status --json
 assert_eq "status surfaces the update" "$(jq -r .extra.auto_update.update_available "$OUT/mac-status.out" 2>/dev/null)" "true"
+au_status() { # <home> <applied-revision> — the status section as status computes it
+  # shellcheck disable=SC2016
+  env -i PATH="$STUBS:$PATH" HOME="$1" AFK_TEST_LOG="$LOG" AFK_AUTO_UPDATE_PLATFORM=darwin \
+    AFK_STATE_DIR="$1/.local/state/agent-flow-kit" AFK_SKILLS_HOME="$1/.agents/skills" \
+    AFK_INSTALL_ROOT="$KIT_ROOT" AFK_RELEASE_POLICY="$POLICY" AFK_APPLIED_REVISION="$2" \
+    bash -c 'source "$AFK_INSTALL_ROOT/lib/afk-auto-update.sh" && afk_auto_update_status_json'
+}
+assert_eq "a check older than the applied revision is not reported" \
+  "$(au_status "$H" "$REMOTE_HEAD" | jq -r .update_available)" "false"
+assert_eq "a different applied revision still reports the update" \
+  "$(au_status "$H" "2222222222222222222222222222222222222222" | jq -r .update_available)" "true"
+
+head1 "macOS re-enrollment waits for bootout and never loses the working agent"
+jq '.check_interval_seconds = 1800' "$POLICY" >"$TMPROOT/policy-1800.json"
+AFK_TEST_POLICY="$TMPROOT/policy-1800.json" run_afk "$H" darwin mac-reenroll enroll-auto-update --key-ref op://develop/good/notesPlain
+assert_eq "re-enroll succeeds once the old agent is gone" "$RC" "0"
+assert_contains "launchd loaded the new interval" "$(cat "$H/.stub-agent-loaded" 2>/dev/null)" "<integer>1800</integer>"
+printf '3\n' >"$H/.stub-bootstrap-fails"
+run_afk "$H" darwin mac-fail enroll-auto-update --key-ref op://develop/good/notesPlain
+if (( RC != 0 )); then ok "a failed re-enroll exits non-zero ($RC)"; else bad "a failed re-enroll exits non-zero" "exit 0"; fi
+assert_absent "a failed re-enroll never reports ENROLLED" "$(cat "$OUT/mac-fail.out")" "ENROLLED"
+assert_contains "the failure says the previous agent was restored" "$(cat "$OUT/mac-fail.err")" "previous agent and config were restored"
+assert_contains "the previous plist is back" "$(cat "$H/$PLIST_REL" 2>/dev/null)" "<integer>1800</integer>"
+assert_contains "launchd runs the previous agent again" "$(cat "$H/.stub-agent-loaded" 2>/dev/null)" "<integer>1800</integer>"
+assert_eq "the previous config is kept" \
+  "$(jq -r .key_ref "$H/.config/agent-flow-kit/auto-update.json" 2>/dev/null)" "op://develop/good/notesPlain"
+run_afk "$H" darwin mac-fail-status status --json
+assert_eq "still enrolled after the failed re-enroll" "$(jq -r .extra.auto_update.enrolled "$OUT/mac-fail-status.out" 2>/dev/null)" "true"
 
 head1 "No key bytes anywhere but the key file"
 LEAKS="$(grep -rl --exclude-dir=stubs AFKTESTKEYBYTES "$TMPROOT" 2>/dev/null \

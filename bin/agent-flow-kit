@@ -254,6 +254,8 @@ agent-flow-kit — lifecycle entry point
       releases on Linux, a check-only launchd agent on macOS. Idempotent.
       --check records whether an update is available (what the macOS agent
       runs; it never applies). --remove removes the scheduler and config.
+      --check and --remove are exclusive and take no --key-ref/--key-file;
+      they use the key path enrollment recorded.
 
   agent-flow-kit schema
       The documented machine contract: schema version, state, reason and
@@ -390,7 +392,7 @@ afk_main() {
   local monitor_verbs=0
   local pm_write="" pm_continuation="false" pm_harness=""
   local usage_days=""
-  local au_mode="enroll" au_key_ref="" au_key_file=""
+  local au_mode="enroll" au_key_ref="" au_key_file="" au_prev=""
 
   cmd="${1:-help}"
   if (( $# > 0 )); then shift; fi
@@ -448,12 +450,21 @@ afk_main() {
             AFK_STAMP_FILE="$2"
             shift ;;
           --continuation)              pm_continuation="true" ;;
-          --check)                     au_mode="check" ;;
-          --remove)                    au_mode="remove" ;;
+          --check|--remove)
+            if [[ "$au_mode" != enroll && "$au_mode" != "${1#--}" ]]; then
+              afk_warn "enroll-auto-update: --check and --remove cannot be combined"
+              return "$AFK_EXIT_USAGE"
+            fi
+            au_mode="${1#--}" ;;
           --key-ref|--key-file)
             # A reference or a path, never a key; still not echoed back.
             if (( $# < 2 )); then
               afk_warn "$1 requires its declared value"
+              return "$AFK_EXIT_USAGE"
+            fi
+            if [[ "$1" == --key-ref ]]; then au_prev="$au_key_ref"; else au_prev="$au_key_file"; fi
+            if [[ -n "$au_prev" && "$au_prev" != "$2" ]]; then
+              afk_warn "$1 was given twice with different values"
               return "$AFK_EXIT_USAGE"
             fi
             if [[ "$1" == --key-ref ]]; then au_key_ref="$2"; else au_key_file="$2"; fi

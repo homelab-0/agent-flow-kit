@@ -98,13 +98,23 @@ or something other than a regular file at the key path it refuses (exit 4,
 `KEY_REF_UNREADABLE`, `KEY_PATH_OCCUPIED`) and installs nothing; the scratch
 file is removed on every exit. A `--key-file` path with whitespace, quotes,
 `\`, `%`, `#`, `$`, or control characters is refused before anything is read
-(exit 1, `KEY_PATH_UNSAFE`). It then installs and enables the scheduler,
-records the reference (never the key) in
-`~/.config/agent-flow-kit/auto-update.json` only once the scheduler is really
-enabled, runs the first attempt with that key, and prints one
-`auto-update: ENROLLED …` line. If the scheduler cannot be enabled it removes
-the units and the config and exits 5 (`SCHEDULER_UNAVAILABLE`). The key's
-bytes are never printed, logged, or copied anywhere else.
+(exit 1, `KEY_PATH_UNSAFE`). Before the key or any scheduler is touched it
+checks that the runtime is installed: the release client (Linux) or the kit
+command (macOS) is executable, and the policy and the pinned known-hosts file
+exist; otherwise it refuses (exit 4, `NOT_READY`) and writes nothing. It then
+installs and enables the scheduler, records the reference and the key path
+(never the key) in `~/.config/agent-flow-kit/auto-update.json` only once the
+scheduler is really enabled, runs the first attempt with that key under the
+same 600-second `timeout` as the unit (`first_attempt=TIMED_OUT` when it
+expires), and prints one `auto-update: ENROLLED …` line. If the scheduler
+cannot be enabled it removes the units and the config and exits 5
+(`SCHEDULER_UNAVAILABLE`); on macOS, when a previous agent was loaded, it puts
+that agent and its config back instead. The key's bytes are never printed,
+logged, or copied anywhere else.
+
+`--check` and `--remove` are exclusive and refuse `--key-ref` and
+`--key-file`. They, and `status`, use the key path enrollment recorded unless
+`AFK_RELEASE_DEPLOY_KEY` is set.
 
 - **Linux.** A systemd user service and timer
   (`~/.config/systemd/user/afk-release-reconcile.{service,timer}`) run the
@@ -121,12 +131,14 @@ bytes are never printed, logged, or copied anywhere else.
   `UPDATE_AVAILABLE`, `CURRENT`, or `CHECK_FAILED` in
   `$AFK_STATE_DIR/auto-update-check.json`. It never applies; the human or an
   agent runs `agent-flow-kit update`. `MACOS_SANDBOX_PENDING` below is
-  unchanged.
+  unchanged. Re-enrolling waits (bounded) for `launchctl bootout` to finish
+  before `bootstrap`, and retries `bootstrap` up to three times.
 
 `agent-flow-kit status` reports whether the host is enrolled (asking
 `systemctl --user is-enabled` or `launchctl print`, not the files) and the last
 result (the release client's `releases/latest.json` on Linux, the check file
-on macOS), including "update available: <revision>".
+on macOS), including "update available: <revision>" only while that revision
+differs from the applied one.
 `agent-flow-kit enroll-auto-update --remove` removes the scheduler and the
 config and leaves the key in place.
 
