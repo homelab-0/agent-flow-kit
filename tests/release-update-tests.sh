@@ -426,6 +426,8 @@ fetch_stderr_case 'unknown host key is HOST_KEY_MISMATCH' \
   'Host key verification failed.' BLOCKED:HOST_KEY_MISMATCH
 fetch_stderr_case 'rejected key is DEPLOY_KEY_REJECTED' \
   'git@github.com: Permission denied (publickey).' BLOCKED:DEPLOY_KEY_REJECTED
+fetch_stderr_case 'unreadable repository is REPOSITORY_ACCESS_DENIED' \
+  'ERROR: Repository not found.' BLOCKED:REPOSITORY_ACCESS_DENIED
 fetch_stderr_case 'other transport failure stays FETCH_UNAVAILABLE' \
   'ssh: connect to host github.com port 22: Network is unreachable' RETAINED:FETCH_UNAVAILABLE
 if ! grep -rqF -e "$STDERR_MARKER" "$STATE/releases/attempts" "$STATE/releases/latest.json"; then
@@ -457,7 +459,10 @@ ln -s "$DEPLOY_KEY_FILE" "$TMP/linked-key"
 key_refusal 'symlinked deploy key' "$TMP/linked-key"
 (umask 077; cp "$DEPLOY_KEY_FILE" "$STATE/deploy-key"); chmod 600 "$STATE/deploy-key"
 key_refusal 'deploy key inside the release state tree' "$STATE/deploy-key"
-rm -f "$STATE/deploy-key"
+ln -s "$STATE" "$HOME_TEST/state-link"
+key_refusal 'state-tree key behind a symlinked parent' "$HOME_TEST/state-link/deploy-key"
+key_refusal 'state-tree key reached through ..' "$DEPLOY_KEY_DIR/../../../.local/state/agent-flow-kit/deploy-key"
+rm -f "$STATE/deploy-key" "$HOME_TEST/state-link"
 mkdir -p "$HOME_TEST/shared-keys"; chmod 775 "$HOME_TEST/shared-keys"
 (umask 077; cp "$DEPLOY_KEY_FILE" "$HOME_TEST/shared-keys/key"); chmod 600 "$HOME_TEST/shared-keys/key"
 key_refusal 'deploy key under a group-writable directory' "$HOME_TEST/shared-keys/key"
@@ -467,6 +472,32 @@ if ! grep -rqF -e "$DEPLOY_KEY_MARKER" -e "$DEPLOY_KEY_DIR" -e "$TMP/wide-key" -
 else
   not_ok 'release results carry no key material or key path'
 fi
+
+# Paths that OpenSSH would re-parse inside an option value are refused, with
+# their own reason, before any fetch.
+unsafe_path_refusal() { # <label> <key path>
+  rm -f "$KEY_FETCH_MARKER"
+  AFK_RELEASE_DEPLOY_KEY="$2" AFK_TEST_FETCH_EXECUTED="$KEY_FETCH_MARKER" \
+    run_update --plan --force-check --policy "$AUTHOR/lifecycle/release-policy.json"
+  assert_eq "$1 is refused as SSH_OPTION_PATH_UNSAFE" \
+    "$(jq -r '.state+":"+.reason' <<<"$RUN_OUT")" BLOCKED:SSH_OPTION_PATH_UNSAFE
+  if [[ ! -e "$KEY_FETCH_MARKER" ]]; then ok "$1 never attempts a fetch"; else not_ok "$1 never attempts a fetch"; fi
+}
+unsafe_path_refusal 'key path with a space' "$TMP/deploy key"
+unsafe_path_refusal 'key path with a tab' "$TMP/deploy"$'\t'"key"
+unsafe_path_refusal 'key path with a single quote' "$TMP/deploy'key"
+unsafe_path_refusal 'key path with a double quote' "$TMP/deploy\"key"
+unsafe_path_refusal 'key path with a backslash' "$TMP/deploy\\key"
+unsafe_path_refusal 'key path with a percent sign' "$TMP/deploy%dkey"
+unsafe_path_refusal 'key path with a hash' "$TMP/deploy#key"
+SAFE_RELEASE_CLIENT="$RELEASE_CLIENT"
+for unsafe_dir in "$TMP/pinned hosts" "$TMP/pinned%hhosts"; do
+  mkdir -p "$unsafe_dir"
+  cp -p "$SAFE_RELEASE_CLIENT" "$TMP/afk-release-known-hosts" "$unsafe_dir/"
+  RELEASE_CLIENT="$unsafe_dir/${SAFE_RELEASE_CLIENT##*/}"
+  unsafe_path_refusal "pinned known_hosts under ${unsafe_dir##*/}" "$DEPLOY_KEY_FILE"
+done
+RELEASE_CLIENT="$SAFE_RELEASE_CLIENT"
 
 # A policy that repeats the legacy HTTPS anchor no longer matches the compiled one.
 jq '.trust.remote_url="https://github.com/jlengelbrecht/agent-flow-kit.git"' \

@@ -807,15 +807,19 @@ sh_quote() {
 # Every directory above it, up to $HOME (or / outside it), must be owned by the
 # user or root and not group/world-writable, as OpenSSH checks its own files.
 deploy_key_is_usable() {
-  local key="$DEPLOY_KEY" runtime_root uid dir home owner mode
+  local key="$DEPLOY_KEY" runtime_root state_root real_key uid dir home owner mode
   uid="$(id -u)"
   [[ -n "$key" && "$key" == /* ]] || return 1
   [[ ! -L "$key" && -f "$key" && -r "$key" ]] || return 1
   [[ "$("$STAT_EXEC" -c %u "$key" 2>/dev/null)" == "$uid" ]] || return 1
   [[ "$("$STAT_EXEC" -c %a "$key" 2>/dev/null)" == 600 ]] || return 1
-  runtime_root="$(cd -P -- "$TRUSTED_DRIVER_SOURCE" 2>/dev/null && pwd -P)" || return 1
-  case "$key" in "$runtime_root"/*|"$STATE_DIR"/*) return 1 ;; esac
+  # Compare physical paths, so a symlinked parent or `..` cannot hide the key
+  # inside the managed runtime or the release state tree.
   dir="$(cd -P -- "${key%/*}/" 2>/dev/null && pwd -P)" || return 1
+  real_key="${dir%/}/${key##*/}"
+  runtime_root="$(cd -P -- "$TRUSTED_DRIVER_SOURCE" 2>/dev/null && pwd -P)" || return 1
+  state_root="$(cd -P -- "$STATE_DIR" 2>/dev/null && pwd -P)" || return 1
+  case "$real_key" in "$runtime_root"/*|"$state_root"/*) return 1 ;; esac
   home="$(cd -P -- "${HOME:-/}" 2>/dev/null && pwd -P)" || home=/
   [[ "$dir" == "$home" || "$dir" == "$home"/* ]] || home=/
   while :; do
@@ -872,8 +876,15 @@ classify_fetch_failure() { # <stderr text>
   case "$1" in
     *"Host key verification failed"*|*"REMOTE HOST IDENTIFICATION HAS CHANGED"*) return 20 ;;
     *"Permission denied (publickey)"*) return 21 ;;
+    *"ERROR: Repository not found."*) return 23 ;;
   esac
   return 14
+}
+
+# OpenSSH re-parses -i and -o values (quotes, escapes, %-tokens, comments), so a
+# path holding any of those characters could be read as a different file.
+ssh_option_path_is_safe() { # <path>
+  [[ -n "$1" && "$1" != *[[:space:]\'\"\\%#]* ]]
 }
 
 fetch_candidate_revision() {
@@ -896,6 +907,7 @@ fetch_candidate_revision() {
   [[ "$url" == "$TRUST_REMOTE" ]] || return 12
   shallow="$(trusted_git --git-dir="$mirror" rev-parse --is-shallow-repository 2>/dev/null || true)"
   [[ "$shallow" == false ]] || return 13
+  ssh_option_path_is_safe "$DEPLOY_KEY" && ssh_option_path_is_safe "$PINNED_KNOWN_HOSTS" || return 22
   deploy_key_is_usable || return 18
   [[ -n "$SSH_EXEC" && ! -L "$PINNED_KNOWN_HOSTS" && -f "$PINNED_KNOWN_HOSTS" &&
      -s "$PINNED_KNOWN_HOSTS" ]] || return 19
@@ -1189,6 +1201,8 @@ if [[ $fetch_rc -ne 0 ]]; then
     19) retain_last_good_or_block RELEASE_TRANSPORT_UNAVAILABLE ;;
     20) retain_last_good_or_block HOST_KEY_MISMATCH ;;
     21) retain_last_good_or_block DEPLOY_KEY_REJECTED ;;
+    22) retain_last_good_or_block SSH_OPTION_PATH_UNSAFE ;;
+    23) retain_last_good_or_block REPOSITORY_ACCESS_DENIED ;;
     14)
       if prove_last_good; then finish RETAINED FETCH_UNAVAILABLE 0; fi
       finish BLOCKED FETCH_UNAVAILABLE_NO_PROVEN_LAST_GOOD 2

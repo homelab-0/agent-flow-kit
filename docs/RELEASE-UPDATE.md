@@ -36,7 +36,9 @@ helper is consulted.
 - **Key path.** `AFK_RELEASE_DEPLOY_KEY`, defaulting to
   `~/.config/agent-flow-kit/deploy-key/agent-flow-kit_ed25519`. It must be a
   regular file (not a symlink) owned by the user with mode `0600`, and must not
-  sit inside the installed runtime or the release state directory. Every
+  sit inside the installed runtime or the release state directory; both checks
+  compare fully resolved paths, so a symlinked parent or `..` cannot hide it
+  there. Every
   directory above it, up to `$HOME` (or `/` for a key outside `$HOME`), must be
   owned by the user or root and must not be group- or world-writable. The
   client reads the key in place through ssh and never copies, hashes, or logs
@@ -45,7 +47,10 @@ helper is consulted.
   or one under an unsafe directory, yields `DEPLOY_KEY_UNAVAILABLE` before any
   network attempt, so "no key" is never confused with `FETCH_UNAVAILABLE`
   (offline). A missing ssh binary or pinned host-key file yields
-  `RELEASE_TRANSPORT_UNAVAILABLE`. When the fetch itself fails, its stderr goes
+  `RELEASE_TRANSPORT_UNAVAILABLE`. A key path or pinned host-key path holding
+  whitespace, `'`, `"`, `\`, `%`, or `#` yields `SSH_OPTION_PATH_UNSAFE`
+  before any fetch, because OpenSSH re-parses those characters inside option
+  values; move the key (or the runtime) to a plain path. When the fetch itself fails, its stderr goes
   to a private scratch file in the release state, is matched against fixed
   strings, and is deleted; the raw text is never recorded:
   - `Host key verification failed` or `REMOTE HOST IDENTIFICATION HAS CHANGED`
@@ -56,6 +61,9 @@ helper is consulted.
   - `Permission denied (publickey)` gives `DEPLOY_KEY_REJECTED`: GitHub refused
     the key. It was probably removed from the repository's deploy keys, or the
     host holds the wrong key.
+  - `ERROR: Repository not found.` gives `REPOSITORY_ACCESS_DENIED`: the key
+    authenticated but cannot read the repository. The key may be registered on
+    a different repository, or the repository was renamed or removed.
   - Any other failure stays `FETCH_UNAVAILABLE`.
 
   With a proven last-good release, `--apply` still retains it under any of
