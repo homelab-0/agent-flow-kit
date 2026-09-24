@@ -2,7 +2,7 @@
 
 AFK's release client follows one immutable trust path:
 
-- remote: `https://github.com/jlengelbrecht/agent-flow-kit.git`
+- remote: `ssh://git@github.com/jlengelbrecht/agent-flow-kit.git`
 - ref: `refs/heads/master`
 - repository root: `d74e7f9542cfe2731e09a0ff5c5e1b4cf325062f`
 
@@ -10,6 +10,105 @@ Those values are compiled into `bin/afk-release-reconcile`. The adjacent
 `lifecycle/release-policy.json` must repeat them exactly or the client refuses
 to run. Neither command-line flags nor environment variables can replace a
 trust anchor.
+
+## Deploy key (required)
+
+The kit repository is private. Before this change the trust anchor was the
+HTTPS URL, and the client strips every credential helper, so auto-update could
+not fetch a private repository: every host reported
+`FETCH_UNAVAILABLE_NO_PROVEN_LAST_GOOD` and never wrote `releases/current.json`.
+
+Hosts now authenticate with a read-only SSH deploy key for this one repository,
+held in the vault. It is the only credential the client uses. The fetch, and
+only the fetch, adds one `GIT_SSH_COMMAND` to the otherwise empty Git
+environment:
+
+```sh
+/usr/bin/ssh -F /dev/null -i <key> -o IdentitiesOnly=yes -o IdentityAgent=none \
+  -o StrictHostKeyChecking=yes -o UserKnownHostsFile=<runtime>/bin/afk-release-known-hosts \
+  -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no \
+  -o PreferredAuthentications=publickey -o BatchMode=yes -o ConnectTimeout=10
+```
+
+No ssh agent, user or system ssh config, user `known_hosts`, or credential
+helper is consulted.
+
+- **Key path.** `AFK_RELEASE_DEPLOY_KEY`, defaulting to
+  `~/.config/agent-flow-kit/deploy-key/agent-flow-kit_ed25519`. It must be a
+  regular file (not a symlink) owned by the user with mode `0600`, and must not
+  sit inside the installed runtime or the release state directory; both checks
+  compare fully resolved paths, so a symlinked parent or `..` cannot hide it
+  there. Every
+  directory above it, up to `$HOME` (or `/` for a key outside `$HOME`), must be
+  owned by the user or root and must not be group- or world-writable. The
+  client reads the key in place through ssh and never copies, hashes, or logs
+  it.
+- **Distinct refusals.** A missing, unreadable, linked, or wrongly-moded key,
+  or one under an unsafe directory, yields `DEPLOY_KEY_UNAVAILABLE` before any
+  network attempt, so "no key" is never confused with `FETCH_UNAVAILABLE`
+  (offline). A missing ssh binary or pinned host-key file yields
+  `RELEASE_TRANSPORT_UNAVAILABLE`. A key path or pinned host-key path holding
+  whitespace, `'`, `"`, `\`, `%`, or `#` yields `SSH_OPTION_PATH_UNSAFE`
+  before any fetch, because OpenSSH re-parses those characters inside option
+  values; move the key (or the runtime) to a plain path. When the fetch itself fails, its stderr goes
+  to a private scratch file in the release state, is matched against fixed
+  strings, and is deleted; the raw text is never recorded:
+  - `Host key verification failed` or `REMOTE HOST IDENTIFICATION HAS CHANGED`
+    gives `HOST_KEY_MISMATCH`. The server did not present a pinned GitHub key.
+    That can be a GitHub host-key rotation, or it can be interception. It needs
+    owner attention: compare against GitHub's published fingerprints before
+    changing anything.
+  - `Permission denied (publickey)` gives `DEPLOY_KEY_REJECTED`: GitHub refused
+    the key. It was probably removed from the repository's deploy keys, or the
+    host holds the wrong key.
+  - `ERROR: Repository not found.` gives `REPOSITORY_ACCESS_DENIED`: the key
+    authenticated but cannot read the repository. The key may be registered on
+    a different repository, or the repository was renamed or removed.
+  - Any other failure stays `FETCH_UNAVAILABLE`.
+
+  With a proven last-good release, `--apply` still retains it under any of
+  these reasons.
+- **Existing mirrors.** A mirror created by the HTTPS-anchored client has its
+  stored origin rewritten to the SSH anchor on the next fetch. Only that exact
+  legacy value is migrated; any other stored origin is still refused as
+  `RELEASE_MIRROR_UNTRUSTED`.
+
+### One-time host provisioning
+
+1. Take the private key for the `agent-flow-kit` read-only deploy key from the
+   vault. Never commit it or place it under `$AFK_SKILLS_HOME`.
+2. Install it with the right mode from the start:
+
+   ```sh
+   install -d -m 700 ~/.config/agent-flow-kit/deploy-key
+   (umask 077; <read the key from the vault> \
+     >~/.config/agent-flow-kit/deploy-key/agent-flow-kit_ed25519)
+   chmod 600 ~/.config/agent-flow-kit/deploy-key/agent-flow-kit_ed25519
+   ```
+
+3. Run `$AFK_SKILLS_HOME/afk-runtime/bin/afk-release-reconcile --plan --force-check`
+   and confirm the reason is no longer `DEPLOY_KEY_UNAVAILABLE` or
+   `FETCH_UNAVAILABLE_NO_PROVEN_LAST_GOOD`.
+
+To rotate the deploy key, add the new public key to the repository's deploy
+keys, replace the file on each host (same path, mode `0600`), confirm a
+`--plan --force-check` succeeds, then delete the old deploy key on GitHub.
+
+### Pinned GitHub host keys
+
+`bin/afk-release-known-hosts` ships GitHub's published `github.com` host keys
+and is installed with the runtime `bin` tree. Current SHA256 fingerprints:
+
+- ed25519: `SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU`
+- ECDSA: `SHA256:p2QAMXNIC1TJYWeIOttrVc98/R1BUFWu3/LiyKgUfQM`
+
+`tests/release-reconciler-contract-tests.sh` checks the file against these
+fingerprints. If GitHub rotates its host keys, the fetch fails closed with a
+host-key mismatch (reported as `HOST_KEY_MISMATCH`). To rotate: take the new
+keys from GitHub's published SSH key fingerprints page (or
+`https://api.github.com/meta`), cross-check with `ssh-keygen -lf`, update
+the file, the fingerprints above, and the contract test together, and ship a
+release. Hosts that cannot fetch must be updated by a manual install.
 
 ## What an update does
 
