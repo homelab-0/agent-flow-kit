@@ -29,6 +29,17 @@
 
 set -uo pipefail
 
+# The suite is hermetic. Control-plane settings from the calling environment
+# (a dispatch gate runs with its router variables set) must not reach the
+# offline sections, which build their own stubs. Capture them for the opt-in
+# live section and clear them for everything else.
+AFK_LIVE_ROUTER_URL="${AGENT_ROUTER_URL:-}"
+AFK_LIVE_ROUTER_TOKEN="${AGENT_ROUTER_TOKEN:-}"
+AFK_LIVE_VALIDATOR_BIN="${AGENT_STAMP_VALIDATE:-}"
+AFK_LIVE_CATALOG_PATH="${AGENT_STAMP_VALIDATE_CATALOG_PATH:-}"
+unset AGENT_ROUTER_URL AGENT_ROUTER_TOKEN AGENT_ROUTER_TOKEN_ENV \
+      AGENT_STAMP_VALIDATE AGENT_STAMP_VALIDATE_CATALOG_PATH
+
 KIT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DISPATCH="$KIT_ROOT/files/model-router/scripts/dispatch.sh"
 MAKE_STAMP="$KIT_ROOT/files/model-router/scripts/make-stamp.sh"
@@ -3421,14 +3432,22 @@ head1 "5. Live control-plane chain (opt-in, read-only, launches nothing)"
 # Runs only when a real router, caller token, validator and catalog are all
 # present. Everything above this line is offline and hermetic.
 #
-#   AGENT_ROUTER_URL=https://agent-router.homelab0.org \
+#   AFK_LIVE_TESTS=1 AGENT_ROUTER_URL=https://agent-router.homelab0.org \
 #   AGENT_ROUTER_TOKEN=<caller token> \
 #   AGENT_STAMP_VALIDATE=/path/to/agent-stamp-validate \
 #   AGENT_STAMP_VALIDATE_CATALOG_PATH=/path/to/catalog.yaml \
 #     tests/run-tests.sh
 
+# Opt-in only: AFK_LIVE_TESTS=1 plus the four settings above. A gate run never
+# reaches the network by accident.
+if [[ "${AFK_LIVE_TESTS:-0}" == 1 ]]; then
+  export AGENT_ROUTER_URL="$AFK_LIVE_ROUTER_URL" AGENT_ROUTER_TOKEN="$AFK_LIVE_ROUTER_TOKEN"
+  export AGENT_STAMP_VALIDATE_CATALOG_PATH="$AFK_LIVE_CATALOG_PATH"
+  [[ -n "$AFK_LIVE_VALIDATOR_BIN" ]] && export AGENT_STAMP_VALIDATE="$AFK_LIVE_VALIDATOR_BIN"
+fi
 LIVE_VALIDATOR="${AGENT_STAMP_VALIDATE:-agent-stamp-validate}"
-if [[ -n "${AGENT_ROUTER_URL:-}" && -n "${AGENT_ROUTER_TOKEN:-}" ]] \
+if [[ "${AFK_LIVE_TESTS:-0}" == 1 ]] \
+   && [[ -n "${AGENT_ROUTER_URL:-}" && -n "${AGENT_ROUTER_TOKEN:-}" ]] \
    && command -v "$LIVE_VALIDATOR" >/dev/null \
    && [[ -n "${AGENT_STAMP_VALIDATE_CATALOG_PATH:-}" && -f "${AGENT_STAMP_VALIDATE_CATALOG_PATH}" ]]; then
 
@@ -3502,8 +3521,9 @@ JSON
     fi
   fi
 else
-  printf '  \033[33mSKIP\033[0m live chain (set AGENT_ROUTER_URL/_TOKEN + validator + catalog)\n'
+  printf '  \033[33mSKIP\033[0m live chain (set AFK_LIVE_TESTS=1 with AGENT_ROUTER_URL/_TOKEN + validator + catalog)\n'
 fi
+unset AGENT_ROUTER_URL AGENT_ROUTER_TOKEN AGENT_STAMP_VALIDATE AGENT_STAMP_VALIDATE_CATALOG_PATH
 
 # ===========================================================================
 head1 "6. Lifecycle gate — tests/lifecycle-tests.sh"
