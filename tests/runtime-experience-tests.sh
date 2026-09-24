@@ -150,7 +150,7 @@ cp "$home/.codex/hooks.json" "$TMP/codex-hooks-before.json"
 "$ROOT/adapters/manage.sh" install codex --home "$home" --state-dir "$state" --adapter-root "$ROOT/adapters" >/dev/null || no "Codex install"
 "$ROOT/adapters/manage.sh" install codex --home "$home" --state-dir "$state" --adapter-root "$ROOT/adapters" >/dev/null || no "Codex reinstall"
 codex_items="$(yq -p=toml -o=json '.tui.status_line' "$home/.codex/config.toml")"
-if jq -e 'all(["model-with-reasoning","context-used","context-remaining","five-hour-limit","weekly-limit","git-branch","task-progress"][]; . as $x | $ARGS.positional[0] | index($x))' --args "$codex_items" >/dev/null 2>&1; then :; fi
+if jq -n -e 'all(["model-with-reasoning","context-used","context-remaining","five-hour-limit","weekly-limit","git-branch","task-progress"][]; . as $x | $ARGS.positional[0] | index($x))' --args "$codex_items" >/dev/null 2>&1; then :; fi
 eq "Codex native model item" "$(jq --arg x model-with-reasoning 'index($x)!=null' <<<"$codex_items")" true
 eq "Codex native context item" "$(jq --arg x context-remaining 'index($x)!=null' <<<"$codex_items")" true
 eq "Codex native rate item" "$(jq --arg x weekly-limit 'index($x)!=null' <<<"$codex_items")" true
