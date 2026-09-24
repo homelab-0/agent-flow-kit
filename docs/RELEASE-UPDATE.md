@@ -73,26 +73,67 @@ helper is consulted.
   legacy value is migrated; any other stored origin is still refused as
   `RELEASE_MIRROR_UNTRUSTED`.
 
-### One-time host provisioning
+### Enrolling a host (once)
 
-1. Take the private key for the `agent-flow-kit` read-only deploy key from the
-   vault. Never commit it or place it under `$AFK_SKILLS_HOME`.
-2. Install it with the right mode from the start:
+Run one line from the host's kit checkout, with that host's own 1Password
+reference:
 
-   ```sh
-   install -d -m 700 ~/.config/agent-flow-kit/deploy-key
-   (umask 077; <read the key from the vault> \
-     >~/.config/agent-flow-kit/deploy-key/agent-flow-kit_ed25519)
-   chmod 600 ~/.config/agent-flow-kit/deploy-key/agent-flow-kit_ed25519
-   ```
+```sh
+git pull --ff-only && bin/agent-flow-kit update && bin/agent-flow-kit enroll-auto-update --key-ref <ref>
+```
 
-3. Run `$AFK_SKILLS_HOME/afk-runtime/bin/afk-release-reconcile --plan --force-check`
-   and confirm the reason is no longer `DEPLOY_KEY_UNAVAILABLE` or
-   `FETCH_UNAVAILABLE_NO_PROVEN_LAST_GOOD`.
+| Host | `<ref>` |
+| --- | --- |
+| devbox, Mac | `op://develop/afk-release-deploy-key/notesPlain` |
+| cachyos | `op://AI-Access/afk-release-key/notesPlain` |
+
+`enroll-auto-update --key-ref <op://…> [--key-file <path>]` is idempotent. It
+reads the key with `op read` into a private scratch file and compares its
+`ssh-keygen -l` fingerprint with `deploy_key_fingerprint` in
+`lifecycle/release-policy.json` (the only place the fingerprint is declared).
+On a match it installs the key at the key path above with mode `0600`; on a
+mismatch, a value that is not a key, a missing `op`, an unreadable reference,
+or something other than a regular file at the key path it refuses (exit 4,
+`FINGERPRINT_MISMATCH`, `KEY_UNPARSEABLE`, `OP_UNAVAILABLE`,
+`KEY_REF_UNREADABLE`, `KEY_PATH_OCCUPIED`) and installs nothing; the scratch
+file is removed on every exit. A `--key-file` path with whitespace, quotes,
+`\`, `%`, `#`, `$`, or control characters is refused before anything is read
+(exit 1, `KEY_PATH_UNSAFE`). It then installs and enables the scheduler,
+records the reference (never the key) in
+`~/.config/agent-flow-kit/auto-update.json` only once the scheduler is really
+enabled, runs the first attempt with that key, and prints one
+`auto-update: ENROLLED …` line. If the scheduler cannot be enabled it removes
+the units and the config and exits 5 (`SCHEDULER_UNAVAILABLE`). The key's
+bytes are never printed, logged, or copied anywhere else.
+
+- **Linux.** A systemd user service and timer
+  (`~/.config/systemd/user/afk-release-reconcile.{service,timer}`) run the
+  installed `afk-release-reconcile --apply` every `check_interval_seconds`
+  (policy, default 900) with a 600-second start timeout and `Persistent=true`.
+  If the user manager does not linger, the summary line says so and names
+  `sudo loginctl enable-linger <user>`; the command never runs sudo itself.
+- **macOS.** A launchd user agent
+  (`~/Library/LaunchAgents/io.github.jlengelbrecht.agent-flow-kit.update-check.plist`)
+  runs `agent-flow-kit enroll-auto-update --check` on the same interval, with
+  a fixed `PATH` (`/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin`). The
+  check reads the trusted ref with `git ls-remote` over the same pinned-key SSH
+  transport, compares it with the applied revision, and records
+  `UPDATE_AVAILABLE`, `CURRENT`, or `CHECK_FAILED` in
+  `$AFK_STATE_DIR/auto-update-check.json`. It never applies; the human or an
+  agent runs `agent-flow-kit update`. `MACOS_SANDBOX_PENDING` below is
+  unchanged.
+
+`agent-flow-kit status` reports whether the host is enrolled (asking
+`systemctl --user is-enabled` or `launchctl print`, not the files) and the last
+result (the release client's `releases/latest.json` on Linux, the check file
+on macOS), including "update available: <revision>".
+`agent-flow-kit enroll-auto-update --remove` removes the scheduler and the
+config and leaves the key in place.
 
 To rotate the deploy key, add the new public key to the repository's deploy
-keys, replace the file on each host (same path, mode `0600`), confirm a
-`--plan --force-check` succeeds, then delete the old deploy key on GitHub.
+keys, update `deploy_key_fingerprint` in the policy and the vault item, ship a
+release, re-run `enroll-auto-update` on each host, then delete the old deploy
+key on GitHub.
 
 ### Pinned GitHub host keys
 

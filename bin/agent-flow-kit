@@ -2,7 +2,8 @@
 # agent-flow-kit — the one lifecycle entry point (FR-22).
 #
 # Read-only:  status, adopt --inspect, verify, schema, monitor, and any --plan.
-# Mutating:   adopt, update, pm-continue, and the monitor's own action verbs.
+# Mutating:   adopt, update, pm-continue, enroll-auto-update, and the monitor's
+#             own action verbs.
 #
 # Git fetching, pulling, branch switching, route selection, and every external
 # authority remain outside this executable. pm-continue may call the declared
@@ -36,7 +37,7 @@ AFK_LIB_DIR="${AFK_LIB_DIR:-$AFK_INSTALL_ROOT/lib}"
 # A missing or unreadable library is an internal failure with a stable message
 # and the usage exit code — never a partially loaded lifecycle that answers
 # questions with whichever functions happened to load.
-for _afk_lib in afk-common afk-source afk-inventory afk-readiness afk-monitor afk-commands afk-plan afk-mutate afk-usage; do
+for _afk_lib in afk-common afk-source afk-inventory afk-readiness afk-monitor afk-commands afk-plan afk-mutate afk-usage afk-auto-update; do
   if [[ ! -r "$AFK_LIB_DIR/$_afk_lib.sh" ]]; then
     printf 'agent-flow-kit: internal error: required library %s.sh is missing or unreadable under %s\n' \
       "$_afk_lib" "$AFK_LIB_DIR" >&2
@@ -72,6 +73,9 @@ unset _afk_lib
 # shellcheck source=lib/afk-usage.sh
 # shellcheck disable=SC1090,SC1091
 . "$AFK_LIB_DIR/afk-usage.sh"
+# shellcheck source=lib/afk-auto-update.sh
+# shellcheck disable=SC1090,SC1091
+. "$AFK_LIB_DIR/afk-auto-update.sh"
 
 if ! declare -F afk_cmd_status >/dev/null 2>&1 \
    || ! declare -F afk_render_human >/dev/null 2>&1 \
@@ -80,7 +84,8 @@ if ! declare -F afk_cmd_status >/dev/null 2>&1 \
    || ! declare -F afk_monitor_reconcile >/dev/null 2>&1 \
    || ! declare -F afk_cmd_pm_checkpoint >/dev/null 2>&1 \
    || ! declare -F afk_plan_compute >/dev/null 2>&1 \
-   || ! declare -F afk_usage_report >/dev/null 2>&1; then
+   || ! declare -F afk_usage_report >/dev/null 2>&1 \
+   || ! declare -F afk_cmd_enroll_auto_update >/dev/null 2>&1; then
   printf 'agent-flow-kit: internal error: the lifecycle libraries under %s did not load completely\n' \
     "$AFK_LIB_DIR" >&2
   exit 1
@@ -241,6 +246,15 @@ agent-flow-kit — lifecycle entry point
       not a routing input.
       Options: --json --days <n>
 
+  agent-flow-kit enroll-auto-update --key-ref <op://...> [--key-file <path>]
+      Enroll this host once: read the release deploy key from the host's own
+      1Password reference, refuse unless its fingerprint is the one the kit
+      policy pins, install it (0600, outside every managed tree), record the
+      reference, and install the scheduler: a systemd user timer that applies
+      releases on Linux, a check-only launchd agent on macOS. Idempotent.
+      --check records whether an update is available (what the macOS agent
+      runs; it never applies). --remove removes the scheduler and config.
+
   agent-flow-kit schema
       The documented machine contract: schema version, state, reason and
       ownership vocabularies, plan and operation vocabularies, and exit
@@ -363,6 +377,8 @@ afk_option_allowed() { # <command> <option>
       case "$2" in --json|--ack) return 0 ;; esac ;;
     usage-report)
       case "$2" in --json|--days) return 0 ;; esac ;;
+    enroll-auto-update)
+      case "$2" in --key-ref|--key-file|--check|--remove) return 0 ;; esac ;;
   esac
   return 1
 }
@@ -374,6 +390,7 @@ afk_main() {
   local monitor_verbs=0
   local pm_write="" pm_continuation="false" pm_harness=""
   local usage_days=""
+  local au_mode="enroll" au_key_ref="" au_key_file=""
 
   cmd="${1:-help}"
   if (( $# > 0 )); then shift; fi
@@ -431,6 +448,16 @@ afk_main() {
             AFK_STAMP_FILE="$2"
             shift ;;
           --continuation)              pm_continuation="true" ;;
+          --check)                     au_mode="check" ;;
+          --remove)                    au_mode="remove" ;;
+          --key-ref|--key-file)
+            # A reference or a path, never a key; still not echoed back.
+            if (( $# < 2 )); then
+              afk_warn "$1 requires its declared value"
+              return "$AFK_EXIT_USAGE"
+            fi
+            if [[ "$1" == --key-ref ]]; then au_key_ref="$2"; else au_key_file="$2"; fi
+            shift ;;
           --days)
             if (( $# < 2 )); then
               afk_warn "--days requires the rolling window in days"
@@ -571,6 +598,10 @@ afk_main() {
       [[ "$json_mode" == "true" ]] && usage_args+=(--json)
       [[ -n "$usage_days" ]] && usage_args+=(--days "$usage_days")
       afk_usage_report "${usage_args[@]}"
+      return $? ;;
+    enroll-auto-update)
+      afk_require_declared_paths || return "$AFK_EXIT_USAGE"
+      afk_cmd_enroll_auto_update "$au_mode" "$au_key_ref" "$au_key_file"
       return $? ;;
     schema)
       afk_cmd_schema || return "$AFK_EXIT_USAGE"

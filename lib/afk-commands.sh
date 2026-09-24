@@ -433,6 +433,7 @@ afk_cmd_status() { # <json-mode> <require-source> <allow-noncanonical> <allow-ro
   afk_evaluate_installation "$3" "$4"
   afk_apply_readiness_exit
   afk_pm_apply
+  if declare -F afk_auto_update_apply_status >/dev/null; then afk_auto_update_apply_status; fi
   afk_emit_result "$1"
 }
 
