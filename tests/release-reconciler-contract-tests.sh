@@ -11,7 +11,7 @@ no() { printf 'FAIL: %s\n' "$1" >&2; failed=$((failed + 1)); }
 
 if bash -n "$RECONCILER"; then ok; else no "release reconciler parses"; fi
 
-if grep -Fq "readonly TRUST_REMOTE='https://github.com/jlengelbrecht/agent-flow-kit.git'" "$RECONCILER" &&
+if grep -Fq "readonly TRUST_REMOTE='ssh://git@github.com/jlengelbrecht/agent-flow-kit.git'" "$RECONCILER" &&
    grep -Fq "readonly TRUST_REF='refs/heads/master'" "$RECONCILER" &&
    grep -Fq "readonly TRUST_BRANCH='master'" "$RECONCILER"; then
   ok
@@ -41,6 +41,23 @@ if grep -Fq "readonly REQUIRE_TRUSTED_TOOLS=true" "$RECONCILER" &&
   ok
 else
   no "trusted-tool, sandbox, and verified-last-good boundaries remain present"
+fi
+
+# The pinned GitHub host keys must be exactly the ones GitHub publishes. This
+# cross-checks the shipped key blobs against their documented fingerprints.
+KNOWN_HOSTS="$ROOT/bin/afk-release-known-hosts"
+if [[ "$(awk '$1=="github.com"' "$KNOWN_HOSTS" | wc -l)" -eq "$(wc -l <"$KNOWN_HOSTS")" ]]; then
+  ok
+else
+  no "pinned host keys name only github.com"
+fi
+if command -v ssh-keygen >/dev/null 2>&1; then
+  fingerprints="$(ssh-keygen -l -E sha256 -f "$KNOWN_HOSTS" | awk '{print $2}' | LC_ALL=C sort | tr '\n' ' ' || true)"
+  if [[ "$fingerprints" == 'SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU SHA256:p2QAMXNIC1TJYWeIOttrVc98/R1BUFWu3/LiyKgUfQM ' ]]; then
+    ok
+  else
+    no "pinned host keys match GitHub's published fingerprints (got: $fingerprints)"
+  fi
 fi
 
 printf '%s passed, %s failed\n' "$passed" "$failed"

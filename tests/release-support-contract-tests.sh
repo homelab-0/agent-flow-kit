@@ -12,7 +12,7 @@ no() { printf 'FAIL: %s\n' "$1" >&2; failed=$((failed + 1)); }
 
 if jq -e '
   .schema=="afk-release-policy/2" and
-  .trust.remote_url=="https://github.com/jlengelbrecht/agent-flow-kit.git" and
+  .trust.remote_url=="ssh://git@github.com/jlengelbrecht/agent-flow-kit.git" and
   .trust.ref=="refs/heads/master" and
   .rollout.authoritative_promotion==false and
   .automatic_rollback_bypass==false

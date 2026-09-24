@@ -1,7 +1,7 @@
 {
   "schema": "afk-release-policy/2",
   "trust": {
-    "remote_url": "https://github.com/jlengelbrecht/agent-flow-kit.git",
+    "remote_url": "ssh://git@github.com/jlengelbrecht/agent-flow-kit.git",
     "ref": "refs/heads/master",
     "default_branch": "master",
     "repository_root_commit": "d74e7f9542cfe2731e09a0ff5c5e1b4cf325062f"

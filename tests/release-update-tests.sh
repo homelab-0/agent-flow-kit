@@ -13,7 +13,7 @@ candidate_smoke() {
   done
   jq -e '
     .schema=="afk-release-policy/2" and
-    .trust.remote_url=="https://github.com/jlengelbrecht/agent-flow-kit.git" and
+    .trust.remote_url=="ssh://git@github.com/jlengelbrecht/agent-flow-kit.git" and
     .trust.ref=="refs/heads/master" and .trust.default_branch=="master" and
     .trust.repository_root_commit=="d74e7f9542cfe2731e09a0ff5c5e1b4cf325062f" and
     .rollout.mode=="cohort_metadata_only" and .rollout.authoritative_promotion==false and
@@ -90,6 +90,7 @@ git -C "$AUTHOR" config user.email 'afk-release-test@example.invalid'
 # Overlay only the release slice under test. This lets the focused test run in
 # a dirty development worktree before these files have themselves been committed.
 cp "$ROOT/bin/afk-release-reconcile" "$AUTHOR/bin/afk-release-reconcile"
+cp "$ROOT/bin/afk-release-known-hosts" "$AUTHOR/bin/afk-release-known-hosts"
 cp "$ROOT/bin/afk-session-freshness" "$AUTHOR/bin/afk-session-freshness"
 cp "$ROOT/bin/afk-session-start" "$AUTHOR/bin/afk-session-start"
 cp "$ROOT/lifecycle/release-policy.json" "$AUTHOR/lifecycle/release-policy.json"
@@ -189,8 +190,23 @@ TRUSTED_LIB_IDENTITY="$(tree_identity "$TRUSTED_DRIVER_SOURCE/lib")"
 
 cat >"$HOME_TEST/.gitconfig" <<EOF
 [url "file://$REMOTE"]
-    insteadOf = https://github.com/jlengelbrecht/agent-flow-kit.git
+    insteadOf = ssh://git@github.com/jlengelbrecht/agent-flow-kit.git
 EOF
+# A provisioned deploy key at the default machine-local path. The content is a
+# marker, never a real key: no test reaches the network.
+DEPLOY_KEY_DIR="$HOME_TEST/.config/agent-flow-kit/deploy-key"
+DEPLOY_KEY_FILE="$DEPLOY_KEY_DIR/agent-flow-kit_ed25519"
+DEPLOY_KEY_MARKER='afk-test-deploy-key-private-material'
+mkdir -p "$DEPLOY_KEY_DIR"
+# The client refuses keys under group/world-writable directories; do not
+# inherit that from the runner's umask.
+chmod 755 "$HOME_TEST" "$HOME_TEST/.config" "$HOME_TEST/.config/agent-flow-kit"
+chmod 700 "$DEPLOY_KEY_DIR"
+(umask 077; printf '%s\n' "$DEPLOY_KEY_MARKER" >"$DEPLOY_KEY_FILE")
+chmod 600 "$DEPLOY_KEY_FILE"
+# User ssh state the client must never consult.
+mkdir -p "$HOME_TEST/.ssh"
+printf 'Host github.com\n  IdentityFile ~/.ssh/poison\n' >"$HOME_TEST/.ssh/config"
 # The production client intentionally ignores the global rewrite above. A fake
 # git executable is the bounded test transport seam: it changes only fetch
 # transport and delegates every validation/configuration operation unchanged.
@@ -202,14 +218,22 @@ if [[ -n "\${AFK_TEST_GIT_ENV_MARKER:-}" ]]; then
   for name in GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE GIT_INDEX_FILE \
     GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE \
     GIT_CEILING_DIRECTORIES GIT_DISCOVERY_ACROSS_FILESYSTEM GIT_ASKPASS \
-    SSH_ASKPASS GIT_SSH_COMMAND GIT_CONFIG_PARAMETERS GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 \
-    GIT_SSL_CAINFO GIT_SSL_CAPATH GIT_PROXY_COMMAND GIT_EXEC_PATH; do
+    SSH_ASKPASS GIT_CONFIG_PARAMETERS GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 \
+    GIT_SSL_CAINFO GIT_SSL_CAPATH GIT_PROXY_COMMAND GIT_EXEC_PATH SSH_AUTH_SOCK; do
     [[ -v "\$name" ]] && printf '%s\n' "\$name" >>"\$AFK_TEST_GIT_ENV_MARKER"
   done
+  # The client sets its own GIT_SSH_COMMAND for the fetch; only the ambient one is poison.
+  [[ "\${GIT_SSH_COMMAND:-}" == *git-poison* ]] && printf 'GIT_SSH_COMMAND\n' >>"\$AFK_TEST_GIT_ENV_MARKER"
 fi
 anchor_fetch=false
 for arg in "\$@"; do [[ "\$arg" == '+refs/heads/master:refs/afk/fetched' ]] && anchor_fetch=true; done
 if [[ "\$anchor_fetch" == true ]]; then
+  if [[ -n "\${AFK_TEST_SSH_CAPTURE:-}" ]]; then
+    # Run the transport command the way git does, against the stub ssh.
+    printf '%s' "\${GIT_SSH_COMMAND:-}" >"\$AFK_TEST_SSH_CAPTURE.command"
+    /bin/sh -c "\$GIT_SSH_COMMAND"' "\$@"' ssh git@github.com "git-upload-pack 'jlengelbrecht/agent-flow-kit.git'" ||
+      { printf 'fatal: Could not read from remote repository.\n' >&2; exit 128; }
+  fi
   [[ -z "\${AFK_TEST_FETCH_EXECUTED:-}" ]] || : >"\$AFK_TEST_FETCH_EXECUTED"
   [[ -z "\${AFK_TEST_FETCH_FAIL:-}" ]] || exit 73
   if [[ -n "\${AFK_TEST_FETCH_ORPHAN_START:-}" ]]; then
@@ -236,10 +260,21 @@ fi
 exec '$REAL_GIT' "\$@"
 EOF
 chmod +x "$TEST_BIN/git"
+# Stub ssh: records the argv and agent visibility it was started with.
+cat >"$TEST_BIN/ssh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >"$AFK_TEST_SSH_CAPTURE.argv"
+[[ -v SSH_AUTH_SOCK ]] && printf 'SSH_AUTH_SOCK\n' >>"$AFK_TEST_SSH_CAPTURE.argv"
+if [[ -n "${AFK_TEST_SSH_STDERR:-}" ]]; then printf '%s\n' "$AFK_TEST_SSH_STDERR" >&2; exit 255; fi
+exit 0
+EOF
+chmod +x "$TEST_BIN/ssh"
 RELEASE_CLIENT="$TMP/afk-release-reconcile-fixture"
 cp "$AUTHOR/bin/afk-release-reconcile" "$RELEASE_CLIENT"
+cp "$AUTHOR/bin/afk-release-known-hosts" "$TMP/afk-release-known-hosts"
 sed -i \
   -e "s|readonly GIT_BIN='/usr/bin/git'|readonly GIT_BIN='$TEST_BIN/git'|" \
+  -e "s|readonly SSH_BIN='/usr/bin/ssh'|readonly SSH_BIN='$TEST_BIN/ssh'|" \
   -e "s|^readonly TRUSTED_DRIVER_SOURCE=.*|readonly TRUSTED_DRIVER_SOURCE='$TRUSTED_DRIVER_SOURCE'|" \
   -e "s|readonly REQUIRE_TRUSTED_TOOLS=true|readonly REQUIRE_TRUSTED_TOOLS=false|" \
   "$RELEASE_CLIENT"
@@ -315,7 +350,7 @@ if [[ ! -e "$(jq -r .candidate_path "$STATE/releases/current.json")/UNTRACKED-QU
 
 # Mirror-local rewrites are refused even though the stored remote remains the
 # literal anchor. Remove the injected test value afterward to continue.
-"$REAL_GIT" --git-dir="$STATE/releases/repository.git" config --add url.file:///untrusted.insteadOf https://github.com/
+"$REAL_GIT" --git-dir="$STATE/releases/repository.git" config --add url.file:///untrusted.insteadOf ssh://git@github.com/
 run_update --apply --force-check --policy "$AUTHOR/lifecycle/release-policy.json"
 assert_eq 'mirror-local URL rewrite is refused' "$(jq -r .reason <<<"$RUN_OUT")" RELEASE_MIRROR_UNTRUSTED
 "$REAL_GIT" --git-dir="$STATE/releases/repository.git" config --unset-all url.file:///untrusted.insteadOf
@@ -335,6 +370,156 @@ mkdir "$STATE/releases/lock"
 jq -nc --arg host "$host|$machine" --arg boot "$boot" '{schema:"afk-release-lock/1",complete:true,host:$host,boot:$boot,pid:99999999,process_start:"proc:1",incarnation:"dead-owner"}' >"$STATE/releases/lock/owner.json"
 run_update --apply --force-check --policy "$AUTHOR/lifecycle/release-policy.json"
 assert_eq 'dead same-host lock is recovered' "$(jq -r .state <<<"$RUN_OUT")" CURRENT
+
+# The deploy key is the only credential channel. Capture the exact transport
+# command and the argv ssh receives while an ambient agent socket and a user
+# ssh config are both present; neither may reach git or ssh.
+SSH_CAPTURE="$TMP/ssh-capture"
+SSH_AUTH_SOCK="$TMP/poison-agent.sock" AFK_TEST_SSH_CAPTURE="$SSH_CAPTURE" \
+  AFK_TEST_GIT_ENV_MARKER="$TMP/ssh-env-marker" \
+  run_update --plan --force-check --policy "$AUTHOR/lifecycle/release-policy.json"
+assert_eq 'deploy-key fetch reaches a verified plan' "$(jq -r .reason <<<"$RUN_OUT")" PLAN_VERIFIED_NO_CHANGE
+EXPECTED_SSH_OPTIONS=(-o IdentitiesOnly=yes -o IdentityAgent=none -o StrictHostKeyChecking=yes
+  -o "UserKnownHostsFile=$TMP/afk-release-known-hosts" -o GlobalKnownHostsFile=/dev/null
+  -o UpdateHostKeys=no -o PreferredAuthentications=publickey -o BatchMode=yes -o ConnectTimeout=10)
+assert_eq 'GIT_SSH_COMMAND has the exact pinned shape' "$(cat "$SSH_CAPTURE.command" 2>/dev/null)" \
+  "'$TEST_BIN/ssh' -F /dev/null -i '$DEPLOY_KEY_FILE' -o IdentitiesOnly=yes -o IdentityAgent=none -o StrictHostKeyChecking=yes -o UserKnownHostsFile='$TMP/afk-release-known-hosts' -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o PreferredAuthentications=publickey -o BatchMode=yes -o ConnectTimeout=10"
+assert_eq 'ssh gets only the deploy key, pinned host keys, and no user config or agent' \
+  "$(cat "$SSH_CAPTURE.argv" 2>/dev/null)" \
+  "$(printf '%s\n' -F /dev/null -i "$DEPLOY_KEY_FILE" "${EXPECTED_SSH_OPTIONS[@]}" \
+    git@github.com "git-upload-pack 'jlengelbrecht/agent-flow-kit.git'")"
+if [[ ! -e "$TMP/ssh-env-marker" ]]; then ok 'ambient ssh agent never reaches git'; else not_ok 'ambient ssh agent never reaches git'; fi
+
+# Resolve the captured command with the real ssh client (-G prints the final
+# configuration and exits) while the poison ~/.ssh/config is present.
+REAL_SSH="$(command -v ssh 2>/dev/null || true)"
+if [[ -n "$REAL_SSH" ]]; then
+  captured_ssh="$(cat "$SSH_CAPTURE.command" 2>/dev/null)"
+  resolved_ssh="$(env -i PATH=/usr/bin:/bin HOME="$HOME_TEST" /bin/sh -c \
+    "'$REAL_SSH'${captured_ssh#"'$TEST_BIN/ssh'"}"' -G git@github.com' 2>/dev/null || true)"
+  for expected_line in "identityfile $DEPLOY_KEY_FILE" \
+      "userknownhostsfile $TMP/afk-release-known-hosts" "globalknownhostsfile /dev/null" \
+      "identityagent none" "preferredauthentications publickey"; do
+    if grep -Fxq -- "$expected_line" <<<"$resolved_ssh"; then ok "real ssh resolves: $expected_line"
+    else not_ok "real ssh resolves: $expected_line"; fi
+  done
+  assert_eq 'real ssh resolves exactly one identity file' "$(grep -c '^identityfile ' <<<"$resolved_ssh")" 1
+  if ! grep -E '^(proxycommand|controlpath) ' <<<"$resolved_ssh" | grep -vqE ' none$'; then
+    ok 'real ssh resolves no proxy command or control path'
+  else
+    not_ok 'real ssh resolves no proxy command or control path'
+  fi
+else
+  printf 'skip - real ssh -G resolution: no ssh client on this host\n'
+fi
+
+# Fetch stderr is classified by fixed strings and never persisted.
+STDERR_MARKER='afk-test-ssh-stderr-marker'
+fetch_stderr_case() { # <label> <stub ssh stderr> <expected state:reason>
+  AFK_TEST_SSH_CAPTURE="$TMP/ssh-class" AFK_TEST_SSH_STDERR="$2 $STDERR_MARKER" \
+    run_update --plan --force-check --policy "$AUTHOR/lifecycle/release-policy.json"
+  assert_eq "$1" "$(jq -r '.state+":"+.reason' <<<"$RUN_OUT")" "$3"
+}
+fetch_stderr_case 'changed host key is HOST_KEY_MISMATCH' \
+  '@@@@@@@@@@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@@@@@@@@@@' BLOCKED:HOST_KEY_MISMATCH
+fetch_stderr_case 'unknown host key is HOST_KEY_MISMATCH' \
+  'Host key verification failed.' BLOCKED:HOST_KEY_MISMATCH
+fetch_stderr_case 'rejected key is DEPLOY_KEY_REJECTED' \
+  'git@github.com: Permission denied (publickey).' BLOCKED:DEPLOY_KEY_REJECTED
+fetch_stderr_case 'unreadable repository is REPOSITORY_ACCESS_DENIED' \
+  'ERROR: Repository not found.' BLOCKED:REPOSITORY_ACCESS_DENIED
+fetch_stderr_case 'other transport failure stays FETCH_UNAVAILABLE' \
+  'ssh: connect to host github.com port 22: Network is unreachable' RETAINED:FETCH_UNAVAILABLE
+if ! grep -rqF -e "$STDERR_MARKER" "$STATE/releases/attempts" "$STATE/releases/latest.json"; then
+  ok 'fetch stderr is never persisted'
+else
+  not_ok 'fetch stderr is never persisted'
+fi
+if [[ -z "$(find "$STATE/releases" -maxdepth 1 -name '.child-output.*' -print -quit)" ]]; then
+  ok 'fetch stderr scratch file is removed'
+else
+  not_ok 'fetch stderr scratch file is removed'
+fi
+
+# A missing, group/world-readable, symlinked, or state-tree key is refused with
+# its own reason before any network attempt, so "no key" never reads as "offline".
+KEY_FETCH_MARKER="$TMP/key-fetch-executed"
+key_refusal() { # <label> <key path>
+  rm -f "$KEY_FETCH_MARKER"
+  AFK_RELEASE_DEPLOY_KEY="$2" AFK_TEST_FETCH_EXECUTED="$KEY_FETCH_MARKER" \
+    run_update --plan --force-check --policy "$AUTHOR/lifecycle/release-policy.json"
+  assert_eq "$1 is refused as DEPLOY_KEY_UNAVAILABLE" \
+    "$(jq -r '.state+":"+.reason' <<<"$RUN_OUT")" BLOCKED:DEPLOY_KEY_UNAVAILABLE
+  if [[ ! -e "$KEY_FETCH_MARKER" ]]; then ok "$1 never attempts a fetch"; else not_ok "$1 never attempts a fetch"; fi
+}
+key_refusal 'missing deploy key' "$TMP/no-such-key"
+cp "$DEPLOY_KEY_FILE" "$TMP/wide-key"; chmod 644 "$TMP/wide-key"
+key_refusal 'mode 0644 deploy key' "$TMP/wide-key"
+ln -s "$DEPLOY_KEY_FILE" "$TMP/linked-key"
+key_refusal 'symlinked deploy key' "$TMP/linked-key"
+(umask 077; cp "$DEPLOY_KEY_FILE" "$STATE/deploy-key"); chmod 600 "$STATE/deploy-key"
+key_refusal 'deploy key inside the release state tree' "$STATE/deploy-key"
+ln -s "$STATE" "$HOME_TEST/state-link"
+key_refusal 'state-tree key behind a symlinked parent' "$HOME_TEST/state-link/deploy-key"
+key_refusal 'state-tree key reached through ..' "$DEPLOY_KEY_DIR/../../../.local/state/agent-flow-kit/deploy-key"
+rm -f "$STATE/deploy-key" "$HOME_TEST/state-link"
+mkdir -p "$HOME_TEST/shared-keys"; chmod 775 "$HOME_TEST/shared-keys"
+(umask 077; cp "$DEPLOY_KEY_FILE" "$HOME_TEST/shared-keys/key"); chmod 600 "$HOME_TEST/shared-keys/key"
+key_refusal 'deploy key under a group-writable directory' "$HOME_TEST/shared-keys/key"
+if ! grep -rqF -e "$DEPLOY_KEY_MARKER" -e "$DEPLOY_KEY_DIR" -e "$TMP/wide-key" -e "$TMP/linked-key" \
+    -e "$TMP/no-such-key" -e "$STATE/deploy-key" "$STATE/releases/attempts" "$STATE/releases/latest.json"; then
+  ok 'release results carry no key material or key path'
+else
+  not_ok 'release results carry no key material or key path'
+fi
+
+# Paths that OpenSSH would re-parse inside an option value are refused, with
+# their own reason, before any fetch.
+unsafe_path_refusal() { # <label> <key path>
+  rm -f "$KEY_FETCH_MARKER"
+  AFK_RELEASE_DEPLOY_KEY="$2" AFK_TEST_FETCH_EXECUTED="$KEY_FETCH_MARKER" \
+    run_update --plan --force-check --policy "$AUTHOR/lifecycle/release-policy.json"
+  assert_eq "$1 is refused as SSH_OPTION_PATH_UNSAFE" \
+    "$(jq -r '.state+":"+.reason' <<<"$RUN_OUT")" BLOCKED:SSH_OPTION_PATH_UNSAFE
+  if [[ ! -e "$KEY_FETCH_MARKER" ]]; then ok "$1 never attempts a fetch"; else not_ok "$1 never attempts a fetch"; fi
+}
+unsafe_path_refusal 'key path with a space' "$TMP/deploy key"
+unsafe_path_refusal 'key path with a tab' "$TMP/deploy"$'\t'"key"
+unsafe_path_refusal 'key path with a single quote' "$TMP/deploy'key"
+unsafe_path_refusal 'key path with a double quote' "$TMP/deploy\"key"
+unsafe_path_refusal 'key path with a backslash' "$TMP/deploy\\key"
+unsafe_path_refusal 'key path with a percent sign' "$TMP/deploy%dkey"
+unsafe_path_refusal 'key path with a hash' "$TMP/deploy#key"
+SAFE_RELEASE_CLIENT="$RELEASE_CLIENT"
+for unsafe_dir in "$TMP/pinned hosts" "$TMP/pinned%hhosts"; do
+  mkdir -p "$unsafe_dir"
+  cp -p "$SAFE_RELEASE_CLIENT" "$TMP/afk-release-known-hosts" "$unsafe_dir/"
+  RELEASE_CLIENT="$unsafe_dir/${SAFE_RELEASE_CLIENT##*/}"
+  unsafe_path_refusal "pinned known_hosts under ${unsafe_dir##*/}" "$DEPLOY_KEY_FILE"
+done
+RELEASE_CLIENT="$SAFE_RELEASE_CLIENT"
+
+# A policy that repeats the legacy HTTPS anchor no longer matches the compiled one.
+jq '.trust.remote_url="https://github.com/jlengelbrecht/agent-flow-kit.git"' \
+  "$AUTHOR/lifecycle/release-policy.json" >"$TMP/legacy-anchor-policy.json"
+legacy_policy_rc=0
+LEGACY_POLICY_OUT="$(HOME="$HOME_TEST" AFK_STATE_DIR="$STATE" "$RELEASE_CLIENT" --plan \
+  --policy "$TMP/legacy-anchor-policy.json" 2>/dev/null)" || legacy_policy_rc=$?
+assert_eq 'policy/compiled anchor mismatch refuses' \
+  "$(jq -r .reason <<<"$LEGACY_POLICY_OUT"):$legacy_policy_rc" POLICY_UNTRUSTED:2
+
+# A mirror created by the HTTPS-anchored client is migrated in place; any other
+# stored origin is still refused.
+MIRROR="$STATE/releases/repository.git"
+"$REAL_GIT" --git-dir="$MIRROR" config remote.origin.url https://github.com/jlengelbrecht/agent-flow-kit.git
+run_update --plan --force-check --policy "$AUTHOR/lifecycle/release-policy.json"
+assert_eq 'legacy HTTPS mirror is migrated, not refused' "$(jq -r .reason <<<"$RUN_OUT")" PLAN_VERIFIED_NO_CHANGE
+assert_eq 'migrated mirror stores the SSH anchor' \
+  "$("$REAL_GIT" --git-dir="$MIRROR" config --get remote.origin.url)" ssh://git@github.com/jlengelbrecht/agent-flow-kit.git
+"$REAL_GIT" --git-dir="$MIRROR" config remote.origin.url https://github.com/someone-else/agent-flow-kit.git
+run_update --plan --force-check --policy "$AUTHOR/lifecycle/release-policy.json"
+assert_eq 'a foreign stored origin is still refused' "$(jq -r .reason <<<"$RUN_OUT")" RELEASE_MIRROR_UNTRUSTED
+"$REAL_GIT" --git-dir="$MIRROR" config remote.origin.url ssh://git@github.com/jlengelbrecht/agent-flow-kit.git
 
 # Bootstrap trust decisions never invoke a same-named command supplied by PATH
 # or an exported shell function. The fixed absolute helpers remain the only
@@ -831,7 +1016,7 @@ assert_eq 'divergence cannot advance installed revision' "$(jq -r .applied_revis
 # Offline launch proves the recorded candidate and preserves unrelated hooks.
 cat >"$HOME_TEST/.gitconfig" <<EOF
 [url "file://$TMP/offline-remote"]
-    insteadOf = https://github.com/jlengelbrecht/agent-flow-kit.git
+    insteadOf = ssh://git@github.com/jlengelbrecht/agent-flow-kit.git
 EOF
 touch "$OFFLINE_MARKER"
 INSTALLED_RUNTIME="$HOME_TEST/.agents/skills/afk-runtime"
@@ -845,6 +1030,7 @@ printf '%s\n' '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"
 printf 'hindsight-owned\n' >"$HOME_TEST/.hindsight/config"
 printf 'orca-owned\n' >"$HOME_TEST/.config/orca/config"
 cp "$RELEASE_CLIENT" "$INSTALLED_RUNTIME/bin/afk-release-reconcile"
+cp "$TMP/afk-release-known-hosts" "$INSTALLED_RUNTIME/bin/afk-release-known-hosts"
 cp "$ROOT/bin/afk-session-start" "$INSTALLED_RUNTIME/bin/afk-session-start"
 chmod +x "$INSTALLED_RUNTIME/bin/afk-release-reconcile" \
   "$INSTALLED_RUNTIME/bin/afk-session-start"
