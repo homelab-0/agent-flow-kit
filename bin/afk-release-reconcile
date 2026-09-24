@@ -16,7 +16,10 @@ PATH=/usr/bin:/bin
 export PATH
 builtin hash -r
 
-readonly TRUST_REMOTE='https://github.com/jlengelbrecht/agent-flow-kit.git'
+readonly TRUST_REMOTE='ssh://git@github.com/jlengelbrecht/agent-flow-kit.git'
+# The only stored origin a mirror may be migrated from. The repository is
+# private, so this anchor never fetched; any other stored value still refuses.
+readonly LEGACY_TRUST_REMOTE='https://github.com/jlengelbrecht/agent-flow-kit.git'
 readonly TRUST_REF='refs/heads/master'
 readonly TRUST_BRANCH='master'
 readonly TRUST_ROOT='d74e7f9542cfe2731e09a0ff5c5e1b4cf325062f'
@@ -35,6 +38,7 @@ readonly DATE_BIN='/usr/bin/date'
 readonly FIND_BIN='/usr/bin/find'
 readonly SORT_BIN='/usr/bin/sort'
 readonly READLINK_BIN='/usr/bin/readlink'
+readonly SSH_BIN='/usr/bin/ssh'
 readonly REQUIRE_TRUSTED_TOOLS=true
 
 _self_parent="${BASH_SOURCE[0]%/*}"
@@ -43,6 +47,12 @@ SELF_DIR="$(cd -P -- "$_self_parent" && pwd -P)"
 unset _self_parent
 readonly TRUSTED_DRIVER_SOURCE="$SELF_DIR/.."
 POLICY="$SELF_DIR/../lifecycle/release-policy.json"
+# GitHub's published SSH host keys, shipped beside this client in the managed
+# bin tree. They are the only host keys the fetch will accept.
+readonly PINNED_KNOWN_HOSTS="$SELF_DIR/afk-release-known-hosts"
+# Machine-local credential: a read-only deploy key for this one repository. It
+# is read in place by ssh and never copied, logged, or recorded in results.
+DEPLOY_KEY="${AFK_RELEASE_DEPLOY_KEY:-${HOME:+$HOME/.config/agent-flow-kit/deploy-key/agent-flow-kit_ed25519}}"
 STATE_BASE="${XDG_STATE_HOME:-${HOME:+$HOME/.local/state}}"
 STATE_DIR="${AFK_STATE_DIR:-${STATE_BASE:+$STATE_BASE/agent-flow-kit}}"
 MODE=plan
@@ -123,6 +133,7 @@ DATE_EXEC=""
 FIND_EXEC=""
 SORT_EXEC=""
 READLINK_EXEC=""
+SSH_EXEC=""
 ACTIVE_CHILD_PID=""
 ACTIVE_CHILD_PGID=""
 ACTIVE_CHILD_TOKEN=""
@@ -587,6 +598,9 @@ validate_release_tools() {
       HASH_EXEC="$(trusted_absolute_executable "$SHASUM_BIN" 2>/dev/null)" || return 1
       HASH_STYLE=shasum
     fi
+    # ssh is needed only by the network fetch; its absence is reported there
+    # so an offline proof of the last-good release still works without it.
+    SSH_EXEC="$(trusted_absolute_executable "$SSH_BIN" 2>/dev/null)" || SSH_EXEC=""
   else
     [[ "$REALPATH_BIN" == /* && -x "$REALPATH_BIN" && "$STAT_BIN" == /* && -x "$STAT_BIN" &&
        "$JQ_BIN" == /* && -x "$JQ_BIN" && "$CP_BIN" == /* && -x "$CP_BIN" &&
@@ -599,6 +613,8 @@ validate_release_tools() {
     SORT_EXEC="$SORT_BIN"; READLINK_EXEC="$READLINK_BIN"
     GIT_EXEC="$GIT_BIN"; TIMEOUT_EXEC="$TIMEOUT_BIN"
     HASH_EXEC="$SHA256_BIN"; HASH_STYLE=sha256sum
+    SSH_EXEC=""
+    if [[ "$SSH_BIN" == /* && -x "$SSH_BIN" ]]; then SSH_EXEC="$SSH_BIN"; fi
   fi
 }
 
@@ -760,14 +776,15 @@ prepare_trusted_driver() {
 # every invocation from an empty environment so repository/work-tree/index and
 # object-directory selectors, credential helpers, askpass/SSH controls, config
 # injection, and transport overrides cannot redirect reads, writes, or process
-# execution. Focused tests use only the explicitly named non-production seams.
+# execution. The fetch alone adds one explicit GIT_SSH_COMMAND (see
+# release_ssh_command). Focused tests use only the explicitly named seams.
 prepare_git_environment() {
   local name
   GIT_ENV_COMMAND=(env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C HOME=/nonexistent
     GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_GLOBAL=/dev/null
     GIT_CONFIG_COUNT=0 GIT_SSL_NO_VERIFY=false GIT_TERMINAL_PROMPT=0)
   if [[ "$REQUIRE_TRUSTED_TOOLS" != true ]]; then
-    for name in AFK_TEST_GIT_ENV_MARKER AFK_TEST_FETCH_EXECUTED AFK_TEST_FETCH_FAIL AFK_TEST_FETCH_ORPHAN_START \
+    for name in AFK_TEST_GIT_ENV_MARKER AFK_TEST_SSH_CAPTURE AFK_TEST_SSH_STDERR AFK_TEST_FETCH_EXECUTED AFK_TEST_FETCH_FAIL AFK_TEST_FETCH_ORPHAN_START \
       AFK_TEST_FETCH_ORPHAN_TERMINATING AFK_TEST_FETCH_ORPHAN_RELEASE \
       AFK_TEST_FETCH_PARKED AFK_TEST_FETCH_RELEASE AFK_TEST_CHILD_TERMINATING; do
       [[ -v "$name" ]] && GIT_ENV_COMMAND+=("$name=${!name}")
@@ -777,6 +794,46 @@ prepare_git_environment() {
 
 trusted_git() {
   "${GIT_ENV_COMMAND[@]}" "$GIT_EXEC" -c http.sslVerify=true "$@"
+}
+
+# Quote one word for the POSIX shell through which git runs GIT_SSH_COMMAND.
+sh_quote() {
+  local quote="'" escaped="'\\''"
+  printf "'%s'" "${1//"$quote"/"$escaped"}"
+}
+
+# The deploy key must be the user's own regular file (never a link) with mode
+# 0600, and must not live inside the managed runtime or the release state tree.
+# Every directory above it, up to $HOME (or / outside it), must be owned by the
+# user or root and not group/world-writable, as OpenSSH checks its own files.
+deploy_key_is_usable() {
+  local key="$DEPLOY_KEY" runtime_root uid dir home owner mode
+  uid="$(id -u)"
+  [[ -n "$key" && "$key" == /* ]] || return 1
+  [[ ! -L "$key" && -f "$key" && -r "$key" ]] || return 1
+  [[ "$("$STAT_EXEC" -c %u "$key" 2>/dev/null)" == "$uid" ]] || return 1
+  [[ "$("$STAT_EXEC" -c %a "$key" 2>/dev/null)" == 600 ]] || return 1
+  runtime_root="$(cd -P -- "$TRUSTED_DRIVER_SOURCE" 2>/dev/null && pwd -P)" || return 1
+  case "$key" in "$runtime_root"/*|"$STATE_DIR"/*) return 1 ;; esac
+  dir="$(cd -P -- "${key%/*}/" 2>/dev/null && pwd -P)" || return 1
+  home="$(cd -P -- "${HOME:-/}" 2>/dev/null && pwd -P)" || home=/
+  [[ "$dir" == "$home" || "$dir" == "$home"/* ]] || home=/
+  while :; do
+    read -r owner mode < <("$STAT_EXEC" -c '%u %a' "$dir" 2>/dev/null) || return 1
+    [[ ("$owner" == "$uid" || "$owner" == 0) && "$mode" =~ ^[0-7]+$ ]] || return 1
+    (( (8#$mode & 8#022) == 0 )) || return 1
+    [[ "$dir" != "$home" && "$dir" != / ]] || return 0
+    dir="${dir%/*}"; dir="${dir:-/}"
+  done
+}
+
+# The single transport customization: ssh with only the deploy key and only the
+# pinned GitHub host keys. -F /dev/null skips every user and system ssh config
+# (ssh finds ~/.ssh through the password database, not $HOME); the agent,
+# global known_hosts, and host-key updates are all switched off explicitly.
+release_ssh_command() {
+  printf '%s -F /dev/null -i %s -o IdentitiesOnly=yes -o IdentityAgent=none -o StrictHostKeyChecking=yes -o UserKnownHostsFile=%s -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o PreferredAuthentications=publickey -o BatchMode=yes -o ConnectTimeout=10' \
+    "$(sh_quote "$SSH_EXEC")" "$(sh_quote "$DEPLOY_KEY")" "$(sh_quote "$PINNED_KNOWN_HOSTS")"
 }
 
 mirror_config_is_exact() {
@@ -809,8 +866,18 @@ validate_commit() {
   ' <<<"$kit" >/dev/null 2>&1
 }
 
+# Map the fetch's stderr, by fixed strings only, to a reason code. The raw text
+# is never persisted: it may name key files or carry remote-supplied output.
+classify_fetch_failure() { # <stderr text>
+  case "$1" in
+    *"Host key verification failed"*|*"REMOTE HOST IDENTIFICATION HAS CHANGED"*) return 20 ;;
+    *"Permission denied (publickey)"*) return 21 ;;
+  esac
+  return 14
+}
+
 fetch_candidate_revision() {
-  local bound fetch_seconds url shallow
+  local bound fetch_seconds url shallow fetch_error fetch_stderr fetch_rc
   bound="$TIMEOUT_EXEC"
   fetch_seconds="$("$JQ_EXEC" -r '.fetch_timeout_seconds' "$POLICY")"
   if [[ ! -d "$mirror" ]]; then
@@ -822,13 +889,33 @@ fetch_candidate_revision() {
   # Inspect the stored value, not `remote get-url`, which expands `insteadOf`
   # rules before returning it and can make an exact stored anchor look changed.
   url="$(trusted_git --git-dir="$mirror" config --get remote.origin.url 2>/dev/null || true)"
+  if [[ "$url" == "$LEGACY_TRUST_REMOTE" ]]; then
+    trusted_git --git-dir="$mirror" config remote.origin.url "$TRUST_REMOTE" >/dev/null 2>&1 || return 12
+    url="$(trusted_git --git-dir="$mirror" config --get remote.origin.url 2>/dev/null || true)"
+  fi
   [[ "$url" == "$TRUST_REMOTE" ]] || return 12
   shallow="$(trusted_git --git-dir="$mirror" rev-parse --is-shallow-repository 2>/dev/null || true)"
   [[ "$shallow" == false ]] || return 13
+  deploy_key_is_usable || return 18
+  [[ -n "$SSH_EXEC" && ! -L "$PINNED_KNOWN_HOSTS" && -f "$PINNED_KNOWN_HOSTS" &&
+     -s "$PINNED_KNOWN_HOSTS" ]] || return 19
+  # stderr goes to a private scratch file that the EXIT trap also removes.
+  fetch_error="$release_root/.child-output.fetch.${ATTEMPT_ID:-$$}"
+  (umask 077; : >"$fetch_error") || return 14
+  ACTIVE_OUTPUT_FILE="$fetch_error"
   run_tracked "$bound" "$fetch_seconds" "${GIT_ENV_COMMAND[@]}" \
+    GIT_SSH_COMMAND="$(release_ssh_command)" \
     "$GIT_EXEC" -c http.sslVerify=true --git-dir="$mirror" \
     fetch --no-tags --no-recurse-submodules origin \
-    "+$TRUST_REF:refs/afk/fetched" >/dev/null 2>&1 || return 14
+    "+$TRUST_REF:refs/afk/fetched" >/dev/null 2>"$fetch_error"
+  fetch_rc=$?
+  fetch_stderr="$(file_contents_or_empty "$fetch_error")"
+  rm -f -- "$fetch_error"
+  ACTIVE_OUTPUT_FILE=""
+  if (( fetch_rc != 0 )); then
+    classify_fetch_failure "$fetch_stderr"
+    return
+  fi
   TARGET_REVISION="$(trusted_git --git-dir="$mirror" rev-parse 'refs/afk/fetched^{commit}' 2>/dev/null || true)"
   validate_commit "$TARGET_REVISION" || return 15
   if [[ -n "$PRIOR_REVISION" ]]; then
@@ -1098,6 +1185,10 @@ if [[ $fetch_rc -ne 0 ]]; then
     17) retain_last_good_or_block SOURCE_NOT_FORWARD_ANCESTOR ;;
     15|16) retain_last_good_or_block FETCHED_HISTORY_UNTRUSTED ;;
     12|13) retain_last_good_or_block RELEASE_MIRROR_UNTRUSTED ;;
+    18) retain_last_good_or_block DEPLOY_KEY_UNAVAILABLE ;;
+    19) retain_last_good_or_block RELEASE_TRANSPORT_UNAVAILABLE ;;
+    20) retain_last_good_or_block HOST_KEY_MISMATCH ;;
+    21) retain_last_good_or_block DEPLOY_KEY_REJECTED ;;
     14)
       if prove_last_good; then finish RETAINED FETCH_UNAVAILABLE 0; fi
       finish BLOCKED FETCH_UNAVAILABLE_NO_PROVEN_LAST_GOOD 2
