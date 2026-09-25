@@ -82,10 +82,17 @@ reference:
 git pull --ff-only && bin/agent-flow-kit update && bin/agent-flow-kit enroll-auto-update --key-ref <ref>
 ```
 
-| Host | `<ref>` |
+The reference depends on which 1Password access the host has, not on its name.
+The item is `afk-release-deploy-key` in both vaults.
+
+| 1Password access on the host | `<ref>` |
 | --- | --- |
-| devbox, Mac | `op://develop/afk-release-deploy-key/notesPlain` |
-| cachyos | `op://AI-Access/afk-release-key/notesPlain` |
+| Signed in to the account with the `develop` vault (e.g. the Ubuntu dev VM, the Mac) | `op://develop/afk-release-deploy-key/notesPlain` |
+| The `AI-Access` service account in the homelab-0 account (e.g. the CachyOS GPU host) | `op://AI-Access/afk-release-deploy-key/notesPlain` |
+
+A host that reads through a 1Password service account needs
+`OP_SERVICE_ACCOUNT_TOKEN` exported in the shell that runs `enroll-auto-update`;
+an interactive `op signin` is not used there.
 
 `enroll-auto-update --key-ref <op://…> [--key-file <path>]` is idempotent. It
 reads the key with `op read` into a private scratch file and compares its

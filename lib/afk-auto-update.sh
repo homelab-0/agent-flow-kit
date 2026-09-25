@@ -189,7 +189,7 @@ afk_au_install_key() { # <key-ref> — prints installed|unchanged
     trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
     tmp="$(umask 077 && mktemp "$dir/.afk-enroll.XXXXXX")" || { afk_warn "enroll-auto-update: no private scratch file"; exit 1; }
     if ! (umask 077 && "$AFK_AU_OP" read "$1" >"$tmp" 2>/dev/null </dev/null) || [[ ! -s "$tmp" ]]; then
-      afk_warn "enroll-auto-update: KEY_REF_UNREADABLE: op could not read that reference (signed in? right vault?); nothing was installed"
+      afk_warn "enroll-auto-update: KEY_REF_UNREADABLE: op could not read that reference (signed in or service-account token exported? right vault? right item name?); nothing was installed"
       exit 1
     fi
     fp="$(ssh-keygen -l -f "$tmp" </dev/null 2>/dev/null | awk '{print $2; exit}')"
