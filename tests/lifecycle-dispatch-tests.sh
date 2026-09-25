@@ -81,6 +81,18 @@ run_gates() { # <gates_log_dir> <gate...>
   ' _ "$KIT_ROOT/files/model-router/scripts/dispatch.sh" "$@"
 }
 
+# Same subprocess shape as run_gates, but dumps the new ordered GATE_LOG_ENTRIES
+# array (one compact JSON object per line: {index,cmd,status,log}) instead of
+# the legacy command-keyed maps — the array is what AFK-GL-1 review fix 3 added
+# so a duplicated gate command no longer collides.
+run_gate_log_entries() { # <gates_log_dir> <gate...>
+  bash -c '
+    . "$1"; shift
+    dispatch_run_gates "$@"
+    printf "%s\n" "${GATE_LOG_ENTRIES[@]}"
+  ' _ "$KIT_ROOT/files/model-router/scripts/dispatch.sh" "$@"
+}
+
 # ===========================================================================
 head1 "0. Monitor primitives (lib sourced, nothing executed)"
 # ===========================================================================
@@ -118,9 +130,15 @@ assert_eq "an unvalidated preexisting status cannot bypass attempt failure" \
 
 # AFK-GL-1: per-gate logs, the stderr failure tail, and a scrubbed router
 # token — the deterministic-gates loop dispatch.sh runs for every cycle.
+# A single invocation, its stdout and stderr captured to separate files: the
+# directory can now be created only ONCE per dispatch_run_gates call (review
+# fix 1 below refuses a pre-existing gate-log path), so the old pattern of
+# calling run_gates twice against the same GLOGS no longer applies.
 GLOGS="$TMPROOT/gl-logs"
-OUT="$(run_gates "$GLOGS" 'printf keep-this' 'echo boom >&2; exit 1')"
-GERR="$(run_gates "$GLOGS" 'printf keep-this' 'echo boom >&2; exit 1' 2>&1 1>/dev/null)"
+run_gates "$GLOGS" 'printf keep-this' 'echo boom >&2; exit 1' \
+  >"$TMPROOT/gl-out.txt" 2>"$TMPROOT/gl-err.txt"
+OUT="$(cat "$TMPROOT/gl-out.txt")"
+GERR="$(cat "$TMPROOT/gl-err.txt")"
 assert_eq "gates_ok is false when a gate fails" "$(sed -n 1p <<<"$OUT")" "false"
 assert_eq "a passing gate's log exists and is unchanged" \
   "$(cat "$GLOGS/1.log")" "keep-this"
@@ -130,16 +148,85 @@ assert_contains "a failing gate's stderr tail carries its log content" "$GERR" "
 assert_eq "gate log directory is 0700" "$(stat -c '%a' "$GLOGS")" "700"
 assert_eq "gate log files are 0600" "$(stat -c '%a' "$GLOGS/1.log")" "600"
 
-# A gate that does NOT echo the token, run with a sentinel token set in the
-# calling environment (as a real dispatch does): dispatch_run_gates unsets
-# AGENT_ROUTER_TOKEN for the gate's process, so it never reaches the log even
-# though the gate's own environment carries it right up to the call.
+# review fix 2: the failure tail strips ALL terminal control sequences, not
+# just numeric CSI — CSI with private params (e.g. `?25l`), and OSC (title)
+# sequences terminated by BEL.
+CTRLLOGS="$TMPROOT/gl-ctrl-logs"
+CTRL_GATE='printf "\033[?25lhidden\033]0;evil-title\007tail\n" >&2; exit 1'
+run_gates "$CTRLLOGS" "$CTRL_GATE" >/dev/null 2>"$TMPROOT/gl-ctrl-err.txt"
+CTRLERR="$(cat "$TMPROOT/gl-ctrl-err.txt")"
+assert_absent "the CSI cursor-hide private-param sequence is stripped from the failure tail" \
+  "$CTRLERR" $'\033[?25l'
+assert_absent "the OSC title sequence is stripped from the failure tail" \
+  "$CTRLERR" $'\033]0;evil-title\007'
+assert_contains "the printable content around the stripped sequences survives" \
+  "$CTRLERR" "hiddentail"
+
+# review fix 3: gate_logs is keyed by invocation (an ordered array), so a
+# duplicated gate command does not collide the way the legacy GATE_RESULTS /
+# GATE_LOGS maps do (documented pre-existing limitation, unchanged here).
+DUPLOGS="$TMPROOT/gl-dup-logs"
+DUPMARK="$TMPROOT/dup-marker"
+rm -f "$DUPMARK"
+DUP_GATE="[ -e $DUPMARK ] && exit 0 || { : > $DUPMARK; exit 1; }"
+ENTRIES_RAW="$(run_gate_log_entries "$DUPLOGS" "$DUP_GATE" "$DUP_GATE")"
+ENTRIES_JSON="$(printf '%s\n' "$ENTRIES_RAW" | jq -s -c '.')"
+assert_eq "duplicate gate commands still produce two ordered entries" \
+  "$(jq 'length' <<<"$ENTRIES_JSON")" "2"
+assert_eq "the first invocation is recorded as failed" \
+  "$(jq -r '.[0].status' <<<"$ENTRIES_JSON")" "fail"
+assert_eq "the second invocation is recorded as passed" \
+  "$(jq -r '.[1].status' <<<"$ENTRIES_JSON")" "pass"
+assert_eq "entries are indexed by invocation order, 1-based" \
+  "$(jq -c '[.[0].index, .[1].index]' <<<"$ENTRIES_JSON")" "[1,2]"
+assert_eq "both entries carry the same (duplicated) command text" \
+  "$(jq -r '.[0].cmd == .[1].cmd' <<<"$ENTRIES_JSON")" "true"
+
+# review fix 4: the token gate must actually observe AGENT_ROUTER_TOKEN and
+# prove it is unset, not merely avoid echoing an unrelated string.
 TOKGLOGS="$TMPROOT/gl-token-logs"
 AGENT_ROUTER_TOKEN="sentinel-token-do-not-leak" run_gates "$TOKGLOGS" \
-  'printf "%s" "no-token-here"' >/dev/null
+  'printf "%s" "${AGENT_ROUTER_TOKEN-unset}"' >/dev/null
 if grep -rq "sentinel-token-do-not-leak" "$TOKGLOGS" 2>/dev/null; then
   bad "router token never appears in a gate log" "found in $TOKGLOGS"
 else ok "router token never appears in a gate log"; fi
+assert_eq "the gate observes AGENT_ROUTER_TOKEN as unset, not the sentinel" \
+  "$(cat "$TOKGLOGS/1.log")" "unset"
+
+# review fix 1 (security): the gate-log directory moved OUT of the worktree
+# into a dispatcher-owned location; a symlink planted at the retired
+# in-worktree convention (<story>.gates.c<cycle>) is structurally unreachable
+# now, and a symlink planted at the new dispatcher-owned path makes
+# dispatch_run_gates refuse rather than write through it.
+STORY_GATES_REFS="$(grep -c '\${STORY}\.gates\.c' "$KIT_ROOT/files/model-router/scripts/dispatch.sh" || true)"
+assert_eq "no reference to the retired in-worktree gates.c<cycle> convention remains" \
+  "${STORY_GATES_REFS:-0}" "0"
+
+OLD_ESCAPE_TARGET="$TMPROOT/old-escape-target"
+OLDLOC="$TMPROOT/story.md.gates.c1"
+ln -s "$OLD_ESCAPE_TARGET" "$OLDLOC"
+run_gates "$TMPROOT/gl-logs-unrelated" 'printf ok' >/dev/null
+assert_no_file "a symlink planted at the retired in-worktree path is never followed or written through" \
+  "$OLD_ESCAPE_TARGET"
+assert_eq "the planted symlink itself is untouched" "$(readlink "$OLDLOC")" "$OLD_ESCAPE_TARGET"
+
+NEW_ESCAPE_TARGET="$TMPROOT/new-escape-target"
+SYMLINKED_GLOGS="$TMPROOT/gl-logs-symlinked"
+ln -s "$NEW_ESCAPE_TARGET" "$SYMLINKED_GLOGS"
+if run_gates "$SYMLINKED_GLOGS" 'printf ok' >/dev/null 2>"$TMPROOT/gl-symlink-refusal.err"; then
+  bad "dispatch_run_gates refuses a symlinked gate-log directory" "it ran instead of refusing"
+else
+  ok "dispatch_run_gates refuses a symlinked gate-log directory"
+fi
+assert_no_file "nothing was ever created through the planted directory symlink" "$NEW_ESCAPE_TARGET"
+
+# The dispatcher-owned default location (gates_log_dir_for) resolves under
+# AFK_STATE_DIR/dispatch/<dispatch_id>/gates.c<cycle>, never under the story's
+# own worktree path.
+GATES_DIR_FOR_OUT="$(bash -c '. "$1"; AFK_STATE_DIR="$2" gates_log_dir_for "$3" "$4"' \
+  _ "$KIT_ROOT/files/model-router/scripts/dispatch.sh" "$TMPROOT/state" "dispatch-abc" "3")"
+assert_eq "gates_log_dir_for is rooted under AFK_STATE_DIR/dispatch, keyed by dispatch id and cycle" \
+  "$GATES_DIR_FOR_OUT" "$TMPROOT/state/dispatch/dispatch-abc/gates.c3"
 
 # shellcheck source=../lib/afk-common.sh
 . "$KIT_ROOT/lib/afk-common.sh"

@@ -1027,6 +1027,15 @@ set +e; wait "$killed_manager_pid" 2>/dev/null; set -e
 # covers it. Let it actually exit before the next case reuses this bin/dir,
 # instead of trusting that it happened to finish in time.
 for _ in $(seq 1 500); do pgrep -f "$lock_race_bin/stat" >/dev/null 2>&1 || break; /bin/sleep 0.01; done
+# The loop above is a bounded poll, not a proof: it also exits after 500
+# iterations even if the helper never exited. Check again, explicitly, so a
+# still-running helper fails this case instead of silently letting the next
+# case reuse the same bin/dir underneath it.
+if pgrep -f "$lock_race_bin/stat" >/dev/null 2>&1; then
+  no "race-helper stat child is still running after the poll deadline"
+else
+  ok
+fi
 if "$ROOT/adapters/manage.sh" install claude --home "$killed_manager_home" --state-dir "$killed_manager_state" --adapter-root "$ROOT/adapters" >/dev/null; then ok; else no "manager reclaims complete claim after SIGKILL"; fi
 "$ROOT/adapters/manage.sh" remove claude --home "$killed_manager_home" --state-dir "$killed_manager_state" --adapter-root "$ROOT/adapters" >/dev/null
 
