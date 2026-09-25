@@ -2419,6 +2419,39 @@ opencode_funding_preflight() {
   [[ -n "$expected" && "$actual" == "$expected" ]] || die "MiniMax funding attestation is invalid or stale" "$EX_CONFIG"
 }
 
+# dispatch_run_gates — runs each gate, keeping its combined stdout+stderr next
+# to the per-cycle result instead of discarding it, so a failure's reason
+# survives without a ~35-minute re-run of the whole suite. Pass/fail is still
+# exit status only — the log is never read to decide it. Gates never need
+# router credentials, so they are scrubbed from the gate's environment before
+# it runs, on top of tests/run-tests.sh's own hermetic-env handling (#59):
+# belt and suspenders, since a gate command is free-text from the story and
+# may not be run-tests.sh. Sets the globals GATE_RESULTS, GATE_LOGS, GATES_OK;
+# caller passes the per-cycle log directory (may be "") and the gate commands.
+dispatch_run_gates() { # <gates_log_dir> <gate...>
+  local gates_log_dir="$1"; shift
+  declare -g -A GATE_RESULTS=() GATE_LOGS=(); GATES_OK=true
+  local gate_n=0 g
+  (( $# > 0 )) && { mkdir -p -- "$gates_log_dir" && chmod 700 -- "$gates_log_dir"; }
+  local -a gate_env_unset=(-u AGENT_ROUTER_TOKEN -u AGENT_ROUTER_URL -u AGENT_ROUTER_TOKEN_ENV)
+  [[ -n "${CALLER_TOKEN_ENV:-}" ]] && gate_env_unset+=(-u "$CALLER_TOKEN_ENV")
+  for g in "$@"; do
+    [[ -z "$g" ]] && continue
+    gate_n=$((gate_n + 1))
+    local gate_log_name="${gate_n}.log" gate_log_path="${gates_log_dir}/${gate_n}.log"
+    : > "$gate_log_path"; chmod 600 -- "$gate_log_path"
+    if env "${gate_env_unset[@]}" bash -c "$g" >"$gate_log_path" 2>&1; then
+      GATE_RESULTS["$g"]="pass"
+    else
+      GATE_RESULTS["$g"]="fail"; GATES_OK=false
+      local gate_tail
+      gate_tail="$(sed -E 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$gate_log_path" | tail -20)"
+      printf 'GATE FAILED: %s\n%s\n' "$g" "$gate_tail" >&2
+    fi
+    GATE_LOGS["$g"]="$gate_log_name"
+  done
+}
+
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
@@ -3143,12 +3176,9 @@ EOF
 
   # ---- deterministic gates: never trust the worker's word -----------------
   # A zero harness exit means the turn completed, not that the task succeeded.
-  declare -A GATE_RESULTS; GATES_OK=true
-  for g in "${GATES[@]:-}"; do
-    [[ -z "$g" ]] && continue
-    if bash -c "$g" >/dev/null 2>&1; then GATE_RESULTS["$g"]="pass"
-    else GATE_RESULTS["$g"]="fail"; GATES_OK=false; fi
-  done
+  local gates_log_dir=""
+  (( ${#GATES[@]} > 0 )) && gates_log_dir="${STORY}.gates.c${CYCLE}"
+  dispatch_run_gates "$gates_log_dir" "${GATES[@]:-}"
 
   # A run that finished is not a run that needs continuing. An end-of-run ratio
   # in the continuation band on a story whose gates passed and whose worker said
@@ -3232,8 +3262,12 @@ EOF
           checkpoint_artifact:$cp, continuation_artifact:$ct,
           continuation_of:$cof, continuation_decision:$cdec,
           findings:$findings}')" \
+    --arg gates_log_dir "$gates_log_dir" \
     --argjson gates "$(for k in "${!GATE_RESULTS[@]}"; do
                          jq -n --arg k "$k" --arg v "${GATE_RESULTS[$k]}" '{($k):$v}'
+                       done | jq -s 'add // {}')" \
+    --argjson gate_logs "$(for k in "${!GATE_LOGS[@]}"; do
+                         jq -n --arg k "$k" --arg log "${GATE_LOGS[$k]}" '{($k):$log}'
                        done | jq -s 'add // {}')" \
     '{story:$story, cycle:($cycle|tonumber), status:$attempt.status,
       route:$route,
@@ -3242,7 +3276,9 @@ EOF
       placement:$placement,
       budget:$budget,
       launch:({orca_terminal:$terminal,dispatch_id:$dispatch,worker_identity:$worker} + $attempt.launch),
-      gates:$gates}' > "${STORY}.result.json"
+      gates:$gates,
+      gates_log_dir:(if $gates_log_dir == "" then null else $gates_log_dir end),
+      gate_logs:$gate_logs}' > "${STORY}.result.json"
 
   # The per-cycle copy. `${STORY}.result.json` is what a reader opens by name
   # and is overwritten every cycle; the cap and the continuation chain are

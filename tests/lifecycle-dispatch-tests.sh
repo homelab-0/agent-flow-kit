@@ -67,6 +67,20 @@ attempt_projection() {
     _ "$KIT_ROOT/files/model-router/scripts/dispatch.sh" "$@"
 }
 
+# Exercises the deterministic-gates loop (AFK-GL-1) in a subprocess, same
+# reasoning as attempt_projection above. Prints "$GATES_OK" then, per gate in
+# order, "<status> <log-file-name>", to stdout; the gate's own stderr passes
+# through untouched so the failure-tail assertions can inspect it directly.
+run_gates() { # <gates_log_dir> <gate...>
+  bash -c '
+    . "$1"; shift
+    dispatch_run_gates "$@"
+    printf "%s\n" "$GATES_OK"
+    shift
+    for g in "$@"; do [[ -n "$g" ]] && printf "%s %s\n" "${GATE_RESULTS[$g]}" "${GATE_LOGS[$g]}"; done
+  ' _ "$KIT_ROOT/files/model-router/scripts/dispatch.sh" "$@"
+}
+
 # ===========================================================================
 head1 "0. Monitor primitives (lib sourced, nothing executed)"
 # ===========================================================================
@@ -101,6 +115,31 @@ assert_eq "continuation still retains the observed harness exit" \
 ATTEMPT="$(attempt_projection done true 9 true)"
 assert_eq "an unvalidated preexisting status cannot bypass attempt failure" \
   "$(jq -r .status <<<"$ATTEMPT")" "gates_failed"
+
+# AFK-GL-1: per-gate logs, the stderr failure tail, and a scrubbed router
+# token — the deterministic-gates loop dispatch.sh runs for every cycle.
+GLOGS="$TMPROOT/gl-logs"
+OUT="$(run_gates "$GLOGS" 'printf keep-this' 'echo boom >&2; exit 1')"
+GERR="$(run_gates "$GLOGS" 'printf keep-this' 'echo boom >&2; exit 1' 2>&1 1>/dev/null)"
+assert_eq "gates_ok is false when a gate fails" "$(sed -n 1p <<<"$OUT")" "false"
+assert_eq "a passing gate's log exists and is unchanged" \
+  "$(cat "$GLOGS/1.log")" "keep-this"
+assert_eq "a failing gate produces its log file" "$(cat "$GLOGS/2.log")" "boom"
+assert_contains "a failing gate's stderr tail names the gate command" "$GERR" "echo boom >&2; exit 1"
+assert_contains "a failing gate's stderr tail carries its log content" "$GERR" "boom"
+assert_eq "gate log directory is 0700" "$(stat -c '%a' "$GLOGS")" "700"
+assert_eq "gate log files are 0600" "$(stat -c '%a' "$GLOGS/1.log")" "600"
+
+# A gate that does NOT echo the token, run with a sentinel token set in the
+# calling environment (as a real dispatch does): dispatch_run_gates unsets
+# AGENT_ROUTER_TOKEN for the gate's process, so it never reaches the log even
+# though the gate's own environment carries it right up to the call.
+TOKGLOGS="$TMPROOT/gl-token-logs"
+AGENT_ROUTER_TOKEN="sentinel-token-do-not-leak" run_gates "$TOKGLOGS" \
+  'printf "%s" "no-token-here"' >/dev/null
+if grep -rq "sentinel-token-do-not-leak" "$TOKGLOGS" 2>/dev/null; then
+  bad "router token never appears in a gate log" "found in $TOKGLOGS"
+else ok "router token never appears in a gate log"; fi
 
 # shellcheck source=../lib/afk-common.sh
 . "$KIT_ROOT/lib/afk-common.sh"

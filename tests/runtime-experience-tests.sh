@@ -1022,6 +1022,11 @@ for _ in $(seq 1 500); do [[ -e "$lock_race_dir/manager-killed-owned" ]] && brea
 kill -9 "$killed_manager_pid" 2>/dev/null || true
 : >"$lock_race_dir/manager-killed-release-owner"
 set +e; wait "$killed_manager_pid" 2>/dev/null; set -e
+# The killed process's own child (the "stat" race helper, blocked on the
+# release file) is not this script's direct child and `wait` above never
+# covers it. Let it actually exit before the next case reuses this bin/dir,
+# instead of trusting that it happened to finish in time.
+for _ in $(seq 1 500); do pgrep -f "$lock_race_bin/stat" >/dev/null 2>&1 || break; /bin/sleep 0.01; done
 if "$ROOT/adapters/manage.sh" install claude --home "$killed_manager_home" --state-dir "$killed_manager_state" --adapter-root "$ROOT/adapters" >/dev/null; then ok; else no "manager reclaims complete claim after SIGKILL"; fi
 "$ROOT/adapters/manage.sh" remove claude --home "$killed_manager_home" --state-dir "$killed_manager_state" --adapter-root "$ROOT/adapters" >/dev/null
 
@@ -1971,14 +1976,24 @@ eq "second rollover closes independently" "$(jq -r .state "$pmd/handoff.json")" 
 eq "two transition-scoped intent directories remain auditable" "$(find "$pmd/transitions" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" 2
 eq "two rollovers count exactly twice" "$(jq -r .pm_continuations "$pmd/budget-state.json")" 2
 
-# Corruption and a different active continuation both fail closed.
-corrupt="$TMP/corrupt-pm"; mkdir -p "$corrupt"; cp "$pmd/continuation.json" "$corrupt/continuation.json"; printf '{bad\n' >"$corrupt/handoff.json"; cp "$pmd/ownership.json" "$corrupt/ownership.json"
-before="$(sha256sum "$corrupt/handoff.json")"; set +e; AFK_PM_DIR="$corrupt" ORCA_TERMINAL_HANDLE=new-terminal "$ROOT/bin/agent-flow-kit" pm-continue --json >/dev/null 2>&1; corrupt_rc=$?; set -e
+# Corruption and a different active continuation both fail closed. Each gets
+# its own HOME/AFK_STATE_DIR (fresh temp dirs, not the ambient environment's):
+# without one, afk_lock_acquire judges the REAL host's lock file before the
+# corrupt/different artifact is ever read, so a lock genuinely busy elsewhere
+# on the host (e.g. a real dispatch running concurrently) turns an expected
+# artifact-refusal (exit 1) into a lock refusal (exit 2) — timing-dependent
+# and exactly the kind of leak a scoped temp dir exists to prevent.
+corrupt="$TMP/corrupt-pm"; corrupt_home="$TMP/corrupt-pm-home"; corrupt_state="$TMP/corrupt-pm-state"
+mkdir -p "$corrupt" "$corrupt_home" "$corrupt_state"
+cp "$pmd/continuation.json" "$corrupt/continuation.json"; printf '{bad\n' >"$corrupt/handoff.json"; cp "$pmd/ownership.json" "$corrupt/ownership.json"
+before="$(sha256sum "$corrupt/handoff.json")"
+set +e; HOME="$corrupt_home" AFK_STATE_DIR="$corrupt_state" AFK_PM_DIR="$corrupt" ORCA_TERMINAL_HANDLE=new-terminal "$ROOT/bin/agent-flow-kit" pm-continue --json >/dev/null 2>&1; corrupt_rc=$?; set -e
 eq "corrupt handoff refuses" "$corrupt_rc" 1; eq "corrupt handoff not replaced" "$(sha256sum "$corrupt/handoff.json")" "$before"
 active_before="$(sha256sum "$pmd/continuation.json")"; jq '.resume_instruction="different"' "$pmd/continuation.json" >"$TMP/different-cont.json"
 # Re-open the completed state as active to exercise the artifact guard.
 jq '.state="ACKED"' "$pmd/handoff.json" >"$pmd/h"; mv "$pmd/h" "$pmd/handoff.json"
-set +e; AFK_PM_DIR="$pmd" "$ROOT/bin/agent-flow-kit" pm-checkpoint --continuation --write "$TMP/different-cont.json" --json >/dev/null 2>&1; different_rc=$?; set -e
+different_home="$TMP/different-pm-home"; different_state="$TMP/different-pm-state"; mkdir -p "$different_home" "$different_state"
+set +e; HOME="$different_home" AFK_STATE_DIR="$different_state" AFK_PM_DIR="$pmd" "$ROOT/bin/agent-flow-kit" pm-checkpoint --continuation --write "$TMP/different-cont.json" --json >/dev/null 2>&1; different_rc=$?; set -e
 eq "different active continuation refuses" "$different_rc" 2; eq "active continuation unchanged" "$(sha256sum "$pmd/continuation.json")" "$active_before"
 printf '%s\n' "$pass passed, $fail failed"
 (( fail == 0 ))
