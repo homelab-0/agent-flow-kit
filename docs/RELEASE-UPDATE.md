@@ -109,8 +109,12 @@ same 600-second `timeout` as the unit (`first_attempt=TIMED_OUT` when it
 expires), and prints one `auto-update: ENROLLED …` line. If the scheduler
 cannot be enabled it removes the units and the config and exits 5
 (`SCHEDULER_UNAVAILABLE`); on macOS, when a previous agent was loaded, it puts
-that agent and its config back instead. The key's bytes are never printed,
-logged, or copied anywhere else.
+that agent and its config back instead. On a Linux re-enrollment it keeps the
+config, restores the previous unit files, reloads, and restores the timer's
+previous enabled and active state. If the reload itself failed, systemd never
+saw the new units, so it only puts the files back. When any rollback step
+fails it reports `ROLLBACK_FAILED` and names the step rather than claiming a
+restore. The key's bytes are never printed, logged, or copied anywhere else.
 
 `--check` and `--remove` are exclusive and refuse `--key-ref` and
 `--key-file`. They, and `status`, use the key path enrollment recorded unless

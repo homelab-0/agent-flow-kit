@@ -219,15 +219,66 @@ afk_au_unschedule() {
   esac
 }
 
-afk_au_enable_linux() { # <interval>
-  local user
-  if ! { afk_au_put "$AFK_AU_SYSTEMD_DIR/$AFK_AU_UNIT.service" "$(afk_au_systemd_service)" \
+# afk_au_linux_restore_files — put the saved unit files back as they were
+# (present with their text, or absent). Uses the caller's prev_* locals.
+afk_au_linux_restore_files() {
+  local svc="$AFK_AU_SYSTEMD_DIR/$AFK_AU_UNIT.service"
+  if [[ -n "$prev_svc_set" ]]; then afk_au_put "$svc" "$prev_svc" || return 1; else rm -f -- "$svc" || return 1; fi
+  if [[ -n "$prev_tmr_set" ]]; then afk_au_put "$AFK_AU_SCHEDULER" "$prev_tmr" || return 1; else rm -f -- "$AFK_AU_SCHEDULER" || return 1; fi
+}
+
+# afk_au_linux_rollback — after the manager saw the new units: restore the
+# files, reload, then the previous enabled and active state, in that order.
+# Prints the step that failed, if any.
+afk_au_linux_rollback() {
+  local t="$AFK_AU_UNIT.timer"
+  afk_au_linux_restore_files || { printf 'restore-files'; return 1; }
+  systemctl --user daemon-reload >/dev/null 2>&1 </dev/null || { printf 'daemon-reload'; return 1; }
+  if [[ -n "$prev_enabled" ]]; then systemctl --user enable "$t" >/dev/null 2>&1 </dev/null || { printf 'enable'; return 1; }
+  else systemctl --user disable "$t" >/dev/null 2>&1 </dev/null || { printf 'disable'; return 1; }; fi
+  if [[ -n "$prev_active" ]]; then systemctl --user start "$t" >/dev/null 2>&1 </dev/null || { printf 'start'; return 1; }
+  else systemctl --user stop "$t" >/dev/null 2>&1 </dev/null || { printf 'stop'; return 1; }; fi
+}
+
+# afk_au_enable_linux <interval> — sets AFK_AU_PREVIOUS on a re-enrollment and
+# AFK_AU_RESTORED once every rollback step succeeded. A first enrollment that
+# fails is unscheduled as before; a re-enrollment keeps the config.
+afk_au_enable_linux() {
+  local user t="$AFK_AU_UNIT.timer" svc="$AFK_AU_SYSTEMD_DIR/$AFK_AU_UNIT.service" step
+  local prev_svc="" prev_svc_set="" prev_tmr="" prev_tmr_set="" prev_enabled="" prev_active=""
+  AFK_AU_PREVIOUS="" AFK_AU_RESTORED=""
+  [[ -f "$svc" || -f "$AFK_AU_SCHEDULER" ]] && AFK_AU_PREVIOUS=y
+  if [[ -f "$svc" ]]; then prev_svc="$(cat -- "$svc")" || return 1; prev_svc_set=y; fi
+  if [[ -f "$AFK_AU_SCHEDULER" ]]; then prev_tmr="$(cat -- "$AFK_AU_SCHEDULER")" || return 1; prev_tmr_set=y; fi
+  if [[ -n "$AFK_AU_PREVIOUS" ]]; then
+    [[ "$(systemctl --user is-enabled "$t" 2>/dev/null </dev/null)" == enabled ]] && prev_enabled=y
+    [[ "$(systemctl --user is-active "$t" 2>/dev/null </dev/null)" == active ]] && prev_active=y
+  fi
+  if ! { afk_au_put "$svc" "$(afk_au_systemd_service)" \
          && afk_au_put "$AFK_AU_SCHEDULER" "$(afk_au_systemd_timer "$1")" \
-         && systemctl --user daemon-reload >/dev/null 2>&1 \
-         && systemctl --user enable --now "$AFK_AU_UNIT.timer" >/dev/null 2>&1 \
-         && afk_au_scheduler_enabled; }; then
-    afk_au_unschedule
-    afk_warn "enroll-auto-update: SCHEDULER_UNAVAILABLE: systemctl --user could not enable $AFK_AU_UNIT.timer (is a user manager running?); the units were removed"
+         && systemctl --user daemon-reload >/dev/null 2>&1 </dev/null; }; then
+    # The manager has not loaded the new units: put the files back, unschedule nothing.
+    if [[ -n "$AFK_AU_PREVIOUS" ]] && afk_au_linux_restore_files; then
+      AFK_AU_RESTORED=y
+      afk_warn "enroll-auto-update: SCHEDULER_UNAVAILABLE: the new units could not be loaded (is a user manager running?); the previous unit files and the config were restored and nothing was unscheduled"
+    elif [[ -n "$AFK_AU_PREVIOUS" ]]; then
+      afk_warn "enroll-auto-update: ROLLBACK_FAILED: the new units could not be loaded and the previous unit files could not be restored; the config was kept; inspect $AFK_AU_SYSTEMD_DIR"
+    else
+      afk_au_unschedule
+      afk_warn "enroll-auto-update: SCHEDULER_UNAVAILABLE: systemctl --user could not load $t (is a user manager running?); the units were removed"
+    fi
+    return 1
+  fi
+  if ! { systemctl --user enable --now "$t" >/dev/null 2>&1 </dev/null && afk_au_scheduler_enabled; }; then
+    if [[ -z "$AFK_AU_PREVIOUS" ]]; then
+      afk_au_unschedule
+      afk_warn "enroll-auto-update: SCHEDULER_UNAVAILABLE: systemctl --user could not enable $t (is a user manager running?); the units were removed"
+    elif step="$(afk_au_linux_rollback)"; then
+      AFK_AU_RESTORED=y
+      afk_warn "enroll-auto-update: SCHEDULER_UNAVAILABLE: systemctl --user could not enable the new $t; the previous units, their enabled and active state and the config were restored"
+    else
+      afk_warn "enroll-auto-update: ROLLBACK_FAILED: systemctl --user could not enable the new $t and restoring the previous one failed at $step; the config was kept; inspect: systemctl --user status $t"
+    fi
     return 1
   fi
   user="${USER:-$(id -un)}"
@@ -341,10 +392,13 @@ afk_cmd_enroll_auto_update() { # <enroll|check|remove> <key-ref> <key-file>
   interval="$(afk_au_interval)"
   AFK_AU_KEY_ACTION="$(afk_au_install_key "$2")" || return "$AFK_EXIT_SOURCE_REFUSED"
   # The config is written only once the scheduler is really enabled. A failed
-  # enable leaves neither units nor an earlier config, unless macOS put the
-  # previous agent back, in which case its config stays with it.
+  # enable leaves neither units nor an earlier config, unless the previous
+  # scheduler was there before: macOS keeps the config when it put the agent
+  # back; Linux always keeps it on re-enrollment, since status asks systemd.
   if [[ "$AFK_AU_PLATFORM" == linux ]]; then
-    afk_au_enable_linux "$interval" || { rm -f -- "$AFK_AU_CONFIG"; return "$AFK_EXIT_LIVE_UNAVAILABLE"; }
+    afk_au_enable_linux "$interval" || {
+      [[ -n "$AFK_AU_PREVIOUS" ]] || rm -f -- "$AFK_AU_CONFIG"
+      return "$AFK_EXIT_LIVE_UNAVAILABLE"; }
   elif ! afk_au_enable_darwin "$interval"; then
     [[ -n "$AFK_AU_RESTORED" ]] || rm -f -- "$AFK_AU_CONFIG"
     return "$AFK_EXIT_LIVE_UNAVAILABLE"

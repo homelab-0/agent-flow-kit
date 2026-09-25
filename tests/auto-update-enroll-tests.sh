@@ -49,13 +49,30 @@ if grep -q GOOD "${*: -1}"; then printf '256 %s afk (ED25519)\n' "$AFK_TEST_PINN
 else printf '256 SHA256:notThePinnedDeployKey afk (ED25519)\n'; fi
 SH
 # The scheduler stubs keep their enabled/loaded state in the throwaway HOME.
+# AFK_TEST_SYSTEMCTL_FAIL lists steps that fail: a verb (`daemon-reload`,
+# `enable`, `start`...), `enable-now`, or `<step>@<n>` for only its n-th call
+# in this HOME; `1` fails every enable.
 cat >"$STUBS/systemctl" <<'SH'
 #!/usr/bin/env bash
 printf 'systemctl %s\n' "$*" >>"$AFK_TEST_LOG"
-case "$2" in
-  enable)     [[ -z "$AFK_TEST_SYSTEMCTL_FAIL" ]] || exit 1; : >"$HOME/.stub-timer-enabled" ;;
-  disable)    rm -f "$HOME/.stub-timer-enabled" ;;
-  is-enabled) if [[ -f "$HOME/.stub-timer-enabled" ]]; then echo enabled; else echo disabled; exit 1; fi ;;
+E="$HOME/.stub-timer-enabled" A="$HOME/.stub-timer-active"
+step="$2"; [[ "${3:-}" == --now ]] && step="$2-now"
+n=$(( $(cat "$HOME/.stub-count-$step" 2>/dev/null || echo 0) + 1 )); echo "$n" >"$HOME/.stub-count-$step"
+for f in $AFK_TEST_SYSTEMCTL_FAIL; do
+  case "$f" in
+    1) [[ "$2" != enable ]] || exit 1 ;;
+    "$step"|"$step@$n") exit 1 ;;
+  esac
+done
+case "$step" in
+  enable)      : >"$E" ;;
+  enable-now)  : >"$E"; : >"$A" ;;
+  disable)     rm -f "$E" ;;
+  disable-now) rm -f "$E" "$A" ;;
+  start)       : >"$A" ;;
+  stop)        rm -f "$A" ;;
+  is-enabled)  if [[ -f "$E" ]]; then echo enabled; else echo disabled; exit 1; fi ;;
+  is-active)   if [[ -f "$A" ]]; then echo active; else echo inactive; exit 3; fi ;;
 esac
 SH
 # Like launchd, bootout finishes asynchronously (the agent is gone only after
@@ -222,6 +239,58 @@ assert_missing "enable failure: no config recorded" "$H/.config/agent-flow-kit/a
 run_afk "$H" linux enablefail-status status --json
 assert_eq "enable failure: status not enrolled" "$(jq -r .extra.auto_update.enrolled "$OUT/enablefail-status.out" 2>/dev/null)" "false"
 
+head1 "Linux re-enrollment that fails puts the previous timer back"
+H="$(new_home rollback)"
+RB_CONFIG_PATH="$H/.config/agent-flow-kit/auto-update.json"
+jq '.check_interval_seconds = 1800' "$POLICY" >"$TMPROOT/policy-1800.json"
+run_afk "$H" linux rb-enroll enroll-auto-update --key-ref op://develop/good/notesPlain
+assert_eq "rollback: the first enrollment succeeds" "$RC" "0"
+RB_TIMER="$(cksum <"$H/$UNIT_REL.timer")"; RB_SERVICE="$(cksum <"$H/$UNIT_REL.service")"
+RB_CONFIG="$(cksum <"$RB_CONFIG_PATH")"
+RB_CALLS=""
+rb_run() { # <name> <failing-steps> — re-enroll at 1800s with those systemctl steps failing
+  local mark
+  rm -f "$H"/.stub-count-*
+  mark="$(wc -l <"$LOG")"
+  AFK_TEST_SYSTEMCTL_FAIL="$2" AFK_TEST_POLICY="$TMPROOT/policy-1800.json" \
+    run_afk "$H" linux "$1" enroll-auto-update --key-ref op://develop/good/notesPlain
+  RB_CALLS="$(tail -n +"$((mark + 1))" "$LOG")"
+  if (( RC != 0 )); then ok "$1: exits non-zero ($RC)"; else bad "$1: exits non-zero" "exit 0"; fi
+  assert_absent "$1: never reports ENROLLED" "$(cat "$OUT/$1.out")" "ENROLLED"
+  assert_eq "$1: previous timer file kept" "$(cksum <"$H/$UNIT_REL.timer")" "$RB_TIMER"
+  assert_eq "$1: previous service file kept" "$(cksum <"$H/$UNIT_REL.service")" "$RB_SERVICE"
+  assert_eq "$1: config kept" "$(cksum <"$RB_CONFIG_PATH" 2>/dev/null)" "$RB_CONFIG"
+}
+rb_run rb-enable enable-now
+assert_contains "rb-enable: says the previous units were restored" "$(cat "$OUT/rb-enable.err")" "state and the config were restored"
+assert_contains "rb-enable: reloads after restoring the files" "$RB_CALLS" \
+  "systemctl --user enable --now afk-release-reconcile.timer"$'\n'"systemctl --user daemon-reload"
+assert_contains "rb-enable: previous active state restored" "$RB_CALLS" "systemctl --user start afk-release-reconcile.timer"
+run_afk "$H" linux rb-status status --json
+assert_eq "rb-enable: status still enrolled" "$(jq -r .extra.auto_update.enrolled "$OUT/rb-status.out" 2>/dev/null)" "true"
+
+rb_run rb-reload daemon-reload
+assert_contains "rb-reload: the unloaded case is named" "$(cat "$OUT/rb-reload.err")" "nothing was unscheduled"
+assert_absent "rb-reload: nothing unscheduled" "$RB_CALLS" "disable"
+assert_absent "rb-reload: nothing enabled" "$RB_CALLS" "enable --now"
+assert_eq "rb-reload: timer still enabled" "$([[ -f "$H/.stub-timer-enabled" ]] && echo y)" "y"
+
+for rb in "daemon-reload@2:daemon-reload" "enable:enable" "start:start"; do
+  rb_run "rb-fail-${rb%%:*}" "enable-now ${rb%%:*}"
+  assert_contains "rb-fail-${rb%%:*}: ROLLBACK_FAILED names the step" "$(cat "$OUT/rb-fail-${rb%%:*}.err")" \
+    "ROLLBACK_FAILED: systemctl --user could not enable the new afk-release-reconcile.timer and restoring the previous one failed at ${rb#*:}"
+  assert_absent "rb-fail-${rb%%:*}: never claims a restore" "$(cat "$OUT/rb-fail-${rb%%:*}.err")" "were restored"
+done
+
+# The previous timer was enabled but not running: enable --now starts it, the
+# scheduler check then fails, and the rollback stops it again.
+rm -f "$H/.stub-timer-active"
+rb_run rb-inactive is-enabled@2
+assert_contains "rb-inactive: the restore is reported" "$(cat "$OUT/rb-inactive.err")" "state and the config were restored"
+assert_contains "rb-inactive: stopped again" "$RB_CALLS" "systemctl --user stop afk-release-reconcile.timer"
+assert_missing "rb-inactive: previous inactive state restored" "$H/.stub-timer-active"
+assert_eq "rb-inactive: previous enabled state restored" "$([[ -f "$H/.stub-timer-enabled" ]] && echo y)" "y"
+
 head1 "Linux: key, units, first attempt"
 H="$(new_home linux)"
 run_afk "$H" linux enroll1 enroll-auto-update --key-ref op://develop/good/notesPlain
@@ -257,7 +326,6 @@ AFK_TEST_TIMEOUT_EXPIRE=1 run_afk "$H" linux timedout enroll-auto-update --key-r
 assert_eq "a timed-out first attempt still enrolls" "$RC" "0"
 assert_contains "a timed-out first attempt reports TIMED_OUT" "$(cat "$OUT/timedout.out")" "first_attempt=TIMED_OUT"
 
-jq '.check_interval_seconds = 1800' "$POLICY" >"$TMPROOT/policy-1800.json"
 AFK_TEST_POLICY="$TMPROOT/policy-1800.json" run_afk "$H" linux enroll3 enroll-auto-update --key-ref op://develop/good/notesPlain
 assert_contains "timer follows a changed policy interval" "$(cat "$H/$UNIT_REL.timer")" "OnUnitActiveSec=1800"
 
