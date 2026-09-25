@@ -157,21 +157,46 @@ In every other case it changes nothing and refuses with exit 4 and
   `sudo loginctl enable-linger <user>`; the command never runs sudo itself.
 - **macOS.** A launchd user agent
   (`~/Library/LaunchAgents/io.github.jlengelbrecht.agent-flow-kit.update-check.plist`)
-  runs `agent-flow-kit enroll-auto-update --check` on the same interval, with
-  a fixed `PATH` (`/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin`). The
-  check reads the trusted ref with `git ls-remote` over the same pinned-key SSH
-  transport, compares it with the applied revision, and records
-  `UPDATE_AVAILABLE`, `CURRENT`, or `CHECK_FAILED` in
-  `$AFK_STATE_DIR/auto-update-check.json`. It never applies; the human or an
-  agent runs `agent-flow-kit update`. `MACOS_SANDBOX_PENDING` below is
-  unchanged. Re-enrolling waits (bounded) for `launchctl bootout` to finish
-  before `bootstrap`, and retries `bootstrap` up to three times.
+  runs `agent-flow-kit enroll-auto-update --check` on the same interval. The
+  agent's `#!/usr/bin/env bash` shebang is never trusted to pick the
+  interpreter: launchd's own `PATH` puts `/usr/bin` first, which resolves to
+  macOS's system bash **3.2.57** and fails immediately at the kit's `[[ -v `
+  syntax. Enrollment instead resolves an absolute bash **4.2 or newer**
+  itself — checking `/opt/homebrew/bin/bash`, then `/usr/local/bin/bash`, then
+  `command -v bash`, actually running each candidate to read
+  `BASH_VERSINFO` — and makes it `ProgramArguments[0]`, ahead of the installed
+  `agent-flow-kit`. If no bash 4.2+ exists anywhere, enrollment refuses (exit
+  4, `MODERN_BASH_REQUIRED`) and writes nothing. The plist's own fixed `PATH`
+  is `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`, homebrew and
+  `/usr/local` ahead of the system directories, for anything the check itself
+  shells out to. `StandardOutPath` and `StandardErrorPath` both point at
+  `~/Library/Logs/agent-flow-kit/update-check.log` (directory mode `0700`), so
+  a failing check — including the old bash-3.2 failure this replaces — leaves
+  a readable reason instead of failing silently. The check reads the trusted
+  ref with `git ls-remote` over the same pinned-key SSH transport, compares it
+  with the applied revision, and records `UPDATE_AVAILABLE`, `CURRENT`, or
+  `CHECK_FAILED` in `$AFK_STATE_DIR/auto-update-check.json`. It never applies;
+  the human or an agent runs `agent-flow-kit update`.
+  `MACOS_SANDBOX_PENDING` below is unchanged. Re-enrolling on an already
+  enrolled host rewrites the plist in place — interpreter, PATH and log paths
+  included, even upgrading one from before this change — and reloads it the
+  same way: it waits (bounded) for `launchctl bootout` to finish before
+  `bootstrap`, and retries `bootstrap` up to three times.
 
 `agent-flow-kit status` reports whether the host is enrolled (asking
 `systemctl --user is-enabled` or `launchctl print`, not the files) and the last
 result (the release client's `releases/latest.json` on Linux, the check file
 on macOS), including "update available: <revision>" only while that revision
-differs from the applied one.
+differs from the applied one. It also reports `health`: `last_run_failed` when
+the platform's own record of the last run — `systemctl --user show`'s
+`Result`/`ExecMainStatus` on Linux, or the check's own failure state on macOS
+— says it did not finish cleanly, `check_stale` when the most recent result is
+older than 3x `check_interval_seconds` (the scheduler may not be running at
+all), `ok` when recent and clean, and `null` when nothing has run yet. Read
+`health` alongside `update_available`/`last_result`: a stopped or failing
+scheduler still reports its last known state, but `health` says whether that
+state is current enough to trust rather than leaving a stale success looking
+current.
 `agent-flow-kit enroll-auto-update --remove` removes the scheduler and the
 config and leaves the key in place.
 

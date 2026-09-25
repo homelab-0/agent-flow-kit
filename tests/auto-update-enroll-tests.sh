@@ -55,6 +55,13 @@ SH
 cat >"$STUBS/systemctl" <<'SH'
 #!/usr/bin/env bash
 printf 'systemctl %s\n' "$*" >>"$AFK_TEST_LOG"
+if [[ "$2" == show ]]; then
+  # AC-3: `systemctl --user show <unit> -p Result -p ExecMainStatus --value`.
+  # AFK_TEST_SYSTEMCTL_RESULT/EXITCODE steer what the last run "reports".
+  printf '%s\n' "${AFK_TEST_SYSTEMCTL_RESULT:-success}"
+  printf '%s\n' "${AFK_TEST_SYSTEMCTL_EXITCODE:-0}"
+  exit 0
+fi
 E="$HOME/.stub-timer-enabled" A="$HOME/.stub-timer-active"
 step="$2"; [[ "${3:-}" == --now ]] && step="$2-now"
 n=$(( $(cat "$HOME/.stub-count-$step" 2>/dev/null || echo 0) + 1 )); echo "$n" >"$HOME/.stub-count-$step"
@@ -112,6 +119,12 @@ shift
 exec "\$@"
 SH
 printf '#!/usr/bin/env bash\nprintf "no\\n"\n' >"$STUBS/loginctl"
+# Fake bash candidates for AC-1: they never really run anything, they only
+# answer the version probe `afk_au_resolve_bash` runs against them, so a
+# "3.2" stub exercises the refusal path with no macOS 3.2 anywhere near this
+# host and no real bash needs to be built or installed for the test.
+printf '#!/usr/bin/env bash\nprintf "3.2\\n"\n' >"$STUBS/bash-old"
+printf '#!/usr/bin/env bash\nprintf "5.2\\n"\n' >"$STUBS/bash-new"
 cat >"$STUBS/git" <<SH
 #!/usr/bin/env bash
 if [[ "\$1" == ls-remote ]]; then
@@ -148,6 +161,8 @@ run_afk() { # <home> <platform> <out-name> args... ; sets RC
     AFK_RELEASE_POLICY="${AFK_TEST_POLICY:-$POLICY}" \
     AFK_TEST_PINNED="$PINNED" AFK_TEST_LOG="$LOG" AFK_TEST_SYSTEMCTL_FAIL="${AFK_TEST_SYSTEMCTL_FAIL:-}" \
     AFK_TEST_TIMEOUT_EXPIRE="${AFK_TEST_TIMEOUT_EXPIRE:-}" \
+    AFK_AU_BASH_CANDIDATES="${AFK_TEST_BASH_CANDIDATES-$STUBS/bash-new}" \
+    AFK_TEST_SYSTEMCTL_RESULT="${AFK_TEST_SYSTEMCTL_RESULT:-}" AFK_TEST_SYSTEMCTL_EXITCODE="${AFK_TEST_SYSTEMCTL_EXITCODE:-}" \
     bash "$AFK" "$@" >"$OUT/$o.out" 2>"$OUT/$o.err"
   RC=$?
 }
@@ -458,6 +473,48 @@ assert_eq "a config directory outside HOME refuses (exit 4)" "$RC" "4"
 assert_eq "the directory outside HOME is untouched" "$(mode_of "$TMPROOT/outside-config/agent-flow-kit")" "775"
 assert_absent "no removal is claimed" "$(cat "$OUT/outside.err")" "removed group and world write"
 
+head1 "macOS: an explicit bash 4.2+ interpreter, never a shebang (AC-1)"
+H="$(new_home nobash)"
+AFK_TEST_BASH_CANDIDATES="$STUBS/bash-old" run_afk "$H" darwin nobash enroll-auto-update --key-ref op://develop/good/notesPlain
+assert_eq "only bash 3.2 available refuses (exit 4)" "$RC" "4"
+assert_contains "the refusal is named" "$(cat "$OUT/nobash.err")" "MODERN_BASH_REQUIRED"
+assert_missing "no modern bash: no plist written" "$H/$PLIST_REL"
+assert_missing "no modern bash: no key installed" "$H/$KEY_REL"
+assert_missing "no modern bash: no config recorded" "$H/.config/agent-flow-kit/auto-update.json"
+H="$(new_home prefbash)"
+AFK_TEST_BASH_CANDIDATES="$STUBS/bash-new:$STUBS/bash-old" \
+  run_afk "$H" darwin prefbash enroll-auto-update --key-ref op://develop/good/notesPlain
+assert_eq "a modern bash ahead of an old one enrolls" "$RC" "0"
+assert_contains "the modern candidate is chosen, not the old one" "$(cat "$H/$PLIST_REL")" "<string>$STUBS/bash-new</string>"
+
+head1 "macOS re-enrollment upgrades an old-format plist in place (AC-4)"
+H="$(new_home oldformat)"
+mkdir -p "$H/Library/LaunchAgents"
+cat >"$H/$PLIST_REL" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>io.github.jlengelbrecht.agent-flow-kit.update-check</string>
+  <key>ProgramArguments</key><array>
+    <string>$H/.agents/skills/afk-runtime/bin/agent-flow-kit</string>
+    <string>enroll-auto-update</string><string>--check</string>
+  </array>
+  <key>EnvironmentVariables</key><dict>
+    <key>PATH</key><string>/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin</string>
+  </dict>
+  <key>StartInterval</key><integer>900</integer>
+  <key>RunAtLoad</key><true/>
+</dict></plist>
+PLIST
+run_afk "$H" darwin oldformat enroll-auto-update --key-ref op://develop/good/notesPlain
+assert_eq "re-enroll over an old-format plist succeeds" "$RC" "0"
+NEWPLIST="$(cat "$H/$PLIST_REL" 2>/dev/null)"
+assert_contains "the old plist gains the explicit interpreter" "$NEWPLIST" "<string>$STUBS/bash-new</string>"
+assert_contains "the old plist gains the new PATH order" "$NEWPLIST" \
+  "<key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>"
+assert_contains "the old plist gains the log paths" "$NEWPLIST" "StandardOutPath"
+assert_contains "the upgrade reloads via the existing bootout/bootstrap path" "$(cat "$LOG")" "launchctl bootout gui/"
+
 head1 "macOS: a check-only agent"
 H="$(new_home mac)"
 run_afk "$H" darwin mac-enroll enroll-auto-update --key-ref op://develop/good/notesPlain
@@ -467,10 +524,18 @@ assert_contains "agent runs the check" "$PLIST" "<string>enroll-auto-update</str
 assert_absent "agent never applies" "$PLIST" "--apply"
 assert_absent "agent never runs the release client" "$PLIST" "afk-release-reconcile"
 assert_contains "agent uses the policy interval" "$PLIST" "<integer>900</integer>"
-assert_contains "agent PATH is fixed" "$PLIST" "<key>PATH</key><string>/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin</string>"
-assert_absent "agent PATH is not the enrolling shell's" "$PLIST" "$STUBS"
+assert_contains "agent PATH puts homebrew/local ahead of the system bash" "$PLIST" \
+  "<key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>"
+assert_absent "agent PATH is not the enrolling shell's" "$PLIST" "$STUBS:"
+assert_contains "the shebang no longer decides: arg0 is the resolved bash" "$PLIST" \
+  "<array>"$'\n'"    <string>$STUBS/bash-new</string>"$'\n'"    <string>$H/.agents/skills/afk-runtime/bin/agent-flow-kit</string>"
 assert_contains "agent loaded with launchctl" "$(cat "$LOG")" "launchctl bootstrap gui/"
 assert_contains "check uses the pinned-key transport" "$(cat "$LOG")" "IdentitiesOnly=yes"
+assert_contains "failures are logged: StandardOutPath" "$PLIST" \
+  "<key>StandardOutPath</key><string>$H/Library/Logs/agent-flow-kit/update-check.log</string>"
+assert_contains "failures are logged: StandardErrorPath" "$PLIST" \
+  "<key>StandardErrorPath</key><string>$H/Library/Logs/agent-flow-kit/update-check.log</string>"
+assert_eq "the log directory is private" "$(mode_of "$H/Library/Logs/agent-flow-kit")" "700"
 assert_contains "summary reports the available update" "$(cat "$OUT/mac-enroll.out")" "first_attempt=update available: $REMOTE_HEAD"
 CHECK="$H/.local/state/agent-flow-kit/auto-update-check.json"
 assert_eq "check state records the update" "$(jq -r .state "$CHECK")" "UPDATE_AVAILABLE"
@@ -488,6 +553,36 @@ assert_eq "a check older than the applied revision is not reported" \
   "$(au_status "$H" "$REMOTE_HEAD" | jq -r .update_available)" "false"
 assert_eq "a different applied revision still reports the update" \
   "$(au_status "$H" "2222222222222222222222222222222222222222" | jq -r .update_available)" "true"
+
+head1 "status tells the truth about a failed or stale check, not a quiet false (AC-3)"
+NOW_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+jq --arg t "$NOW_ISO" '.state="CURRENT" | .checked_at=$t' "$CHECK" >"$CHECK.tmp" && mv "$CHECK.tmp" "$CHECK"
+assert_eq "a fresh successful check is healthy" "$(au_status "$H" "" | jq -r .health)" "ok"
+jq --arg t "$NOW_ISO" '.state="CHECK_FAILED" | .checked_at=$t' "$CHECK" >"$CHECK.tmp" && mv "$CHECK.tmp" "$CHECK"
+assert_eq "a failed check reports last_run_failed, never a quiet false" "$(au_status "$H" "" | jq -r .health)" "last_run_failed"
+assert_eq "update_available never claims current on a failed check" "$(au_status "$H" "" | jq -r .update_available)" "false"
+jq '.state="CURRENT" | .checked_at="2000-01-01T00:00:00Z"' "$CHECK" >"$CHECK.tmp" && mv "$CHECK.tmp" "$CHECK"
+assert_eq "an old successful check reports check_stale" "$(au_status "$H" "" | jq -r .health)" "check_stale"
+
+au_status_linux() { # <home> — the status section as status computes it, Linux side
+  # shellcheck disable=SC2016
+  env -i PATH="$STUBS:$PATH" HOME="$1" AFK_TEST_LOG="$LOG" AFK_AUTO_UPDATE_PLATFORM=linux \
+    AFK_STATE_DIR="$1/.local/state/agent-flow-kit" AFK_SKILLS_HOME="$1/.agents/skills" \
+    AFK_INSTALL_ROOT="$KIT_ROOT" AFK_RELEASE_POLICY="$POLICY" \
+    AFK_TEST_SYSTEMCTL_RESULT="${AFK_TEST_SYSTEMCTL_RESULT:-success}" \
+    AFK_TEST_SYSTEMCTL_EXITCODE="${AFK_TEST_SYSTEMCTL_EXITCODE:-0}" \
+    bash -c 'source "$AFK_INSTALL_ROOT/lib/afk-auto-update.sh" && afk_auto_update_status_json'
+}
+HL="$(new_home linux-health)"
+mkdir -p "$HL/.local/state/agent-flow-kit/releases"
+printf '{"state":"CONVERGED","reason":"RELEASE_APPLIED","ended_at":"%s"}\n' "$NOW_ISO" \
+  >"$HL/.local/state/agent-flow-kit/releases/latest.json"
+assert_eq "linux: a healthy recent apply is ok" "$(au_status_linux "$HL" | jq -r .health)" "ok"
+assert_eq "linux: a non-zero last run is reported honestly, not just the client's own report" \
+  "$(AFK_TEST_SYSTEMCTL_RESULT=exit-code AFK_TEST_SYSTEMCTL_EXITCODE=1 au_status_linux "$HL" | jq -r .health)" "last_run_failed"
+printf '{"state":"CONVERGED","reason":"RELEASE_APPLIED","ended_at":"2000-01-01T00:00:00Z"}\n' \
+  >"$HL/.local/state/agent-flow-kit/releases/latest.json"
+assert_eq "linux: an old successful apply reports check_stale" "$(au_status_linux "$HL" | jq -r .health)" "check_stale"
 
 head1 "macOS re-enrollment waits for bootout and never loses the working agent"
 jq '.check_interval_seconds = 1800' "$POLICY" >"$TMPROOT/policy-1800.json"
