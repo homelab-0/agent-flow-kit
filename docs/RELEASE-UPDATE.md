@@ -116,6 +116,28 @@ saw the new units, so it only puts the files back. When any rollback step
 fails it reports `ROLLBACK_FAILED` and names the step rather than claiming a
 restore. The key's bytes are never printed, logged, or copied anywhere else.
 
+On Linux, enrollment applies the release client's own key rule (every parent
+directory owned by the user or root and not group- or world-writable, outside
+the runtime and state trees) before reading the key, and the whole rule,
+including mode `0600`, again before scheduling anything, so it never prints
+`ENROLLED` for a key the client would refuse as `DEPLOY_KEY_UNAVAILABLE`.
+`tests/auto-update-enroll-tests.sh` runs both implementations on the same
+fixtures. Enrollment walks every parent first. If `~/.config/agent-flow-kit` is
+the only failing directory, fails only the write-bit rule (a umask of `002`
+leaves it `775`), is a real directory below `$HOME` rather than a symlink, and
+is owned by you, enrollment removes group and world write from it and says so.
+In every other case it changes nothing and refuses with exit 4 and
+`KEY_PARENT_UNSAFE`:
+
+- **A group- or world-writable directory.** The refusal prints the exact
+  command to run, for example `chmod go-w -- '/home/you/.config'`. When
+  `~/.config/agent-flow-kit` is writable too, the one command names both.
+- **A directory owned by neither you nor root.** `chmod` cannot fix that.
+  Choose another key path below directories you own with `--key-file`.
+- **A symlinked `~/.config/agent-flow-kit`** with the key below it. Enrollment
+  never changes permissions through a link. Make it a real directory or choose
+  another `--key-file`.
+
 `--check` and `--remove` are exclusive and refuse `--key-ref` and
 `--key-file`. They, and `status`, use the key path enrollment recorded unless
 `AFK_RELEASE_DEPLOY_KEY` is set.
@@ -195,6 +217,29 @@ zero-conflict `NO_CHANGE` or
 `MUTATION_REQUIRED` plan with exact prior and target revisions is eligible.
 The lifecycle engine then performs its normal plan/apply/verify transaction.
 The release client does not use an approval bypass.
+
+The approval is the plan's `extra.plan.plan_identity`, passed unchanged to
+`update --json --approve-plan`. There is no `extra.plan.identity` field; a
+script that reads one passes the string `null` and is refused with
+`PLAN_APPROVAL_MISMATCH`. To reproduce the client by hand:
+
+```sh
+P="$(bin/agent-flow-kit update --json --plan)"
+bin/agent-flow-kit update --json --approve-plan "$(jq -r .extra.plan.plan_identity <<<"$P")"
+```
+
+The lifecycle names an operation only when it takes its lock, so a no-change
+result and any refusal decided before the lock carry `operation.id: null`. The
+client accepts a null id only for `NO_CHANGE`, `REFUSED` and
+`APPROVAL_REQUIRED`; any other result without an id is unreadable. A no-change
+apply is verified and recorded in `releases/current.json` like a convergence,
+and ends `CURRENT` / `ALREADY_CURRENT`. A refusal ends `RETAINED` /
+`APPLY_REFUSED` (`STALE_PLAN`, `ROLLED_BACK` and `UNRECOVERABLE` keep their own
+reasons), and the attempt record's `operation.reason` carries the lifecycle's
+reason when it is one of the codes `afk_reason_codes` or
+`afk_mutation_reason_codes` publish in the trusted driver; other text is never
+recorded. `APPLY_RESULT_UNREADABLE` means the document itself could not be
+read.
 
 Examples:
 

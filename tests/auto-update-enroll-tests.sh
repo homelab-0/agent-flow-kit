@@ -133,6 +133,9 @@ SH
   printf '#!/usr/bin/env bash\nexit 0\n' >"$h/.agents/skills/afk-runtime/bin/agent-flow-kit"
   printf 'github.com ssh-ed25519 AAAAstub\n' >"$h/.agents/skills/afk-runtime/bin/afk-release-known-hosts"
   chmod +x "$h/.agents/skills/afk-runtime/bin/afk-release-reconcile" "$h/.agents/skills/afk-runtime/bin/agent-flow-kit"
+  # The release client refuses a key below a group-writable HOME; do not
+  # inherit one from the runner's umask.
+  chmod 755 "$h"
   printf '%s\n' "$h"
 }
 
@@ -140,7 +143,7 @@ RC=0
 run_afk() { # <home> <platform> <out-name> args... ; sets RC
   local h="$1" p="$2" o="$3"; shift 3
   env -i PATH="$STUBS:$PATH" HOME="$h" USER=tester LANG=C \
-    AFK_STATE_DIR="$h/.local/state/agent-flow-kit" AFK_PM_DIR="$h/.local/state/agent-flow-kit/pm" \
+    AFK_STATE_DIR="${AFK_TEST_STATE_DIR:-$h/.local/state/agent-flow-kit}" AFK_PM_DIR="$h/.local/state/agent-flow-kit/pm" \
     AFK_AUTO_UPDATE_PLATFORM="$p" AFK_OP_BIN="${AFK_TEST_OP:-$STUBS/op}" \
     AFK_RELEASE_POLICY="${AFK_TEST_POLICY:-$POLICY}" \
     AFK_TEST_PINNED="$PINNED" AFK_TEST_LOG="$LOG" AFK_TEST_SYSTEMCTL_FAIL="${AFK_TEST_SYSTEMCTL_FAIL:-}" \
@@ -353,16 +356,19 @@ run_afk "$H" linux status-after status --json
 assert_eq "status reports not enrolled after removal" "$(jq -r .extra.auto_update.enrolled "$OUT/status-after.out" 2>/dev/null)" "false"
 
 head1 "--key-file reaches the units and the first attempt; % is escaped"
-H="$(new_home 'pct%home')"
-CUSTOM_KEY="$TMPROOT/custom-keys/custom_ed25519"
-run_afk "$H" linux keyfile enroll-auto-update --key-ref op://develop/good/notesPlain --key-file "$CUSTOM_KEY"
+# The key stays below HOME: a key below the world-writable /tmp is one the
+# release client refuses, so enrollment refuses it too.
+H="$(new_home keyfile)"
+CUSTOM_KEY="$H/custom-keys/custom_ed25519"
+AFK_TEST_STATE_DIR="$H/pct%state/agent-flow-kit" \
+  run_afk "$H" linux keyfile enroll-auto-update --key-ref op://develop/good/notesPlain --key-file "$CUSTOM_KEY"
 assert_eq "enroll with --key-file succeeds" "$RC" "0"
 assert_eq "custom key installed with mode 0600" "$(mode_of "$CUSTOM_KEY")" "600"
 assert_eq "first attempt ran with the --key-file key" "$(cat "$H/.first-attempt-key" 2>/dev/null)" "$CUSTOM_KEY"
 SERVICE="$(cat "$H/$UNIT_REL.service" 2>/dev/null)"
 assert_contains "service passes the --key-file key" "$SERVICE" "AFK_RELEASE_DEPLOY_KEY=$CUSTOM_KEY\""
-assert_contains "% in a unit value is escaped" "$SERVICE" "pct%%home/.local/state"
-assert_absent "no unescaped % in the unit" "$SERVICE" "pct%home/"
+assert_contains "% in a unit value is escaped" "$SERVICE" "pct%%state/agent-flow-kit"
+assert_absent "no unescaped % in the unit" "$SERVICE" "pct%state/"
 run_afk "$H" linux keyfile-status status --json
 assert_eq "status finds the recorded key path" "$(jq -r .extra.auto_update.key_present "$OUT/keyfile-status.out" 2>/dev/null)" "true"
 : >"$LOG"
@@ -370,6 +376,87 @@ run_afk "$H" linux keyfile-check enroll-auto-update --check
 assert_contains "--check uses the recorded key path" "$(cat "$LOG")" "-i '$CUSTOM_KEY'"
 run_afk "$H" linux keyfile-remove enroll-auto-update --remove
 assert_contains "--remove names the recorded key path" "$(cat "$OUT/keyfile-remove.out")" "deploy key at $CUSTOM_KEY"
+
+head1 "Enrollment applies the release client's exact key rule"
+# Both implementations run on the same fixtures: the client's function is
+# lifted verbatim from bin/afk-release-reconcile, so neither can drift alone.
+CLIENT_RULE="$(sed -n '/^deploy_key_is_usable() {$/,/^}$/p' "$KIT_ROOT/bin/afk-release-reconcile")"
+assert_contains "the client rule is found" "$CLIENT_RULE" "deploy_key_is_usable() {"
+P="$(new_home pin)"
+mkdir -p "$P/.local/state/agent-flow-kit" "$P/.config/agent-flow-kit/deploy-key"
+chmod 755 "$P/.local" "$P/.local/state" "$P/.local/state/agent-flow-kit" "$P/.agents" \
+  "$P/.agents/skills" "$P/.agents/skills/afk-runtime" "$P/.config" "$P/.config/agent-flow-kit"
+chmod 700 "$P/.config/agent-flow-kit/deploy-key"
+PK="$P/.config/agent-flow-kit/deploy-key/agent-flow-kit_ed25519"
+(umask 077; printf 'k\n' >"$PK"; printf 'k\n' >"$P/.local/state/agent-flow-kit/k"; printf 'k\n' >"$P/.agents/skills/afk-runtime/k")
+pin() { # <label> <expected usable|refused> <key>
+  local c l
+  c="$(HOME="$P" DEPLOY_KEY="$3" STAT_EXEC="$(command -v stat)" \
+    TRUSTED_DRIVER_SOURCE="$P/.agents/skills/afk-runtime" STATE_DIR="$P/.local/state/agent-flow-kit" \
+    bash -c "$CLIENT_RULE"$'\n''deploy_key_is_usable && echo usable || echo refused')"
+  # shellcheck disable=SC2016 # expanded by the child shell
+  l="$(HOME="$P" AFK_AU_RUNTIME_BIN="$P/.agents/skills/afk-runtime/bin" AFK_STATE_DIR="$P/.local/state/agent-flow-kit" \
+    bash -c '. "$1"; afk_au_key_usable "$2" && echo usable || echo refused' _ "$KIT_ROOT/lib/afk-auto-update.sh" "$3")"
+  assert_eq "$1: client and enrollment agree" "$l" "$c"
+  assert_eq "$1: $2" "$c" "$2"
+}
+pin "a private key below private directories" usable "$PK"
+chmod 775 "$P/.config/agent-flow-kit"; pin "a group-writable parent" refused "$PK"
+chmod 755 "$P/.config/agent-flow-kit"
+chmod 757 "$P/.config"; pin "a world-writable grandparent" refused "$PK"; chmod 755 "$P/.config"
+chmod 644 "$PK"; pin "a key others can read" refused "$PK"; chmod 600 "$PK"
+ln -s "$PK" "$P/.config/agent-flow-kit/deploy-key/link"
+pin "a symlinked key" refused "$P/.config/agent-flow-kit/deploy-key/link"
+pin "a key in the state tree" refused "$P/.local/state/agent-flow-kit/k"
+pin "a key in the runtime tree" refused "$P/.agents/skills/afk-runtime/k"
+
+head1 "AFK's own config directory is tightened; other parents are not touched"
+H="$(new_home own775)"
+mkdir -p "$H/.config/agent-flow-kit"; chmod 755 "$H/.config"; chmod 775 "$H/.config/agent-flow-kit"
+run_afk "$H" linux own775 enroll-auto-update --key-ref op://develop/good/notesPlain
+assert_eq "a 775 ~/.config/agent-flow-kit still enrolls" "$RC" "0"
+assert_eq "it loses group and world write" "$(mode_of "$H/.config/agent-flow-kit")" "755"
+assert_contains "and enrollment says so" "$(cat "$OUT/own775.err")" "removed group and world write from $H/.config/agent-flow-kit"
+assert_contains "then reports ENROLLED" "$(cat "$OUT/own775.out")" "auto-update: ENROLLED"
+H="$(new_home foreign777)"
+mkdir -p "$H/.config"; chmod 777 "$H/.config"
+run_afk "$H" linux foreign777 enroll-auto-update --key-ref op://develop/good/notesPlain
+assert_eq "a writable parent AFK does not own refuses (exit 4)" "$RC" "4"
+assert_contains "the refusal prints the exact chmod" "$(cat "$OUT/foreign777.err")" "chmod go-w -- '$H/.config'"
+assert_eq "that directory is left as it was" "$(mode_of "$H/.config")" "777"
+assert_missing "no key installed" "$H/$KEY_REL"
+assert_absent "never reports ENROLLED" "$(cat "$OUT/foreign777.out")" "ENROLLED"
+# Both failing: the whole walk runs first, so AFK's own directory is not
+# tightened on the way to a refusal.
+H="$(new_home both)"
+mkdir -p "$H/.config/agent-flow-kit"; chmod 777 "$H/.config"; chmod 775 "$H/.config/agent-flow-kit"
+run_afk "$H" linux both enroll-auto-update --key-ref op://develop/good/notesPlain
+assert_eq "own and a foreign parent both writable: refused (exit 4)" "$RC" "4"
+assert_eq "the refusal changes nothing: own directory" "$(mode_of "$H/.config/agent-flow-kit")" "775"
+assert_eq "the refusal changes nothing: the foreign parent" "$(mode_of "$H/.config")" "777"
+assert_contains "one chmod fixes both" "$(cat "$OUT/both.err")" \
+  "chmod go-w -- '$H/.config' '$H/.config/agent-flow-kit'"
+assert_absent "no removal is claimed" "$(cat "$OUT/both.err")" "removed group and world write"
+# A symlinked config directory: refused before anything is created or changed.
+H="$(new_home cfglink)"
+mkdir -p "$H/.config" "$TMPROOT/cfglink-target"; chmod 755 "$H/.config"; chmod 775 "$TMPROOT/cfglink-target"
+ln -s "$TMPROOT/cfglink-target" "$H/.config/agent-flow-kit"
+run_afk "$H" linux cfglink enroll-auto-update --key-ref op://develop/good/notesPlain
+assert_eq "a symlinked ~/.config/agent-flow-kit refuses (exit 4)" "$RC" "4"
+assert_contains "it is named as the unsafe directory" "$(cat "$OUT/cfglink.err")" \
+  "KEY_PARENT_UNSAFE: $H/.config/agent-flow-kit is a symlink"
+assert_eq "the link target keeps its mode" "$(mode_of "$TMPROOT/cfglink-target")" "775"
+assert_eq "nothing is created through the link" "$(find "$TMPROOT/cfglink-target" -mindepth 1 | wc -l | tr -d ' ')" "0"
+assert_absent "no removal is claimed" "$(cat "$OUT/cfglink.err")" "removed group and world write"
+# ~/.config itself links outside HOME: AFK's directory resolves there and is
+# not AFK's to tighten.
+H="$(new_home outside)"
+mkdir -p "$TMPROOT/outside-config/agent-flow-kit"; chmod 775 "$TMPROOT/outside-config/agent-flow-kit"
+ln -s "$TMPROOT/outside-config" "$H/.config"
+run_afk "$H" linux outside enroll-auto-update --key-ref op://develop/good/notesPlain
+assert_eq "a config directory outside HOME refuses (exit 4)" "$RC" "4"
+assert_eq "the directory outside HOME is untouched" "$(mode_of "$TMPROOT/outside-config/agent-flow-kit")" "775"
+assert_absent "no removal is claimed" "$(cat "$OUT/outside.err")" "removed group and world write"
 
 head1 "macOS: a check-only agent"
 H="$(new_home mac)"
