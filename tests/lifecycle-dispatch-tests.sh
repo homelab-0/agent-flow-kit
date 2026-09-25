@@ -1759,6 +1759,20 @@ assert_eq "no source or doc claims stream-json makes sessions finish sooner" \
   "$(grep -niE 'stream-json[^.]*(finish|terminat|exit)s? (sooner|faster|earlier)|(sooner|faster)[^.]*stream-json' \
        "$KIT_ROOT/files/model-router/scripts/dispatch.sh" "$KIT_ROOT/docs/LIFECYCLE-CONTRACT.md" | wc -l | tr -d ' ')" "0"
 
+# ---------------------------------------------------------------------------
+# Gate-log location: never inside the worker's worktree (PR #61 review).
+gl_wt="$(mktemp -d)"; gl_state="$(mktemp -d)"
+gl_dir() { ( cd "$gl_wt" && env -i PATH="$PATH" ${1:+HOME="$1"} ${2:+AFK_STATE_DIR="$2"} \
+  bash -c 'source "$1" || exit 99; out="$(gates_log_dir_for D 1)" || exit 98; printf "[%s]" "$out"' _ "$KIT_ROOT/files/model-router/scripts/dispatch.sh" 2>/dev/null ); }
+assert_eq "gate logs: no HOME and no AFK_STATE_DIR -> no log dir (never \$PWD)" "$(gl_dir "" "")" "[]"
+assert_eq "gate logs: AFK_STATE_DIR inside the worktree -> no log dir" "$(gl_dir "" "$gl_wt/state")" "[]"
+assert_eq "gate logs: relative AFK_STATE_DIR -> no log dir" "$(gl_dir "" "rel/state")" "[]"
+assert_eq "gate logs: state dir outside the worktree -> dispatcher-owned path" \
+  "$(gl_dir "" "$gl_state")" "[$gl_state/dispatch/D/gates.c1]"
+assert_eq "failed-gate command is printed without control bytes" \
+  "$(source "$KIT_ROOT/files/model-router/scripts/dispatch.sh" && strip_terminal_control <<<$'ok\e]0;title\a\e[?25lcmd' | od -An -c | tr -d ' \n')" "okcmd\n"
+rm -rf "$gl_wt" "$gl_state"
+
 # ===========================================================================
 if (( SKIPPED > 0 )); then
   printf '\n\033[33mskipped checks computed no verdict — they are not passes\033[0m\n'

@@ -2511,7 +2511,7 @@ dispatch_run_gates() { # <gates_log_dir> <gate...>
       GATE_RESULTS["$g"]="fail"; GATES_OK=false; gate_status="fail"
       local gate_tail
       gate_tail="$(strip_terminal_control < "$gate_log_path" | tail -20)"
-      printf 'GATE FAILED: %s\n%s\n' "$g" "$gate_tail" >&2
+      printf 'GATE FAILED: %s\n%s\n' "$(strip_terminal_control <<<"$g")" "$gate_tail" >&2
     fi
     # shellcheck disable=SC2034 # GATE_LOGS is the legacy command-keyed map,
     # kept only for tests/lifecycle-dispatch-tests.sh, which sources this file
@@ -2534,9 +2534,23 @@ dispatch_run_gates() { # <gates_log_dir> <gate...>
 # AFK_DISPATCH_DIR, keyed by dispatch id and cycle so two attempts never share
 # a directory.
 gates_log_dir_for() { # <dispatch_id> <cycle>
-  local dispatch_id="$1" cycle="$2"
-  local base="${AFK_STATE_DIR:-${HOME:-$PWD}/.local/state/agent-flow-kit}/dispatch"
-  printf '%s/%s/gates.c%s' "$base" "$dispatch_id" "$cycle"
+  # Prints nothing (gates then run without logs) unless the base is a real,
+  # absolute state directory that resolves outside the worker's worktree. It
+  # never falls back to $PWD: that is the worktree the worker can write.
+  local dispatch_id="$1" cycle="$2" root probe phys_probe phys_pwd
+  root="${AFK_STATE_DIR:-${HOME:+$HOME/.local/state/agent-flow-kit}}"
+  if [[ -z "$root" || "$root" != /* ]]; then
+    log "gate logs: no absolute AFK_STATE_DIR or HOME; running gates without logs"
+    return 0
+  fi
+  probe="$root"; while [[ ! -d "$probe" ]]; do probe="$(dirname -- "$probe")"; done
+  phys_probe="$(cd -P -- "$probe" 2>/dev/null && pwd -P)" || phys_probe=""
+  phys_pwd="$(pwd -P)"
+  if [[ -z "$phys_probe" || "$phys_probe" == "$phys_pwd" || "$phys_probe" == "$phys_pwd"/* ]]; then
+    log "gate logs: state directory resolves inside the worktree; running gates without logs"
+    return 0
+  fi
+  printf '%s/dispatch/%s/gates.c%s' "$root" "$dispatch_id" "$cycle"
 }
 
 # ---------------------------------------------------------------------------
