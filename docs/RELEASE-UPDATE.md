@@ -116,6 +116,17 @@ saw the new units, so it only puts the files back. When any rollback step
 fails it reports `ROLLBACK_FAILED` and names the step rather than claiming a
 restore. The key's bytes are never printed, logged, or copied anywhere else.
 
+On Linux, enrollment applies the release client's own key rule (every parent
+directory owned by the user or root and not group- or world-writable, outside
+the runtime and state trees) before reading the key, and the whole rule,
+including mode `0600`, again before scheduling anything, so it never prints
+`ENROLLED` for a key the client would refuse as `DEPLOY_KEY_UNAVAILABLE`.
+`tests/auto-update-enroll-tests.sh` runs both implementations on the same
+fixtures. If `~/.config/agent-flow-kit` fails only the write-bit rule (a umask
+of `002` leaves it `775`), enrollment removes group and world write from it and
+says so. Any other failing directory is left alone: enrollment refuses (exit 4,
+`KEY_PARENT_UNSAFE`) and prints the exact `chmod go-w -- <dir>` to run.
+
 `--check` and `--remove` are exclusive and refuse `--key-ref` and
 `--key-file`. They, and `status`, use the key path enrollment recorded unless
 `AFK_RELEASE_DEPLOY_KEY` is set.
@@ -195,6 +206,27 @@ zero-conflict `NO_CHANGE` or
 `MUTATION_REQUIRED` plan with exact prior and target revisions is eligible.
 The lifecycle engine then performs its normal plan/apply/verify transaction.
 The release client does not use an approval bypass.
+
+The approval is the plan's `extra.plan.plan_identity`, passed unchanged to
+`update --json --approve-plan`. There is no `extra.plan.identity` field; a
+script that reads one passes the string `null` and is refused with
+`PLAN_APPROVAL_MISMATCH`. To reproduce the client by hand:
+
+```sh
+P="$(bin/agent-flow-kit update --json --plan)"
+bin/agent-flow-kit update --json --approve-plan "$(jq -r .extra.plan.plan_identity <<<"$P")"
+```
+
+The lifecycle names an operation only when it takes its lock, so a no-change
+result and any refusal decided before the lock carry `operation.id: null`. The
+client accepts that for every result except `CONVERGED`. A no-change apply is
+verified and recorded in `releases/current.json` like a convergence, and ends
+`CURRENT` / `ALREADY_CURRENT`. A refusal ends `RETAINED` / `APPLY_REFUSED`
+(`STALE_PLAN`, `ROLLED_BACK` and `UNRECOVERABLE` keep their own reasons), and
+the attempt record's `operation.reason` carries the lifecycle's reason when it
+is a code from the trusted driver's published vocabulary; other text is never
+recorded. `APPLY_RESULT_UNREADABLE` means the document itself could not be
+read.
 
 Examples:
 

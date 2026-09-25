@@ -156,6 +156,10 @@ if [[ "$approval" != "$plan_identity" ]]; then
   jq -nc --argjson plan "$plan_doc" '{kind:"lifecycle_result",source_eligibility:{state:"ELIGIBLE",mutation_allowed:true},extra:{plan:$plan},operation:{id:"test-refusal",result:"REFUSED",reason:"PLAN_IDENTITY_REQUIRED"},overall:{exit_code:2}}'
   exit 2
 fi
+if [[ -f "$state_dir/.test-refuse" ]]; then
+  jq -nc --argjson plan "$plan_doc" '{kind:"lifecycle_result",source_eligibility:{state:"ELIGIBLE",mutation_allowed:true},extra:{plan:$plan},operation:{id:null,result:"REFUSED",reason:"PLAN_APPROVAL_MISMATCH"},overall:{exit_code:2}}'
+  exit 2
+fi
 if [[ -f "$state_dir/.test-rollback" ]]; then
   operation_id="$(cat "$state_dir/.test-operation-id" 2>/dev/null || printf test-rollback)"
   operation_reason="$(cat "$state_dir/.test-result-reason" 2>/dev/null || printf TEST_APPLY_ROLLED_BACK)"
@@ -167,8 +171,9 @@ fi
 mkdir -p "$(dirname "$state")"
 jq --arg target "$target" '.applied_revision=$target' "$state" >"${state}.tmp"
 mv "${state}.tmp" "$state"
-result=CONVERGED; [[ "$disposition" == NO_CHANGE ]] && result=NO_CHANGE
-jq -nc --argjson plan "$plan_doc" --arg result "$result" '{kind:"lifecycle_result",source_eligibility:{state:"ELIGIBLE",mutation_allowed:true},extra:{plan:$plan},operation:{id:"test-apply",result:$result,reason:"TEST_APPLY"},overall:{exit_code:0}}'
+# Like the real lifecycle, a no-change result takes no lock and names no operation.
+result=CONVERGED; id=test-apply; [[ "$disposition" == NO_CHANGE ]] && { result=NO_CHANGE; id=""; }
+jq -nc --argjson plan "$plan_doc" --arg result "$result" --arg id "$id" '{kind:"lifecycle_result",source_eligibility:{state:"ELIGIBLE",mutation_allowed:true},extra:{plan:$plan},operation:{id:(if $id=="" then null else $id end),result:$result,reason:"TEST_APPLY"},overall:{exit_code:0}}'
 STUB
 chmod +x "$AUTHOR/bin/agent-flow-kit" "$AUTHOR/bin/afk-release-reconcile" \
   "$AUTHOR/bin/afk-session-freshness" "$AUTHOR/bin/afk-session-start" \
@@ -811,6 +816,15 @@ assert_eq 'unbounded candidate operation id is refused' "$(jq -r .reason <<<"$RU
 assert_eq 'unbounded candidate operation id is not persisted' "$(jq -r '.operation.id' <<<"$RUN_OUT")" null
 rm -f "$STATE/.test-rollback" "$STATE/.test-operation-id" "$STATE/.test-result-reason"
 
+# A refusal decided before the lifecycle lock names no operation. It is still a
+# readable result, reported with the lifecycle's own published reason.
+touch "$STATE/.test-refuse"
+run_update --apply --force-check --policy "$AUTHOR/lifecycle/release-policy.json"
+assert_eq 'a null-id refusal is reported as a refusal' "$(jq -r '.state+":"+.reason' <<<"$RUN_OUT")" RETAINED:APPLY_REFUSED
+assert_eq 'the lifecycle reason is kept in the attempt record' "$(jq -r '.operation.reason' <<<"$RUN_OUT")" PLAN_APPROVAL_MISMATCH
+assert_eq 'the refused operation stays unnamed' "$(jq -r '.operation.id' <<<"$RUN_OUT")" null
+rm -f "$STATE/.test-refuse"
+
 # A syntactically valid candidate that fails distributed runtime behavior is
 # rejected before its lifecycle plan can be trusted or applied.
 cp "$AUTHOR/bin/afk-session-freshness" "$TMP/freshness-good"
@@ -1046,6 +1060,89 @@ assert_eq 'installed hook uses stable runtime path' "$(jq -r .statusLine.command
 if grep -Fq '/releases/candidates/' "$HOME_TEST/.claude/settings.json"; then not_ok 'hook avoids candidate cache path'; else ok 'hook avoids candidate cache path'; fi
 assert_file_contains 'Hindsight config remains byte-owned by Hindsight' "$HOME_TEST/.hindsight/config" hindsight-owned
 assert_file_contains 'Orca config remains byte-owned by Orca' "$HOME_TEST/.config/orca/config" orca-owned
+
+# End to end with the real lifecycle, no stub: a real adoption in a throwaway
+# HOME, the adopted runtime as the trusted driver, and the client planning,
+# approving and verifying through it. The fetch transport is the only seam.
+rm -f "$OFFLINE_MARKER"
+E2E_HOME="$TMP/e2e-home"; E2E_STATE="$E2E_HOME/.local/state/agent-flow-kit"
+E2E_SOURCE="$TMP/e2e-source"; E2E_RUNTIME="$E2E_HOME/.agents/skills/afk-runtime"
+git clone -q "$ROOT" "$E2E_SOURCE"
+git -C "$E2E_SOURCE" checkout -q -B master HEAD
+git -C "$E2E_SOURCE" config user.name 'AFK release test'
+git -C "$E2E_SOURCE" config user.email 'afk-release-test@example.invalid'
+for input in bin lib lifecycle adapters; do
+  rm -rf "${E2E_SOURCE:?}/$input"; cp -R "$ROOT/$input" "$E2E_SOURCE/$input"
+done
+cp "$ROOT/tests/release-update-tests.sh" "$E2E_SOURCE/tests/release-update-tests.sh"
+git -C "$E2E_SOURCE" add -A bin lib lifecycle adapters tests/release-update-tests.sh
+git -C "$E2E_SOURCE" commit -q --allow-empty -m 'e2e installed release'
+# A legacy installation of exactly this revision, which adoption claims unattended.
+mkdir -p "$E2E_HOME/.agents/skills" "$E2E_HOME/.claude/skills" "$E2E_HOME/.codex"
+cp -R "$E2E_SOURCE/adapters" "$E2E_RUNTIME"
+mkdir -p "$E2E_RUNTIME/lifecycle"
+cp -R "$E2E_SOURCE/bin" "$E2E_SOURCE/lib" "$E2E_RUNTIME/"
+cp "$E2E_SOURCE/lifecycle/release-policy.json" "$E2E_RUNTIME/lifecycle/"
+cp -R "$E2E_SOURCE/files/model-router" "$E2E_SOURCE/files/humanizer" "$E2E_HOME/.agents/skills/"
+ln -s "$E2E_HOME/.agents/skills/model-router" "$E2E_HOME/.claude/skills/model-router"
+ln -s "$E2E_HOME/.agents/skills/humanizer" "$E2E_HOME/.claude/skills/humanizer"
+{
+  printf '# owner notes\n# >>> agent-flow-kit managed section: claude-global-policy >>>\n'
+  cat "$E2E_SOURCE/files/claude-global-CLAUDE.md"
+  printf '# <<< agent-flow-kit managed section: claude-global-policy <<<\n'
+} >"$E2E_HOME/.claude/CLAUDE.md"
+cp "$E2E_SOURCE/files/codex-AGENTS.md" "$E2E_HOME/.codex/AGENTS.md"
+E2E_OUT="$(env -i PATH="$PATH" LANG=C HOME="$E2E_HOME" AFK_KIT_ROOT="$E2E_SOURCE" \
+  bash "$E2E_SOURCE/bin/agent-flow-kit" adopt --json 2>/dev/null)"
+assert_eq 'e2e: the real lifecycle adopts the throwaway home' "$(jq -r .operation.result <<<"$E2E_OUT")" ADOPTED
+mkdir -p "$E2E_HOME/.config/agent-flow-kit/deploy-key"
+chmod 755 "$E2E_HOME" "$E2E_HOME/.config" "$E2E_HOME/.config/agent-flow-kit"
+chmod 700 "$E2E_HOME/.config/agent-flow-kit/deploy-key"
+(umask 077; printf '%s\n' "$DEPLOY_KEY_MARKER" >"$E2E_HOME/.config/agent-flow-kit/deploy-key/agent-flow-kit_ed25519")
+# A forward release that changes one managed tree.
+printf 'e2e release two\n' >"$E2E_SOURCE/files/humanizer/e2e-release-marker"
+git -C "$E2E_SOURCE" add files/humanizer/e2e-release-marker
+git -C "$E2E_SOURCE" commit -qm 'e2e release two'
+E2E_TWO="$(git -C "$E2E_SOURCE" rev-parse HEAD)"
+git -C "$E2E_SOURCE" push -q --force "$REMOTE" master
+E2E_CLIENT="$TMP/e2e-client/afk-release-reconcile"; mkdir -p "${E2E_CLIENT%/*}"
+cp "$ROOT/bin/afk-release-reconcile" "$E2E_CLIENT"
+cp "$ROOT/bin/afk-release-known-hosts" "${E2E_CLIENT%/*}/afk-release-known-hosts"
+sed -i \
+  -e "s|readonly GIT_BIN='/usr/bin/git'|readonly GIT_BIN='$TEST_BIN/git'|" \
+  -e "s|readonly SSH_BIN='/usr/bin/ssh'|readonly SSH_BIN='$TEST_BIN/ssh'|" \
+  -e "s|^readonly TRUSTED_DRIVER_SOURCE=.*|readonly TRUSTED_DRIVER_SOURCE='$E2E_RUNTIME'|" \
+  -e "s|readonly REQUIRE_TRUSTED_TOOLS=true|readonly REQUIRE_TRUSTED_TOOLS=false|" \
+  "$E2E_CLIENT"
+chmod +x "$E2E_CLIENT"
+e2e_update() { # <client> args...
+  local client="$1"; shift
+  RUN_OUT="$(HOME="$E2E_HOME" AFK_STATE_DIR="$E2E_STATE" "$client" "$@" \
+    --policy "$E2E_SOURCE/lifecycle/release-policy.json" 2>"$TMP/e2e.err")"
+}
+e2e_update "$E2E_CLIENT" --apply --force-check
+assert_eq 'e2e: the first apply converges' "$(jq -r '.state+":"+.reason' <<<"$RUN_OUT")" CONVERGED:RELEASE_APPLIED
+assert_eq 'e2e: the lifecycle applied the target' "$(jq -r .applied_revision "$E2E_STATE/state.json")" "$E2E_TWO"
+assert_file_contains 'e2e: the changed tree was installed' "$E2E_HOME/.agents/skills/humanizer/e2e-release-marker" 'e2e release two'
+rm -f "$E2E_STATE/releases/current.json"
+e2e_update "$E2E_CLIENT" --apply --force-check
+assert_eq 'e2e: the second apply is a verified no-change' "$(jq -r '.state+":"+.reason' <<<"$RUN_OUT")" CURRENT:ALREADY_CURRENT
+assert_eq 'e2e: no-change carries the lifecycle reason' "$(jq -r .operation.reason <<<"$RUN_OUT")" PLAN_NO_CHANGE_REQUIRED
+assert_eq 'e2e: no-change is proven last-good' "$(jq -r .last_good_verified "$E2E_STATE/releases/latest.json")" true
+assert_eq 'e2e: no-change records the accepted release' "$(jq -r .revision "$E2E_STATE/releases/current.json" 2>/dev/null)" "$E2E_TWO"
+# Machine-local state moves between plan and approval, so the lifecycle refuses
+# the approval before taking its lock and names no operation.
+E2E_DRIFT_CLIENT="${E2E_CLIENT%/*}/afk-release-reconcile-drift"
+cp "$E2E_CLIENT" "$E2E_DRIFT_CLIENT"
+# shellcheck disable=SC2016 # fixture patch keeps runtime variables literal
+sed -i 's|candidate_pre_use_boundary() { :; }|candidate_pre_use_boundary() { if [[ -e "$AFK_TEST_DRIFT_ARMED" ]]; then printf "drift\\n" >>"$AFK_TEST_DRIFT_FILE"; else : >"$AFK_TEST_DRIFT_ARMED"; fi; }|' "$E2E_DRIFT_CLIENT"
+chmod +x "$E2E_DRIFT_CLIENT"
+AFK_TEST_DRIFT_ARMED="$TMP/e2e-drift-armed" \
+  AFK_TEST_DRIFT_FILE="$E2E_HOME/.agents/skills/model-router/subscriptions.yaml" \
+  e2e_update "$E2E_DRIFT_CLIENT" --apply --force-check
+assert_eq 'e2e: a refused approval is reported as a refusal' "$(jq -r '.state+":"+.reason' <<<"$RUN_OUT")" RETAINED:APPLY_REFUSED
+assert_eq 'e2e: with the lifecycle reason' "$(jq -r .operation.reason <<<"$RUN_OUT")" PLAN_APPROVAL_MISMATCH
+assert_eq 'e2e: and no invented operation id' "$(jq -r .operation.id <<<"$RUN_OUT")" null
 
 printf '1..%d\n' "$((PASS + FAIL))"
 if (( FAIL )); then printf '%d release update assertions failed\n' "$FAIL" >&2; exit 1; fi
