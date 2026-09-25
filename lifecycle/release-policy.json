@@ -9,6 +9,7 @@
   "fetch_timeout_seconds": 20,
   "qualification_timeout_seconds": 30,
   "check_interval_seconds": 900,
+  "deploy_key_fingerprint": "SHA256:bSEA/KNX1UdAkGPXvamZgkrCfPfpT0Umadr4aDyvxkA",
   "offline_fallback": "RETAIN_PROVEN_LAST_GOOD",
   "rollout": {
     "mode": "cohort_metadata_only",

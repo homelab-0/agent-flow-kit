@@ -164,7 +164,8 @@ SC_SCRIPTS=("$DISPATCH" "$MAKE_STAMP" "$USAGE_CHECK" "$GH_HEALTH" \
             "$KIT_ROOT/tests/harness-start-contract-tests.sh" \
             "$KIT_ROOT/tests/release-reconciler-contract-tests.sh" \
             "$KIT_ROOT/tests/release-support-contract-tests.sh" \
-            "$KIT_ROOT/tests/session-gate-contract-tests.sh")
+            "$KIT_ROOT/tests/session-gate-contract-tests.sh" \
+            "$KIT_ROOT/tests/auto-update-enroll-tests.sh")
 # The lifecycle surface. Checked at warning level and above, with two codes
 # excluded for a structural reason rather than a stylistic one: the lifecycle
 # files are always sourced together and share one result model, so a variable
@@ -176,6 +177,7 @@ SC_LIFECYCLE=("$KIT_ROOT/bin/agent-flow-kit" "$KIT_ROOT/lib/afk-common.sh" \
               "$KIT_ROOT/lib/afk-readiness.sh" "$KIT_ROOT/lib/afk-monitor.sh" \
               "$KIT_ROOT/lib/afk-commands.sh" \
               "$KIT_ROOT/lib/afk-plan.sh" "$KIT_ROOT/lib/afk-mutate.sh" \
+              "$KIT_ROOT/lib/afk-auto-update.sh" \
               "$KIT_ROOT/tests/lockctl-helper.sh")
 
 if (( ${#SC_CMD[@]} > 0 )); then
@@ -3764,6 +3766,24 @@ if [[ -f "$USAGE_TESTS" ]]; then
   fi
 else
   bad "usage-report gate present" "missing: $USAGE_TESTS"
+fi
+
+# ===========================================================================
+head1 "19. Auto-update enrollment gate — tests/auto-update-enroll-tests.sh"
+# ===========================================================================
+# `agent-flow-kit enroll-auto-update` (lib/afk-auto-update.sh): stubbed op,
+# ssh-keygen, systemctl, loginctl, launchctl and git; no network.
+
+ENROLL_TESTS="$KIT_ROOT/tests/auto-update-enroll-tests.sh"
+if [[ -f "$ENROLL_TESTS" ]]; then
+  if enroll_out="$(bash "$ENROLL_TESTS" 2>&1)"; then
+    ok "auto-update enrollment gate: $(tail -1 <<<"$enroll_out")"
+  else
+    bad "auto-update enrollment gate" "$(tail -1 <<<"$enroll_out")"
+    printf '%s\n' "$enroll_out" | tail -40
+  fi
+else
+  bad "auto-update enrollment gate present" "missing: $ENROLL_TESTS"
 fi
 
 # ===========================================================================
