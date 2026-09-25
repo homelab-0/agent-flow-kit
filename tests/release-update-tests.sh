@@ -132,7 +132,7 @@ state="$state_dir/state.json"
 applied="$(jq -r '.applied_revision // ""' "$state" 2>/dev/null || true)"
 command_name="${1:-}"; shift || true
 if [[ "$command_name" == verify ]]; then
-  if [[ "$applied" == "$target" ]]; then
+  if [[ "$applied" == "$target" && ! -f "$state_dir/.test-verify-diverge" ]]; then
     jq -nc --arg target "$target" '{kind:"lifecycle_result",installed:{applied_revision:$target},extra:{verification:{verified:true}},overall:{exit_code:0}}'
     exit 0
   fi
@@ -157,7 +157,11 @@ if [[ "$approval" != "$plan_identity" ]]; then
   exit 2
 fi
 if [[ -f "$state_dir/.test-refuse" ]]; then
-  jq -nc --argjson plan "$plan_doc" '{kind:"lifecycle_result",source_eligibility:{state:"ELIGIBLE",mutation_allowed:true},extra:{plan:$plan},operation:{id:null,result:"REFUSED",reason:"PLAN_APPROVAL_MISMATCH"},overall:{exit_code:2}}'
+  # "<result> <reason>" in the file overrides the null-id refusal it returns.
+  read -r refuse_result refuse_reason <"$state_dir/.test-refuse" || true
+  jq -nc --argjson plan "$plan_doc" --arg result "${refuse_result:-REFUSED}" \
+    --arg reason "${refuse_reason:-PLAN_APPROVAL_MISMATCH}" \
+    '{kind:"lifecycle_result",source_eligibility:{state:"ELIGIBLE",mutation_allowed:true},extra:{plan:$plan},operation:{id:null,result:$result,reason:$reason},overall:{exit_code:2}}'
   exit 2
 fi
 if [[ -f "$state_dir/.test-rollback" ]]; then
@@ -352,6 +356,18 @@ run_update --apply --policy "$AUTHOR/lifecycle/release-policy.json"
 assert_eq 'an untracked candidate file defeats the throttle proof' "$(jq -r .reason <<<"$RUN_OUT")" ALREADY_CURRENT
 if find "$STATE/releases/candidates" -maxdepth 1 -type d -name 'quarantine.*' | grep -q .; then ok 'dirty candidate is quarantined'; else not_ok 'dirty candidate is quarantined'; fi
 if [[ ! -e "$(jq -r .candidate_path "$STATE/releases/current.json")/UNTRACKED-QUALIFICATION-INPUT" ]]; then ok 'replacement candidate is entirely clean'; else not_ok 'replacement candidate is entirely clean'; fi
+
+# A no-change whose verification reports a diverged revision is not current:
+# nothing is accepted and the last good is not called verified.
+cp "$STATE/releases/current.json" "$TMP/current.json.saved"
+rm -f "$STATE/releases/current.json"
+touch "$STATE/.test-verify-diverge"
+run_update --apply --force-check --policy "$AUTHOR/lifecycle/release-policy.json"
+assert_eq 'a diverged verification blocks the no-change' "$(jq -r '.state+":"+.reason' <<<"$RUN_OUT")" BLOCKED:POST_APPLY_VERIFY_FAILED
+assert_eq 'a diverged verification is not a verified last-good' "$(jq -r .last_good_verified "$STATE/releases/latest.json")" false
+if [[ ! -e "$STATE/releases/current.json" ]]; then ok 'a diverged verification writes no current.json'; else not_ok 'a diverged verification writes no current.json'; fi
+rm -f "$STATE/.test-verify-diverge"
+mv "$TMP/current.json.saved" "$STATE/releases/current.json"
 
 # Mirror-local rewrites are refused even though the stored remote remains the
 # literal anchor. Remove the injected test value afterward to continue.
@@ -823,6 +839,23 @@ run_update --apply --force-check --policy "$AUTHOR/lifecycle/release-policy.json
 assert_eq 'a null-id refusal is reported as a refusal' "$(jq -r '.state+":"+.reason' <<<"$RUN_OUT")" RETAINED:APPLY_REFUSED
 assert_eq 'the lifecycle reason is kept in the attempt record' "$(jq -r '.operation.reason' <<<"$RUN_OUT")" PLAN_APPROVAL_MISMATCH
 assert_eq 'the refused operation stays unnamed' "$(jq -r '.operation.id' <<<"$RUN_OUT")" null
+# Only codes the driver publishes are kept: the heredoc delimiter of the
+# vocabulary is not a code, and the read-only half is part of the vocabulary.
+for refusal in 'CODES:null' 'NOT_A_PUBLISHED_REASON:null' 'SOURCE_NOT_A_GIT_CHECKOUT:SOURCE_NOT_A_GIT_CHECKOUT'; do
+  printf 'REFUSED %s\n' "${refusal%%:*}" >"$STATE/.test-refuse"
+  run_update --apply --force-check --policy "$AUTHOR/lifecycle/release-policy.json"
+  assert_eq "a refusal reason ${refusal%%:*} is still APPLY_REFUSED" "$(jq -r .reason <<<"$RUN_OUT")" APPLY_REFUSED
+  assert_eq "reason ${refusal%%:*} is recorded only when published" "$(jq -r '.operation.reason' <<<"$RUN_OUT")" "${refusal#*:}"
+done
+# A null id is readable only for results decided before the lifecycle lock.
+for result in STALE_PLAN ROLLED_BACK UNRECOVERABLE CONVERGED; do
+  printf '%s PLAN_APPROVAL_MISMATCH\n' "$result" >"$STATE/.test-refuse"
+  run_update --apply --force-check --policy "$AUTHOR/lifecycle/release-policy.json"
+  assert_eq "a null-id $result is unreadable" "$(jq -r .reason <<<"$RUN_OUT")" APPLY_RESULT_UNREADABLE
+done
+printf 'APPROVAL_REQUIRED PLAN_APPROVAL_REQUIRED\n' >"$STATE/.test-refuse"
+run_update --apply --force-check --policy "$AUTHOR/lifecycle/release-policy.json"
+assert_eq 'a null-id APPROVAL_REQUIRED is readable' "$(jq -r .reason <<<"$RUN_OUT")" APPLY_APPROVAL_REQUIRED
 rm -f "$STATE/.test-refuse"
 
 # A syntactically valid candidate that fails distributed runtime behavior is
@@ -1137,12 +1170,18 @@ cp "$E2E_CLIENT" "$E2E_DRIFT_CLIENT"
 # shellcheck disable=SC2016 # fixture patch keeps runtime variables literal
 sed -i 's|candidate_pre_use_boundary() { :; }|candidate_pre_use_boundary() { if [[ -e "$AFK_TEST_DRIFT_ARMED" ]]; then printf "drift\\n" >>"$AFK_TEST_DRIFT_FILE"; else : >"$AFK_TEST_DRIFT_ARMED"; fi; }|' "$E2E_DRIFT_CLIENT"
 chmod +x "$E2E_DRIFT_CLIENT"
+E2E_CURRENT_BEFORE="$(cksum <"$E2E_STATE/releases/current.json" 2>/dev/null)"
 AFK_TEST_DRIFT_ARMED="$TMP/e2e-drift-armed" \
   AFK_TEST_DRIFT_FILE="$E2E_HOME/.agents/skills/model-router/subscriptions.yaml" \
   e2e_update "$E2E_DRIFT_CLIENT" --apply --force-check
 assert_eq 'e2e: a refused approval is reported as a refusal' "$(jq -r '.state+":"+.reason' <<<"$RUN_OUT")" RETAINED:APPLY_REFUSED
 assert_eq 'e2e: with the lifecycle reason' "$(jq -r .operation.reason <<<"$RUN_OUT")" PLAN_APPROVAL_MISMATCH
 assert_eq 'e2e: and no invented operation id' "$(jq -r .operation.id <<<"$RUN_OUT")" null
+if [[ -n "$E2E_CURRENT_BEFORE" && "$(cksum <"$E2E_STATE/releases/current.json" 2>/dev/null)" == "$E2E_CURRENT_BEFORE" ]]; then
+  ok 'e2e: a refusal leaves current.json as it was'
+else
+  not_ok 'e2e: a refusal leaves current.json as it was'
+fi
 
 printf '1..%d\n' "$((PASS + FAIL))"
 if (( FAIL )); then printf '%d release update assertions failed\n' "$FAIL" >&2; exit 1; fi

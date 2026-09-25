@@ -1129,13 +1129,39 @@ validate_plan() {
 
 # The lifecycle names an operation only once it takes its lock, so a no-change
 # result and every refusal decided before the lock carry `operation.id: null`.
-# Only a convergence must name the operation that wrote. The lifecycle's own
-# reason is kept only when it is a whole line of the trusted driver's published
-# reason vocabulary, so a candidate cannot put arbitrary text in the record.
+# reason_is_published <code> — true only for a code the trusted driver
+# publishes: a line inside the heredoc body of afk_reason_codes (afk-common.sh)
+# or afk_mutation_reason_codes (afk-mutate.sh). The heredoc delimiter and every
+# other line of those files are not codes. Pure bash, so no untrusted tool
+# reads the vocabulary.
+reason_is_published() {
+  local code="$1" file line where
+  [[ "$code" =~ ^[A-Z][A-Z0-9_]{1,63}$ ]] || return 1
+  for file in "$TRUSTED_DRIVER_DIR/lib/afk-common.sh" "$TRUSTED_DRIVER_DIR/lib/afk-mutate.sh"; do
+    [[ -f "$file" && -r "$file" ]] || continue
+    where=outside
+    while IFS= read -r line; do
+      case "$where:$line" in
+        "outside:afk_reason_codes() {"|"outside:afk_mutation_reason_codes() {") where=function ;;
+        "function:  cat <<'CODES'") where=body ;;
+        function:*) where=outside ;;
+        body:CODES) where=outside ;;
+        body:*) [[ "$line" == "$code" ]] && return 0 ;;
+      esac
+    done <"$file"
+  done
+  return 1
+}
+
+# A convergence, a rollback or any other result that wrote must name its
+# operation. The lifecycle's own reason is kept only when it is a code of the
+# trusted driver's published reason vocabulary, so a candidate cannot put
+# arbitrary text in the record.
 validate_operation() {
   local document="$1" id result reason
   "$JQ_EXEC" -e '.kind=="lifecycle_result" and (.operation|type)=="object" and
-    ((.operation.id|type)=="string" or (.operation.id==null and .operation.result!="CONVERGED")) and
+    ((.operation.id|type)=="string" or
+     (.operation.id==null and (.operation.result as $r | ["NO_CHANGE","REFUSED","APPROVAL_REQUIRED"] | index($r)) != null)) and
     (.operation.result|type)=="string" and
     (.operation.result as $result |
       (["NO_CHANGE","CONVERGED","ADOPTED","PLAN_ONLY","APPROVAL_REQUIRED","REFUSED",
@@ -1145,10 +1171,7 @@ validate_operation() {
   result="$("$JQ_EXEC" -r '.operation.result' <<<"$document")"
   reason="$("$JQ_EXEC" -r '.operation.reason | strings' <<<"$document" 2>/dev/null)"
   [[ -z "$id" || "$id" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$ ]] || return 1
-  if [[ "$reason" =~ ^[A-Z][A-Z0-9_]{1,63}$ ]] && grep -qxF -- "$reason" \
-      "$TRUSTED_DRIVER_DIR/lib/afk-common.sh" "$TRUSTED_DRIVER_DIR/lib/afk-mutate.sh" 2>/dev/null; then
-    OPERATION_REASON="$reason"
-  fi
+  if reason_is_published "$reason"; then OPERATION_REASON="$reason"; fi
   OPERATION_ID="$id"
   OPERATION_RESULT="$result"
 }

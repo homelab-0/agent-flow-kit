@@ -426,6 +426,37 @@ assert_contains "the refusal prints the exact chmod" "$(cat "$OUT/foreign777.err
 assert_eq "that directory is left as it was" "$(mode_of "$H/.config")" "777"
 assert_missing "no key installed" "$H/$KEY_REL"
 assert_absent "never reports ENROLLED" "$(cat "$OUT/foreign777.out")" "ENROLLED"
+# Both failing: the whole walk runs first, so AFK's own directory is not
+# tightened on the way to a refusal.
+H="$(new_home both)"
+mkdir -p "$H/.config/agent-flow-kit"; chmod 777 "$H/.config"; chmod 775 "$H/.config/agent-flow-kit"
+run_afk "$H" linux both enroll-auto-update --key-ref op://develop/good/notesPlain
+assert_eq "own and a foreign parent both writable: refused (exit 4)" "$RC" "4"
+assert_eq "the refusal changes nothing: own directory" "$(mode_of "$H/.config/agent-flow-kit")" "775"
+assert_eq "the refusal changes nothing: the foreign parent" "$(mode_of "$H/.config")" "777"
+assert_contains "one chmod fixes both" "$(cat "$OUT/both.err")" \
+  "chmod go-w -- '$H/.config' '$H/.config/agent-flow-kit'"
+assert_absent "no removal is claimed" "$(cat "$OUT/both.err")" "removed group and world write"
+# A symlinked config directory: refused before anything is created or changed.
+H="$(new_home cfglink)"
+mkdir -p "$H/.config" "$TMPROOT/cfglink-target"; chmod 755 "$H/.config"; chmod 775 "$TMPROOT/cfglink-target"
+ln -s "$TMPROOT/cfglink-target" "$H/.config/agent-flow-kit"
+run_afk "$H" linux cfglink enroll-auto-update --key-ref op://develop/good/notesPlain
+assert_eq "a symlinked ~/.config/agent-flow-kit refuses (exit 4)" "$RC" "4"
+assert_contains "it is named as the unsafe directory" "$(cat "$OUT/cfglink.err")" \
+  "KEY_PARENT_UNSAFE: $H/.config/agent-flow-kit is a symlink"
+assert_eq "the link target keeps its mode" "$(mode_of "$TMPROOT/cfglink-target")" "775"
+assert_eq "nothing is created through the link" "$(find "$TMPROOT/cfglink-target" -mindepth 1 | wc -l | tr -d ' ')" "0"
+assert_absent "no removal is claimed" "$(cat "$OUT/cfglink.err")" "removed group and world write"
+# ~/.config itself links outside HOME: AFK's directory resolves there and is
+# not AFK's to tighten.
+H="$(new_home outside)"
+mkdir -p "$TMPROOT/outside-config/agent-flow-kit"; chmod 775 "$TMPROOT/outside-config/agent-flow-kit"
+ln -s "$TMPROOT/outside-config" "$H/.config"
+run_afk "$H" linux outside enroll-auto-update --key-ref op://develop/good/notesPlain
+assert_eq "a config directory outside HOME refuses (exit 4)" "$RC" "4"
+assert_eq "the directory outside HOME is untouched" "$(mode_of "$TMPROOT/outside-config/agent-flow-kit")" "775"
+assert_absent "no removal is claimed" "$(cat "$OUT/outside.err")" "removed group and world write"
 
 head1 "macOS: a check-only agent"
 H="$(new_home mac)"

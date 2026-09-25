@@ -115,30 +115,51 @@ afk_au_key_usable() {
   done
 }
 
+# afk_au_key_config_link — a key below a symlinked ~/.config/agent-flow-kit is
+# refused before anything is created: enrollment never writes or changes
+# permissions through a link.
+afk_au_key_config_link() {
+  [[ -n "${HOME:-}" && -L "$HOME/.config/agent-flow-kit" ]] || return 0
+  case "$AFK_AU_KEY" in "$HOME/.config/agent-flow-kit/"*) : ;; *) return 0 ;; esac
+  afk_warn "enroll-auto-update: KEY_PARENT_UNSAFE: $HOME/.config/agent-flow-kit is a symlink, and enrollment never changes permissions through a link; make it a real directory or choose a --key-file below directories you own — nothing was installed"
+  return 1
+}
+
 # afk_au_key_parents — the parent half of that rule, before the key is read.
-# AFK's own ~/.config/agent-flow-kit that fails only the write-bit rule (a
-# umask of 002 leaves it 775) is tightened; any other failing directory is left
-# alone and the exact fix is printed. Diagnostics go to stderr: stdout carries
-# the caller's installed|unchanged answer.
+# AFK's own ~/.config/agent-flow-kit is tightened only when the whole walk has
+# run and it is the one failing directory, failing only the write-bit rule (a
+# umask of 002 leaves it 775), and it is a real directory below HOME owned by
+# this user. Anything else is left alone and the exact fix is printed, so a
+# refusal changes no permissions. Diagnostics go to stderr: stdout carries the
+# caller's installed|unchanged answer.
 afk_au_key_parents() {
-  local own fixed=false
+  local own="" home bad why also=""
   (umask 077 && mkdir -p -- "$AFK_STATE_DIR") || return 1
-  own="$(cd -P -- "$HOME/.config/agent-flow-kit" 2>/dev/null && pwd -P)" || own=""
-  while ! afk_au_key_usable "$AFK_AU_KEY" --parents-only; do
-    if [[ "$fixed" == false && -n "$own" && "$AFK_AU_BAD_DIR" == "$own" &&
-          "$AFK_AU_BAD_WHY" == writable && "$(stat -c %u "$own" 2>/dev/null)" == "$(id -u)" ]]; then
+  afk_au_key_usable "$AFK_AU_KEY" --parents-only && return 0
+  bad="$AFK_AU_BAD_DIR" why="$AFK_AU_BAD_WHY"
+  home="$(cd -P -- "${HOME:-/}" 2>/dev/null && pwd -P)" || home=/
+  if [[ -n "${HOME:-}" && -d "$HOME/.config/agent-flow-kit" && ! -L "$HOME/.config/agent-flow-kit" ]]; then
+    own="$(cd -P -- "$HOME/.config/agent-flow-kit" 2>/dev/null && pwd -P)" || own=""
+  fi
+  if [[ -n "$own" && "$home" != / && "$own" == "$home"/* && "$bad" == "$own" && "$why" == writable &&
+        "$(stat -c %u "$own" 2>/dev/null)" == "$(id -u)" ]]; then
+    # The walk stopped at AFK's directory; finish it from the parent up.
+    if afk_au_key_usable "${own%/*}/.afk-parent-probe" --parents-only; then
       chmod go-w -- "$own" || return 1
       printf 'auto-update: removed group and world write from %s; the release client refuses a key below a writable directory\n' "$own" >&2
-      fixed=true
-      continue
+      afk_au_key_usable "$AFK_AU_KEY" --parents-only && return 0
+    else
+      also="$own"
     fi
-    case "$AFK_AU_BAD_WHY" in
-      writable) afk_warn "enroll-auto-update: KEY_PARENT_UNSAFE: $AFK_AU_BAD_DIR is group or world writable, so the release client would refuse the key. Run: chmod go-w -- $(afk_au_shq "$AFK_AU_BAD_DIR") — nothing was installed" ;;
-      owner)    afk_warn "enroll-auto-update: KEY_PARENT_UNSAFE: $AFK_AU_BAD_DIR is owned by neither you nor root, so the release client would refuse the key; choose a --key-file below directories you own — nothing was installed" ;;
-      *)        afk_warn "enroll-auto-update: KEY_PATH_UNUSABLE: the release client would refuse a key at $AFK_AU_KEY; nothing was installed" ;;
-    esac
-    return 1
-  done
+    bad="$AFK_AU_BAD_DIR" why="$AFK_AU_BAD_WHY"
+  fi
+  local verb=is; [[ -z "$also" ]] || verb=are
+  case "$why" in
+    writable) afk_warn "enroll-auto-update: KEY_PARENT_UNSAFE: $bad${also:+ and $also} $verb group or world writable, so the release client would refuse the key. Run: chmod go-w -- $(afk_au_shq "$bad")${also:+ $(afk_au_shq "$also")} — nothing was installed" ;;
+    owner)    afk_warn "enroll-auto-update: KEY_PARENT_UNSAFE: $bad is owned by neither you nor root, so the release client would refuse the key; choose a --key-file below directories you own — nothing was installed" ;;
+    *)        afk_warn "enroll-auto-update: KEY_PATH_UNUSABLE: the release client would refuse a key at $AFK_AU_KEY; nothing was installed" ;;
+  esac
+  return 1
 }
 
 afk_au_install_key() { # <key-ref> — prints installed|unchanged
@@ -154,6 +175,7 @@ afk_au_install_key() { # <key-ref> — prints installed|unchanged
       afk_warn "enroll-auto-update: the deploy key path is inside a managed tree; nothing was installed"; return 1 ;;
   esac
   afk_au_key_path_free || return 1
+  if [[ "$AFK_AU_PLATFORM" == linux ]]; then afk_au_key_config_link || return 1; fi
   dir="${AFK_AU_KEY%/*}"
   (umask 077 && mkdir -p -- "$dir") || { afk_warn "enroll-auto-update: the deploy key directory could not be created"; return 1; }
   # Only the Linux release client reads the key under this rule.
