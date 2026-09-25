@@ -1771,6 +1771,9 @@ assert_eq "gate logs: state dir outside the worktree -> dispatcher-owned path" \
   "$(gl_dir "" "$gl_state")" "[$gl_state/dispatch/D/gates.c1]"
 assert_eq "failed-gate command is printed without control bytes" \
   "$(source "$KIT_ROOT/files/model-router/scripts/dispatch.sh" && strip_terminal_control <<<$'ok\e]0;title\a\e[?25lcmd' | od -An -c | tr -d ' \n')" "okcmd\n"
+gl_run="$(cd "$gl_wt" && bash -c 'source "$1" || exit 99; dispatch_run_gates "" "true" "false"; printf "%s|%s|%s" "${GATE_RESULTS[true]}" "${GATE_RESULTS[false]}" "$(printf "%s\\n" "${GATE_LOG_ENTRIES[@]}" | jq -sc "map(.log)")"' _ "$KIT_ROOT/files/model-router/scripts/dispatch.sh" 2>/dev/null)"
+assert_eq "gate logs: with no log dir, gates still run and record log null" "$gl_run" "pass|fail|[null,null]"
+assert_eq "gate logs: with no log dir, nothing is written at /1.log" "$([[ -e /1.log ]] && echo exists || echo absent)" "absent"
 rm -rf "$gl_wt" "$gl_state"
 
 # ===========================================================================

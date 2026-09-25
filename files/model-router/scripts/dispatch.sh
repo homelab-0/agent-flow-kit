@@ -2492,7 +2492,11 @@ dispatch_run_gates() { # <gates_log_dir> <gate...>
   for g in "$@"; do
     [[ -z "$g" ]] && continue
     gate_n=$((gate_n + 1))
-    local gate_log_name="${gate_n}.log" gate_log_path="${gates_log_dir}/${gate_n}.log"
+    # No safe log directory: run the gate exactly as before, output discarded,
+    # and record no log. Never build a path from an empty directory.
+    local gate_log_name="" gate_log_path="/dev/null"
+    if [[ -n "$gates_log_dir" ]]; then
+    gate_log_name="${gate_n}.log"; gate_log_path="${gates_log_dir}/${gate_n}.log"
     # Same reasoning as the directory above: refuse a symlink (never follow
     # it), but a plain pre-existing log file from an earlier attempt of this
     # same cycle is reused (truncated), exactly as the original `: >` did.
@@ -2504,13 +2508,15 @@ dispatch_run_gates() { # <gates_log_dir> <gate...>
     ( umask 077 && : > "$gate_log_path" ) || \
       die "could not create gate log '$gate_log_path'" "$EX_CONFIG"
     chmod 600 -- "$gate_log_path"
+    fi
     local gate_status
     if env "${gate_env_unset[@]}" bash -c "$g" >"$gate_log_path" 2>&1; then
       GATE_RESULTS["$g"]="pass"; gate_status="pass"
     else
       GATE_RESULTS["$g"]="fail"; GATES_OK=false; gate_status="fail"
       local gate_tail
-      gate_tail="$(strip_terminal_control < "$gate_log_path" | tail -20)"
+      gate_tail=""
+      [[ -n "$gate_log_name" ]] && gate_tail="$(strip_terminal_control < "$gate_log_path" | tail -20)"
       printf 'GATE FAILED: %s\n%s\n' "$(strip_terminal_control <<<"$g")" "$gate_tail" >&2
     fi
     # shellcheck disable=SC2034 # GATE_LOGS is the legacy command-keyed map,
@@ -2521,7 +2527,7 @@ dispatch_run_gates() { # <gates_log_dir> <gate...>
     GATE_LOGS["$g"]="$gate_log_name"
     GATE_LOG_ENTRIES+=("$(jq -nc --argjson idx "$gate_n" --arg cmd "$g" \
                             --arg status "$gate_status" --arg log "$gate_log_name" \
-                            '{index:$idx, cmd:$cmd, status:$status, log:$log}')")
+                            '{index:$idx, cmd:$cmd, status:$status, log:(if $log == "" then null else $log end)}')")
   done
 }
 
