@@ -37,6 +37,8 @@ afk_au_paths() {
   AFK_AU_RUNTIME_BIN="$AFK_SKILLS_HOME/afk-runtime/bin"
   AFK_AU_SYSTEMD_DIR="${AFK_SYSTEMD_USER_DIR:-${XDG_CONFIG_HOME:-${HOME:-}/.config}/systemd/user}"
   AFK_AU_LAUNCHD_DIR="${AFK_LAUNCHD_DIR:-${HOME:-}/Library/LaunchAgents}"
+  AFK_AU_LOG_DIR="${AFK_LAUNCHD_LOG_DIR:-${HOME:-}/Library/Logs/agent-flow-kit}"
+  AFK_AU_LOG_FILE="$AFK_AU_LOG_DIR/update-check.log"
   AFK_AU_OP="${AFK_OP_BIN:-op}"
   case "${AFK_AUTO_UPDATE_PLATFORM:-$(uname -s)}" in
     linux|Linux)   AFK_AU_PLATFORM=linux;  AFK_AU_SCHEDULER="$AFK_AU_SYSTEMD_DIR/$AFK_AU_UNIT.timer" ;;
@@ -49,6 +51,49 @@ afk_au_interval() {
   local v
   v="$(jq -r '.check_interval_seconds // empty' "$AFK_AU_POLICY" 2>/dev/null)"
   if [[ "$v" =~ ^[0-9]+$ ]] && (( v >= 60 )); then printf '%s\n' "$v"; else printf '900\n'; fi
+}
+
+# afk_au_bash_candidates — the ordered list of bash interpreters to try. A
+# test-only override (AFK_AU_BASH_CANDIDATES, colon-separated) REPLACES the
+# whole list so tests never depend on the host's real /opt/homebrew, /usr/local
+# or PATH bash; production leaves it unset and gets the real candidates.
+afk_au_bash_candidates() {
+  if [[ -n "${AFK_AU_BASH_CANDIDATES+x}" ]]; then
+    local IFS=':' c
+    for c in $AFK_AU_BASH_CANDIDATES; do [[ -n "$c" ]] && printf '%s\n' "$c"; done
+    return 0
+  fi
+  printf '%s\n' '/opt/homebrew/bin/bash' '/usr/local/bin/bash'
+  command -v bash 2>/dev/null
+}
+
+# afk_au_resolve_bash — prints the absolute path of the first candidate that
+# is executable and reports BASH_VERSINFO 4.2 or newer, or returns 1 when none
+# qualifies (the launchd-under-macOS-3.2 failure this story fixes). Each
+# candidate is actually RUN, never guessed from its path.
+afk_au_resolve_bash() {
+  local c v maj min
+  while IFS= read -r c; do
+    [[ -n "$c" && -x "$c" ]] || continue
+    v="$("$c" -c 'printf "%s.%s\n" "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}"' 2>/dev/null </dev/null)" || continue
+    [[ "$v" =~ ^([0-9]+)\.([0-9]+)$ ]] || continue
+    maj="${BASH_REMATCH[1]}"; min="${BASH_REMATCH[2]}"
+    if (( maj > 4 || (maj == 4 && min >= 2) )); then
+      printf '%s\n' "$c"
+      return 0
+    fi
+  done < <(afk_au_bash_candidates)
+  return 1
+}
+
+# afk_au_epoch <ISO-8601 UTC timestamp> -> epoch seconds, or a non-zero return.
+# GNU date takes the first form; the BSD/macOS date this ships on takes -j -f.
+afk_au_epoch() {
+  local iso="$1" e
+  [[ -n "$iso" ]] || return 1
+  e="$(date -u -d "$iso" +%s 2>/dev/null)" && { printf '%s\n' "$e"; return 0; }
+  e="$(date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$iso" +%s 2>/dev/null)" && { printf '%s\n' "$e"; return 0; }
+  return 1
 }
 
 # afk_au_ready — what the scheduled job will run must already be installed:
@@ -261,7 +306,7 @@ afk_au_systemd_timer() { # <interval>
     '[Install]' 'WantedBy=timers.target'
 }
 
-afk_au_launchd_plist() { # <interval> — CHECK ONLY: the agent never applies
+afk_au_launchd_plist() { # <interval> <resolved-bash> — CHECK ONLY: never applies
   printf '%s\n' \
     '<?xml version="1.0" encoding="UTF-8"?>' \
     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
@@ -269,16 +314,19 @@ afk_au_launchd_plist() { # <interval> — CHECK ONLY: the agent never applies
     '<plist version="1.0"><dict>' \
     "  <key>Label</key><string>$AFK_AU_LABEL</string>" \
     '  <key>ProgramArguments</key><array>' \
+    "    <string>$(afk_au_xml "$2")</string>" \
     "    <string>$(afk_au_xml "$AFK_AU_RUNTIME_BIN/agent-flow-kit")</string>" \
     '    <string>enroll-auto-update</string><string>--check</string>' \
     '  </array>' \
     '  <key>EnvironmentVariables</key><dict>' \
-    '    <key>PATH</key><string>/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin</string>' \
+    '    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>' \
     "    <key>AFK_STATE_DIR</key><string>$(afk_au_xml "$AFK_STATE_DIR")</string>" \
     "    <key>AFK_RELEASE_DEPLOY_KEY</key><string>$(afk_au_xml "$AFK_AU_KEY")</string>" \
     '  </dict>' \
     "  <key>StartInterval</key><integer>$1</integer>" \
     '  <key>RunAtLoad</key><true/>' \
+    "  <key>StandardOutPath</key><string>$(afk_au_xml "$AFK_AU_LOG_FILE")</string>" \
+    "  <key>StandardErrorPath</key><string>$(afk_au_xml "$AFK_AU_LOG_FILE")</string>" \
     '</dict></plist>'
 }
 
@@ -394,12 +442,15 @@ afk_au_darwin_load() {
   return 1
 }
 
-afk_au_enable_darwin() { # <interval> — sets AFK_AU_RESTORED when the previous agent was put back
+afk_au_enable_darwin() { # <interval> <resolved-bash> — sets AFK_AU_RESTORED when the previous agent was put back
   local domain prev=""
   domain="gui/$(id -u)"
   AFK_AU_RESTORED=""
+  (umask 077 && mkdir -p -- "$AFK_AU_LOG_DIR") || {
+    afk_warn "enroll-auto-update: the log directory could not be created; nothing was installed"; return 1; }
+  chmod 700 -- "$AFK_AU_LOG_DIR" || true
   [[ -f "$AFK_AU_SCHEDULER" ]] && prev="$(cat -- "$AFK_AU_SCHEDULER")"
-  if afk_au_darwin_load "$domain" "$(afk_au_launchd_plist "$1")"; then
+  if afk_au_darwin_load "$domain" "$(afk_au_launchd_plist "$1" "$2")"; then
     AFK_AU_NOTE="check-only (MACOS_SANDBOX_PENDING: apply with agent-flow-kit update)"
     return 0
   fi
@@ -475,6 +526,15 @@ afk_cmd_enroll_auto_update() { # <enroll|check|remove> <key-ref> <key-file>
   fi
   afk_au_key_path_valid || return "$AFK_EXIT_USAGE"
   afk_au_ready || return "$AFK_EXIT_SOURCE_REFUSED"
+  # The macOS agent's shebang is `#!/usr/bin/env bash`, and launchd's PATH puts
+  # /usr/bin first, so without this the agent silently runs under macOS's bash
+  # 3.2 and fails at the first `[[ -v ... ]]`. Resolved once, before anything
+  # is installed, so a host with no modern bash writes nothing.
+  if [[ "$AFK_AU_PLATFORM" == darwin ]]; then
+    AFK_AU_BASH="$(afk_au_resolve_bash)" || {
+      afk_warn "enroll-auto-update: MODERN_BASH_REQUIRED: no bash 4.2 or newer was found (checked /opt/homebrew/bin/bash, /usr/local/bin/bash, and command -v bash); nothing was installed"
+      return "$AFK_EXIT_SOURCE_REFUSED"; }
+  fi
   interval="$(afk_au_interval)"
   AFK_AU_KEY_ACTION="$(afk_au_install_key "$2")" || return "$AFK_EXIT_SOURCE_REFUSED"
   # The config is written only once the scheduler is really enabled. A failed
@@ -485,7 +545,7 @@ afk_cmd_enroll_auto_update() { # <enroll|check|remove> <key-ref> <key-file>
     afk_au_enable_linux "$interval" || {
       [[ -n "$AFK_AU_PREVIOUS" ]] || rm -f -- "$AFK_AU_CONFIG"
       return "$AFK_EXIT_LIVE_UNAVAILABLE"; }
-  elif ! afk_au_enable_darwin "$interval"; then
+  elif ! afk_au_enable_darwin "$interval" "$AFK_AU_BASH"; then
     [[ -n "$AFK_AU_RESTORED" ]] || rm -f -- "$AFK_AU_CONFIG"
     return "$AFK_EXIT_LIVE_UNAVAILABLE"
   fi
@@ -513,19 +573,56 @@ afk_cmd_enroll_auto_update() { # <enroll|check|remove> <key-ref> <key-file>
 
 # --- status ------------------------------------------------------------------
 
+# afk_au_linux_last_run — sets AFK_AU_LR_FAILED=y when systemd's own record of
+# the unit's last run (never the release client's own JSON) says it did not
+# finish cleanly. Read-only: no probe here ever mutates the unit.
+afk_au_linux_last_run() {
+  AFK_AU_LR_FAILED=""
+  local out result status
+  out="$(systemctl --user show "$AFK_AU_UNIT.service" -p Result -p ExecMainStatus --value 2>/dev/null </dev/null)" || return 0
+  result="$(sed -n '1p' <<<"$out")"; status="$(sed -n '2p' <<<"$out")"
+  [[ -n "$result" ]] || return 0
+  if [[ "$result" != success ]] || { [[ "$status" =~ ^[0-9]+$ ]] && (( status != 0 )); }; then
+    AFK_AU_LR_FAILED=y
+  fi
+}
+
+# afk_auto_update_status_json — health tells the truth even when last_result
+# would otherwise read as a quiet "no news": last_run_failed when the platform's
+# own record of the run (launchd/systemd, or the check's own state file, never
+# the release client's optimistic self-report alone) says it did not finish
+# cleanly; check_stale when the most recent record is older than 3x the check
+# interval (the scheduler may not be running at all); ok otherwise; null when
+# nothing has ever run. update_available keeps its own narrower rule below.
 afk_auto_update_status_json() {
-  # update_available compares the saved check with the revision status loaded,
-  # so a check taken before the last apply is never reported.
-  local last="null" config="{}"
+  local last="null" config="{}" last_at="" failed="" health=""
   afk_au_paths
   [[ -r "$AFK_AU_CONFIG" ]] && config="$(jq -c '.' "$AFK_AU_CONFIG" 2>/dev/null || printf '{}')"
   if [[ "$AFK_AU_PLATFORM" == darwin && -r "$AFK_AU_CHECK_STATE" ]]; then
     last="$(jq -c '{state, at: .checked_at, remote_revision}' "$AFK_AU_CHECK_STATE" 2>/dev/null || printf 'null')"
+    last_at="$(jq -r '.checked_at // empty' "$AFK_AU_CHECK_STATE" 2>/dev/null)"
+    [[ "$(jq -r '.state // empty' "$AFK_AU_CHECK_STATE" 2>/dev/null)" == CHECK_FAILED ]] && failed=y
   elif [[ -r "$AFK_STATE_DIR/releases/latest.json" ]]; then
     last="$(jq -c '{state, reason, at: .ended_at}' "$AFK_STATE_DIR/releases/latest.json" 2>/dev/null || printf 'null')"
+    last_at="$(jq -r '.ended_at // empty' "$AFK_STATE_DIR/releases/latest.json" 2>/dev/null)"
+    if [[ "$AFK_AU_PLATFORM" == linux ]]; then
+      afk_au_linux_last_run
+      [[ -n "$AFK_AU_LR_FAILED" ]] && failed=y
+    fi
+  fi
+  if [[ -n "$failed" ]]; then
+    health="last_run_failed"
+  elif [[ -n "$last_at" ]]; then
+    local now interval last_epoch
+    now="$(date -u +%s)"; interval="$(afk_au_interval)"
+    if last_epoch="$(afk_au_epoch "$last_at")" && (( now - last_epoch > interval * 3 )); then
+      health="check_stale"
+    else
+      health="ok"
+    fi
   fi
   jq -nc --arg platform "$AFK_AU_PLATFORM" --arg sched "$AFK_AU_SCHEDULER" \
-    --argjson config "$config" --argjson last "$last" \
+    --argjson config "$config" --argjson last "$last" --arg health "$health" \
     --arg has_config "$([[ -f "$AFK_AU_CONFIG" ]] && echo y)" \
     --arg has_sched "$(afk_au_scheduler_enabled && echo y)" \
     --arg has_key "$([[ -f "$AFK_AU_KEY" ]] && echo y)" \
@@ -533,7 +630,7 @@ afk_auto_update_status_json() {
     '{enrolled: ($has_config == "y" and $has_sched == "y"), platform: $platform,
       scheduler: (if $has_sched == "y" then $sched else null end),
       key_ref: ($config.key_ref // null), key_present: ($has_key == "y"),
-      last_result: $last,
+      last_result: $last, health: (if $health == "" then null else $health end),
       update_available: ($platform == "darwin" and $last != null
         and $last.state == "UPDATE_AVAILABLE"
         and ($last.remote_revision | type == "string")

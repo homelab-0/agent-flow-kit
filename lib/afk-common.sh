@@ -1206,7 +1206,7 @@ afk_render_human() { # <result-json-document>
     printf '\n  auto-update\n'
     afk_render_q -r '.extra.auto_update | (.last_result // {}) as $l |
       "    \(if .enrolled then "enrolled" else "not enrolled" end)  platform=\(.platform)  scheduler=\(.scheduler // "-")\n"
-      + "    last result: \($l.state // "-") \($l.reason // "-")  at=\($l.at // "-")"
+      + "    last result: \($l.state // "-") \($l.reason // "-")  at=\($l.at // "-")  health=\(.health // "-")"
       + (if .update_available then "\n    update available: \($l.remote_revision) (run: agent-flow-kit update)" else "" end)'
   fi
 
