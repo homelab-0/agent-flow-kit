@@ -91,6 +91,24 @@ passwd_home() {
 stat_identity() { stat -Lc '%d:%i:%y' "$1" 2>/dev/null || stat -Lf '%d:%i:%Sm' -t '%Y-%m-%dT%H:%M:%S%z' "$1" 2>/dev/null; }
 stat_mode() { stat -Lc '%a' "$1" 2>/dev/null || stat -Lf '%Lp' "$1" 2>/dev/null; }
 
+# strip_terminal_control — remove every terminal control sequence from stdin,
+# not just numeric CSI: CSI (ESC '[' ... final byte 0x40-0x7E, including
+# private-parameter forms like `?25l`), OSC (ESC ']' ... terminated by BEL or
+# ESC '\'), any other ESC-initiated sequence, and any remaining C0 control byte
+# except newline and tab. A gate is free-text from the story and its output is
+# never trusted to be inert before it reaches dispatch's own stderr.
+strip_terminal_control() {
+  # LC_ALL=C: the byte ranges below (e.g. `[0-?]`, `[ -/]`, `[@-~]`) are
+  # collation ranges, and under a UTF-8 locale sed can refuse them outright
+  # ("Invalid range end") or match on collation order instead of raw byte
+  # value. C locale makes every range exactly the ASCII byte range it names.
+  LC_ALL=C sed -E \
+    -e 's#\x1b\][^\x07\x1b]*(\x07|\x1b\\)##g' \
+    -e 's#\x1b\[[0-?]*[ -/]*[@-~]##g' \
+    -e 's#\x1b.##g' \
+    -e 's#[\x00-\x08\x0b-\x1f\x7f]##g'
+}
+
 # shq — encode a launcher-resolved value as a shell-safe LITERAL for embedding
 # in generated terminal command text. This is what lets the launcher put its own
 # control values into a command string without ever making task-shaped content
@@ -2419,6 +2437,128 @@ opencode_funding_preflight() {
   [[ -n "$expected" && "$actual" == "$expected" ]] || die "MiniMax funding attestation is invalid or stale" "$EX_CONFIG"
 }
 
+# dispatch_run_gates — runs each gate, keeping its combined stdout+stderr next
+# to the per-cycle result instead of discarding it, so a failure's reason
+# survives without a ~35-minute re-run of the whole suite. Pass/fail is still
+# exit status only — the log is never read to decide it. Gates never need
+# router credentials, so they are scrubbed from the gate's environment before
+# it runs, on top of tests/run-tests.sh's own hermetic-env handling (#59):
+# belt and suspenders, since a gate command is free-text from the story and
+# may not be run-tests.sh. Sets the globals GATE_RESULTS, GATE_LOGS,
+# GATE_LOG_ENTRIES, GATES_OK; caller passes the per-cycle log directory (may
+# be "") and the gate commands.
+#
+# SECURITY (AFK-GL-1 review): the gates run OUTSIDE the worker sandbox, on the
+# dispatcher's own credentials, against a directory the caller names. A worker
+# that ran in an EARLIER cycle owns that worktree and could have planted a
+# directory symlink at the exact log-dir/log-file path this function is about
+# to `mkdir`/`: >` through, redirecting it anywhere the dispatcher can write.
+# The caller is responsible for naming a location OUTSIDE the worktree (see
+# the `gates_log_dir_for` helper); this function additionally refuses, rather
+# than follows, anything already sitting at that path. `mkdir` and a
+# noclobber `>` redirect both fail closed on an existing path — including a
+# symlink, which they never dereference for their own last path component —
+# so the check-then-act window below is a clearer error message, not the
+# safety boundary itself.
+dispatch_run_gates() { # <gates_log_dir> <gate...>
+  local gates_log_dir="$1"; shift
+  declare -g -A GATE_RESULTS=() GATE_LOGS=(); declare -g -a GATE_LOG_ENTRIES=(); GATES_OK=true
+  local gate_n=0 g
+  if (( $# > 0 )) && [[ -n "$gates_log_dir" ]]; then
+    # The directory is dispatcher-owned and keyed by (dispatch_id, cycle), so a
+    # RETRY of the exact same cycle legitimately recomputes the exact same
+    # path and must be able to reuse it — this is not the attack the security
+    # review flagged. What must never happen is following a symlink placed at
+    # that path (a real directory here, planted before the dispatcher's first
+    # write, would not be reachable from inside the worker's own worktree
+    # sandbox, but a defense-in-depth refusal costs nothing and closes the
+    # class outright): refuse a symlink, and refuse anything that exists but
+    # is not a directory; otherwise create it if missing and reuse it if not.
+    if [[ -L "$gates_log_dir" ]]; then
+      die "gate log directory '$gates_log_dir' is a symlink — refusing to write gate logs through it" "$EX_CONFIG"
+    elif [[ -e "$gates_log_dir" && ! -d "$gates_log_dir" ]]; then
+      die "gate log directory '$gates_log_dir' exists and is not a directory — refusing to write gate logs there" "$EX_CONFIG"
+    fi
+    mkdir -p -- "$(dirname -- "$gates_log_dir")" || \
+      die "could not create the parent of gate log directory '$gates_log_dir'" "$EX_CONFIG"
+    if [[ ! -d "$gates_log_dir" ]]; then
+      ( umask 077 && mkdir -m 700 -- "$gates_log_dir" ) || \
+        die "could not create gate log directory '$gates_log_dir'" "$EX_CONFIG"
+    fi
+    chmod 700 -- "$gates_log_dir"
+  fi
+  local -a gate_env_unset=(-u AGENT_ROUTER_TOKEN -u AGENT_ROUTER_URL -u AGENT_ROUTER_TOKEN_ENV)
+  [[ -n "${CALLER_TOKEN_ENV:-}" ]] && gate_env_unset+=(-u "$CALLER_TOKEN_ENV")
+  for g in "$@"; do
+    [[ -z "$g" ]] && continue
+    gate_n=$((gate_n + 1))
+    # No safe log directory: run the gate exactly as before, output discarded,
+    # and record no log. Never build a path from an empty directory.
+    local gate_log_name="" gate_log_path="/dev/null"
+    if [[ -n "$gates_log_dir" ]]; then
+    gate_log_name="${gate_n}.log"; gate_log_path="${gates_log_dir}/${gate_n}.log"
+    # Same reasoning as the directory above: refuse a symlink (never follow
+    # it), but a plain pre-existing log file from an earlier attempt of this
+    # same cycle is reused (truncated), exactly as the original `: >` did.
+    if [[ -L "$gate_log_path" ]]; then
+      die "gate log '$gate_log_path' is a symlink — refusing to write through it" "$EX_CONFIG"
+    elif [[ -e "$gate_log_path" && ! -f "$gate_log_path" ]]; then
+      die "gate log '$gate_log_path' exists and is not a regular file — refusing to write there" "$EX_CONFIG"
+    fi
+    ( umask 077 && : > "$gate_log_path" ) || \
+      die "could not create gate log '$gate_log_path'" "$EX_CONFIG"
+    chmod 600 -- "$gate_log_path"
+    fi
+    local gate_status
+    if env "${gate_env_unset[@]}" bash -c "$g" >"$gate_log_path" 2>&1; then
+      GATE_RESULTS["$g"]="pass"; gate_status="pass"
+    else
+      GATE_RESULTS["$g"]="fail"; GATES_OK=false; gate_status="fail"
+      local gate_tail
+      gate_tail=""
+      [[ -n "$gate_log_name" ]] && gate_tail="$(strip_terminal_control < "$gate_log_path" | tail -20)"
+      printf 'GATE FAILED: %s\n%s\n' "$(strip_terminal_control <<<"$g")" "$gate_tail" >&2
+    fi
+    # shellcheck disable=SC2034 # GATE_LOGS is the legacy command-keyed map,
+    # kept only for tests/lifecycle-dispatch-tests.sh, which sources this file
+    # and reads it directly; the thin result's gate_logs field is built from
+    # GATE_LOG_ENTRIES below instead (review fix 3: ordered by invocation, so
+    # a duplicated gate command does not collide).
+    GATE_LOGS["$g"]="$gate_log_name"
+    GATE_LOG_ENTRIES+=("$(jq -nc --argjson idx "$gate_n" --arg cmd "$g" \
+                            --arg status "$gate_status" --arg log "$gate_log_name" \
+                            '{index:$idx, cmd:$cmd, status:$status, log:(if $log == "" then null else $log end)}')")
+  done
+}
+
+# gates_log_dir_for — the dispatcher-owned, per-attempt gate-log directory.
+# MUST live outside the worktree the worker just ran in (AFK-GL-1 review): the
+# worker owns that tree, and dispatch_run_gates itself runs on the dispatcher's
+# credentials, after the worker has exited, so an in-worktree path is a path a
+# prior cycle's worker could have pre-planted a symlink at. Rooted under the
+# same $AFK_STATE_DIR/dispatch tree bin/agent-flow-kit already uses for
+# AFK_DISPATCH_DIR, keyed by dispatch id and cycle so two attempts never share
+# a directory.
+gates_log_dir_for() { # <dispatch_id> <cycle>
+  # Prints nothing (gates then run without logs) unless the base is a real,
+  # absolute state directory that resolves outside the worker's worktree. It
+  # never falls back to $PWD: that is the worktree the worker can write.
+  local dispatch_id="$1" cycle="$2" root probe phys_probe phys_pwd
+  root="${AFK_STATE_DIR:-${HOME:+$HOME/.local/state/agent-flow-kit}}"
+  if [[ -z "$root" || "$root" != /* ]]; then
+    log "gate logs: no absolute AFK_STATE_DIR or HOME; running gates without logs"
+    return 0
+  fi
+  probe="$root"; while [[ ! -d "$probe" ]]; do probe="$(dirname -- "$probe")"; done
+  phys_probe="$(cd -P -- "$probe" 2>/dev/null && pwd -P)" || phys_probe=""
+  phys_pwd="$(pwd -P)"
+  if [[ -z "$phys_probe" || "$phys_probe" == "$phys_pwd" || "$phys_probe" == "$phys_pwd"/* ]]; then
+    log "gate logs: state directory resolves inside the worktree; running gates without logs"
+    return 0
+  fi
+  printf '%s/dispatch/%s/gates.c%s' "$root" "$dispatch_id" "$cycle"
+}
+
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
@@ -3143,12 +3283,9 @@ EOF
 
   # ---- deterministic gates: never trust the worker's word -----------------
   # A zero harness exit means the turn completed, not that the task succeeded.
-  declare -A GATE_RESULTS; GATES_OK=true
-  for g in "${GATES[@]:-}"; do
-    [[ -z "$g" ]] && continue
-    if bash -c "$g" >/dev/null 2>&1; then GATE_RESULTS["$g"]="pass"
-    else GATE_RESULTS["$g"]="fail"; GATES_OK=false; fi
-  done
+  local gates_log_dir=""
+  (( ${#GATES[@]} > 0 )) && gates_log_dir="$(gates_log_dir_for "$WORKER_DISPATCH_ID" "$CYCLE")"
+  dispatch_run_gates "$gates_log_dir" "${GATES[@]:-}"
 
   # A run that finished is not a run that needs continuing. An end-of-run ratio
   # in the continuation band on a story whose gates passed and whose worker said
@@ -3232,9 +3369,11 @@ EOF
           checkpoint_artifact:$cp, continuation_artifact:$ct,
           continuation_of:$cof, continuation_decision:$cdec,
           findings:$findings}')" \
+    --arg gates_log_dir "$gates_log_dir" \
     --argjson gates "$(for k in "${!GATE_RESULTS[@]}"; do
                          jq -n --arg k "$k" --arg v "${GATE_RESULTS[$k]}" '{($k):$v}'
                        done | jq -s 'add // {}')" \
+    --argjson gate_logs "$(printf '%s\n' ${GATE_LOG_ENTRIES[@]+"${GATE_LOG_ENTRIES[@]}"} | jq -s -c '.')" \
     '{story:$story, cycle:($cycle|tonumber), status:$attempt.status,
       route:$route,
       stamp:{digest:$digest, expires_at:$expires, catalog_version:$catalog,
@@ -3242,7 +3381,9 @@ EOF
       placement:$placement,
       budget:$budget,
       launch:({orca_terminal:$terminal,dispatch_id:$dispatch,worker_identity:$worker} + $attempt.launch),
-      gates:$gates}' > "${STORY}.result.json"
+      gates:$gates,
+      gates_log_dir:(if $gates_log_dir == "" then null else $gates_log_dir end),
+      gate_logs:$gate_logs}' > "${STORY}.result.json"
 
   # The per-cycle copy. `${STORY}.result.json` is what a reader opens by name
   # and is overwritten every cycle; the cap and the continuation chain are
