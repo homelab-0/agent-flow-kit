@@ -98,12 +98,18 @@ case "$1" in
     [[ -f "$L" ]] ;;
 esac
 SH
-REAL_TIMEOUT="$(command -v timeout)"
+# macOS has no timeout binary by default (coreutils installs gtimeout). When
+# neither exists, the stub drops timeout's options and duration and runs the
+# command directly, so the suite behaves the same on every supported host.
+REAL_TIMEOUT="$(command -v timeout || command -v gtimeout || true)"
 cat >"$STUBS/timeout" <<SH
 #!/usr/bin/env bash
 printf 'timeout %s\n' "\$*" >>"$LOG"
 [[ -z "\${AFK_TEST_TIMEOUT_EXPIRE:-}" ]] || exit 124
-exec "$REAL_TIMEOUT" "\$@"
+if [[ -n "$REAL_TIMEOUT" ]]; then exec "$REAL_TIMEOUT" "\$@"; fi
+while [[ "\${1:-}" == -* ]]; do shift; done
+shift
+exec "\$@"
 SH
 printf '#!/usr/bin/env bash\nprintf "no\\n"\n' >"$STUBS/loginctl"
 cat >"$STUBS/git" <<SH
