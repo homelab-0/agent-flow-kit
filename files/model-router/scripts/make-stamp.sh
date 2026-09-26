@@ -266,7 +266,11 @@ log "  digest sha256:$(sha256_of "$OUT")"
 
 if (( CHECK )); then
   validator="${AGENT_STAMP_VALIDATE:-agent-stamp-validate}"
+  # Same order as dispatch.sh: env, launcher.catalog_path, the synced current.yaml.
   catalog="${AGENT_STAMP_VALIDATE_CATALOG_PATH:-$(yq_cfg '.launcher.catalog_path')}"
+  [[ "$catalog" == null ]] && catalog=""
+  synced="${HOME:+$HOME/.config/agent-flow-kit/trusted-catalogs/current.yaml}"
+  [[ -z "$catalog" && -n "$synced" && -e "$synced" ]] && catalog="$synced"
   if command -v "$validator" >/dev/null && [[ -n "$catalog" && -f "$catalog" ]]; then
     rc=0
     "$validator" --catalog "$catalog" --stamp "$OUT" > "$TMP/verdict.json" 2>"$TMP/verdict.err" || rc=$?

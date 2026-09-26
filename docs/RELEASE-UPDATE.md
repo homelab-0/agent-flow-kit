@@ -221,6 +221,120 @@ keys from GitHub's published SSH key fingerprints page (or
 the file, the fingerprints above, and the contract test together, and ship a
 release. Hosts that cannot fetch must be updated by a manual install.
 
+## Trusted catalog
+
+The stamp validator's catalog is the one the deployed agent-router trusts.
+prox-ops runs that deployment and publishes which catalog it trusts in a
+public, credential-free client manifest. ACP is not a source: AFK never reads
+an ACP repository or release for it. A catalog bump on the deployment no
+longer needs an AFK commit or a per-host runbook; each host converges on its
+own.
+
+**Source.** `catalog_source` in `lifecycle/release-policy.json` is the one
+declaration: repository `https://github.com/jlengelbrecht/prox-ops`, branch
+`main`, manifest `clients/agent-router/manifest.json` (schema
+`prox-ops/agent-router-client/v1`, contract in prox-ops
+`clients/agent-router/README.md`), and a 20-second fetch timeout.
+
+**Recipe.** `agent-flow-kit catalog-sync [--check|--apply] [--json]`:
+
+1. `git ls-remote https://github.com/jlengelbrecht/prox-ops refs/heads/main`
+   resolves `main` to one commit. Only the line whose ref is exactly
+   `refs/heads/main` counts (ls-remote also matches refs merely ending in it,
+   such as `a/refs/heads/main`), and its id must be 40 lowercase hex, or the
+   sync fails with `SOURCE_UNREACHABLE`. No GitHub API call.
+2. `curl -fsSL` fetches the manifest and then the file at `catalog.path`, both
+   from `https://raw.githubusercontent.com/jlengelbrecht/prox-ops/<sha>/<path>`
+   with that same commit, so the two cannot come from different commits.
+3. The manifest must be a JSON object with `schema` equal to
+   `prox-ops/agent-router-client/v1`. Unknown fields are ignored. Only
+   `catalog.document_version`, `catalog.digest` and `catalog.path` are read;
+   the `validator.*` fields are not used here.
+4. `sha256(catalog) == catalog.digest` (`sha256:<hex>`), or nothing changes.
+
+No credential is sent. git, curl and timeout are resolved only from
+`/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin` (a missing git or curl is
+`SOURCE_UNREACHABLE`; without timeout, git's low-speed limit and curl's
+`--max-time` still bound the fetch), and they start from an empty environment
+with that `PATH`, `HOME=/nonexistent`, no system or global git config
+(`GIT_CONFIG_NOSYSTEM`, `GIT_CONFIG_SYSTEM=/dev/null`), the credential helper
+cleared, `http.sslVerify=true`, and `curl -q` (no `.curlrc`, no `.netrc`),
+HTTPS only.
+
+`--check` (the default) verifies and reports `ALREADY_CURRENT` or
+`UPDATE_AVAILABLE` with the live digest, and writes nothing. `--apply` installs
+a verified catalog and records every outcome.
+
+**Layout.** Under `~/.config/agent-flow-kit/trusted-catalogs/`:
+
+- `trusted-catalog-<document_version>-<first 12 hex of digest>.yaml`, mode
+  `0444`, written to a temporary file and renamed into place. Older files stay,
+  so earlier pins remain inspectable.
+- `current.yaml`, a relative symlink to the verified file, replaced by
+  renaming a fresh link over it. If `current.yaml` is a directory or a link to
+  one, `--apply` refuses with `INSTALL_FAILED`; after the rename the link must
+  name the installed file and hash to the digest, or it is `INSTALL_FAILED`.
+
+When `current.yaml` already hashes to the manifest digest, `--apply` writes no
+catalog file or link and reports `ALREADY_CURRENT`. It still refreshes the
+state file, so status can tell a recent verification from a stale one. The
+state file is `$AFK_STATE_DIR/catalog/latest.json`: `outcome`, `reason`,
+`source_sha`, `document_version`, `digest`, `fetched_at`, and the last
+verified sync, which carries over when a later sync fails. It contains no
+secrets. Nothing is written inside `~/.agents/skills`.
+
+**Failures keep the last good catalog.** `current.yaml` is left alone and the
+reason is recorded:
+
+| Reason | Meaning | Exit |
+| --- | --- | --- |
+| `SOURCE_UNREACHABLE` | `ls-remote` or a fetch failed or timed out | 5 |
+| `MANIFEST_INVALID` | not a JSON object, or `catalog.digest`/`path`/`document_version` missing or malformed | 4 |
+| `SCHEMA_UNSUPPORTED` | `schema` is not v1 | 4 |
+| `PATH_REJECTED` | `catalog.path` is absolute, contains `..`, or has characters outside `[A-Za-z0-9._/-]` | 4 |
+| `DIGEST_MISMATCH` | the fetched catalog does not hash to `catalog.digest` | 4 |
+| `SOURCE_UNDECLARED`, `INSTALL_FAILED` | the policy has no complete `catalog_source`; the file or link could not be written | 4 |
+
+**Scheduling.** The Linux service runs
+`ExecStopPost=-<runtime>/bin/agent-flow-kit catalog-sync --apply`. It runs
+after the release step whatever that step's outcome, and the `-` keeps a
+catalog failure out of systemd's record of the release run. Its output goes to
+the user journal. The macOS agent's `enroll-auto-update --check` runs
+`catalog-sync --apply` after the release check and logs it to
+`update-check.log`. The catalog is digest-verified data, not kit code, so the
+Mac's check-only rule for releases does not apply to it. A catalog failure
+never changes the release result's `state` or `reason`. Hosts enrolled before
+this change get the new unit text from re-running `enroll-auto-update`.
+
+**Resolution order.** `dispatch.sh` and `make-stamp.sh` choose the catalog in
+this order, and never from the stamp:
+
+1. `AGENT_STAMP_VALIDATE_CATALOG_PATH`
+2. a non-empty `launcher.catalog_path` in the machine-local
+   `subscriptions.yaml`
+3. `~/.config/agent-flow-kit/trusted-catalogs/current.yaml`, if it exists
+
+With none of these, dispatch fails with "no trusted catalog".
+
+**Status.** `agent-flow-kit status` reports `extra.catalog`: the resolved
+path, the rule that chose it (`env`, `config`, `synced`), the digest it
+resolves to, `current.yaml`'s digest, and the last sync outcome and time.
+Findings:
+
+- `CATALOG_PIN_SHADOWED` (warning): `launcher.catalog_path` is set and its
+  file's digest differs from `current.yaml`'s, so the host does not follow the
+  deployment.
+- `CATALOG_SYNC_FAILED` (warning): the last sync failed.
+- `CATALOG_SYNC_STALE` (warning): the last verified sync is older than 3x
+  `check_interval_seconds`, or there never was one.
+- `CATALOG_UNRESOLVED` (error): no rule above yields a readable catalog.
+
+**One-time host migration.** Once `catalog-sync --apply` has created
+`current.yaml`, set `launcher.catalog_path` in the host's
+`subscriptions.yaml` to `""` (or to the `current.yaml` path) so the host
+follows the deployment. `subscriptions.yaml` is machine-local: the kit never
+edits it, so each host makes this change by hand.
+
 ## What an update does
 
 `afk-release-reconcile --apply` creates an AFK-owned bare mirror below the
