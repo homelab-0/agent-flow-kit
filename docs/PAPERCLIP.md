@@ -90,7 +90,13 @@ for the marker: found means sent (delete and continue); not found leaves the
 file in place for the next pass. A `sending` marker is written to the ledger
 before every POST, and a leftover one from a crashed pass is resolved by the
 same read-back before anything else is posted, so no entry is ever posted
-twice on the strength of a guess.
+twice on the strength of a guess. Only comments authored by the poller's own
+agent count as a match, and a read-back that itself fails holds every entry
+for that issue until the next pass. An entry with an unknown `kind`, a
+`final` status other than `in_review`/`done`, or a `question` without a
+short `question_id` goes to `dead/` unposted. If a `final` comment lands but
+its status PATCH fails, the status is kept in the ledger as `pending_final`
+and retried on the next pass without re-posting the comment.
 
 A `422`/`400` moves that one entry to `spool/<issue-id>/dead/` with a
 `.reason` file and continues with the rest. A `404`/`410` drops the whole
