@@ -178,6 +178,44 @@ sessions never act on the same one.
   when already settled); an unknown or foreign notice refuses with
   `PAPERCLIP_NOTICE_UNKNOWN`.
 
+## `paperclip-report` — the PM's only way to write (AFK-PC-3a)
+
+The PM never holds a Paperclip key and never touches the poller's spool or
+status files directly (AD-7/AD-8). `agent-flow-kit paperclip-report` is the
+one command that writes there, and it enforces ordering, closure and who's
+allowed to:
+
+- **Caller.** The verb resolves the issue's project from the poller ledger
+  (`$AFK_STATE_DIR/paperclip/ledger.json`, `issues[<id>].project`), then that
+  project's `repo_path` from the paperclip config. The caller must be the
+  registry's live owner (or the named handoff successor) for that repo — the
+  same check as `paperclip-take`, via `ORCA_TERMINAL_HANDLE`. Otherwise it
+  refuses with `PAPERCLIP_NOT_OWNER`. An unknown issue id, or one not in the
+  ledger, refuses with `PAPERCLIP_ISSUE_UNKNOWN`.
+- **`paperclip-report --issue <id> --comment-file <path>`**,
+  **`--issue <id> --question <qid> --comment-file <path>`**, or
+  **`--issue <id> --final in_review|done --comment-file <path>`**: the body
+  is always read from a file, at most 16 KiB and valid UTF-8, never from an
+  argument. `qid` matches `^[a-z0-9-]{1,32}$`. The verb writes
+  `{id, kind, body[, question_id | status]}` to
+  `spool/<issue-id>/.tmp/<uuid>.json`, then publishes it with a no-clobber
+  rename to `spool/<issue-id>/<seq>.json` — the same layout
+  `paperclip-poll`'s report cycle reads (see above). `seq` is zero-padded to
+  8 digits and comes from a per-issue counter file
+  (`spool/<issue-id>/.seq`), incremented under the kit's portable `mkdir`
+  lock, never a directory listing. After a `final` entry is published, any
+  further entry for that issue refuses with `PAPERCLIP_SPOOL_CLOSED`; a
+  `final` also refuses with `COST_EVENTS_PENDING` while the ledger lists a
+  pending cost result for the issue.
+- **`paperclip-report --issue <id> --status "<text>" [--story k/n]`**: writes
+  `status/<issue-id>.json` atomically as
+  `{schema:"afk-paperclip-status/1", text, story, version, updated_at}`,
+  incrementing `version`. `text` is at most 120 characters, a single line,
+  and free of control characters. It never touches the spool.
+- Human mode prints one line — the entry's seq, or the status version;
+  `--json` prints `{result, issue, seq|version}`. The body is never printed,
+  in either mode.
+
 ## The self-block model
 
 While AFK works on an issue locally (outside Paperclip, in the real repo),
