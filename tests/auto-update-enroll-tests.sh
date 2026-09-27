@@ -134,6 +134,22 @@ fi
 exec "$(command -v git)" "\$@"
 SH
 chmod +x "$STUBS"/*
+# The macOS check also runs catalog-sync, which resolves git and curl only from
+# AFK_CATALOG_SYNC_TOOL_PATH. Point that at fakes that never touch the network:
+# git answers with a sentinel commit that exists nowhere, curl refuses.
+CS_TOOLS="$TMPROOT/cs-tools"; CS_FAKE_SHA=cafecafecafecafecafecafecafecafecafecafe
+mkdir -p "$CS_TOOLS"
+cat >"$CS_TOOLS/git" <<SH
+#!$(command -v bash)
+printf 'cs-git %s\n' "\$*" >>"$LOG"
+printf '%s\trefs/heads/main\n' "$CS_FAKE_SHA"
+SH
+cat >"$CS_TOOLS/curl" <<SH
+#!$(command -v bash)
+printf 'cs-curl %s\n' "\${*: -1}" >>"$LOG"
+exit 22
+SH
+chmod +x "$CS_TOOLS"/*
 
 new_home() { # <name> -> path; a home with a stub installed release client
   local h="$TMPROOT/$1"
@@ -158,7 +174,7 @@ run_afk() { # <home> <platform> <out-name> args... ; sets RC
   env -i PATH="$STUBS:$PATH" HOME="$h" USER=tester LANG=C \
     AFK_STATE_DIR="${AFK_TEST_STATE_DIR:-$h/.local/state/agent-flow-kit}" AFK_PM_DIR="$h/.local/state/agent-flow-kit/pm" \
     AFK_AUTO_UPDATE_PLATFORM="$p" AFK_OP_BIN="${AFK_TEST_OP:-$STUBS/op}" \
-    AFK_RELEASE_POLICY="${AFK_TEST_POLICY:-$POLICY}" \
+    AFK_RELEASE_POLICY="${AFK_TEST_POLICY:-$POLICY}" AFK_CATALOG_SYNC_TOOL_PATH="$CS_TOOLS" \
     AFK_TEST_PINNED="$PINNED" AFK_TEST_LOG="$LOG" AFK_TEST_SYSTEMCTL_FAIL="${AFK_TEST_SYSTEMCTL_FAIL:-}" \
     AFK_TEST_TIMEOUT_EXPIRE="${AFK_TEST_TIMEOUT_EXPIRE:-}" \
     AFK_AU_BASH_CANDIDATES="${AFK_TEST_BASH_CANDIDATES-$STUBS/bash-new}" \
@@ -583,6 +599,23 @@ assert_eq "linux: a non-zero last run is reported honestly, not just the client'
 printf '{"state":"CONVERGED","reason":"RELEASE_APPLIED","ended_at":"2000-01-01T00:00:00Z"}\n' \
   >"$HL/.local/state/agent-flow-kit/releases/latest.json"
 assert_eq "linux: an old successful apply reports check_stale" "$(au_status_linux "$HL" | jq -r .health)" "check_stale"
+
+head1 "macOS: the check runs catalog-sync hermetically and keeps the check's exit"
+CS_STATE="$H/.local/state/agent-flow-kit/catalog/latest.json"
+: >"$LOG"
+run_afk "$H" darwin mac-check enroll-auto-update --check
+assert_eq "mac --check exits as afk_au_check does (0, update available)" "$RC" "0"
+assert_contains "mac --check reports the update" "$(cat "$OUT/mac-check.out")" "update available: $REMOTE_HEAD"
+assert_contains "catalog-sync ran through the fake git" "$(cat "$LOG")" "cs-git -c credential.helper="
+assert_contains "catalog-sync fetched only from the fake curl, at the sentinel commit" "$(cat "$LOG")" \
+  "cs-curl https://raw.githubusercontent.com/jlengelbrecht/prox-ops/$CS_FAKE_SHA/"
+assert_eq "no real git: the recorded commit is the sentinel" "$(jq -r .source_sha "$CS_STATE" 2>/dev/null)" "$CS_FAKE_SHA"
+assert_eq "the fake curl failure is recorded, nothing installed" "$(jq -r .reason "$CS_STATE" 2>/dev/null)" "SOURCE_UNREACHABLE"
+jq 'del(.trust.remote_url)' "$POLICY" >"$TMPROOT/policy-noremote.json"
+: >"$LOG"
+AFK_TEST_POLICY="$TMPROOT/policy-noremote.json" run_afk "$H" darwin mac-check-fail enroll-auto-update --check
+assert_eq "a failed mac check still exits 5 after catalog-sync" "$RC" "5"
+assert_contains "catalog-sync still ran through the fakes" "$(cat "$LOG")" "cs-curl https://raw.githubusercontent.com/jlengelbrecht/prox-ops/$CS_FAKE_SHA/"
 
 head1 "macOS re-enrollment waits for bootout and never loses the working agent"
 jq '.check_interval_seconds = 1800' "$POLICY" >"$TMPROOT/policy-1800.json"

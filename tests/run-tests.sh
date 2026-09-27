@@ -165,7 +165,8 @@ SC_SCRIPTS=("$DISPATCH" "$MAKE_STAMP" "$USAGE_CHECK" "$GH_HEALTH" \
             "$KIT_ROOT/tests/release-reconciler-contract-tests.sh" \
             "$KIT_ROOT/tests/release-support-contract-tests.sh" \
             "$KIT_ROOT/tests/session-gate-contract-tests.sh" \
-            "$KIT_ROOT/tests/auto-update-enroll-tests.sh")
+            "$KIT_ROOT/tests/auto-update-enroll-tests.sh" \
+            "$KIT_ROOT/tests/catalog-sync-tests.sh")
 # The lifecycle surface. Checked at warning level and above, with two codes
 # excluded for a structural reason rather than a stylistic one: the lifecycle
 # files are always sourced together and share one result model, so a variable
@@ -177,7 +178,7 @@ SC_LIFECYCLE=("$KIT_ROOT/bin/agent-flow-kit" "$KIT_ROOT/lib/afk-common.sh" \
               "$KIT_ROOT/lib/afk-readiness.sh" "$KIT_ROOT/lib/afk-monitor.sh" \
               "$KIT_ROOT/lib/afk-commands.sh" \
               "$KIT_ROOT/lib/afk-plan.sh" "$KIT_ROOT/lib/afk-mutate.sh" \
-              "$KIT_ROOT/lib/afk-auto-update.sh" \
+              "$KIT_ROOT/lib/afk-auto-update.sh" "$KIT_ROOT/lib/afk-catalog-sync.sh" \
               "$KIT_ROOT/tests/lockctl-helper.sh")
 
 if (( ${#SC_CMD[@]} > 0 )); then
@@ -3784,6 +3785,24 @@ if [[ -f "$ENROLL_TESTS" ]]; then
   fi
 else
   bad "auto-update enrollment gate present" "missing: $ENROLL_TESTS"
+fi
+
+# ===========================================================================
+head1 "20. Trusted catalog sync gate — tests/catalog-sync-tests.sh"
+# ===========================================================================
+# `catalog-sync` (lib/afk-catalog-sync.sh) and the catalog resolution order:
+# stubbed git ls-remote and curl serving a fixture manifest; no network.
+
+CATALOG_TESTS="$KIT_ROOT/tests/catalog-sync-tests.sh"
+if [[ -f "$CATALOG_TESTS" ]]; then
+  if catalog_out="$(bash "$CATALOG_TESTS" 2>&1)"; then
+    ok "trusted catalog sync gate: $(tail -1 <<<"$catalog_out")"
+  else
+    bad "trusted catalog sync gate" "$(tail -1 <<<"$catalog_out")"
+    printf '%s\n' "$catalog_out" | tail -40
+  fi
+else
+  bad "trusted catalog sync gate present" "missing: $CATALOG_TESTS"
 fi
 
 # ===========================================================================
