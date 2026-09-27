@@ -295,7 +295,11 @@ afk_au_systemd_service() {
     "Environment=\"AFK_STATE_DIR=$(afk_au_sd "$AFK_STATE_DIR")\"" \
     "Environment=\"AFK_RELEASE_DEPLOY_KEY=$(afk_au_sd "$AFK_AU_KEY")\"" \
     "ExecStart=\"$(afk_au_sd "$AFK_AU_RUNTIME_BIN")/afk-release-reconcile\" --apply" \
-    "TimeoutStartSec=$AFK_AU_TIMEOUT_SECONDS"
+    "TimeoutStartSec=$AFK_AU_TIMEOUT_SECONDS" \
+    '# Runs after the release step whatever its outcome; "-" keeps a catalog' \
+    '# failure out of the release result and systemd'"'"'s record of it.' \
+    "ExecStopPost=-\"$(afk_au_sd "$AFK_AU_RUNTIME_BIN")/agent-flow-kit\" catalog-sync --apply" \
+    'TimeoutStopSec=120'
 }
 
 afk_au_systemd_timer() { # <interval>
@@ -515,7 +519,14 @@ afk_cmd_enroll_auto_update() { # <enroll|check|remove> <key-ref> <key-file>
     afk_warn "enroll-auto-update: HOME is not set; nothing was changed"; return "$AFK_EXIT_USAGE"
   fi
   case "$1" in
-    check)  afk_au_check; return $? ;;
+    check)
+      # The macOS agent also follows the trusted catalog: digest-verified data,
+      # not kit code, so the check-only rule for releases does not cover it.
+      afk_au_check; rc=$?
+      if [[ "$AFK_AU_PLATFORM" == darwin ]] && declare -F afk_catalog_scheduled >/dev/null; then
+        afk_catalog_scheduled
+      fi
+      return "$rc" ;;
     remove) afk_au_remove; return "$AFK_EXIT_OK" ;;
   esac
   if [[ "$AFK_AU_PLATFORM" == unsupported ]]; then

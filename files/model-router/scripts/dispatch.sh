@@ -790,6 +790,15 @@ cfg() {  # cfg <yq-path> <ENV_OVERRIDE_NAME|""> [default]
   printf '%s' "${v:-${3:-}}"
 }
 
+# The trusted catalog path, in order: AGENT_STAMP_VALIDATE_CATALOG_PATH, a
+# non-empty launcher.catalog_path, then the digest-verified catalog
+# `agent-flow-kit catalog-sync` links at current.yaml. NEVER from the stamp.
+resolve_catalog_path() {
+  local synced="${HOME:+$HOME/.config/agent-flow-kit/trusted-catalogs/current.yaml}"
+  [[ -n "$synced" && -e "$synced" ]] || synced=""
+  cfg '.launcher.catalog_path' AGENT_STAMP_VALIDATE_CATALOG_PATH "$synced"
+}
+
 # ---------------------------------------------------------------------------
 # Orca: the ADE owns worktrees, terminals, processes and native auth.
 # ---------------------------------------------------------------------------
@@ -2593,7 +2602,7 @@ main() {
 
   # ---- launcher config (never from the story, never from the stamp) --------
   VALIDATOR="$(cfg '.launcher.stamp_validator' AGENT_STAMP_VALIDATE 'agent-stamp-validate')"
-  CATALOG_PATH="$(cfg '.launcher.catalog_path' AGENT_STAMP_VALIDATE_CATALOG_PATH '')"
+  CATALOG_PATH="$(resolve_catalog_path)"
   ROUTER_URL="$(cfg '.launcher.router_endpoint' AGENT_ROUTER_URL '')"
   ROUTER_URL="${ROUTER_URL%/}"
   CALLER_TOKEN_ENV="$(cfg '.launcher.caller_token_env' AGENT_ROUTER_TOKEN_ENV 'AGENT_ROUTER_TOKEN')"
@@ -2603,7 +2612,7 @@ main() {
 
   command -v "$VALIDATOR" >/dev/null || die "missing stamp validator: $VALIDATOR"
   [[ -n "$CATALOG_PATH" && -f "$CATALOG_PATH" ]] || \
-    die "no trusted catalog: set launcher.catalog_path or AGENT_STAMP_VALIDATE_CATALOG_PATH. It is NEVER taken from the stamp."
+    die "no trusted catalog: set launcher.catalog_path or AGENT_STAMP_VALIDATE_CATALOG_PATH, or run agent-flow-kit catalog-sync --apply. It is NEVER taken from the stamp."
 
   # The declared context-budget policy, loaded BEFORE anything else this run
   # would do: before the stamp is opened, before Orca is asked anything, before

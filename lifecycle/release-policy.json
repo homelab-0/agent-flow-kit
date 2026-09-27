@@ -17,5 +17,12 @@
     "authoritative_promotion": false,
     "explanation": "Every enrolled host follows the same canonical ref automatically. Cohort is retained as honest observation metadata; this client does not claim that a canary gates a later wave."
   },
-  "automatic_rollback_bypass": false
+  "automatic_rollback_bypass": false,
+  "catalog_source": {
+    "repository_url": "https://github.com/jlengelbrecht/prox-ops",
+    "raw_base_url": "https://raw.githubusercontent.com/jlengelbrecht/prox-ops",
+    "branch": "main",
+    "manifest_path": "clients/agent-router/manifest.json",
+    "fetch_timeout_seconds": 20
+  }
 }

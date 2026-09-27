@@ -26,6 +26,14 @@ if [[ -n "${AFK_COMMANDS_SOURCED:-}" ]]; then
 fi
 AFK_COMMANDS_SOURCED=1
 
+# `catalog-sync` and the status catalog section live in their own library,
+# shipped beside this one in the same managed lib tree.
+if [[ -r "${BASH_SOURCE[0]%/*}/afk-catalog-sync.sh" ]]; then
+  # shellcheck source=lib/afk-catalog-sync.sh
+  # shellcheck disable=SC1090,SC1091
+  . "${BASH_SOURCE[0]%/*}/afk-catalog-sync.sh"
+fi
+
 # Environment names whose PRESENCE is diagnostically useful. Values never leave
 # afk_env_record; only the name, the presence flag and the redacted placeholder
 # are reported (FR-81, FR-82).
@@ -434,7 +442,11 @@ afk_cmd_status() { # <json-mode> <require-source> <allow-noncanonical> <allow-ro
   afk_apply_readiness_exit
   afk_pm_apply
   if declare -F afk_auto_update_apply_status >/dev/null; then afk_auto_update_apply_status; fi
-  afk_emit_result "$1"
+  if declare -F afk_catalog_apply_status >/dev/null; then afk_catalog_apply_status; fi
+  local rc=0
+  afk_emit_result "$1" || rc=$?
+  if [[ "$1" != "true" ]] && declare -F afk_catalog_render_human >/dev/null; then afk_catalog_render_human; fi
+  return "$rc"
 }
 
 afk_cmd_adopt_inspect() { # <json-mode> <allow-noncanonical> <allow-rollback>
