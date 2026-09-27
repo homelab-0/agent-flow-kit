@@ -39,10 +39,12 @@ from this CLI, the same skill and guardrails apply as in Claude Code:
   context budgeting, and integration with the released legacy-router public
   contract. Do not do ACP implementation or work intended only to unblock
   ACP's internal review/QA/development workflow from an AFK task. A genuine
-  router defect or public-contract need goes to the ACP PM as a bounded customer
-  request with contract/version, expected versus observed behavior, minimal
-  evidence, and the exact requested change. Prox-ops owns the deployed legacy
-  instance, catalog, provider bindings, and deployment changes.
+  public-contract need goes to the ACP PM as a bounded customer request with
+  contract/version, expected versus observed behavior, minimal evidence, and
+  the exact requested change. Requests about a legacy-router defect, or about
+  the deployed router, catalog, validator, or stamp contract, go to the
+  prox-ops PM in the same shape. Prox-ops owns the deployed legacy instance,
+  catalog, provider bindings, and deployment changes.
 - **AFK session continuity:** An AFK PM enters through the installed
   `afk-session-start` path and registers its exact Orca terminal with
   `agent-flow-kit pm-start --harness <claude|codex|opencode>`; workers never
