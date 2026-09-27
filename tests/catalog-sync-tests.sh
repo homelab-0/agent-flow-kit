@@ -260,6 +260,35 @@ rm -f "$HX/$CAT_REL/current.yaml"; mkdir "$HX/$CAT_REL/current.yaml"
 dir_case plain-dir
 assert_eq "plain-dir: the directory is left empty" "$(find "$HX/$CAT_REL/current.yaml" -mindepth 1 | wc -l | tr -d ' ')" "0"
 
+head1 "A directory or symlink at the digest-named catalog path is refused before any write (INSTALL_FAILED)"
+HG="$(new_home digestpath)"; DGDIR="$HG/$CAT_REL"; STG="$HG/.local/state/agent-flow-kit/catalog/latest.json"
+cs "$HG" digestpath-seed afk_cmd_catalog_sync apply false
+assert_eq "digestpath-seed: apply succeeds" "$RC" "0"
+assert_eq "digestpath-seed: current.yaml links the seeded file" "$(readlink "$DGDIR/current.yaml")" "$F3"
+SHA5=5555555555555555555555555555555555555555
+publish "$SHA5" "1.9.3" "document_version: 1.9.3"
+DG5="$(digest_of "$REMOTE/$SHA5/clients/agent-router/catalog.yaml")"
+F5="trusted-catalog-1.9.3-${DG5:7:12}.yaml"
+digest_path_case() { # <name>
+  cs "$HG" "$1" afk_cmd_catalog_sync apply false
+  assert_eq "$1: exits 4" "$RC" "4"
+  assert_contains "$1: reports INSTALL_FAILED" "$(cat "$OUT/$1.out")" "INSTALL_FAILED"
+  assert_absent "$1: never reports INSTALLED" "$(cat "$OUT/$1.out")" "catalog-sync: INSTALLED"
+  assert_eq "$1: current.yaml unchanged" "$(readlink "$DGDIR/current.yaml")" "$F3"
+  assert_eq "$1: last_verified digest kept" "$(jq -r .last_verified.digest "$STG")" "$DG3"
+  assert_eq "$1: reason recorded" "$(jq -r .reason "$STG")" "INSTALL_FAILED"
+  assert_eq "$1: no stray temp files" "$(find "$DGDIR" -name '.*' -type f -o -name '.*' -type l | wc -l | tr -d ' ')" "0"
+}
+mkdir "$DGDIR/$F5"
+digest_path_case digest-path-is-dir
+assert_eq "digest-path-is-dir: the directory is left empty" "$(find "$DGDIR/$F5" -mindepth 1 | wc -l | tr -d ' ')" "0"
+rmdir "$DGDIR/$F5"
+ln -s "$TMPROOT/elsewhere" "$DGDIR/$F5"
+digest_path_case digest-path-is-symlink
+assert_eq "digest-path-is-symlink: the symlink is untouched" "$(readlink "$DGDIR/$F5")" "$TMPROOT/elsewhere"
+rm -f "$DGDIR/$F5"
+printf '%s\n' "$SHA3" >"$REMOTE/HEAD" # restore the fixture head the later sections expect
+
 head1 "The command: agent-flow-kit catalog-sync [--check|--apply] [--json] (AC-1)"
 afk_cli() { # <home> <out-name> [args...] ; sets RC — the installed entry point
   local h="$1" o="$2"; shift 2

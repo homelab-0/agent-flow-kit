@@ -160,7 +160,14 @@ afk_cs_install() {
   if [[ -d "$AFK_CS_CURRENT" ]]; then
     afk_cs_fail INSTALL_FAILED "current.yaml is a directory or a link to one"; return 1
   fi
-  if [[ -L "$AFK_CS_FILE" || "$(afk_cs_sha256 "$AFK_CS_FILE" 2>/dev/null)" != "$AFK_CS_DIGEST" ]]; then
+  # A directory (or any other non-regular file) at the digest-named path would
+  # make the digest check below fail, and then mv -f would move the temp
+  # catalog INTO it instead of replacing it — leaving current.yaml re-pointed
+  # at that directory with no way back. Refuse before touching anything.
+  if [[ -L "$AFK_CS_FILE" ]] || { [[ -e "$AFK_CS_FILE" ]] && [[ ! -f "$AFK_CS_FILE" ]]; }; then
+    afk_cs_fail INSTALL_FAILED "$AFK_CS_FILE exists and is not a regular file"; return 1
+  fi
+  if [[ "$(afk_cs_sha256 "$AFK_CS_FILE" 2>/dev/null)" != "$AFK_CS_DIGEST" ]]; then
     cp -- "$AFK_CS_TMP/catalog.yaml" "$AFK_CS_DIR/.$name.tmp.$$" && chmod 0444 "$AFK_CS_DIR/.$name.tmp.$$" \
       && mv -f -- "$AFK_CS_DIR/.$name.tmp.$$" "$AFK_CS_FILE" \
       || { rm -f -- "$AFK_CS_DIR/.$name.tmp.$$"; afk_cs_fail INSTALL_FAILED "the catalog could not be written"; return 1; }
