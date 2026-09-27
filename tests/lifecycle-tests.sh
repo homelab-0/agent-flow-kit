@@ -1889,6 +1889,12 @@ head1 "14. The coordinator's own artifacts (lane D)"
 #
 # A PM artifact carries pointers and bounded summaries, is secret-free by rule,
 # and is settled atomically: a refused submission leaves what is on disk as it was.
+#
+# AC-2: this section never called new_scenario itself — it relied on whichever
+# section ran immediately before it leaving HOMEDIR/CHECKOUT set, so it only
+# passed because everything runs in order. It now builds its own scenario, so
+# it passes when run first or on its own too.
+new_scenario pmartifacts
 PMD="$HOMEDIR/.local/state/agent-flow-kit/pm"
 # This section intentionally owns one synthetic artifact location. Pin it so
 # the assertions verify the explicit override contract rather than depending
