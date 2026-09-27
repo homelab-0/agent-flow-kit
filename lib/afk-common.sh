@@ -501,7 +501,7 @@ afk_env_record() { # <name> -> one JSON object
 # closed vocabulary is the only thing that ever reaches a diagnostic.
 afk_safe_diagnostic() { # <raw>
   case "$1" in
-    status|adopt|update|verify|schema|monitor|help)
+    status|adopt|update|verify|schema|monitor|help|paperclip-poll)
       printf '%s' "$1" ;;
     -h|--help|--json|--inspect|--plan|--apply|--approve-plan|--require-source-eligible|--allow-noncanonical-source|--allow-rollback|--live|--synthetic-route|--stamp|--target|--register|--reconcile|--cleanup)
       printf '%s' "$1" ;;
