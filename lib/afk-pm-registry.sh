@@ -57,12 +57,12 @@ afk_pmr_handoff_timeout_min() {
 }
 
 # --- Orca liveness (AC-2) ----------------------------------------------------
-# Sets AFK_PMR_TERMINALS_JSON and AFK_PMR_ORCA_STATE (OK|UNAVAILABLE). A
+# Sets AFK_PMR_TERMINALS_JSON and AFK_PMR_ORCA_STATE (OK|ORCA_UNAVAILABLE). A
 # missing bounding tool, a missing orca binary, a non-zero exit or unparsable
-# output are all UNAVAILABLE — never treated as "no terminals".
+# output are all ORCA_UNAVAILABLE — never treated as "no terminals".
 afk_pmr_orca_terminals() {
   local orca_bin bound out parsed
-  AFK_PMR_TERMINALS_JSON="[]"; AFK_PMR_ORCA_STATE="UNAVAILABLE"
+  AFK_PMR_TERMINALS_JSON="[]"; AFK_PMR_ORCA_STATE="ORCA_UNAVAILABLE"
   orca_bin="${ORCA_CLI_COMMAND:-${AFK_ORCA_BIN:-orca}}"
   bound=""
   command -v timeout >/dev/null 2>&1 && bound=timeout
@@ -93,6 +93,20 @@ afk_pmr_terminal_stale() { # <handle>
     <<<"$AFK_PMR_TERMINALS_JSON" >/dev/null 2>&1
 }
 
+# A terminal Orca still lists, but marks connected:false and orphaned:false,
+# is a PM whose Orca session dropped without Orca declaring it orphaned. It is
+# not stale (afk_pmr_terminal_stale above returns false for it, so reap
+# refuses PM_OWNER_LIVE), and it must also never be counted as a live owner —
+# otherwise a disconnected PM's terminal handle would still pass
+# paperclip-take's identity check. Returns true only when the handle is
+# actually listed (an absent handle is stale, not disconnected).
+afk_pmr_terminal_disconnected() { # <handle>
+  [[ -n "$1" && "$AFK_PMR_ORCA_STATE" == OK ]] || return 1
+  jq -e --arg h "$1" \
+    'map(select(.handle==$h)) as $m | ($m|length) > 0 and all($m[]; .connected==false and .orphaned==false)' \
+    <<<"$AFK_PMR_TERMINALS_JSON" >/dev/null 2>&1
+}
+
 # Project names become directory names under notices/: a plain name only, and
 # never one of the kit's own claimed/settled directories.
 afk_pmr_project_ok() {
@@ -104,7 +118,7 @@ afk_pmr_project_ok() {
 afk_pm_registry_lookup() {
   local repo_path="$1" target_common d scope_key owner_file owner_doc owner_common
   local handoff_doc terminal orca_state stale="[]"
-  local -a candidates=() handoffs=()
+  local -a candidates=() handoffs=() disconnected=()
   target_common="$(git -C "$repo_path" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || target_common=""
   if [[ -z "$target_common" ]]; then
     jq -nc '{state:"none",owner:null,owners:null,handoff:null,reason:null,orca:"OK",stale:[]}'
@@ -142,11 +156,27 @@ afk_pm_registry_lookup() {
         stale="$(jq -c --argjson o "$owner_doc" '. + [{scope:$o.scope,terminal:$o.terminal}]' <<<"$stale")"
         continue
       fi
+      if afk_pmr_terminal_disconnected "$terminal"; then
+        disconnected+=("$owner_doc")
+        continue
+      fi
       candidates+=("$owner_doc")
     done
   fi
 
-  if (( ${#handoffs[@]} > 0 )); then
+  if (( ${#handoffs[@]} > 1 )); then
+    local harr="[]" h
+    for h in "${handoffs[@]}"; do
+      harr="$(jq -c --argjson h "$h" \
+        '. + [{scope:$h.scope,old:{terminal:$h.old.terminal},successor:{terminal:$h.successor.terminal}}]' <<<"$harr")"
+    done
+    jq -nc --argjson handoffs "$harr" --argjson stale "$stale" --arg orca "$orca_state" \
+      '{state:"ambiguous",owner:null,owners:null,handoff:null,handoffs:$handoffs,
+        reason:"PM_HANDOFF_AMBIGUOUS",orca:$orca,stale:$stale}'
+    return 0
+  fi
+
+  if (( ${#handoffs[@]} == 1 )); then
     local h="${handoffs[0]}" upd h_epoch now_epoch state reason=null timeout_min
     upd="$(jq -r '.updated_at // .observed_at // empty' <<<"$h")"
     h_epoch="$(afk_epoch_of_utc "$upd" 2>/dev/null)" || h_epoch=""
@@ -164,6 +194,16 @@ afk_pm_registry_lookup() {
 
   local n=${#candidates[@]}
   if (( n == 0 )); then
+    if (( ${#disconnected[@]} > 0 )); then
+      local darr="[]" o
+      for o in "${disconnected[@]}"; do
+        darr="$(jq -c --argjson o "$o" \
+          '. + [{scope:$o.scope,terminal:$o.terminal,harness:$o.harness,session:$o.session,worktree:$o.worktree}]' <<<"$darr")"
+      done
+      jq -nc --argjson owners "$darr" --argjson stale "$stale" --arg orca "$orca_state" \
+        '{state:"unknown",owner:null,owners:$owners,handoff:null,reason:"PM_OWNER_DISCONNECTED",orca:$orca,stale:$stale}'
+      return 0
+    fi
     jq -nc --argjson stale "$stale" --arg orca "$orca_state" \
       '{state:"none",owner:null,owners:null,handoff:null,reason:null,orca:$orca,stale:$stale}'
   elif (( n == 1 )); then
@@ -192,7 +232,8 @@ afk_pmr_emit_refusal() { # <reason> <json_mode>
 # --- AC-3: pm-registry-reap ---------------------------------------------------
 afk_cmd_pm_registry_reap() { # <json_mode> <scope_key>
   local json_mode="$1" scope_key="$2" dir owner_file owner_doc handoff_state terminal
-  local claim_key epoch dest returned=0 f proj
+  local claim_key epoch dest returned=0 f proj unreturned_dir udest
+  local -a stranded=()
   afk_pmr_scope_key_ok "$scope_key" || { afk_pmr_emit_refusal "PM_SCOPE_INVALID" "$json_mode"; return 1; }
   dir="$AFK_STATE_DIR/pm/scopes/$scope_key"
   owner_file="$dir/ownership.json"
@@ -235,24 +276,58 @@ afk_cmd_pm_registry_reap() { # <json_mode> <scope_key>
   fi
 
   claim_key="$(afk_pmr_claim_key_for_terminal "$terminal" 2>/dev/null)" || claim_key=""
+  unreturned_dir="$AFK_STATE_DIR/paperclip/notices/unreturned/$scope_key"
   if [[ -n "$claim_key" && -d "$AFK_STATE_DIR/paperclip/notices/claimed/$claim_key" ]]; then
     for f in "$AFK_STATE_DIR/paperclip/notices/claimed/$claim_key"/*; do
       [[ -f "$f" ]] || continue
       proj="$(jq -r '.project // empty' "$f" 2>/dev/null)"
-      afk_pmr_project_ok "$proj" || continue
-      afk_state_dir_ensure "$AFK_STATE_DIR/paperclip/notices/$proj" || continue
-      mv -n -- "$f" "$AFK_STATE_DIR/paperclip/notices/$proj/$(basename -- "$f")" 2>/dev/null \
-        && [[ ! -e "$f" ]] && returned=$((returned + 1))
+      if afk_pmr_project_ok "$proj" \
+         && afk_state_dir_ensure "$AFK_STATE_DIR/paperclip/notices/$proj" \
+         && mv -n -- "$f" "$AFK_STATE_DIR/paperclip/notices/$proj/$(basename -- "$f")" 2>/dev/null \
+         && [[ ! -e "$f" ]]; then
+        returned=$((returned + 1))
+        continue
+      fi
+      # Could not return this notice to its project (unknown/invalid project,
+      # a state-dir write failure, or a same-name file already there). Never
+      # leave it silently behind under the dead terminal's claim key: move it
+      # to a deterministic, scope-keyed recovery location instead, unless a
+      # duplicate already occupies that spot — then the source is left in
+      # place (never overwritten) and just named in the report.
+      udest="$unreturned_dir/$(basename -- "$f")"
+      if [[ -e "$udest" ]]; then
+        stranded+=("$(jq -nc --arg src "$f" --arg dest "$udest" \
+          '{source:$src,recovered_to:null,reason:"duplicate destination"}')")
+      elif afk_state_dir_ensure "$unreturned_dir" \
+           && mv -n -- "$f" "$udest" 2>/dev/null && [[ ! -e "$f" ]]; then
+        stranded+=("$(jq -nc --arg src "$f" --arg dest "$udest" \
+          '{source:$src,recovered_to:$dest,reason:"project unreturnable"}')")
+      else
+        stranded+=("$(jq -nc --arg src "$f" \
+          '{source:$src,recovered_to:null,reason:"recovery move failed"}')")
+      fi
     done
   fi
 
+  local stranded_json="[]" s
+  for s in "${stranded[@]}"; do
+    stranded_json="$(jq -c --argjson s "$s" '. + [$s]' <<<"$stranded_json")"
+  done
+  local stranded_n=${#stranded[@]}
+
   if [[ "$json_mode" == true ]]; then
     jq -nc --arg r "reaped" --arg s "$scope_key" --arg t "$terminal" --argjson n "$returned" \
-      '{result:$r,scope:$s,terminal:$t,notices_returned:$n}'
+      --argjson sn "$stranded_n" --argjson stranded "$stranded_json" \
+      '{result:$r,scope:$s,terminal:$t,notices_returned:$n,notices_stranded:$sn,stranded:$stranded}'
   else
-    printf 'pm-registry-reap: scope %s (terminal %s) reaped, %d notice(s) returned\n' "$scope_key" "$terminal" "$returned"
+    printf 'pm-registry-reap: scope %s (terminal %s) reaped, %d notice(s) returned, %d stranded\n' \
+      "$scope_key" "$terminal" "$returned" "$stranded_n"
+    for s in "${stranded[@]}"; do
+      printf '  stranded: %s\n' "$(jq -r '"\(.source) -> \(.recovered_to // "left in place")  (\(.reason))"' <<<"$s")"
+    done
   fi
-  return 0
+  (( stranded_n == 0 )) && return 0
+  return 3
 }
 
 # --- AC-4: paperclip-take -----------------------------------------------------

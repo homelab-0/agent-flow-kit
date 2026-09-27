@@ -134,7 +134,7 @@ assert_eq "  ...stale list carries the dead owner" "$(jq -r '.stale[0].terminal'
 
 out="$(ORCA_STUB_MODE=fail lookup "$REPO")"
 assert_eq "Orca unavailable -> nothing stale, owner still live" "$(jq -r .state <<<"$out")" "live"
-assert_eq "  ...orca field reports ORCA_UNAVAILABLE" "$(jq -r .orca <<<"$out")" "UNAVAILABLE"
+assert_eq "  ...orca field reports ORCA_UNAVAILABLE" "$(jq -r .orca <<<"$out")" "ORCA_UNAVAILABLE"
 assert_eq "  ...stale list is empty" "$(jq -c .stale <<<"$out")" "[]"
 
 reset_state
@@ -248,6 +248,101 @@ assert_eq "the old owner is refused during a handoff" "$(jq -r .result <<<"$OUT_
 ORCA_TERMINAL_HANDLE=termC run_afk paperclip-take --project proj1 --json
 assert_eq "the named successor may take during a handoff" "$RC" "0"
 assert_eq "  ...it claims the notice" "$(jq -r '.[0].id' <<<"$OUT_TEXT")" "66666666-6666-6666-6666-666666666666"
+
+# ============================================================================
+head1 "5. lookup with a disconnected (not orphaned) owner"
+# ============================================================================
+reset_state
+SK5="$(write_owner termA 11111111-1111-1111-1111-111111111111 "$REPO")"
+write_paperclip_config proj1 "$REPO"
+set_terminals '{"terminals":[{"handle":"termA","connected":false,"orphaned":false}]}'
+
+out="$(lookup "$REPO")"
+assert_eq "a listed, disconnected owner is neither live nor stale" "$(jq -r .state <<<"$out")" "unknown"
+assert_eq "  ...reason is PM_OWNER_DISCONNECTED" "$(jq -r .reason <<<"$out")" "PM_OWNER_DISCONNECTED"
+assert_eq "  ...it is not in the stale list" "$(jq -c .stale <<<"$out")" "[]"
+assert_eq "  ...it is named in owners" "$(jq -r '.owners[0].terminal' <<<"$out")" "termA"
+
+ORCA_TERMINAL_HANDLE=termA run_afk paperclip-take --project proj1 --json
+assert_eq "take refuses a disconnected owner's own terminal" "$(jq -r .result <<<"$OUT_TEXT")" "PAPERCLIP_NOT_OWNER"
+assert_eq "  ...exit code 2" "$RC" "2"
+
+set_terminals '{"terminals":[{"handle":"termA","connected":true,"orphaned":false}]}'
+run_afk pm-registry-reap --scope "$SK5" --json
+assert_eq "a reconnected owner is live again, not reapable" "$(jq -r .result <<<"$OUT_TEXT")" "PM_OWNER_LIVE"
+
+# ============================================================================
+head1 "6. lookup with more than one in-progress handoff"
+# ============================================================================
+reset_state
+write_owner termA 11111111-1111-1111-1111-111111111111 "$REPO" >/dev/null
+write_owner termD 44444444-4444-4444-4444-444444444444 "$REPO" >/dev/null
+write_handoff termA SUCCESSOR_LAUNCHED termC "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+write_handoff termD SUCCESSOR_LAUNCHED termE "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+set_terminals '{"terminals":[{"handle":"termA","connected":true,"orphaned":false},{"handle":"termD","connected":true,"orphaned":false}]}'
+
+out="$(lookup "$REPO")"
+assert_eq "two in-progress handoffs -> ambiguous, not glob order" "$(jq -r .state <<<"$out")" "ambiguous"
+assert_eq "  ...reason is PM_HANDOFF_AMBIGUOUS" "$(jq -r .reason <<<"$out")" "PM_HANDOFF_AMBIGUOUS"
+assert_eq "  ...both old terminals are named" "$(jq -c '[.handoffs[].old.terminal] | sort' <<<"$out")" '["termA","termD"]'
+assert_eq "  ...both successors are named" "$(jq -c '[.handoffs[].successor.terminal] | sort' <<<"$out")" '["termC","termE"]'
+
+write_paperclip_config proj1 "$REPO"
+write_notice proj1 1000 66666666-6666-6666-6666-666666666666 claimed
+ORCA_TERMINAL_HANDLE=termC run_afk paperclip-take --project proj1 --json
+assert_eq "no successor may take while the handoff is ambiguous" "$(jq -r .result <<<"$OUT_TEXT")" "PAPERCLIP_NOT_OWNER"
+
+# ============================================================================
+head1 "7. pm-registry-reap never strands a notice silently"
+# ============================================================================
+reset_state
+SK7="$(write_owner termA 11111111-1111-1111-1111-111111111111 "$REPO")"
+write_paperclip_config proj1 "$REPO"
+IDA=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+IDB=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+IDC=cccccccc-cccc-cccc-cccc-cccccccccccc
+write_notice proj1 1000 "$IDA" claimed
+write_notice proj1 2000 "$IDB" claimed
+write_notice proj1 3000 "$IDC" claimed
+set_terminals '{"terminals":[{"handle":"termA","connected":true,"orphaned":false}]}'
+ORCA_TERMINAL_HANDLE=termA run_afk paperclip-take --project proj1 --json
+assert_eq "take claims all three seeded notices" "$RC" "0"
+
+CLAIMED_DIR="$STATE/paperclip/notices/claimed/$(scope_key termA)"
+UNRETURNED_DIR="$STATE/paperclip/notices/unreturned/$SK7"
+
+# A: an invalid project on the claimed notice.
+jq -c '.project="../bad"' "$CLAIMED_DIR/1000.$IDA.claimed.json" >"$CLAIMED_DIR/1000.$IDA.claimed.json.tmp" \
+  && mv "$CLAIMED_DIR/1000.$IDA.claimed.json.tmp" "$CLAIMED_DIR/1000.$IDA.claimed.json"
+
+# B: the project destination is already occupied by a duplicate, so the
+# recovery path is used instead (and succeeds, since nothing occupies it).
+mkdir -p "$STATE/paperclip/notices/proj1"
+: >"$STATE/paperclip/notices/proj1/2000.$IDB.claimed.json"
+
+# C: the project destination AND the recovery destination are both already
+# occupied — this one must stay exactly where it is, in the claimed dir.
+: >"$STATE/paperclip/notices/proj1/3000.$IDC.claimed.json"
+mkdir -p "$UNRETURNED_DIR"
+: >"$UNRETURNED_DIR/3000.$IDC.claimed.json"
+
+set_terminals '{"terminals":[]}'
+run_afk pm-registry-reap --scope "$SK7" --json
+assert_eq "reap still reaps the stale owner" "$(jq -r .result <<<"$OUT_TEXT")" "reaped"
+assert_eq "  ...exit code 3 (notices were stranded)" "$RC" "3"
+assert_eq "  ...none of the three notices were cleanly returned" "$(jq -r .notices_returned <<<"$OUT_TEXT")" "0"
+assert_eq "  ...all three are reported stranded" "$(jq -r .notices_stranded <<<"$OUT_TEXT")" "3"
+
+assert_eq "  ...A is recovered under notices/unreturned/<scope>/" \
+  "$([[ -f "$UNRETURNED_DIR/1000.$IDA.claimed.json" ]] && echo yes || echo no)" "yes"
+assert_eq "  ...B is recovered under notices/unreturned/<scope>/" \
+  "$([[ -f "$UNRETURNED_DIR/2000.$IDB.claimed.json" ]] && echo yes || echo no)" "yes"
+assert_eq "  ...C is left exactly where it was (never overwritten, never dropped)" \
+  "$([[ -f "$CLAIMED_DIR/3000.$IDC.claimed.json" ]] && echo yes || echo no)" "yes"
+assert_eq "  ...C's would-be recovery duplicate was not overwritten" \
+  "$(cat "$UNRETURNED_DIR/3000.$IDC.claimed.json")" ""
+assert_contains "  ...C is named in the stranded report by its source path" \
+  "$(jq -r '[.stranded[].source] | join(",")' <<<"$OUT_TEXT")" "$CLAIMED_DIR/3000.$IDC.claimed.json"
 
 # ============================================================================
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
