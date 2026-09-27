@@ -66,6 +66,10 @@ for ((i = 0; i < n; i++)); do
 done
 key="${method}_${path#/}"; key="${key//\//_}"
 f="$CURL_STUB_FIXTURES/$key"
+# route_nth: a per-route call counter picks "<key>.<n>" for the n-th call.
+cnt="$(( $(cat "$CURL_STUB_FIXTURES/.n_$key" 2>/dev/null || printf 0) + 1 ))"
+printf '%s' "$cnt" >"$CURL_STUB_FIXTURES/.n_$key"
+[[ -f "$f.$cnt" ]] && f="$f.$cnt"
 [[ -f "$f" ]] || f="$CURL_STUB_FIXTURES/DEFAULT"
 if [[ ! -f "$f" ]]; then printf '000'; exit 0; fi
 code="$(head -1 "$f")"
@@ -79,6 +83,12 @@ chmod +x "$STUBS"/*
 route() {
   local key="${1}_${2#/}"; key="${key//\//_}"
   { printf '%s\n' "$3"; [[ -n "${4:-}" ]] && printf '%s\n' "$4"; } >"$FIXDIR/$key"
+}
+
+# route_nth <method> <path> <n> <code> [<body>] — override only the n-th call.
+route_nth() {
+  local key="${1}_${2#/}"; key="${key//\//_}"
+  { printf '%s\n' "$4"; [[ -n "${5:-}" ]] && printf '%s\n' "$5"; } >"$FIXDIR/$key.$3"
 }
 
 # new_scenario <name> — fresh HOME, fixtures and logs; sets CONFIG, LOG, etc.
@@ -656,6 +666,353 @@ assert_eq "held_by_board creates no recovery issue" "$(grep -c "^POST /api/compa
 recovery_scenario recovery_inactive_status '{"status":"resolved","ownerType":"board"}' "$STALE_SELF_BLOCK_DESCRIPTOR"
 assert_absent "an activeRecoveryAction with a non-active status is never stranded" \
   "$(jq -r --arg id "$ISSUE1" '.issues[$id].state' "$STATE/paperclip/ledger.json")" "stranded"
+
+# ============================================================================
+head1 "14. The report cycle (PC-1b AC-1..AC-10)"
+# ============================================================================
+# seed_working <issue_id> <identifier> <state> [<extra-json>] — a ledger with
+# one issue this agent already holds, action_text_applied pre-set so a cycle
+# only fires because the test wants it to (a queued spool or a status change).
+seed_working() {
+  local xtra="${4:-}"; [[ -n "$xtra" ]] || xtra='{}'
+  mkdir -p "$STATE/paperclip"
+  jq -n --arg a "$AGENT1" --arg id "$1" --arg ident "$2" --arg st "$3" --argjson extra "$xtra" \
+    '{issues: {($id): ({agent_id:$a, project:"proj", identifier:$ident, state:$st, since:"2026-01-01T00:00:00Z",
+        action_text:"AFK host is working on this", action_text_applied:"AFK host is working on this"} + $extra)},
+      stranded_reported: [], drain_tampered_reported: false, last_successful_pass: null}' \
+    >"$STATE/paperclip/ledger.json"
+}
+write_spool() { # <issue_id> <seq> <json>
+  local dir="$STATE/paperclip/spool/$1"; mkdir -p "$dir"
+  printf '%s' "$3" >"$dir/$2.json"
+}
+E1="c1111111-1111-1111-1111-111111111111"
+E2="c2222222-2222-2222-2222-222222222222"
+E3="c3333333-3333-3333-3333-333333333333"
+
+new_scenario cycle_three_entries
+write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+seed_working "$ISSUE1" PROJ-1 working
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+route POST "/api/agents/$AGENT1/wakeup" 202 '{"id":"run-cyc"}'
+route PATCH "/api/issues/$ISSUE1" 200 '{}'
+route POST "/api/issues/$ISSUE1/comments" 201 '{}'
+write_spool "$ISSUE1" 001 "{\"id\":\"$E1\",\"kind\":\"comment\",\"body\":\"one\"}"
+write_spool "$ISSUE1" 002 "{\"id\":\"$E2\",\"kind\":\"comment\",\"body\":\"two\"}"
+write_spool "$ISSUE1" 003 "{\"id\":\"$E3\",\"kind\":\"comment\",\"body\":\"three\"}"
+run_afk --json
+assert_eq "3 entries: exactly 3 comments posted" "$(grep -c "^POST /api/issues/$ISSUE1/comments$" "$LOG")" "3"
+assert_eq "3 entries: posted in order (first marker before the last)" \
+  "$(awk -v a="afk-entry:$E1" -v b="afk-entry:$E3" 'index($0,a){print NR": "a} index($0,b){print NR": "b}' "$BODYLOG" | head -1 | grep -c "$E1")" "1"
+assert_eq "3 entries: re-blocked (in_progress + final self-block)" "$(grep -c "^PATCH /api/issues/$ISSUE1$" "$LOG")" "2"
+assert_eq "3 entries: spool emptied" "$(find "$STATE/paperclip/spool/$ISSUE1" -maxdepth 1 -name '*.json' 2>/dev/null | wc -l | tr -d ' ')" "0"
+
+new_scenario cycle_final_then_dead
+write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+seed_working "$ISSUE1" PROJ-1 working
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+route POST "/api/agents/$AGENT1/wakeup" 202 '{"id":"run-fin"}'
+route PATCH "/api/issues/$ISSUE1" 200 '{}'
+route POST "/api/issues/$ISSUE1/comments" 201 '{}'
+write_spool "$ISSUE1" 001 "{\"id\":\"$E1\",\"kind\":\"comment\",\"body\":\"one\"}"
+write_spool "$ISSUE1" 002 "{\"id\":\"$E2\",\"kind\":\"final\",\"status\":\"done\",\"body\":\"done now\"}"
+write_spool "$ISSUE1" 003 "{\"id\":\"$E3\",\"kind\":\"comment\",\"body\":\"too late\"}"
+run_afk --json
+assert_eq "final: ledger closed" "$(jq -r --arg id "$ISSUE1" '.issues[$id].state' "$STATE/paperclip/ledger.json")" "closed"
+assert_missing "final: the final entry itself is gone" "$STATE/paperclip/spool/$ISSUE1/002.json"
+assert_eq "final: the later entry moved to dead/" "$(find "$STATE/paperclip/spool/$ISSUE1/dead" -name '003.json' 2>/dev/null | wc -l | tr -d ' ')" "1"
+
+new_scenario cycle_question
+write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+seed_working "$ISSUE1" PROJ-1 working
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+route POST "/api/agents/$AGENT1/wakeup" 202 '{"id":"run-q"}'
+route PATCH "/api/issues/$ISSUE1" 200 '{}'
+route POST "/api/issues/$ISSUE1/comments" 201 '{}'
+write_spool "$ISSUE1" 001 "{\"id\":\"$E1\",\"kind\":\"question\",\"question_id\":\"q7\",\"body\":\"pick a color?\"}"
+run_afk --json
+assert_eq "question: ledger state waiting_human" "$(jq -r --arg id "$ISSUE1" '.issues[$id].state' "$STATE/paperclip/ledger.json")" "waiting_human"
+assert_contains "question: self-block text names the question id" "$(cat "$BODYLOG")" "waiting on q7"
+
+new_scenario cycle_stuck_sending_blocks_final
+write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+seed_working "$ISSUE1" PROJ-1 working \
+  "{\"sending\":{\"entry_id\":\"$E1\",\"issue_id\":\"$ISSUE1\",\"at\":\"2026-01-01T00:00:00Z\"}}"
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+route GET "/api/issues/$ISSUE1/comments" 200 '[]'
+route POST "/api/agents/$AGENT1/wakeup" 202 '{"id":"run-stuck"}'
+route PATCH "/api/issues/$ISSUE1" 200 '{}'
+route POST "/api/issues/$ISSUE1/comments" NETFAIL
+write_spool "$ISSUE1" 001 "{\"id\":\"$E1\",\"kind\":\"comment\",\"body\":\"stuck\"}"
+write_spool "$ISSUE1" 002 "{\"id\":\"$E2\",\"kind\":\"final\",\"status\":\"done\",\"body\":\"done\"}"
+run_afk --json
+assert_eq "stuck sending: still not closed" "$(jq -r --arg id "$ISSUE1" '.issues[$id].state' "$STATE/paperclip/ledger.json")" "working"
+assert_eq "stuck sending: the final entry was never sent" "$(find "$STATE/paperclip/spool/$ISSUE1" -maxdepth 1 -name '002.json' 2>/dev/null | wc -l | tr -d ' ')" "1"
+
+new_scenario cycle_404_drops_issue
+write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+seed_working "$ISSUE1" PROJ-1 working
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+route POST "/api/agents/$AGENT1/wakeup" 202 '{"id":"run-404"}'
+route PATCH "/api/issues/$ISSUE1" 200 '{}'
+route POST "/api/issues/$ISSUE1/comments" 404 '{}'
+write_spool "$ISSUE1" 001 "{\"id\":\"$E1\",\"kind\":\"comment\",\"body\":\"gone\"}"
+run_afk --json
+assert_eq "404: the issue is dropped (closed)" "$(jq -r --arg id "$ISSUE1" '.issues[$id].state' "$STATE/paperclip/ledger.json")" "closed"
+assert_eq "404: its entry moved to dead/" "$(find "$STATE/paperclip/spool/$ISSUE1/dead" -name '001.json' 2>/dev/null | wc -l | tr -d ' ')" "1"
+
+new_scenario cycle_429_keeps_entry
+write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+seed_working "$ISSUE1" PROJ-1 working
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+route POST "/api/agents/$AGENT1/wakeup" 202 '{"id":"run-429"}'
+route PATCH "/api/issues/$ISSUE1" 200 '{}'
+route POST "/api/issues/$ISSUE1/comments" 429 '{}'
+write_spool "$ISSUE1" 001 "{\"id\":\"$E1\",\"kind\":\"comment\",\"body\":\"slow down\"}"
+run_afk --json
+assert_eq "429: the entry is kept" "$(find "$STATE/paperclip/spool/$ISSUE1" -maxdepth 1 -name '001.json' 2>/dev/null | wc -l | tr -d ' ')" "1"
+assert_contains "429: reported as rate limited" "$OUT_TEXT" "PAPERCLIP_RATE_LIMITED"
+
+new_scenario cycle_500_readback_found
+write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+seed_working "$ISSUE1" PROJ-1 working
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+route POST "/api/agents/$AGENT1/wakeup" 202 '{"id":"run-500"}'
+route PATCH "/api/issues/$ISSUE1" 200 '{}'
+route POST "/api/issues/$ISSUE1/comments" 500 '{}'
+route GET "/api/issues/$ISSUE1/comments" 200 "[{\"authorAgentId\":\"$AGENT1\",\"body\":\"one\\n\\n<!-- afk-entry:$E1 -->\"}]"
+write_spool "$ISSUE1" 001 "{\"id\":\"$E1\",\"kind\":\"comment\",\"body\":\"one\"}"
+run_afk --json
+assert_eq "500 + marker found: counted as sent" \
+  "$(find "$STATE/paperclip/spool/$ISSUE1" -maxdepth 1 -name '001.json' 2>/dev/null | wc -l | tr -d ' ')" "0"
+assert_eq "500 + marker found: exactly one POST, no duplicate" "$(grep -c "^POST /api/issues/$ISSUE1/comments$" "$LOG")" "1"
+
+new_scenario cycle_500_readback_not_found
+write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+seed_working "$ISSUE1" PROJ-1 working
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+route POST "/api/agents/$AGENT1/wakeup" 202 '{"id":"run-500b"}'
+route PATCH "/api/issues/$ISSUE1" 200 '{}'
+route POST "/api/issues/$ISSUE1/comments" 500 '{}'
+route GET "/api/issues/$ISSUE1/comments" 200 '[]'
+write_spool "$ISSUE1" 001 "{\"id\":\"$E1\",\"kind\":\"comment\",\"body\":\"one\"}"
+run_afk --json
+assert_eq "500 + no marker: the entry stays" "$(find "$STATE/paperclip/spool/$ISSUE1" -maxdepth 1 -name '001.json' 2>/dev/null | wc -l | tr -d ' ')" "1"
+# Next pass: Paperclip now accepts it -> exactly one more POST, not two.
+route POST "/api/issues/$ISSUE1/comments" 201 '{}'
+run_afk --json
+assert_eq "500 + no marker: re-posted exactly once on the next pass" "$(grep -c "^POST /api/issues/$ISSUE1/comments$" "$LOG")" "2"
+assert_missing "the entry is finally gone" "$STATE/paperclip/spool/$ISSUE1/001.json"
+
+new_scenario cycle_422_dead_rest_continue
+write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+seed_working "$ISSUE1" PROJ-1 working
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+route POST "/api/agents/$AGENT1/wakeup" 202 '{"id":"run-fail"}'
+route PATCH "/api/issues/$ISSUE1" 200 '{}'
+route POST "/api/issues/$ISSUE1/comments" 422 '{}'
+route_nth POST "/api/issues/$ISSUE1/comments" 2 201 '{}'
+write_spool "$ISSUE1" 001 "{\"id\":\"$E1\",\"kind\":\"comment\",\"body\":\"bad\"}"
+write_spool "$ISSUE1" 002 "{\"id\":\"$E2\",\"kind\":\"comment\",\"body\":\"fine\"}"
+run_afk --json
+assert_eq "422: entry moved to dead/" "$(find "$STATE/paperclip/spool/$ISSUE1/dead" -name '001.json' 2>/dev/null | wc -l | tr -d ' ')" "1"
+assert_missing "422: the next entry still went out" "$STATE/paperclip/spool/$ISSUE1/002.json"
+assert_eq "422: still re-blocked (in_progress + self-block)" "$(grep -c "^PATCH /api/issues/$ISSUE1$" "$LOG")" "2"
+
+new_scenario cycle_no_run_leaves_spool
+write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+seed_working "$ISSUE1" PROJ-1 working
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+route POST "/api/agents/$AGENT1/wakeup" 202 '{}'
+write_spool "$ISSUE1" 001 "{\"id\":\"$E1\",\"kind\":\"comment\",\"body\":\"x\"}"
+run_afk --json
+assert_eq "no run: no PATCH at all" "$(grep -c "^PATCH /api/issues/$ISSUE1$" "$LOG")" "0"
+assert_eq "no run: the spool is untouched" "$(find "$STATE/paperclip/spool/$ISSUE1" -maxdepth 1 -name '001.json' 2>/dev/null | wc -l | tr -d ' ')" "1"
+
+new_scenario cycle_403_credential
+write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+seed_working "$ISSUE1" PROJ-1 working
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+route POST "/api/agents/$AGENT1/wakeup" 403 '{}'
+write_spool "$ISSUE1" 001 "{\"id\":\"$E1\",\"kind\":\"comment\",\"body\":\"x\"}"
+run_afk --json
+assert_contains "403: credential reason" "$OUT_TEXT" "PAPERCLIP_CREDENTIAL_REJECTED"
+assert_eq "403: nothing posted" "$(grep -c "^POST /api/issues/$ISSUE1/comments$" "$LOG")" "0"
+
+new_scenario cycle_paused_nothing_touched
+write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+mkdir -p "$HOME/.config/agent-flow-kit/paperclip"; : >"$HOME/.config/agent-flow-kit/paperclip/stop"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+seed_working "$ISSUE1" PROJ-1 working
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+write_spool "$ISSUE1" 001 "{\"id\":\"$E1\",\"kind\":\"comment\",\"body\":\"x\"}"
+run_afk --json
+assert_eq "paused: no wakeup, no post, no delete" "$(grep -c -e '^POST' -e '^PATCH' "$LOG")" "0"
+assert_eq "paused: the spool entry is untouched" "$(find "$STATE/paperclip/spool/$ISSUE1" -maxdepth 1 -name '001.json' 2>/dev/null | wc -l | tr -d ' ')" "1"
+
+new_scenario cycle_stranded_held
+write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+seed_working "$ISSUE1" PROJ-1 stranded
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+write_spool "$ISSUE1" 001 "{\"id\":\"$E1\",\"kind\":\"comment\",\"body\":\"x\"}"
+run_afk --json
+assert_eq "stranded: no wakeup for that issue" "$(grep -c "^POST /api/agents/$AGENT1/wakeup$" "$LOG")" "0"
+assert_eq "stranded: spool held" "$(find "$STATE/paperclip/spool/$ISSUE1" -maxdepth 1 -name '001.json' 2>/dev/null | wc -l | tr -d ' ')" "1"
+
+new_scenario cycle_junk_ignored
+write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+seed_working "$ISSUE1" PROJ-1 working
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+mkdir -p "$STATE/paperclip/spool/$ISSUE1/.tmp"
+printf 'junk' >"$STATE/paperclip/spool/$ISSUE1/.tmp/leftover"
+printf 'junk' >"$STATE/paperclip/spool/$ISSUE1/notanentry.txt"
+run_afk --json
+assert_eq "junk names: no cycle ran (no spool, no text change)" "$(grep -c "^POST /api/agents/$AGENT1/wakeup$" "$LOG")" "0"
+
+new_scenario cycle_key_never_logged
+write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+seed_working "$ISSUE1" PROJ-1 working
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+route POST "/api/agents/$AGENT1/wakeup" 202 '{"id":"run-key"}'
+route PATCH "/api/issues/$ISSUE1" 200 '{}'
+route POST "/api/issues/$ISSUE1/comments" 201 '{}'
+write_spool "$ISSUE1" 001 "{\"id\":\"$E1\",\"kind\":\"comment\",\"body\":\"x\"}"
+run_afk --json
+assert_absent "report cycle: the key never appears in any logged argv" "$(cat "$LOG.argv")" "KEY-AGENT1-SECRET-VALUE"
+assert_absent "report cycle: the key never appears in the ledger" "$(cat "$STATE/paperclip/ledger.json")" "KEY-AGENT1-SECRET-VALUE"
+
+# ============================================================================
+head1 "15. Adopted while paused (AC-10)"
+# ============================================================================
+new_scenario adopt_while_paused_then_unpause
+write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+mkdir -p "$HOME/.config/agent-flow-kit/paperclip"; : >"$HOME/.config/agent-flow-kit/paperclip/stop"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+route GET "/api/issues/$ISSUE1" 200 \
+  "{\"status\":\"in_progress\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"updatedAt\":\"2026-01-01T00:00:00Z\"}"
+route GET "/api/issues/$ISSUE1/active-run" 200 '{"id":"run-1"}'
+route PATCH "/api/issues/$ISSUE1" 200 '{}'
+run_afk --json
+LEDGER="$STATE/paperclip/ledger.json"
+assert_eq "adopted while paused: pending_claim, not working" "$(jq -r --arg id "$ISSUE1" '.issues[$id].state' "$LEDGER")" "pending_claim"
+assert_eq "adopted while paused: no claim comment yet" "$(grep -c 'claimed by AFK PM' "$BODYLOG")" "0"
+assert_missing "adopted while paused: no claimed notice yet" "$STATE/paperclip/notices/proj"
+
+rm -f "$HOME/.config/agent-flow-kit/paperclip/stop"
+route GET "/api/issues/$ISSUE1/active-run" 200 '{"id":"run-2"}'
+run_afk --json
+assert_eq "unpaused: exactly one claim comment" "$(grep -c 'claimed by AFK PM' "$BODYLOG")" "1"
+NOTICE_DIR="$STATE/paperclip/notices/proj"
+assert_eq "unpaused: exactly one claimed notice" "$(find "$NOTICE_DIR" -name '*.claimed.json' 2>/dev/null | wc -l | tr -d ' ')" "1"
+assert_eq "unpaused: exactly one brief" "$(find "$NOTICE_DIR" -name 'brief.*' 2>/dev/null | wc -l | tr -d ' ')" "1"
+assert_eq "unpaused: the issue is now working" "$(jq -r --arg id "$ISSUE1" '.issues[$id].state' "$LEDGER")" "working"
+
+# ============================================================================
+head1 "16. Report-cycle hardening (PC-1b review)"
+# ============================================================================
+# cycle_base <name> — one working issue, a run, and 200 PATCHes by default.
+cycle_base() {
+  new_scenario "$1"
+  write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+  route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+  seed_working "$ISSUE1" PROJ-1 working "${2:-}"
+  route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+  route POST "/api/agents/$AGENT1/wakeup" 202 '{"id":"run-h"}'
+  route PATCH "/api/issues/$ISSUE1" 200 '{}'
+}
+patches() { grep -c "^PATCH /api/issues/$ISSUE1$" "$LOG"; }
+last_patch_blocked() { awk 'BEGIN{RS="\n---\n"} /"status"/{l=$0} END{print l}' "$BODYLOG" | grep -c '"status":"blocked"'; }
+
+cycle_base cycle_403_after_in_progress
+route POST "/api/issues/$ISSUE1/comments" 403 '{}'
+write_spool "$ISSUE1" 001 "{\"id\":\"$E1\",\"kind\":\"comment\",\"body\":\"x\"}"
+run_afk --json
+assert_contains "403 after in_progress: credential reason" "$OUT_TEXT" "PAPERCLIP_CREDENTIAL_REJECTED"
+assert_eq "403 after in_progress: self-block still attempted" "$(patches)" "2"
+assert_eq "403 after in_progress: the last PATCH is a block" "$(last_patch_blocked)" "1"
+
+cycle_base cycle_in_progress_timeout
+route PATCH "/api/issues/$ISSUE1" NETFAIL
+write_spool "$ISSUE1" 001 "{\"id\":\"$E1\",\"kind\":\"comment\",\"body\":\"x\"}"
+run_afk --json
+assert_eq "in_progress timeout: a self-block follows it" "$(patches)" "2"
+assert_eq "in_progress timeout: nothing posted" "$(grep -c "^POST /api/issues/$ISSUE1/comments$" "$LOG")" "0"
+
+cycle_base cycle_readback_unavailable \
+  "{\"sending\":{\"entry_id\":\"$E1\",\"issue_id\":\"$ISSUE1\",\"at\":\"2026-01-01T00:00:00Z\"}}"
+route GET "/api/issues/$ISSUE1/comments" 500 '{}'
+route POST "/api/issues/$ISSUE1/comments" 201 '{}'
+write_spool "$ISSUE1" 001 "{\"id\":\"$E1\",\"kind\":\"comment\",\"body\":\"x\"}"
+run_afk --json
+assert_eq "read-back failed: never re-posted blind" "$(grep -c "^POST /api/issues/$ISSUE1/comments$" "$LOG")" "0"
+assert_eq "read-back failed: sending kept" "$(jq -r --arg id "$ISSUE1" '.issues[$id].sending.entry_id' "$STATE/paperclip/ledger.json")" "$E1"
+
+cycle_base cycle_marker_from_stranger
+route POST "/api/issues/$ISSUE1/comments" 500 '{}'
+route GET "/api/issues/$ISSUE1/comments" 200 "[{\"authorUserId\":\"$STRANGER\",\"body\":\"<!-- afk-entry:$E1 -->\"}]"
+write_spool "$ISSUE1" 001 "{\"id\":\"$E1\",\"kind\":\"comment\",\"body\":\"x\"}"
+run_afk --json
+assert_eq "a marker someone else posted never counts as sent" "$(find "$STATE/paperclip/spool/$ISSUE1" -maxdepth 1 -name '001.json' | wc -l | tr -d ' ')" "1"
+
+cycle_base cycle_final_patch_fails
+route POST "/api/issues/$ISSUE1/comments" 201 '{}'
+route_nth PATCH "/api/issues/$ISSUE1" 2 500 '{}'
+write_spool "$ISSUE1" 001 "{\"id\":\"$E1\",\"kind\":\"final\",\"status\":\"in_review\",\"body\":\"done\"}"
+run_afk --json
+assert_eq "final PATCH failed: not closed yet" "$(jq -r --arg id "$ISSUE1" '.issues[$id].state' "$STATE/paperclip/ledger.json")" "working"
+assert_eq "final PATCH failed: self-blocked instead" "$(last_patch_blocked)" "1"
+run_afk --json
+assert_eq "final PATCH retried next pass: closed" "$(jq -r --arg id "$ISSUE1" '.issues[$id].state' "$STATE/paperclip/ledger.json")" "closed"
+assert_eq "final PATCH retried: the comment was not re-posted" "$(grep -c "^POST /api/issues/$ISSUE1/comments$" "$LOG")" "1"
+assert_contains "final PATCH retried: in_review applied" "$(cat "$BODYLOG")" '{"status":"in_review"}'
+
+cycle_base cycle_bad_kind_and_status
+route POST "/api/issues/$ISSUE1/comments" 201 '{}'
+write_spool "$ISSUE1" 001 "{\"id\":\"$E1\",\"kind\":\"cost\",\"body\":\"x\"}"
+write_spool "$ISSUE1" 002 "{\"id\":\"$E2\",\"kind\":\"final\",\"status\":\"cancelled\",\"body\":\"x\"}"
+run_afk --json
+assert_eq "unknown kind and bad final status: nothing posted" "$(grep -c "^POST /api/issues/$ISSUE1/comments$" "$LOG")" "0"
+assert_eq "unknown kind and bad final status: both dead" "$(find "$STATE/paperclip/spool/$ISSUE1/dead" -name '*.json' | wc -l | tr -d ' ')" "2"
+
+new_scenario adopt_while_paused_then_unpause_blocked
+write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+mkdir -p "$HOME/.config/agent-flow-kit/paperclip"; : >"$HOME/.config/agent-flow-kit/paperclip/stop"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+route GET "/api/issues/$ISSUE1" 200 \
+  "{\"status\":\"in_progress\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"updatedAt\":\"2026-01-01T00:00:00Z\"}"
+route GET "/api/issues/$ISSUE1/active-run" 200 '{"id":"run-1"}'
+route PATCH "/api/issues/$ISSUE1" 200 '{}'
+run_afk --json
+rm -f "$HOME/.config/agent-flow-kit/paperclip/stop"
+# The realistic second pass: the paused self-block stuck, so it is blocked.
+route GET "/api/issues/$ISSUE1" 200 \
+  "{\"status\":\"blocked\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"updatedAt\":\"2026-01-01T00:00:00Z\",\"unblockDescriptor\":{\"owner\":{\"agentId\":\"$AGENT1\"}}}"
+route GET "/api/issues/$ISSUE1/comments" 200 '[]'
+route POST "/api/agents/$AGENT1/wakeup" 202 '{"id":"run-2"}'
+route POST "/api/issues/$ISSUE1/comments" 201 '{}'
+run_afk --json
+run_afk --json
+NOTICE_DIR="$STATE/paperclip/notices/proj"
+assert_eq "unpaused (blocked): working" "$(jq -r --arg id "$ISSUE1" '.issues[$id].state' "$STATE/paperclip/ledger.json")" "working"
+assert_eq "unpaused (blocked): exactly one claim comment over two passes" "$(grep -c 'claimed by AFK PM' "$BODYLOG")" "1"
+assert_eq "unpaused (blocked): exactly one claimed notice" "$(find "$NOTICE_DIR" -name '*.claimed.json' 2>/dev/null | wc -l | tr -d ' ')" "1"
+assert_eq "unpaused (blocked): exactly one brief" "$(find "$NOTICE_DIR" -name 'brief.*' 2>/dev/null | wc -l | tr -d ' ')" "1"
 
 # ===========================================================================
 printf '\n\033[1m%d passed, %d failed\033[0m\n' "$PASS" "$FAIL"
