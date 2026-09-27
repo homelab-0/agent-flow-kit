@@ -36,6 +36,25 @@ else
   no "freshness is an offline observation, never launch authority"
 fi
 
+# A no-change acceptance records the installed revision next to the accepted
+# target; freshness matches the install and still reports the target.
+target=89abcdef0123456789abcdef0123456789abcdef
+freshness_case() { # <current.json> <expected state:reason:accepted> <label>
+  printf '%s\n' "$1" >"$TMP/state/releases/current.json"
+  if [[ "$("$ROOT/bin/afk-session-freshness" --state-dir "$TMP/state" |
+        jq -r '.state+":"+.reason+":"+.accepted_revision+":"+.applied_revision')" == "$2:$revision" ]]; then
+    ok
+  else
+    no "$3"
+  fi
+}
+freshness_case "{\"revision\":\"$target\",\"installed_revision\":\"$revision\"}" \
+  "ACCEPTED_LOCALLY:RECORDED_LAST_GOOD:$target" "a no-change acceptance matches the installed revision"
+freshness_case "{\"revision\":\"$target\",\"installed_revision\":\"$target\"}" \
+  "MISMATCH:APPLIED_REVISION_DIFFERS_FROM_ACCEPTED_RELEASE:$target" "a recorded install that differs is a mismatch"
+freshness_case "{\"revision\":\"$target\"}" \
+  "MISMATCH:APPLIED_REVISION_DIFFERS_FROM_ACCEPTED_RELEASE:$target" "an older record without installed_revision is unchanged"
+
 memory="$(AFK_STATE_DIR="$TMP/memory-state" "$ROOT/adapters/hindsight.sh" blind "$ROOT")"
 if jq -e '
   .schema=="afk-memory-context/2" and .state=="DISABLED" and

@@ -132,9 +132,21 @@ state="$state_dir/state.json"
 applied="$(jq -r '.applied_revision // ""' "$state" 2>/dev/null || true)"
 command_name="${1:-}"; shift || true
 if [[ "$command_name" == verify ]]; then
-  if [[ "$applied" == "$target" && ! -f "$state_dir/.test-verify-diverge" ]]; then
-    jq -nc --arg target "$target" '{kind:"lifecycle_result",installed:{applied_revision:$target},extra:{verification:{verified:true}},overall:{exit_code:0}}'
-    exit 0
+  # .test-no-change: the target changes no installed input, so the prior install
+  # verifies. .test-verify-installed overrides the reported installed revision;
+  # .test-verify-result holds "<exit_code> <verified>"; .test-verify-moves-state
+  # rewrites the installed revision before verification reports.
+  if [[ -f "$state_dir/.test-verify-moves-state" ]]; then
+    jq --arg moved "$(cat "$state_dir/.test-verify-moves-state")" '.applied_revision=$moved' "$state" >"${state}.tmp"
+    mv "${state}.tmp" "$state"
+  fi
+  reported="$applied"; [[ -f "$state_dir/.test-verify-installed" ]] && reported="$(cat "$state_dir/.test-verify-installed")"
+  verify_exit=0; verify_ok=true
+  [[ -f "$state_dir/.test-verify-result" ]] && read -r verify_exit verify_ok <"$state_dir/.test-verify-result"
+  if [[ ( "$applied" == "$target" || -f "$state_dir/.test-no-change" || -f "$state_dir/.test-verify-installed" ) &&
+        ! -f "$state_dir/.test-verify-diverge" ]]; then
+    jq -nc --arg installed "$reported" --argjson ok "$verify_ok" --argjson rc "$verify_exit" '{kind:"lifecycle_result",installed:{applied_revision:$installed},extra:{verification:{verified:$ok}},overall:{exit_code:$rc}}'
+    exit "$verify_exit"
   fi
   jq -nc --arg target "$target" --arg applied "$applied" '{kind:"lifecycle_result",installed:{applied_revision:$applied},extra:{verification:{verified:false}},overall:{exit_code:3}}'
   exit 3
@@ -145,7 +157,7 @@ while (( $# )); do
   case "$1" in --plan) plan=true ;; --approve-plan) approval="${2:-}"; shift ;; esac
   shift
 done
-disposition=MUTATION_REQUIRED; [[ "$applied" == "$target" ]] && disposition=NO_CHANGE
+disposition=MUTATION_REQUIRED; [[ "$applied" == "$target" || -f "$state_dir/.test-no-change" ]] && disposition=NO_CHANGE
 plan_identity="sha256:$(printf '%s' "$target" | sha256sum | awk '{print $1}')"
 plan_doc="$(jq -nc --arg target "$target" --arg prior "$applied" --arg disposition "$disposition" --arg identity "$plan_identity" '{plan_identity:$identity,disposition:$disposition,prior_revision:$prior,target_revision:$target,approvals_required:0,conflicts:0,refusal_reason:null}')"
 if [[ "$plan" == true ]]; then
@@ -172,11 +184,18 @@ if [[ -f "$state_dir/.test-rollback" ]]; then
     '{kind:"lifecycle_result",source_eligibility:{state:"ELIGIBLE",mutation_allowed:true},extra:{plan:$plan},operation:{id:$id,result:"ROLLED_BACK",reason:$reason},overall:{exit_code:2}}'
   exit 2
 fi
-mkdir -p "$(dirname "$state")"
-jq --arg target "$target" '.applied_revision=$target' "$state" >"${state}.tmp"
-mv "${state}.tmp" "$state"
-# Like the real lifecycle, a no-change result takes no lock and names no operation.
-result=CONVERGED; id=test-apply; [[ "$disposition" == NO_CHANGE ]] && { result=NO_CHANGE; id=""; }
+# Like the real lifecycle, a no-change result takes no lock, names no operation
+# and leaves the installed revision where it was.
+# .test-apply-no-change forces a NO_CHANGE result over any plan;
+# .test-apply-foreign-plan names another target in the applied plan.
+result=CONVERGED; id=test-apply; [[ "$disposition" == NO_CHANGE || -f "$state_dir/.test-apply-no-change" ]] && { result=NO_CHANGE; id=""; }
+[[ -f "$state_dir/.test-apply-foreign-plan" ]] &&
+  plan_doc="$(jq -c --arg foreign "$(cat "$state_dir/.test-apply-foreign-plan")" '.target_revision=$foreign' <<<"$plan_doc")"
+if [[ "$result" == CONVERGED ]]; then
+  mkdir -p "$(dirname "$state")"
+  jq --arg target "$target" '.applied_revision=$target' "$state" >"${state}.tmp"
+  mv "${state}.tmp" "$state"
+fi
 jq -nc --argjson plan "$plan_doc" --arg result "$result" --arg id "$id" '{kind:"lifecycle_result",source_eligibility:{state:"ELIGIBLE",mutation_allowed:true},extra:{plan:$plan},operation:{id:(if $id=="" then null else $id end),result:$result,reason:"TEST_APPLY"},overall:{exit_code:0}}'
 STUB
 chmod +x "$AUTHOR/bin/agent-flow-kit" "$AUTHOR/bin/afk-release-reconcile" \
@@ -1094,6 +1113,102 @@ if grep -Fq '/releases/candidates/' "$HOME_TEST/.claude/settings.json"; then not
 assert_file_contains 'Hindsight config remains byte-owned by Hindsight' "$HOME_TEST/.hindsight/config" hindsight-owned
 assert_file_contains 'Orca config remains byte-owned by Orca' "$HOME_TEST/.config/orca/config" orca-owned
 
+# A release that changes no installed file (tests only) plans and applies as
+# NO_CHANGE and leaves the installed revision behind. It is accepted only when
+# this exact target is a verified no-change over the prior install.
+rm -f "$OFFLINE_MARKER"
+printf 'tests only\n' >"$AUTHOR/tests/no-change-release-marker"
+git -C "$AUTHOR" add tests/no-change-release-marker
+git -C "$AUTHOR" commit -qm 'test no-change release'
+NC_TARGET="$(git -C "$AUTHOR" rev-parse HEAD)"
+git -C "$AUTHOR" push -q --force test-origin master
+NC_PRIOR="$(jq -r .applied_revision "$STATE/state.json")"
+NC_CURRENT="$(cksum <"$STATE/releases/current.json")"
+cp "$STATE/state.json" "$TMP/nc-state.saved"
+no_change_block() { # <label> <marker>=<content>...
+  local label="$1" marker; shift
+  for marker in "$@"; do printf '%s\n' "${marker#*=}" >"$STATE/${marker%%=*}"; done
+  run_update --apply --force-check --policy "$AUTHOR/lifecycle/release-policy.json"
+  assert_eq "$label blocks" "$(jq -r '.state+":"+.reason' <<<"$RUN_OUT")" BLOCKED:POST_APPLY_VERIFY_FAILED
+  assert_eq "$label accepts nothing" "$(cksum <"$STATE/releases/current.json")" "$NC_CURRENT"
+  for marker in "$@"; do rm -f "$STATE/${marker%%=*}"; done
+  cp "$TMP/nc-state.saved" "$STATE/state.json"
+}
+no_change_block 'a no-change apply over a mutation plan' .test-apply-no-change=x .test-verify-installed="$NC_PRIOR"
+touch "$STATE/.test-no-change"
+no_change_block 'a no-change with a failing verify' .test-verify-result='3 true'
+no_change_block 'a no-change that is not verified' .test-verify-result='0 false'
+no_change_block 'a no-change with an unexpected installed revision' .test-verify-installed="$BASE"
+no_change_block 'a no-change whose install moves before verify' .test-verify-moves-state="$BASE" .test-verify-installed="$NC_PRIOR"
+no_change_block 'a no-change applying another plan' .test-apply-foreign-plan="$BASE"
+run_update --apply --force-check --policy "$AUTHOR/lifecycle/release-policy.json"
+assert_eq 'a verified tests-only release is accepted' "$(jq -r '.state+":"+.reason' <<<"$RUN_OUT")" CURRENT:RELEASE_ACCEPTED_NO_CHANGE
+assert_eq 'the accepted no-change reports the installed revision' "$(jq -r .applied_revision <<<"$RUN_OUT")" "$NC_PRIOR"
+assert_eq 'the accepted no-change reports the accepted revision' "$(jq -r .accepted_revision <<<"$RUN_OUT")" "$NC_TARGET"
+assert_eq 'the accepted no-change is a verified last-good' "$(jq -r .last_good_verified <<<"$RUN_OUT")" true
+assert_eq 'current.json records the accepted target' "$(jq -r .revision "$STATE/releases/current.json")" "$NC_TARGET"
+assert_eq 'current.json records what is installed' "$(jq -r .installed_revision "$STATE/releases/current.json")" "$NC_PRIOR"
+assert_eq 'the installed revision stays at the prior one' "$(jq -r .applied_revision "$STATE/state.json")" "$NC_PRIOR"
+assert_eq 'freshness reports the accepted no-change as matched' \
+  "$(AFK_STATE_DIR="$STATE" bash "$ROOT/bin/afk-session-freshness" | jq -r '.state+":"+.accepted_revision')" "ACCEPTED_LOCALLY:$NC_TARGET"
+run_update --apply --force-check --policy "$AUTHOR/lifecycle/release-policy.json"
+assert_eq 'the next run on the same target is current' "$(jq -r '.state+":"+.reason' <<<"$RUN_OUT")" CURRENT:ALREADY_CURRENT
+run_update --apply --policy "$AUTHOR/lifecycle/release-policy.json"
+assert_eq 'the accepted no-change passes the throttle proof' "$(jq -r '.state+":"+.reason' <<<"$RUN_OUT")" CURRENT:CHECK_INTERVAL_NOT_ELAPSED
+# Two no-change releases in a row: both are accepted over the same install.
+printf 'tests only again\n' >"$AUTHOR/tests/no-change-release-marker"
+git -C "$AUTHOR" add tests/no-change-release-marker
+git -C "$AUTHOR" commit -qm 'test second no-change release'
+NC_TARGET2="$(git -C "$AUTHOR" rev-parse HEAD)"
+git -C "$AUTHOR" push -q test-origin master
+run_update --apply --force-check --policy "$AUTHOR/lifecycle/release-policy.json"
+assert_eq 'a second tests-only release is accepted' "$(jq -r '.state+":"+.reason' <<<"$RUN_OUT")" CURRENT:RELEASE_ACCEPTED_NO_CHANGE
+assert_eq 'current.json records the second target over the same install' \
+  "$(jq -r '.revision+":"+.installed_revision' "$STATE/releases/current.json")" "$NC_TARGET2:$NC_PRIOR"
+assert_eq 'the install stays at the first prior revision' "$(jq -r .applied_revision "$STATE/state.json")" "$NC_PRIOR"
+# A target that descends from the installed revision but not from the accepted
+# one would move the host backward.
+git -C "$AUTHOR" checkout -q -b no-change-sibling "$NC_TARGET^"
+printf 'sibling\n' >"$AUTHOR/tests/no-change-sibling-marker"
+git -C "$AUTHOR" add tests/no-change-sibling-marker
+git -C "$AUTHOR" commit -qm 'test release behind the accepted one'
+git -C "$AUTHOR" push -q --force test-origin no-change-sibling:master
+run_update --apply --force-check --policy "$AUTHOR/lifecycle/release-policy.json"
+assert_eq 'a target behind the accepted revision is refused' "$(jq -r '.state+":"+.reason' <<<"$RUN_OUT")" RETAINED:SOURCE_NOT_FORWARD_ANCESTOR
+# A record that no longer describes the install does not hold the host: after
+# an operator reinstalls that sibling by hand, the next release converges.
+rm -f "$STATE/.test-no-change"
+cp "$STATE/releases/current.json" "$TMP/nc-current.saved"
+jq --arg manual "$(git -C "$AUTHOR" rev-parse HEAD)" '.applied_revision=$manual' "$TMP/nc-state.saved" >"$STATE/state.json"
+printf 'after a manual reinstall\n' >"$AUTHOR/files/release-test-marker"
+git -C "$AUTHOR" add files/release-test-marker
+git -C "$AUTHOR" commit -qm 'test release after a manual reinstall'
+git -C "$AUTHOR" push -q --force test-origin no-change-sibling:master
+run_update --apply --force-check --policy "$AUTHOR/lifecycle/release-policy.json"
+assert_eq 'a manual reinstall past a stale record converges' "$(jq -r '.state+":"+.reason' <<<"$RUN_OUT")" CONVERGED:RELEASE_APPLIED
+cp "$TMP/nc-state.saved" "$STATE/state.json"; cp "$TMP/nc-current.saved" "$STATE/releases/current.json"
+git -C "$AUTHOR" checkout -q master
+# A later release that changes installed files converges from that state.
+printf 'release after no-change\n' >"$AUTHOR/files/release-test-marker"
+git -C "$AUTHOR" add files/release-test-marker
+git -C "$AUTHOR" commit -qm 'test release after no-change'
+NC_NEXT="$(git -C "$AUTHOR" rev-parse HEAD)"
+git -C "$AUTHOR" push -q --force test-origin master
+run_update --apply --force-check --policy "$AUTHOR/lifecycle/release-policy.json"
+assert_eq 'an installed-file release converges after a no-change' "$(jq -r '.state+":"+.reason' <<<"$RUN_OUT")" CONVERGED:RELEASE_APPLIED
+assert_eq 'the convergence installs the target' "$(jq -r .applied_revision "$STATE/state.json")" "$NC_NEXT"
+assert_eq 'current.json installed and accepted revisions agree again' "$(jq -r '.installed_revision==.revision' "$STATE/releases/current.json")" true
+# A convergence whose verification reports any other revision still blocks.
+printf 'wrong applied\n' >"$AUTHOR/files/release-test-marker"
+git -C "$AUTHOR" add files/release-test-marker
+git -C "$AUTHOR" commit -qm 'test convergence with a wrong applied revision'
+git -C "$AUTHOR" push -q test-origin master
+printf '%s\n' "$NC_NEXT" >"$STATE/.test-verify-installed"
+run_update --apply --force-check --policy "$AUTHOR/lifecycle/release-policy.json"
+assert_eq 'a convergence reporting the prior revision blocks' "$(jq -r '.state+":"+.reason' <<<"$RUN_OUT")" BLOCKED:POST_APPLY_VERIFY_FAILED
+assert_eq 'the blocked convergence accepts nothing' "$(jq -r .revision "$STATE/releases/current.json")" "$NC_NEXT"
+rm -f "$STATE/.test-verify-installed"
+
 # End to end with the real lifecycle, no stub: a real adoption in a throwaway
 # HOME, the adopted runtime as the trusted driver, and the client planning,
 # approving and verifying through it. The fetch transport is the only seam.
@@ -1163,6 +1278,19 @@ assert_eq 'e2e: the second apply is a verified no-change' "$(jq -r '.state+":"+.
 assert_eq 'e2e: no-change carries the lifecycle reason' "$(jq -r .operation.reason <<<"$RUN_OUT")" PLAN_NO_CHANGE_REQUIRED
 assert_eq 'e2e: no-change is proven last-good' "$(jq -r .last_good_verified "$E2E_STATE/releases/latest.json")" true
 assert_eq 'e2e: no-change records the accepted release' "$(jq -r .revision "$E2E_STATE/releases/current.json" 2>/dev/null)" "$E2E_TWO"
+# The real lifecycle plans a tests-only release as NO_CHANGE and keeps the
+# installed revision; the client accepts it rather than blocking.
+printf 'e2e tests only\n' >"$E2E_SOURCE/tests/e2e-no-change-marker"
+git -C "$E2E_SOURCE" add tests/e2e-no-change-marker
+git -C "$E2E_SOURCE" commit -qm 'e2e tests-only release'
+E2E_THREE="$(git -C "$E2E_SOURCE" rev-parse HEAD)"
+git -C "$E2E_SOURCE" push -q --force "$REMOTE" master
+e2e_update "$E2E_CLIENT" --apply --force-check
+assert_eq 'e2e: a tests-only release is accepted' "$(jq -r '.state+":"+.reason' <<<"$RUN_OUT")" CURRENT:RELEASE_ACCEPTED_NO_CHANGE
+assert_eq 'e2e: it keeps the installed revision' "$(jq -r .applied_revision "$E2E_STATE/state.json")" "$E2E_TWO"
+assert_eq 'e2e: and records the accepted one' "$(jq -r .accepted_revision <<<"$RUN_OUT")" "$E2E_THREE"
+e2e_update "$E2E_CLIENT" --apply --force-check
+assert_eq 'e2e: the next run is current' "$(jq -r '.state+":"+.reason' <<<"$RUN_OUT")" CURRENT:ALREADY_CURRENT
 # Machine-local state moves between plan and approval, so the lifecycle refuses
 # the approval before taking its lock and names no operation.
 E2E_DRIFT_CLIENT="${E2E_CLIENT%/*}/afk-release-reconcile-drift"
