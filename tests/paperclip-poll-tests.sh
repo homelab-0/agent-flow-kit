@@ -167,6 +167,14 @@ write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj
 run_afk
 assert_contains "duplicate agent_id refused" "$OUT_TEXT" "PAPERCLIP_CONFIG_INVALID"
 
+new_scenario cfg_http_url
+write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo)" '[$a]')"
+jq '.api_url = "http://paperclip.test"' "$CONFIG" >"$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
+run_afk
+assert_eq "non-https api_url: non-zero exit" "$RC" "1"
+assert_eq "non-https api_url: no request made" "$(cat "$LOG" 2>/dev/null)" ""
+assert_contains "non-https api_url refused" "$OUT_TEXT" "PAPERCLIP_CONFIG_INVALID"
+
 # ============================================================================
 head1 "2. Key handling (AC-2)"
 # ============================================================================
@@ -226,6 +234,15 @@ assert_eq "lock held: exit 0 (busy is not a failure)" "$RC" "0"
 assert_contains "lock held: reason" "$OUT_TEXT" "PAPERCLIP_POLL_BUSY"
 assert_eq "lock held: no request made" "$(cat "$LOG" 2>/dev/null)" ""
 
+new_scenario lock_quote_path
+STATE="$SCEN/ho'me/.local/state/agent-flow-kit"; mkdir -p "$STATE"
+write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo)" '[$a]')"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+route GET "/api/agents/me/inbox-lite" 200 '[]'
+run_afk --json
+assert_eq "a single quote in the state path does not break the pass" "$RC" "0"
+assert_missing "the lock dir is released even with a quote in its path" "$STATE/paperclip/.lock"
+
 # ============================================================================
 head1 "4. Fresh adoption, capacity and re-adoption (AC-5a)"
 # ============================================================================
@@ -249,6 +266,21 @@ NOTICE_DIR="$STATE/paperclip/notices/proj"
 assert_eq "fresh adoption: one claimed notice" "$(find "$NOTICE_DIR" -name '*.claimed.json' 2>/dev/null | wc -l | tr -d ' ')" "1"
 assert_eq "fresh adoption: one brief" "$(find "$NOTICE_DIR" -name 'brief.*' 2>/dev/null | wc -l | tr -d ' ')" "1"
 assert_contains "brief has no Paperclip-only leak beyond title/description" "$(cat "$NOTICE_DIR"/brief.* 2>/dev/null)" "D"
+
+new_scenario brief_no_digits_in_updated_at
+write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+route GET "/api/issues/$ISSUE1" 200 \
+  "{\"status\":\"in_progress\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"updatedAt\":\"unknown\"}"
+route GET "/api/issues/$ISSUE1/active-run" 200 '{"id":"run-1"}'
+route POST "/api/issues/$ISSUE1/comments" 201 '{}'
+route PATCH "/api/issues/$ISSUE1" 200 '{}'
+run_afk --json
+NOTICE_DIR="$STATE/paperclip/notices/proj"
+assert_missing "an updatedAt with no digits never writes brief.<id>..md" "$NOTICE_DIR/brief.$ISSUE1..md"
+assert_eq "an updatedAt with no digits still writes exactly one brief" \
+  "$(find "$NOTICE_DIR" -name 'brief.*' 2>/dev/null | wc -l | tr -d ' ')" "1"
 
 # Re-adopt: same issue reappears in_progress with a run this poller never
 # requested (an unrequested run). No second comment.
@@ -382,6 +414,39 @@ run_afk --json
 assert_eq "closed: ledger state" "$(jq -r --arg id "$ISSUE1" '.issues[$id].state' "$STATE/paperclip/ledger.json")" "closed"
 assert_eq "closed: one stopped notice" \
   "$(find "$STATE/paperclip/notices/proj" -name '*.stopped.json' 2>/dev/null | wc -l | tr -d ' ')" "1"
+
+new_scenario close_and_new_same_pass
+write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+mkdir -p "$STATE/paperclip"
+jq -n --arg a "$AGENT1" --arg id "$ISSUE1" \
+  '{issues: {($id): {agent_id: $a, project: "proj", identifier: "PROJ-1", state: "working", since: "2026-01-01T00:00:00Z", action_text: "AFK host is working on this"}},
+    stranded_reported: [], drain_tampered_reported: false, last_successful_pass: null}' \
+  >"$STATE/paperclip/ledger.json"
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"},{\"id\":\"$ISSUE2\"}]"
+route GET "/api/issues/$ISSUE1" 200 '{"status":"done","identifier":"PROJ-1"}'
+route GET "/api/issues/$ISSUE2" 200 \
+  "{\"status\":\"in_progress\",\"identifier\":\"PROJ-2\",\"title\":\"T2\",\"description\":\"D2\",\"updatedAt\":\"2026-01-01T00:00:00Z\"}"
+route GET "/api/issues/$ISSUE2/active-run" 200 '{"id":"run-2"}'
+route POST "/api/issues/$ISSUE2/comments" 201 '{}'
+route PATCH "/api/issues/$ISSUE2" 200 '{}'
+run_afk --json
+LEDGER="$STATE/paperclip/ledger.json"
+assert_eq "same-pass close: issue1 is closed" "$(jq -r --arg id "$ISSUE1" '.issues[$id].state' "$LEDGER")" "closed"
+assert_eq "same-pass close frees the slot: the new issue is working, not queued" \
+  "$(jq -r --arg id "$ISSUE2" '.issues[$id].state' "$LEDGER")" "working"
+
+new_scenario orphan_self_block
+write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+route GET "/api/issues/$ISSUE1" 200 \
+  "{\"status\":\"blocked\",\"identifier\":\"PROJ-1\",\"unblockDescriptor\":{\"owner\":{\"agentId\":\"$AGENT1\"},\"action\":\"stale\"}}"
+route GET "/api/issues/$ISSUE1/comments" 200 '[]'
+run_afk --json
+LEDGER="$STATE/paperclip/ledger.json"
+assert_eq "an orphaned self-block with no prior ledger entry creates none" \
+  "$(jq -r --arg id "$ISSUE1" '.issues[$id] // "MISSING"' "$LEDGER")" "MISSING"
 
 # ============================================================================
 head1 "8. Stop flag and drain (AC-9)"
@@ -517,6 +582,7 @@ jq -n --arg a "$AGENT1" --arg id "$ISSUE1" \
 route GET /api/agents/me/inbox-lite 200 '{"error":"unexpected shape"}'
 run_afk --json
 assert_eq "a non-array inbox never closes ledger issues" "$(jq -r --arg id "$ISSUE1" '.issues[$id].state' "$STATE/paperclip/ledger.json")" "working"
+assert_eq "a non-array inbox: non-zero exit, nothing completed" "$RC" "1"
 
 # ============================================================================
 head1 "12. Drain: board-actor check on the last status change (AC-9 amendment)"

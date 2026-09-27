@@ -44,7 +44,7 @@ afk_pc_config_path() {
 afk_pc_curl() {
   local -; set +x # never trace the key, whatever the caller's options
   local method="$1" url="$2" key="$3" run="$4" body="${5:-}"
-  local -a args=(-sS --connect-timeout 5 --max-time 20 -X "$method" -w '%{http_code}')
+  local -a args=(-sS --connect-timeout 5 --max-time 20 --proto '=https' -X "$method" -w '%{http_code}')
   local hfd bfd
   exec {hfd}< <(printf 'Authorization: Bearer %s' "$key")
   args+=(-H "@/dev/fd/$hfd")
@@ -136,6 +136,12 @@ afk_pc_load_config() {
   if [[ -z "$api_url" || -z "$company_id" || -z "$board_user_id" || -z "$host_label" ]]; then
     AFK_PC_REFUSAL="PAPERCLIP_CONFIG_INVALID"; return 1
   fi
+  # Every agent key is sent as a bearer token to $api_url; refuse anything
+  # that is not https:// so a typo or an edited config never sends every
+  # project agent's key in cleartext.
+  if [[ "$api_url" != https://* ]]; then
+    AFK_PC_REFUSAL="PAPERCLIP_CONFIG_INVALID"; return 1
+  fi
   if [[ "$board_user_id" == board || "$board_user_id" == local-board ]]; then
     AFK_PC_REFUSAL="PAPERCLIP_ID_INVALID"; return 1
   fi
@@ -190,6 +196,8 @@ afk_pc_brief() { # <project> <issue_id> <updated_at> <title> <description>
   local dir="$AFK_STATE_DIR/paperclip/notices/$1" digits
   afk_state_dir_ensure "$dir"
   digits="$(tr -cd '0-9' <<<"$3")"
+  # updatedAt with no digits at all must never produce brief.<id>..md.
+  [[ -n "$digits" ]] || digits="$(date +%s)"
   afk_state_file_write "$dir/brief.$2.$digits.md" "# $4"$'\n\n'"$5"
 }
 
@@ -249,7 +257,10 @@ afk_cmd_paperclip_poll() { # <json_mode>
   fi
   # shellcheck disable=SC2064
   # Chain the entry point's own EXIT handler rather than replacing it.
-  trap "rmdir '$lockdir' 2>/dev/null; declare -F afk_release_on_exit >/dev/null && afk_release_on_exit" EXIT
+  # %q-quote the path: a bare single-quote wrap breaks if the state dir
+  # itself ever contains a single quote.
+  local lockdir_q; printf -v lockdir_q '%q' "$lockdir"
+  trap "rmdir $lockdir_q 2>/dev/null; declare -F afk_release_on_exit >/dev/null && afk_release_on_exit" EXIT
 
   local ledger_path="$pc_dir/ledger.json" ledger=""
   if [[ -r "$ledger_path" ]]; then
@@ -310,20 +321,22 @@ afk_cmd_paperclip_poll() { # <json_mode>
       pause_kind="$AFK_PC_PAUSE_KIND"
     fi
 
-    any_agent_ok=true
-    result=completed
     local inbox_resp inbox_http inbox_body ids used_slots working_id status_file_dir
     inbox_resp="$(afk_pc_curl GET "$api_url/api/agents/me/inbox-lite" "$key" "")"
     inbox_http="${inbox_resp%%$'\n'*}"; inbox_body="${inbox_resp#*$'\n'}"
-    # A non-array inbox must never read as "every ledger issue closed".
+    # A non-array inbox must never read as "every ledger issue closed", and it
+    # must never count as a completed pass either (AC-3): any_agent_ok/result
+    # are set only once the inbox has actually been fetched and parsed as an
+    # array. Any PAPERCLIP_DRAIN_* action already queued for this agent
+    # (afk_pc_compute_pause) is carried into the reported entry, not dropped.
     if [[ "$inbox_http" != 200 ]] || ! jq -e 'type == "array"' >/dev/null 2>&1 <<<"$inbox_body"; then
-      agents_json="$(jq -c --arg a "$agent_id" '. + [{agent_id:$a, result:"unreachable", actions:[]}]' <<<"$agents_json")"
+      agents_json="$(jq -c --arg a "$agent_id" --argjson acts "$actions" '. + [{agent_id:$a, result:"unreachable", actions:$acts}]' <<<"$agents_json")"
       key=""
       continue
     fi
+    any_agent_ok=true
+    result=completed
     mapfile -t ids < <(jq -r '.[].id' <<<"$inbox_body")
-    used_slots="$(jq --arg a "$agent_id" '[.issues[] | select(.agent_id == $a and .state == "working")] | length' <<<"$ledger")"
-    working_id="$(jq -r --arg a "$agent_id" '[.issues[] | select(.agent_id == $a and .state == "working")][0].identifier // empty' <<<"$ledger")"
     status_file_dir="$AFK_STATE_DIR/paperclip/status"
 
     # AC-5d: ledger issues for this agent no longer present in the inbox.
@@ -339,6 +352,12 @@ afk_cmd_paperclip_poll() { # <json_mode>
       afk_pc_notice "$project" "$cid" "$cidentifier" "$agent_id" "$repo_path" "$harness" stopped
       actions="$(jq -c --arg t "stopped: $cidentifier" '. + [$t]' <<<"$actions")"
     done
+
+    # Computed after the closed-issue loop above, so an issue that just
+    # dropped out of the inbox never counts as a held working slot for the
+    # issues processed below in this same pass.
+    used_slots="$(jq --arg a "$agent_id" '[.issues[] | select(.agent_id == $a and .state == "working")] | length' <<<"$ledger")"
+    working_id="$(jq -r --arg a "$agent_id" '[.issues[] | select(.agent_id == $a and .state == "working")][0].identifier // empty' <<<"$ledger")"
 
     local id
     for id in "${ids[@]:-}"; do
@@ -464,8 +483,13 @@ afk_cmd_paperclip_poll() { # <json_mode>
 
           if [[ "$recovery_active" == true ]]; then
             if [[ -n "$prev" ]]; then
+              local prev_state_rec; prev_state_rec="$(jq -r '.state // empty' <<<"$prev")"
               afk_pc_strand "$api_url" "$key" "$company_id" "$board_user_id" "$id" "$identifier" \
                 "$agent_id" "$project" "$repo_path" "$harness"
+              if [[ "$prev_state_rec" == working ]]; then
+                (( used_slots > 0 )) && used_slots=$((used_slots - 1))
+                [[ "$working_id" == "$identifier" ]] && working_id=""
+              fi
             fi
           elif [[ -n "$owner_agent" && "$owner_agent" == "$agent_id" ]]; then
             local prev_state qid comments_resp comments_body
@@ -506,7 +530,12 @@ afk_cmd_paperclip_poll() { # <json_mode>
               afk_pc_notice "$project" "$id" "$identifier" "$agent_id" "$repo_path" "$harness" promoted
               actions="$(jq -c --arg t "promoted: $identifier" '. + [$t]' <<<"$actions")"
             fi
-            ledger="$(jq -c --arg id "$id" --arg st "$final_state" --arg since "${newest_since:-$since}" \
+            # Never write into .issues[$id] when there is no prior entry: the
+            # ledger was reset invalid, or a previous poller self-blocked this
+            # issue without ever creating a ledger row. Writing anyway leaves
+            # an orphan entry (state set, no agent_id/project/identifier) that
+            # every agent_id-filtered query silently ignores forever.
+            [[ -n "$prev" ]] && ledger="$(jq -c --arg id "$id" --arg st "$final_state" --arg since "${newest_since:-$since}" \
               '.issues[$id].state = $st | .issues[$id].since = $since' <<<"$ledger")"
           elif [[ -n "$owner_user" && "$owner_user" == "$board_user_id" ]]; then
             [[ -n "$prev" ]] && ledger="$(jq -c --arg id "$id" '.issues[$id].state = "held_by_board"' <<<"$ledger")"
@@ -517,14 +546,25 @@ afk_cmd_paperclip_poll() { # <json_mode>
             if [[ -n "$prev" && ( "$prev_state" == working || "$prev_state" == queued || "$prev_state" == waiting_human || "$prev_state" == stranded ) ]]; then
               afk_pc_strand "$api_url" "$key" "$company_id" "$board_user_id" "$id" "$identifier" \
                 "$agent_id" "$project" "$repo_path" "$harness"
+              if [[ "$prev_state" == working ]]; then
+                (( used_slots > 0 )) && used_slots=$((used_slots - 1))
+                [[ "$working_id" == "$identifier" ]] && working_id=""
+              fi
             fi
           fi
           ;;
         cancelled | done)
           if [[ -n "$prev" ]]; then
+            local prev_state_closed; prev_state_closed="$(jq -r '.state // empty' <<<"$prev")"
             ledger="$(jq -c --arg id "$id" '.issues[$id].state = "closed"' <<<"$ledger")"
             afk_pc_notice "$project" "$id" "$identifier" "$agent_id" "$repo_path" "$harness" stopped
             actions="$(jq -c --arg t "stopped: $identifier" '. + [$t]' <<<"$actions")"
+            # A working slot closing mid-pass must free up immediately, or an
+            # issue claimed later in this same pass sees a stale used_slots.
+            if [[ "$prev_state_closed" == working ]]; then
+              (( used_slots > 0 )) && used_slots=$((used_slots - 1))
+              [[ "$working_id" == "$identifier" ]] && working_id=""
+            fi
           fi
           ;;
         *) : ;; # todo (AC-5e): leave it alone.

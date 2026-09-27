@@ -41,8 +41,10 @@ Neither makes a network call.
 
 Under `$AFK_STATE_DIR/paperclip/notices/<project>/`, one file per event,
 never rewritten: `claimed`, `promoted`, `human_commented`, `stopped`,
-`stranded`. A `claimed` notice also writes a `brief.<issue-id>.<epoch>.md`
-with the issue title and description. A `human_commented` notice writes a
+`stranded`. A `claimed` notice also writes a
+`brief.<issue-id>.<updatedAt digits>.md` with the issue title and
+description; if the issue's `updatedAt` has no digits, the digits fall back
+to the current epoch. A `human_commented` notice writes a
 `reply.<comment-id>.md` holding the comment body. Notices never carry Paperclip comment or issue text
 beyond what those two file types already declare.
 
