@@ -500,6 +500,19 @@ afk_pc_is_josh_comment() { # <comment-json> <board_user_id>
   case "$v" in josh) return 0 ;; other) return 1 ;; *) return 2 ;; esac
 }
 
+# --- AFK-PC-2b: the PM-start classification hook -----------------------------
+# Called at both `claimed`-notice sites below. Reads the caller's api_url/key/
+# company_id/board_user_id/host_label/agent_id/id/identifier/project/
+# repo_path/harness/detail/ledger/actions locals directly, exactly like
+# afk_pc_strand. Sets AFK_PCS_ACTION_OVERRIDE (empty when the normal action
+# text stands) and never puts a Paperclip byte into a terminal, prompt, argv,
+# or the bootstrap intent — see lib/afk-paperclip-start.sh.
+afk_pc_maybe_start_pm() {
+  AFK_PCS_ACTION_OVERRIDE=""
+  declare -F afk_pcs_start_pm >/dev/null 2>&1 || return 0
+  afk_pcs_start_pm
+}
+
 # --- the pass (AC-3..AC-10) ---------------------------------------------------
 afk_cmd_paperclip_poll() { # <json_mode>
   local -; set +x # the key lives in locals below; never trace them
@@ -520,15 +533,23 @@ afk_cmd_paperclip_poll() { # <json_mode>
   afk_state_dir_ensure "$pc_dir"
   local lockdir="$pc_dir/.lock"
   if ! mkdir "$lockdir" 2>/dev/null; then
-    afk_pc_emit_refusal "PAPERCLIP_POLL_BUSY" "$json_mode"
-    return 0
+    # AC-7b: the lock carries no owner record before this story. A `kill -9`
+    # or reboot leaves it forever busy, so a lock old enough (5x the poll
+    # interval) whose owner PID is provably gone is reaped once, then retried.
+    if ! { declare -F afk_pcs_lock_stale_reap >/dev/null 2>&1 &&
+           afk_pcs_lock_stale_reap "$lockdir" "${AFK_PAPERCLIP_POLL_INTERVAL_SECONDS:-90}" &&
+           mkdir "$lockdir" 2>/dev/null; }; then
+      afk_pc_emit_refusal "PAPERCLIP_POLL_BUSY" "$json_mode"
+      return 0
+    fi
   fi
+  printf '%s %s\n' "$$" "$(date +%s)" >"$lockdir/owner" 2>/dev/null || true
   # Chain the entry point's own EXIT handler rather than replacing it.
   # %q-quote the path: a bare single-quote wrap breaks if the state dir
   # itself ever contains a single quote.
   local lockdir_q; printf -v lockdir_q '%q' "$lockdir"
   # shellcheck disable=SC2064
-  trap "rmdir $lockdir_q 2>/dev/null; declare -F afk_release_on_exit >/dev/null && afk_release_on_exit" EXIT
+  trap "rm -f $lockdir_q/owner 2>/dev/null; rmdir $lockdir_q 2>/dev/null; declare -F afk_release_on_exit >/dev/null && afk_release_on_exit" EXIT
 
   local ledger_path="$pc_dir/ledger.json" ledger=""
   if [[ -r "$ledger_path" ]]; then
@@ -698,6 +719,8 @@ afk_cmd_paperclip_poll() { # <json_mode>
               used_slots=$((used_slots + 1))
               working_id="$identifier"
             fi
+            afk_pc_maybe_start_pm
+            [[ -n "$AFK_PCS_ACTION_OVERRIDE" ]] && action="$AFK_PCS_ACTION_OVERRIDE"
             afk_pc_self_block "$api_url" "$id" "$key" "$run_id" "$agent_id" "$action" ||
               actions="$(jq -c --arg t "PAPERCLIP_SELF_BLOCK_FAILED: $identifier" '. + [$t]' <<<"$actions")"
             actions="$(jq -c --arg t "claimed: $identifier" '. + [$t]' <<<"$actions")"
@@ -781,6 +804,15 @@ afk_cmd_paperclip_poll() { # <json_mode>
             prev_state="$(jq -r '.state // empty' <<<"$prev")"
             qid="$(jq -r '.question_id // empty' <<<"$prev")"
             local since; since="$(jq -r '.since // empty' <<<"$prev")"
+
+            # AFK-PC-2b: re-run the PM-start classification every pass this
+            # issue stays self-blocked and owned by us, not only at the
+            # moment it was first claimed — a later exact Josh approval
+            # comment, or the registry finally reporting `none`, is decided
+            # here on the pass that observes it.
+            afk_pc_maybe_start_pm
+            [[ -n "$AFK_PCS_ACTION_OVERRIDE" ]] && ledger="$(jq -c --arg id "$id" --arg t "$AFK_PCS_ACTION_OVERRIDE" \
+              '.issues[$id].action_text = $t | .issues[$id].action_text_applied = $t' <<<"$ledger")"
 
             comments_resp="$(afk_pc_curl GET "$api_url/api/issues/$id/comments" "$key" "")"
             comments_body="${comments_resp#*$'\n'}"

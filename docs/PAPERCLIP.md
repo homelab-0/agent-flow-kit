@@ -192,3 +192,48 @@ and, if capacity allows, promotes a queued issue back to `working`. Only
 Josh (via the board account, verified by `authorUserId` and a present-but-null
 `authorAgentId`) can answer a self-blocked question; anything else is either
 ignored or, if unverifiable, reported and left untouched (fail-closed).
+
+## Starting the first PM (AFK-PC-2b)
+
+Opt-in via `pm_start_enabled: true` in `paperclip.json` (default off, so an
+existing install sees no behaviour change). When set, every pass that finds
+an issue self-blocked and owned by this host re-evaluates whether to start
+the project's PM, using PC-2a's registry lookup for the agent's `repo_path`:
+
+- `live`: nothing starts; the PM pulls its own notices.
+- `handoff_in_progress` / `ambiguous` / `handoff_stalled`: nothing starts;
+  the self-block text says so, and an ambiguous/stalled registry state opens
+  one out-of-band "NEEDS HUMAN" issue per repo (an `idempotencyKey`).
+- Every listed stale owner is reaped with `pm-registry-reap` before deciding.
+- `none`: subject to the creator gate (`createdByUserId == board_user_id`,
+  else one `Reply exactly: approve start <identifier>` question comment and
+  an exact matching Josh reply — gated on `interim_comment_approval` present
+  and its `paperclip_version` matching the config's own, else
+  `APPROVAL_INTERIM_UNATTESTED`), the daily cap (`pm_start_daily_cap`,
+  default 3, per host per UTC day), and the kit's own readiness check
+  (`AFK_PCS_READINESS_BIN`, defaulting to `agent-flow-kit status --json`
+  against the repo) — never auto-fixed.
+
+A start creates exactly one visible Orca terminal titled
+`PM <project> (paperclip)`, running `adapters/orca-pm-bootstrap.sh` with a
+`afk-pm-bootstrap-first-start-intent/1` intent (a sibling of the handoff
+intent, for a PM with no predecessor). The first instruction is fixed kit
+text naming only `<project>` (`^[a-z0-9-]+$`) and `<harness>` (the enum);
+no Paperclip issue title, description or comment ever reaches the terminal,
+the prompt, an argv, or the intent file. The Orca terminal nudge for a live
+PM is not implemented (Orca has no foreground-process check; see AD-7).
+
+## `agent-flow-kit paperclip-timer --install|--remove|--status [--json]`
+
+Linux only: a systemd **user** service and timer running `paperclip-poll`
+every 90s (`OnUnitActiveSec`/`OnActiveSec`, `RandomizedDelaySec=15s`,
+`Persistent=false`). The unit holds no secret and no key reference; the
+poller reads its config at run time. `--status` also reports
+`PAPERCLIP_POLLER_STALE` when the ledger's `last_successful_pass` is older
+than 3 intervals. macOS refuses with `PAPERCLIP_TIMER_UNSUPPORTED_PLATFORM`.
+
+**Stale lock (AC-7b):** the poll lock (`paperclip/.lock`) now carries an
+owner PID file. A lock older than 5 poll intervals whose owner PID is
+provably dead is reaped (and the pass retried, or `--status` reports clean)
+instead of reporting `PAPERCLIP_POLL_BUSY` forever after a `kill -9` or a
+reboot.
