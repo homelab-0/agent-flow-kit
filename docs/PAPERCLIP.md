@@ -110,6 +110,74 @@ An issue first adopted during a pause is recorded `pending_claim`, not
 `working`, so the PM never hears about it mid-pause; the claim comment,
 notice and brief are only sent on the first pass after the pause lifts.
 
+## The PM registry and notice verbs
+
+PM ownership (`adapters/pm-session.sh`) is recorded per worktree, under
+`$AFK_STATE_DIR/pm/scopes/<worktree-key>/ownership.json`. A repo can have
+several worktrees, and a PM terminal can die and leave its ownership record
+behind. `lib/afk-pm-registry.sh` answers "is there a live PM for this repo,
+and which terminal is it?" by scanning every scope whose `worktree.path`
+resolves (via `git rev-parse --git-common-dir`) to the same repo, and gives
+the poller (and any PM) a safe way to claim and settle notices so two
+sessions never act on the same one.
+
+- **`afk_pm_registry_lookup <repo_path>`** (library function): one JSON
+  object, `state` one of `none`, `live`, `unknown`, `handoff_in_progress`,
+  `handoff_stalled`, `ambiguous`. Liveness comes from `orca terminal list
+  --json`, and a listed terminal falls into exactly one of three buckets:
+  live (`connected: true`, `orphaned: false`), stale (absent from the list,
+  or listed with `orphaned: true`), or disconnected (listed with
+  `connected: false` and `orphaned: false`). A disconnected owner is neither
+  live nor stale — it is never reaped, and it never satisfies
+  `paperclip-take` either. When the only owner found is disconnected, the
+  lookup reports `state: "unknown"` with `reason: "PM_OWNER_DISCONNECTED"`
+  and names it in `owners`. If Orca cannot be queried at all, the `orca`
+  field reports `ORCA_UNAVAILABLE` and every owner is treated as live —
+  **never reap on uncertainty**. `handoff_in_progress`/`handoff_stalled`
+  come from a scope's `handoff.json` in state `SUCCESSOR_LAUNCHED` or
+  `ACKED`, aged against `pm_handoff_timeout_min` (default 30, from
+  `~/.config/agent-flow-kit/pm-registry.json`). When more than one scope for
+  the same repo has such a handoff in flight, the lookup never picks one by
+  glob order: it reports `state: "ambiguous"` with `reason:
+  "PM_HANDOFF_AMBIGUOUS"` and names every one of them in `handoffs`. `stale`
+  always lists every owner found dead.
+
+- **`agent-flow-kit pm-registry-reap --scope <key> [--json]`**: re-proves
+  staleness itself (refuses `PM_OWNER_LIVE`, `PM_HANDOFF_IN_PROGRESS` or
+  `ORCA_UNAVAILABLE` otherwise), atomically moves that scope's
+  `ownership.json` to `pm/reaped/<scope>.<epoch>.json`, and returns every
+  notice claimed under that owner's terminal back to `notices/<project>/`.
+  A notice that cannot be returned — an invalid or unknown project, or a
+  same-named file already at the destination — is never left silently
+  behind under the dead terminal's claim key: it is moved instead to
+  `notices/unreturned/<scope>/`, unless that recovery location is itself
+  already occupied by a same-named file, in which case the notice is left
+  exactly where it was rather than overwriting anything. Either way it is
+  named, by its source path, in the result's `stranded` array, and
+  `notices_stranded` counts them; a nonzero count exits `3` even though the
+  owner was reaped successfully.
+
+- **`agent-flow-kit paperclip-take --project <name> [--json]`**: only the
+  registry's live owner for that project's `repo_path` may call it (identity
+  is `ORCA_TERMINAL_HANDLE`, checked against the owner's `terminal`; during a
+  handoff, the named successor terminal may call it instead — anyone else
+  gets `PAPERCLIP_HANDOFF_IN_PROGRESS`). A disconnected or ambiguous owner
+  never authorizes a take: `ORCA_TERMINAL_HANDLE` matching a disconnected
+  owner's terminal, or a successor named in one of several ambiguous
+  handoffs, both get `PAPERCLIP_NOT_OWNER`. Claims every notice under
+  `notices/<project>/` in order by an atomic `mv` into
+  `notices/claimed/<claim-key>/` before reading it, where `<claim-key>` is
+  `terminal-<sha256 of the caller's terminal handle>` — the same key
+  `pm-registry-reap` derives from a stale owner's `terminal`, so a reaped
+  PM's claimed notices are always found. Prints each notice's brief/reply as
+  a path, never a content.
+
+- **`agent-flow-kit paperclip-settle --notice <id> [--json]`**: `<id>` is the
+  notice's Paperclip issue id. Moves every matching notice claimed under the
+  caller's own claim key to `notices/settled/`. Idempotent (a no-op exit 0
+  when already settled); an unknown or foreign notice refuses with
+  `PAPERCLIP_NOTICE_UNKNOWN`.
+
 ## The self-block model
 
 While AFK works on an issue locally (outside Paperclip, in the real repo),

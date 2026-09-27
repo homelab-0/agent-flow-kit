@@ -37,7 +37,7 @@ AFK_LIB_DIR="${AFK_LIB_DIR:-$AFK_INSTALL_ROOT/lib}"
 # A missing or unreadable library is an internal failure with a stable message
 # and the usage exit code — never a partially loaded lifecycle that answers
 # questions with whichever functions happened to load.
-for _afk_lib in afk-common afk-source afk-inventory afk-readiness afk-monitor afk-commands afk-plan afk-mutate afk-usage afk-auto-update afk-catalog-sync afk-paperclip; do
+for _afk_lib in afk-common afk-source afk-inventory afk-readiness afk-monitor afk-commands afk-plan afk-mutate afk-usage afk-auto-update afk-catalog-sync afk-paperclip afk-pm-registry; do
   if [[ ! -r "$AFK_LIB_DIR/$_afk_lib.sh" ]]; then
     printf 'agent-flow-kit: internal error: required library %s.sh is missing or unreadable under %s\n' \
       "$_afk_lib" "$AFK_LIB_DIR" >&2
@@ -82,6 +82,9 @@ unset _afk_lib
 # shellcheck source=lib/afk-paperclip.sh
 # shellcheck disable=SC1090,SC1091
 . "$AFK_LIB_DIR/afk-paperclip.sh"
+# shellcheck source=lib/afk-pm-registry.sh
+# shellcheck disable=SC1090,SC1091
+. "$AFK_LIB_DIR/afk-pm-registry.sh"
 
 if ! declare -F afk_cmd_status >/dev/null 2>&1 \
    || ! declare -F afk_render_human >/dev/null 2>&1 \
@@ -93,7 +96,11 @@ if ! declare -F afk_cmd_status >/dev/null 2>&1 \
    || ! declare -F afk_usage_report >/dev/null 2>&1 \
    || ! declare -F afk_cmd_enroll_auto_update >/dev/null 2>&1 \
    || ! declare -F afk_cmd_catalog_sync >/dev/null 2>&1 \
-   || ! declare -F afk_cmd_paperclip_poll >/dev/null 2>&1; then
+   || ! declare -F afk_cmd_paperclip_poll >/dev/null 2>&1 \
+   || ! declare -F afk_pm_registry_lookup >/dev/null 2>&1 \
+   || ! declare -F afk_cmd_pm_registry_reap >/dev/null 2>&1 \
+   || ! declare -F afk_cmd_paperclip_take >/dev/null 2>&1 \
+   || ! declare -F afk_cmd_paperclip_settle >/dev/null 2>&1; then
   printf 'agent-flow-kit: internal error: the lifecycle libraries under %s did not load completely\n' \
     "$AFK_LIB_DIR" >&2
   exit 1
@@ -280,6 +287,22 @@ agent-flow-kit — lifecycle entry point
       writes local notices. It is the only thing on this host that writes to
       Paperclip. Never loops, sleeps or waits. See docs/PAPERCLIP.md.
 
+  agent-flow-kit pm-registry-reap --scope <key> [--json]
+      Re-check one PM scope's own staleness, refuse with PM_OWNER_LIVE unless
+      it is provably stale, then move its ownership.json to pm/reaped/ and
+      return its claimed Paperclip notices to their project. Never touches a
+      live scope or one with a handoff in progress, and never reaps on an
+      Orca outage. Calls no LLM.
+
+  agent-flow-kit paperclip-take --project <name> [--json]
+      Claim every pending Paperclip notice for one project, in order, as
+      paths only. Only the registry's live owner (or the named handoff
+      successor) for that project's repo may call it.
+
+  agent-flow-kit paperclip-settle --notice <id> [--json]
+      Move one claimed notice to notices/settled/. Idempotent; refuses an
+      unknown or foreign notice with PAPERCLIP_NOTICE_UNKNOWN.
+
   agent-flow-kit schema
       The documented machine contract: schema version, state, reason and
       ownership vocabularies, plan and operation vocabularies, and exit
@@ -408,6 +431,12 @@ afk_option_allowed() { # <command> <option>
       case "$2" in --json|--check|--apply) return 0 ;; esac ;;
     paperclip-poll)
       case "$2" in --json) return 0 ;; esac ;;
+    pm-registry-reap)
+      case "$2" in --json|--scope) return 0 ;; esac ;;
+    paperclip-take)
+      case "$2" in --json|--project) return 0 ;; esac ;;
+    paperclip-settle)
+      case "$2" in --json|--notice) return 0 ;; esac ;;
   esac
   return 1
 }
@@ -418,6 +447,7 @@ afk_main() {
   local inspect="false" plan_only="false" approval=""
   local monitor_verbs=0
   local pm_write="" pm_continuation="false" pm_harness=""
+  local pmr_scope="" pc_project="" pc_notice=""
   local usage_days=""
   local au_mode="enroll" au_key_ref="" au_key_file="" au_prev=""
   local cs_apply="false"
@@ -509,6 +539,20 @@ afk_main() {
           --ack)
             if (( $# < 2 )); then afk_warn "--ack requires a successor acknowledgement document"; return "$AFK_EXIT_USAGE"; fi
             AFK_PM_ACK_FILE="$2"; shift ;;
+          --scope|--project|--notice)
+            # The value is a scope key, project name or notice id — never
+            # echoed back; only the closed option vocabulary is.
+            if (( $# < 2 )); then
+              afk_warn "$1 requires its declared value"
+              afk_usage >&2
+              return "$AFK_EXIT_USAGE"
+            fi
+            case "$1" in
+              --scope)   pmr_scope="$2" ;;
+              --project) pc_project="$2" ;;
+              --notice)  pc_notice="$2" ;;
+            esac
+            shift ;;
           --pm-stamp|--write|--harness)
             # The VALUE is a path or an id and is never echoed back in a
             # diagnostic; the option name is closed vocabulary, so it is.
@@ -573,6 +617,18 @@ afk_main() {
   fi
   if [[ "$cmd" == pm-start && "$pm_harness" != claude && "$pm_harness" != codex && "$pm_harness" != opencode ]]; then
     afk_warn "pm-start requires --harness claude, codex, or opencode"
+    return "$AFK_EXIT_USAGE"
+  fi
+  if [[ "$cmd" == pm-registry-reap && -z "$pmr_scope" ]]; then
+    afk_warn "pm-registry-reap needs the --scope key of the PM registration to re-check"
+    return "$AFK_EXIT_USAGE"
+  fi
+  if [[ "$cmd" == paperclip-take && -z "$pc_project" ]]; then
+    afk_warn "paperclip-take needs the --project name to claim notices for"
+    return "$AFK_EXIT_USAGE"
+  fi
+  if [[ "$cmd" == paperclip-settle && -z "$pc_notice" ]]; then
+    afk_warn "paperclip-settle needs the --notice id to settle"
     return "$AFK_EXIT_USAGE"
   fi
   if (( monitor_verbs > 1 )); then
@@ -658,6 +714,18 @@ afk_main() {
     paperclip-poll)
       afk_require_declared_paths || return "$AFK_EXIT_USAGE"
       afk_cmd_paperclip_poll "$json_mode"
+      return $? ;;
+    pm-registry-reap)
+      afk_require_declared_paths || return "$AFK_EXIT_USAGE"
+      afk_cmd_pm_registry_reap "$json_mode" "$pmr_scope"
+      return $? ;;
+    paperclip-take)
+      afk_require_declared_paths || return "$AFK_EXIT_USAGE"
+      afk_cmd_paperclip_take "$json_mode" "$pc_project"
+      return $? ;;
+    paperclip-settle)
+      afk_require_declared_paths || return "$AFK_EXIT_USAGE"
+      afk_cmd_paperclip_settle "$json_mode" "$pc_notice"
       return $? ;;
     schema)
       afk_cmd_schema || return "$AFK_EXIT_USAGE"
