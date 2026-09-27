@@ -172,6 +172,16 @@ run_afk pm-registry-reap --scope "$SK" --json
 assert_eq "reap refuses a live owner" "$(jq -r .result <<<"$OUT_TEXT")" "PM_OWNER_LIVE"
 assert_eq "  ...exit code 2" "$RC" "2"
 
+for bad_list in '{"ok":false,"error":{"code":"x"}}' '{"ok":true,"result":{"terminals":[],"truncated":true}}' \
+    '{"ok":true,"result":{"terminals":[{"handle":"termZ"}]}}' '{"ok":true,"result":{}}'; do
+  set_terminals "$bad_list"
+  run_afk pm-registry-reap --scope "$SK" --json
+  assert_eq "reap refuses on an uncertain list: $bad_list" "$(jq -r .result <<<"$OUT_TEXT")" "ORCA_UNAVAILABLE"
+done
+set_terminals '{"ok":true,"result":{"terminals":[{"handle":"termA","title":"t","connected":false,"orphaned":false}],"truncated":false}}'
+run_afk pm-registry-reap --scope "$SK" --json
+assert_eq "reap refuses a disconnected but not orphaned owner" "$(jq -r .result <<<"$OUT_TEXT")" "PM_OWNER_LIVE"
+
 set_terminals '{"terminals":[]}'
 run_afk pm-registry-reap --scope "$SK" --json
 assert_eq "reap of a stale owner succeeds" "$(jq -r .result <<<"$OUT_TEXT")" "reaped"
@@ -193,6 +203,9 @@ set_terminals '{"terminals":[{"handle":"termA","connected":true,"orphaned":false
 ORCA_TERMINAL_HANDLE=termZ run_afk paperclip-take --project proj1 --json
 assert_eq "take by a non-owner refuses" "$(jq -r .result <<<"$OUT_TEXT")" "PAPERCLIP_NOT_OWNER"
 assert_eq "  ...exit code 2" "$RC" "2"
+
+ORCA_TERMINAL_HANDLE=termA run_afk paperclip-take --project ../proj1 --json
+assert_eq "take refuses a path-shaped project name" "$(jq -r .result <<<"$OUT_TEXT")" "PAPERCLIP_PROJECT_UNKNOWN"
 
 ORCA_TERMINAL_HANDLE=termA run_afk paperclip-take --project proj1 --json
 assert_eq "take by the owner succeeds" "$RC" "0"

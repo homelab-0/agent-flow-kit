@@ -70,18 +70,33 @@ afk_pmr_orca_terminals() {
   [[ -n "$bound" ]] || return 1
   command -v "$orca_bin" >/dev/null 2>&1 || return 1
   out="$($bound "${AFK_ORCA_TIMEOUT_SECONDS:-5}" "$orca_bin" terminal list --json 2>/dev/null)" || return 1
-  parsed="$(jq -c '(.terminals // .result.terminals // []) |
-    map({handle:(.handle // ""), connected:(.connected // false), orphaned:(.orphaned // false)})' \
+  # A partial or malformed list is uncertainty, not "no terminals": refuse an
+  # ok:false/error envelope, a truncated list, a missing terminals array, and
+  # any entry without a string handle and boolean connected/orphaned.
+  parsed="$(jq -ce 'if type!="object" or .ok==false or (.error // null)!=null then empty else
+    (.result // .) as $r |
+    if ($r|type)!="object" or ($r.truncated // false)!=false or ($r.terminals|type)!="array" then empty
+    elif all($r.terminals[]; type=="object" and (.handle|type)=="string" and (.handle|length)>0 and
+      (.connected|type)=="boolean" and (.orphaned|type)=="boolean")
+    then $r.terminals | map({handle, connected, orphaned}) else empty end end' \
     <<<"$out" 2>/dev/null)" || return 1
   [[ -n "$parsed" ]] || return 1
   AFK_PMR_TERMINALS_JSON="$parsed"; AFK_PMR_ORCA_STATE="OK"
   return 0
 }
 
-afk_pmr_terminal_live() { # <handle>
-  [[ -n "$1" ]] || return 1
-  jq -e --arg h "$1" 'map(select(.handle==$h)) | length>0 and (.[0].connected==true and .[0].orphaned==false)' \
+# Stale is provable only as "absent" or "orphaned" (AC-2). A listed terminal
+# that is merely disconnected is neither live nor stale, so it is never reaped.
+afk_pmr_terminal_stale() { # <handle>
+  [[ -n "$1" && "$AFK_PMR_ORCA_STATE" == OK ]] || return 1
+  jq -e --arg h "$1" 'map(select(.handle==$h)) | all(.[]; .orphaned==true)' \
     <<<"$AFK_PMR_TERMINALS_JSON" >/dev/null 2>&1
+}
+
+# Project names become directory names under notices/: a plain name only, and
+# never one of the kit's own claimed/settled directories.
+afk_pmr_project_ok() {
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ && "$1" != claimed && "$1" != settled ]]
 }
 
 # --- AC-1: lookup by git common-dir ------------------------------------------
@@ -123,7 +138,7 @@ afk_pm_registry_lookup() {
       fi
 
       terminal="$(jq -r .terminal <<<"$owner_doc")"
-      if [[ "$orca_state" == OK ]] && ! afk_pmr_terminal_live "$terminal"; then
+      if afk_pmr_terminal_stale "$terminal"; then
         stale="$(jq -c --argjson o "$owner_doc" '. + [{scope:$o.scope,terminal:$o.terminal}]' <<<"$stale")"
         continue
       fi
@@ -185,20 +200,13 @@ afk_cmd_pm_registry_reap() { # <json_mode> <scope_key>
   owner_doc="$(jq -ce 'select(.schema=="afk-pm-ownership/2" and .owned==true and
     (.terminal|type)=="string" and (.terminal|length)>0)' "$owner_file" 2>/dev/null)" \
     || { afk_pmr_emit_refusal "PM_SCOPE_EMPTY" "$json_mode"; return 4; }
-  if [[ -f "$dir/handoff.json" ]]; then
-    handoff_state="$(jq -r '.state // empty' "$dir/handoff.json" 2>/dev/null)"
-    if [[ -n "$handoff_state" && "$handoff_state" != "OLD_CLOSED" ]]; then
-      afk_pmr_emit_refusal "PM_HANDOFF_IN_PROGRESS" "$json_mode"
-      return 2
-    fi
-  fi
   afk_pmr_orca_terminals || true
   if [[ "$AFK_PMR_ORCA_STATE" != OK ]]; then
     afk_pmr_emit_refusal "ORCA_UNAVAILABLE" "$json_mode"
     return 5
   fi
   terminal="$(jq -r .terminal <<<"$owner_doc")"
-  if afk_pmr_terminal_live "$terminal"; then
+  if ! afk_pmr_terminal_stale "$terminal"; then
     afk_pmr_emit_refusal "PM_OWNER_LIVE" "$json_mode"
     return 2
   fi
@@ -206,16 +214,35 @@ afk_cmd_pm_registry_reap() { # <json_mode> <scope_key>
   epoch="$(date +%s)"
   afk_state_dir_ensure "$AFK_STATE_DIR/pm/reaped" || { afk_pmr_emit_refusal "PM_REGISTRY_WRITE_FAILED" "$json_mode"; return 1; }
   dest="$AFK_STATE_DIR/pm/reaped/$scope_key.$epoch.json"
-  mv -- "$owner_file" "$dest" 2>/dev/null || { afk_pmr_emit_refusal "PM_REGISTRY_WRITE_FAILED" "$json_mode"; return 1; }
+  # Scopes are worktree-keyed, so a new PM or a handoff can land in this scope
+  # while Orca was being asked. Re-check both right before the rename, and
+  # verify what was actually moved; put it back if it is not what was judged.
+  if [[ -f "$dir/handoff.json" ]]; then
+    handoff_state="$(jq -r '.state // empty' "$dir/handoff.json" 2>/dev/null)"
+    if [[ "$handoff_state" != "OLD_CLOSED" ]]; then
+      afk_pmr_emit_refusal "PM_HANDOFF_IN_PROGRESS" "$json_mode"
+      return 2
+    fi
+  fi
+  [[ "$(jq -c . "$owner_file" 2>/dev/null)" == "$(jq -c . <<<"$owner_doc")" ]] \
+    || { afk_pmr_emit_refusal "PM_OWNER_LIVE" "$json_mode"; return 2; }
+  mv -n -- "$owner_file" "$dest" 2>/dev/null && [[ -f "$dest" ]] \
+    || { afk_pmr_emit_refusal "PM_REGISTRY_WRITE_FAILED" "$json_mode"; return 1; }
+  if [[ "$(jq -c . "$dest" 2>/dev/null)" != "$(jq -c . <<<"$owner_doc")" ]]; then
+    mv -n -- "$dest" "$owner_file" 2>/dev/null
+    afk_pmr_emit_refusal "PM_OWNER_LIVE" "$json_mode"
+    return 2
+  fi
 
   claim_key="$(afk_pmr_claim_key_for_terminal "$terminal" 2>/dev/null)" || claim_key=""
   if [[ -n "$claim_key" && -d "$AFK_STATE_DIR/paperclip/notices/claimed/$claim_key" ]]; then
     for f in "$AFK_STATE_DIR/paperclip/notices/claimed/$claim_key"/*; do
       [[ -f "$f" ]] || continue
       proj="$(jq -r '.project // empty' "$f" 2>/dev/null)"
-      [[ -n "$proj" && "$proj" != *"/"* && "${proj:0:1}" != "." ]] || continue
+      afk_pmr_project_ok "$proj" || continue
       afk_state_dir_ensure "$AFK_STATE_DIR/paperclip/notices/$proj" || continue
-      mv -n -- "$f" "$AFK_STATE_DIR/paperclip/notices/$proj/$(basename -- "$f")" 2>/dev/null && returned=$((returned + 1))
+      mv -n -- "$f" "$AFK_STATE_DIR/paperclip/notices/$proj/$(basename -- "$f")" 2>/dev/null \
+        && [[ ! -e "$f" ]] && returned=$((returned + 1))
     done
   fi
 
@@ -232,7 +259,7 @@ afk_cmd_pm_registry_reap() { # <json_mode> <scope_key>
 afk_cmd_paperclip_take() { # <json_mode> <project>
   local json_mode="$1" project="$2" repo_path terminal lookup state claim_terminal claim_key
   local notices_dir claimed_dir out="[]" f base moved doc id event brief_path reply_path
-  [[ -n "$project" ]] || { afk_pmr_emit_refusal "PAPERCLIP_PROJECT_UNKNOWN" "$json_mode"; return 1; }
+  afk_pmr_project_ok "$project" || { afk_pmr_emit_refusal "PAPERCLIP_PROJECT_UNKNOWN" "$json_mode"; return 1; }
   if ! afk_pc_load_config; then
     afk_pmr_emit_refusal "$AFK_PC_REFUSAL" "$json_mode"
     return 4
@@ -270,7 +297,7 @@ afk_cmd_paperclip_take() { # <json_mode> <project>
       [[ -f "$f" ]] || continue
       base="$(basename -- "$f")"
       moved="$claimed_dir/$base"
-      mv -n -- "$f" "$moved" 2>/dev/null || continue
+      mv -n -- "$f" "$moved" 2>/dev/null && [[ ! -e "$f" ]] || continue
       doc="$(jq -c . "$moved" 2>/dev/null)" || continue
       id="$(jq -r '.id // empty' <<<"$doc")"
       event="$(jq -r '.event // empty' <<<"$doc")"
@@ -313,7 +340,7 @@ afk_cmd_paperclip_settle() { # <json_mode> <notice_id>
     for f in "$AFK_STATE_DIR/paperclip/notices/claimed/$claim_key"/*."$notice_id".*.json; do
       [[ -f "$f" ]] || continue
       afk_state_dir_ensure "$settled_dir" || continue
-      mv -n -- "$f" "$settled_dir/$(basename -- "$f")" 2>/dev/null && moved=$((moved + 1))
+      mv -n -- "$f" "$settled_dir/$(basename -- "$f")" 2>/dev/null && [[ ! -e "$f" ]] && moved=$((moved + 1))
     done
   fi
 
