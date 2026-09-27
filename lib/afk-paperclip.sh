@@ -42,6 +42,7 @@ afk_pc_config_path() {
 # a descriptor that lives until this function closes it, which survives that
 # boundary.
 afk_pc_curl() {
+  local -; set +x # never trace the key, whatever the caller's options
   local method="$1" url="$2" key="$3" run="$4" body="${5:-}"
   local -a args=(-sS --connect-timeout 5 --max-time 20 -X "$method" -w '%{http_code}')
   local hfd bfd
@@ -77,7 +78,8 @@ afk_pc_self_block() { # <api_url> <issue_id> <key> <run_id> <agent_id> <action_t
     b="$(jq -nc --arg a "$5" --arg t "$6" \
       '{status:"blocked", unblockDescriptor:{owner:{agentId:$a}, action:$t}}')"
   fi
-  afk_pc_curl PATCH "$1/api/issues/$2" "$3" "$4" "$b" >/dev/null
+  local r; r="$(afk_pc_curl PATCH "$1/api/issues/$2" "$3" "$4" "$b")"
+  [[ "${r%%$'\n'*}" == 2?? ]] # non-zero unless Paperclip accepted the block
 }
 
 afk_pc_create_issue() { # <api_url> <key> <company_id> <title> <assignee> <description> [<idempotency_key>]
@@ -100,10 +102,16 @@ afk_pc_strand() {
     local create_resp create_body newid
     create_resp="$(afk_pc_create_issue "$1" "$2" "$3" "NEEDS HUMAN: resolve recovery on $6" \
       "$4" "Open $6 and set Status to Todo." "afk-recovery-$5")"
+    # Only a created (or idempotently returned) issue counts as reported; a
+    # timeout or error is retried next pass under the same idempotencyKey.
+    if [[ "${create_resp%%$'\n'*}" != 2?? ]]; then
+      actions="$(jq -c --arg t "stranded (recovery issue not created, retrying next pass): $6" '. + [$t]' <<<"$actions")"
+      return 0
+    fi
     create_body="${create_resp#*$'\n'}"
-    newid="$(jq -r '.id // empty' <<<"$create_body")"
+    newid="$(jq -r '.id // empty' <<<"$create_body" 2>/dev/null)"
     ledger="$(jq -c --arg id "$5" '.stranded_reported += [$id]' <<<"$ledger")"
-    [[ -n "$newid" ]] && ledger="$(jq -c --arg id "$5" --arg rid "$newid" '.issues[$id].recovery_issue_id = $rid' <<<"$ledger")"
+    afk_pc_uuid_ok "$newid" && ledger="$(jq -c --arg id "$5" --arg rid "$newid" '.issues[$id].recovery_issue_id = $rid' <<<"$ledger")"
     afk_pc_notice "$8" "$5" "$6" "$7" "$9" "${10}" stranded
     actions="$(jq -c --arg t "stranded: $6" '. + [$t]' <<<"$actions")"
   fi
@@ -209,17 +217,16 @@ afk_pc_action_text() { # <pause-kind: none|stopped|maintenance> <queued-behind-o
 # --- the Josh test (AC-8) ----------------------------------------------------
 # 0: a Josh comment. 1: not Josh. 2: unverifiable (no authorAgentId key at all).
 afk_pc_is_josh_comment() { # <comment-json> <board_user_id>
-  local author has_key agent_val
-  has_key="$(jq 'has("authorAgentId")' <<<"$1")"
-  [[ "$has_key" == "true" ]] || return 2
-  author="$(jq -r '.authorUserId // empty' <<<"$1")"
-  agent_val="$(jq -r '.authorAgentId' <<<"$1")"
-  [[ "$author" == "$2" && "$agent_val" == null ]] && return 0
-  return 1
+  local v
+  # One typed jq test: a JSON null, not the string "null", and a string match.
+  v="$(jq -r --arg b "$2" 'if (type != "object") or (has("authorAgentId") | not) then "unverifiable"
+    elif .authorAgentId == null and .authorUserId == $b then "josh" else "other" end' <<<"$1" 2>/dev/null)"
+  case "$v" in josh) return 0 ;; other) return 1 ;; *) return 2 ;; esac
 }
 
 # --- the pass (AC-3..AC-10) ---------------------------------------------------
 afk_cmd_paperclip_poll() { # <json_mode>
+  local -; set +x # the key lives in locals below; never trace them
   local json_mode="$1"
   if ! afk_pc_load_config; then
     afk_pc_emit_refusal "$AFK_PC_REFUSAL" "$json_mode"
@@ -241,7 +248,8 @@ afk_cmd_paperclip_poll() { # <json_mode>
     return 0
   fi
   # shellcheck disable=SC2064
-  trap "rmdir '$lockdir' 2>/dev/null" EXIT
+  # Chain the entry point's own EXIT handler rather than replacing it.
+  trap "rmdir '$lockdir' 2>/dev/null; declare -F afk_release_on_exit >/dev/null && afk_release_on_exit" EXIT
 
   local ledger_path="$pc_dir/ledger.json" ledger=""
   if [[ -r "$ledger_path" ]]; then
@@ -307,7 +315,8 @@ afk_cmd_paperclip_poll() { # <json_mode>
     local inbox_resp inbox_http inbox_body ids used_slots working_id status_file_dir
     inbox_resp="$(afk_pc_curl GET "$api_url/api/agents/me/inbox-lite" "$key" "")"
     inbox_http="${inbox_resp%%$'\n'*}"; inbox_body="${inbox_resp#*$'\n'}"
-    if [[ -z "$inbox_http" || "$inbox_http" != 200 ]]; then
+    # A non-array inbox must never read as "every ledger issue closed".
+    if [[ "$inbox_http" != 200 ]] || ! jq -e 'type == "array"' >/dev/null 2>&1 <<<"$inbox_body"; then
       agents_json="$(jq -c --arg a "$agent_id" '. + [{agent_id:$a, result:"unreachable", actions:[]}]' <<<"$agents_json")"
       key=""
       continue
@@ -354,14 +363,28 @@ afk_cmd_paperclip_poll() { # <json_mode>
           local run_resp run_body run_id action new_state was_stranded
           run_resp="$(afk_pc_curl GET "$api_url/api/issues/$id/active-run" "$key" "")"
           run_body="${run_resp#*$'\n'}"
-          run_id="$(jq -r '.id // empty' <<<"$run_body")"
+          run_id="$(jq -r '.id // empty' <<<"$run_body" 2>/dev/null)"
+          # No live run means no write is possible (and a header value from
+          # Paperclip must be a plain token): report it and leave the issue.
+          if ! [[ "$run_id" =~ ^[A-Za-z0-9_-]+$ ]]; then
+            actions="$(jq -c --arg t "in_progress without a live run, left alone: $identifier" '. + [$t]' <<<"$actions")"
+            continue
+          fi
+          local wake_reason clear_blockers=false
+          wake_reason="$(jq -r '.contextSnapshot.wakeReason // .contextSnapshot.reason // empty' <<<"$run_body")"
+          # AC-5a: an issue_blockers_resolved wake must clear blockedByIssueIds
+          # on every re-block (paused or not), or Paperclip reads it as
+          # "blockers restored" and sends a second wake into recovery.
+          [[ "$wake_reason" == issue_blockers_resolved ]] && clear_blockers=true
           was_stranded="false"
           [[ -n "$prev" && "$(jq -r '.state' <<<"$prev")" == stranded ]] && was_stranded="true"
 
           if [[ "$pause_kind" != none ]]; then
             action="$(afk_pc_action_text "$pause_kind" "" "" "")"
             new_state="working"
-            afk_pc_self_block "$api_url" "$id" "$key" "$run_id" "$agent_id" "$action"
+            [[ -n "$prev" ]] && new_state="$(jq -r '.state' <<<"$prev")"
+            afk_pc_self_block "$api_url" "$id" "$key" "$run_id" "$agent_id" "$action" "$clear_blockers" ||
+              actions="$(jq -c --arg t "PAPERCLIP_SELF_BLOCK_FAILED: $identifier" '. + [$t]' <<<"$actions")"
             actions="$(jq -c --arg t "paused: $identifier" '. + [$t]' <<<"$actions")"
           elif [[ -z "$prev" ]]; then
             afk_pc_comment "$api_url" "$id" "$key" "$run_id" "claimed by AFK PM ($host_label)" >/dev/null
@@ -376,7 +399,8 @@ afk_cmd_paperclip_poll() { # <json_mode>
               used_slots=$((used_slots + 1))
               working_id="$identifier"
             fi
-            afk_pc_self_block "$api_url" "$id" "$key" "$run_id" "$agent_id" "$action"
+            afk_pc_self_block "$api_url" "$id" "$key" "$run_id" "$agent_id" "$action" ||
+              actions="$(jq -c --arg t "PAPERCLIP_SELF_BLOCK_FAILED: $identifier" '. + [$t]' <<<"$actions")"
             actions="$(jq -c --arg t "claimed: $identifier" '. + [$t]' <<<"$actions")"
           else
             # AC-5a: an existing ledger entry plus a live in_progress status
@@ -385,9 +409,8 @@ afk_cmd_paperclip_poll() { # <json_mode>
             # reason) — Paperclip auto-started this run, we never requested
             # it. Handle exactly like a report cycle: one short
             # acknowledgment comment naming the reason, then re-self-block.
-            local prior_state queued_behind="" wake_reason clear_blockers=false
+            local prior_state queued_behind=""
             prior_state="$(jq -r '.state' <<<"$prev")"
-            wake_reason="$(jq -r '.contextSnapshot.wakeReason // .contextSnapshot.reason // empty' <<<"$run_body")"
             afk_pc_comment "$api_url" "$id" "$key" "$run_id" \
               "AFK host acknowledged: ${wake_reason:-a Paperclip wake}" >/dev/null
             if [[ "$prior_state" == working ]]; then
@@ -401,11 +424,8 @@ afk_cmd_paperclip_poll() { # <json_mode>
               working_id="$identifier"
             fi
             action="$(afk_pc_action_text none "$queued_behind" "$status_file_dir/$id.json" "$(jq -r '.action_text' <<<"$prev")")"
-            # AC-5a: an issue_blockers_resolved wake must clear
-            # blockedByIssueIds on the re-block, or Paperclip reads it as
-            # "blockers restored" and sends a second wake into recovery.
-            [[ "$wake_reason" == issue_blockers_resolved ]] && clear_blockers=true
-            afk_pc_self_block "$api_url" "$id" "$key" "$run_id" "$agent_id" "$action" "$clear_blockers"
+            afk_pc_self_block "$api_url" "$id" "$key" "$run_id" "$agent_id" "$action" "$clear_blockers" ||
+              actions="$(jq -c --arg t "PAPERCLIP_SELF_BLOCK_FAILED: $identifier" '. + [$t]' <<<"$actions")"
             actions="$(jq -c --arg t "wake acknowledged: $identifier" '. + [$t]' <<<"$actions")"
           fi
 
@@ -418,7 +438,11 @@ afk_cmd_paperclip_poll() { # <json_mode>
 
           if [[ "$was_stranded" == true ]]; then
             local recid; recid="$(jq -r --arg id "$id" '.issues[$id].recovery_issue_id // empty' <<<"$ledger")"
-            [[ -n "$recid" ]] && afk_pc_curl PATCH "$api_url/api/issues/$recid" "$key" "" '{"status":"done"}' >/dev/null
+            if afk_pc_uuid_ok "$recid"; then
+              local rec_resp; rec_resp="$(afk_pc_curl PATCH "$api_url/api/issues/$recid" "$key" "" '{"status":"done"}')"
+              [[ "${rec_resp%%$'\n'*}" == 2?? ]] ||
+                actions="$(jq -c --arg t "recovery issue for $identifier not closed (needs a run), left open" '. + [$t]' <<<"$actions")"
+            fi
           fi
           ;;
         blocked)
@@ -463,11 +487,12 @@ afk_cmd_paperclip_poll() { # <json_mode>
                   actions="$(jq -c '. + ["PAPERCLIP_AUTHOR_UNVERIFIABLE"]' <<<"$actions")"
                 fi
               elif (( rc == 0 )); then
-                local cid2; cid2="$(jq -r '.id' <<<"$c")"
+                local cid2; cid2="$(jq -r '.id // empty' <<<"$c")"
+                afk_pc_uuid_ok "$cid2" || continue # AC-1: ids used in file paths
                 afk_pc_notice "$project" "$id" "$identifier" "$agent_id" "$repo_path" "$harness" human_commented \
                   "$(jq -nc --arg cid "$cid2" --arg ca "$ccreated" --arg q "${qid:-}" \
                     'if $q == "" then {comment_id:$cid, created_at:$ca, open_question_id:null} else {comment_id:$cid, created_at:$ca, open_question_id:$q} end')"
-                afk_pc_reply "$project" "$cid2" "Reply to $identifier"
+                afk_pc_reply "$project" "$cid2" "$(jq -r '.body // empty' <<<"$c")"
                 actions="$(jq -c --arg t "human_commented: $identifier" '. + [$t]' <<<"$actions")"
               fi
               [[ -z "$newest_since" || "$ccreated" > "$newest_since" ]] && newest_since="$ccreated"
@@ -484,10 +509,12 @@ afk_cmd_paperclip_poll() { # <json_mode>
             ledger="$(jq -c --arg id "$id" --arg st "$final_state" --arg since "${newest_since:-$since}" \
               '.issues[$id].state = $st | .issues[$id].since = $since' <<<"$ledger")"
           elif [[ -n "$owner_user" && "$owner_user" == "$board_user_id" ]]; then
-            ledger="$(jq -c --arg id "$id" '.issues[$id].state = "held_by_board"' <<<"$ledger")"
+            [[ -n "$prev" ]] && ledger="$(jq -c --arg id "$id" '.issues[$id].state = "held_by_board"' <<<"$ledger")"
           else
             local prev_state; prev_state="$(jq -r '.state // empty' <<<"$prev")"
-            if [[ -n "$prev" && ( "$prev_state" == working || "$prev_state" == queued || "$prev_state" == waiting_human ) ]]; then
+            # `stranded` too, so a recovery issue whose creation failed is retried
+            # (afk_pc_strand itself keeps it to exactly one per issue).
+            if [[ -n "$prev" && ( "$prev_state" == working || "$prev_state" == queued || "$prev_state" == waiting_human || "$prev_state" == stranded ) ]]; then
               afk_pc_strand "$api_url" "$key" "$company_id" "$board_user_id" "$id" "$identifier" \
                 "$agent_id" "$project" "$repo_path" "$harness"
             fi
@@ -583,9 +610,9 @@ afk_pc_compute_pause() {
     AFK_PC_PAUSE_KIND=none
     local reported; reported="$(jq -r '.drain_tampered_reported // false' <<<"$ledger" 2>/dev/null)"
     if [[ "$reported" != true ]]; then
-      afk_pc_create_issue "$1" "$2" "$5" "NEEDS HUMAN: drain issue tampered" "$4" \
-        "The maintenance issue's assignee is not the board; drain is being ignored." >/dev/null
-      ledger="$(jq -c '.drain_tampered_reported = true' <<<"$ledger")"
+      local tr; tr="$(afk_pc_create_issue "$1" "$2" "$5" "NEEDS HUMAN: drain issue tampered" "$4" \
+        "The maintenance issue's assignee is not the board; drain is being ignored.")"
+      [[ "${tr%%$'\n'*}" == 2?? ]] && ledger="$(jq -c '.drain_tampered_reported = true' <<<"$ledger")"
     fi
     actions="$(jq -c '. + ["PAPERCLIP_DRAIN_TAMPERED"]' <<<"$actions")"
   fi

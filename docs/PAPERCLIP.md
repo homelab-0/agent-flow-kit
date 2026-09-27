@@ -43,7 +43,7 @@ Under `$AFK_STATE_DIR/paperclip/notices/<project>/`, one file per event,
 never rewritten: `claimed`, `promoted`, `human_commented`, `stopped`,
 `stranded`. A `claimed` notice also writes a `brief.<issue-id>.<epoch>.md`
 with the issue title and description. A `human_commented` notice writes a
-`reply.<comment-id>.md`. Notices never carry Paperclip comment or issue text
+`reply.<comment-id>.md` holding the comment body. Notices never carry Paperclip comment or issue text
 beyond what those two file types already declare.
 
 ## Refusal and pause reasons
@@ -52,7 +52,7 @@ beyond what those two file types already declare.
 `PAPERCLIP_VAULT_UNAVAILABLE`, `PAPERCLIP_KEY_AGENT_MISMATCH`,
 `PAPERCLIP_KEY_UNAUTHORIZED`, `PAPERCLIP_POLL_BUSY`, `PAPERCLIP_PAUSED`,
 `PAPERCLIP_DRAIN_TAMPERED`, `PAPERCLIP_DRAIN_UNREADABLE`,
-`PAPERCLIP_AUTHOR_UNVERIFIABLE`, `PAPERCLIP_UNREACHABLE`.
+`PAPERCLIP_AUTHOR_UNVERIFIABLE`, `PAPERCLIP_SELF_BLOCK_FAILED`, `PAPERCLIP_UNREACHABLE`.
 
 ## The self-block model
 

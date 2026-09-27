@@ -48,6 +48,7 @@ url="${args[$((n - 1))]}"
 tmp="${url#*://}"
 path="/${tmp#*/}"
 printf '%s %s\n' "$method" "$path" >>"$CURL_STUB_LOG"
+printf '%s\n' "$*" >>"$CURL_STUB_LOG.argv" # the full argv, as ps would show it
 # curl reads a header/body from a file with the `@<path>` syntax (afk_pc_curl
 # passes `-H @<(...)` / `--data-binary @<(...)`), so the argument to match is
 # `@/dev/fd/N`, not `/dev/fd/N` bare.
@@ -100,7 +101,7 @@ run_afk() { # [--json]
     AFK_STATE_DIR="$STATE" AFK_PAPERCLIP_CONFIG="$CONFIG" \
     AFK_OP_BIN="$STUBS/op" AFK_CURL_BIN="$STUBS/curl" \
     CURL_STUB_LOG="$LOG" CURL_STUB_KEYLOG="$KEYLOG" CURL_STUB_BODYLOG="$BODYLOG" CURL_STUB_FIXTURES="$FIXDIR" \
-    bash "$AFK" paperclip-poll "${extra[@]}" 2>"$SCEN/err")"
+    bash ${AFK_XTRACE:+-x} "$AFK" paperclip-poll "${extra[@]}" 2>"$SCEN/err")"
   RC=$?
   err="$(cat "$SCEN/err")"
   OUT_TEXT="$out"$'\n'"$err"
@@ -198,6 +199,22 @@ assert_absent "the key never appears in stdout/stderr" "$OUT_TEXT" "KEY-AGENT1-S
 assert_absent "the key never appears in the ledger" "$(cat "$STATE/paperclip/ledger.json" 2>/dev/null)" "KEY-AGENT1-SECRET-VALUE"
 assert_contains "the key WAS actually sent (control on the assertion above)" "$(cat "$KEYLOG")" "KEY-AGENT1-SECRET-VALUE"
 
+# Same, through a full adoption (argv, notices, brief) and under `bash -x`.
+new_scenario key_never_logged_xtrace
+write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo)" '[$a]')"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+route GET /api/agents/me/inbox-lite 200 '[{"id":"e1111111-1111-1111-1111-111111111111"}]'
+route GET /api/issues/e1111111-1111-1111-1111-111111111111 200 \
+  '{"status":"in_progress","identifier":"PROJ-1","title":"T","description":"D","updatedAt":"2026-01-01T00:00:00Z"}'
+route GET /api/issues/e1111111-1111-1111-1111-111111111111/active-run 200 '{"id":"run-1"}'
+route POST /api/issues/e1111111-1111-1111-1111-111111111111/comments 201 '{}'
+route PATCH /api/issues/e1111111-1111-1111-1111-111111111111 200 '{}'
+AFK_XTRACE=1 run_afk --json
+assert_contains "xtrace: the pass really ran (control)" "$(cat "$STATE"/paperclip/notices/proj/*.claimed.json 2>/dev/null)" "claimed"
+assert_absent "the key never appears in any curl argv" "$(cat "$LOG.argv")" "KEY-AGENT1-SECRET-VALUE"
+assert_absent "the key never appears under bash -x" "$OUT_TEXT" "KEY-AGENT1-SECRET-VALUE"
+assert_eq "the key never appears in any state file" "$(grep -rl KEY-AGENT1-SECRET-VALUE "$STATE" 2>/dev/null)" ""
+
 # ============================================================================
 head1 "3. Lock (AC-3)"
 # ============================================================================
@@ -267,17 +284,17 @@ route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
 route GET "/api/issues/$ISSUE1" 200 \
   "{\"status\":\"blocked\",\"identifier\":\"PROJ-1\",\"unblockDescriptor\":{\"owner\":{\"agentId\":\"$AGENT1\"},\"action\":\"AFK host is working on this\"}}"
 route GET "/api/issues/$ISSUE1/comments" 200 \
-  "[{\"id\":\"c-josh\",\"body\":\"go ahead\",\"authorUserId\":\"$BOARD\",\"authorAgentId\":null,\"createdAt\":\"2026-02-01T00:00:00Z\"},
-    {\"id\":\"c-agent-as-board\",\"body\":\"x\",\"authorUserId\":\"$BOARD\",\"authorAgentId\":\"$AGENT2\",\"createdAt\":\"2026-02-01T00:00:01Z\"},
-    {\"id\":\"c-unverifiable\",\"body\":\"y\",\"authorUserId\":\"$BOARD\",\"createdAt\":\"2026-02-01T00:00:02Z\"}]"
+  "[{\"id\":\"c0000000-0000-0000-0000-00000000000a\",\"body\":\"go ahead\",\"authorUserId\":\"$BOARD\",\"authorAgentId\":null,\"createdAt\":\"2026-02-01T00:00:00Z\"},
+    {\"id\":\"c0000000-0000-0000-0000-00000000000b\",\"body\":\"x\",\"authorUserId\":\"$BOARD\",\"authorAgentId\":\"$AGENT2\",\"createdAt\":\"2026-02-01T00:00:01Z\"},
+    {\"id\":\"c0000000-0000-0000-0000-00000000000c\",\"body\":\"y\",\"authorUserId\":\"$BOARD\",\"createdAt\":\"2026-02-01T00:00:02Z\"}]"
 run_afk --json
 NOTICE_DIR="$STATE/paperclip/notices/proj"
 assert_eq "Josh comment -> exactly one human_commented notice" \
   "$(find "$NOTICE_DIR" -name '*.human_commented.json' 2>/dev/null | wc -l | tr -d ' ')" "1"
-assert_eq "Josh comment -> exactly one reply file" \
-  "$(find "$NOTICE_DIR" -name 'reply.c-josh.md' 2>/dev/null | wc -l | tr -d ' ')" "1"
-assert_missing "an agent-authored comment with Josh's userId writes no notice" "$NOTICE_DIR/reply.c-agent-as-board.md"
-assert_missing "a missing authorAgentId key writes no notice" "$NOTICE_DIR/reply.c-unverifiable.md"
+assert_eq "Josh comment -> the reply file carries the comment body" \
+  "$(cat "$NOTICE_DIR/reply.c0000000-0000-0000-0000-00000000000a.md" 2>/dev/null)" "go ahead"
+assert_missing "an agent-authored comment with Josh's userId writes no notice" "$NOTICE_DIR/reply.c0000000-0000-0000-0000-00000000000b.md"
+assert_missing "a missing authorAgentId key writes no notice" "$NOTICE_DIR/reply.c0000000-0000-0000-0000-00000000000c.md"
 assert_contains "a missing authorAgentId key reports unverifiable" "$OUT_TEXT" "PAPERCLIP_AUTHOR_UNVERIFIABLE"
 
 # ============================================================================
@@ -310,12 +327,12 @@ jq -n --arg a "$AGENT1" --arg id "$ISSUE1" \
 route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
 route GET "/api/issues/$ISSUE1" 200 \
   "{\"status\":\"blocked\",\"identifier\":\"PROJ-1\",\"unblockDescriptor\":{\"owner\":{\"agentId\":\"$STRANGER\"},\"action\":\"x\"}}"
-route POST "/api/companies/$COMPANY/issues" 201 '{"id":"recovery-1"}'
+route POST "/api/companies/$COMPANY/issues" 201 '{"id":"f0000000-0000-0000-0000-000000000001"}'
 run_afk --json
 LEDGER="$STATE/paperclip/ledger.json"
 assert_eq "stranded issue: state" "$(jq -r --arg id "$ISSUE1" '.issues[$id].state' "$LEDGER")" "stranded"
 assert_eq "stranded issue: exactly one out-of-band issue" "$(grep -c "^POST /api/companies/$COMPANY/issues$" "$LOG")" "1"
-assert_eq "stranded issue: recovery issue id recorded" "$(jq -r --arg id "$ISSUE1" '.issues[$id].recovery_issue_id' "$LEDGER")" "recovery-1"
+assert_eq "stranded issue: recovery issue id recorded" "$(jq -r --arg id "$ISSUE1" '.issues[$id].recovery_issue_id' "$LEDGER")" "f0000000-0000-0000-0000-000000000001"
 assert_contains "the out-of-band issue body carries the idempotencyKey" "$(cat "$BODYLOG")" "\"idempotencyKey\":\"afk-recovery-$ISSUE1\""
 
 # stranded twice: still blocked by the stranger on the next pass -> no 2nd issue.
@@ -327,10 +344,27 @@ route GET "/api/issues/$ISSUE1" 200 \
   "{\"status\":\"in_progress\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"updatedAt\":\"2026-01-01T00:00:00Z\"}"
 route GET "/api/issues/$ISSUE1/active-run" 200 '{"id":"run-1"}'
 route PATCH "/api/issues/$ISSUE1" 200 '{}'
-route PATCH "/api/issues/recovery-1" 200 '{}'
+route PATCH "/api/issues/f0000000-0000-0000-0000-000000000001" 200 '{}'
 run_afk --json
-assert_eq "re-adopted stranded issue: recovery issue set to done" "$(grep -c "^PATCH /api/issues/recovery-1$" "$LOG")" "1"
+assert_eq "re-adopted stranded issue: recovery issue set to done" "$(grep -c "^PATCH /api/issues/f0000000-0000-0000-0000-000000000001$" "$LOG")" "1"
 assert_eq "re-adopted stranded issue: back to working" "$(jq -r --arg id "$ISSUE1" '.issues[$id].state' "$STATE/paperclip/ledger.json")" "working"
+
+# A failed create is not "reported": the next pass retries under the same key.
+new_scenario stranded_create_fails
+write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+mkdir -p "$STATE/paperclip"
+jq -n --arg a "$AGENT1" --arg id "$ISSUE1" \
+  '{issues: {($id): {agent_id: $a, project: "proj", identifier: "PROJ-1", state: "working", since: "x", action_text: "y"}},
+    stranded_reported: [], drain_tampered_reported: false, last_successful_pass: null}' >"$STATE/paperclip/ledger.json"
+route GET /api/agents/me/inbox-lite 200 "[{\"id\":\"$ISSUE1\"}]"
+route GET "/api/issues/$ISSUE1" 200 "{\"status\":\"blocked\",\"identifier\":\"PROJ-1\",\"unblockDescriptor\":{\"owner\":{\"agentId\":\"$STRANGER\"}}}"
+route POST "/api/companies/$COMPANY/issues" NETFAIL
+run_afk --json
+assert_eq "failed recovery create: not marked reported" "$(jq -c '.stranded_reported' "$STATE/paperclip/ledger.json")" "[]"
+route POST "/api/companies/$COMPANY/issues" 200 '{"id":"f0000000-0000-0000-0000-000000000009"}'
+run_afk --json
+assert_eq "failed recovery create: retried and reported on the next pass" "$(jq -r '.stranded_reported | length' "$STATE/paperclip/ledger.json")" "1"
 
 # ============================================================================
 head1 "7. Closed issues (AC-5d)"
@@ -366,6 +400,7 @@ assert_contains "stop flag -> pass reports paused" "$OUT_TEXT" "PAPERCLIP_PAUSED
 assert_eq "stop flag: unrequested run is re-blocked with no comment" "$(grep -c 'claimed by AFK PM' "$BODYLOG")" "0"
 assert_eq "stop flag: self-block sent" "$(grep -c "^PATCH /api/issues/$ISSUE1$" "$LOG")" "1"
 assert_contains "stop flag: action text is Stopped" "$(cat "$BODYLOG")" "Stopped"
+assert_eq "stop flag: no comment of any kind" "$(grep -c "^POST /api/issues/$ISSUE1/comments$" "$LOG")" "0"
 
 new_scenario drain_unreadable
 write_config_maint "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')" "$MAINT"
@@ -445,6 +480,44 @@ wake_scenario wake_blockers_resolved '{"wakeReason":"issue_blockers_resolved"}'
 assert_contains "an issue_blockers_resolved wake: the re-block clears blockedByIssueIds" \
   "$(cat "$BODYLOG")" '"blockedByIssueIds":[]'
 
+mkdir -p "$TMPROOT/wake_paused_blockers/home/.config/agent-flow-kit/paperclip"
+: >"$TMPROOT/wake_paused_blockers/home/.config/agent-flow-kit/paperclip/stop"
+wake_scenario wake_paused_blockers '{"wakeReason":"issue_blockers_resolved"}'
+assert_contains "paused issue_blockers_resolved wake: still clears blockedByIssueIds" "$(cat "$BODYLOG")" '"blockedByIssueIds":[]'
+assert_eq "paused wake keeps the ledger state" "$(jq -r --arg id "$ISSUE1" '.issues[$id].state' "$STATE/paperclip/ledger.json")" "working"
+
+new_scenario self_block_fails
+write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+route GET /api/agents/me/inbox-lite 200 "[{\"id\":\"$ISSUE1\"}]"
+route GET "/api/issues/$ISSUE1" 200 '{"status":"in_progress","identifier":"PROJ-1","title":"T","description":"D","updatedAt":"x"}'
+route GET "/api/issues/$ISSUE1/active-run" 200 '{"id":"run-1"}'
+route POST "/api/issues/$ISSUE1/comments" 201 '{}'
+route PATCH "/api/issues/$ISSUE1" 500 '{}'
+run_afk --json
+assert_contains "a failed self-block is reported, never silent" "$OUT_TEXT" "PAPERCLIP_SELF_BLOCK_FAILED"
+
+new_scenario no_live_run
+write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+route GET /api/agents/me/inbox-lite 200 "[{\"id\":\"$ISSUE1\"}]"
+route GET "/api/issues/$ISSUE1" 200 '{"status":"in_progress","identifier":"PROJ-1","title":"T","description":"D","updatedAt":"x"}'
+route GET "/api/issues/$ISSUE1/active-run" 200 'null'
+run_afk --json
+assert_eq "no live run: nothing is written to Paperclip" "$(grep -c -e '^POST' -e '^PATCH' "$LOG")" "0"
+assert_missing "no live run: no claimed notice" "$STATE/paperclip/notices/proj"
+
+new_scenario inbox_not_array
+write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+mkdir -p "$STATE/paperclip"
+jq -n --arg a "$AGENT1" --arg id "$ISSUE1" \
+  '{issues: {($id): {agent_id: $a, project: "proj", identifier: "PROJ-1", state: "working", since: "x", action_text: "y"}},
+    stranded_reported: [], drain_tampered_reported: false, last_successful_pass: null}' >"$STATE/paperclip/ledger.json"
+route GET /api/agents/me/inbox-lite 200 '{"error":"unexpected shape"}'
+run_afk --json
+assert_eq "a non-array inbox never closes ledger issues" "$(jq -r --arg id "$ISSUE1" '.issues[$id].state' "$STATE/paperclip/ledger.json")" "working"
+
 # ============================================================================
 head1 "12. Drain: board-actor check on the last status change (AC-9 amendment)"
 # ============================================================================
@@ -491,7 +564,7 @@ recovery_scenario() { # <name> <activeRecoveryAction-json-or-null> <descriptor-j
   route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
   route GET "/api/issues/$ISSUE1" 200 \
     "{\"status\":\"blocked\",\"identifier\":\"PROJ-1\",\"unblockDescriptor\":$3,\"activeRecoveryAction\":$2,\"successfulRunHandoff\":{\"state\":\"stale-should-be-ignored\"}}"
-  route POST "/api/companies/$COMPANY/issues" 201 '{"id":"recovery-active-1"}'
+  route POST "/api/companies/$COMPANY/issues" 201 '{"id":"f0000000-0000-0000-0000-000000000002"}'
   route GET "/api/issues/$ISSUE1/comments" 200 '[]'
   run_afk --json
 }
