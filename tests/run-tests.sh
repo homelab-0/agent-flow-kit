@@ -166,7 +166,8 @@ SC_SCRIPTS=("$DISPATCH" "$MAKE_STAMP" "$USAGE_CHECK" "$GH_HEALTH" \
             "$KIT_ROOT/tests/release-support-contract-tests.sh" \
             "$KIT_ROOT/tests/session-gate-contract-tests.sh" \
             "$KIT_ROOT/tests/auto-update-enroll-tests.sh" \
-            "$KIT_ROOT/tests/catalog-sync-tests.sh")
+            "$KIT_ROOT/tests/catalog-sync-tests.sh" \
+            "$KIT_ROOT/tests/dispatch-secret-scan-tests.sh")
 # The lifecycle surface. Checked at warning level and above, with two codes
 # excluded for a structural reason rather than a stylistic one: the lifecycle
 # files are always sourced together and share one result model, so a variable
