@@ -503,11 +503,21 @@ head1 "10. PROTOCOL — a lock caught mid-publication is waited on, not condemne
 # This is bounded and it is not a rendezvous, so it stops early the moment the
 # contender exits — which on a tree that refuses the window outright is what
 # happens, and is the failure being pinned.
+#
+# The bound is real wall-clock time, not an iteration count: a fixed count of
+# `kill -0` checks measures CPU/syscall speed, not elapsed time, and on a host
+# where each check costs more, the same count can burn as long as the lock's
+# own publication-wait ceiling (AFK_LOCK_PUBLISH_WAIT_SLICES *
+# AFK_LOCK_PUBLISH_WAIT_SLICE, ~2.4s+) — racing this fixture's own PUB release
+# against the contender's budget instead of comfortably inside it. `sleep`
+# with a fractional argument is the same real timer the lock's own
+# `afk_lock_pause` relies on, so 300ms here stays 300ms everywhere.
 burn_until_gone() { # <pid>
   local pid="$1" i=0
   while kill -0 "$pid" 2>/dev/null; do
     i=$((i + 1))
-    (( i < 120000 )) || return 0
+    (( i < 15 )) || return 0
+    sleep 0.02 2>/dev/null || true
   done
   return 0
 }
