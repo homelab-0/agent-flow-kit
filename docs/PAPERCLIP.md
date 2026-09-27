@@ -2,9 +2,9 @@
 
 One deterministic poller per host holds every project agent's Paperclip key
 and is the only thing on that host that writes to Paperclip. It runs one
-bounded pass at a time: no loop, no sleep, no wait. The report cycle that
-sends queued PM status back to Paperclip is a separate story (AFK-PC-1b);
-this command only claims and classifies.
+bounded pass at a time: no loop, no sleep, no wait. It claims and classifies
+issues, and drains the spool of queued PM status back to Paperclip (the
+report cycle, below).
 
 ## Config
 
@@ -54,7 +54,55 @@ beyond what those two file types already declare.
 `PAPERCLIP_VAULT_UNAVAILABLE`, `PAPERCLIP_KEY_AGENT_MISMATCH`,
 `PAPERCLIP_KEY_UNAUTHORIZED`, `PAPERCLIP_POLL_BUSY`, `PAPERCLIP_PAUSED`,
 `PAPERCLIP_DRAIN_TAMPERED`, `PAPERCLIP_DRAIN_UNREADABLE`,
-`PAPERCLIP_AUTHOR_UNVERIFIABLE`, `PAPERCLIP_SELF_BLOCK_FAILED`, `PAPERCLIP_UNREACHABLE`.
+`PAPERCLIP_AUTHOR_UNVERIFIABLE`, `PAPERCLIP_SELF_BLOCK_FAILED`, `PAPERCLIP_UNREACHABLE`,
+`PAPERCLIP_CREDENTIAL_REJECTED`, `PAPERCLIP_RATE_LIMITED`.
+
+## The report cycle and the spool (`agent-flow-kit paperclip-poll`, AFK-PC-1b)
+
+The PM never holds a Paperclip key. It drops progress, questions and its
+final result into a per-issue spool, and the same poller pass drains it:
+
+```
+$AFK_STATE_DIR/paperclip/spool/<issue-id>/<seq>.json
+```
+
+`seq` is a zero-padded integer; entries are sent strictly in ascending order.
+Only a `<digits>.json` name is a live entry — `.tmp/` and anything else is
+ignored. Each entry is one of:
+
+```json
+{"id":"<uuid>", "kind":"comment", "body":"…"}
+{"id":"<uuid>", "kind":"question", "question_id":"<short id>", "body":"…"}
+{"id":"<uuid>", "kind":"final", "status":"in_review"|"done", "body":"…"}
+```
+
+For a ledger issue this agent holds (`working` or `waiting_human`), a cycle
+runs when the spool has entries, or when the declared action text has
+changed since the last self-block. The cycle: take a run (wakeup), `PATCH`
+in_progress, post every entry in order, then either the final status (a
+`final` entry) or a self-block with the composed text — never leaving the
+issue in_progress.
+
+Every posted comment body carries a trailing marker line,
+`<!-- afk-entry:<entry id> -->`. A 201 deletes the spool file. On an
+ambiguous outcome (timeout, 5xx, or no status), the comments are read back
+for the marker: found means sent (delete and continue); not found leaves the
+file in place for the next pass. A `sending` marker is written to the ledger
+before every POST, and a leftover one from a crashed pass is resolved by the
+same read-back before anything else is posted, so no entry is ever posted
+twice on the strength of a guess.
+
+A `422`/`400` moves that one entry to `spool/<issue-id>/dead/` with a
+`.reason` file and continues with the rest. A `404`/`410` drops the whole
+issue from the ledger and moves everything left in its spool to `dead/`,
+the same place a closed issue's spool ends up once it is no longer held.
+A `429` keeps the entry and backs off for the rest of that agent's pass. A
+`409` leaves the entry for the next pass. None of this runs while paused or
+draining, and a `stranded` issue's spool is simply held.
+
+An issue first adopted during a pause is recorded `pending_claim`, not
+`working`, so the PM never hears about it mid-pause; the claim comment,
+notice and brief are only sent on the first pass after the pause lifts.
 
 ## The self-block model
 
