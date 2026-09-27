@@ -179,8 +179,8 @@ SC_LIFECYCLE=("$KIT_ROOT/bin/agent-flow-kit" "$KIT_ROOT/lib/afk-common.sh" \
               "$KIT_ROOT/lib/afk-readiness.sh" "$KIT_ROOT/lib/afk-monitor.sh" \
               "$KIT_ROOT/lib/afk-commands.sh" \
               "$KIT_ROOT/lib/afk-plan.sh" "$KIT_ROOT/lib/afk-mutate.sh" \
-              "$KIT_ROOT/lib/afk-auto-update.sh" "$KIT_ROOT/lib/afk-catalog-sync.sh" \
-              "$KIT_ROOT/tests/lockctl-helper.sh")
+              "$KIT_ROOT/lib/afk-auto-update.sh" "$KIT_ROOT/lib/afk-catalog-sync.sh" "$KIT_ROOT/lib/afk-paperclip.sh" \
+              "$KIT_ROOT/tests/lockctl-helper.sh" "$KIT_ROOT/tests/paperclip-poll-tests.sh")
 
 if (( ${#SC_CMD[@]} > 0 )); then
   ok "shellcheck runs here: ${SC_CMD[0]} ${SC_VERSION:-(version not reported)}"

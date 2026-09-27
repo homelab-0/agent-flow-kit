@@ -37,7 +37,7 @@ AFK_LIB_DIR="${AFK_LIB_DIR:-$AFK_INSTALL_ROOT/lib}"
 # A missing or unreadable library is an internal failure with a stable message
 # and the usage exit code — never a partially loaded lifecycle that answers
 # questions with whichever functions happened to load.
-for _afk_lib in afk-common afk-source afk-inventory afk-readiness afk-monitor afk-commands afk-plan afk-mutate afk-usage afk-auto-update afk-catalog-sync; do
+for _afk_lib in afk-common afk-source afk-inventory afk-readiness afk-monitor afk-commands afk-plan afk-mutate afk-usage afk-auto-update afk-catalog-sync afk-paperclip; do
   if [[ ! -r "$AFK_LIB_DIR/$_afk_lib.sh" ]]; then
     printf 'agent-flow-kit: internal error: required library %s.sh is missing or unreadable under %s\n' \
       "$_afk_lib" "$AFK_LIB_DIR" >&2
@@ -79,6 +79,9 @@ unset _afk_lib
 # shellcheck source=lib/afk-catalog-sync.sh
 # shellcheck disable=SC1090,SC1091
 . "$AFK_LIB_DIR/afk-catalog-sync.sh"
+# shellcheck source=lib/afk-paperclip.sh
+# shellcheck disable=SC1090,SC1091
+. "$AFK_LIB_DIR/afk-paperclip.sh"
 
 if ! declare -F afk_cmd_status >/dev/null 2>&1 \
    || ! declare -F afk_render_human >/dev/null 2>&1 \
@@ -89,7 +92,8 @@ if ! declare -F afk_cmd_status >/dev/null 2>&1 \
    || ! declare -F afk_plan_compute >/dev/null 2>&1 \
    || ! declare -F afk_usage_report >/dev/null 2>&1 \
    || ! declare -F afk_cmd_enroll_auto_update >/dev/null 2>&1 \
-   || ! declare -F afk_cmd_catalog_sync >/dev/null 2>&1; then
+   || ! declare -F afk_cmd_catalog_sync >/dev/null 2>&1 \
+   || ! declare -F afk_cmd_paperclip_poll >/dev/null 2>&1; then
   printf 'agent-flow-kit: internal error: the lifecycle libraries under %s did not load completely\n' \
     "$AFK_LIB_DIR" >&2
   exit 1
@@ -269,6 +273,12 @@ agent-flow-kit — lifecycle entry point
       --apply installs the verified catalog read-only under
       ~/.config/agent-flow-kit/trusted-catalogs and re-points current.yaml.
       Any failure keeps the last verified catalog. No credential is sent.
+  agent-flow-kit paperclip-poll [--json]
+      One bounded, deterministic claim-side pass over every configured
+      Paperclip agent's inbox: adopts newly in-progress issues, re-blocks
+      known ones, promotes queued issues, detects stranding and drain, and
+      writes local notices. It is the only thing on this host that writes to
+      Paperclip. Never loops, sleeps or waits. See docs/PAPERCLIP.md.
 
   agent-flow-kit schema
       The documented machine contract: schema version, state, reason and
@@ -396,6 +406,8 @@ afk_option_allowed() { # <command> <option>
       case "$2" in --key-ref|--key-file|--check|--remove) return 0 ;; esac ;;
     catalog-sync)
       case "$2" in --json|--check|--apply) return 0 ;; esac ;;
+    paperclip-poll)
+      case "$2" in --json) return 0 ;; esac ;;
   esac
   return 1
 }
@@ -642,6 +654,10 @@ afk_main() {
       else
         afk_cmd_catalog_sync check "$json_mode"
       fi
+      return $? ;;
+    paperclip-poll)
+      afk_require_declared_paths || return "$AFK_EXIT_USAGE"
+      afk_cmd_paperclip_poll "$json_mode"
       return $? ;;
     schema)
       afk_cmd_schema || return "$AFK_EXIT_USAGE"
