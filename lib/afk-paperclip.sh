@@ -255,11 +255,11 @@ afk_cmd_paperclip_poll() { # <json_mode>
     afk_pc_emit_refusal "PAPERCLIP_POLL_BUSY" "$json_mode"
     return 0
   fi
-  # shellcheck disable=SC2064
   # Chain the entry point's own EXIT handler rather than replacing it.
   # %q-quote the path: a bare single-quote wrap breaks if the state dir
   # itself ever contains a single quote.
   local lockdir_q; printf -v lockdir_q '%q' "$lockdir"
+  # shellcheck disable=SC2064
   trap "rmdir $lockdir_q 2>/dev/null; declare -F afk_release_on_exit >/dev/null && afk_release_on_exit" EXIT
 
   local ledger_path="$pc_dir/ledger.json" ledger=""
