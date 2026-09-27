@@ -200,9 +200,10 @@ route_result_json() { # <harness> <profile> <native-model> <resolution> <effort>
 # harness process or an explicit harness error envelope into `done`. An
 # already-validated continuation remains authoritative: it names resumable
 # work, not a completed or failed attempt.
-attempt_result_projection() {
+attempt_result_projection() { # ... [<failure_reason> <paths_json>]
   local current_status="${1:-}" gates_ok="${2:-false}" \
-        harness_exit="${3:-}" harness_error="${4:-false}" status
+        harness_exit="${3:-}" harness_error="${4:-false}" \
+        failure_reason="${5:-}" paths_json="${6:-null}" status
   status=""
   [[ "$current_status" == "continuation_required" ]] && status="$current_status"
   if [[ -z "$status" ]]; then
@@ -212,8 +213,15 @@ attempt_result_projection() {
       status="gates_failed"
     fi
   fi
+  # A failure_reason forces gates_failed: it names a reason the gates were
+  # never even run for, so it must never be masked by an in-flight
+  # continuation_required. The extra keys are added only when there is a
+  # reason, so a clean run's JSON shape is unchanged (AC-4).
+  [[ -n "$failure_reason" ]] && status="gates_failed"
   jq -nc --arg status "$status" --arg harness_exit "$harness_exit" \
-    '{status:$status, launch:{harness_exit:($harness_exit|tonumber?)}}'
+         --arg reason "$failure_reason" --argjson paths "$paths_json" \
+    '{status:$status, launch:{harness_exit:($harness_exit|tonumber?)}}
+     + (if $reason == "" then {} else {failure_reason:$reason, paths:$paths} end)'
 }
 
 # build_claude_command — the frozen claude launch, as generated terminal text.
@@ -2446,6 +2454,88 @@ opencode_funding_preflight() {
   [[ -n "$expected" && "$actual" == "$expected" ]] || die "MiniMax funding attestation is invalid or stale" "$EX_CONFIG"
 }
 
+# secret_scan_candidates — every file changed or created relative to a BASE
+# commit, NUL-delimited and relative to the repository TOP (not the caller's
+# cwd, so a dispatch started in a subdirectory still sees the whole tree):
+# tracked diffs against that base (staged or not, committed or not, renames
+# under their new name), the staged changes explicitly, and untracked,
+# non-ignored files. -z keeps unusual names (non-ASCII, quotes, newlines)
+# unquoted, so no path is silently skipped. Gitignored files are out of scope
+# by design.
+#
+# <base> is the cycle's starting HEAD, recorded by the caller BEFORE the
+# harness runs (see SECRET_SCAN_BASE). Diffing against that fixed commit
+# rather than "HEAD" is what makes a file the worker commits DURING the cycle
+# visible: committing moves HEAD forward, so a diff against the post-cycle
+# HEAD would compare that commit to itself and see nothing (AD-14 gap). When
+# <base> is empty (worktree was not a git repo at recording time, or the repo
+# had no HEAD yet), this falls back to the pre-fix behaviour: diff against
+# HEAD only.
+secret_scan_candidates() { # <toplevel> <base>
+  local top="$1" base="$2"
+  if [[ -n "$base" ]]; then
+    git -C "$top" diff -z --name-only "$base" -- 2>/dev/null
+    git -C "$top" diff -z --name-only --cached -- 2>/dev/null
+  else
+    git -C "$top" diff -z --name-only HEAD -- 2>/dev/null
+  fi
+  git -C "$top" ls-files -z -o --exclude-standard 2>/dev/null
+}
+
+# scan_worktree_for_secrets — pure secret scanner (AD-14, F15). Secrets are
+# read one per line from the given fd, NEVER from argv, so they never reach
+# `ps`, a log, or a command line. Empty lines and anything shorter than 12
+# characters are dropped before they are ever compared, to keep short/blank
+# values from turning into false hits. Each candidate is matched with fixed
+# strings fed through a descriptor, binary files included. A symlink is never
+# followed (git records only its target text, so that text is what is
+# compared). Prints only the matching PATHS (never a secret). Returns 0
+# clean, 3 on a hit, 4 when the tree could not be enumerated or a file could
+# not be read and nothing matched (the caller records SECRET_SCAN_INCOMPLETE).
+#
+# <base> (may be empty) is the cycle's starting HEAD, recorded by the caller
+# before the harness launched — see secret_scan_candidates for why a fixed
+# base, rather than "HEAD" read now, is what makes a commit the worker makes
+# DURING the cycle visible to the scan. A <base> that no longer resolves to a
+# commit in this repo (should not happen — dispatch never rewrites history
+# under a worker) falls back to the pre-fix "diff against current HEAD" path
+# rather than silently scanning nothing.
+scan_worktree_for_secrets() { # <worktree> <secrets-fd> <base>
+  local worktree="$1" fd="$2" base="${3:-}" line top f p target s rc hit=0 incomplete=0
+  local -a secrets=() candidates=()
+  while IFS= read -r line <&"$fd"; do
+    (( ${#line} >= 12 )) && secrets+=("$line")
+  done
+  (( ${#secrets[@]} == 0 )) && return 0
+  top="$(git -C "$worktree" rev-parse --show-toplevel 2>/dev/null)" || return 4
+  git -C "$top" rev-parse -q --verify HEAD >/dev/null || return 4
+  if [[ -n "$base" ]] && ! git -C "$top" cat-file -e "${base}^{commit}" 2>/dev/null; then
+    base=""
+  fi
+  mapfile -d '' -t candidates < <(secret_scan_candidates "$top" "$base")
+  for f in ${candidates[@]+"${candidates[@]}"}; do
+    p="$top/$f"
+    if [[ -L "$p" ]]; then
+      target="$(readlink -- "$p")"
+      for s in "${secrets[@]}"; do
+        [[ "$target" == *"$s"* ]] && { printf '%s\n' "$f"; hit=1; break; }
+      done
+      continue
+    fi
+    [[ -f "$p" ]] || continue # deleted, or a nested repository's directory
+    rc=0
+    grep -aqF -f <(printf '%s\n' "${secrets[@]}") -- "$p" 2>/dev/null || rc=$?
+    case "$rc" in
+      0) printf '%s\n' "$f"; hit=1 ;;
+      1) ;;
+      *) incomplete=1 ;;
+    esac
+  done
+  (( hit )) && return 3
+  (( incomplete )) && return 4
+  return 0
+}
+
 # dispatch_run_gates — runs each gate, keeping its combined stdout+stderr next
 # to the per-cycle result instead of discarding it, so a failure's reason
 # survives without a ~35-minute re-run of the whole suite. Pass/fail is still
@@ -2880,6 +2970,17 @@ EOF
   [[ -f "$CONTINUATION_FILE" ]] && CONTINUATION_BEFORE="$(sha256_of "$CONTINUATION_FILE")"
   [[ -f "$CHECKPOINT_FILE" ]] && CHECKPOINT_BEFORE="$(sha256_of "$CHECKPOINT_FILE")"
 
+  # ---- secret scan base: recorded BEFORE the harness runs (AD-14 gap fix) --
+  # secret_scan_candidates diffs against this commit, not against whatever
+  # HEAD happens to be after the cycle. A worker that commits a secret during
+  # the cycle moves HEAD forward; diffing the post-cycle HEAD against itself
+  # would make that commit invisible to the scan. Recording the cycle's base
+  # here, before the worker can touch the worktree, closes that gap. If the
+  # worktree is not (yet) a git repo, SECRET_SCAN_BASE stays empty and the
+  # scanner falls back to its pre-fix behaviour (diff against HEAD only).
+  SECRET_SCAN_BASE=""
+  SECRET_SCAN_BASE="$(git -C "$(realpath "$PWD")" rev-parse -q --verify HEAD 2>/dev/null)" || SECRET_SCAN_BASE=""
+
   # ---- Orca visibility ----------------------------------------------------
   local selector repo_id
   selector="$(orca_worktree_selector "$(realpath "$PWD")")"
@@ -3290,11 +3391,64 @@ EOF
     log "budget: the worker signalled a continuation ($summary)"
   fi
 
-  # ---- deterministic gates: never trust the worker's word -----------------
-  # A zero harness exit means the turn completed, not that the task succeeded.
+  # ---- secret scan: look before anything else counts (AD-14, F15) --------
+  # After the harness exits and strictly BEFORE the gates: a worker can write
+  # files, a gateway-lane worker runs under a resolved gateway token, and
+  # dispatch itself may hold AGENT_ROUTER_TOKEN. If either landed in the
+  # worktree, passing gates would let the PM merge a leaked secret.
+  local -a SECRET_SCAN_VALUES=()
+  local SECRET_SCAN_FAILURE_REASON="" SECRET_SCAN_PATHS_JSON=null
+  if [[ "$HARNESS" == claude && "$PLACEMENT_REQUIRED" == "true" \
+        && -n "${token_ref:-}" && -n "${op_env_file:-}" ]]; then
+    local resolved_gateway_token=""
+    # shellcheck source=/dev/null
+    if resolved_gateway_token="$(. "$op_env_file" && op read "$token_ref" 2>/dev/null)" \
+        && [[ -n "$resolved_gateway_token" ]]; then
+      SECRET_SCAN_VALUES+=("$resolved_gateway_token")
+    else
+      BUDGET_FINDINGS+=("SECRET_SCAN_INCOMPLETE")
+      log "secret scan: the gateway token could not be re-resolved for scanning; continuing with what remains (SECRET_SCAN_INCOMPLETE, advisory)"
+    fi
+    resolved_gateway_token=""
+  fi
+  [[ -n "${AGENT_ROUTER_TOKEN:-}" ]] && SECRET_SCAN_VALUES+=("$AGENT_ROUTER_TOKEN")
+  # The caller token can live under a configured name (launcher.caller_token_env).
+  [[ -n "${CALLER_TOKEN_ENV:-}" && "$CALLER_TOKEN_ENV" != AGENT_ROUTER_TOKEN \
+     && -n "${!CALLER_TOKEN_ENV:-}" ]] && SECRET_SCAN_VALUES+=("${!CALLER_TOKEN_ENV}")
+
+  local secret_scan_hits="" secret_scan_rc=0
+  exec 9< <(printf '%s\n' ${SECRET_SCAN_VALUES[@]+"${SECRET_SCAN_VALUES[@]}"})
+  secret_scan_hits="$(scan_worktree_for_secrets "$(realpath "$PWD")" 9 "$SECRET_SCAN_BASE")" || secret_scan_rc=$?
+  exec 9<&-
+  local secret_scan_count=${#SECRET_SCAN_VALUES[@]}
+  SECRET_SCAN_VALUES=()
+
   local gates_log_dir=""
-  (( ${#GATES[@]} > 0 )) && gates_log_dir="$(gates_log_dir_for "$WORKER_DISPATCH_ID" "$CYCLE")"
-  dispatch_run_gates "$gates_log_dir" "${GATES[@]:-}"
+  if (( secret_scan_rc == 3 )); then
+    # shellcheck disable=SC2034 # GATE_LOGS: legacy map read by sourcing tests (see dispatch_run_gates)
+    declare -g -A GATE_RESULTS=() GATE_LOGS=(); declare -g -a GATE_LOG_ENTRIES=(); GATES_OK=false
+    local -a secret_hit_paths=(); mapfile -t secret_hit_paths <<<"$secret_scan_hits"
+    local secret_hit_csv; secret_hit_csv="$(IFS=,; echo "${secret_hit_paths[*]}")"
+    printf 'SECRET_IN_DIFF: %d file(s): %s\n' "${#secret_hit_paths[@]}" "$secret_hit_csv" >&2
+    printf 'SECRET_IN_DIFF: %s\nRotate the exposed credential(s) before this worktree is dispatched again.\n' \
+      "$secret_hit_csv" > "${STORY}.blocked"
+    SECRET_SCAN_FAILURE_REASON="SECRET_IN_DIFF"
+    SECRET_SCAN_PATHS_JSON="$(printf '%s\n' "${secret_hit_paths[@]}" | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+    RESULT_STATUS=""
+  else
+    if (( secret_scan_rc == 4 )); then
+      BUDGET_FINDINGS+=("SECRET_SCAN_INCOMPLETE")
+      log "secret scan: the worktree could not be fully enumerated or read; no match in what was scanned (SECRET_SCAN_INCOMPLETE, advisory)"
+    else
+      local secret_scan_file_count
+      secret_scan_file_count="$(secret_scan_candidates "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" "$SECRET_SCAN_BASE" | tr -cd '\0' | wc -c | tr -d ' ' || true)"
+      log "secret scan: clean ($secret_scan_count secret(s), $secret_scan_file_count file(s))"
+    fi
+    # ---- deterministic gates: never trust the worker's word -----------------
+    # A zero harness exit means the turn completed, not that the task succeeded.
+    (( ${#GATES[@]} > 0 )) && gates_log_dir="$(gates_log_dir_for "$WORKER_DISPATCH_ID" "$CYCLE")"
+    dispatch_run_gates "$gates_log_dir" "${GATES[@]:-}"
+  fi
 
   # A run that finished is not a run that needs continuing. An end-of-run ratio
   # in the continuation band on a story whose gates passed and whose worker said
@@ -3329,7 +3483,8 @@ EOF
   fi
   local attempt_result_json
   attempt_result_json="$(attempt_result_projection \
-    "$RESULT_STATUS" "$GATES_OK" "$HARNESS_EXIT" "$HARNESS_REPORTED_ERROR")"
+    "$RESULT_STATUS" "$GATES_OK" "$HARNESS_EXIT" "$HARNESS_REPORTED_ERROR" \
+    "$SECRET_SCAN_FAILURE_REASON" "$SECRET_SCAN_PATHS_JSON")"
   RESULT_STATUS="$(jq -r .status <<<"$attempt_result_json")"
 
   # ---- thin result the PM can read without loading the transcript ---------
@@ -3392,7 +3547,9 @@ EOF
       launch:({orca_terminal:$terminal,dispatch_id:$dispatch,worker_identity:$worker} + $attempt.launch),
       gates:$gates,
       gates_log_dir:(if $gates_log_dir == "" then null else $gates_log_dir end),
-      gate_logs:$gate_logs}' > "${STORY}.result.json"
+      gate_logs:$gate_logs}
+      + (if $attempt.failure_reason then {failure_reason:$attempt.failure_reason, paths:$attempt.paths} else {} end)' \
+    > "${STORY}.result.json"
 
   # The per-cycle copy. `${STORY}.result.json` is what a reader opens by name
   # and is overwritten every cycle; the cap and the continuation chain are
