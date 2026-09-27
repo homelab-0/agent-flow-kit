@@ -123,6 +123,16 @@ assert_eq "third comment gets seq 3, despite the leftover .tmp file" "$(jq -r .s
 assert_eq "  ...the leftover .tmp file is still there, untouched" \
   "$(find "$STATE/paperclip/spool/$ISSUE/.tmp" -type f | wc -l)" "1"
 
+rm -f "$STATE/paperclip/spool/$ISSUE/.seq.lock" 2>/dev/null
+printf '%s\n' 3 >"$STATE/paperclip/spool/$ISSUE/.seq"
+cp "$STATE/paperclip/spool/$ISSUE/00000003.json" "$STATE/paperclip/spool/$ISSUE/00000004.json"
+run_afk termA paperclip-report --issue "$ISSUE" --comment-file "$(body_file four)" --json
+assert_eq "a counter left behind a live entry (interrupted writer) steps past it" "$(jq -r .seq <<<"$OUT_TEXT")" "5"
+
+mkfifo "$TMPROOT/body.fifo"
+run_afk termA paperclip-report --issue "$ISSUE" --comment-file "$TMPROOT/body.fifo" --json
+assert_contains "a FIFO body file is refused, not read (no hang)" "$OUT_TEXT" "PAPERCLIP_BODY_UNREADABLE"
+
 head1 "3. Concurrency: two backgrounded writers never collide (AC-2)"
 reset_state
 run_bg() { # <out-file> <args...> -- a standalone invocation, safe backgrounded
@@ -189,6 +199,10 @@ head1 "8. Round trip: the report cycle reads and posts what we wrote"
 reset_state
 run_afk termA paperclip-report --issue "$ISSUE" --comment-file "$(body_file "round trip body")" --json
 assert_eq "seed comment published" "$(jq -r .result <<<"$OUT_TEXT")" "ok"
+run_afk termA paperclip-report --issue "$ISSUE" --question q-7 --comment-file "$(body_file "round trip question")" --json
+assert_eq "seed question published" "$(jq -r .result <<<"$OUT_TEXT")" "ok"
+run_afk termA paperclip-report --issue "$ISSUE" --final in_review --comment-file "$(body_file "round trip final")" --json
+assert_eq "seed final published" "$(jq -r .result <<<"$OUT_TEXT")" "ok"
 
 RT_CURL="$TMPROOT/rt-curl"
 RT_LOG="$TMPROOT/rt-curl.log"
@@ -228,7 +242,12 @@ out="$(env -i PATH="$STUBS:$PATH" HOME="$HOME_DIR" LANG=C AFK_STATE_DIR="$STATE"
     afk_pc_report_cycle "https://paperclip.test" "k" "'"$AGENT1"'" "'"$ISSUE"'" "PROJ-1" "proj1" "/nonexistent"
   ')"
 assert_contains "the report cycle posted a comment" "$(cat "$RT_LOG.body" 2>/dev/null)" "round trip body"
-assert_eq "the spool entry was consumed" \
+assert_contains "the report cycle posted the question" "$(cat "$RT_LOG.body" 2>/dev/null)" "round trip question"
+assert_contains "the report cycle posted the final" "$(cat "$RT_LOG.body" 2>/dev/null)" "round trip final"
+assert_contains "the final set the declared status" "$(cat "$RT_LOG.body" 2>/dev/null)" '"in_review"'
+assert_eq "every spool entry was consumed, none dead-lettered" \
+  "$(find "$STATE/paperclip/spool/$ISSUE" -name '[0-9]*.json' | wc -l)" "0"
+assert_eq "  ...and the live directory is empty" \
   "$(find "$STATE/paperclip/spool/$ISSUE" -maxdepth 1 -name '[0-9]*.json' | wc -l)" "0"
 
 head1 "Summary"

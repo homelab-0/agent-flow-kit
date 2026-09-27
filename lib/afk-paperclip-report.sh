@@ -37,6 +37,11 @@ afk_pcr_new_uuid() {
 # afk_pcr_lock <lockdir> -- the kit's portable mkdir lock (no flock), spun
 # rather than refused, so two concurrent writers serialize instead of racing.
 # Bounded so a genuinely stuck lock is a reported failure, never a hang.
+# A held lock is also released on EXIT, which the entry point's signal
+# handlers reach by exiting: an interrupted writer never strands the lock and
+# wedges every later write for the issue. The entry point's own EXIT handler
+# is chained, not replaced.
+AFK_PCR_HELD_LOCK=""
 afk_pcr_lock() {
   local dir="$1" waited=0
   while ! mkdir "$dir" 2>/dev/null; do
@@ -44,9 +49,11 @@ afk_pcr_lock() {
     waited=$((waited + 1))
     (( waited > 500 )) && return 1
   done
+  AFK_PCR_HELD_LOCK="$dir"
+  trap '[[ -n "$AFK_PCR_HELD_LOCK" ]] && rmdir "$AFK_PCR_HELD_LOCK" 2>/dev/null; declare -F afk_release_on_exit >/dev/null && afk_release_on_exit' EXIT
   return 0
 }
-afk_pcr_unlock() { rmdir "$1" 2>/dev/null || true; }
+afk_pcr_unlock() { rmdir "$1" 2>/dev/null || true; AFK_PCR_HELD_LOCK=""; }
 
 # afk_pcr_owner_repo <issue-id> -- sets AFK_PCR_REPO_PATH on success. Resolves
 # the project from the poller ledger, then the repo from the paperclip
@@ -91,11 +98,16 @@ afk_pcr_require_owner() {
 afk_pcr_body_read() {
   local path="$1" size
   AFK_PCR_BODY=""
-  [[ -n "$path" && -r "$path" ]] || { AFK_PCR_REFUSAL="PAPERCLIP_BODY_UNREADABLE"; return 1; }
+  # A regular file only: a FIFO or a device (/dev/zero) would hang the size
+  # check or the read instead of being refused.
+  [[ -n "$path" && -f "$path" && -r "$path" ]] || { AFK_PCR_REFUSAL="PAPERCLIP_BODY_UNREADABLE"; return 1; }
   size="$(wc -c <"$path" 2>/dev/null)" || size=-1
   (( size >= 0 && size <= 16384 )) || { AFK_PCR_REFUSAL="PAPERCLIP_BODY_TOO_LARGE"; return 1; }
   iconv -f UTF-8 -t UTF-8 "$path" >/dev/null 2>&1 || { AFK_PCR_REFUSAL="PAPERCLIP_BODY_INVALID"; return 1; }
   AFK_PCR_BODY="$(cat "$path" 2>/dev/null)"
+  # Re-check what was actually read, in bytes: the file may have grown since.
+  local LC_ALL=C
+  (( ${#AFK_PCR_BODY} <= 16384 )) || { AFK_PCR_BODY=""; AFK_PCR_REFUSAL="PAPERCLIP_BODY_TOO_LARGE"; return 1; }
   return 0
 }
 
@@ -139,7 +151,11 @@ afk_pcr_report_entry() {
   local seq_file="$spool_dir/.seq" cur=0 seq
   [[ -r "$seq_file" ]] && cur="$(cat "$seq_file" 2>/dev/null)"
   [[ "$cur" =~ ^[0-9]+$ ]] || cur=0
-  seq=$((cur + 1))
+  seq=$((10#$cur + 1))
+  # A writer interrupted between its publish and its counter write leaves the
+  # counter one behind a live entry; step past it rather than fail every later
+  # write until the reader drains that entry.
+  while [[ -e "$spool_dir/$(printf '%08d' "$seq").json" ]]; do seq=$((seq + 1)); done
 
   local eid rc=0
   eid="$(afk_pcr_new_uuid)" || rc=1
@@ -168,6 +184,7 @@ afk_pcr_report_entry() {
   final_path="$spool_dir/$final_name"
   if (( rc == 0 )); then
     mv -n -- "$tmp_path" "$final_path" 2>/dev/null && [[ ! -e "$tmp_path" ]] || rc=1
+    (( rc == 0 )) || rm -f -- "$tmp_path" 2>/dev/null
   fi
   (( rc == 0 )) && { afk_state_file_write "$seq_file" "$seq" || rc=1; }
   if (( rc == 0 )) && [[ "$kind" == final ]]; then
