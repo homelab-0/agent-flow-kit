@@ -207,12 +207,13 @@ afk_pc_reply() { # <project> <comment_id> <body>
   afk_state_file_write "$dir/reply.$2.md" "$3"
 }
 
-# --- action text (AC-7) ------------------------------------------------------
-afk_pc_action_text() { # <pause-kind: none|stopped|maintenance> <queued-behind-or-empty> <status-file> <prev-action-or-empty>
+# --- action text (AC-7, extended by PC-1b AC-2) ------------------------------
+afk_pc_action_text() { # <pause-kind: none|stopped|maintenance> <queued-behind-or-empty> <status-file> <prev-action-or-empty> [<question-id-or-empty>]
   case "$1" in
     stopped) printf 'Stopped'; return 0 ;;
     maintenance) printf 'paused for Paperclip maintenance'; return 0 ;;
   esac
+  [[ -n "${5:-}" ]] && { printf 'waiting on %s' "$5"; return 0; }
   [[ -n "$2" ]] && { printf 'queued behind %s' "$2"; return 0; }
   if [[ -r "$3" ]]; then
     local t; t="$(jq -r '.text // empty' "$3" 2>/dev/null)"
@@ -220,6 +221,273 @@ afk_pc_action_text() { # <pause-kind: none|stopped|maintenance> <queued-behind-o
   fi
   if [[ -n "$4" && "$4" != null ]]; then printf '%s' "$4"; return 0; fi
   printf 'AFK host is working on this'
+}
+
+# --- the spool (PC-1b) --------------------------------------------------------
+# Layout: $AFK_STATE_DIR/paperclip/spool/<issue-id>/<seq>.json, dead/ and
+# unconfirmed/ siblings hold retired entries. Only <digits>.json is a live
+# entry; .tmp/ and anything else is ignored (AC-8).
+afk_pc_spool_dir() { printf '%s/paperclip/spool/%s' "$AFK_STATE_DIR" "$1"; }
+
+afk_pc_spool_files() { # <issue_id> -- prints live entry basenames, seq order
+  local dir; dir="$(afk_pc_spool_dir "$1")"
+  [[ -d "$dir" ]] || return 0
+  find "$dir" -maxdepth 1 -type f -name '*.json' -printf '%f\n' 2>/dev/null |
+    grep -E '^[0-9]+\.json$' | sort -n
+}
+
+afk_pc_spool_dead() { # <issue_id> <entry-file-basename> <reason>
+  local dir; dir="$(afk_pc_spool_dir "$1")/dead"
+  afk_state_dir_ensure "$dir"
+  mv -f -- "$(afk_pc_spool_dir "$1")/$2" "$dir/$2" 2>/dev/null
+  printf '%s\n' "$3" >"$dir/$2.reason" 2>/dev/null
+}
+
+afk_pc_spool_dead_all() { # <issue_id> -- everything remaining, e.g. after a
+  local dir f base                                # final or a closed issue.
+  dir="$(afk_pc_spool_dir "$1")"
+  [[ -d "$dir" ]] || return 0
+  while IFS= read -r base; do
+    [[ -n "$base" ]] || continue
+    afk_pc_spool_dead "$1" "$base" "PAPERCLIP_ISSUE_CLOSED"
+  done < <(afk_pc_spool_files "$1")
+}
+
+# afk_pc_marker_seen <api_url> <key> <issue_id> <marker> <agent_id> -- AC-4
+# read-back. 0: one of OUR comments carries the marker. 1: the comment list
+# was read and none does. 2: the read-back itself failed, so nothing is known
+# and the caller must not re-post (a failed read is never "not found").
+# Only comments authored by this agent count, so a marker pasted by anyone
+# else can never make an unsent entry look sent.
+afk_pc_marker_seen() {
+  local resp body; resp="$(afk_pc_curl GET "$1/api/issues/$3/comments" "$2" "")"
+  [[ "${resp%%$'\n'*}" == 2?? ]] || return 2
+  body="${resp#*$'\n'}"
+  jq -e 'type == "array"' >/dev/null 2>&1 <<<"$body" || return 2
+  jq -e --arg m "$4" --arg a "$5" \
+    'any(.[]; (.authorAgentId // "") == $a and ((.body // "") | type == "string" and contains($m)))' \
+    >/dev/null 2>&1 <<<"$body"
+}
+
+# afk_pc_resolve_sending <issue_id> -- AC-4: a leftover `sending` from a
+# crashed pass is resolved by read-back before anything else is posted. Reads
+# and writes the caller's `ledger` local directly, like afk_pc_strand.
+# Returns 1 when the read-back failed: `sending` stays, and the caller posts
+# nothing for this issue this pass.
+afk_pc_resolve_sending() { # <api_url> <key> <issue_id> <agent_id>
+  local sending eid marker base rc=0
+  sending="$(jq -c --arg id "$3" '.issues[$id].sending // empty' <<<"$ledger")"
+  [[ -n "$sending" ]] || return 0
+  eid="$(jq -r '.entry_id // empty' <<<"$sending")"
+  marker="<!-- afk-entry:$eid -->"
+  afk_pc_marker_seen "$1" "$2" "$3" "$marker" "$4" || rc=$?
+  (( rc == 2 )) && return 1
+  if (( rc == 0 )); then
+    while IFS= read -r base; do
+      [[ -n "$base" ]] || continue
+      [[ "$(jq -r '.id // empty' "$(afk_pc_spool_dir "$3")/$base" 2>/dev/null)" == "$eid" ]] &&
+        rm -f -- "$(afk_pc_spool_dir "$3")/$base"
+    done < <(afk_pc_spool_files "$3")
+  fi
+  ledger="$(jq -c --arg id "$3" '.issues[$id].sending = null' <<<"$ledger")"
+}
+
+# afk_pc_entry_outcome <http-status> -- AC-5, applied to a single entry POST.
+afk_pc_entry_outcome() {
+  case "$1" in
+    2??) printf 'ok' ;;
+    401 | 403) printf 'credential' ;;
+    409) printf 'conflict' ;;
+    422 | 400) printf 'dead' ;;
+    429) printf 'backoff' ;;
+    404 | 410) printf 'gone' ;;
+    *) printf 'ambiguous' ;; # 5xx or a blank/transport-failed status
+  esac
+}
+
+# afk_pc_report_cycle <api_url> <key> <agent_id> <issue_id> <identifier>
+#                      <project> <status_file_dir>
+# One report cycle (AC-1..AC-5, AC-10): wakeup, in_progress, drain the spool
+# in order, then either the final status or a self-block. Reads/writes the
+# caller's `ledger`/`actions` locals directly and sets AFK_PC_ABORT when the
+# whole agent must stop for this pass (credential rejection or a rate limit).
+afk_pc_report_cycle() {
+  local api_url="$1" key="$2" agent_id="$3" id="$4" identifier="$5" project="$6" status_file_dir="$7"
+  AFK_PC_ABORT=false
+
+  # A failed read-back of a leftover `sending` means nothing is known: post
+  # nothing for this issue this pass rather than risk a duplicate.
+  if ! afk_pc_resolve_sending "$api_url" "$key" "$id" "$agent_id"; then
+    actions="$(jq -c --arg t "read-back unavailable, entries held: $identifier" '. + [$t]' <<<"$actions")"
+    return 0
+  fi
+
+  local -a files=(); mapfile -t files < <(afk_pc_spool_files "$id")
+  local prev; prev="$(jq -c --arg id "$id" '.issues[$id] // empty' <<<"$ledger")"
+  local state qid prev_applied composed pending_final claim_pending
+  state="$(jq -r '.state // empty' <<<"$prev")"
+  qid="$(jq -r '.question_id // empty' <<<"$prev")"
+  prev_applied="$(jq -r '.action_text_applied // .action_text // empty' <<<"$prev")"
+  # A final whose comment went out but whose status PATCH failed is retried
+  # from the ledger: its spool file is already gone.
+  pending_final="$(jq -r '.pending_final // empty' <<<"$prev")"
+  claim_pending="$(jq -r '.claim_comment_pending // false' <<<"$prev")"
+  if [[ "$state" == waiting_human && -n "$qid" ]]; then
+    composed="$(afk_pc_action_text none "" "" "$prev_applied" "$qid")"
+  else
+    composed="$(afk_pc_action_text none "" "$status_file_dir/$id.json" "$prev_applied")"
+  fi
+
+  { (( ${#files[@]} > 0 )) || [[ "$composed" != "$prev_applied" || -n "$pending_final" || "$claim_pending" == true ]]; } || return 0
+
+  local wr wh wb run_id
+  wr="$(afk_pc_curl POST "$api_url/api/agents/$agent_id/wakeup" "$key" "" \
+    "$(jq -nc --arg id "$id" '{source:"timer", payload:{issueId:$id}}')")"
+  wh="${wr%%$'\n'*}"; wb="${wr#*$'\n'}"
+  if [[ "$wh" == 401 || "$wh" == 403 ]]; then
+    actions="$(jq -c --arg t "PAPERCLIP_CREDENTIAL_REJECTED: $identifier" '. + [$t]' <<<"$actions")"
+    AFK_PC_ABORT=true; return
+  fi
+  run_id="$(jq -r '.id // empty' <<<"$wb" 2>/dev/null)"
+  [[ "$run_id" =~ ^[A-Za-z0-9_-]+$ ]] || return 0 # no run: the spool is untouched
+
+  local pr ph
+  pr="$(afk_pc_curl PATCH "$api_url/api/issues/$id" "$key" "$run_id" '{"status":"in_progress"}')"
+  ph="${pr%%$'\n'*}"
+  if [[ "$ph" != 2?? ]]; then
+    # A timeout or 5xx may still have applied in_progress: re-assert the
+    # block before leaving (the invariant), whatever the reason.
+    afk_pc_self_block "$api_url" "$id" "$key" "$run_id" "$agent_id" "${prev_applied:-$composed}" ||
+      actions="$(jq -c --arg t "PAPERCLIP_SELF_BLOCK_FAILED: $identifier" '. + [$t]' <<<"$actions")"
+    if [[ "$ph" == 401 || "$ph" == 403 ]]; then
+      actions="$(jq -c --arg t "PAPERCLIP_CREDENTIAL_REJECTED: $identifier" '. + [$t]' <<<"$actions")"
+      AFK_PC_ABORT=true; return
+    fi
+    actions="$(jq -c --arg t "report cycle could not reach in_progress, spool untouched: $identifier" '. + [$t]' <<<"$actions")"
+    return 0
+  fi
+
+  # Invariant: from here on, every exit except a 404/410 (issue gone) goes
+  # through the final status or the self-block below.
+  local final_sent=false final_status="" stop=false cred=false
+  [[ -n "$pending_final" ]] && { final_sent=true; final_status="$pending_final"; }
+
+  # AC-10: the claim comment for an issue adopted during a pause.
+  if [[ "$claim_pending" == true ]]; then
+    local clr; clr="$(afk_pc_comment "$api_url" "$id" "$key" "$run_id" "claimed by AFK PM ($host_label)")"
+    [[ "${clr%%$'\n'*}" == 2?? ]] &&
+      ledger="$(jq -c --arg id "$id" 'del(.issues[$id].claim_comment_pending)' <<<"$ledger")"
+  fi
+
+  local f entry eid kind body marker outcome mrc q fs
+  for f in "${files[@]:-}"; do
+    [[ "$final_sent" == true ]] && break
+    [[ -n "$f" ]] || continue
+    entry="$(jq -c '.' "$(afk_pc_spool_dir "$id")/$f" 2>/dev/null)" || { afk_pc_spool_dead "$id" "$f" "PAPERCLIP_ENTRY_INVALID"; continue; }
+    eid="$(jq -r '.id // empty' <<<"$entry" 2>/dev/null)"
+    if ! afk_pc_uuid_ok "$eid"; then afk_pc_spool_dead "$id" "$f" "PAPERCLIP_ID_INVALID"; continue; fi
+    kind="$(jq -r '.kind // empty' <<<"$entry")"
+    body="$(jq -r '.body // empty' <<<"$entry")"
+    q="$(jq -r '.question_id // empty' <<<"$entry")"
+    fs="$(jq -r '.status // empty' <<<"$entry")"
+    # Unknown kinds, a question without a sane id, and a final status other
+    # than the two the contract allows are never posted.
+    case "$kind" in
+      comment) ;;
+      question) [[ "$q" =~ ^[A-Za-z0-9._:-]{1,64}$ ]] || kind="" ;;
+      final) [[ "$fs" == in_review || "$fs" == "done" ]] || kind="" ;;
+      *) kind="" ;;
+    esac
+    if [[ -z "$kind" ]]; then afk_pc_spool_dead "$id" "$f" "PAPERCLIP_ENTRY_INVALID"; continue; fi
+    marker="<!-- afk-entry:$eid -->"
+
+    ledger="$(jq -c --arg id "$id" --arg eid "$eid" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      '.issues[$id].sending = {entry_id:$eid, issue_id:$id, at:$at}' <<<"$ledger")"
+    afk_state_file_write "$ledger_path" "$ledger"
+
+    local cr ch; cr="$(afk_pc_comment "$api_url" "$id" "$key" "$run_id" "$body"$'\n\n'"$marker")"
+    ch="${cr%%$'\n'*}"
+    outcome="$(afk_pc_entry_outcome "$ch")"
+    if [[ "$outcome" == ambiguous ]]; then
+      mrc=0; afk_pc_marker_seen "$api_url" "$key" "$id" "$marker" "$agent_id" || mrc=$?
+      (( mrc == 0 )) && outcome=ok
+    fi
+
+    case "$outcome" in
+      ok)
+        rm -f -- "$(afk_pc_spool_dir "$id")/$f"
+        ledger="$(jq -c --arg id "$id" '.issues[$id].sending = null' <<<"$ledger")"
+        case "$kind" in
+          question)
+            ledger="$(jq -c --arg id "$id" --arg q "$q" '.issues[$id].state = "waiting_human" | .issues[$id].question_id = $q' <<<"$ledger")"
+            ;;
+          final)
+            final_sent=true; final_status="$fs"
+            ledger="$(jq -c --arg id "$id" --arg s "$fs" '.issues[$id].pending_final = $s' <<<"$ledger")"
+            afk_state_file_write "$ledger_path" "$ledger"
+            ;;
+        esac
+        ;;
+      dead)
+        afk_pc_spool_dead "$id" "$f" "PAPERCLIP_ENTRY_REJECTED"
+        ledger="$(jq -c --arg id "$id" '.issues[$id].sending = null' <<<"$ledger")"
+        ;;
+      gone)
+        ledger="$(jq -c --arg id "$id" '.issues[$id].state = "closed" | .issues[$id].sending = null' <<<"$ledger")"
+        afk_pc_spool_dead_all "$id"
+        actions="$(jq -c --arg t "stopped (404/410): $identifier" '. + [$t]' <<<"$actions")"
+        return 0
+        ;;
+      credential)
+        actions="$(jq -c --arg t "PAPERCLIP_CREDENTIAL_REJECTED: $identifier" '. + [$t]' <<<"$actions")"
+        cred=true; stop=true
+        ;;
+      backoff)
+        actions="$(jq -c --arg t "PAPERCLIP_RATE_LIMITED, kept: $identifier" '. + [$t]' <<<"$actions")"
+        stop=true
+        ;;
+      conflict | ambiguous)
+        stop=true
+        ;;
+    esac
+    [[ "$stop" == true ]] && break
+  done
+
+  if [[ "$final_sent" == true && "$cred" == false ]]; then
+    local fr fh
+    fr="$(afk_pc_curl PATCH "$api_url/api/issues/$id" "$key" "$run_id" "$(jq -nc --arg s "$final_status" '{status:$s}')")"
+    fh="${fr%%$'\n'*}"
+    if [[ "$fh" == 2?? ]]; then
+      ledger="$(jq -c --arg id "$id" '.issues[$id].state = "closed" | del(.issues[$id].pending_final)' <<<"$ledger")"
+      afk_pc_spool_dead_all "$id"
+      actions="$(jq -c --arg t "final ($final_status): $identifier" '. + [$t]' <<<"$actions")"
+      return 0
+    fi
+    # the final PATCH failed: pending_final stays in the ledger for the next
+    # pass, and this one falls through to the self-block invariant.
+    actions="$(jq -c --arg t "final status not applied, retrying next pass: $identifier" '. + [$t]' <<<"$actions")"
+  fi
+
+  # Recompute against the post-loop state: a question entry sent above may
+  # have just moved this issue to waiting_human, and the self-block text must
+  # reflect that in this same cycle, not the pre-loop state (AC-2).
+  local post_state post_qid final_composed
+  post_state="$(jq -r --arg id "$id" '.issues[$id].state // empty' <<<"$ledger")"
+  post_qid="$(jq -r --arg id "$id" '.issues[$id].question_id // empty' <<<"$ledger")"
+  if [[ "$post_state" == waiting_human && -n "$post_qid" ]]; then
+    final_composed="$(afk_pc_action_text none "" "" "$prev_applied" "$post_qid")"
+  else
+    final_composed="$(afk_pc_action_text none "" "$status_file_dir/$id.json" "$prev_applied")"
+  fi
+
+  if afk_pc_self_block "$api_url" "$id" "$key" "$run_id" "$agent_id" "$final_composed"; then
+    ledger="$(jq -c --arg id "$id" --arg t "$final_composed" \
+      '.issues[$id].action_text = $t | .issues[$id].action_text_applied = $t' <<<"$ledger")"
+  else
+    actions="$(jq -c --arg t "PAPERCLIP_SELF_BLOCK_FAILED: $identifier" '. + [$t]' <<<"$actions")"
+  fi
+  [[ "$cred" == true ]] && { AFK_PC_ABORT=true; return; }
+  actions="$(jq -c --arg t "report cycle: $identifier" '. + [$t]' <<<"$actions")"
 }
 
 # --- the Josh test (AC-8) ----------------------------------------------------
@@ -350,6 +618,9 @@ afk_cmd_paperclip_poll() { # <json_mode>
       local cidentifier; cidentifier="$(jq -r --arg id "$cid" '.issues[$id].identifier // empty' <<<"$ledger")"
       ledger="$(jq -c --arg id "$cid" '.issues[$id].state = "closed"' <<<"$ledger")"
       afk_pc_notice "$project" "$cid" "$cidentifier" "$agent_id" "$repo_path" "$harness" stopped
+      # PC-1b AC-6: closed or no-longer-in-inbox issues never keep spool
+      # entries around; frozen (deletes nothing) while paused, like everything else.
+      [[ "$pause_kind" == none ]] && afk_pc_spool_dead_all "$cid"
       actions="$(jq -c --arg t "stopped: $cidentifier" '. + [$t]' <<<"$actions")"
     done
 
@@ -398,14 +669,23 @@ afk_cmd_paperclip_poll() { # <json_mode>
           was_stranded="false"
           [[ -n "$prev" && "$(jq -r '.state' <<<"$prev")" == stranded ]] && was_stranded="true"
 
+          local prior_state_ip=""
+          [[ -n "$prev" ]] && prior_state_ip="$(jq -r '.state' <<<"$prev")"
+
           if [[ "$pause_kind" != none ]]; then
             action="$(afk_pc_action_text "$pause_kind" "" "" "")"
-            new_state="working"
-            [[ -n "$prev" ]] && new_state="$(jq -r '.state' <<<"$prev")"
+            # AC-10: a first-ever adoption during a pause/drain is recorded as
+            # pending_claim, not working, so the PM never hears about it until
+            # the first unpaused pass runs the real claim below.
+            if [[ -z "$prev" ]]; then
+              new_state="pending_claim"
+            else
+              new_state="$prior_state_ip"
+            fi
             afk_pc_self_block "$api_url" "$id" "$key" "$run_id" "$agent_id" "$action" "$clear_blockers" ||
               actions="$(jq -c --arg t "PAPERCLIP_SELF_BLOCK_FAILED: $identifier" '. + [$t]' <<<"$actions")"
             actions="$(jq -c --arg t "paused: $identifier" '. + [$t]' <<<"$actions")"
-          elif [[ -z "$prev" ]]; then
+          elif [[ -z "$prev" || "$prior_state_ip" == pending_claim ]]; then
             afk_pc_comment "$api_url" "$id" "$key" "$run_id" "claimed by AFK PM ($host_label)" >/dev/null
             afk_pc_notice "$project" "$id" "$identifier" "$agent_id" "$repo_path" "$harness" claimed
             afk_pc_brief "$project" "$id" "$updated" "$title" "$desc"
@@ -432,8 +712,8 @@ afk_cmd_paperclip_poll() { # <json_mode>
             prior_state="$(jq -r '.state' <<<"$prev")"
             afk_pc_comment "$api_url" "$id" "$key" "$run_id" \
               "AFK host acknowledged: ${wake_reason:-a Paperclip wake}" >/dev/null
-            if [[ "$prior_state" == working ]]; then
-              new_state="working"
+            if [[ "$prior_state" == working || "$prior_state" == waiting_human ]]; then
+              new_state="$prior_state"
             elif (( used_slots >= max_active )); then
               new_state="queued"
               queued_behind="$working_id"
@@ -442,7 +722,9 @@ afk_cmd_paperclip_poll() { # <json_mode>
               used_slots=$((used_slots + 1))
               working_id="$identifier"
             fi
-            action="$(afk_pc_action_text none "$queued_behind" "$status_file_dir/$id.json" "$(jq -r '.action_text' <<<"$prev")")"
+            local wake_qid=""
+            [[ "$new_state" == waiting_human ]] && wake_qid="$(jq -r '.question_id // empty' <<<"$prev")"
+            action="$(afk_pc_action_text none "$queued_behind" "$status_file_dir/$id.json" "$(jq -r '.action_text' <<<"$prev")" "$wake_qid")"
             afk_pc_self_block "$api_url" "$id" "$key" "$run_id" "$agent_id" "$action" "$clear_blockers" ||
               actions="$(jq -c --arg t "PAPERCLIP_SELF_BLOCK_FAILED: $identifier" '. + [$t]' <<<"$actions")"
             actions="$(jq -c --arg t "wake acknowledged: $identifier" '. + [$t]' <<<"$actions")"
@@ -450,9 +732,12 @@ afk_cmd_paperclip_poll() { # <json_mode>
 
           local since; since="$(jq -r 'if .since then .since else empty end' <<<"$prev")"
           [[ -n "$since" ]] || since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          # action_text_applied mirrors this self-block's text (PC-1b AC-2), so
+          # the report cycle below only fires on a genuinely new declared
+          # status or a queued spool entry, never on a text it just applied.
           ledger="$(jq -c --arg id "$id" --arg a "$agent_id" --arg p "$project" --arg ident "$identifier" \
             --arg st "$new_state" --arg since "$since" --arg act "$action" \
-            '.issues[$id] = ((.issues[$id] // {}) + {agent_id:$a, project:$p, identifier:$ident, state:$st, since:$since, action_text:$act})' \
+            '.issues[$id] = ((.issues[$id] // {}) + {agent_id:$a, project:$p, identifier:$ident, state:$st, since:$since, action_text:$act, action_text_applied:$act})' \
             <<<"$ledger")"
 
           if [[ "$was_stranded" == true ]]; then
@@ -530,6 +815,22 @@ afk_cmd_paperclip_poll() { # <json_mode>
               afk_pc_notice "$project" "$id" "$identifier" "$agent_id" "$repo_path" "$harness" promoted
               actions="$(jq -c --arg t "promoted: $identifier" '. + [$t]' <<<"$actions")"
             fi
+            # AC-10: adopted during a pause, the issue is now self-blocked, not
+            # in_progress, so the claim happens here on the first unpaused
+            # pass; the claim comment itself goes out in the report cycle.
+            if [[ "$prev_state" == pending_claim && "$pause_kind" == none ]]; then
+              afk_pc_notice "$project" "$id" "$identifier" "$agent_id" "$repo_path" "$harness" claimed
+              afk_pc_brief "$project" "$id" "$updated" "$title" "$desc"
+              if (( used_slots >= max_active )); then
+                final_state="queued"
+              else
+                final_state="working"
+                used_slots=$((used_slots + 1))
+                working_id="$identifier"
+              fi
+              ledger="$(jq -c --arg id "$id" '.issues[$id].claim_comment_pending = true' <<<"$ledger")"
+              actions="$(jq -c --arg t "claimed: $identifier" '. + [$t]' <<<"$actions")"
+            fi
             # Never write into .issues[$id] when there is no prior entry: the
             # ledger was reset invalid, or a previous poller self-blocked this
             # issue without ever creating a ledger row. Writing anyway leaves
@@ -558,6 +859,7 @@ afk_cmd_paperclip_poll() { # <json_mode>
             local prev_state_closed; prev_state_closed="$(jq -r '.state // empty' <<<"$prev")"
             ledger="$(jq -c --arg id "$id" '.issues[$id].state = "closed"' <<<"$ledger")"
             afk_pc_notice "$project" "$id" "$identifier" "$agent_id" "$repo_path" "$harness" stopped
+            [[ "$pause_kind" == none ]] && afk_pc_spool_dead_all "$id"
             actions="$(jq -c --arg t "stopped: $identifier" '. + [$t]' <<<"$actions")"
             # A working slot closing mid-pass must free up immediately, or an
             # issue claimed later in this same pass sees a stale used_slots.
@@ -570,6 +872,25 @@ afk_cmd_paperclip_poll() { # <json_mode>
         *) : ;; # todo (AC-5e): leave it alone.
       esac
     done
+
+    # --- PC-1b: the report cycle (AC-1..AC-10) --------------------------------
+    # Frozen while paused/draining (AC-6): no cycles, nothing deleted. Only
+    # issues this agent actually holds (working/waiting_human) are eligible;
+    # queued, stranded, pending_claim, held_by_board and closed are untouched.
+    if [[ "$pause_kind" == none ]]; then
+      local -a report_ids=()
+      mapfile -t report_ids < <(jq -r --arg a "$agent_id" \
+        '.issues | to_entries[] | select(.value.agent_id == $a and (.value.state == "working" or .value.state == "waiting_human")) | .key' \
+        <<<"$ledger")
+      local rid
+      for rid in "${report_ids[@]:-}"; do
+        [[ -n "$rid" ]] || continue
+        AFK_PC_ABORT=false
+        local r_ident; r_ident="$(jq -r --arg id "$rid" '.issues[$id].identifier // empty' <<<"$ledger")"
+        afk_pc_report_cycle "$api_url" "$key" "$agent_id" "$rid" "$r_ident" "$project" "$status_file_dir"
+        [[ "$AFK_PC_ABORT" == true ]] && break
+      done
+    fi
 
     key=""
     agents_json="$(jq -c --arg a "$agent_id" --arg r "$result" --argjson acts "$actions" \
