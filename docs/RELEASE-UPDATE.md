@@ -387,6 +387,22 @@ reason when it is one of the codes `afk_reason_codes` or
 recorded. `APPLY_RESULT_UNREADABLE` means the document itself could not be
 read.
 
+A release that changes no installed file (tests, planning files, docs outside
+the managed set) plans and applies as `NO_CHANGE`, and the lifecycle keeps
+`applied_revision` at the prior revision. The client accepts that target only
+when this exact target and plan identity planned and applied as `NO_CHANGE`,
+and verification succeeds with the installed revision still equal to the
+prior one. It then records the target in `releases/current.json`
+(`revision`, plus `installed_revision` for what is actually installed) and
+ends `CURRENT` / `RELEASE_ACCEPTED_NO_CHANGE`; the attempt reports both
+`applied_revision` and `accepted_revision`, and `afk-session-freshness`
+compares the install with `installed_revision` when it is recorded. Later runs
+on the same target end `ALREADY_CURRENT`. While the record still describes
+the install, every later target must descend from the accepted revision as
+well as the installed one. Any other verification result still ends
+`BLOCKED` / `POST_APPLY_VERIFY_FAILED`, and a `CONVERGED` apply must still
+report the target as installed.
+
 Examples:
 
 ```sh

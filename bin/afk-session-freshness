@@ -11,13 +11,16 @@ fi
 
 applied="$(jq -r '.applied_revision // ""' "$STATE_DIR/state.json" 2>/dev/null || true)"
 accepted="$(jq -r '.revision // ""' "$STATE_DIR/releases/current.json" 2>/dev/null || true)"
+# A no-change acceptance leaves the install behind the accepted target and
+# records what is installed; older records name only the one revision.
+installed="$(jq -r '.installed_revision // .revision // ""' "$STATE_DIR/releases/current.json" 2>/dev/null || true)"
 latest_state="$(jq -r '.state // ""' "$STATE_DIR/releases/latest.json" 2>/dev/null || true)"
 latest_reason="$(jq -r '.reason // ""' "$STATE_DIR/releases/latest.json" 2>/dev/null || true)"
 latest_target="$(jq -r '.target_revision // ""' "$STATE_DIR/releases/latest.json" 2>/dev/null || true)"
 
 state=NOT_EVALUATED; reason=INSTALLATION_NOT_ADOPTED
 if [[ "$applied" =~ ^[0-9a-f]{40}$ ]]; then
-  if [[ "$accepted" == "$applied" ]]; then state=ACCEPTED_LOCALLY; reason=RECORDED_LAST_GOOD
+  if [[ -n "$accepted" && "$installed" == "$applied" ]]; then state=ACCEPTED_LOCALLY; reason=RECORDED_LAST_GOOD
   elif [[ -z "$accepted" ]]; then state=UNPROVEN; reason=NO_ACCEPTED_RELEASE
   else state=MISMATCH; reason=APPLIED_REVISION_DIFFERS_FROM_ACCEPTED_RELEASE; fi
 fi
