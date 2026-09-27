@@ -17,6 +17,10 @@ if [[ "$(jq -r '.schema // empty' "$intent" 2>/dev/null)" == "afk-pm-bootstrap-f
     (.worktree.id|s) and (.worktree.path|s)' "$intent" >/dev/null 2>&1 || exit 1
   fs_harness="$(jq -r .harness "$intent")"; fs_resume="$(jq -r .resume_instruction "$intent")"
   fs_wi="$(jq -r .worktree.id "$intent")"; fs_wp="$(jq -r .worktree.path "$intent")"
+  fs_project="$(jq -r .project "$intent")"
+  # The only text this kind may carry is the fixed kit instruction; rebuild it
+  # and refuse anything else, so an edited intent cannot become a prompt.
+  [[ "$fs_resume" == "You are the BMAD PM for project $fs_project. Register with \`agent-flow-kit pm-start --harness $fs_harness\`, then run \`agent-flow-kit paperclip-take --project $fs_project\` and read the brief file it names." ]] || exit 1
   fs_actual_path="$(pwd -P 2>/dev/null || true)"
   [[ "$fs_actual_path" == "$fs_wp" && -n "${ORCA_TERMINAL_HANDLE:-}" ]] || exit 1
   [[ -z "${ORCA_WORKTREE_PATH:-}" || "${ORCA_WORKTREE_PATH}" == "$fs_wp" ]] || exit 1

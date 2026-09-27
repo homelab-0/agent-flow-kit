@@ -47,6 +47,9 @@ afk_pcs_start_pm() {
     none) : ;;
     *) return 0 ;;
   esac
+  # At most one start per issue, ever (an approval authorises one start). A
+  # started PM that has not registered yet still reads `none` here.
+  jq -e --arg id "$id" '.pm_started[$id] != null' <<<"$ledger" >/dev/null 2>&1 && return 0
 
   # AC-2: the creator gate.
   if [[ -z "$created_by" || "$created_by" != "$board_user_id" ]]; then
@@ -171,10 +174,20 @@ afk_pcs_readiness_check() {
   out="$(cd "$repo_path" 2>/dev/null && "$bin" status --json 2>/dev/null)"; rc=$?
   if (( rc != 0 )); then
     code="$(jq -r '.readiness.route.reason // .route.reason // .reason // empty' <<<"$out" 2>/dev/null)"
-    printf '%s' "${code:-PAPERCLIP_START_READINESS_UNKNOWN}"
-    return 1
+  else
+    # Plain `status` exits 0 even when not ready (only --live/--stamp force an
+    # exit code), so the readiness block itself is the answer. Unparseable is
+    # a refusal, never a pass.
+    code="$(jq -r 'if (.readiness|type) != "object" then "PAPERCLIP_START_READINESS_UNKNOWN"
+      elif (.readiness.INSTALLED_INTEGRITY.state // "") != "READY" then (.readiness.INSTALLED_INTEGRITY.reason // "INSTALLED_INTEGRITY")
+      else ([.readiness | to_entries[] | select(.key != "MUTATION_SOURCE_ELIGIBLE")
+             | select((.value.state // "") | IN("FALSE","NOT_READY","NEEDS_OWNER")) | (.value.reason // .key)][0] // "")
+      end' <<<"$out" 2>/dev/null)" || code="PAPERCLIP_START_READINESS_UNKNOWN"
+    [[ -z "$code" ]] && { printf 'ok'; return 0; }
   fi
-  printf 'ok'
+  [[ "$code" =~ ^[A-Z0-9_]+$ ]] || code="PAPERCLIP_START_READINESS_UNKNOWN"
+  printf '%s' "$code"
+  return 1
 }
 
 # afk_pcs_create_terminal -- AC-5. One visible Orca terminal, idempotent by
@@ -195,9 +208,14 @@ afk_pcs_create_terminal() {
   [[ -n "$observed_id" && -n "$observed_path" ]] || return 1
 
   title="PM $project (paperclip)"
-  local listed count
+  local listed count prior
   listed="$($bound "$seconds" "$orca_bin" terminal list --worktree "id:$observed_id" --json 2>/dev/null)" || return 1
-  count="$(jq -r --arg t "$title" '[.result.terminals[]? | select(.title==$t)] | length' <<<"$listed" 2>/dev/null)"
+  # The harness rewrites the terminal title once it runs, so the title alone
+  # cannot prove "no PM started yet". Any terminal this host started for the
+  # same repo that is still listed also blocks a second start.
+  prior="$(jq -c --arg r "$repo_path" '[(.pm_started // {})[] | select(.repo == $r) | .terminal]' <<<"$ledger" 2>/dev/null)" || return 1
+  count="$(jq -r --arg t "$title" --argjson h "$prior" \
+    '[.result.terminals[]? | select(.title==$t or (.handle as $x | any($h[]; . == $x)))] | length' <<<"$listed" 2>/dev/null)"
   [[ "$count" =~ ^[0-9]+$ ]] || return 1
   (( count > 0 )) && return 1 # already visible: never start a second one
 
@@ -207,7 +225,7 @@ afk_pcs_create_terminal() {
     --arg resume "$resume" \
     '{schema:"afk-pm-bootstrap-first-start-intent/1", project:$proj, harness:$h,
       worktree:{id:$wi, path:$wp}, resume_instruction:$resume}')" || return 1
-  intent_file="$AFK_STATE_DIR/paperclip/pm-start-intents/$id.json"
+  intent_file="$AFK_STATE_DIR/paperclip/pm-start-intents/$project.json"
   afk_state_file_write "$intent_file" "$intent" || return 1
 
   bootstrap="${AFK_PM_BOOTSTRAP_BIN:-$AFK_KIT_ROOT/adapters/orca-pm-bootstrap.sh}"
@@ -218,8 +236,8 @@ afk_pcs_create_terminal() {
   [[ -n "$terminal" ]] || return 1
 
   ledger="$(jq -c --arg id "$id" --arg t "$terminal" --arg proj "$project" --arg h "$harness" \
-    --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '.pm_started = ((.pm_started // {}) + {($id): {terminal:$t, project:$proj, harness:$h, at:$at}})' \
+    --arg r "$repo_path" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '.pm_started = ((.pm_started // {}) + {($id): {terminal:$t, project:$proj, harness:$h, repo:$r, at:$at}})' \
     <<<"$ledger")"
   return 0
 }
@@ -229,20 +247,42 @@ afk_pcs_create_terminal() {
 # written on take is the whole new mechanism, nothing else changes. Never
 # reaps a lock that is merely young, and never reaps one whose owner PID is
 # still alive.
-afk_pcs_lock_stale_reap() { # <lockdir> <interval_seconds>
-  local lockdir="$1" interval="$2" mtime now age owner_file pid
-  [[ -d "$lockdir" ]] || return 1
-  mtime="$(stat -c %Y "$lockdir" 2>/dev/null || stat -f %m "$lockdir" 2>/dev/null)" || return 1
+afk_pcs_path_age() { # <path> -> seconds since mtime, or fails
+  local mtime
+  mtime="$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null)" || return 1
   [[ "$mtime" =~ ^[0-9]+$ ]] || return 1
-  [[ "$interval" =~ ^[0-9]+$ ]] || interval=90
-  now="$(date +%s)"; age=$(( now - mtime ))
+  printf '%s' "$(( $(date +%s) - mtime ))"
+}
+
+afk_pcs_lock_is_stale() { # <lockdir> <interval_seconds>
+  local lockdir="$1" interval="$2" age pid=""
+  [[ -d "$lockdir" && ! -L "$lockdir" ]] || return 1
+  age="$(afk_pcs_path_age "$lockdir")" || return 1
   (( age > interval * 5 )) || return 1
-  owner_file="$lockdir/owner"; pid=""
-  [[ -f "$owner_file" ]] && pid="$(awk '{print $1}' "$owner_file" 2>/dev/null)"
+  [[ -f "$lockdir/owner" ]] && pid="$(awk '{print $1}' "$lockdir/owner" 2>/dev/null)"
   if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
-    return 1
+    # Alive. Only a reused PID (provably not a paperclip-poll) is stale;
+    # without /proc we cannot tell, so the lock stands.
+    [[ -r "/proc/$pid/cmdline" ]] || return 1
+    tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | grep -q 'paperclip-poll' && return 1
   fi
-  rm -rf -- "$lockdir"
+  return 0
+}
+
+afk_pcs_lock_stale_reap() { # <lockdir> <interval_seconds>
+  local lockdir="$1" interval="$2" reaplock="$1.reap" age rc=1
+  [[ "$interval" =~ ^[0-9]+$ ]] || interval=90
+  # Serialise reapers: without this, a reaper that checked before a peer's
+  # reap+mkdir would delete the peer's fresh, live lock. The staleness check
+  # runs under the reap lock, so a peer's new lock is always seen as young.
+  if ! mkdir "$reaplock" 2>/dev/null; then
+    age="$(afk_pcs_path_age "$reaplock")" || return 1
+    (( age > interval )) || return 1
+    rmdir "$reaplock" 2>/dev/null; mkdir "$reaplock" 2>/dev/null || return 1
+  fi
+  afk_pcs_lock_is_stale "$lockdir" "$interval" && rm -rf -- "$lockdir" && rc=0
+  rmdir "$reaplock" 2>/dev/null
+  return "$rc"
 }
 
 # --- AC-7: agent-flow-kit paperclip-timer ------------------------------------
@@ -327,10 +367,12 @@ afk_cmd_paperclip_timer() { # <json_mode> <action: install|remove|status>
         jq -nc --arg e "${enabled:-unknown}" --arg a "${active:-unknown}" \
           --arg lp "$last_pass" --arg r "$reason" --argjson sr "$reaped" \
           '{enabled:$e, active:$a, last_successful_pass:(if $lp=="" then null else $lp end),
-            reason:(if $r=="" then null else $r end), lock_stale_reaped:$sr}'
+            reason:(if $r=="" then null else $r end), lock_stale_reaped:$sr,
+            lock:(if $sr then "PAPERCLIP_LOCK_STALE" else null end)}'
       else
-        printf 'paperclip-timer: enabled=%s active=%s last_successful_pass=%s%s\n' \
-          "${enabled:-unknown}" "${active:-unknown}" "${last_pass:-none}" "${reason:+ ($reason)}"
+        printf 'paperclip-timer: enabled=%s active=%s last_successful_pass=%s%s%s\n' \
+          "${enabled:-unknown}" "${active:-unknown}" "${last_pass:-none}" "${reason:+ ($reason)}" \
+          "$([[ "$reaped" == true ]] && printf ' (PAPERCLIP_LOCK_STALE: reaped)')"
       fi
       [[ -z "$reason" ]]
       return $? ;;

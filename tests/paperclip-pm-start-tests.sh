@@ -85,7 +85,8 @@ SH
 # (AFK_PCS_READINESS_BIN). Never the real kit.
 cat >"$STUBS/readiness" <<'SH'
 #!/usr/bin/env bash
-if [[ "${READINESS_OK:-true}" == true ]]; then printf '{}'; exit 0; fi
+if [[ "${READINESS_OK:-true}" == true ]]; then printf '{"readiness":{"INSTALLED_INTEGRITY":{"state":"READY"}}}'; exit 0; fi
+if [[ "${READINESS_OK}" == integrity ]]; then printf '{"readiness":{"INSTALLED_INTEGRITY":{"state":"NOT_READY","reason":"INTEGRITY_DRIFT"}}}'; exit 0; fi
 printf '{"route":{"reason":"%s"}}' "${READINESS_REASON:-NOT_READY}"; exit 3
 SH
 chmod +x "$STUBS"/*
@@ -172,11 +173,11 @@ issue_route in_progress "$BOARD"
 do_pass
 assert_eq "none+Josh: pass exit 0" "$RC" "0"
 assert_eq "none+Josh: exactly one terminal create" "$(wc -l <"$ORCA_CREATE_LOG" | tr -d ' ')" "1"
-INTENT_FILE="$STATE/paperclip/pm-start-intents/$ISSUE1.json"
+INTENT_FILE="$STATE/paperclip/pm-start-intents/proj.json"
 assert_contains "none+Josh: fixed instruction text present" "$(cat "$INTENT_FILE")" "You are the BMAD PM for project proj"
 assert_absent "none+Josh: no issue title in the create argv" "$(cat "$ORCA_CREATE_LOG")" "T\""
 assert_absent "none+Josh: no issue description in the create argv" "$(cat "$ORCA_CREATE_LOG")" "\"D\""
-INTENT_FILE="$STATE/paperclip/pm-start-intents/$ISSUE1.json"
+INTENT_FILE="$STATE/paperclip/pm-start-intents/proj.json"
 assert_absent "none+Josh: no issue title in the bootstrap intent" "$(cat "$INTENT_FILE" 2>/dev/null)" "\"T\""
 assert_absent "none+Josh: no issue description in the bootstrap intent" "$(cat "$INTENT_FILE" 2>/dev/null)" "\"D\""
 LEDGER="$STATE/paperclip/ledger.json"
@@ -255,6 +256,28 @@ route GET "/api/issues/$ISSUE1/comments" 200 \
   "[{\"id\":\"c0000000-0000-0000-0000-00000000000a\",\"body\":\"approve start PROJ-1\",\"authorUserId\":\"$BOARD\",\"authorAgentId\":null,\"createdAt\":\"2026-02-01T00:00:00Z\"}]"
 run_afk paperclip-poll --json
 assert_eq "approved: exactly one terminal create" "$(wc -l <"$ORCA_CREATE_LOG" | tr -d ' ')" "1"
+# The harness has since retitled its terminal and has not registered yet:
+# the registry still says `none` and no title matches. Still one start.
+run_afk paperclip-poll --json
+assert_eq "approved: a later pass never starts a second PM" "$(wc -l <"$ORCA_CREATE_LOG" | tr -d ' ')" "1"
+
+# The stop flag holds every start, even an approved one.
+new_scenario approved_but_stopped
+write_config "$(jq -nc --arg cv v1 '{pm_start_enabled:true, paperclip_version:$cv, interim_comment_approval:{paperclip_version:$cv}}')"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+mkdir -p "$STATE/paperclip" "$HOME/.config/agent-flow-kit/paperclip"
+: >"$HOME/.config/agent-flow-kit/paperclip/stop"
+jq -n --arg a "$AGENT1" --arg id "$ISSUE1" \
+  '{issues: {($id): {agent_id: $a, project: "proj", identifier: "PROJ-1", state: "pending_claim", since: "2026-01-01T00:00:00Z"}},
+    stranded_reported: [], drain_tampered_reported: false, last_successful_pass: null}' \
+  >"$STATE/paperclip/ledger.json"
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+route GET "/api/issues/$ISSUE1" 200 \
+  "{\"status\":\"blocked\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"createdByUserId\":\"$BOARD\",\"unblockDescriptor\":{\"owner\":{\"agentId\":\"$AGENT1\"},\"action\":\"paused\"}}"
+route GET "/api/issues/$ISSUE1/comments" 200 '[]'
+route POST "/api/issues/$ISSUE1/comments" 201 '{}'
+run_afk paperclip-poll --json
+assert_eq "stopped: no terminal create" "$(wc -l <"$ORCA_CREATE_LOG" | tr -d ' ')" "0"
 
 # ============================================================================
 head1 "5. Attestation absent -> APPROVAL_INTERIM_UNATTESTED, no start"
@@ -329,6 +352,16 @@ LEDGER="$STATE/paperclip/ledger.json"
 assert_contains "not ready: action text carries the code" \
   "$(jq -r --arg id "$ISSUE1" '.issues[$id].action_text' "$LEDGER")" "REPO_DIRTY"
 
+new_scenario not_ready_exit0
+write_config '{"pm_start_enabled":true}'
+READINESS_OK=integrity
+issue_route in_progress "$BOARD"
+do_pass
+READINESS_OK=true
+assert_eq "not ready (exit 0): no terminal create" "$(wc -l <"$ORCA_CREATE_LOG" | tr -d ' ')" "0"
+assert_contains "not ready (exit 0): action text carries the code" \
+  "$(jq -r --arg id "$ISSUE1" '.issues[$id].action_text' "$STATE/paperclip/ledger.json")" "INTEGRITY_DRIFT"
+
 # ============================================================================
 head1 "9. paperclip-timer install/status/remove"
 # ============================================================================
@@ -392,6 +425,32 @@ issue_route in_progress "$BOARD"
 do_pass
 assert_eq "stale lock: the pass proceeds instead of reporting busy" "$RC" "0"
 assert_absent "stale lock: PAPERCLIP_POLL_BUSY is not reported" "$OUT_TEXT" "PAPERCLIP_POLL_BUSY"
+
+# An old lock whose owner is a live paperclip-poll is never reaped.
+new_scenario live_lock
+write_config '{"pm_start_enabled":true}'
+mkdir -p "$STATE/paperclip/.lock"
+bash -c 'sleep 30; :' paperclip-poll & LIVE_PID=$!
+printf '%s 0\n' "$LIVE_PID" >"$STATE/paperclip/.lock/owner"
+touch -d '-1000 seconds' "$STATE/paperclip/.lock"
+issue_route in_progress "$BOARD"
+do_pass
+kill "$LIVE_PID" 2>/dev/null; wait "$LIVE_PID" 2>/dev/null
+assert_contains "live lock: still busy" "$OUT_TEXT" "PAPERCLIP_POLL_BUSY"
+assert_eq "live lock: the lock stays" "$([[ -d "$STATE/paperclip/.lock" ]] && echo yes)" "yes"
+
+# A reused PID (alive, but not a paperclip-poll) does not pin the lock.
+new_scenario reused_pid_lock
+write_config '{"pm_start_enabled":true}'
+mkdir -p "$STATE/paperclip/.lock"
+sleep 30 & OTHER_PID=$!
+printf '%s 0\n' "$OTHER_PID" >"$STATE/paperclip/.lock/owner"
+touch -d '-1000 seconds' "$STATE/paperclip/.lock"
+issue_route in_progress "$BOARD"
+do_pass
+kill "$OTHER_PID" 2>/dev/null; wait "$OTHER_PID" 2>/dev/null
+assert_absent "reused pid: not busy" "$OUT_TEXT" "PAPERCLIP_POLL_BUSY"
+assert_contains "reused pid: PAPERCLIP_LOCK_STALE reported" "$OUT_TEXT" "PAPERCLIP_LOCK_STALE"
 
 # ============================================================================
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

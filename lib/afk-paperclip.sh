@@ -542,6 +542,7 @@ afk_cmd_paperclip_poll() { # <json_mode>
       afk_pc_emit_refusal "PAPERCLIP_POLL_BUSY" "$json_mode"
       return 0
     fi
+    afk_warn "PAPERCLIP_LOCK_STALE: reaped a poll lock left by a dead pass"
   fi
   printf '%s %s\n' "$$" "$(date +%s)" >"$lockdir/owner" 2>/dev/null || true
   # Chain the entry point's own EXIT handler rather than replacing it.
@@ -810,7 +811,10 @@ afk_cmd_paperclip_poll() { # <json_mode>
             # moment it was first claimed — a later exact Josh approval
             # comment, or the registry finally reporting `none`, is decided
             # here on the pass that observes it.
-            afk_pc_maybe_start_pm
+            # Never while paused, stopped or draining, and never for an issue
+            # this host has already stranded or closed.
+            AFK_PCS_ACTION_OVERRIDE=""
+            [[ "$pause_kind" == none && "$prev_state" != stranded && "$prev_state" != closed ]] && afk_pc_maybe_start_pm
             [[ -n "$AFK_PCS_ACTION_OVERRIDE" ]] && ledger="$(jq -c --arg id "$id" --arg t "$AFK_PCS_ACTION_OVERRIDE" \
               '.issues[$id].action_text = $t | .issues[$id].action_text_applied = $t' <<<"$ledger")"
 
