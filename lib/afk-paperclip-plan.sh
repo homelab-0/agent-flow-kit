@@ -63,7 +63,10 @@ afk_pcp_check_gates() {
     afk_pcp_emit "$json_mode" GATE_ALLOWLIST_MISSING; return 1
   fi
   while IFS= read -r line; do
-    [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+    # A comment is a line whose first byte is `#`; an indented `#` line is an
+    # entry (it can never equal a gate). Entries are byte-exact: a CRLF line
+    # keeps its CR and matches nothing.
+    [[ "$line" == \#* || "$line" =~ ^[[:space:]]*$ ]] && continue
     allowed["$line"]=1
   done <<<"$allow"
   while IFS= read -r line; do
@@ -116,34 +119,60 @@ afk_cmd_paperclip_plan() {
      [[ -e "$approvals/$id.json" || -e "$plans/$id.json" ]]; then
     afk_pcr_unlock "$lock"; afk_pcp_emit "$json_mode" PAPERCLIP_REGISTRY_WRITE_FAILED; return 1
   fi
+  # The record is durable before the question can reach the spool, so the
+  # poller never sends a plan question that has no plan record behind it.
+  # 1. pending_publish, no seq: nothing can approve it yet.
+  local rec_at rec
+  rec_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  rec="$(jq -nc --argjson p "$plan" --arg d "$digest" --arg q "$qid" --arg bs "$body_sha" \
+    --arg bc "$base_commit" --arg at "$rec_at" \
+    '{schema:"afk-paperclip-plan-record/1", state:"pending_publish", digest:$d, digest8:$d[0:8], question_id:$q,
+      body_sha256:$bs, repo:$p.repo, base:$p.base, base_commit:$bc, stories:$p.stories, posted_seq:null, created_at:$at}')"
+  if ! afk_state_file_write "$plans/$id.json" "$rec"; then
+    afk_pcr_unlock "$lock"; afk_pcp_emit "$json_mode" PAPERCLIP_REGISTRY_WRITE_FAILED; return 1
+  fi
+  # 2. publish through PC-3a's writer, called directly (never in a subshell)
+  # so its lock trap and ordering are the ones every other spool entry uses.
   local cfile="$plans/.tmp/$id.comment" ofile="$plans/.tmp/$id.out" rc=0 seq
   afk_state_file_write "$cfile" \
     "${body}"$'\n'"plan $digest8"$'\n'"Reply exactly \`approve $digest8\` to approve, or \`reject $digest8\`." || rc=1
-  # PC-3a's writer, called directly (never in a subshell) so its lock trap
-  # and ordering are the ones every other spool entry uses.
   (( rc == 0 )) && { afk_pcr_report_entry true "$id" "$cfile" "$qid" "" >"$ofile" || rc=$?; }
   AFK_PCR_HELD_LOCK="$lock" # the writer's own unlock cleared it
   seq="$(jq -r '.seq // empty' "$ofile" 2>/dev/null)"
   if (( rc != 0 )) || ! [[ "$seq" =~ ^[0-9]+$ ]]; then
     reason="$(jq -r '.result // empty' "$ofile" 2>/dev/null)"
-    rm -f -- "$cfile" "$ofile"; afk_pcr_unlock "$lock"
+    rm -f -- "$cfile" "$ofile" "$plans/$id.json"; afk_pcr_unlock "$lock"
     afk_pcp_emit "$json_mode" "${reason:-PAPERCLIP_REGISTRY_WRITE_FAILED}"; return "${rc/#0/1}"
   fi
   rm -f -- "$cfile" "$ofile"
-  local rec
-  rec="$(jq -nc --argjson p "$plan" --arg d "$digest" --arg q "$qid" --arg bs "$body_sha" \
-    --arg bc "$base_commit" --argjson seq "$seq" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '{schema:"afk-paperclip-plan-record/1", digest:$d, digest8:$d[0:8], question_id:$q, body_sha256:$bs,
-      repo:$p.repo, base:$p.base, base_commit:$bc, stories:$p.stories, posted_seq:$seq, created_at:$at}')"
-  afk_state_file_write "$plans/$id.json" "$rec" || rc=1
+  # 3. posted, with the seq. If that write fails, fall back to a
+  # pending_publish record that still carries the seq: the poller accepts
+  # it for the question it matches, and nothing else.
+  rec="$(jq -c --argjson seq "$seq" '.posted_seq = $seq' <<<"$rec")"
+  if ! afk_state_file_write "$plans/$id.json" "$(jq -c '.state = "posted"' <<<"$rec")"; then
+    afk_state_file_write "$plans/$id.json" "$rec"
+    afk_pcr_unlock "$lock"
+    afk_pcp_emit "$json_mode" PAPERCLIP_REGISTRY_WRITE_FAILED \
+      "$(jq -nc --arg d8 "$digest8" --argjson seq "$seq" '{digest8:$d8, seq:$seq}')"
+    return 1
+  fi
   afk_pcr_unlock "$lock"
-  (( rc == 0 )) || { afk_pcp_emit "$json_mode" PAPERCLIP_REGISTRY_WRITE_FAILED; return 1; }
   if [[ "$json_mode" == true ]]; then
     jq -nc --arg id "$id" --arg d "$digest" --arg q "$qid" --argjson seq "$seq" \
       '{result:"ok", issue:$id, digest:$d, digest8:$d[0:8], question_id:$q, seq:$seq}'
   else
     printf 'plan %s (seq %s)\n' "$digest8" "$seq"
   fi
+}
+
+# afk_pcp_live <plan-record-json> <sent-seq> -- the record stands behind the
+# question the poller sent: `posted`, or a `pending_publish` left by a failed
+# final write that still carries the seq, and in both cases posted_seq equals
+# that sent seq. Anything else (no state, pending with no seq) never matches.
+afk_pcp_live() {
+  [[ "$2" =~ ^[0-9]+$ ]] || return 1
+  jq -e --arg s "$2" '(.state == "posted" or .state == "pending_publish")
+    and (.posted_seq | type) == "number" and (.posted_seq | tostring) == $s' <<<"$1" >/dev/null 2>&1
 }
 
 # afk_pcp_attested <approval-commit-or-empty> -- AC-6 config half: the
@@ -177,21 +206,37 @@ afk_pcp_on_josh_comment() {
   [[ -r "$plans/$id.json" ]] && plan="$(jq -c '.' "$plans/$id.json" 2>/dev/null)"
   digest="$(jq -r '.digest // empty' <<<"${plan:-null}")"
   if [[ "$verb" == reject ]]; then
-    # A reject also withdraws an earlier approval of this same plan.
-    if [[ -n "$digest" && -e "$AFK_STATE_DIR/paperclip/approvals/$id.json" ]] && afk_pc_spool_lock "$lock"; then
-      [[ "$(jq -r '.digest // empty' "$AFK_STATE_DIR/paperclip/approvals/$id.json" 2>/dev/null)" == "$digest" ]] &&
-        rm -f -- "$AFK_STATE_DIR/paperclip/approvals/$id.json"
-      afk_pc_spool_unlock "$lock"
+    # A reject also withdraws an earlier approval of this same plan, under the
+    # plan lock. approval_rejected is written only when there was nothing to
+    # withdraw or the withdrawal happened; otherwise approval_withdraw_failed.
+    local appr="$AFK_STATE_DIR/paperclip/approvals/$id.json" ev=approval_rejected wreason=""
+    if [[ -e "$appr" ]]; then
+      if afk_pc_spool_lock "$lock"; then
+        digest="$(jq -r '.digest // empty' "$plans/$id.json" 2>/dev/null)"
+        if [[ -n "$digest" && "$(jq -r '.digest // empty' "$appr" 2>/dev/null)" == "$digest" ]]; then
+          rm -f -- "$appr" 2>/dev/null
+          [[ -e "$appr" ]] && wreason=APPROVAL_WRITE_FAILED
+        fi
+        afk_pc_spool_unlock "$lock"
+      else
+        wreason=PAPERCLIP_LOCK_TIMEOUT
+      fi
     fi
-    afk_pc_notice "$project" "$id" "$identifier" "$agent_id" "$repo_path" "$harness" approval_rejected "$x"
-    actions="$(jq -c --arg t "approval_rejected: $identifier" '. + [$t]' <<<"$actions")"
+    if [[ -n "$wreason" ]]; then
+      ev=approval_withdraw_failed
+      x="$(jq -c --arg r "$wreason" '. + {reason:$r}' <<<"$x")"
+      actions="$(jq -c --arg t "approval_withdraw_failed ($wreason): $identifier" '. + [$t]' <<<"$actions")"
+    else
+      actions="$(jq -c --arg t "approval_rejected: $identifier" '. + [$t]' <<<"$actions")"
+    fi
+    afk_pc_notice "$project" "$id" "$identifier" "$agent_id" "$repo_path" "$harness" "$ev" "$x"
     return 0
   fi
   local sent_seq sent_at
   sent_seq="$(jq -r --arg id "$id" '.issues[$id].question_seq // empty' <<<"$ledger")"
   sent_at="$(jq -r --arg id "$id" '.issues[$id].question_sent_at // empty' <<<"$ledger")"
   if [[ -z "$plan" || ! "$digest" =~ ^[0-9a-f]{64}$ || "${digest:0:8}" != "$d8" ||
-        "$(jq -r '.question_id' <<<"$plan")" != "$qid" || -z "$sent_seq" || "$(jq -r '.posted_seq' <<<"$plan")" != "$sent_seq" ]]; then
+        "$(jq -r '.question_id' <<<"$plan")" != "$qid" ]] || ! afk_pcp_live "$plan" "$sent_seq"; then
     reason=APPROVAL_PLAN_MISMATCH
   elif [[ -z "$sent_at" || -z "$3" || ! "$3" > "$sent_at" ]]; then
     reason=APPROVAL_BEFORE_PLAN
@@ -206,7 +251,8 @@ afk_pcp_on_josh_comment() {
     reason=APPROVAL_WRITE_FAILED
     if afk_pc_spool_lock "$lock"; then
       # Re-checked under the plan lock: a re-plan that landed meanwhile wins.
-      if [[ "$(jq -r '.digest // empty' "$plans/$id.json" 2>/dev/null)" == "$digest" ]]; then
+      plan="$(jq -c '.' "$plans/$id.json" 2>/dev/null)"
+      if [[ "$(jq -r '.digest // empty' <<<"${plan:-null}")" == "$digest" ]] && afk_pcp_live "$plan" "$sent_seq"; then
         rec="$(jq -nc --arg d "$digest" --arg c "$2" --arg ca "$3" --arg pc "$AFK_PCP_COMMIT" \
           --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
           '{schema:"afk-paperclip-approval/1", kind:"plan", digest:$d, digest8:$d[0:8], comment_id:$c,

@@ -72,7 +72,7 @@ reset_state() {
 RC=0 OUT_TEXT=""
 run_afk() { # <handle> <args...>
   local handle="$1"; shift
-  OUT_TEXT="$(env -i PATH="$STUBS:$PATH" HOME="$HOME_DIR" LANG=C \
+  OUT_TEXT="$(env -i PATH="${FAULT_PATH:+$FAULT_PATH:}$STUBS:$PATH" HOME="$HOME_DIR" LANG=C \
     AFK_STATE_DIR="$STATE" AFK_ORCA_BIN="$STUBS/orca" \
     AFK_PAPERCLIP_CONFIG="$CONFIG" ORCA_TERMINAL_HANDLE="$handle" \
     bash "$AFK" "$@" 2>&1)"
@@ -171,6 +171,50 @@ assert_eq "a changed plan gets a new digest" "$([[ "$(jq -r .digest <<<"$OUT_TEX
 assert_eq "a re-plan revokes the approval record" "$([[ -e "$STATE/paperclip/approvals/$ISSUE.json" ]] && echo present || echo gone)" "gone"
 run_afk termA paperclip-approval --issue "$ISSUE"
 assert_eq "  ...and paperclip-approval says so (exit 1)" "$OUT_TEXT $RC" "not approved: NOT_APPROVED 1"
+
+head1 "5. Allowlist comment rule"
+printf '# c\n   \n\t\n  # indented\nbash tests/c.sh\r\n' >"$REPO/.afk/gates-allowlist"
+g add .afk; g commit -qm quirks; g branch quirks; g reset -q --hard HEAD~1
+reset_state
+run_afk termA paperclip-plan --issue "$ISSUE" --plan-file "$(plan_file quirks "$(story_with_gates '["   "]')")" --json
+assert_contains "a whitespace-only allowlist line is ignored, never a gate" "$OUT_TEXT" "GATE_NOT_ALLOWLISTED"
+run_afk termA paperclip-plan --issue "$ISSUE" --plan-file "$(plan_file quirks "$(story_with_gates '["bash tests/c.sh"]')")" --json
+assert_contains "a CRLF allowlist entry matches nothing" "$OUT_TEXT" "GATE_NOT_ALLOWLISTED"
+run_afk termA paperclip-plan --issue "$ISSUE" --plan-file "$(plan_file quirks "$(story_with_gates '["# c"]')")" --json
+assert_contains "a line starting with # is a comment" "$OUT_TEXT" "GATE_NOT_ALLOWLISTED"
+run_afk termA paperclip-plan --issue "$ISSUE" --plan-file "$(plan_file quirks "$(story_with_gates '["  # indented"]')")" --json
+assert_eq "an indented # line is an entry, not a comment" "$(jq -r .result <<<"$OUT_TEXT")" "ok"
+
+head1 "6. Publication order: record, question, posted (failure points)"
+# mv stubs that fail only the rename of a plan record in one state.
+REAL_MV="$(command -v mv)"
+for st in pending_publish posted; do
+  mkdir -p "$TMPROOT/fault_$st"
+  cat >"$TMPROOT/fault_$st/mv" <<SH
+#!/usr/bin/env bash
+dst="\${*: -1}"; src="\${*: -2:1}"
+[[ "\$dst" == */paperclip/plans/*.json ]] && grep -q '"state":"$st"' "\$src" 2>/dev/null && exit 1
+exec "$REAL_MV" "\$@"
+SH
+  chmod +x "$TMPROOT/fault_$st/mv"
+done
+reset_state
+N0="$(spool_count)"
+FAULT_PATH="$TMPROOT/fault_pending_publish" run_afk termA paperclip-plan --issue "$ISSUE" --plan-file "$(plan_file main "$S_OK")" --json
+assert_eq "step 1 (pending record) fails -> refused" "$(jq -r .result <<<"$OUT_TEXT") $RC" "PAPERCLIP_REGISTRY_WRITE_FAILED 1"
+assert_eq "  ...nothing published" "$(spool_count)" "$N0"
+assert_eq "  ...no plan record" "$([[ -e "$PLAN" ]] && echo present || echo absent)" "absent"
+mkdir -p "$STATE/paperclip/spool/$ISSUE"; : >"$STATE/paperclip/spool/$ISSUE/.final"
+run_afk termA paperclip-plan --issue "$ISSUE" --plan-file "$(plan_file main "$S_OK")" --json
+assert_eq "step 2 (publish) fails -> the writer's refusal" "$(jq -r .result <<<"$OUT_TEXT")" "PAPERCLIP_SPOOL_CLOSED"
+assert_eq "  ...the pending record is removed" "$([[ -e "$PLAN" ]] && echo present || echo absent)" "absent"
+rm -f "$STATE/paperclip/spool/$ISSUE/.final"
+FAULT_PATH="$TMPROOT/fault_posted" run_afk termA paperclip-plan --issue "$ISSUE" --plan-file "$(plan_file main "$S_OK")" --json
+assert_eq "step 3 (posted) fails -> refused, naming the published seq" "$(jq -c '[.result, .seq]' <<<"$OUT_TEXT") $RC" '["PAPERCLIP_REGISTRY_WRITE_FAILED",1] 1'
+assert_eq "  ...the question is published" "$(spool_count)" "1"
+assert_eq "  ...a pending_publish record that carries the seq is left" "$(jq -c '[.state, .posted_seq]' "$PLAN" 2>/dev/null)" '["pending_publish",1]'
+run_afk termA paperclip-plan --issue "$ISSUE" --plan-file "$(plan_file main "$S_OK")" --json
+assert_eq "no fault -> the record ends posted with its seq" "$(jq -c '[.state, .posted_seq]' "$PLAN" 2>/dev/null)" '["posted",2]'
 
 printf '\n\033[1m%d passed, %d failed\033[0m\n' "$PASS" "$FAIL"
 (( FAIL == 0 )) || exit 1

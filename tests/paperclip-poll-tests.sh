@@ -1040,7 +1040,9 @@ PCOMMIT="d554c4789ed3930f8a53ac9fdf6503b3187097da"
 PATT="{\"attested_on\":\"2026-09-27\",\"paperclip_commit\":\"$PCOMMIT\"}"
 # plan_scenario <name> <comments-json> [<interim-json|none>] [<health code>] [<health body>]
 # Overrides via the environment: PQID (the ledger's open question id), PSENT
-# (question_sent_at as JSON, e.g. null) and PSEQ (the plan file's posted_seq).
+# (question_sent_at as JSON, e.g. null), PSEQ (the plan file's posted_seq,
+# JSON), PSTATE (its state, JSON; null omits it), PAPPR=1 (an approval of the
+# plan already on file) and PLOCK=1 (the plan lock already held).
 plan_scenario() {
   local qid="${PQID:-plan-$PD8}" sent="${PSENT:-\"2026-03-01T00:00:00.000Z\"}"
   new_scenario "$1"
@@ -1052,9 +1054,16 @@ plan_scenario() {
   seed_working "$ISSUE1" HOM-12 waiting_human \
     "{\"question_id\":\"$qid\",\"question_seq\":3,\"question_sent_at\":$sent,\"action_text_applied\":\"waiting on $qid\"}"
   mkdir -p "$STATE/paperclip/plans"
-  jq -nc --arg d "$PD" --argjson seq "${PSEQ:-3}" \
-    '{schema:"afk-paperclip-plan-record/1", digest:$d, digest8:$d[0:8], question_id:("plan-" + $d[0:8]), posted_seq:$seq}' \
+  jq -nc --arg d "$PD" --argjson seq "${PSEQ:-3}" --argjson st "${PSTATE:-\"posted\"}" \
+    '{schema:"afk-paperclip-plan-record/1", digest:$d, digest8:$d[0:8], question_id:("plan-" + $d[0:8]), posted_seq:$seq}
+     + (if $st == null then {} else {state:$st} end)' \
     >"$STATE/paperclip/plans/$ISSUE1.json"
+  if [[ -n "${PAPPR:-}" ]]; then
+    mkdir -p "$STATE/paperclip/approvals"
+    jq -nc --arg d "$PD" '{schema:"afk-paperclip-approval/1", kind:"plan", digest:$d, digest8:$d[0:8]}' \
+      >"$STATE/paperclip/approvals/$ISSUE1.json"
+  fi
+  [[ -n "${PLOCK:-}" ]] && mkdir -p "$STATE/paperclip/plans/.$ISSUE1.lock"
   route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
   route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
   route GET "/api/issues/$ISSUE1" 200 \
@@ -1109,6 +1118,26 @@ assert_contains "  ...reported unverifiable" "$OUT_TEXT" "PAPERCLIP_AUTHOR_UNVER
 PSEQ=2 plan_scenario appr_seq_mismatch "[$(jc 1 "approve $PD8")]"
 assert_missing "plan file posted_seq != the sent question_seq -> no record" "$APPROVAL"
 assert_contains "  ...APPROVAL_PLAN_MISMATCH" "$OUT_TEXT" "APPROVAL_PLAN_MISMATCH"
+
+PSTATE='"pending_publish"' plan_scenario appr_pending_seq "[$(jc 1 "approve $PD8")]"
+assert_eq "a pending_publish record carrying the sent seq -> approved" "$(jq -r .digest "$APPROVAL" 2>/dev/null)" "$PD"
+PSTATE='"pending_publish"' PSEQ=null plan_scenario appr_pending_noseq "[$(jc 1 "approve $PD8")]"
+assert_missing "a pending_publish record with no seq -> no record" "$APPROVAL"
+assert_contains "  ...APPROVAL_PLAN_MISMATCH" "$OUT_TEXT" "APPROVAL_PLAN_MISMATCH"
+PSTATE=null plan_scenario appr_no_state "[$(jc 1 "approve $PD8")]"
+assert_missing "a plan record with no state -> no record" "$APPROVAL"
+PSTATE='"withdrawn"' plan_scenario appr_other_state "[$(jc 1 "approve $PD8")]"
+assert_missing "a plan record in any other state -> no record" "$APPROVAL"
+
+PAPPR=1 plan_scenario appr_reject_withdraws "[$(jc 1 "reject $PD8")]"
+assert_missing "reject <d8> withdraws an approval of the same plan" "$APPROVAL"
+assert_eq "  ...then one approval_rejected notice" "$(notices approval_rejected)" "1"
+PAPPR=1 PLOCK=1 plan_scenario appr_reject_locked "[$(jc 1 "reject $PD8")]"
+assert_eq "reject while the plan lock is held -> the approval stays" "$(jq -r .digest "$APPROVAL" 2>/dev/null)" "$PD"
+assert_eq "  ...no approval_rejected notice" "$(notices approval_rejected)" "0"
+assert_eq "  ...an approval_withdraw_failed notice with the reason" \
+  "$(jq -r .reason "$NOTICE_DIR"/*.approval_withdraw_failed.json 2>/dev/null)" "PAPERCLIP_LOCK_TIMEOUT"
+assert_contains "  ...and a local action line" "$OUT_TEXT" "approval_withdraw_failed (PAPERCLIP_LOCK_TIMEOUT): HOM-12"
 
 PSENT=null plan_scenario appr_sent_unknown "[$(jc 1 "approve $PD8")]"
 assert_missing "question_sent_at unknown -> no record" "$APPROVAL"
