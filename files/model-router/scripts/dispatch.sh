@@ -2541,20 +2541,27 @@ scan_worktree_for_secrets() { # <worktree> <secrets-fd> <base>
 # untracked (ignored ones included). --no-renames, so a file moved OUT of
 # .afk/ still shows its old path. Prints one path per line; nothing when clean
 # or when the tree is not a git repository (the secret scan reports that).
+# Fails closed: if any git query fails (a base that is gone with no HEAD to
+# fall back to, a diff or ls-files error) it prints nothing and returns 3, and
+# the cycle fails with AFK_PROTECTED_PATH_UNCHECKABLE rather than reading clean.
 afk_protected_paths() { # <worktree> <base>
-  local top base="${2:-}" f
+  local top base="${2:-}" f out rc=0
   local -A afk_seen=()
   top="$(git -C "$1" rev-parse --show-toplevel 2>/dev/null)" || return 0
   if [[ -n "$base" ]] && ! git -C "$top" cat-file -e "${base}^{commit}" 2>/dev/null; then base=""; fi
-  while IFS= read -r -d '' f; do
-    [[ "$f" == .afk || "$f" == .afk/* ]] || continue
-    [[ -n "${afk_seen[$f]+x}" ]] && continue
-    afk_seen[$f]=1; printf '%s\n' "$f"
-  done < <({
-    git -C "$top" diff -z --no-renames --name-only "${base:-HEAD}" --
-    git -C "$top" diff -z --no-renames --name-only --cached --
-    git -C "$top" ls-files -z -o -- .afk
-  } 2>/dev/null)
+  out="$(mktemp)" || return 3
+  { git -C "$top" diff -z --no-renames --name-only "${base:-HEAD}" -- >"$out" &&
+    git -C "$top" diff -z --no-renames --name-only --cached -- >>"$out" &&
+    git -C "$top" ls-files -z -o -- .afk >>"$out"; } 2>/dev/null || rc=3
+  if (( rc == 0 )); then
+    while IFS= read -r -d '' f; do
+      [[ "$f" == .afk || "$f" == .afk/* ]] || continue
+      [[ -n "${afk_seen[$f]+x}" ]] && continue
+      afk_seen[$f]=1; printf '%s\n' "$f"
+    done <"$out"
+  fi
+  rm -f -- "$out"
+  return "$rc"
 }
 
 # paperclip_story_marked — any Paperclip marker (home, issue, HOM- story id)
@@ -3481,8 +3488,10 @@ EOF
   local secret_scan_count=${#SECRET_SCAN_VALUES[@]}
   SECRET_SCAN_VALUES=()
 
-  local gates_log_dir="" afk_hits=""
-  (( secret_scan_rc == 3 )) || afk_hits="$(afk_protected_paths "$(realpath "$PWD")" "$SECRET_SCAN_BASE")"
+  local gates_log_dir="" afk_hits="" afk_rc=0
+  if (( secret_scan_rc != 3 )); then
+    afk_hits="$(afk_protected_paths "$(realpath "$PWD")" "$SECRET_SCAN_BASE")" || afk_rc=$?
+  fi
   if (( secret_scan_rc == 3 )); then
     # shellcheck disable=SC2034 # GATE_LOGS: legacy map read by sourcing tests (see dispatch_run_gates)
     declare -g -A GATE_RESULTS=() GATE_LOGS=(); declare -g -a GATE_LOG_ENTRIES=(); GATES_OK=false
@@ -3494,14 +3503,22 @@ EOF
     SECRET_SCAN_FAILURE_REASON="SECRET_IN_DIFF"
     SECRET_SCAN_PATHS_JSON="$(printf '%s\n' "${secret_hit_paths[@]}" | jq -R -s -c 'split("\n") | map(select(length > 0))')"
     RESULT_STATUS=""
-  elif [[ -n "$afk_hits" ]]; then
+  elif [[ -n "$afk_hits" ]] || (( afk_rc != 0 )); then
     # AFK_PROTECTED_PATH (AFK-PC-4 AC-6): .afk/ holds the gate allowlist a plan
     # is judged against, so a worker touching it fails the cycle, gates unrun.
+    # A tree the check could not read fails the same way, never as clean.
     # shellcheck disable=SC2034 # GATE_LOGS: legacy map read by sourcing tests
     declare -g -A GATE_RESULTS=() GATE_LOGS=(); declare -g -a GATE_LOG_ENTRIES=(); GATES_OK=false
-    printf 'AFK_PROTECTED_PATH: %s\n' "$(paste -sd, <<<"$afk_hits")" | tee "${STORY}.blocked" >&2
-    SECRET_SCAN_FAILURE_REASON="AFK_PROTECTED_PATH"
-    SECRET_SCAN_PATHS_JSON="$(jq -R -s -c 'split("\n") | map(select(length > 0))' <<<"$afk_hits")"
+    if (( afk_rc != 0 )); then
+      printf 'AFK_PROTECTED_PATH_UNCHECKABLE: git could not list the changes under .afk/ since %s\n' \
+        "${SECRET_SCAN_BASE:-HEAD}" | tee "${STORY}.blocked" >&2
+      SECRET_SCAN_FAILURE_REASON="AFK_PROTECTED_PATH_UNCHECKABLE"
+      SECRET_SCAN_PATHS_JSON='[]'
+    else
+      printf 'AFK_PROTECTED_PATH: %s\n' "$(paste -sd, <<<"$afk_hits")" | tee "${STORY}.blocked" >&2
+      SECRET_SCAN_FAILURE_REASON="AFK_PROTECTED_PATH"
+      SECRET_SCAN_PATHS_JSON="$(jq -R -s -c 'split("\n") | map(select(length > 0))' <<<"$afk_hits")"
+    fi
     RESULT_STATUS=""
   else
     if (( secret_scan_rc == 4 )); then

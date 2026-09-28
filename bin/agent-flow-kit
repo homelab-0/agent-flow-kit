@@ -345,7 +345,8 @@ agent-flow-kit — lifecycle entry point
   agent-flow-kit route-accept --story <story.md> --verify [--json]
       Write <story>.acceptance.json binding the stamp's decision digest to who
       accepted it. pm-auto only for a natural, free, non-excluded Paperclip
-      story in Josh's approved plan with unchanged gates. --verify is the
+      story in Josh's approved plan with unchanged gates; a Paperclip story
+      accepts pm-auto only (human/override: ACCEPTANCE_KIND_NOT_ALLOWED). --verify is the
       check dispatch.sh runs on every cycle of a Paperclip story.
 
   agent-flow-kit paperclip-timer --install|--remove|--status [--json]

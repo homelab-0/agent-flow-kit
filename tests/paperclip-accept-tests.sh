@@ -137,7 +137,7 @@ gate_then_launch "$S"; assert_eq "cycle 1 passes" "$RC" "0"
 sed -i 's#bash tests/b.sh#bash tests/b.sh --skip#' "$S"
 gate_then_launch "$S"
 assert_eq "cycle 2 after a gate edit -> STORY_CONTRACT_MUTATED" "$RC $(blocked "$S")" "4 STORY_CONTRACT_MUTATED"
-S="$(new_story disp3)"; accept --story "$S" --kind human --actor josh
+S="$(new_story disp3)"; accept --story "$S" --kind pm-auto --actor pm
 rm -f "$STATE/paperclip/approvals/$ISSUE.json"
 gate_then_launch "$S"
 assert_eq "approval withdrawn -> PLAN_NOT_APPROVED" "$RC $(blocked "$S")" "4 PLAN_NOT_APPROVED"
@@ -158,9 +158,30 @@ S="$(new_story forged)"; D="$(jq -r .decision_digest "$TMPROOT/disp2.md.acceptan
 jq -nc --arg d "$D" '{schema:"afk-acceptance/1", story_id:"HOM-12.S1", decision_digest:$d}' >"$S.acceptance.json"
 gate_then_launch "$S"
 assert_eq "a record with the right digest but no kind/actor -> ACCEPTANCE_INVALID" "$RC $(blocked "$S")" "4 ACCEPTANCE_INVALID"
-S="$(new_story humet '.cost_class = "subscription" | .metered = true')"; accept --story "$S" --kind human --actor josh
+# A Paperclip story accepts pm-auto only: a human or override record, however
+# it was written, is refused, and a hard-excluded stamp stays refused whatever
+# the kind. route-accept will not write one either.
+forge() { # <story> <kind> -- a record with the right digest, written directly
+  jq -nc --arg k "$2" --arg d "sha256:$(jq -cS '{harness, model_profile, effort, cost_class, metered, catalog_version, task:{story_id: .task.story_id}}' "$1.stamp.json" | sha256sum | awk '{print $1}')" \
+    '{schema:"afk-acceptance/1", story_id:"HOM-12.S1", decision_digest:$d, kind:$k, actor:"josh", reason:"r"}' >"$1.acceptance.json"
+}
+for k in human override; do
+  for v in "free:." "metered:.cost_class = \"subscription\" | .metered = true" "excluded:.task.tags += [\"secrets\"]"; do
+    S="$(new_story "forge-$k-${v%%:*}" "${v#*:}")"; forge "$S" "$k"
+    want=ACCEPTANCE_KIND_NOT_ALLOWED; [[ "${v%%:*}" == excluded ]] && want=HARD_EXCLUSION
+    gate_then_launch "$S"
+    assert_eq "a forged $k record on a ${v%%:*} Paperclip stamp -> $want, not launched" \
+      "$RC $(blocked "$S") $([[ "$OUT" == *LAUNCHED* ]] && echo L)" "4 $want "
+    rm -f "$S.acceptance.json"; accept --story "$S" --kind "$k" --actor josh --reason r
+    assert_eq "route-accept --kind $k on a ${v%%:*} Paperclip stamp -> $want, nothing written" \
+      "$(res) $RC $([[ -e "$S.acceptance.json" ]] && echo W)" "$want 4 "
+  done
+done
+S="$(new_story nonpc '.task.story_id = "AFK-X" | .cost_class = "subscription" | .metered = true' 'persona: dev')"
+accept --story "$S" --kind human --actor josh; W="$(res)"
 gate_then_launch "$S"
-assert_eq "a human acceptance on a metered stamp passes (provenance, no lane re-check)" "$RC" "0"
+assert_eq "a non-Paperclip human acceptance on a metered stamp: written, dispatch unaffected" \
+  "$W $(jq -r .kind "$S.acceptance.json") $RC $OUT" "ok human 0 LAUNCHED"
 S="$(new_story disp4)"; printf '#!/bin/sh\necho garbage\n' >"$TMPROOT/afk-bad"; chmod +x "$TMPROOT/afk-bad"
 gate_then_launch "$S" "$TMPROOT/afk-bad"
 assert_eq "an unreadable verifier answer -> ACCEPTANCE_UNCHECKABLE" "$RC $(blocked "$S")" "4 ACCEPTANCE_UNCHECKABLE"
@@ -185,12 +206,60 @@ git -C "$R" reset -q --hard "$BASE"; git -C "$R" mv .afk/gates-allowlist moved; 
 assert_eq "a move out of .afk/ still names the old path" "$(prot "$R" "$BASE")" ".afk/gates-allowlist"
 git -C "$R" reset -q --hard "$BASE"; printf '.afk/new\n' >"$R/.gitignore"; printf 'y\n' >"$R/.afk/new"
 assert_eq "an untracked (even ignored) file under .afk/ -> named" "$(prot "$R" "$BASE")" ".afk/new"
+# Fail closed: a git that cannot answer is AFK_PROTECTED_PATH_UNCHECKABLE (rc 3,
+# nothing printed), never a clean tree.
+N="$TMPROOT/nohead"; git init -q "$N"
+assert_eq "a gone base and no HEAD -> rc 3, nothing printed" "$(prot "$N" "$BASE"; echo "rc=$?")" "rc=3"
+mkdir -p "$TMPROOT/fakegit"
+for sub in diff ls-files; do
+  printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = %s ] && exit 128; done\nexec %s "$@"\n' "$sub" "$(command -v git)" >"$TMPROOT/fakegit/git"
+  chmod +x "$TMPROOT/fakegit/git"
+  assert_eq "a failing git $sub -> rc 3, nothing printed" \
+    "$(PATH="$TMPROOT/fakegit:$PATH" prot "$R" "$BASE"; echo "rc=$?")" "rc=3"
+done
+assert_eq "main() fails the cycle on an uncheckable .afk/ check, gates skipped, .blocked written" \
+  "$(grep -c 'elif \[\[ -n "\$afk_hits" \]\] || (( afk_rc != 0 ))' "$DISPATCH") $(grep -c 'AFK_PROTECTED_PATH_UNCHECKABLE: git could not' "$DISPATCH")" "1 1"
 proj() { bash -c '. "$1"; shift; attempt_result_projection "$@"' _ "$DISPATCH" "$@"; }
 assert_eq "result projection: AFK_PROTECTED_PATH forces gates_failed with paths" \
   "$(proj "" true 0 false AFK_PROTECTED_PATH '[".afk/new"]')" \
   '{"status":"gates_failed","launch":{"harness_exit":0},"failure_reason":"AFK_PROTECTED_PATH","paths":[".afk/new"]}'
 assert_eq "main() checks .afk/ before the gates, beside the secret scan" \
   "$(grep -c 'elif \[\[ -n "\$afk_hits" \]\]' "$DISPATCH") $(grep -c 'AFK_PROTECTED_PATH: %s' "$DISPATCH")" "1 1"
+
+head1 "6. dispatch.sh main(): the acceptance check runs before any launch"
+# The real main() with stubbed orca, validator and harness, as in
+# tests/lifecycle-dispatch-tests.sh. Every stub logs its call; orca refuses
+# terminal creation, so nothing could run even if the order were wrong.
+W="$TMPROOT/wt"; SB="$TMPROOT/stubs"; CALLS="$TMPROOT/calls.log"; mkdir -p "$W" "$SB"
+cat >"$SB/orca" <<STUB
+#!/bin/sh
+echo "orca \$*" >>"$CALLS"
+case "\$1 \$2" in
+  "worktree list") printf '{"result":{"worktrees":[{"path":"%s","id":"r1::wt1"}]}}' "$W" ;;
+  "repo list") echo '{"result":{"repos":[{"id":"r1","hookSettings":{"setupAgentStartupPolicy":"start-immediately"}}]}}' ;;
+  *) exit 1 ;;
+esac
+STUB
+printf '#!/bin/sh\necho validator >>"%s"\necho "{}"\n' "$CALLS" >"$SB/validator"
+printf '#!/bin/sh\necho harness >>"%s"\n' "$CALLS" >"$SB/claude"
+chmod +x "$SB/orca" "$SB/validator" "$SB/claude"
+printf 'profiles:\n  local-code-standard:\n    physical: [{model_id: qwen-test}]\n' >"$TMPROOT/catalog.yaml"
+run_main() { # <story> -> RC, OUT; the calls log is reset first
+  : >"$CALLS"
+  OUT="$(cd "$W" && PATH="$SB:$PATH" AGENT_FLOW_CONFIG=/nonexistent AGENT_STAMP_VALIDATE=validator \
+    AGENT_STAMP_VALIDATE_CATALOG_PATH="$TMPROOT/catalog.yaml" AGENT_FLOW_KIT_BIN="$AFK" \
+    bash "$DISPATCH" "$1" 2>&1)"; RC=$?
+}
+S="$(new_story main '.placement_required = false')"
+mv "$S" "$W/main.md"; mv "$S.stamp.json" "$W/main.md.stamp.json"; S="$W/main.md"
+run_main "$S"
+assert_eq "main(): no acceptance -> exit 4, validator ran first, no terminal, no harness" \
+  "$RC $(blocked "$S") $(paste -sd, "$CALLS")" "4 ACCEPTANCE_MISSING orca worktree list --json,orca repo list --json,validator"
+accept --story "$S" --kind pm-auto --actor pm
+rm -f "$S.blocked"; run_main "$S"
+if [[ "$OUT" == *"acceptance digest, plan approval and story gates verified"* && "$OUT" == *"NO VALIDATED LAUNCH CONTRACT"* ]]; then
+  ok "main(): accepted -> the check passes, then control reaches the launch-contract guard"
+else bad "main(): accepted -> the check passes, then control reaches the launch-contract guard" "$RC $OUT"; fi
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

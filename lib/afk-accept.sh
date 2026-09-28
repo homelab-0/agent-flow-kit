@@ -89,15 +89,33 @@ afk_accept_plan_check() {
 afk_accept_lane_reason() {
   jq -e '.override == null' <<<"$AFK_ACC_STAMP_JSON" >/dev/null || { printf PM_AUTO_NOT_NATURAL; return 0; }
   jq -e '.cost_class == "free" and .metered == false' <<<"$AFK_ACC_STAMP_JSON" >/dev/null || { printf PM_AUTO_NOT_FREE; return 0; }
-  jq -e --argjson x "$AFK_ACCEPT_HARD_EXCLUSIONS" \
-    '[.task.tags[]? | ascii_downcase | gsub("^\\s+|\\s+$"; "") | select(. as $t | $x | index($t))] | length == 0' \
-    <<<"$AFK_ACC_STAMP_JSON" >/dev/null || { printf HARD_EXCLUSION; return 0; }
+  afk_accept_hard_excluded && { printf HARD_EXCLUSION; return 0; }
   printf ok
+}
+
+# afk_accept_hard_excluded -- true when the current stamp carries a
+# hard-exclusion tag.
+afk_accept_hard_excluded() {
+  ! jq -e --argjson x "$AFK_ACCEPT_HARD_EXCLUSIONS" \
+    '[.task.tags[]? | ascii_downcase | gsub("^\\s+|\\s+$"; "") | select(. as $t | $x | index($t))] | length == 0' \
+    <<<"$AFK_ACC_STAMP_JSON" >/dev/null
+}
+
+# afk_accept_kind_reason <kind> -- a Paperclip story accepts only pm-auto.
+# Nothing ties a human or override record's free-text actor to Josh, and the
+# record sits in the worker's worktree, so until native route approvals exist
+# such a record is refused: HARD_EXCLUSION when the stamp is hard-excluded
+# (never a question for Josh), ACCEPTANCE_KIND_NOT_ALLOWED otherwise.
+afk_accept_kind_reason() {
+  [[ "$1" == pm-auto ]] && { printf ok; return 0; }
+  afk_accept_hard_excluded && { printf HARD_EXCLUSION; return 0; }
+  printf ACCEPTANCE_KIND_NOT_ALLOWED
 }
 
 # afk_accept_verify <story> -- AC-4, what dispatch.sh asks on every cycle.
 # The record must be a well-formed acceptance for THIS stamp's digest and
-# story id. A pm-auto record is additionally re-judged against the current
+# story id, and of kind pm-auto (a human or override record is refused, see
+# afk_accept_kind_reason). The pm-auto record is re-judged against the current
 # stamp's lane: the AC-2 digest does not cover override or task.tags, so a
 # stamp that stopped being natural, free or non-excluded must not ride on an
 # acceptance the PM wrote when it still was.
@@ -110,9 +128,8 @@ afk_accept_verify() {
   [[ "$kind" =~ ^(human|override|pm-auto)$ ]] || { printf ACCEPTANCE_INVALID; return 0; }
   jq -e --arg d "$AFK_ACC_DIGEST" --arg s "$AFK_ACC_SID" '.decision_digest == $d and .story_id == $s' "$acc" >/dev/null 2>&1 ||
     { printf ACCEPTANCE_DIGEST_MISMATCH; return 0; }
-  if [[ "$kind" == pm-auto ]]; then
-    r="$(afk_accept_lane_reason)"; [[ "$r" == ok ]] || { printf '%s' "$r"; return 0; }
-  fi
+  r="$(afk_accept_kind_reason "$kind")"; [[ "$r" == ok ]] || { printf '%s' "$r"; return 0; }
+  r="$(afk_accept_lane_reason)"; [[ "$r" == ok ]] || { printf '%s' "$r"; return 0; }
   afk_accept_plan_check
 }
 
@@ -134,6 +151,10 @@ afk_cmd_route_accept() {
     afk_accept_emit "$json_mode" "$r" "$x"
     [[ "$r" == ok ]] && return 0
     return 4
+  fi
+  if [[ "$AFK_ACC_PAPERCLIP" == true && "$kind" != pm-auto ]]; then
+    r="$(afk_accept_kind_reason "$kind")"
+    afk_accept_emit "$json_mode" "$r" "$x"; return 4
   fi
   if [[ "$kind" == pm-auto ]]; then
     r="$(afk_accept_pm_auto_reason)"
