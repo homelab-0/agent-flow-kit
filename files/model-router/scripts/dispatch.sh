@@ -2536,6 +2536,61 @@ scan_worktree_for_secrets() { # <worktree> <secrets-fd> <base>
   return 0
 }
 
+# afk_protected_paths — AC-6 of AFK-PC-4 (F2), every home: the paths under
+# .afk/ the cycle touched since <base> — committed, staged, unstaged or
+# untracked (ignored ones included). --no-renames, so a file moved OUT of
+# .afk/ still shows its old path. Prints one path per line; nothing when clean
+# or when the tree is not a git repository (the secret scan reports that).
+afk_protected_paths() { # <worktree> <base>
+  local top base="${2:-}" f
+  local -A afk_seen=()
+  top="$(git -C "$1" rev-parse --show-toplevel 2>/dev/null)" || return 0
+  if [[ -n "$base" ]] && ! git -C "$top" cat-file -e "${base}^{commit}" 2>/dev/null; then base=""; fi
+  while IFS= read -r -d '' f; do
+    [[ "$f" == .afk || "$f" == .afk/* ]] || continue
+    [[ -n "${afk_seen[$f]+x}" ]] && continue
+    afk_seen[$f]=1; printf '%s\n' "$f"
+  done < <({
+    git -C "$top" diff -z --no-renames --name-only "${base:-HEAD}" --
+    git -C "$top" diff -z --no-renames --name-only --cached --
+    git -C "$top" ls-files -z -o -- .afk
+  } 2>/dev/null)
+}
+
+# paperclip_story_marked — any Paperclip marker (home, issue, HOM- story id)
+# puts a story under paperclip_preconditions; route-accept then refuses one
+# whose markers disagree, so dropping one marker never skips the checks.
+paperclip_story_marked() { # <story> <stamp>
+  local home issue
+  home="$(yq --front-matter=extract -r '.home // ""' "$1" 2>/dev/null || true)"
+  issue="$(yq --front-matter=extract -r '.paperclip_issue // ""' "$1" 2>/dev/null || true)"
+  [[ "$home" == paperclip:* || ( -n "$issue" && "$issue" != null ) ||
+     "$(jq -r '.task.story_id // "" | strings' "$2" 2>/dev/null)" == HOM-* ]]
+}
+
+# paperclip_preconditions — AC-4 of AFK-PC-4, on EVERY cycle, after stamp
+# validation and before any launch. The acceptance, its decision digest, the
+# plan approval and the gates are judged by `agent-flow-kit route-accept
+# --verify` alone (the digest is defined once, in lib/afk-accept.sh). Anything
+# but a clean "ok" is a policy refusal: the named reason, a .blocked marker,
+# and EX_STAMP_INVALID. An answer that cannot be read is never a pass.
+paperclip_preconditions() { # <story>
+  local bin out rc=0 reason
+  bin="$(cfg '.launcher.agent_flow_kit' AGENT_FLOW_KIT_BIN 'agent-flow-kit')"
+  out="$("$bin" route-accept --story "$1" --verify --json 2>/dev/null)" || rc=$?
+  reason="$(jq -r '.result // empty | strings' <<<"$out" 2>/dev/null || true)"
+  if (( rc == 0 )) && [[ "$reason" == ok ]]; then
+    log "paperclip: acceptance digest, plan approval and story gates verified"
+    return 0
+  fi
+  [[ "$reason" =~ ^[A-Z][A-Z_]*$ ]] || reason=ACCEPTANCE_UNCHECKABLE
+  rm -f "$1.blocked"
+  printf '%s: %s\nNothing was launched. Re-accept the current stamp (route-accept) or re-plan; dispatch never works around this.\n' \
+    "$reason" "$1" > "$1.blocked"
+  log "$reason — Paperclip precondition refused the launch; see $1.blocked"
+  return "$EX_STAMP_INVALID"
+}
+
 # dispatch_run_gates — runs each gate, keeping its combined stdout+stderr next
 # to the per-cycle result instead of discarding it, so a failure's reason
 # survives without a ~35-minute re-run of the whole suite. Pass/fail is still
@@ -3085,6 +3140,9 @@ EOF
 
   VERDICT_FILE="$(mktemp)"; TMPFILES+=("$VERDICT_FILE" "$VERDICT_FILE.err")
   validate_stamp "$STAMP_FILE" "$EVIDENCE_FILE" "$VERDICT_FILE"
+  if paperclip_story_marked "$STORY" "$STAMP_FILE"; then
+    paperclip_preconditions "$STORY" || exit "$EX_STAMP_INVALID"
+  fi
 
   # ---- launch-contract capability guard -----------------------------------
   # Runs AFTER validation (the router and the validator are the authorities on
@@ -3423,7 +3481,8 @@ EOF
   local secret_scan_count=${#SECRET_SCAN_VALUES[@]}
   SECRET_SCAN_VALUES=()
 
-  local gates_log_dir=""
+  local gates_log_dir="" afk_hits=""
+  (( secret_scan_rc == 3 )) || afk_hits="$(afk_protected_paths "$(realpath "$PWD")" "$SECRET_SCAN_BASE")"
   if (( secret_scan_rc == 3 )); then
     # shellcheck disable=SC2034 # GATE_LOGS: legacy map read by sourcing tests (see dispatch_run_gates)
     declare -g -A GATE_RESULTS=() GATE_LOGS=(); declare -g -a GATE_LOG_ENTRIES=(); GATES_OK=false
@@ -3434,6 +3493,15 @@ EOF
       "$secret_hit_csv" > "${STORY}.blocked"
     SECRET_SCAN_FAILURE_REASON="SECRET_IN_DIFF"
     SECRET_SCAN_PATHS_JSON="$(printf '%s\n' "${secret_hit_paths[@]}" | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+    RESULT_STATUS=""
+  elif [[ -n "$afk_hits" ]]; then
+    # AFK_PROTECTED_PATH (AFK-PC-4 AC-6): .afk/ holds the gate allowlist a plan
+    # is judged against, so a worker touching it fails the cycle, gates unrun.
+    # shellcheck disable=SC2034 # GATE_LOGS: legacy map read by sourcing tests
+    declare -g -A GATE_RESULTS=() GATE_LOGS=(); declare -g -a GATE_LOG_ENTRIES=(); GATES_OK=false
+    printf 'AFK_PROTECTED_PATH: %s\n' "$(paste -sd, <<<"$afk_hits")" | tee "${STORY}.blocked" >&2
+    SECRET_SCAN_FAILURE_REASON="AFK_PROTECTED_PATH"
+    SECRET_SCAN_PATHS_JSON="$(jq -R -s -c 'split("\n") | map(select(length > 0))' <<<"$afk_hits")"
     RESULT_STATUS=""
   else
     if (( secret_scan_rc == 4 )); then

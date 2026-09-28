@@ -320,6 +320,54 @@ record is Josh's own comment `approve <digest8>` on the open plan question.
   1) `NO_PLAN`, `NOT_APPROVED`, `PLAN_CHANGED` or
   `APPROVAL_INTERIM_UNATTESTED`.
 
+## Route acceptance and dispatch's Paperclip checks (AFK-PC-4)
+
+A Paperclip story carries `home: paperclip:HOM-<n>` and `paperclip_issue:
+<uuid>` in its frontmatter, and its stamp's `task.story_id` matches
+`^HOM-[0-9]+\.S[0-9]+$` with the same `HOM-<n>` prefix. Any one of those
+markers makes it a Paperclip story; if they disagree, the answer is
+`STORY_HOME_INVALID`.
+
+- **Decision digest.** `sha256:` + the sha256 of what `jq -cS '{harness,
+  model_profile, effort, cost_class, metered, catalog_version,
+  task:{story_id: .task.story_id}}'` prints for the stamp, trailing LF
+  included. It is defined once, in `lib/afk-accept.sh`. dispatch.sh does not
+  recompute it; it asks `route-accept --verify`.
+- **`route-accept --story <story.md> --kind human|override|pm-auto --actor
+  <name> [--reason <text>] [--json]`** writes `<story>.acceptance.json`
+  atomically: `{schema:"afk-acceptance/1", story_id, decision_digest, kind,
+  actor, policy, reason, created_at}`. `STAMP_MISSING` if there is no stamp.
+  `override` needs `--reason`. `human` and `override` only record who
+  accepted the route. They bypass nothing: the validator and every dispatch
+  check below still run.
+- **`pm-auto`** gets `policy: paperclip-free-lane`, and only when all of
+  these hold, checked in this order: a Paperclip home
+  (`PM_AUTO_NOT_PAPERCLIP`), `override: null` (`PM_AUTO_NOT_NATURAL`),
+  `cost_class: free` and `metered: false` (`PM_AUTO_NOT_FREE`), no `security`,
+  `iam`, `secrets`, `prod-iac` or `destructive-tools` tag (`HARD_EXCLUSION`),
+  an approved plan (`PLAN_NOT_APPROVED`) that contains the story
+  (`STORY_NOT_IN_PLAN`) with the same gates in the same order
+  (`STORY_CONTRACT_MUTATED`). On `HARD_EXCLUSION` the PM declares `Stopped`
+  or re-plans. That is never a question for Josh. `PM_AUTO_NOT_NATURAL` and
+  `PM_AUTO_NOT_FREE` mean `Waiting for Josh: route`, and the PM tells Josh
+  in chat. The plan refusals mean re-plan, or wait for the approval.
+- **dispatch, every cycle.** Right after stamp validation and before any
+  launch, dispatch.sh runs `agent-flow-kit route-accept --story <s> --verify
+  --json` for a Paperclip story. The binary is `launcher.agent_flow_kit` or
+  `$AGENT_FLOW_KIT_BIN`, and defaults to `agent-flow-kit`. Anything other
+  than `ok` exits 4, prints the reason and writes `<story>.blocked`. The
+  reasons are `ACCEPTANCE_MISSING`, `ACCEPTANCE_DIGEST_MISMATCH` (a re-route
+  never inherits an acceptance), `PLAN_NOT_APPROVED`, `STORY_NOT_IN_PLAN`,
+  `STORY_CONTRACT_MUTATED`, `STORY_HOME_INVALID`, and
+  `ACCEPTANCE_UNCHECKABLE` when the answer can't be read. Stories with no
+  Paperclip marker never reach this check.
+- **`.afk/` is protected on every home.** After the worker exits, next to
+  the secret scan, any path under `.afk/` that changed since the cycle's
+  base commit fails the cycle with `AFK_PROTECTED_PATH`. That covers
+  committed, staged and untracked changes, ignored files, and moves out of
+  `.afk/`. The paths are named, the gates are skipped, and a `.blocked`
+  marker is written.
+
 ## The self-block model
 
 While AFK works on an issue locally (outside Paperclip, in the real repo),
