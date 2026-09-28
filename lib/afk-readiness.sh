@@ -582,6 +582,18 @@ afk_live_fact() { # <key> <state> <reason> <provenance> <evaluated> [transient] 
         freshness="$AFK_LIVE_FRESHNESS_S"
       fi ;;
   esac
+  # No jq per fact (AD-20) when every number is a plain integer literal, which
+  # `tonumber` would render unchanged; anything else keeps the jq below.
+  local fact rec
+  if [[ "$timeout_ms" =~ ^(0|[1-9][0-9]{0,14})?$ && "$freshness" =~ ^(0|[1-9][0-9]{0,14})?$ ]] \
+     && afk_json_record fact state s "$state" evaluated b "$evaluated" reason s "$reason" \
+          observed_at n "$observed_at" timeout_ms j "${timeout_ms:-null}" \
+          freshness_seconds j "${freshness:-null}" evidence_provenance n "$prov" \
+          transient b "$transient" launch_authoritative b false detail n "$detail" \
+     && afk_json_record rec key s "$key" fact j "$fact"; then
+    AFK_LIVE_ENTRIES="${AFK_LIVE_ENTRIES}${rec}"$'\n'
+    return 0
+  fi
   AFK_LIVE_ENTRIES="${AFK_LIVE_ENTRIES}$(jq -nc \
     --arg key "$key" --arg state "$state" --arg reason "$reason" --arg prov "$prov" \
     --arg evaluated "$evaluated" --arg transient "$transient" --arg detail "$detail" \

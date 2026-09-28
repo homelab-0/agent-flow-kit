@@ -145,7 +145,7 @@ afk_load_manifest() {
   AFK_MANIFEST_PRESENT="true"
   local guard boundary j major
   boundary="$(afk_state_boundary "$AFK_MANIFEST")"
-  guard="$(afk_path_guard "$AFK_MANIFEST" file "$boundary" "$boundary")"
+  afk_path_guard_v guard "$AFK_MANIFEST" file "$boundary" "$boundary"
   if [[ "$guard" != "PATH_OK" ]]; then
     AFK_MANIFEST_REASON="STATE_MANIFEST_PATH_UNSAFE"
     return 0
@@ -207,9 +207,78 @@ afk_emit_manifest_findings() {
     "$AFK_SUPPORTED_STATE_SCHEMA_MAJOR.x" "${AFK_STATE_SCHEMA_VERSION:-unparseable}" "false" "false" ""
 }
 
+# The manifest is parsed ONCE into a component -> identity map (AD-20), keyed
+# by the exact manifest text it was built from: any reassignment of
+# AFK_MANIFEST_JSON rebuilds it, and the lock and every manifest write drop it
+# explicitly. The map holds only what the per-call lookup below would answer.
+# A manifest the lookup would ERROR on (a non-object where an object is
+# indexed), one holding a NUL, or text that is not exactly one JSON document
+# is never mapped: those keep the per-call jq,
+# so its stderr and empty answer are exactly what they always were.
+AFK_MANIFEST_MAP_SRC="" AFK_MANIFEST_MAP_STATE="none"
+AFK_MANIFEST_MAP_KEYS=() AFK_MANIFEST_MAP_VALS=()
+afk_manifest_map_invalidate() { AFK_MANIFEST_MAP_STATE="none"; AFK_MANIFEST_MAP_SRC=""; }
+
+afk_manifest_map_build() {
+  local code
+  AFK_MANIFEST_MAP_KEYS=(); AFK_MANIFEST_MAP_VALS=()
+  AFK_MANIFEST_MAP_SRC="$AFK_MANIFEST_JSON"; AFK_MANIFEST_MAP_STATE="unmapped"
+  # Slurped, and mapped only when the text is exactly ONE document: the
+  # per-call jq answers once per document, so anything else keeps it.
+  code="$(printf '%s' "$AFK_MANIFEST_JSON" | jq -rs '
+    if length != 1 then empty else .[0] end
+    | .components as $c
+    | if ($c | type) == "null" then "AFK_MANIFEST_MAP_KEYS=()", "AFK_MANIFEST_MAP_VALS=()"
+      elif (($c | type) == "object") and all($c[]; type == "object" or type == "null")
+         and ([$c | keys_unsorted[], (.[] | .identity? | strings)] | all(index("\u0000") == null))
+      then "AFK_MANIFEST_MAP_KEYS=(" + ([$c | keys_unsorted[] | @sh] | join(" ")) + ")",
+           "AFK_MANIFEST_MAP_VALS=(" + ([$c[] | if (.identity | type) == "string" then .identity else "" end | @sh] | join(" ")) + ")"
+      else empty end' 2>/dev/null)" || return 0
+  [[ -n "$code" ]] || return 0
+  # @sh output is single-quoted words only; it is evaluated as two array
+  # assignments, never as a command.
+  eval "$code" || { AFK_MANIFEST_MAP_KEYS=(); AFK_MANIFEST_MAP_VALS=(); return 0; }
+  (( ${#AFK_MANIFEST_MAP_KEYS[@]} == ${#AFK_MANIFEST_MAP_VALS[@]} )) && AFK_MANIFEST_MAP_STATE="mapped"
+}
+
+# afk_manifest_component_identity_v <var> <id> — the recorded identity, or "".
+# Call it in the evaluating shell (not inside $(…)) so the map outlives it.
+afk_manifest_component_identity_v() {
+  local _mi _mv=""
+  if [[ "$AFK_MANIFEST_MAP_STATE" == "none" || "$AFK_MANIFEST_MAP_SRC" != "$AFK_MANIFEST_JSON" ]]; then
+    afk_manifest_map_build
+  fi
+  if [[ "$AFK_MANIFEST_MAP_STATE" != "mapped" ]]; then
+    _mv="$(printf '%s' "$AFK_MANIFEST_JSON" | jq -r --arg id "$2" \
+      'if (.components[$id].identity | type) == "string" then .components[$id].identity else "" end')"
+  else
+    for (( _mi = 0; _mi < ${#AFK_MANIFEST_MAP_KEYS[@]}; _mi++ )); do
+      [[ "${AFK_MANIFEST_MAP_KEYS[_mi]}" == "$2" ]] || continue
+      _mv="${AFK_MANIFEST_MAP_VALS[_mi]}"
+      while [[ "$_mv" == *$'\n' ]]; do _mv="${_mv%$'\n'}"; done   # as $(jq -r …) strips
+      break
+    done
+  fi
+  printf -v "$1" '%s' "$_mv"
+}
+
 afk_manifest_component_identity() { # <id>
-  printf '%s' "$AFK_MANIFEST_JSON" | jq -r --arg id "$1" \
-    'if (.components[$id].identity | type) == "string" then .components[$id].identity else "" end'
+  local v
+  if [[ "$AFK_MANIFEST_MAP_STATE" == "none" || "$AFK_MANIFEST_MAP_SRC" != "$AFK_MANIFEST_JSON" ]]; then
+    afk_manifest_map_build
+  fi
+  if [[ "$AFK_MANIFEST_MAP_STATE" != "mapped" ]]; then
+    # Unmapped: the per-call jq prints (and exits) exactly as it always did.
+    printf '%s' "$AFK_MANIFEST_JSON" | jq -r --arg id "$1" \
+      'if (.components[$id].identity | type) == "string" then .components[$id].identity else "" end'
+    return
+  fi
+  local i
+  v=""   # the raw value, trailing newlines included, as `jq -r` prints it
+  for (( i = 0; i < ${#AFK_MANIFEST_MAP_KEYS[@]}; i++ )); do
+    [[ "${AFK_MANIFEST_MAP_KEYS[i]}" == "$1" ]] && { v="${AFK_MANIFEST_MAP_VALS[i]}"; break; }
+  done
+  printf '%s\n' "$v"
 }
 
 # --- the operation journal (FR-92: an in-progress installation is not healthy)
@@ -223,7 +292,7 @@ afk_evaluate_journal() {
 
   local boundary guard st
   boundary="$(afk_state_boundary "$AFK_JOURNAL")"
-  guard="$(afk_path_guard "$AFK_JOURNAL" file "$boundary" "$boundary")"
+  afk_path_guard_v guard "$AFK_JOURNAL" file "$boundary" "$boundary"
   if [[ "$guard" != "PATH_OK" ]]; then
     # A journal that is a directory, a symlink out of the state directory, or
     # any other unexpected type is not "no journal": it is a journal whose
@@ -471,11 +540,11 @@ afk_evaluate_components() {
     boundary="$target_root"
 
     # --- path type, containment, symlink boundary: fail closed BEFORE reading
-    guard="$(afk_path_guard "$dpath" "$want" "$boundary" "$container")"
+    afk_path_guard_v guard "$dpath" "$want" "$boundary" "$container"
     rc=$?
     if (( rc != 0 )); then
       if [[ "$guard" == "PATH_ABSENT" ]]; then
-        applied="$(afk_manifest_component_identity "$id")"
+        afk_manifest_component_identity_v applied "$id"
         if [[ "$AFK_ADOPTED" == "true" && -n "$applied" ]]; then
           afk_component_fail "$critical" "$id" "BROKEN" "COMPONENT_MISSING" "PATH_STRUCTURE" "$applied"
         else
@@ -505,8 +574,8 @@ afk_evaluate_components() {
         canonical="$(afk_tree_identity "$AFK_KIT_ROOT/$srel" "$extra")"
         ;;
       MANAGED_COPY_FILE)
-        observed="$(afk_sha256_file "$dpath")"
-        canonical="$(afk_sha256_file "$AFK_KIT_ROOT/$srel")"
+        afk_sha256_file_v observed "$dpath"
+        afk_sha256_file_v canonical "$AFK_KIT_ROOT/$srel"
         ;;
       MANAGED_SECTION)
         observed="$(afk_section_identity "$dpath" "$extra")"
@@ -519,7 +588,7 @@ afk_evaluate_components() {
           continue
         fi
         if (( rc == 2 )); then
-          applied="$(afk_manifest_component_identity "$id")"
+          afk_manifest_component_identity_v applied "$id"
           if [[ "$AFK_ADOPTED" == "true" && -n "$applied" ]]; then
             afk_component_fail "$critical" "$id" "BROKEN" "MANAGED_SECTION_ABSENT" "FILE_STRUCTURE" "$applied"
           else
@@ -539,12 +608,12 @@ afk_evaluate_components() {
           afk_emit_adaptations_for "$id" ""
           continue
         fi
-        if resolved="$(afk_realpath "$dpath")"; then observed="link:$resolved"; else observed=""; fi
-        if resolved="$(afk_realpath "$extra")"; then canonical="link:$resolved"; else canonical=""; fi
+        if afk_realpath_v resolved "$dpath"; then observed="link:$resolved"; else observed=""; fi
+        if afk_realpath_v resolved "$extra"; then canonical="link:$resolved"; else canonical=""; fi
         C_PROVENANCE="PATH_STRUCTURE"
         ;;
       MACHINE_LOCAL)
-        observed="$(afk_sha256_file "$dpath")"
+        afk_sha256_file_v observed "$dpath"
         canonical=""
         ;;
     esac
@@ -569,7 +638,7 @@ afk_evaluate_components() {
       C_STATE="UNKNOWN"; C_REASON="NOT_ADOPTED"; C_SEVERITY="info"
       C_EXPECTED="$canonical"
     else
-      applied="$(afk_manifest_component_identity "$id")"
+      afk_manifest_component_identity_v applied "$id"
       C_EXPECTED="$applied"
       if [[ -z "$applied" ]]; then
         C_STATE="UNKNOWN"; C_REASON="COMPONENT_NOT_RECORDED"; C_MUTATION_SAFE="false"
