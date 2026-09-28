@@ -216,6 +216,91 @@ allowed to:
   `--json` prints `{result, issue, seq|version}`. The body is never printed,
   in either mode.
 
+## Plans and Josh's approval of record (AFK-PC-3b)
+
+Nothing from a Paperclip issue is stamped or dispatched until Josh approves
+the exact plan he saw. Until native approvals ship (PC-8), the approval of
+record is Josh's own comment `approve <digest8>` on the open plan question.
+
+- **`paperclip-plan --issue <id> --plan-file <path> [--json]`** (owner only,
+  same check and body-file rules as `paperclip-report`). The file is JSON
+  `{schema:"afk-paperclip-plan/1", repo, base, stories:[{id, title, size,
+  lane, files:[…], gates:[…]}]}`. `repo` must equal the configured
+  `repo_path` for the issue's project; each `id` matches
+  `^HOM-[0-9]+\.S[0-9]+$` with the issue's own identifier as its prefix; ids
+  are unique; there is at least one story; no field may contain a control
+  character (`PLAN_INVALID`, `PLAN_REPO_MISMATCH`).
+- **Gate allowlist.** Read only as `git -C <repo> show <base-commit>:.afk/gates-allowlist`
+  (the base resolved with `rev-parse --verify`, else `PLAN_BASE_UNKNOWN`),
+  never from a worktree, so a branch or working-tree edit cannot widen it.
+  One exact command per line; blank or whitespace-only lines and lines
+  whose first byte is `#` are ignored. An indented `#` line is an entry, and
+  entries are byte-exact (a CRLF line keeps its CR and matches nothing). No file (or not a regular file) at the base: `GATE_ALLOWLIST_MISSING`.
+  An empty `gates` list, or any gate not byte-equal to a line:
+  `GATE_NOT_ALLOWLISTED`, naming the story and the gate.
+- **Digest.** The verb renders a deterministic markdown body from the
+  validated fields only (unknown keys are dropped): the repo name and path,
+  the base, and per story its id, title, size, lane, files, and every gate
+  verbatim in a fenced block. **`digest` is the lowercase hex sha256 of
+  exactly the UTF-8 bytes of that rendered body, every line ending in LF,
+  including the LF after the closing fence of the last story, and nothing
+  else.** `digest8` is its first 8 hex characters. The posted comment is
+  that body, one blank line, then the footer `plan <digest8>` and
+  ``Reply exactly `approve <digest8>` to approve, or `reject <digest8>`.``
+  **The footer (and the blank line before it, and the poller's
+  `<!-- afk-entry -->` marker) is never part of the digest input.** The same
+  JSON content always gives the same digest, whatever its key order or
+  whitespace.
+- **Publish.** Under `plans/.<id>.lock` the verb first deletes
+  `approvals/<id>.json` and `plans/<id>.json` (a re-plan revokes any earlier
+  approval, F1). It then (1) writes `plans/<id>.json` atomically:
+  `{schema:"afk-paperclip-plan-record/1", state:"pending_publish", digest,
+  digest8, question_id, body_sha256 (sha256 of the raw plan file), repo,
+  base, base_commit, stories, posted_seq:null, created_at}`; (2) publishes
+  the comment as a spool `question` entry with `question_id =
+  plan-<digest8>` through the `paperclip-report` writer function; (3)
+  rewrites the record atomically with `state:"posted"` and `posted_seq`. The
+  poller can therefore never send a plan question with no record behind it.
+  If (1) fails nothing is published; if (2) fails the pending record is
+  removed and the writer's refusal is returned; if (3) fails the verb
+  writes a `pending_publish` record that carries `posted_seq` and refuses
+  with `PAPERCLIP_REGISTRY_WRITE_FAILED` naming `digest8` and `seq`. Prints
+  `plan <digest8> (seq N)`, or `{result, issue, digest, digest8,
+  question_id, seq}` with `--json`.
+- **Approval (poller).** When the poller sends a `question` entry it records
+  `question_seq` and Paperclip's `createdAt` for that comment
+  (`question_sent_at`, absent when the response did not carry one). On an
+  issue in `waiting_human` with `question_id = plan-<digest8>`, a comment
+  that passes the Josh test and whose body, trimmed of surrounding
+  whitespace, is **exactly** `approve <digest8>` writes
+  `approvals/<id>.json` = `{schema:"afk-paperclip-approval/1", kind:"plan",
+  digest, digest8, comment_id, comment_created_at, decided_at,
+  paperclip_commit}` and an `approval_granted` notice, only when all of
+  these hold: the plan file's `digest8`/`question_id` match, its `state` is
+  `posted` or `pending_publish`, and its `posted_seq` is a number equal to
+  the recorded `question_seq` (else `APPROVAL_PLAN_MISMATCH`); the comment was created after
+  `question_sent_at` (else, or if unknown, `APPROVAL_BEFORE_PLAN`); the
+  config has `interim_comment_approval: {attested_on, paperclip_commit}`
+  and an unauthenticated `GET /api/health` returns `commit` equal to
+  `paperclip_commit` (else, including any health failure,
+  `APPROVAL_INTERIM_UNATTESTED`). The record is written under the plan
+  lock after re-checking the plan digest, state and seq. A refusal writes
+  an `approval_refused` notice carrying `reason` and a local action line;
+  never a record. `reject <digest8>` withdraws an approval of that same plan
+  under the plan lock and then writes an `approval_rejected` notice. If the
+  lock cannot be taken or the approval cannot be removed, it writes an
+  `approval_withdraw_failed` notice carrying `reason`
+  (`PAPERCLIP_LOCK_TIMEOUT` or `APPROVAL_WRITE_FAILED`) and a local action
+  line instead, and the approval stays. Any other Josh comment is a
+  plain `human_commented` notice and never approves.
+- **`paperclip-approval --issue <id> [--json]`** is read-only:
+  `{approved, digest, digest8, reason}`. `approved` is true (exit 0, reason
+  `APPROVED`) only when `approvals/<id>.json` exists and its digest equals
+  the current `plans/<id>.json` digest and the configured attestation still
+  names the `paperclip_commit` the approval was made under. Otherwise (exit
+  1) `NO_PLAN`, `NOT_APPROVED`, `PLAN_CHANGED` or
+  `APPROVAL_INTERIM_UNATTESTED`.
+
 ## The self-block model
 
 While AFK works on an issue locally (outside Paperclip, in the real repo),
