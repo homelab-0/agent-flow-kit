@@ -8,7 +8,9 @@
 # run, so the baseline and the candidate see byte-identical hosts. For each
 # (fixture, verb) the exit code, stdout, stderr and the resulting host tree are
 # compared. Only timestamps and timestamp-derived operation ids are masked
-# (plus, in stderr only, the source line number in bash's own diagnostics);
+# (plus, in stderr only, the source line number in bash's own diagnostics, and
+# — a PM-approved mask, AFK-TP-3 CR-1 — adjacent duplicates of bash's
+# "Permission denied" diagnostic on the BASELINE side, see collapse_denied);
 # anything else that differs is a failure of the code, never of the mask.
 #
 # The candidate is also run with AFK_HASH_FORCE_PORTABLE=1, which forces the
@@ -22,8 +24,10 @@
 #   AFK_EQUIV_BASE=<ref>        baseline (default: merge-base with origin/master;
 #                               a baseline identical to the candidate FAILS)
 #   AFK_EQUIV_ONLY="a b"        only these fixtures ("none": primitives only)
-#   AFK_EQUIV_VERBS="status"    only these verbs (status verify plan adopt update)
+#   AFK_EQUIV_VERBS="status"    only these verbs (status verify plan adopt update approve)
+#   AFK_EQUIV_DRIFTS="none"     drift-between-boundaries cases (see DRIFTS below)
 #   AFK_EQUIV_KEEP=<dir>        keep every raw output there
+#   AFK_EQUIV_OBSLOG=<dir>      keep the candidate's observation log per run
 # Exit:  0 all identical, 1 any difference.
 
 if [[ -z "${BASH_VERSINFO:-}" || "${BASH_VERSINFO[0]}" -lt 5 ]]; then
@@ -39,8 +43,22 @@ unset AFK_ORCA_BIN ORCA_CLI_COMMAND AGENT_ROUTER_URL AGENT_ROUTER_TOKEN \
 KIT_ROOT="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 BASE="${AFK_EQUIV_BASE:-$(git -C "$KIT_ROOT" merge-base HEAD origin/master 2>/dev/null)}"
 [[ -n "$BASE" ]] || { printf 'no baseline: set AFK_EQUIV_BASE (no merge-base with origin/master)\n' >&2; exit 1; }
-FIXTURES="${AFK_EQUIV_ONLY:-installed clean ahead drift redirect missing unreadable}"
-VERBS="${AFK_EQUIV_VERBS:-status verify plan adopt update}"
+FIXTURES="${AFK_EQUIV_ONLY:-installed clean ahead drift redirect missing unreadable unrecognized interrupted}"
+VERBS="${AFK_EQUIV_VERBS:-status verify plan adopt update approve}"
+# Drift injected between two safety boundaries of ONE mutating run (AD-19),
+# as <fixture>:<verb>:<boundary>:<change>:<expected result/reason>.
+DRIFTS="${AFK_EQUIV_DRIFTS:-ahead:update:lock:codex:STALE_PLAN/PLAN_STALE_DESTINATION_CHANGED
+ahead:update:prepare:runtime:STALE_PLAN/PLAN_STALE_DESTINATION_CHANGED
+ahead:update:applied:humanizer:ROLLED_BACK/PLAN_STALE_DESTINATION_CHANGED
+ahead:update:build:codex:ROLLED_BACK/VERIFICATION_FAILED
+ahead:update:lock:commit:STALE_PLAN/PLAN_STALE_DESTINATION_CHANGED
+ahead:update:lock:dirty:STALE_PLAN/PLAN_STALE_DESTINATION_CHANGED
+ahead:update:lock:ignored:STALE_PLAN/PLAN_STALE_DESTINATION_CHANGED
+ahead:update:lock:assume:STALE_PLAN/PLAN_STALE_DESTINATION_CHANGED
+ahead:update:lock:symlink:STALE_PLAN/PLAN_STALE_DESTINATION_CHANGED
+installed:adopt:lock:codex:STALE_PLAN/PLAN_STALE_DESTINATION_CHANGED
+installed:adopt:prepare:humanizer:STALE_PLAN/PLAN_STALE_DESTINATION_CHANGED}"
+# AFK_EQUIV_OBSLOG=<dir>: the candidate's observation log per run is kept there.
 
 TMPROOT="$(mktemp -d)"
 trap 'chmod -R u+rwX "$TMPROOT" 2>/dev/null; rm -rf "$TMPROOT"' EXIT
@@ -72,9 +90,58 @@ if diff -rq "$TMPROOT/k-baseline/lib" "$TMPROOT/k-candidate/lib" >/dev/null &&
   exit 1
 fi
 
+# The drift driver: each side's own CLI with the final dispatch cut off, one
+# change injected at a named boundary through a wrapper around a function both
+# sides call at that point, then the real dispatch. It lives beside the CLI so
+# it resolves the same install root.
+for side in baseline candidate; do
+  cli="$TMPROOT/k-$side/bin/agent-flow-kit"
+  [[ "$(tail -n 2 "$cli")" == $'afk_main "$@"\nexit $?' ]] || { printf 'unexpected CLI tail in %s\n' "$side" >&2; exit 1; }
+  { sed '$d' "$cli" | sed '$d'; cat <<'DRIVER'
+afk_equiv_fired=""
+afk_equiv_fire() { # <boundary>
+  local b="${AFK_EQUIV_DRIFT%%:*}" c="${AFK_EQUIV_DRIFT#*:}"
+  [[ "$1" == "$b" && -z "$afk_equiv_fired" ]] || return 0
+  afk_equiv_fired=1
+  case "$c" in
+    runtime)   printf 'drift\n' >> "$HOME/.agents/skills/afk-runtime/README" ;;
+    codex)     printf 'drift\n' >> "$HOME/.codex/AGENTS.md" ;;
+    humanizer) printf 'drift\n' >> "$HOME/.agents/skills/humanizer/SKILL.md" ;;
+    commit)    printf 'humanizer v2\n' > "$AFK_KIT_ROOT/files/humanizer/SKILL.md"
+               git -C "$AFK_KIT_ROOT" add -A >/dev/null 2>&1
+               GIT_AUTHOR_DATE=2026-01-01T00:00:00Z GIT_COMMITTER_DATE=2026-01-01T00:00:00Z \
+                 git -C "$AFK_KIT_ROOT" -c commit.gpgsign=false commit -q --no-verify -m v2 >/dev/null 2>&1 ;;
+    dirty)     printf 'humanizer inner v2\n' > "$AFK_KIT_ROOT/files/humanizer/skills/humanizer/SKILL.md" ;;
+    assume)    git -C "$AFK_KIT_ROOT" update-index --assume-unchanged files/humanizer/SKILL.md
+               printf 'humanizer hidden v2\n' > "$AFK_KIT_ROOT/files/humanizer/SKILL.md" ;;
+    symlink)   printf 'codex guidance v2\n' > "${AFK_KIT_ROOT%/checkout}/codex-source.md" ;;
+    ignored)   printf 'ignored notes v2\n' > "$AFK_KIT_ROOT/files/model-router/notes.local" ;;
+  esac
+}
+for f in afk_lock_acquire afk_journal_write afk_journal_step_result afk_build_manifest_json; do
+  eval "afk_equiv_orig_$f() $(declare -f "$f" | tail -n +2)"
+done
+afk_lock_acquire() { afk_equiv_fire lock; afk_equiv_orig_afk_lock_acquire "$@"; }
+afk_journal_write() { [[ "$1" != PREPARING ]] || afk_equiv_fire prepare; afk_equiv_orig_afk_journal_write "$@"; }
+afk_journal_step_result() {
+  local rc=0; afk_equiv_orig_afk_journal_step_result "$@" || rc=$?
+  [[ "$2" != APPLIED ]] || afk_equiv_fire applied; return "$rc"
+}
+afk_build_manifest_json() { afk_equiv_fire build; afk_equiv_orig_afk_build_manifest_json "$@"; }
+afk_main "$@"
+exit $?
+DRIVER
+  } > "$TMPROOT/k-$side/bin/afk-equiv-drift"
+done
+
 # --- fixtures (the shapes of tests/lifecycle-mutation-tests.sh) -------------
 
 FX="$TMPROOT/fx" HOMEDIR="$TMPROOT/fx/home" CHECKOUT="$TMPROOT/fx/checkout"
+mkdir -p "$TMPROOT/obs"
+# The declared inventory size, from the candidate's own table.
+COMPONENTS="$(bash -c '. "$1/afk-common.sh"; . "$1/afk-inventory.sh"
+  AFK_SKILLS_HOME=/s AFK_CLAUDE_HOME=/c AFK_CODEX_HOME=/x; afk_component_table | grep -c .' _ "$KIT_ROOT/lib")"
+[[ "$COMPONENTS" =~ ^[1-9][0-9]*$ ]] || { printf 'cannot count the declared inventory\n' >&2; exit 1; }
 
 git_commit_all() { git -C "$1" add -A >/dev/null 2>&1; git -C "$1" -c commit.gpgsign=false commit -q --no-verify -m "$2" >/dev/null 2>&1; }
 
@@ -122,8 +189,9 @@ RUN_RC=0
 run_cli() { # <baseline|candidate> <out-prefix> <args...>
   local side="$1" out="$2"; shift 2
   mv "$TMPROOT/k-$side" "$KIT"
-  ( cd "$FX" && HOME="$HOMEDIR" XDG_STATE_HOME="$HOMEDIR/.local/state" AFK_KIT_ROOT="$CHECKOUT" \
-      bash "$KIT/bin/agent-flow-kit" "$@" >"$out.stdout" 2>"$out.stderr" )
+  ( [[ "$side" != candidate ]] || export AFK_TEST_OBSERVATION_LOG="$TMPROOT/obs/${out##*/}.log"
+    cd "$FX" && HOME="$HOMEDIR" XDG_STATE_HOME="$HOMEDIR/.local/state" AFK_KIT_ROOT="$CHECKOUT" \
+      bash "$KIT/bin/${ENTRY:-agent-flow-kit}" "$@" >"$out.stdout" 2>"$out.stderr" )
   RUN_RC=$?
   mv "$KIT" "$TMPROOT/k-$side"
   printf '%s\n' "$RUN_RC" > "$out.rc"
@@ -134,12 +202,26 @@ build_fixture() { # <name>
   make_checkout "$CHECKOUT"
   install_kit "$HOMEDIR" "$CHECKOUT"
   [[ "$1" == installed ]] && return 0
+  if [[ "$1" == unrecognized ]]; then
+    # Not adopted, and one tree matches no canonical or prior revision: adopt
+    # needs an explicit approval of its plan identity.
+    printf 'locally authored\n' >> "$HOMEDIR/.agents/skills/humanizer/SKILL.md"
+    return 0
+  fi
   run_cli baseline "$TMPROOT/build-$1" adopt --json
   [[ "$RUN_RC" == 0 ]] || { bad "fixture $1: baseline adopt established ownership" "exit $RUN_RC"; return 1; }
   case "$1" in
     ahead)
       printf 'model-router skill v2\n' > "$CHECKOUT/files/model-router/SKILL.md"
       printf 'policy line one\npolicy line two\npolicy line three\n' > "$CHECKOUT/files/claude-global-CLAUDE.md"
+      # An ignored file inside a managed input: Git never reports an edit to
+      # it, but the canonical tree identity hashes it.
+      printf '*.local\n' > "$CHECKOUT/.gitignore"
+      printf 'ignored notes v1\n' > "$CHECKOUT/files/model-router/notes.local"
+      # A committed symlink source whose target lives outside the repository:
+      # the file identity is read through it, and Git never looks there.
+      mv "$CHECKOUT/files/codex-AGENTS.md" "$FX/codex-source.md"
+      ln -s "$FX/codex-source.md" "$CHECKOUT/files/codex-AGENTS.md"
       git_commit_all "$CHECKOUT" "canonical v2" ;;
     drift)
       printf 'locally edited\n' >> "$HOMEDIR/.agents/skills/humanizer/SKILL.md"
@@ -150,6 +232,11 @@ build_fixture() { # <name>
       ln -s "$FX/elsewhere/SKILL.md" "$HOMEDIR/.agents/skills/model-router/escape.md" ;;
     missing)
       rm -rf "$HOMEDIR/.agents/skills/humanizer" "$HOMEDIR/.codex/AGENTS.md" ;;
+    interrupted)
+      # An operation that never closed its journal: the next mutation must
+      # resolve it (FR-45) before planning anything new.
+      j="$HOMEDIR/.local/state/agent-flow-kit/journal.json"
+      jq -c '.state = "IN_PROGRESS"' "$j" > "$j.x" && mv "$j.x" "$j" ;;
   esac
   return 0
 }
@@ -187,21 +274,58 @@ verb_args() {
     plan)   printf '%s\n' update --json --plan ;;
     adopt)  printf '%s\n' adopt --json ;;
     update) printf '%s\n' update --json ;;
+    approve) printf '%s\n' adopt --json --approve-plan "$APPROVAL" ;;
   esac
 }
 
 # stderr alone also masks the SOURCE LINE bash prints in its own diagnostics
 # ("afk-common.sh: line 122: <path>: Permission denied"): that number moves
-# with any edit to the file. The message, the path and the count still match.
+# with any edit to the file. The message and the path still match.
+# PM-approved mask (AFK-TP-3 CR-1), stderr only: ADJACENT duplicates of exactly
+# bash's "<file>: line N: <path>: Permission denied" diagnostic collapse to one
+# line. Bash prints it once per observation pass that hashes an unreadable
+# file, and AD-19 removes the passes that repeated one. Nothing else collapses,
+# and only the BASELINE is collapsed: a candidate that repeated the line would
+# still differ.
+collapse_denied() { # <part>
+  if [[ "$1" != stderr ]]; then cat; return; fi
+  awk '/\.sh: line N: .*: Permission denied$/ && $0 == prev { next } { print; prev = $0 }'
+}
+
 compare_run() { # <label> <baseline-prefix> <candidate-prefix>
   local label="$1" a="$2" b="$3" part d re
   for part in rc stdout stderr host; do
     re=''; [[ "$part" != stderr ]] || re='s/(\.sh: line )[0-9]+:/\1N:/'
-    if d="$(diff <(mask "$a.$part" | sed -E "$re") <(mask "$b.$part" | sed -E "$re"))"; then :; else
+    if d="$(diff <(mask "$a.$part" | sed -E "$re" | collapse_denied "$part") \
+                 <(mask "$b.$part" | sed -E "$re"))"; then :; else
       bad "$label: $part identical" "$d"; return
     fi
   done
   ok "$label: exit $(cat "$a.rc"), JSON, stderr and host state identical"
+}
+
+# Candidate only (AD-19): the full-inventory passes a run made, in order, and
+# which functions observed a single component. A read-only verb observes once
+# (O1); a mutation that took the lock adds O2, and O4 once its writes are
+# verified; a run whose report no ledger still describes (a rollback) adds one
+# "report" pass. Per-component observations belong to the pass itself, the
+# pre-write guard (O3), the post-write proof and restoration only.
+check_points() { # <label> <candidate-prefix>
+  local log="$TMPROOT/obs/${2##*/}.log" got result per bad_caller n want
+  got="$(awk 'NF == 1' "$log" 2>/dev/null | tr '\n' ' ')"; got="${got% }"
+  result="$(jq -r '.operation.result // ""' "$2.stdout" 2>/dev/null)"
+  per="$(awk 'NF == 2 && $1 == "afk_observation_pass"' "$log" 2>/dev/null | wc -l | tr -d ' ')"
+  bad_caller="$(awk 'NF == 2 && $1 !~ /^afk_(observation_pass|component_prewrite_ok|component_apply|restoration_verified|recover_interrupted)$/ {print $1}' "$log" 2>/dev/null | sort -u | tr '\n' ' ')"
+  n="$(wc -w <<<"$got" | tr -d ' ')"
+  case "$result" in
+    CONVERGED|ADOPTED) want="^O1 O2 O4$" ;;
+    *) want="^O1( O2( O4)?( report)?)?$" ;;
+  esac
+  if [[ "$got" =~ $want && "$per" == "$((n * COMPONENTS))" && -z "$bad_caller" ]]; then
+    ok "$1: observed at ${got:-nothing}${result:+ ($result)}"
+  else
+    bad "$1: observes only at O1-O4" "passes '$got' result '$result' pass-entries $per stray callers '$bad_caller'"
+  fi
 }
 
 # --- primitives, called directly: every edge the CLI fixtures cannot reach ---
@@ -312,6 +436,34 @@ LOCK_CASE="$(bash -c 'set -uo pipefail
 if [[ "$LOCK_CASE" == "1 mapped|0|0 none" ]]; then ok "afk_lock_acquire drops the boundary memo and the manifest map"
 else bad "afk_lock_acquire drops the boundary memo and the manifest map" "$LOCK_CASE"; fi
 
+# Candidate only (AD-19, AC-2/AC-4): a pass fills the whole ledger or leaves
+# none, a binding is never computed over a partial one, and a cached
+# canonical identity survives the lock-time recheck only while every source
+# entry's stat (not merely Git's view of it) holds still.
+LR="$TMPROOT/ledger"; mkdir -p "$LR/home"; make_checkout "$LR/kit"
+LEDGER_CASE="$(HOME="$LR/home" bash -c 'set -uo pipefail
+  for l in common source inventory commands plan mutate; do . "$1/afk-$l.sh"; done
+  AFK_KIT_ROOT="$2"; AFK_SKILLS_HOME="$HOME/s"; AFK_CLAUDE_HOME="$HOME/c"; AFK_CODEX_HOME="$HOME/x"
+  AFK_MANIFEST="$HOME/state.json"; AFK_CO_MANAGED_INPUTS=(files)
+  f=files/codex-AGENTS.md
+  afk_observation_pass O1; full="$?:$AFK_OBL_STATE:$AFK_OBL_POINT"
+  n=0; eval "orig() $(declare -f afk_observe_component | tail -n +2)"
+  afk_observe_component() { n=$((n + 1)); (( n < 3 )) || return 1; orig "$@"; }
+  afk_observation_pass O2; part="$?:$AFK_OBL_STATE:${#AFK_OBL[@]}"
+  afk_plan_binding_compute O1 reuse; bind="$?:$AFK_PLAN_BINDING"
+  afk_observation_restore afk-runtime-bin; rest="$?"
+  afk_canonical_enable
+  afk_canonical_identity_v a MANAGED_COPY_FILE "$f" ""
+  afk_canonical_recheck; afk_canonical_identity_v b MANAGED_COPY_FILE "$f" ""
+  # An edit Git is told not to see: only the stat walk can notice it.
+  git -C "$2" update-index --assume-unchanged "$f"; printf "two\n" > "$2/$f"
+  afk_canonical_recheck; afk_canonical_identity_v c MANAGED_COPY_FILE "$f" ""
+  canon="$AFK_CANON_STATE:$([[ "$a" == "$b" && "$b" != "$c" && -n "$a" ]] && echo moved)"
+  printf "%s|%s|%s|%s|%s" "$full" "$part" "$bind" "$rest" "$canon"' _ "$KIT_ROOT/lib" "$LR/kit" 2>&1)"
+if [[ "$LEDGER_CASE" == "0:complete:O1|1:none:0|1:{}|1|on:moved" ]]; then
+  ok "a partial observation pass leaves no ledger to bind, and a checkout edited behind Git's back is re-hashed"
+else bad "a partial observation pass leaves no ledger to bind, and a checkout edited behind Git's back is re-hashed" "$LEDGER_CASE"; fi
+
 TIMES="$TMPROOT/times"
 for fx in $FIXTURES; do
   [[ "$fx" != none ]] || continue
@@ -319,6 +471,9 @@ for fx in $FIXTURES; do
   if [[ "$fx" == unreadable ]] && (( EUID == 0 )); then printf '  root reads mode-000 files; skipped\n'; continue; fi
   build_fixture "$fx" || continue
   cp -a "$FX" "$TMPROOT/golden-$fx"
+  # The identity an owner would approve: the baseline's own adopt plan.
+  restore_fixture "$fx"; run_cli baseline "$TMPROOT/approval-$fx" adopt --json --plan
+  APPROVAL="$(jq -r '.operation.plan_identity // "none"' "$TMPROOT/approval-$fx.stdout" 2>/dev/null)"
   for verb in $VERBS; do
     mapfile -t args < <(verb_args "$verb")
     for side in baseline candidate portable; do
@@ -335,10 +490,32 @@ for fx in $FIXTURES; do
     done
     compare_run "$fx $verb" "$TMPROOT/$fx-$verb-baseline" "$TMPROOT/$fx-$verb-candidate"
     compare_run "$fx $verb (portable hashing)" "$TMPROOT/$fx-$verb-baseline" "$TMPROOT/$fx-$verb-portable"
+    check_points "$fx $verb" "$TMPROOT/$fx-$verb-candidate"
   done
 done
 
+printf '\n\033[1mdrift between safety boundaries\033[0m\n'
+while IFS=: read -r fx verb point change want; do
+  [[ -n "$fx" && "$fx" != none ]] || continue
+  case " $FIXTURES " in *" $fx "*) : ;; *) continue ;; esac
+  [[ -d "$TMPROOT/golden-$fx" ]] || continue
+  mapfile -t args < <(verb_args "$verb")
+  label="$fx $verb, $change changed at the $point boundary"
+  for side in baseline candidate; do
+    restore_fixture "$fx"
+    ENTRY=afk-equiv-drift AFK_EQUIV_DRIFT="$point:$change" \
+      run_cli "$side" "$TMPROOT/drift-$fx-$point-$change-$side" "${args[@]}"
+    host_state > "$TMPROOT/drift-$fx-$point-$change-$side.host"
+  done
+  compare_run "$label" "$TMPROOT/drift-$fx-$point-$change-baseline" "$TMPROOT/drift-$fx-$point-$change-candidate"
+  check_points "$label" "$TMPROOT/drift-$fx-$point-$change-candidate"
+  got="$(jq -r '"\(.operation.result)/\(.operation.reason)"' "$TMPROOT/drift-$fx-$point-$change-candidate.stdout" 2>/dev/null)"
+  if [[ "$got" == "$want" ]]; then ok "$label: refused as $want"
+  else bad "$label: refused as $want" "got $got"; fi
+done <<< "$DRIFTS"
+
 printf '\nwall seconds (fixture verb side):\n'; column -t "$TIMES" 2>/dev/null || cat "$TIMES"
+[[ -z "${AFK_EQUIV_OBSLOG:-}" ]] || { mkdir -p "$AFK_EQUIV_OBSLOG" && cp "$TMPROOT"/obs/*.log "$AFK_EQUIV_OBSLOG"/ 2>/dev/null; }
 if [[ -n "${AFK_EQUIV_KEEP:-}" ]]; then
   mkdir -p "$AFK_EQUIV_KEEP" && cp "$TMPROOT"/*.rc "$TMPROOT"/*.stdout "$TMPROOT"/*.stderr "$TMPROOT"/*.host "$TIMES" "$AFK_EQUIV_KEEP"/ 2>/dev/null
 fi

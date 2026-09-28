@@ -62,6 +62,19 @@ codex-global-guidance|MANAGED_COPY_FILE|file|files/codex-AGENTS.md|file|$AFK_COD
 EOF
 }
 
+# --- observation accounting (AD-19) -----------------------------------------
+#
+# Test-visible only: AFK_OBSERVATION_PASSES counts full-inventory passes in
+# this process, and with AFK_TEST_OBSERVATION_LOG set every observation is
+# appended there as "<point> [component]" so a suite can count them per verb.
+# Neither ever reaches a result document.
+AFK_OBSERVATION_PASSES=0
+afk_observation_note() { # <point> [component]
+  [[ -n "${2:-}" ]] || AFK_OBSERVATION_PASSES=$((AFK_OBSERVATION_PASSES + 1))
+  [[ -z "${AFK_TEST_OBSERVATION_LOG:-}" ]] \
+    || printf '%s%s\n' "$1" "${2:+ $2}" >> "$AFK_TEST_OBSERVATION_LOG" 2>/dev/null || true
+}
+
 afk_component_row() { # <id> -> the declared row
   local id="$1" line
   while IFS= read -r line; do
@@ -520,9 +533,27 @@ afk_component_fail() { # <critical> <id> <state> <reason> <provenance> [expected
   if [[ "$1" == "true" ]]; then C_SEVERITY="blocking"; else C_SEVERITY="warning"; fi
 }
 
+# afk_evaluate_components [report-point]
+#
+# Classifies the observation ledger (afk-plan.sh, AD-19). Without an argument
+# it fills the ledger with one fresh pass (O1), which afk_plan_compute then
+# binds rather than observing again. With a point (O4 after a committed
+# operation, O2 after a plan went stale at revalidation), it reports from the
+# ledger that point left, which describes the filesystem as it now is; any
+# other ledger is never reused, and a fresh "report" pass is taken instead.
+# The applied identity and the adaptation match are always read from the
+# manifest and records loaded now, never from the ledger.
 afk_evaluate_components() {
   local id ownership skind srel dkind dpath extra critical container target_root
-  local guard rc want boundary observed canonical applied adapt_id disp escape resolved
+  local guard rc observed canonical applied adapt_id disp escape point="O1"
+
+  if [[ -n "${1:-}" ]]; then
+    point="report"
+    [[ "$AFK_OBL_STATE" == "complete" && "$AFK_OBL_POINT" == "$1" ]] && point=""
+  fi
+  if [[ -n "$point" ]]; then
+    afk_observation_pass "$point" || return 0
+  fi
 
   while IFS='|' read -r id ownership skind srel dkind dpath extra critical container target_root; do
     [[ -n "$id" ]] || continue
@@ -530,19 +561,14 @@ afk_evaluate_components() {
     C_ID="$id"; C_OWNERSHIP="$ownership"; C_DEST="$dpath"; C_CRITICAL="$critical"
     observed=""; canonical=""; applied=""; adapt_id=""
 
-    case "$dkind" in
-      dir)     want="dir" ;;
-      file)    want="file" ;;
-      section) want="file" ;;
-      link)    want="link" ;;
-      *)       want="file" ;;
-    esac
-    boundary="$target_root"
-
     # --- path type, containment, symlink boundary: fail closed BEFORE reading
-    afk_path_guard_v guard "$dpath" "$want" "$boundary" "$container"
-    rc=$?
-    if (( rc != 0 )); then
+    if ! afk_observation_restore "$id"; then
+      afk_component_fail "$critical" "$id" "BROKEN" "IDENTITY_UNREADABLE" "HASH_COMPARISON"
+      afk_c_emit
+      continue
+    fi
+    guard="$AFK_OB_GUARD"
+    if [[ "$guard" != "PATH_OK" ]]; then
       if [[ "$guard" == "PATH_ABSENT" ]]; then
         afk_manifest_component_identity_v applied "$id"
         if [[ "$AFK_ADOPTED" == "true" && -n "$applied" ]]; then
@@ -560,9 +586,10 @@ afk_evaluate_components() {
     fi
 
     # --- bounded identity of destination and canonical source ---------------
+    observed="$AFK_OB_OBSERVED"; canonical="$AFK_OB_CANONICAL"
     case "$ownership" in
       MANAGED_COPY_TREE)
-        escape="$(afk_tree_find_escaping_symlink "$dpath")"
+        escape="$AFK_OB_ESCAPE"
         if [[ -n "$escape" ]]; then
           afk_component_fail "$critical" "$id" "BROKEN" "PATH_ESCAPES_OWNERSHIP_BOUNDARY" \
             "PATH_STRUCTURE" "" "$escape"
@@ -570,17 +597,10 @@ afk_evaluate_components() {
           afk_emit_adaptations_for "$id" ""
           continue
         fi
-        observed="$(afk_tree_identity "$dpath" "$extra")"
-        canonical="$(afk_tree_identity "$AFK_KIT_ROOT/$srel" "$extra")"
         ;;
-      MANAGED_COPY_FILE)
-        afk_sha256_file_v observed "$dpath"
-        afk_sha256_file_v canonical "$AFK_KIT_ROOT/$srel"
-        ;;
+      MANAGED_COPY_FILE) : ;;
       MANAGED_SECTION)
-        observed="$(afk_section_identity "$dpath" "$extra")"
-        rc=$?
-        canonical="$(afk_file_payload_identity "$AFK_KIT_ROOT/$srel")"
+        rc="$AFK_OB_SECTION_RC"
         if (( rc == 3 )); then
           afk_component_fail "$critical" "$id" "BROKEN" "MANAGED_SECTION_MARKERS_MALFORMED" "FILE_STRUCTURE"
           afk_c_emit
@@ -602,20 +622,15 @@ afk_evaluate_components() {
         fi
         ;;
       MANAGED_LINK)
-        if [[ ! -e "$dpath" ]]; then
+        if [[ "$AFK_OB_LINK_MISSING" == "true" ]]; then
           afk_component_fail "$critical" "$id" "BROKEN" "LINK_TARGET_MISSING" "PATH_STRUCTURE"
           afk_c_emit
           afk_emit_adaptations_for "$id" ""
           continue
         fi
-        if afk_realpath_v resolved "$dpath"; then observed="link:$resolved"; else observed=""; fi
-        if afk_realpath_v resolved "$extra"; then canonical="link:$resolved"; else canonical=""; fi
         C_PROVENANCE="PATH_STRUCTURE"
         ;;
-      MACHINE_LOCAL)
-        afk_sha256_file_v observed "$dpath"
-        canonical=""
-        ;;
+      MACHINE_LOCAL) canonical="" ;;
     esac
 
     C_OBSERVED="$observed"

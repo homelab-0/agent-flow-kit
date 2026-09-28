@@ -50,6 +50,7 @@ AFK_OP_BACKUP_DIR=""
 AFK_OP_STAGE_DIR=""
 AFK_OP_MUTATED="false"
 AFK_OP_ROLLBACK_STATE="NOT_REQUIRED"
+AFK_OP_REPORT_POINT=""      # O2 | O4 | "": the ledger the post-operation report reuses
 AFK_OP_COMMITTED="false"
 AFK_OP_PRIOR_REVISION=""
 AFK_OP_APPLIED_REVISION=""
@@ -1156,8 +1157,10 @@ afk_verify_journal_check() {
   return 1
 }
 
-# afk_verify_against_manifest <manifest-json> <applied-revision>
-# Returns 0 when every blocking check passed.
+# afk_verify_against_manifest <manifest-json> <applied-revision> [reuse]
+# Returns 0 when every blocking check passed. The components are one fresh
+# observation pass (O4); only the read-only verify command passes "reuse" to
+# prove the O1 ledger its own report was built from.
 afk_verify_against_manifest() {
   local manifest="$1" applied="$2" row recorded major n i tid tpath valid
   AFK_VERIFY_ENTRIES=""
@@ -1203,9 +1206,15 @@ afk_verify_against_manifest() {
   fi
 
   # --- every declared component -------------------------------------------
+  # A pass that cannot observe the whole inventory proves nothing about it.
+  if [[ "${3:-}" != "reuse" || "$AFK_OBL_STATE" != "complete" || "$AFK_OBL_POINT" != "O1" ]] \
+     && ! afk_observation_pass O4; then
+    afk_verify_note "component-inventory" "inventory_observed" "FAIL" "PLAN_NOT_COMPUTABLE" \
+      "every declared component" "incomplete"
+  fi
   while IFS= read -r row; do
     [[ -n "$row" ]] || continue
-    afk_observe_component "$row"
+    afk_observation_restore "${row%%|*}" || continue
     recorded="$(afk_identity_in_manifest "$manifest" "$AFK_OB_ID")"
 
     if [[ "$AFK_OB_OWNERSHIP" == "MACHINE_LOCAL" ]]; then
@@ -1818,9 +1827,13 @@ afk_transaction_execute() { # <command: adopt|update>
   # write, including a rollback that completed correctly.
   AFK_OP_APPLIED_REVISION="$AFK_APPLIED_REVISION"
   AFK_OP_TARGET_REVISION="$AFK_CO_REVISION"
+  # The ledger the post-operation report may be built from: set only where
+  # nothing managed has been touched since that ledger was filled.
+  AFK_OP_REPORT_POINT=""
 
   # --- the mutation boundary: revalidate every bound input (FR-91) ---------
   if ! afk_plan_revalidate; then
+    AFK_OP_REPORT_POINT="O2"
     AFK_OP_RESULT="STALE_PLAN"
     AFK_OP_REASON="$AFK_PLAN_STALE_REASON"
     AFK_OP_DETAIL="$AFK_PLAN_STALE_DETAIL"
@@ -1976,6 +1989,8 @@ afk_transaction_execute() { # <command: adopt|update>
   fi
   AFK_OP_COMMITTED="true"
   AFK_OP_APPLIED_REVISION="$target_revision"
+  # O4 observed the destinations as committed; nothing below touches one.
+  AFK_OP_REPORT_POINT="O4"
 
   # --- housekeeping (cannot change what the commit means) ------------------
   afk_journal_mark_committed || true
