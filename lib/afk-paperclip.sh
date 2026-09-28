@@ -15,10 +15,14 @@ fi
 AFK_PAPERCLIP_SOURCED=1
 
 AFK_PC_UUID_RE='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+# board_user_id isn't a UUID for real Paperclip accounts (Better-Auth style
+# ids, e.g. "emXp8Svi8ncWyL1EORTkRNQYjFjCdQon"). A UUID still matches this.
+AFK_PC_USER_ID_RE='^[A-Za-z0-9_-]{16,64}$'
 AFK_PC_OP="${AFK_OP_BIN:-op}"
 AFK_PC_CURL="${AFK_CURL_BIN:-curl}"
 
 afk_pc_uuid_ok() { [[ "$1" =~ $AFK_PC_UUID_RE ]]; }
+afk_pc_user_id_ok() { [[ "$1" =~ $AFK_PC_USER_ID_RE ]]; }
 
 afk_pc_config_path() {
   printf '%s' "${AFK_PAPERCLIP_CONFIG:-${HOME:-}/.config/agent-flow-kit/paperclip.json}"
@@ -172,7 +176,7 @@ afk_pc_load_config() {
   if [[ "$board_user_id" == board || "$board_user_id" == local-board ]]; then
     AFK_PC_REFUSAL="PAPERCLIP_ID_INVALID"; return 1
   fi
-  if ! afk_pc_uuid_ok "$company_id" || ! afk_pc_uuid_ok "$board_user_id"; then
+  if ! afk_pc_uuid_ok "$company_id" || ! afk_pc_user_id_ok "$board_user_id"; then
     AFK_PC_REFUSAL="PAPERCLIP_ID_INVALID"; return 1
   fi
   if [[ -n "$maint" ]] && ! afk_pc_uuid_ok "$maint"; then

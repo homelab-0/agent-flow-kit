@@ -14,7 +14,7 @@ report cycle, below).
 {
   "api_url": "https://paperclip.example",
   "company_id": "<uuid>",
-  "board_user_id": "<uuid>",
+  "board_user_id": "emXp8Svi8ncWyL1EORTkRNQYjFjCdQon",
   "host_label": "devbox",
   "maintenance_issue_id": "<uuid, optional>",
   "agents": [
@@ -30,11 +30,14 @@ report cycle, below).
 }
 ```
 
-Every id (company, board user, agent, maintenance issue, and every id read
-back from a Paperclip response) is checked as a UUID before it is used in a
-file path. `board_user_id` may never be the literal string `board` or
-`local-board`. A missing config reports `PAPERCLIP_NOT_CONFIGURED`; an
-invalid one reports `PAPERCLIP_CONFIG_INVALID` or `PAPERCLIP_ID_INVALID`.
+Every id used in a file path (company, agent, maintenance issue, and every id
+read back from a Paperclip response) is checked as a UUID before it is used
+that way. `board_user_id` is never used in a file path; it is checked against
+`^[A-Za-z0-9_-]{16,64}$` (a UUID also matches), since real Paperclip board
+user ids are Better-Auth style ids, not UUIDs. `board_user_id` may never be
+the literal string `board` or `local-board`. A missing config reports
+`PAPERCLIP_NOT_CONFIGURED`; an invalid one reports `PAPERCLIP_CONFIG_INVALID`
+or `PAPERCLIP_ID_INVALID`.
 Neither makes a network call. `interim_comment_approval.paperclip_commit`,
 when present, must be 40 lowercase hex characters or config load itself
 refuses with `PAPERCLIP_CONFIG_INVALID`.
