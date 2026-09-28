@@ -1032,6 +1032,138 @@ assert_eq "unpaused (blocked): exactly one claim comment over two passes" "$(gre
 assert_eq "unpaused (blocked): exactly one claimed notice" "$(find "$NOTICE_DIR" -name '*.claimed.json' 2>/dev/null | wc -l | tr -d ' ')" "1"
 assert_eq "unpaused (blocked): exactly one brief" "$(find "$NOTICE_DIR" -name 'brief.*' 2>/dev/null | wc -l | tr -d ' ')" "1"
 
+# ============================================================================
+head1 "17. Plan approval of record (PC-3b AC-5, AC-6)"
+# ============================================================================
+PD="$(printf 'a%.0s' {1..8})$(printf '0%.0s' {1..56})"; PD8="${PD:0:8}"
+PCOMMIT="d554c4789ed3930f8a53ac9fdf6503b3187097da"
+PATT="{\"attested_on\":\"2026-09-27\",\"paperclip_commit\":\"$PCOMMIT\"}"
+# plan_scenario <name> <comments-json> [<interim-json|none>] [<health code>] [<health body>]
+# Overrides via the environment: PQID (the ledger's open question id), PSENT
+# (question_sent_at as JSON, e.g. null), PSEQ (the plan file's posted_seq,
+# JSON), PSTATE (its state, JSON; null omits it), PAPPR=1 (an approval of the
+# plan already on file) and PLOCK=1 (the plan lock already held).
+plan_scenario() {
+  local qid="${PQID:-plan-$PD8}" sent="${PSENT:-\"2026-03-01T00:00:00.000Z\"}"
+  new_scenario "$1"
+  write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+  if [[ "${3:-}" != none ]]; then
+    jq --argjson i "${3:-$PATT}" \
+      '.interim_comment_approval = $i' "$CONFIG" >"$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
+  fi
+  seed_working "$ISSUE1" HOM-12 waiting_human \
+    "{\"question_id\":\"$qid\",\"question_seq\":3,\"question_sent_at\":$sent,\"action_text_applied\":\"waiting on $qid\"}"
+  mkdir -p "$STATE/paperclip/plans"
+  jq -nc --arg d "$PD" --argjson seq "${PSEQ:-3}" --argjson st "${PSTATE:-\"posted\"}" \
+    '{schema:"afk-paperclip-plan-record/1", digest:$d, digest8:$d[0:8], question_id:("plan-" + $d[0:8]), posted_seq:$seq}
+     + (if $st == null then {} else {state:$st} end)' \
+    >"$STATE/paperclip/plans/$ISSUE1.json"
+  if [[ -n "${PAPPR:-}" ]]; then
+    mkdir -p "$STATE/paperclip/approvals"
+    jq -nc --arg d "$PD" '{schema:"afk-paperclip-approval/1", kind:"plan", digest:$d, digest8:$d[0:8]}' \
+      >"$STATE/paperclip/approvals/$ISSUE1.json"
+  fi
+  [[ -n "${PLOCK:-}" ]] && mkdir -p "$STATE/paperclip/plans/.$ISSUE1.lock"
+  route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+  route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+  route GET "/api/issues/$ISSUE1" 200 \
+    "{\"status\":\"blocked\",\"identifier\":\"HOM-12\",\"unblockDescriptor\":{\"owner\":{\"agentId\":\"$AGENT1\"}}}"
+  route GET "/api/issues/$ISSUE1/comments" 200 "$2"
+  route GET /api/health "${4:-200}" "${5:-{\"commit\":\"$PCOMMIT\"\}}"
+  run_afk --json
+  APPROVAL="$STATE/paperclip/approvals/$ISSUE1.json"; NOTICE_DIR="$STATE/paperclip/notices/proj"
+}
+jc() { # <id-suffix> <body> [<createdAt>] [<authorAgentId-json>]
+  jq -nc --arg id "c0000000-0000-0000-0000-00000000000$1" --arg b "$2" --arg c "${3:-2026-03-02T00:00:00.000Z}" \
+    --arg u "$BOARD" --argjson ag "${4:-null}" '{id:$id, body:$b, authorUserId:$u, authorAgentId:$ag, createdAt:$c}'
+}
+notices() { find "$NOTICE_DIR" -name "*.$1.json" 2>/dev/null | wc -l | tr -d ' '; }
+
+plan_scenario appr_exact "[$(jc 1 "  approve $PD8"$'\n')]"
+assert_eq "exact approve <d8> from Josh -> an approval record of the plan digest" "$(jq -r '.kind + " " + .digest' "$APPROVAL" 2>/dev/null)" "plan $PD"
+assert_eq "  ...and one approval_granted notice" "$(notices approval_granted)" "1"
+assert_eq "  ...the health check carries no key" "$(grep 'api/health' "$LOG.argv" | grep -c '@/dev/fd')" "0"
+
+plan_scenario appr_variants "[$(jc 1 "approve 0bad0bad"), $(jc 2 "approve $PD8 please"), $(jc 3 "Approve $PD8"), $(jc 4 "APPROVE ${PD8^^}")]"
+assert_missing "wrong digest8, extra words, or case changes -> no record" "$APPROVAL"
+assert_eq "  ...each stays a plain human comment (reply file)" "$(find "$NOTICE_DIR" -name 'reply.*.md' | wc -l | tr -d ' ')" "4"
+
+plan_scenario appr_agent "[$(jc 1 "approve $PD8" "" "\"$AGENT2\"")]"
+assert_missing "an agent's comment carrying Josh's user id -> no record" "$APPROVAL"
+
+plan_scenario appr_reject "[$(jc 1 "reject $PD8")]"
+assert_missing "reject <d8> -> no record" "$APPROVAL"
+assert_eq "  ...an approval_rejected notice" "$(notices approval_rejected)" "1"
+
+plan_scenario appr_early "[$(jc 1 "approve $PD8" 2026-02-01T00:00:00.000Z)]"
+assert_missing "a comment older than the plan's send -> no record" "$APPROVAL"
+assert_contains "  ...reported" "$OUT_TEXT" "APPROVAL_BEFORE_PLAN"
+
+plan_scenario appr_unattested "[$(jc 1 "approve $PD8")]" none
+assert_missing "no attestation config -> no record" "$APPROVAL"
+assert_contains "  ...APPROVAL_INTERIM_UNATTESTED reported" "$OUT_TEXT" "APPROVAL_INTERIM_UNATTESTED: HOM-12"
+assert_eq "  ...and a notice" "$(grep -l APPROVAL_INTERIM_UNATTESTED "$NOTICE_DIR"/*.approval_refused.json 2>/dev/null | wc -l | tr -d ' ')" "1"
+
+plan_scenario appr_mismatch "[$(jc 1 "approve $PD8")]" "" 200 '{"commit":"0000000000000000000000000000000000000000"}'
+assert_missing "health commit mismatched -> no record" "$APPROVAL"
+assert_contains "  ...unattested" "$OUT_TEXT" "APPROVAL_INTERIM_UNATTESTED"
+
+plan_scenario appr_health_down "[$(jc 1 "approve $PD8")]" "" NETFAIL
+assert_missing "health unreachable -> no record (fail closed)" "$APPROVAL"
+
+plan_scenario appr_unverifiable "[$(jc 1 "approve $PD8" | jq -c 'del(.authorAgentId)')]"
+assert_missing "a comment with no authorAgentId key at all -> no record" "$APPROVAL"
+assert_contains "  ...reported unverifiable" "$OUT_TEXT" "PAPERCLIP_AUTHOR_UNVERIFIABLE"
+
+PSEQ=2 plan_scenario appr_seq_mismatch "[$(jc 1 "approve $PD8")]"
+assert_missing "plan file posted_seq != the sent question_seq -> no record" "$APPROVAL"
+assert_contains "  ...APPROVAL_PLAN_MISMATCH" "$OUT_TEXT" "APPROVAL_PLAN_MISMATCH"
+
+PSTATE='"pending_publish"' plan_scenario appr_pending_seq "[$(jc 1 "approve $PD8")]"
+assert_eq "a pending_publish record carrying the sent seq -> approved" "$(jq -r .digest "$APPROVAL" 2>/dev/null)" "$PD"
+PSTATE='"pending_publish"' PSEQ=null plan_scenario appr_pending_noseq "[$(jc 1 "approve $PD8")]"
+assert_missing "a pending_publish record with no seq -> no record" "$APPROVAL"
+assert_contains "  ...APPROVAL_PLAN_MISMATCH" "$OUT_TEXT" "APPROVAL_PLAN_MISMATCH"
+PSTATE=null plan_scenario appr_no_state "[$(jc 1 "approve $PD8")]"
+assert_missing "a plan record with no state -> no record" "$APPROVAL"
+PSTATE='"withdrawn"' plan_scenario appr_other_state "[$(jc 1 "approve $PD8")]"
+assert_missing "a plan record in any other state -> no record" "$APPROVAL"
+
+PAPPR=1 plan_scenario appr_reject_withdraws "[$(jc 1 "reject $PD8")]"
+assert_missing "reject <d8> withdraws an approval of the same plan" "$APPROVAL"
+assert_eq "  ...then one approval_rejected notice" "$(notices approval_rejected)" "1"
+PAPPR=1 PLOCK=1 plan_scenario appr_reject_locked "[$(jc 1 "reject $PD8")]"
+assert_eq "reject while the plan lock is held -> the approval stays" "$(jq -r .digest "$APPROVAL" 2>/dev/null)" "$PD"
+assert_eq "  ...no approval_rejected notice" "$(notices approval_rejected)" "0"
+assert_eq "  ...an approval_withdraw_failed notice with the reason" \
+  "$(jq -r .reason "$NOTICE_DIR"/*.approval_withdraw_failed.json 2>/dev/null)" "PAPERCLIP_LOCK_TIMEOUT"
+assert_contains "  ...and a local action line" "$OUT_TEXT" "approval_withdraw_failed (PAPERCLIP_LOCK_TIMEOUT): HOM-12"
+
+PSENT=null plan_scenario appr_sent_unknown "[$(jc 1 "approve $PD8")]"
+assert_missing "question_sent_at unknown -> no record" "$APPROVAL"
+assert_contains "  ...APPROVAL_BEFORE_PLAN" "$OUT_TEXT" "APPROVAL_BEFORE_PLAN"
+
+PQID=q7 plan_scenario appr_other_question "[$(jc 1 "approve $PD8")]"
+assert_missing "approve <d8> while a non-plan question is open -> no record" "$APPROVAL"
+assert_eq "  ...it stays a plain human comment" "$(find "$NOTICE_DIR" -name 'reply.*.md' | wc -l | tr -d ' ')" "1"
+
+plan_scenario appr_zero_width "[$(jc 1 "approve $PD8"$'​'), $(jc 2 "approve $PD8"$'\r\n')]"
+assert_eq "a zero-width char after the digest is not an approval; CRLF is trimmed and is" \
+  "$(jq -r .comment_id "$APPROVAL" 2>/dev/null)" "c0000000-0000-0000-0000-000000000002"
+
+new_scenario question_send_recorded
+write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+seed_working "$ISSUE1" HOM-12 working
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+route POST "/api/agents/$AGENT1/wakeup" 202 '{"id":"run-q"}'
+route PATCH "/api/issues/$ISSUE1" 200 '{}'
+route POST "/api/issues/$ISSUE1/comments" 201 '{"createdAt":"2026-03-01T00:00:00.000Z"}'
+write_spool "$ISSUE1" 00000005 "{\"id\":\"$E1\",\"kind\":\"question\",\"question_id\":\"plan-$PD8\",\"body\":\"plan\"}"
+run_afk --json
+assert_eq "a sent question records its seq and Paperclip's createdAt" \
+  "$(jq -r --arg id "$ISSUE1" '.issues[$id] | "\(.question_seq) \(.question_sent_at)"' "$STATE/paperclip/ledger.json")" "5 2026-03-01T00:00:00.000Z"
+
 # ===========================================================================
 printf '\n\033[1m%d passed, %d failed\033[0m\n' "$PASS" "$FAIL"
 (( FAIL == 0 )) || exit 1
