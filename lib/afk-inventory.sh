@@ -551,8 +551,17 @@ afk_evaluate_components() {
     point="report"
     [[ "$AFK_OBL_STATE" == "complete" && "$AFK_OBL_POINT" == "$1" ]] && point=""
   fi
-  if [[ -n "$point" ]]; then
-    afk_observation_pass "$point" || return 0
+  # A pass that could not observe the whole inventory leaves no ledger, and an
+  # empty component list would read as CURRENT. So it is reported as one
+  # blocking, execution-critical component of its own, and every declared
+  # component below then fails its restore and is reported BROKEN as well.
+  if [[ -n "$point" ]] && ! afk_observation_pass "$point"; then
+    afk_c_reset
+    C_ID="component-inventory"; C_OWNERSHIP="KIT_STATE"; C_CRITICAL="true"
+    afk_component_fail "true" "$C_ID" "BROKEN" "IDENTITY_UNREADABLE" "HASH_COMPARISON" \
+      "every declared component"
+    C_SCOPES="INSTALLED_INTEGRITY,HOST_EXECUTION_READY"; C_OBSERVED="incomplete"
+    afk_c_emit
   fi
 
   while IFS='|' read -r id ownership skind srel dkind dpath extra critical container target_root; do

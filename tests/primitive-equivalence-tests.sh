@@ -132,6 +132,19 @@ afk_main "$@"
 exit $?
 DRIVER
   } > "$TMPROOT/k-$side/bin/afk-equiv-drift"
+  # The fault driver: the same CLI with one failure injected into a function
+  # both sides call. "table": the declared inventory cannot be enumerated.
+  # "observe": one component (humanizer) cannot be observed.
+  { sed '$d' "$cli" | sed '$d'; cat <<'DRIVER'
+case "${AFK_EQUIV_FAULT:-}" in
+  table)   afk_component_table() { return 1; } ;;
+  observe) eval "afk_equiv_orig_observe() $(declare -f afk_observe_component | tail -n +2)"
+           afk_observe_component() { [[ "$1" != humanizer\|* ]] || return 1; afk_equiv_orig_observe "$@"; } ;;
+esac
+afk_main "$@"
+exit $?
+DRIVER
+  } > "$TMPROOT/k-$side/bin/afk-equiv-fault"
 done
 
 # --- fixtures (the shapes of tests/lifecycle-mutation-tests.sh) -------------
@@ -292,15 +305,16 @@ collapse_denied() { # <part>
   awk '/\.sh: line N: .*: Permission denied$/ && $0 == prev { next } { print; prev = $0 }'
 }
 
-compare_run() { # <label> <baseline-prefix> <candidate-prefix>
+compare_run() { # <label> <baseline-prefix> <candidate-prefix> [parts]
   local label="$1" a="$2" b="$3" part d re
-  for part in rc stdout stderr host; do
+  for part in ${4:-rc stdout stderr host}; do
     re=''; [[ "$part" != stderr ]] || re='s/(\.sh: line )[0-9]+:/\1N:/'
     if d="$(diff <(mask "$a.$part" | sed -E "$re" | collapse_denied "$part") \
                  <(mask "$b.$part" | sed -E "$re"))"; then :; else
       bad "$label: $part identical" "$d"; return
     fi
   done
+  if [[ -n "${4:-}" ]]; then ok "$label: $4 identical"; return; fi
   ok "$label: exit $(cat "$a.rc"), JSON, stderr and host state identical"
 }
 
@@ -513,6 +527,48 @@ while IFS=: read -r fx verb point change want; do
   if [[ "$got" == "$want" ]]; then ok "$label: refused as $want"
   else bad "$label: refused as $want" "got $got"; fi
 done <<< "$DRIFTS"
+
+# An observation pass that cannot complete (AD-19). The candidate reports it
+# as a blocking component-inventory component, so the installation can never
+# read CURRENT, and every mutation still refuses exactly as the baseline does.
+# The baseline has no equivalent report: with an unenumerable inventory it
+# listed zero components and called the installation CURRENT (the gap this
+# closes), and it never observed through afk_observe_component to report, so
+# an unobservable component there still yields a full report built from the
+# other primitives. What must match byte for byte is therefore stderr and the
+# host tree for every verb, and the exit code and refusal for every mutation:
+# the whole operation block when the inventory cannot be enumerated, and its
+# result and reason when one component cannot be observed (the plan identity
+# digests the report, which necessarily differs).
+printf '\n\033[1mobservation pass that cannot complete\033[0m\n'
+for fc in ${AFK_EQUIV_FAULTS:-clean:table drift:table drift:observe}; do
+  fx="${fc%%:*}" fault="${fc#*:}"
+  case " $FIXTURES " in *" $fx "*) : ;; *) continue ;; esac
+  [[ -d "$TMPROOT/golden-$fx" ]] || continue
+  for verb in status verify plan update; do
+    mapfile -t args < <(verb_args "$verb")
+    label="$fx $verb, $fault fault"; p="$TMPROOT/fault-$fx-$fault-$verb"
+    for side in baseline candidate; do
+      restore_fixture "$fx"
+      ENTRY=afk-equiv-fault AFK_EQUIV_FAULT="$fault" run_cli "$side" "$p-$side" "${args[@]}"
+      host_state > "$p-$side.host"
+    done
+    compare_run "$label" "$p-baseline" "$p-candidate" "stderr host"
+    if [[ "$verb" == plan || "$verb" == update ]]; then
+      compare_run "$label" "$p-baseline" "$p-candidate" "rc"
+      for side in baseline candidate; do
+        if [[ "$fault" == table ]]; then jq -S '.operation' "$p-$side.stdout"
+        else jq -c '[.operation.result, .operation.reason]' "$p-$side.stdout"; fi > "$p-$side.op" 2>&1
+      done
+      compare_run "$label" "$p-baseline" "$p-candidate" "op"
+    fi
+    got="$(jq -c '[.installed.state, ([.components[] | select(.id == "component-inventory"
+            and .state == "BROKEN" and .severity == "blocking" and .execution_critical)] | length)]' \
+            "$p-candidate.stdout" 2>/dev/null)"
+    if [[ "$got" == '["BROKEN",1]' ]]; then ok "$label: reported BROKEN with a blocking component-inventory"
+    else bad "$label: reported BROKEN with a blocking component-inventory" "got $got"; fi
+  done
+done
 
 printf '\nwall seconds (fixture verb side):\n'; column -t "$TIMES" 2>/dev/null || cat "$TIMES"
 [[ -z "${AFK_EQUIV_OBSLOG:-}" ]] || { mkdir -p "$AFK_EQUIV_OBSLOG" && cp "$TMPROOT"/obs/*.log "$AFK_EQUIV_OBSLOG"/ 2>/dev/null; }
