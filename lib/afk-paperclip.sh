@@ -45,9 +45,12 @@ afk_pc_curl() {
   local -; set +x # never trace the key, whatever the caller's options
   local method="$1" url="$2" key="$3" run="$4" body="${5:-}"
   local -a args=(-sS --connect-timeout 5 --max-time 20 --proto '=https' -X "$method" -w '%{http_code}')
-  local hfd bfd
-  exec {hfd}< <(printf 'Authorization: Bearer %s' "$key")
-  args+=(-H "@/dev/fd/$hfd")
+  local hfd="" bfd
+  # An empty key is an unauthenticated call (only GET /api/health): no header.
+  if [[ -n "$key" ]]; then
+    exec {hfd}< <(printf 'Authorization: Bearer %s' "$key")
+    args+=(-H "@/dev/fd/$hfd")
+  fi
   [[ -n "$run" ]] && args+=(-H "X-Paperclip-Run-Id: $run")
   if [[ -n "$body" ]]; then
     exec {bfd}< <(printf '%s' "$body")
@@ -55,7 +58,7 @@ afk_pc_curl() {
   fi
   local raw rc=0
   raw="$("$AFK_PC_CURL" "${args[@]}" "$url" 2>/dev/null)" || rc=1
-  exec {hfd}<&-
+  [[ -n "$hfd" ]] && exec {hfd}<&-
   [[ -n "${bfd:-}" ]] && exec {bfd}<&-
   if (( rc != 0 )); then
     printf '\n'
@@ -479,7 +482,12 @@ afk_pc_report_cycle() {
         ledger="$(jq -c --arg id "$id" '.issues[$id].sending = null' <<<"$ledger")"
         case "$kind" in
           question)
-            ledger="$(jq -c --arg id "$id" --arg q "$q" '.issues[$id].state = "waiting_human" | .issues[$id].question_id = $q' <<<"$ledger")"
+            # PC-3b: which entry asked, and Paperclip's own createdAt for it
+            # (absent: unknown, and a plan approval is then refused).
+            local q_at; q_at="$(jq -r '.createdAt // empty | strings' <<<"${cr#*$'\n'}" 2>/dev/null)"
+            ledger="$(jq -c --arg id "$id" --arg q "$q" --arg at "$q_at" --argjson seq "$((10#${f%.json}))" \
+              '.issues[$id].state = "waiting_human" | .issues[$id].question_id = $q | .issues[$id].question_seq = $seq
+               | .issues[$id].question_sent_at = (if $at == "" then null else $at end)' <<<"$ledger")"
             ;;
           final)
             final_sent=true; final_status="$fs"
@@ -894,6 +902,13 @@ afk_cmd_paperclip_poll() { # <json_mode>
               elif (( rc == 0 )); then
                 local cid2; cid2="$(jq -r '.id // empty' <<<"$c")"
                 afk_pc_uuid_ok "$cid2" || continue # AC-1: ids used in file paths
+                # PC-3b: an exact `approve|reject <digest8>` on the open plan
+                # question is decided there; anything else is a plain comment.
+                if declare -F afk_pcp_on_josh_comment >/dev/null 2>&1 &&
+                   afk_pcp_on_josh_comment "$c" "$cid2" "$ccreated"; then
+                  [[ -z "$newest_since" || "$ccreated" > "$newest_since" ]] && newest_since="$ccreated"
+                  continue
+                fi
                 afk_pc_notice "$project" "$id" "$identifier" "$agent_id" "$repo_path" "$harness" human_commented \
                   "$(jq -nc --arg cid "$cid2" --arg ca "$ccreated" --arg q "${qid:-}" \
                     'if $q == "" then {comment_id:$cid, created_at:$ca, open_question_id:null} else {comment_id:$cid, created_at:$ca, open_question_id:$q} end')"
