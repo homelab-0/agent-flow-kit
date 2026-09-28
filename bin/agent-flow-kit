@@ -37,7 +37,7 @@ AFK_LIB_DIR="${AFK_LIB_DIR:-$AFK_INSTALL_ROOT/lib}"
 # A missing or unreadable library is an internal failure with a stable message
 # and the usage exit code — never a partially loaded lifecycle that answers
 # questions with whichever functions happened to load.
-for _afk_lib in afk-common afk-source afk-inventory afk-readiness afk-monitor afk-commands afk-plan afk-mutate afk-usage afk-auto-update afk-catalog-sync afk-paperclip afk-pm-registry afk-paperclip-report afk-paperclip-start; do
+for _afk_lib in afk-common afk-source afk-inventory afk-readiness afk-monitor afk-commands afk-plan afk-mutate afk-usage afk-auto-update afk-catalog-sync afk-paperclip afk-pm-registry afk-paperclip-report afk-paperclip-plan afk-paperclip-start; do
   if [[ ! -r "$AFK_LIB_DIR/$_afk_lib.sh" ]]; then
     printf 'agent-flow-kit: internal error: required library %s.sh is missing or unreadable under %s\n' \
       "$_afk_lib" "$AFK_LIB_DIR" >&2
@@ -88,6 +88,9 @@ unset _afk_lib
 # shellcheck source=lib/afk-paperclip-report.sh
 # shellcheck disable=SC1090,SC1091
 . "$AFK_LIB_DIR/afk-paperclip-report.sh"
+# shellcheck source=lib/afk-paperclip-plan.sh
+# shellcheck disable=SC1090,SC1091
+. "$AFK_LIB_DIR/afk-paperclip-plan.sh"
 # shellcheck source=lib/afk-paperclip-start.sh
 # shellcheck disable=SC1090,SC1091
 . "$AFK_LIB_DIR/afk-paperclip-start.sh"
@@ -108,6 +111,8 @@ if ! declare -F afk_cmd_status >/dev/null 2>&1 \
    || ! declare -F afk_cmd_paperclip_take >/dev/null 2>&1 \
    || ! declare -F afk_cmd_paperclip_settle >/dev/null 2>&1 \
    || ! declare -F afk_cmd_paperclip_report >/dev/null 2>&1 \
+   || ! declare -F afk_cmd_paperclip_plan >/dev/null 2>&1 \
+   || ! declare -F afk_cmd_paperclip_approval >/dev/null 2>&1 \
    || ! declare -F afk_cmd_paperclip_timer >/dev/null 2>&1; then
   printf 'agent-flow-kit: internal error: the lifecycle libraries under %s did not load completely\n' \
     "$AFK_LIB_DIR" >&2
@@ -322,6 +327,15 @@ agent-flow-kit — lifecycle entry point
       counter and is published by a no-clobber rename. Refuses after a final
       entry with PAPERCLIP_SPOOL_CLOSED.
 
+  agent-flow-kit paperclip-plan --issue <id> --plan-file <path> [--json]
+      Validate a plan (every gate must be a line of .afk/gates-allowlist on
+      the plan's base branch), publish it as the open plan question, record
+      its digest, and revoke any earlier approval for the issue. Owner only.
+
+  agent-flow-kit paperclip-approval --issue <id> [--json]
+      Read-only: approved only when Josh's approval digest equals the current
+      plan digest and the interim attestation still holds.
+
   agent-flow-kit paperclip-timer --install|--remove|--status [--json]
       Linux only: a systemd user service and timer running paperclip-poll
       every 90s (RandomizedDelaySec=15s, Persistent=false). The unit holds no
@@ -468,6 +482,10 @@ afk_option_allowed() { # <command> <option>
       case "$2" in
         --json|--issue|--comment-file|--question|--final|--status|--story) return 0 ;;
       esac ;;
+    paperclip-plan)
+      case "$2" in --json|--issue|--plan-file) return 0 ;; esac ;;
+    paperclip-approval)
+      case "$2" in --json|--issue) return 0 ;; esac ;;
     paperclip-timer)
       case "$2" in --json|--install|--remove|--status) return 0 ;; esac ;;
   esac
@@ -481,7 +499,7 @@ afk_main() {
   local monitor_verbs=0
   local pm_write="" pm_continuation="false" pm_harness=""
   local pmr_scope="" pc_project="" pc_notice="" pct_action=""
-  local pc_issue="" pc_comment_file="" pc_question="" pc_final="" pc_status_text="" pc_story=""
+  local pc_issue="" pc_plan_file="" pc_comment_file="" pc_question="" pc_final="" pc_status_text="" pc_story=""
   local usage_days=""
   local au_mode="enroll" au_key_ref="" au_key_file="" au_prev=""
   local cs_apply="false"
@@ -623,7 +641,7 @@ afk_main() {
               --notice)  pc_notice="$2" ;;
             esac
             shift ;;
-          --issue|--comment-file|--question|--final|--story)
+          --issue|--plan-file|--comment-file|--question|--final|--story)
             # The value is an issue id, a file path, a short question id, a
             # final status word, or a story fraction — never echoed back;
             # only the closed option vocabulary is.
@@ -634,6 +652,7 @@ afk_main() {
             fi
             case "$1" in
               --issue)        pc_issue="$2" ;;
+              --plan-file)    pc_plan_file="$2" ;;
               --comment-file) pc_comment_file="$2" ;;
               --question)     pc_question="$2" ;;
               --final)        pc_final="$2" ;;
@@ -735,6 +754,11 @@ afk_main() {
       afk_warn "paperclip-report --question and --final are different entries; ask one at a time."
       return "$AFK_EXIT_USAGE"
     fi
+  fi
+  if [[ ( "$cmd" == paperclip-plan || "$cmd" == paperclip-approval ) && -z "$pc_issue" ]] ||
+     [[ "$cmd" == paperclip-plan && -z "$pc_plan_file" ]]; then
+    afk_warn "$cmd needs --issue <id>, and paperclip-plan also needs --plan-file <path>"
+    return "$AFK_EXIT_USAGE"
   fi
   if [[ "$cmd" == paperclip-timer && -z "$pct_action" ]]; then
     afk_warn "paperclip-timer needs exactly one of --install, --remove or --status"
@@ -840,6 +864,14 @@ afk_main() {
       afk_require_declared_paths || return "$AFK_EXIT_USAGE"
       afk_cmd_paperclip_report "$json_mode" "$pc_issue" "$pc_comment_file" \
         "$pc_question" "$pc_final" "$pc_status_text" "$pc_story"
+      return $? ;;
+    paperclip-plan)
+      afk_require_declared_paths || return "$AFK_EXIT_USAGE"
+      afk_cmd_paperclip_plan "$json_mode" "$pc_issue" "$pc_plan_file"
+      return $? ;;
+    paperclip-approval)
+      afk_require_declared_paths || return "$AFK_EXIT_USAGE"
+      afk_cmd_paperclip_approval "$json_mode" "$pc_issue"
       return $? ;;
     paperclip-timer)
       afk_require_declared_paths || return "$AFK_EXIT_USAGE"
