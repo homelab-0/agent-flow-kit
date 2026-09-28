@@ -338,6 +338,95 @@ adopt_host() {
 }
 
 # ===========================================================================
+# golden fixtures (AD-21) — built once per suite process through the real
+# CLI, then restored to the one fixed path they were built at instead of
+# paid for again through a real `adopt` (~20 s) in every scenario that only
+# needs the RESULT of adoption, never the adoption itself.
+# ===========================================================================
+
+GOLDEN_SC="$TMPROOT/sc-work"
+GOLDEN_ADOPTED_STATUS=""
+
+# The isolation guarantees a golden must keep the instant it is taken (AD-21),
+# so a violation is caught here rather than laundered through every restore.
+# A committed journal is deliberately retained (never absent on an adopted
+# host, per journal_fingerprint above), so item 3 checks for no IN_PROGRESS
+# journal and no content under stage/, not bare absence.
+assert_golden_isolation() { # <name> <home>
+  local name="$1" home="$2" j st
+  [[ -e "$home/$STATE_DIR_REL/lock" ]] && \
+    bad "fixture: golden $name has no lock dir" "found $home/$STATE_DIR_REL/lock"
+  j="$home/$STATE_DIR_REL/journal.json"
+  if [[ -e "$j" ]]; then
+    st="$(jq -r '.state // ""' "$j" 2>/dev/null)"
+    [[ "$st" == "IN_PROGRESS" ]] && \
+      bad "fixture: golden $name has no in-progress journal" "journal.json state is IN_PROGRESS"
+  fi
+  if [[ -n "$(find "$home/$STATE_DIR_REL/stage" -mindepth 1 -print -quit 2>/dev/null)" ]]; then
+    bad "fixture: golden $name has no stage leftovers" "content found under stage/"
+  fi
+  [[ -z "$(jobs -p)" ]] || \
+    bad "fixture: golden $name build left no background process alive" "$(jobs -p)"
+}
+
+# Snapshot the scenario just built at $GOLDEN_SC into $TMPROOT/golden-<name>,
+# make it read-only, and confirm the copy shares no inodes with its source
+# (cp -a only, never --link/--reflink=always).
+snapshot_golden() { # <name>
+  cp -a "$GOLDEN_SC" "$TMPROOT/golden-$1" || bad "fixture: golden $1 snapshot" "cp -a failed"
+  chmod -R a-w "$TMPROOT/golden-$1" 2>/dev/null
+  [[ ! -w "$TMPROOT/golden-$1" ]] || \
+    bad "fixture: golden $1 is read-only" "$TMPROOT/golden-$1 is writable"
+  if [[ -n "$(find "$TMPROOT/golden-$1" -type f -links +1 -print -quit 2>/dev/null)" ]]; then
+    bad "fixture: golden $1 shares no inodes with its source" "a hard-linked file was found"
+  fi
+}
+
+# Restore golden <name> to the one fixed absolute path it was built at. Never
+# relocated: the manifest and the ~/.claude/skills links record absolute
+# paths, and a relocated copy fails PATH_ESCAPES_OWNERSHIP_BOUNDARY.
+restore_golden() { # <name>
+  SC="$GOLDEN_SC"; HOMEDIR="$SC/home"; CHECKOUT="$SC/checkout"
+  chmod -R u+rwX "$SC" 2>/dev/null
+  rm -rf "$SC"
+  cp -a "$TMPROOT/golden-$1" "$SC" || { bad "fixture: golden $1 restored in place" "cp -a failed"; return 1; }
+  # cp -a carries the read-only golden's mode bits onto the working copy too;
+  # only the golden itself (AC-3.6) is meant to stay read-only.
+  chmod -R u+rwX "$SC"
+}
+
+# Build both goldens once, through the real CLI. "installed" covers setup
+# that only needs a legacy install; "adopted" additionally establishes
+# ownership through a real, asserted `adopt --json`.
+build_goldens() {
+  SC="$GOLDEN_SC"; HOMEDIR="$SC/home"; CHECKOUT="$SC/checkout"
+  mkdir -p "$HOMEDIR" "$CHECKOUT"
+  make_checkout "$CHECKOUT"
+  install_kit "$HOMEDIR" "$CHECKOUT"
+  snapshot_golden installed
+  assert_golden_isolation installed "$HOMEDIR"
+
+  adopt_host
+  run_afk status --json
+  GOLDEN_ADOPTED_STATUS="$RUN_OUT"
+  git -C "$CHECKOUT" cat-file -e HEAD 2>/dev/null || \
+    bad "fixture: golden adopted checkout resolves HEAD" "git objects did not copy whole"
+  snapshot_golden adopted
+  assert_golden_isolation adopted "$HOMEDIR"
+
+  # AC-4 self-check: a fresh restore must observe byte-identically to the
+  # build, once per suite, or the suite fails loudly before any scenario runs.
+  restore_golden adopted
+  run_afk status --json
+  if [[ "$RUN_OUT" != "$GOLDEN_ADOPTED_STATUS" ]]; then
+    bad "fixture: golden adopted restore is byte-identical to the build" \
+      "status --json differs after a fresh restore"
+    exit 1
+  fi
+}
+build_goldens
+
+# ===========================================================================
 head1 "0. Managed-section writes preserve user-owned bytes (unit)"
 # ===========================================================================
 
@@ -537,8 +626,7 @@ assert_eq "no code is published twice across both halves" \
 head1 "2. The plan is complete, stable, falsifiable, and writes nothing"
 # ===========================================================================
 
-new_scenario plan
-install_kit "$HOMEDIR" "$CHECKOUT"
+restore_golden installed
 
 # On a host the lifecycle has never touched, planning creates NOTHING: not a
 # manifest, not a journal, not a lock, not even the declared state directory.
@@ -547,7 +635,7 @@ assert_eq "planning on a pristine host exits 0"     "$RUN_RC" "0"
 assert_eq "and answers the question it was asked"   "$(jget '.extra.plan.command')" "adopt"
 assert_no_file "and creates no kit state whatsoever" "$HOMEDIR/$STATE_DIR_REL"
 
-adopt_host
+restore_golden adopted
 printf 'model-router skill v2\n' > "$CHECKOUT/files/model-router/SKILL.md"
 printf 'policy line one\npolicy line two\npolicy line three\n' > "$CHECKOUT/files/claude-global-CLAUDE.md"
 git_commit_all "$CHECKOUT" "canonical v2"
@@ -783,9 +871,7 @@ assert_no_file "and nothing was written" "$HOMEDIR/$STATE_DIR_REL"
 head1 "4. Update converges only what it owns"
 # ===========================================================================
 
-new_scenario update
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 OLD_SHA="$(git -C "$CHECKOUT" rev-parse HEAD)"
 
 # The host carries machine-local configuration and user-owned content on both
@@ -850,8 +936,7 @@ assert_eq "the manifest was not rewritten"              "$(hash_of_file "$(manif
 assert_eq "the applied revision is unchanged"           "$(manifest_get '.applied_revision')" "$NEW_SHA"
 
 # --- a component that is absent is installed, never claimed ---------------
-new_scenario install
-install_kit "$HOMEDIR" "$CHECKOUT"
+restore_golden installed
 rm -f "$HOMEDIR/.codex/AGENTS.md"
 adopt_host
 assert_eq "an absent component is not recorded by adoption" \
@@ -867,8 +952,7 @@ assert_eq "and it is now owned" \
   "sha256:$(hash_of_file "$CHECKOUT/files/codex-AGENTS.md")"
 
 # --- a managed section that is absent is inserted, preserving the file ----
-new_scenario sectioninsert
-install_kit "$HOMEDIR" "$CHECKOUT"
+restore_golden installed
 printf '# only my own notes here\nnothing managed yet\n' > "$HOMEDIR/.claude/CLAUDE.md"
 cp "$HOMEDIR/.claude/CLAUDE.md" "$SC/claude-before.md"
 adopt_host
@@ -888,9 +972,7 @@ assert_eq "and the host verifies afterwards" "$(jget '.extra.verification.verifi
 head1 "5. Drift, adaptations and redirection block replacement"
 # ===========================================================================
 
-new_scenario driftrefusal
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 ADOPTED_SHA="$(manifest_get '.applied_revision')"
 JOURNAL_AFTER_ADOPT="$(journal_fingerprint)"
 printf 'edited by hand\n' >> "$HOMEDIR/.agents/skills/model-router/SKILL.md"
@@ -931,9 +1013,7 @@ assert_eq "with the canonical content"    \
   "$(hash_of_file "$CHECKOUT/files/model-router/SKILL.md")"
 
 # --- registered adaptations are honoured exactly as declared --------------
-new_scenario adaptation
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 MR_DEST="$HOMEDIR/.agents/skills/model-router"
 BASELINE_ID="$(manifest_get '.components["model-router"].identity')"
 printf 'a deliberate local patch\n' >> "$MR_DEST/SKILL.md"
@@ -999,9 +1079,7 @@ assert_eq "an invalid adaptation record refuses the whole plan" "$RUN_RC" "2"
 assert_eq "with a stable reason" "$(jget '.extra.plan.refusal_reason')" "ADAPTATION_MALFORMED"
 
 # --- a symlink attack on a managed destination ----------------------------
-new_scenario symlinkattack
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 mkdir -p "$SC/outside"
 printf 'somebody elses file %s\n' "$SENTINEL" > "$SC/outside/target.md"
 OUTSIDE_ID="$(hash_of_file "$SC/outside/target.md")"
@@ -1020,9 +1098,7 @@ assert_absent "and its content never reached the output" "$RUN_OUT" "$SENTINEL"
 assert_eq "no mutation was performed at all" "$(jget '.operation.mutation_performed')" "false"
 
 # A symlinked PARENT directory is caught the same way.
-new_scenario parentattack
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 mkdir -p "$SC/outside"
 mv "$HOMEDIR/.claude/skills" "$SC/outside/skills"
 ln -s "$SC/outside/skills" "$HOMEDIR/.claude/skills"
@@ -1038,9 +1114,7 @@ assert_eq "and nothing was written" "$(jget '.operation.mutation_performed')" "f
 head1 "6. Overlapping operations are prevented, never interleaved"
 # ===========================================================================
 
-new_scenario concurrency
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 BEFORE_SHA="$(manifest_get '.applied_revision')"
 printf 'model-router skill v2\n' > "$CHECKOUT/files/model-router/SKILL.md"
 git_commit_all "$CHECKOUT" "canonical v2"
@@ -1083,9 +1157,7 @@ head1 "7. Failure leaves the applied revision where it was"
 # carries a symlink that escapes the managed tree once copied: the plan cannot
 # see it (the source hashes fine), the write does — which is exactly the shape
 # of a failure that lands between two component writes.
-new_scenario rollback
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 GOOD_SHA="$(manifest_get '.applied_revision')"
 MR_ID="$(tree_id "$HOMEDIR/.agents/skills/model-router" subscriptions.yaml)"
 HUM_ID="$(tree_id "$HOMEDIR/.agents/skills/humanizer")"
@@ -1122,9 +1194,7 @@ assert_eq "and exits 0" "$RUN_RC" "0"
 head1 "8. An interrupted operation is resolved before any new mutation"
 # ===========================================================================
 
-new_scenario interrupted
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 SAFE_SHA="$(manifest_get '.applied_revision')"
 CODEX_GOOD="$(hash_of_file "$HOMEDIR/.codex/AGENTS.md")"
 
@@ -1157,9 +1227,7 @@ run_afk update --json
 assert_eq "and the following run proceeds normally" "$RUN_RC" "0"
 
 # --- recovery material that is gone stops with an owner decision ----------
-new_scenario unrecoverable
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 write_journal "/nonexistent/backups" codex-global-guidance REPLACE \
   "$HOMEDIR/.codex/AGENTS.md" "$(file_id "$HOMEDIR/.codex/AGENTS.md")"
 run_afk update --json
@@ -1170,9 +1238,7 @@ assert_eq "the journal is left open as evidence" \
   "$(jq -r '.state' "$(journal_path)")" "IN_PROGRESS"
 
 # --- an interrupted operation that wrote nothing is simply closed ---------
-new_scenario interruptedempty
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 jq -n '{journal_schema_version: "2.0", state: "IN_PROGRESS", operation_id: "op-nothing",
         command: "update", backup_dir: null, rollback_state: "NOT_REQUIRED",
         pre_mutation: [], plan: {components: []}, completed_steps: []}' > "$(journal_path)"
@@ -1185,9 +1251,7 @@ assert_eq "and the journal is closed" "$(jq -r '.state' "$(journal_path)")" "COM
 head1 "9. Verification observes, and never repairs"
 # ===========================================================================
 
-new_scenario verifyonly
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 printf 'edited by hand\n' >> "$HOMEDIR/.agents/skills/model-router/SKILL.md"
 DRIFTED="$(hash_of_file "$HOMEDIR/.agents/skills/model-router/SKILL.md")"
 FP_BEFORE="$(fingerprint_tree "$HOMEDIR")"
@@ -1222,9 +1286,7 @@ assert_absent  "and leaked no secret" "$(cat "$SC/verify.json")" "$SENTINEL"
 # Installed integrity and source eligibility stay independent (NFR-12): a
 # manifest whose recorded revision is unreachable from THIS checkout still
 # describes installed content that can be proven.
-new_scenario independence
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 manifest_patch '.applied_revision = "0000000000000000000000000000000000000000"'
 run_afk verify --json
 assert_eq "installed content still verifies against what the manifest records" \
@@ -1235,8 +1297,7 @@ assert_eq "as a source precondition, not an installation failure" \
   "$(jget '.operation.reason')" "SOURCE_INELIGIBLE"
 assert_eq "and nothing was mutated" "$(jget '.operation.mutation_performed')" "false"
 
-new_scenario unadopted
-install_kit "$HOMEDIR" "$CHECKOUT"
+restore_golden installed
 run_afk verify --json
 assert_eq "an unadopted host has nothing to verify" "$(jget '.extra.verification.verified')" "false"
 assert_eq "with a stable reason" \
@@ -1251,9 +1312,7 @@ assert_no_file "and writes nothing" "$HOMEDIR/$STATE_DIR_REL"
 head1 "10. The mutating contract is machine-readable and projected"
 # ===========================================================================
 
-new_scenario contract
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 printf 'model-router skill v2\n' > "$CHECKOUT/files/model-router/SKILL.md"
 git_commit_all "$CHECKOUT" "canonical v2"
 run_afk update --json
@@ -1284,9 +1343,7 @@ head1 "10. Adversarial-review regressions F1-F8"
 # deleted behind it.
 
 # (a) backup directory present, per-component store absent.
-new_scenario f1storeabsent
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 VICTIM_DIR="$HOMEDIR/Documents/taxes"
 mkdir -p "$VICTIM_DIR"
 printf 'my 2025 tax return, owned by me\n' > "$VICTIM_DIR/2025.txt"
@@ -1311,9 +1368,7 @@ assert_file "F1a and so is the recovery directory" "$EMPTY_BACKUPS"
 assert_eq "F1a nothing on the host was touched" "$(fingerprint_tree "$HOMEDIR")" "$FP_BEFORE"
 
 # (b) a journal step naming a destination the inventory does not declare.
-new_scenario f1undeclared
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 OUTSIDE="$SC/outside"
 mkdir -p "$OUTSIDE"
 printf 'notes nobody asked the lifecycle to manage\n' > "$OUTSIDE/notes.txt"
@@ -1326,9 +1381,7 @@ assert_eq "F1b an undeclared component id refuses" \
 assert_file "F1b and the unmanaged path is still there" "$OUTSIDE/notes.txt"
 
 # (c) a declared component whose recorded destination is not the declared one.
-new_scenario f1movedpath
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 OUTSIDE="$SC/outside"
 mkdir -p "$OUTSIDE"
 printf 'still not the lifecycle to remove\n' > "$OUTSIDE/notes.txt"
@@ -1341,9 +1394,7 @@ assert_eq "F1c a destination the inventory does not declare refuses" \
 assert_file "F1c and the named path is untouched" "$OUTSIDE/notes.txt"
 
 # (d) a backup directory outside the declared backup root.
-new_scenario f1outsideroot
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 FOREIGN="$SC/foreign-backups"
 mkdir -p "$FOREIGN"
 cp "$HOMEDIR/.codex/AGENTS.md" "$FOREIGN/codex-global-guidance"
@@ -1355,9 +1406,7 @@ assert_eq "F1d a backup directory outside the declared state directory refuses" 
 
 # (e) a restoration whose result does not match the recorded pre-mutation
 #     identity is a verification failure, not a recovery.
-new_scenario f1badrestore
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 BACKUPS="$HOMEDIR/$STATE_DIR_REL/backups/op-wrong"
 mkdir -p "$BACKUPS"
 printf 'not what the journal says was there\n' > "$BACKUPS/codex-global-guidance"
@@ -1372,9 +1421,7 @@ assert_eq "F1e the journal is retained" "$(jq -r '.state' "$(journal_path)")" "I
 assert_file "F1e and so are the backups" "$BACKUPS/codex-global-guidance"
 
 # (f) a journal at an unsupported schema is refused, not interpreted.
-new_scenario f1schema
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 BACKUPS="$HOMEDIR/$STATE_DIR_REL/backups/op-oldschema"
 mkdir -p "$BACKUPS"
 jq -n --arg b "$BACKUPS" --arg d "$HOMEDIR/.codex/AGENTS.md" \
@@ -1391,8 +1438,7 @@ assert_eq "F1f and nothing was restored from it" \
 
 # (g) the authorized removal still works: observed_identity null, matched to
 #     this exact component and this exact INSTALL binding.
-new_scenario f1authorizedremoval
-install_kit "$HOMEDIR" "$CHECKOUT"
+restore_golden installed
 rm -f "$HOMEDIR/.codex/AGENTS.md"
 adopt_host
 printf 'created by the interrupted install\n' > "$HOMEDIR/.codex/AGENTS.md"
@@ -1411,9 +1457,7 @@ assert_no_file "F1g by removing exactly what the operation created" \
 # the final verification and the commit, so a completed rollback reported the
 # TARGET revision beside prior_revision — the obvious reading being "this run
 # advanced the host", on exactly the paths where it did not.
-new_scenario f2rollback
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 PRIOR_SHA="$(manifest_get '.applied_revision')"
 printf 'model-router skill v2\n' > "$CHECKOUT/files/model-router/SKILL.md"
 git_commit_all "$CHECKOUT" "canonical v2"
@@ -1494,9 +1538,7 @@ fi
 # redirection (so it carried the process umask) and renamed it over the
 # destination, turning a deliberately 0600 ~/.claude/CLAUDE.md into 0664 while
 # the byte-level preservation proof saw nothing wrong.
-new_scenario f4mode
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 chmod 600 "$HOMEDIR/.claude/CLAUDE.md"
 chmod 600 "$HOMEDIR/.codex/AGENTS.md"
 OUTSIDE_BEFORE_F4="$(outside_id "$HOMEDIR/.claude/CLAUDE.md" claude-global-policy)"
@@ -1529,9 +1571,7 @@ assert_eq "F4 and so is the recovery journal" \
 # them produced a plan whose expected_destination_identity disagreed with the
 # binding's observed_identity — and revalidation compares binding to binding,
 # so it structurally could not see the divergence.
-new_scenario f5coherent
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 printf 'model-router skill v2\n' > "$CHECKOUT/files/model-router/SKILL.md"
 git_commit_all "$CHECKOUT" "canonical v2"
 run_afk update --plan --json
@@ -1555,9 +1595,7 @@ assert_eq "F5 and on the containment observation" \
 # power loss bricked the installation for the lifecycle, and the published
 # guidance was "wait for the operation in progress to finish" — advice that
 # could never come true.
-new_scenario f6deadlock
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 printf 'model-router skill v2\n' > "$CHECKOUT/files/model-router/SKILL.md"
 git_commit_all "$CHECKOUT" "canonical v2"
 
@@ -1582,9 +1620,7 @@ assert_eq "F6 and the reclamation is reported rather than silent" \
   "$(printf '%s' "$RUN_OUT" | jq -r '[.findings[].reason] | index("OPERATION_LOCK_RECLAIMED") != null')" "true"
 
 # An exact live owner still blocks: THIS process holds it.
-new_scenario f6livelock
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 printf 'model-router skill v2\n' > "$CHECKOUT/files/model-router/SKILL.md"
 git_commit_all "$CHECKOUT" "canonical v2"
 write_live_lock
@@ -1596,9 +1632,7 @@ assert_eq "F6 and nothing was written" "$(fingerprint_tree "$HOMEDIR")" "$FP_BEF
 rm -rf "$(lock_path)"
 
 # An owner that cannot be judged is neither waited on nor reclaimed.
-new_scenario f6unknownlock
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 printf 'model-router skill v2\n' > "$CHECKOUT/files/model-router/SKILL.md"
 git_commit_all "$CHECKOUT" "canonical v2"
 mkdir -p "$(lock_path)"
@@ -1613,9 +1647,7 @@ assert_eq "F6 the guidance names the lock the owner must remove" \
 assert_eq "F6 and nothing was written" "$(fingerprint_tree "$HOMEDIR")" "$FP_BEFORE"
 
 # A lock taken on another host is foreign, not reclaimable.
-new_scenario f6foreignlock
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 printf 'model-router skill v2\n' > "$CHECKOUT/files/model-router/SKILL.md"
 git_commit_all "$CHECKOUT" "canonical v2"
 mkdir -p "$(lock_path)"
@@ -1697,9 +1729,7 @@ lock_residue() {
   printf '%s' "${acc# }"
 }
 
-new_scenario f6contend2
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 printf 'model-router skill v2\n' > "$CHECKOUT/files/model-router/SKILL.md"
 git_commit_all "$CHECKOUT" "canonical v2"
 STRANDED="$(strand_lock)"
@@ -1720,9 +1750,7 @@ assert_eq "F6 the installation the race left behind verifies" \
   "$(jget '.extra.verification.verified')" "true"
 assert_eq "F6 and offline verification exits 0" "$RUN_RC" "0"
 
-new_scenario f6contend4
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 printf 'model-router skill v2\n' > "$CHECKOUT/files/model-router/SKILL.md"
 git_commit_all "$CHECKOUT" "canonical v2"
 STRANDED="$(strand_lock)"
@@ -1742,9 +1770,7 @@ assert_eq "F6 and offline verification exits 0" "$RUN_RC" "0"
 
 # The same crowd against a lock held by an owner that is ALIVE: nobody may
 # mutate, and the installation must be byte-identical afterwards.
-new_scenario f6contendlive
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 printf 'model-router skill v2\n' > "$CHECKOUT/files/model-router/SKILL.md"
 git_commit_all "$CHECKOUT" "canonical v2"
 write_live_lock
@@ -1767,9 +1793,7 @@ rm -rf "$(lock_path)"
 # The window is held open deliberately here rather than raced for: a live
 # process creates the directory and publishes the record only when this test
 # says so, with the real `agent-flow-kit update` contending in between.
-new_scenario f6window
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 printf 'model-router skill v2\n' > "$CHECKOUT/files/model-router/SKILL.md"
 git_commit_all "$CHECKOUT" "canonical v2"
 
@@ -1822,9 +1846,7 @@ assert_eq "F6 and the refused contender opened no journal" \
 # installation with NO pre-existing lock. Every loser observes the winner's
 # publication window, so the wrong refusal shows up here without any fixture
 # holding anything open.
-new_scenario f6contendclean
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 printf 'model-router skill v2\n' > "$CHECKOUT/files/model-router/SKILL.md"
 git_commit_all "$CHECKOUT" "canonical v2"
 assert_no_file "F6 the clean-path race starts with no lock at all" "$(lock_path)"
@@ -1867,9 +1889,7 @@ assert_eq "F6 the installation the clean-path race left behind verifies" \
 # produced it. No lifecycle code is replaced; only the instant the release
 # lands is the fixture's, and the read count below pins that it landed on the
 # read the acquisition made.
-new_scenario f6vanishrecord
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 VANISH_SAFE_SHA="$(manifest_get '.applied_revision')"
 VANISH_CODEX_GOOD="$(hash_of_file "$HOMEDIR/.codex/AGENTS.md")"
 VANISH_BACKUPS="$HOMEDIR/$STATE_DIR_REL/backups/op-vanish"
@@ -1959,9 +1979,7 @@ assert_eq "F6 and no residue survives it either" "$(lock_residue)" ""
 # that path -- lock.stale.<incarnation>/owner.json -- exists only in that
 # window. A `jq` ahead of the real one takes the lock path there, once, and
 # hands over.
-new_scenario f6silentreclaim
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 printf 'model-router skill v2\n' > "$CHECKOUT/files/model-router/SKILL.md"
 git_commit_all "$CHECKOUT" "canonical v2"
 SILENT_SAFE_SHA="$(manifest_get '.applied_revision')"
@@ -2033,9 +2051,7 @@ rm -rf -- "$(lock_path)"
 # is landed from outside with no in-process interception at all: a reader ahead
 # of the real one on PATH does exactly what the winner does -- renames the lock
 # directory away and removes it -- on the one read of exactly that marker.
-new_scenario f6markervanish
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 printf 'model-router skill v2\n' > "$CHECKOUT/files/model-router/SKILL.md"
 git_commit_all "$CHECKOUT" "canonical v2"
 MV_INC="$(strand_lock)"
@@ -2105,9 +2121,7 @@ assert_eq "F6 and no residue survives it either" "$(lock_residue)" ""
 # recomputed binding carried the value from the initial evaluation and
 # journal_state compared equal to itself by construction — decoration in the
 # half of the plan that is supposed to be falsifiable.
-new_scenario f7journalbinding
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 UNIT_JOURNAL="$(journal_path)"
 JOURNAL_BINDING="$(HOME="$HOMEDIR" XDG_STATE_HOME="$HOMEDIR/.local/state" \
   AFK_KIT_ROOT="$CHECKOUT" bash -c '
@@ -2143,9 +2157,7 @@ assert_eq "F7 so a journal that moved makes the plan stale" \
 # destination and only then wrote the journal, so a kill inside that window
 # left copies of user content in the state directory that no journal named and
 # nothing ever reclaimed.
-new_scenario f8orphans
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 ORPHAN="$HOMEDIR/$STATE_DIR_REL/backups/op-orphaned-by-a-crash"
 mkdir -p "$ORPHAN"
 cp "$HOMEDIR/.codex/AGENTS.md" "$ORPHAN/codex-global-guidance"
@@ -2157,9 +2169,7 @@ assert_no_file "F8 and recovery material no journal names is reclaimed" "$ORPHAN
 
 # The journal names its backup directory BEFORE that directory is filled, so a
 # run killed inside the backup loop leaves a record that can reclaim it.
-new_scenario f8preparing
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 PREPARED="$HOMEDIR/$STATE_DIR_REL/backups/op-prepared"
 mkdir -p "$PREPARED"
 cp "$HOMEDIR/.codex/AGENTS.md" "$PREPARED/codex-global-guidance"
@@ -2226,9 +2236,7 @@ assert_eq "every finding state is inside the component-state vocabulary" \
      '[.findings[].state | . as $state | select(($pub | index($state)) == null)] | unique | join(",")')" ""
 
 # Human output is projected from the same document, plan and operation included.
-new_scenario projection
-install_kit "$HOMEDIR" "$CHECKOUT"
-adopt_host
+restore_golden adopted
 printf 'model-router skill v2\n' > "$CHECKOUT/files/model-router/SKILL.md"
 git_commit_all "$CHECKOUT" "canonical v2"
 run_afk update --plan --json
@@ -2405,9 +2413,7 @@ lock_incarnation_now() { jq -r '.incarnation // ""' "$(lock_path)/owner.json" 2>
 # A host one revision behind, with both managed trees due to change, so the
 # write phase makes more than one call to the interposed tool.
 sig_scenario() { # <name>
-  new_scenario "$1"
-  install_kit "$HOMEDIR" "$CHECKOUT"
-  adopt_host
+  restore_golden adopted
   printf 'model-router skill v2\n' > "$CHECKOUT/files/model-router/SKILL.md"
   printf 'humanizer v2\n' > "$CHECKOUT/files/humanizer/SKILL.md"
   git_commit_all "$CHECKOUT" "canonical v2"
@@ -2784,8 +2790,7 @@ rm -rf "$LC/base/afk-runtime"
 AFK_OP_CREATED_DIRS=""
 
 # --- AC-1: a nested install completes in one run --------------------------
-new_scenario nestedinstall
-install_kit "$HOMEDIR" "$CHECKOUT"
+restore_golden installed
 # Remove the runtime BEFORE adoption so its four components — the shared root
 # and the bin/lib/lifecycle members that live inside it — are absent AND
 # unrecorded: exactly the shape that used to abort "stale before its first
@@ -2811,8 +2816,7 @@ assert_eq "the shared root reports CURRENT"               "$(component_field afk
 assert_eq "the nested member reports CURRENT"             "$(component_field afk-runtime-release-policy .state)" "CURRENT"
 
 # --- AC-3: an abort after the shared root is scaffolded leaves nothing -----
-new_scenario nestedrollback
-install_kit "$HOMEDIR" "$CHECKOUT"
+restore_golden installed
 rm -rf "$HOMEDIR/.agents/skills/afk-runtime"
 adopt_host
 GOOD_SHA="$(manifest_get '.applied_revision')"
@@ -2836,8 +2840,7 @@ run_afk verify --json
 assert_eq "the untouched installation still verifies"     "$(jget '.extra.verification.verified')" "true"
 
 # --- AC-4: an empty leftover root is planned as an install, not blocked ----
-new_scenario emptyleftover
-install_kit "$HOMEDIR" "$CHECKOUT"
+restore_golden installed
 rm -rf "$HOMEDIR/.agents/skills/afk-runtime"
 adopt_host
 # The 2026-09-17 shape: an earlier aborted op left an empty shared root behind.
@@ -2856,8 +2859,7 @@ assert_file "the shared root now carries canonical content" \
   "$HOMEDIR/.agents/skills/afk-runtime/README"
 
 # --- AC-4 / FR-26: a non-empty unowned root still blocks ------------------
-new_scenario nonemptyunowned
-install_kit "$HOMEDIR" "$CHECKOUT"
+restore_golden installed
 rm -rf "$HOMEDIR/.agents/skills/afk-runtime"
 adopt_host
 # A root that CONTAINS an unowned file is content this kit may not claim: it
