@@ -290,6 +290,7 @@ afk_pc_spool_lock() { # <lockdir>
     if (( waited % 100 == 0 )) && declare -F afk_pcs_lock_stale_reap >/dev/null 2>&1 && \
        afk_pcs_lock_stale_reap "$dir" "${AFK_PCR_LOCK_STALE_INTERVAL_SECONDS:-30}" "paperclip-report|paperclip-poll" && \
        mkdir "$dir" 2>/dev/null; then
+      declare -F afk_warn >/dev/null 2>&1 && afk_warn "PAPERCLIP_LOCK_STALE: reaped a spool lock left by a dead writer"
       break
     fi
     sleep 0.02

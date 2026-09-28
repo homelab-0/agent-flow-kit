@@ -121,14 +121,20 @@ afk_pcr_require_owner() {
 # so a would-be blocked open or read never wedges the caller.
 AFK_PCR_BODY_READ_TIMEOUT="${AFK_PCR_BODY_READ_TIMEOUT:-5}"
 afk_pcr_body_read() {
-  local path="$1" tmp size size_no_nul body
+  local path="$1" tmp size size_no_nul body bound=""
   AFK_PCR_BODY=""
+  # GNU timeout, or coreutils' gtimeout on macOS; with neither, the read
+  # cannot be bounded, so it is refused rather than risked unbounded.
+  if command -v timeout >/dev/null 2>&1; then bound=timeout
+  elif command -v gtimeout >/dev/null 2>&1; then bound=gtimeout
+  else AFK_PCR_REFUSAL="PAPERCLIP_BODY_UNREADABLE"; return 1
+  fi
   # A regular file only, checked by name first so an obviously bad path (a
   # FIFO already sitting there, a missing file) is refused without ever
   # opening it.
   [[ -n "$path" && -f "$path" && -r "$path" ]] || { AFK_PCR_REFUSAL="PAPERCLIP_BODY_UNREADABLE"; return 1; }
   tmp="$(mktemp 2>/dev/null)" || { AFK_PCR_REFUSAL="PAPERCLIP_BODY_UNREADABLE"; return 1; }
-  if ! timeout "$AFK_PCR_BODY_READ_TIMEOUT" bash -c '
+  if ! "$bound" "$AFK_PCR_BODY_READ_TIMEOUT" bash -c '
         exec {fd}<"$1" 2>/dev/null || exit 1
         [[ -f "/dev/fd/$fd" ]] || exit 1
         head -c 16385 <&"$fd"

@@ -157,12 +157,36 @@ printf 'stable body' >"$RACE_PATH"
 SWAPPER=$!
 timeout 5 env -i PATH="$STUBS:$PATH" HOME="$HOME_DIR" LANG=C \
   AFK_STATE_DIR="$STATE" AFK_ORCA_BIN="$STUBS/orca" ORCA_STUB_TERMINALS="$TERMFILE" \
-  AFK_PAPERCLIP_CONFIG="$CONFIG" ORCA_TERMINAL_HANDLE="termA" \
+  AFK_PAPERCLIP_CONFIG="$CONFIG" ORCA_TERMINAL_HANDLE="termA" AFK_PCR_BODY_READ_TIMEOUT=2 \
   bash "$AFK" paperclip-report --issue "$ISSUE" --comment-file "$RACE_PATH" --json >/dev/null 2>&1
 RACE_RC=$?
 kill "$SWAPPER" 2>/dev/null; wait "$SWAPPER" 2>/dev/null
 if [[ "$RACE_RC" -ne 124 ]]; then ok "a path swapped mid-race never hangs the reader"
 else bad "a path swapped mid-race never hangs the reader" "timed out (rc=124)"; fi
+
+# Deterministic AC-1: a `mktemp` shim (the first command afk_pcr_body_read
+# runs after its `-f` check) swaps the path for a FIFO with no writer, so the
+# open itself would block forever without the bounded read.
+SWAP_STUBS="$TMPROOT/swap-stubs"; mkdir -p "$SWAP_STUBS"
+REAL_MKTEMP="$(command -v mktemp)"
+cat >"$SWAP_STUBS/mktemp" <<SH
+#!/usr/bin/env bash
+if [[ -n "\${SWAP_TO_FIFO:-}" && -f "\$SWAP_TO_FIFO" ]]; then rm -f "\$SWAP_TO_FIFO"; mkfifo "\$SWAP_TO_FIFO"; fi
+exec "$REAL_MKTEMP" "\$@"
+SH
+chmod +x "$SWAP_STUBS/mktemp"
+SWAP_PATH="$TMPROOT/swap_body.txt"; printf 'regular at check time' >"$SWAP_PATH"
+swap_start=$SECONDS
+SWAP_OUT="$(timeout 20 env -i PATH="$SWAP_STUBS:$STUBS:$PATH" HOME="$HOME_DIR" LANG=C \
+  AFK_STATE_DIR="$STATE" AFK_ORCA_BIN="$STUBS/orca" ORCA_STUB_TERMINALS="$TERMFILE" \
+  AFK_PAPERCLIP_CONFIG="$CONFIG" ORCA_TERMINAL_HANDLE="termA" AFK_PCR_BODY_READ_TIMEOUT=2 \
+  SWAP_TO_FIFO="$SWAP_PATH" \
+  bash "$AFK" paperclip-report --issue "$ISSUE" --comment-file "$SWAP_PATH" --json 2>&1)"
+swap_elapsed=$((SECONDS - swap_start))
+assert_eq "  ...the path really was swapped for a FIFO after the check" "$([[ -p "$SWAP_PATH" ]] && echo fifo)" "fifo"
+assert_contains "a FIFO swapped in after the check is refused" "$SWAP_OUT" "PAPERCLIP_BODY_UNREADABLE"
+if (( swap_elapsed <= 5 )); then ok "  ...within 5 s (took ${swap_elapsed}s)"
+else bad "  ...within 5 s" "took ${swap_elapsed}s"; fi
 
 head1 "3. Concurrency: two backgrounded writers never collide (AC-2, AC-5)"
 reset_state
