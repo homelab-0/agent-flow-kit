@@ -708,6 +708,24 @@ assert_eq "3 entries: posted in order (first marker before the last)" \
 assert_eq "3 entries: re-blocked (in_progress + final self-block)" "$(grep -c "^PATCH /api/issues/$ISSUE1$" "$LOG")" "2"
 assert_eq "3 entries: spool emptied" "$(find "$STATE/paperclip/spool/$ISSUE1" -maxdepth 1 -name '*.json' 2>/dev/null | wc -l | tr -d ' ')" "0"
 
+new_scenario cycle_lock_held_skips
+write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+seed_working "$ISSUE1" PROJ-1 working
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+route POST "/api/agents/$AGENT1/wakeup" 202 '{"id":"run-lock"}'
+route PATCH "/api/issues/$ISSUE1" 200 '{}'
+route POST "/api/issues/$ISSUE1/comments" 201 '{}'
+write_spool "$ISSUE1" 001 "{\"id\":\"$E1\",\"kind\":\"comment\",\"body\":\"held\"}"
+# A writer (paperclip-report) still holding .seq.lock: the reader must skip
+# this issue's spool for the pass rather than list or delete anything.
+mkdir -p "$STATE/paperclip/spool/$ISSUE1/.seq.lock"
+run_afk --json
+assert_eq "lock held: no comment posted" "$(grep -c "^POST /api/issues/$ISSUE1/comments$" "$LOG")" "0"
+assert_eq "lock held: the entry is untouched, not deleted" \
+  "$(find "$STATE/paperclip/spool/$ISSUE1" -maxdepth 1 -name '001.json' 2>/dev/null | wc -l | tr -d ' ')" "1"
+rmdir "$STATE/paperclip/spool/$ISSUE1/.seq.lock"
+
 new_scenario cycle_final_then_dead
 write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
