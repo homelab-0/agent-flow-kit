@@ -81,13 +81,19 @@ afk_require_tools() {
 # A declared directory excludes that directory's bounded subtree (`item/...`),
 # but never a lookalike prefix such as `item-backup`. Word splitting is never
 # used: spaces and glob characters remain literal path bytes (FR-93).
+#
+# The list is split by parameter expansion (no here-string, no subprocess),
+# with exactly the field rules `IFS=, read -r -a` applied before: only the
+# first line counts, and one trailing empty field is not a field.
 afk_excluded() { # <relative-path> <comma-separated exclusions>
   local rel="$1" list="${2:-}" item
-  local -a items=()
   [[ -n "$list" ]] || return 1
-  IFS=',' read -r -a items <<< "$list"
-  for item in "${items[@]}"; do
+  list="${list%%$'\n'*}"
+  while [[ -n "$list" ]]; do
+    item="${list%%,*}"
     if [[ "$item" == "$rel" || "$rel" == "$item/"* ]]; then return 0; fi
+    [[ "$list" == *,* ]] || break
+    list="${list#*,}"
   done
   return 1
 }
@@ -95,11 +101,16 @@ afk_excluded() { # <relative-path> <comma-separated exclusions>
 # A reversible one-line encoding for a filename or link target. Every record in
 # a tree listing is exactly one line, so a filename containing a newline or a
 # tab cannot forge, merge or hide a neighbouring record (FR-79).
+afk_encode_path_v() { # <var> <raw>
+  local _ep="$2"
+  _ep="${_ep//\\/\\\\}"
+  _ep="${_ep//$'\n'/\\n}"
+  printf -v "$1" '%s' "${_ep//$'\t'/\\t}"
+}
+
 afk_encode_path() { # <raw>
-  local s="$1"
-  s="${s//\\/\\\\}"
-  s="${s//$'\n'/\\n}"
-  s="${s//$'\t'/\\t}"
+  local s
+  afk_encode_path_v s "$1"
   printf '%s' "$s"
 }
 
@@ -107,19 +118,83 @@ afk_encode_path() { # <raw>
 # Bounded identifiers only (FR-79): the lifecycle compares hashes, never file
 # dumps, so evidence can be emitted without becoming an exfiltration surface.
 
-afk_sha256_stdin() {
-  if afk_have sha256sum; then
-    sha256sum | awk '{print "sha256:" $1}'
+# One hashing process per digest, read back with `read`/expansion (AD-20).
+# The exit status is the hasher's under pipefail, exactly as the former
+# `hasher | awk` pipeline reported it, and 0 without pipefail. A hasher that
+# printed nothing yields an empty value, never a bare "sha256:".
+#
+# AFK_HASH_FORCE_PORTABLE forces the per-file path macOS takes (shasum where it
+# is installed, one process per file, no batching), so the fallback can be
+# proven equal on a host that has both. It selects between two equivalent
+# hashers and never skips a check.
+afk_sha256_stdin_v() { # <var>  (hashes stdin)
+  local _hs _hrc
+  if [[ -z "${AFK_HASH_FORCE_PORTABLE:-}" ]] && afk_have sha256sum; then
+    _hs="$(sha256sum)"; _hrc=$?
   elif afk_have shasum; then
-    shasum -a 256 | awk '{print "sha256:" $1}'
+    _hs="$(shasum -a 256)"; _hrc=$?
+  elif afk_have sha256sum; then
+    _hs="$(sha256sum)"; _hrc=$?
   else
-    return 1
+    printf -v "$1" '%s' ""; return 1
   fi
+  _hs="${_hs%%[[:space:]]*}"
+  if [[ -n "$_hs" ]]; then printf -v "$1" 'sha256:%s' "$_hs"; else printf -v "$1" '%s' ""; fi
+  [[ -o pipefail ]] || return 0
+  return "$_hrc"
+}
+
+afk_sha256_stdin() {
+  local h rc
+  afk_sha256_stdin_v h; rc=$?
+  [[ -z "$h" ]] || printf '%s\n' "$h"
+  return "$rc"
+}
+
+afk_sha256_file_v() { # <var> <path>
+  printf -v "$1" '%s' ""
+  [[ -f "$2" ]] || return 1
+  afk_sha256_stdin_v "$1" < "$2"
 }
 
 afk_sha256_file() { # <path>
   [[ -f "$1" ]] || return 1
   afk_sha256_stdin < "$1"
+}
+
+# afk_sha256_files <absolute-path>... — AFK_DIGESTS[i] is the "sha256:<hex>"
+# of the i-th path. Paths are hashed in batches of 256 by ONE `sha256sum -z`
+# each, and every NUL-terminated record must be a 64-hex digest for exactly the
+# path in that position. Anything else — an unreadable or vanished member, a
+# hasher without -z, a record out of place, a failed exit — abandons the batch
+# and hashes one file per process instead, with afk_sha256_file's own rules.
+# Returns 1 (and no digests) unless every path produced a digest.
+afk_sha256_files() {
+  local -a all=("$@") chunk=()
+  local rec k=0 n=0 hex
+  AFK_DIGESTS=()
+  if [[ -z "${AFK_HASH_FORCE_PORTABLE:-}" ]] && afk_have sha256sum; then
+    while (( n < ${#all[@]} )); do
+      chunk=("${all[@]:n:256}"); k=0
+      while IFS= read -r -d '' rec; do
+        [[ "$rec" == "HASHRC=0" && $k -eq ${#chunk[@]} ]] && { k=-1; break; }
+        hex="${rec:0:64}"
+        [[ $k -lt ${#chunk[@]} && "$hex" =~ ^[0-9a-f]{64}$ \
+           && ( "${rec:64:2}" == "  " || "${rec:64:2}" == " *" ) && "${rec:66}" == "${chunk[k]}" ]] || break
+        AFK_DIGESTS+=("sha256:$hex"); k=$((k + 1))
+      done < <(sha256sum -z -- "${chunk[@]}" 2>/dev/null; printf 'HASHRC=%s\0' "$?")
+      (( k == -1 )) || break
+      n=$((n + ${#chunk[@]}))
+    done
+    (( n == ${#all[@]} )) && return 0
+  fi
+  AFK_DIGESTS=()
+  for rec in ${all[@]+"${all[@]}"}; do
+    afk_sha256_file_v hex "$rec" || { AFK_DIGESTS=(); return 1; }
+    [[ -n "$hex" ]] || { AFK_DIGESTS=(); return 1; }
+    AFK_DIGESTS+=("$hex")
+  done
+  return 0
 }
 
 afk_sha256_string() { printf '%s' "$1" | afk_sha256_stdin; }
@@ -138,7 +213,7 @@ afk_tree_identity() {
   [[ "$root" == /* ]] || return 1
   [[ -d "$root" ]] || return 1
   out="$(
-    listing=""
+    listing="" files=() erels=()
     while IFS= read -r -d '' entry; do
       # find's own exit status arrives as the last NUL-terminated record. Every
       # real record is an absolute path, so the sentinel cannot be a filename.
@@ -149,16 +224,25 @@ afk_tree_identity() {
       rel="${entry#"$root"/}"
       if [[ "$rel" == "$entry" ]]; then rel="${entry##*/}"; fi
       if afk_excluded "$rel" "$excl"; then continue; fi
+      afk_encode_path_v erel "$rel"
       if [[ -L "$entry" ]]; then
+        # One readlink per symlink member: bash has no builtin that reads one.
         target="$(readlink -- "$entry")" || exit 1
-        listing="${listing}L $(afk_encode_path "$target") $(afk_encode_path "$rel")"$'\n'
+        afk_encode_path_v etarget "$target"
+        listing="${listing}L ${etarget} ${erel}"$'\n'
       else
-        digest="$(afk_sha256_file "$entry")" || exit 1
-        [[ -n "$digest" ]] || exit 1
-        listing="${listing}F ${digest} $(afk_encode_path "$rel")"$'\n'
+        [[ -f "$entry" ]] || exit 1
+        files+=("$entry"); erels+=("$erel")
       fi
     done < <(find "$root" \( -type f -o -type l \) -print0 2>/dev/null
              printf 'FINDRC=%s\0' "$?")
+    # Every regular member is hashed in one batch; a member without its digest
+    # fails the whole identity, exactly as a per-file failure always has.
+    afk_sha256_files ${files[@]+"${files[@]}"} || exit 1
+    (( ${#AFK_DIGESTS[@]} == ${#files[@]} )) || exit 1
+    for (( i = 0; i < ${#files[@]}; i++ )); do
+      listing="${listing}F ${AFK_DIGESTS[i]} ${erels[i]}"$'\n'
+    done
     printf '%s' "$listing" | LC_ALL=C sort | afk_sha256_stdin
   )" || return 1
   [[ -n "$out" ]] || return 1
@@ -175,7 +259,72 @@ afk_tree_identity() {
 # managed destination is legitimately allowed to be absent and its containment
 # still has to be judged. That leniency is correct for a destination and wrong
 # for a boundary — see afk_resolve_boundary.
+#
+# afk_realpath_v is the same algorithm, step for step, without a process per
+# step (AD-20): dirname/basename are parameter expansion (afk_split_path), and
+# the whole walk runs in ONE subshell whose `cd -P` then stands where each
+# `$(cd -P … && pwd -P)` stood ($PWD after `cd -P` is the physical path, with
+# the trailing newlines `$(…)` used to strip removed the same way). Only a
+# symlink hop still execs `readlink`. The single exception is a relative path
+# while CDPATH is set, where `cd` itself would print; that keeps the original
+# code (afk_realpath_legacy) so even that output stays what it was.
+
+# "$(dirname -- p)" and "$(basename -- p)" into AFK_SPLIT_DIR / AFK_SPLIT_BASE,
+# including the trailing newlines that command substitution strips.
+afk_split_path() { # <path>
+  local t="$1"
+  AFK_SPLIT_DIR="."; AFK_SPLIT_BASE=""
+  if [[ -n "$t" ]]; then
+    t="${t%"${t##*[!/]}"}"
+    if [[ -z "$t" ]]; then
+      AFK_SPLIT_DIR="/"; AFK_SPLIT_BASE="/"
+    else
+      AFK_SPLIT_BASE="${t##*/}"
+      if [[ "$t" == */* ]]; then t="${t%/*}"; t="${t%"${t##*[!/]}"}"; AFK_SPLIT_DIR="${t:-/}"; fi
+    fi
+  fi
+  while [[ "$AFK_SPLIT_DIR" == *$'\n' ]]; do AFK_SPLIT_DIR="${AFK_SPLIT_DIR%$'\n'}"; done
+  while [[ "$AFK_SPLIT_BASE" == *$'\n' ]]; do AFK_SPLIT_BASE="${AFK_SPLIT_BASE%$'\n'}"; done
+}
+
+afk_realpath_v() { # <var> <path>
+  local _rp
+  if [[ -n "${CDPATH:-}" && "$2" != /* ]]; then
+    _rp="$(afk_realpath_legacy "$2")" || { printf -v "$1" '%s' ""; return 1; }
+  else
+    _rp="$(
+      afk_realpath_cd() { # <dir> -> P, the physical directory
+        cd -P -- "$1" 2>/dev/null || exit 1
+        P="$PWD"; while [[ "$P" == *$'\n' ]]; do P="${P%$'\n'}"; done
+      }
+      p="$2" i=0
+      afk_split_path "$p"; b="$AFK_SPLIT_BASE"
+      afk_realpath_cd "$AFK_SPLIT_DIR"; p="$P/$b"
+      while [[ -L "$p" && $i -lt 40 ]]; do
+        t="$(readlink -- "$p")" || exit 1
+        case "$t" in
+          /*) p="$t" ;;
+          *)  afk_split_path "$p"; p="$AFK_SPLIT_DIR/$t" ;;
+        esac
+        afk_split_path "$p"; b="$AFK_SPLIT_BASE"
+        afk_realpath_cd "$AFK_SPLIT_DIR"; p="$P/$b"
+        i=$((i + 1))
+      done
+      if (( i >= 40 )); then exit 1; fi
+      if [[ -d "$p" ]]; then afk_realpath_cd "$p"; p="$P"; fi
+      printf '%s' "$p"
+    )" || { printf -v "$1" '%s' ""; return 1; }
+  fi
+  printf -v "$1" '%s' "$_rp"
+}
+
 afk_realpath() { # <path>
+  local r
+  afk_realpath_v r "$1" || return 1
+  printf '%s\n' "$r"
+}
+
+afk_realpath_legacy() { # <path>
   local p="$1" d b i=0 t
   d="$(dirname -- "$p")"
   b="$(basename -- "$p")"
@@ -214,10 +363,38 @@ afk_is_within() { # <child> <root>
 # with different reason codes, so they are kept apart here: a boundary that
 # does not resolve to an existing directory is UNRESOLVABLE, and only a
 # boundary that does resolve can be escaped.
+#
+# A boundary is one of 2–3 fixed directories, so a SUCCESSFUL resolution of an
+# absolute declared boundary is memoized for the process (AD-20). A failure is
+# never memoized, a hit is used only while the declared path still names that
+# same directory (-ef), and the memo is dropped at every lock acquisition
+# (afk_lock_acquire) and whenever the lifecycle removes directories, so every
+# check under the lock resolves again. (Parallel indexed arrays rather than an
+# associative one keep this code free of declare -A.)
+AFK_BOUNDARY_MEMO_KEYS=() AFK_BOUNDARY_MEMO_VALS=()
+afk_boundary_memo_clear() { AFK_BOUNDARY_MEMO_KEYS=(); AFK_BOUNDARY_MEMO_VALS=(); }
+
+afk_resolve_boundary_v() { # <var> <declared-boundary>
+  local _rb="" _ri
+  if [[ "$2" == /* ]]; then
+    for (( _ri = 0; _ri < ${#AFK_BOUNDARY_MEMO_KEYS[@]}; _ri++ )); do
+      [[ "${AFK_BOUNDARY_MEMO_KEYS[_ri]}" == "$2" ]] || continue
+      _rb="${AFK_BOUNDARY_MEMO_VALS[_ri]}"
+      # Still the same directory the declared path names? A boundary that was
+      # repointed or removed since is resolved again, never answered stale.
+      if [[ -d "$_rb" && -d "$2" && "$2" -ef "$_rb" ]]; then printf -v "$1" '%s' "$_rb"; return 0; fi
+    done
+  fi
+  afk_realpath_v _rb "$2" && [[ -d "$_rb" ]] || { printf -v "$1" '%s' ""; return 1; }
+  if [[ "$2" == /* ]]; then
+    AFK_BOUNDARY_MEMO_KEYS+=("$2"); AFK_BOUNDARY_MEMO_VALS+=("$_rb")
+  fi
+  printf -v "$1" '%s' "$_rb"
+}
+
 afk_resolve_boundary() { # <declared-boundary>
   local resolved
-  resolved="$(afk_realpath "$1")" || return 1
-  [[ -d "$resolved" ]] || return 1
+  afk_resolve_boundary_v resolved "$1" || return 1
   printf '%s\n' "$resolved"
 }
 
@@ -236,44 +413,62 @@ afk_resolve_boundary() { # <declared-boundary>
 #
 # Both are resolved before either is compared against, so an unprovable
 # boundary is never mistaken for a destination that escaped one.
+#
+# afk_path_guard_v <var> <path> … sets <var> to the reason code instead of
+# printing it; afk_path_guard is the printing form for $(…) callers.
 afk_path_guard() {
+  local g rc
+  afk_path_guard_v g "$@"; rc=$?
+  printf '%s\n' "$g"
+  return "$rc"
+}
+
+afk_path_guard_v() { # <var> <path> <expected-type> [target-boundary] [container-boundary]
+  local _pg_code _pg_rc
+  afk_path_guard_code "${@:2}"; _pg_rc=$?
+  printf -v "$1" '%s' "$_pg_code"
+  return "$_pg_rc"
+}
+
+afk_path_guard_code() { # sets _pg_code in the caller (afk_path_guard_v)
   local p="$1" want="$2" boundary="${3:-}" container="${4:-}"
   local resolved="" parent="" rboundary="" rcontainer=""
   if [[ ! -e "$p" && ! -L "$p" ]]; then
-    printf 'PATH_ABSENT\n'; return 1
+    _pg_code=PATH_ABSENT; return 1
   fi
   if [[ -n "$container" ]]; then
-    rcontainer="$(afk_resolve_boundary "$container")" || { printf 'PATH_BOUNDARY_UNRESOLVABLE\n'; return 1; }
+    afk_resolve_boundary_v rcontainer "$container" || { _pg_code=PATH_BOUNDARY_UNRESOLVABLE; return 1; }
   fi
   if [[ -n "$boundary" ]]; then
-    rboundary="$(afk_resolve_boundary "$boundary")" || { printf 'PATH_BOUNDARY_UNRESOLVABLE\n'; return 1; }
+    afk_resolve_boundary_v rboundary "$boundary" || { _pg_code=PATH_BOUNDARY_UNRESOLVABLE; return 1; }
   fi
-  parent="$(afk_realpath "$(dirname -- "$p")")" || { printf 'PATH_PARENT_UNRESOLVABLE\n'; return 1; }
+  afk_split_path "$p"
+  afk_realpath_v parent "$AFK_SPLIT_DIR" || { _pg_code=PATH_PARENT_UNRESOLVABLE; return 1; }
   if [[ -n "$rcontainer" ]] && ! afk_is_within "$parent" "$rcontainer"; then
-    printf 'PATH_PARENT_ESCAPES_BOUNDARY\n'; return 1
+    _pg_code=PATH_PARENT_ESCAPES_BOUNDARY; return 1
   fi
   if [[ -L "$p" ]]; then
     if [[ "$want" != "link" ]]; then
-      printf 'PATH_UNEXPECTED_SYMLINK\n'; return 1
+      _pg_code=PATH_UNEXPECTED_SYMLINK; return 1
     fi
-    resolved="$(afk_realpath "$p")" || { printf 'PATH_UNRESOLVABLE_SYMLINK\n'; return 1; }
+    afk_realpath_v resolved "$p" || { _pg_code=PATH_UNRESOLVABLE_SYMLINK; return 1; }
     if [[ -n "$rboundary" ]] && ! afk_is_within "$resolved" "$rboundary"; then
-      printf 'PATH_ESCAPES_OWNERSHIP_BOUNDARY\n'; return 1
+      _pg_code=PATH_ESCAPES_OWNERSHIP_BOUNDARY; return 1
     fi
-    printf 'PATH_OK\n'; return 0
+    _pg_code=PATH_OK; return 0
   fi
   if [[ "$want" == "link" ]]; then
-    printf 'PATH_NOT_A_SYMLINK\n'; return 1
+    _pg_code=PATH_NOT_A_SYMLINK; return 1
   fi
   case "$want" in
-    file) [[ -f "$p" ]] || { printf 'PATH_TYPE_MISMATCH\n'; return 1; } ;;
-    dir)  [[ -d "$p" ]] || { printf 'PATH_TYPE_MISMATCH\n'; return 1; } ;;
+    file) [[ -f "$p" ]] || { _pg_code=PATH_TYPE_MISMATCH; return 1; } ;;
+    dir)  [[ -d "$p" ]] || { _pg_code=PATH_TYPE_MISMATCH; return 1; } ;;
   esac
-  resolved="$(afk_realpath "$p")" || { printf 'PATH_UNRESOLVABLE_SYMLINK\n'; return 1; }
+  afk_realpath_v resolved "$p" || { _pg_code=PATH_UNRESOLVABLE_SYMLINK; return 1; }
   if [[ -n "$rboundary" ]] && ! afk_is_within "$resolved" "$rboundary"; then
-    printf 'PATH_ESCAPES_OWNERSHIP_BOUNDARY\n'; return 1
+    _pg_code=PATH_ESCAPES_OWNERSHIP_BOUNDARY; return 1
   fi
-  printf 'PATH_OK\n'; return 0
+  _pg_code=PATH_OK; return 0
 }
 
 # --- destination metadata (FR-37) -------------------------------------------
@@ -365,10 +560,10 @@ afk_state_file_write() { # <path> <content>
 # Returns 0 when such an escape exists (i.e. the tree must not be hashed).
 afk_tree_find_escaping_symlink() {
   local root="$1" resolved_root="" entry target
-  resolved_root="$(afk_realpath "$root")" || return 1
+  afk_realpath_v resolved_root "$root" || return 1
   while IFS= read -r -d '' entry; do
     [[ -n "$entry" ]] || continue
-    if ! target="$(afk_realpath "$entry")"; then
+    if ! afk_realpath_v target "$entry"; then
       afk_encode_path "${entry#"$root"/}"; printf '\n'
       return 0
     fi
@@ -476,11 +671,15 @@ afk_env_value() { # <name>
 }
 
 afk_env_record() { # <name> -> one JSON object
-  local n="$1" raw cls present red
+  local n="$1" raw cls present red rec
   raw="$(afk_env_value "$n")"
   cls="$(afk_env_classification "$n")"
   if [[ -n "$raw" ]]; then present=true; else present=false; fi
   red="$("$AFK_REDACT_FN" "$raw")"
+  if afk_json_record rec name s "$n" present b "$present" classification s "$cls" value n "$red" \
+       value_emitted b false; then
+    printf '%s\n' "$rec"; return 0
+  fi
   jq -nc --arg name "$n" --argjson present "$present" --arg cls "$cls" --arg red "$red" \
     '{name: $name,
       present: $present,
@@ -856,11 +1055,60 @@ afk_reason_impact() { # <severity>
   esac
 }
 
+# --- records without a process each (AD-20) ---------------------------------
+#
+# afk_json_record <var> (<key> <kind> <value>)... builds one compact object.
+# Kinds mirror the jq each record used to be built with:
+#   s  string                 n  string, "" -> null
+#   b  "true" -> true, else false
+#   a  split(","), "" -> []   j  JSON this function already built
+# Every record is re-serialized by the ONE jq that assembles its document, so
+# this text only has to parse to the same value — and it is only produced for
+# plain printable ASCII, where \" and \\ are the whole escaping job. Anything
+# else (a control character, any non-ASCII byte) returns 1 and the caller
+# builds that record with its jq, exactly as before.
+#
+# Contract: a `j` value must already be JSON produced by this same function
+# (or another trusted jq build) — it is inserted verbatim, unvalidated. Keys
+# must be trusted literals written by the caller, never data; this function
+# only guards that a key looks like an identifier, it never escapes one.
+afk_json_record() {
+  local _jr_var="$1" _jr_out="" _jr_x _jr_v
+  shift
+  while (( $# >= 3 )); do
+    [[ "$1" =~ ^[A-Za-z0-9_]+$ ]] || return 1
+    _jr_v="${3//\\/\\\\}"; _jr_v="${_jr_v//\"/\\\"}"
+    case "$2" in
+      s) _jr_x="\"$_jr_v\"" ;;
+      n) if [[ -z "$3" ]]; then _jr_x=null; else _jr_x="\"$_jr_v\""; fi ;;
+      b) if [[ "$3" == "true" ]]; then _jr_x=true; else _jr_x=false; fi ;;
+      a) if [[ -z "$3" ]]; then _jr_x="[]"; else _jr_x="[\"${_jr_v//,/\",\"}\"]"; fi ;;
+      j) _jr_x="$3" ;;
+      *) return 1 ;;
+    esac
+    _jr_out="${_jr_out:+$_jr_out,}\"$1\":$_jr_x"
+    shift 3
+  done
+  local LC_ALL=C
+  [[ "$_jr_out" != *[![:print:]]* ]] || return 1
+  printf -v "$_jr_var" '{%s}' "$_jr_out"
+}
+
 afk_f_emit() {
-  local json msg action impact
+  local json msg action impact ev oar=false
   msg="$(afk_reason_message "$F_REASON")"
   action="$(afk_reason_action "$F_REASON")"
   impact="$(afk_reason_impact "$F_SEVERITY")"
+  [[ "$F_SEVERITY" != "owner_action" ]] || oar=true
+  if afk_json_record ev provenance s "$F_PROVENANCE" expected n "$F_EXPECTED" observed n "$F_OBSERVED" \
+     && afk_json_record json component n "$F_COMPONENT" ownership n "$F_OWNERSHIP" state s "$F_STATE" \
+          reason s "$F_REASON" severity s "$F_SEVERITY" blocked_scopes a "$F_SCOPES" \
+          owner s agent-flow-kit owner_action_required b "$oar" \
+          mutation_safe b "$F_MUTATION_SAFE" transient b "$F_TRANSIENT" evidence j "$ev" \
+          message s "$msg" impact s "$impact" required_action s "$action" detail n "$F_DETAIL"; then
+    AFK_FINDINGS="${AFK_FINDINGS}${json}"$'\n'
+    return 0
+  fi
   json="$(jq -nc \
     --arg component "$F_COMPONENT" --arg ownership "$F_OWNERSHIP" --arg state "$F_STATE" \
     --arg reason "$F_REASON" --arg severity "$F_SEVERITY" --arg scopes "$F_SCOPES" \
@@ -897,7 +1145,16 @@ afk_add_finding() { # <component> <ownership> <state> <reason> <severity> <scope
 }
 
 afk_c_emit() {
-  local json
+  local json ev oar=false
+  [[ "$C_SEVERITY" != "owner_action" ]] || oar=true
+  if afk_json_record ev provenance s "$C_PROVENANCE" expected n "$C_EXPECTED" observed n "$C_OBSERVED" \
+     && afk_json_record json id s "$C_ID" ownership s "$C_OWNERSHIP" destination s "$C_DEST" \
+          state s "$C_STATE" reason n "$C_REASON" severity s "$C_SEVERITY" blocked_scopes a "$C_SCOPES" \
+          owner s agent-flow-kit owner_action_required b "$oar" mutation_safe b "$C_MUTATION_SAFE" \
+          execution_critical b "$C_CRITICAL" transient b false adaptation n "$C_ADAPTATION" \
+          evidence j "$ev" detail n "$C_DETAIL"; then
+    :
+  else
   json="$(jq -nc \
     --arg id "$C_ID" --arg ownership "$C_OWNERSHIP" --arg dest "$C_DEST" \
     --arg state "$C_STATE" --arg reason "$C_REASON" --arg severity "$C_SEVERITY" \
@@ -921,6 +1178,7 @@ afk_c_emit() {
                  expected: (if $expected == "" then null else $expected end),
                  observed: (if $observed == "" then null else $observed end)},
       detail: (if $detail == "" then null else $detail end)}')" || return 1
+  fi
   AFK_COMPONENTS="${AFK_COMPONENTS}${json}"$'\n'
   if [[ "$C_SEVERITY" != "info" ]]; then
     afk_f_reset

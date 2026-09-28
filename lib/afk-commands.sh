@@ -280,7 +280,7 @@ afk_adopt_analyze() {
       *)       want="file"; boundary="$target_root" ;;
     esac
 
-    guard="$(afk_path_guard "$dpath" "$want" "$boundary" "$container")"
+    afk_path_guard_v guard "$dpath" "$want" "$boundary" "$container"
     rc=$?
     if (( rc != 0 )); then
       if [[ "$guard" == "PATH_ABSENT" ]]; then
@@ -302,8 +302,8 @@ afk_adopt_analyze() {
           afk_adoption_note "$id" "APPROVAL_REQUIRED" "LINK_TARGET_MISSING" "$dpath"
           continue
         fi
-        if resolved="$(afk_realpath "$dpath")"; then observed="link:$resolved"; else observed=""; fi
-        if resolved="$(afk_realpath "$extra")"; then canonical="link:$resolved"; else canonical=""; fi
+        if afk_realpath_v resolved "$dpath"; then observed="link:$resolved"; else observed=""; fi
+        if afk_realpath_v resolved "$extra"; then canonical="link:$resolved"; else canonical=""; fi
         if [[ -z "$observed" ]]; then
           afk_adoption_note "$id" "REFUSED" "IDENTITY_UNREADABLE" "$dpath"
           continue
@@ -328,8 +328,8 @@ afk_adopt_analyze() {
         canonical="$(afk_tree_identity "$AFK_KIT_ROOT/$srel" "$extra")"
         ;;
       MANAGED_COPY_FILE)
-        observed="$(afk_sha256_file "$dpath")"
-        canonical="$(afk_sha256_file "$AFK_KIT_ROOT/$srel")"
+        afk_sha256_file_v observed "$dpath"
+        afk_sha256_file_v canonical "$AFK_KIT_ROOT/$srel"
         ;;
       MANAGED_SECTION)
         observed="$(afk_section_identity "$dpath" "$extra")"
