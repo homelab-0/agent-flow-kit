@@ -3849,6 +3849,81 @@ else
 fi
 
 # ===========================================================================
+head1 "21. Paperclip poll gate — tests/paperclip-poll-tests.sh"
+# ===========================================================================
+# `paperclip-poll` (lib/afk-paperclip.sh), the claim-side pass: no network,
+# stubbed curl/orca. AD-18: added here so the four Paperclip suites gate the
+# same as everything else after merge, at the cost of roughly +1-1.5 min
+# serial (offset by TP-2's fork-free helpers).
+
+POLL_TESTS="$KIT_ROOT/tests/paperclip-poll-tests.sh"
+if [[ -f "$POLL_TESTS" ]]; then
+  if poll_out="$(bash "$POLL_TESTS" 2>&1)"; then
+    ok "paperclip poll gate: $(tail -1 <<<"$poll_out")"
+  else
+    bad "paperclip poll gate" "$(tail -1 <<<"$poll_out")"
+    printf '%s\n' "$poll_out" | tail -40
+  fi
+else
+  bad "paperclip poll gate present" "missing: $POLL_TESTS"
+fi
+
+# ===========================================================================
+head1 "22. Paperclip PM registry gate — tests/paperclip-pm-registry-tests.sh"
+# ===========================================================================
+# `pm-registry-lookup`/`pm-start`/`pm-registry-reap` (lib/afk-pm-registry.sh):
+# no network, no real Orca.
+
+REGISTRY_TESTS="$KIT_ROOT/tests/paperclip-pm-registry-tests.sh"
+if [[ -f "$REGISTRY_TESTS" ]]; then
+  if registry_out="$(bash "$REGISTRY_TESTS" 2>&1)"; then
+    ok "paperclip pm-registry gate: $(tail -1 <<<"$registry_out")"
+  else
+    bad "paperclip pm-registry gate" "$(tail -1 <<<"$registry_out")"
+    printf '%s\n' "$registry_out" | tail -40
+  fi
+else
+  bad "paperclip pm-registry gate present" "missing: $REGISTRY_TESTS"
+fi
+
+# ===========================================================================
+head1 "23. Paperclip PM start gate — tests/paperclip-pm-start-tests.sh"
+# ===========================================================================
+# AFK-PC-2b's PM-start classification (lib/afk-paperclip-start.sh) and
+# `paperclip-timer`: no network, no real harness, no real systemd unit.
+
+PM_START_TESTS="$KIT_ROOT/tests/paperclip-pm-start-tests.sh"
+if [[ -f "$PM_START_TESTS" ]]; then
+  if pm_start_out="$(bash "$PM_START_TESTS" 2>&1)"; then
+    ok "paperclip pm-start gate: $(tail -1 <<<"$pm_start_out")"
+  else
+    bad "paperclip pm-start gate" "$(tail -1 <<<"$pm_start_out")"
+    printf '%s\n' "$pm_start_out" | tail -40
+  fi
+else
+  bad "paperclip pm-start gate present" "missing: $PM_START_TESTS"
+fi
+
+# ===========================================================================
+head1 "24. Paperclip report gate — tests/paperclip-report-tests.sh"
+# ===========================================================================
+# `paperclip-report` (lib/afk-paperclip-report.sh), AFK-PC-3a: the PM's only
+# way to write to Paperclip. No network; a real temp git repo stands in for
+# the issue's project repo.
+
+REPORT_TESTS="$KIT_ROOT/tests/paperclip-report-tests.sh"
+if [[ -f "$REPORT_TESTS" ]]; then
+  if report_out="$(bash "$REPORT_TESTS" 2>&1)"; then
+    ok "paperclip report gate: $(tail -1 <<<"$report_out")"
+  else
+    bad "paperclip report gate" "$(tail -1 <<<"$report_out")"
+    printf '%s\n' "$report_out" | tail -40
+  fi
+else
+  bad "paperclip report gate present" "missing: $REPORT_TESTS"
+fi
+
+# ===========================================================================
 if (( SKIPPED > 0 )); then
   printf '\n\033[1m%d passed, %d failed, %d skipped\033[0m\n' "$PASS" "$FAIL" "$SKIPPED"
   printf '\033[33mskipped checks computed no verdict — they are not passes\033[0m\n'

@@ -35,7 +35,26 @@ back from a Paperclip response) is checked as a UUID before it is used in a
 file path. `board_user_id` may never be the literal string `board` or
 `local-board`. A missing config reports `PAPERCLIP_NOT_CONFIGURED`; an
 invalid one reports `PAPERCLIP_CONFIG_INVALID` or `PAPERCLIP_ID_INVALID`.
-Neither makes a network call.
+Neither makes a network call. `interim_comment_approval.paperclip_commit`,
+when present, must be 40 lowercase hex characters or config load itself
+refuses with `PAPERCLIP_CONFIG_INVALID`.
+
+### Migrating from `paperclip_version`
+
+An older config's `paperclip_version` field is no longer read by the PM-start
+approval gate; an unmigrated config now always returns
+`APPROVAL_INTERIM_UNATTESTED` and the caller never auto-starts a PM. Replace
+it with `interim_comment_approval.paperclip_commit`, set to the exact commit
+`GET /api/health` reports (`afk_pc_health_commit`) -- a short SHA does not
+match the full SHA the endpoint returns:
+
+```json
+{
+  "interim_comment_approval": {
+    "paperclip_commit": "4a1b2c3d4e5f60718293a4b5c6d7e8f9a0b1c2d3"
+  }
+}
+```
 
 ## Notices
 
@@ -331,8 +350,10 @@ the project's PM, using PC-2a's registry lookup for the agent's `repo_path`:
 - `none`: subject to the creator gate (`createdByUserId == board_user_id`,
   else one `Reply exactly: approve start <identifier>` question comment and
   an exact matching Josh reply — gated on `interim_comment_approval` present
-  and its `paperclip_version` matching the config's own, else
-  `APPROVAL_INTERIM_UNATTESTED`), the daily cap (`pm_start_daily_cap`,
+  and its `paperclip_commit` matching the deployed commit from
+  `GET /api/health` (`afk_pc_health_commit`, shared with the plan-approval
+  check), else `APPROVAL_INTERIM_UNATTESTED`; a failed or unreachable health
+  check is the same fail-closed refusal), the daily cap (`pm_start_daily_cap`,
   default 3, per host per UTC day), and the kit's own readiness check
   (`AFK_PCS_READINESS_BIN`, defaulting to `agent-flow-kit status --json`
   against the repo) — never auto-fixed.
