@@ -133,6 +133,30 @@ mkfifo "$TMPROOT/body.fifo"
 run_afk termA paperclip-report --issue "$ISSUE" --comment-file "$TMPROOT/body.fifo" --json
 assert_contains "a FIFO body file is refused, not read (no hang)" "$OUT_TEXT" "PAPERCLIP_BODY_UNREADABLE"
 
+# A path swapped for a FIFO after the initial `-f` check, racing the open
+# in afk_pcr_body_read, must never hang the command: the descriptor is
+# re-verified after the open, not the path. Bounded by `timeout` so a
+# regression (re-opening the path instead of the fd) fails the test instead
+# of wedging the suite.
+RACE_PATH="$TMPROOT/race_body.txt"
+printf 'stable body' >"$RACE_PATH"
+(
+  race_end=$((SECONDS + 3))
+  while (( SECONDS < race_end )); do
+    rm -f "$RACE_PATH"; mkfifo "$RACE_PATH" 2>/dev/null
+    rm -f "$RACE_PATH"; printf 'stable body' >"$RACE_PATH"
+  done
+) &
+SWAPPER=$!
+timeout 5 env -i PATH="$STUBS:$PATH" HOME="$HOME_DIR" LANG=C \
+  AFK_STATE_DIR="$STATE" AFK_ORCA_BIN="$STUBS/orca" ORCA_STUB_TERMINALS="$TERMFILE" \
+  AFK_PAPERCLIP_CONFIG="$CONFIG" ORCA_TERMINAL_HANDLE="termA" \
+  bash "$AFK" paperclip-report --issue "$ISSUE" --comment-file "$RACE_PATH" --json >/dev/null 2>&1
+RACE_RC=$?
+kill "$SWAPPER" 2>/dev/null; wait "$SWAPPER" 2>/dev/null
+if [[ "$RACE_RC" -ne 124 ]]; then ok "a path swapped mid-race never hangs the reader"
+else bad "a path swapped mid-race never hangs the reader" "timed out (rc=124)"; fi
+
 head1 "3. Concurrency: two backgrounded writers never collide (AC-2)"
 reset_state
 run_bg() { # <out-file> <args...> -- a standalone invocation, safe backgrounded

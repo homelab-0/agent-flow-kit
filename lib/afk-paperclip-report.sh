@@ -95,19 +95,42 @@ afk_pcr_require_owner() {
 # afk_pcr_body_read <path> -- sets AFK_PCR_BODY on success (never printed
 # elsewhere): at most 16 KiB on disk and valid UTF-8, read from a file, never
 # an argument. A direct call (never `$(...)`), for the same reason as above.
+#
+# Opens the path exactly once, then does every check (regular file, size,
+# UTF-8) and the content read against that one descriptor. A caller that can
+# replace the path between the initial `-f` check and the open (or race it
+# for a FIFO/device) cannot redirect what gets read or hang the command: the
+# descriptor is re-verified after the open, and the read below is bounded so
+# even a would-be device fd cannot block indefinitely.
 afk_pcr_body_read() {
-  local path="$1" size
+  local path="$1" fd size body
   AFK_PCR_BODY=""
-  # A regular file only: a FIFO or a device (/dev/zero) would hang the size
-  # check or the read instead of being refused.
+  # A regular file only, checked by name first so an obviously bad path (a
+  # FIFO already sitting there, a missing file) is refused without ever
+  # opening it.
   [[ -n "$path" && -f "$path" && -r "$path" ]] || { AFK_PCR_REFUSAL="PAPERCLIP_BODY_UNREADABLE"; return 1; }
-  size="$(wc -c <"$path" 2>/dev/null)" || size=-1
-  (( size >= 0 && size <= 16384 )) || { AFK_PCR_REFUSAL="PAPERCLIP_BODY_TOO_LARGE"; return 1; }
-  iconv -f UTF-8 -t UTF-8 "$path" >/dev/null 2>&1 || { AFK_PCR_REFUSAL="PAPERCLIP_BODY_INVALID"; return 1; }
-  AFK_PCR_BODY="$(cat "$path" 2>/dev/null)"
-  # Re-check what was actually read, in bytes: the file may have grown since.
+  if ! exec {fd}<"$path" 2>/dev/null; then
+    AFK_PCR_REFUSAL="PAPERCLIP_BODY_UNREADABLE"; return 1
+  fi
+  # Re-check the opened descriptor itself, not the path again: this is what
+  # closes the window where the path was swapped for a FIFO or device
+  # between the check above and this open.
+  if [[ ! -f "/dev/fd/$fd" ]]; then
+    exec {fd}<&-
+    AFK_PCR_REFUSAL="PAPERCLIP_BODY_UNREADABLE"; return 1
+  fi
+  # Bounded read of one byte past the limit, from the fd only: never the
+  # path again. `read -r -d ''` (via process substitution) preserves
+  # trailing newlines that a bare command substitution would strip.
+  IFS= read -r -d '' body < <(head -c 16385 <&"$fd"; printf '\0')
+  exec {fd}<&-
   local LC_ALL=C
-  (( ${#AFK_PCR_BODY} <= 16384 )) || { AFK_PCR_BODY=""; AFK_PCR_REFUSAL="PAPERCLIP_BODY_TOO_LARGE"; return 1; }
+  size=${#body}
+  (( size >= 0 && size <= 16384 )) || { AFK_PCR_REFUSAL="PAPERCLIP_BODY_TOO_LARGE"; return 1; }
+  if ! printf '%s' "$body" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
+    AFK_PCR_REFUSAL="PAPERCLIP_BODY_INVALID"; return 1
+  fi
+  AFK_PCR_BODY="$body"
   return 0
 }
 
@@ -179,18 +202,27 @@ afk_pcr_report_entry() {
   (( rc == 0 )) && { afk_state_dir_ensure "$spool_dir/.tmp" || rc=1; }
   (( rc == 0 )) && { afk_state_file_write "$tmp_path" "$entry" || rc=1; }
 
-  local final_name final_path
+  local final_name final_path published=false
   printf -v final_name '%08d.json' "$seq"
   final_path="$spool_dir/$final_name"
   if (( rc == 0 )); then
-    mv -n -- "$tmp_path" "$final_path" 2>/dev/null && [[ ! -e "$tmp_path" ]] || rc=1
-    (( rc == 0 )) || rm -f -- "$tmp_path" 2>/dev/null
+    if mv -n -- "$tmp_path" "$final_path" 2>/dev/null && [[ ! -e "$tmp_path" ]]; then
+      published=true
+    else
+      rc=1
+      rm -f -- "$tmp_path" 2>/dev/null
+    fi
   fi
   (( rc == 0 )) && { afk_state_file_write "$seq_file" "$seq" || rc=1; }
   if (( rc == 0 )) && [[ "$kind" == final ]]; then
     afk_state_file_write "$final_marker" "$final" || rc=1
   fi
 
+  # A later write (seq/final) failing after the entry was already published
+  # would otherwise leave a live spool entry the reader can list before this
+  # lock releases; remove exactly that entry, never anything else in the
+  # spool.
+  (( rc == 0 )) || { [[ "$published" == true ]] && rm -f -- "$final_path" 2>/dev/null; }
   afk_pcr_unlock "$lockdir"
   if (( rc != 0 )); then
     afk_pcr_emit_refusal "PAPERCLIP_REGISTRY_WRITE_FAILED" "$json_mode"
