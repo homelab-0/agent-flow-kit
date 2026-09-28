@@ -344,8 +344,9 @@ markers makes it a Paperclip story; if they disagree, the answer is
   these hold, checked in this order: a Paperclip home
   (`PM_AUTO_NOT_PAPERCLIP`), `override: null` (`PM_AUTO_NOT_NATURAL`),
   `cost_class: free` and `metered: false` (`PM_AUTO_NOT_FREE`), no `security`,
-  `iam`, `secrets`, `prod-iac` or `destructive-tools` tag (`HARD_EXCLUSION`),
-  an approved plan (`PLAN_NOT_APPROVED`) that contains the story
+  `iam`, `secrets`, `prod-iac` or `destructive-tools` tag, compared trimmed
+  and case-folded (`HARD_EXCLUSION`; a stamp whose `task.tags` is not an
+  array of strings is `STAMP_INVALID`), an approved plan (`PLAN_NOT_APPROVED`) that contains the story
   (`STORY_NOT_IN_PLAN`) with the same gates in the same order
   (`STORY_CONTRACT_MUTATED`). On `HARD_EXCLUSION` the PM declares `Stopped`
   or re-plans. That is never a question for Josh. `PM_AUTO_NOT_NATURAL` and
@@ -356,11 +357,15 @@ markers makes it a Paperclip story; if they disagree, the answer is
   --json` for a Paperclip story. The binary is `launcher.agent_flow_kit` or
   `$AGENT_FLOW_KIT_BIN`, and defaults to `agent-flow-kit`. Anything other
   than `ok` exits 4, prints the reason and writes `<story>.blocked`. The
-  reasons are `ACCEPTANCE_MISSING`, `ACCEPTANCE_DIGEST_MISMATCH` (a re-route
-  never inherits an acceptance), `PLAN_NOT_APPROVED`, `STORY_NOT_IN_PLAN`,
-  `STORY_CONTRACT_MUTATED`, `STORY_HOME_INVALID`, and
-  `ACCEPTANCE_UNCHECKABLE` when the answer can't be read. Stories with no
-  Paperclip marker never reach this check.
+  reasons are `ACCEPTANCE_MISSING`, `ACCEPTANCE_INVALID` (no
+  `afk-acceptance/1` schema, kind or actor), `ACCEPTANCE_DIGEST_MISMATCH` (a
+  re-route never inherits an acceptance), `PLAN_NOT_APPROVED`,
+  `STORY_NOT_IN_PLAN`, `STORY_CONTRACT_MUTATED`, `STORY_HOME_INVALID`,
+  `STAMP_INVALID`, and `ACCEPTANCE_UNCHECKABLE` when the answer can't be
+  read. A `pm-auto` record is also re-judged against the current stamp's
+  lane on every cycle (`PM_AUTO_NOT_NATURAL`, `PM_AUTO_NOT_FREE`,
+  `HARD_EXCLUSION`), because the decision digest does not cover `override`
+  or `task.tags`. Stories with no Paperclip marker never reach this check.
 - **`.afk/` is protected on every home.** After the worker exits, next to
   the secret scan, any path under `.afk/` that changed since the cycle's
   base commit fails the cycle with `AFK_PROTECTED_PATH`. That covers

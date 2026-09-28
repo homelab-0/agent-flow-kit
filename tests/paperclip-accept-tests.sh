@@ -68,6 +68,13 @@ for tag in security iam secrets prod-iac destructive-tools; do
 done
 accept --story "$(new_story iac '.task.tags += ["iac"]')" --kind pm-auto --actor pm
 assert_eq "iac is not prod-iac" "$(res)" "ok"
+accept --story "$(new_story hxcase '.task.tags += [" Security "]')" --kind pm-auto --actor pm
+assert_eq "tag matching is trimmed and case-folded -> HARD_EXCLUSION" "$(res)" "HARD_EXCLUSION"
+accept --story "$(new_story hxstr '.task.tags = "security"')" --kind pm-auto --actor pm
+assert_eq "tags that are not an array of strings -> STAMP_INVALID, never a pass" "$(res) $RC" "STAMP_INVALID 4"
+S="$(new_story twodoc)"; D2="$(jq '.override = {actor:"x", reason:"y"}' "$S.stamp.json")"; printf '%s\n' "$D2" >>"$S.stamp.json"
+accept --story "$S" --kind pm-auto --actor pm
+assert_eq "a stamp file holding two documents -> STAMP_INVALID" "$(res)" "STAMP_INVALID"
 rm -f "$STATE/paperclip/approvals/$ISSUE.json"
 accept --story "$(new_story unappr)" --kind pm-auto --actor pm
 assert_eq "no approval -> PLAN_NOT_APPROVED" "$(res)" "PLAN_NOT_APPROVED"
@@ -138,6 +145,22 @@ approve
 sed -i '/^home:/d' "$S"
 gate_then_launch "$S"
 assert_eq "dropping home still runs the checks -> STORY_HOME_INVALID" "$RC $(blocked "$S")" "4 STORY_HOME_INVALID"
+# The AC-2 digest leaves override and task.tags out, so a pm-auto acceptance
+# is re-judged against the current stamp's lane on every cycle.
+S="$(new_story lane)"; accept --story "$S" --kind pm-auto --actor pm
+jq '.override = {actor:"josh", reason:"pool"}' "$S.stamp.json" >"$S.t" && mv "$S.t" "$S.stamp.json"
+gate_then_launch "$S"
+assert_eq "pm-auto acceptance, stamp later overridden (same digest) -> PM_AUTO_NOT_NATURAL" "$RC $(blocked "$S")" "4 PM_AUTO_NOT_NATURAL"
+jq '.override = null | .task.tags += ["secrets"]' "$S.stamp.json" >"$S.t" && mv "$S.t" "$S.stamp.json"
+gate_then_launch "$S"
+assert_eq "pm-auto acceptance, hard-exclusion tag added (same digest) -> HARD_EXCLUSION" "$RC $(blocked "$S")" "4 HARD_EXCLUSION"
+S="$(new_story forged)"; D="$(jq -r .decision_digest "$TMPROOT/disp2.md.acceptance.json")"
+jq -nc --arg d "$D" '{schema:"afk-acceptance/1", story_id:"HOM-12.S1", decision_digest:$d}' >"$S.acceptance.json"
+gate_then_launch "$S"
+assert_eq "a record with the right digest but no kind/actor -> ACCEPTANCE_INVALID" "$RC $(blocked "$S")" "4 ACCEPTANCE_INVALID"
+S="$(new_story humet '.cost_class = "subscription" | .metered = true')"; accept --story "$S" --kind human --actor josh
+gate_then_launch "$S"
+assert_eq "a human acceptance on a metered stamp passes (provenance, no lane re-check)" "$RC" "0"
 S="$(new_story disp4)"; printf '#!/bin/sh\necho garbage\n' >"$TMPROOT/afk-bad"; chmod +x "$TMPROOT/afk-bad"
 gate_then_launch "$S" "$TMPROOT/afk-bad"
 assert_eq "an unreadable verifier answer -> ACCEPTANCE_UNCHECKABLE" "$RC $(blocked "$S")" "4 ACCEPTANCE_UNCHECKABLE"

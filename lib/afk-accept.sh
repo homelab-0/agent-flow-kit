@@ -48,9 +48,14 @@ afk_accept_load() {
   AFK_ACC_GATES="$(jq -c '.gates // []' <<<"$fm")"
   stamp="$(jq -r '.stamp // "" | strings' <<<"$fm")"; stamp="${stamp:-$story.stamp.json}"
   [[ -f "$stamp" ]] || { AFK_ACC_REASON=STAMP_MISSING; return 1; }
+  # Exactly one JSON object whose task.tags (when present) is an array of
+  # strings: the hard-exclusion check below matches tags one by one, and a
+  # tags value of any other shape would slip past it as "no tag matched".
   AFK_ACC_STAMP_JSON="$(jq -c 'select(type == "object")' "$stamp" 2>/dev/null)"
   AFK_ACC_DIGEST="$(afk_accept_decision_digest "$stamp")"
-  [[ -n "$AFK_ACC_STAMP_JSON" && -n "$AFK_ACC_DIGEST" ]] || { AFK_ACC_REASON=STAMP_INVALID; return 1; }
+  [[ -n "$AFK_ACC_STAMP_JSON" && -n "$AFK_ACC_DIGEST" && "$AFK_ACC_STAMP_JSON" != *$'\n'* ]] &&
+    jq -e '(.task.tags // []) | type == "array" and all(type == "string")' <<<"$AFK_ACC_STAMP_JSON" >/dev/null 2>&1 ||
+    { AFK_ACC_REASON=STAMP_INVALID; return 1; }
   AFK_ACC_SID="$(jq -r '.task.story_id // "" | strings' <<<"$AFK_ACC_STAMP_JSON")"
   if [[ "$home" == paperclip:* || -n "$AFK_ACC_ISSUE" || "$AFK_ACC_SID" == HOM-* ]]; then
     AFK_ACC_PAPERCLIP=true
@@ -78,24 +83,44 @@ afk_accept_plan_check() {
   printf ok
 }
 
+# afk_accept_lane_reason -- the free-lane conditions on the CURRENT stamp:
+# natural, free, no hard-exclusion tag (compared trimmed and case-folded, so
+# "Security" or " iam " is still the exclusion). Prints ok or the reason.
+afk_accept_lane_reason() {
+  jq -e '.override == null' <<<"$AFK_ACC_STAMP_JSON" >/dev/null || { printf PM_AUTO_NOT_NATURAL; return 0; }
+  jq -e '.cost_class == "free" and .metered == false' <<<"$AFK_ACC_STAMP_JSON" >/dev/null || { printf PM_AUTO_NOT_FREE; return 0; }
+  jq -e --argjson x "$AFK_ACCEPT_HARD_EXCLUSIONS" \
+    '[.task.tags[]? | ascii_downcase | gsub("^\\s+|\\s+$"; "") | select(. as $t | $x | index($t))] | length == 0' \
+    <<<"$AFK_ACC_STAMP_JSON" >/dev/null || { printf HARD_EXCLUSION; return 0; }
+  printf ok
+}
+
 # afk_accept_verify <story> -- AC-4, what dispatch.sh asks on every cycle.
+# The record must be a well-formed acceptance for THIS stamp's digest and
+# story id. A pm-auto record is additionally re-judged against the current
+# stamp's lane: the AC-2 digest does not cover override or task.tags, so a
+# stamp that stopped being natural, free or non-excluded must not ride on an
+# acceptance the PM wrote when it still was.
 afk_accept_verify() {
-  local acc="$1.acceptance.json"
+  local acc="$1.acceptance.json" kind r
   [[ "$AFK_ACC_PAPERCLIP" == true ]] || { printf STORY_HOME_INVALID; return 0; }
   [[ -f "$acc" ]] || { printf ACCEPTANCE_MISSING; return 0; }
-  jq -e --arg d "$AFK_ACC_DIGEST" --arg s "$AFK_ACC_SID" \
-    '.schema == "afk-acceptance/1" and .decision_digest == $d and .story_id == $s' "$acc" >/dev/null 2>&1 ||
+  kind="$(jq -r 'select(type == "object") | select(.schema == "afk-acceptance/1" and (.actor | type) == "string" and .actor != "")
+                 | .kind | strings | select(. == "human" or . == "override" or . == "pm-auto")' "$acc" 2>/dev/null)"
+  [[ "$kind" =~ ^(human|override|pm-auto)$ ]] || { printf ACCEPTANCE_INVALID; return 0; }
+  jq -e --arg d "$AFK_ACC_DIGEST" --arg s "$AFK_ACC_SID" '.decision_digest == $d and .story_id == $s' "$acc" >/dev/null 2>&1 ||
     { printf ACCEPTANCE_DIGEST_MISMATCH; return 0; }
+  if [[ "$kind" == pm-auto ]]; then
+    r="$(afk_accept_lane_reason)"; [[ "$r" == ok ]] || { printf '%s' "$r"; return 0; }
+  fi
   afk_accept_plan_check
 }
 
 # afk_accept_pm_auto_reason -- AC-3, every condition, in the contract's order.
 afk_accept_pm_auto_reason() {
+  local r
   [[ "$AFK_ACC_PAPERCLIP" == true ]] || { printf PM_AUTO_NOT_PAPERCLIP; return 0; }
-  jq -e '.override == null' <<<"$AFK_ACC_STAMP_JSON" >/dev/null || { printf PM_AUTO_NOT_NATURAL; return 0; }
-  jq -e '.cost_class == "free" and .metered == false' <<<"$AFK_ACC_STAMP_JSON" >/dev/null || { printf PM_AUTO_NOT_FREE; return 0; }
-  jq -e --argjson x "$AFK_ACCEPT_HARD_EXCLUSIONS" '[.task.tags[]? | select(. as $t | $x | index($t))] | length == 0' \
-    <<<"$AFK_ACC_STAMP_JSON" >/dev/null || { printf HARD_EXCLUSION; return 0; }
+  r="$(afk_accept_lane_reason)"; [[ "$r" == ok ]] || { printf '%s' "$r"; return 0; }
   afk_accept_plan_check
 }
 
