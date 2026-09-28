@@ -111,8 +111,13 @@ else
 fi
 
 # 4: a stale mkdir lock with a dead pid is reclaimed, not waited out.
+# The dead pid is a subshell that disables its OWN inherited EXIT trap and
+# then exits on its own — no external kill, so there's no race between that
+# signal and the subshell's first statement; killing it instead intermittently
+# fired our EXIT trap (rm -rf "$TMPROOT") from inside the subshell if the
+# signal arrived before it ran anything, corrupting an unrelated later test.
 LP="$TMPROOT/lock4"; mkdir "$LP.d"
-( sleep 30 ) & deadpid=$!; kill "$deadpid" 2>/dev/null; wait "$deadpid" 2>/dev/null
+( trap '' EXIT; exit 0 ) & deadpid=$!; wait "$deadpid" 2>/dev/null
 echo "$deadpid" >"$LP.d/pid"; echo "pid=$deadpid cwd=/nowhere start=1970-01-01T00:00:00Z" >"$LP.d/holder"
 t0=$SECONDS
 AFK_TEST_LOCK_PATH="$LP" AFK_TEST_LOCK_FORCE_MKDIR=1 AFK_TEST_LOCK_TIMEOUT=5 bash "$LOCKER" 0 >"$TMPROOT/h.out" 2>&1
@@ -130,7 +135,7 @@ h1=$!
 sleep 0.3; t0=$SECONDS
 AFK_TEST_LOCK=off AFK_TEST_LOCK_PATH="$LP" bash "$LOCKER" 0 >"$TMPROOT/h2.out" 2>&1
 elapsed=$((SECONDS - t0)); wait "$h1"
-if grep -q ACQUIRED "$TMPROOT/h2.out" && (( elapsed < 1 )); then
+if grep -q ACQUIRED "$TMPROOT/h2.out" && (( elapsed < 2 )); then
   ok "AFK_TEST_LOCK=off bypasses the lock (${elapsed}s)"
 else
   bad "AFK_TEST_LOCK=off bypasses the lock" "elapsed=${elapsed}s out=$(cat "$TMPROOT/h2.out")"
@@ -143,7 +148,7 @@ h1=$!
 sleep 0.3; t0=$SECONDS
 AFK_TEST_LOCK_PATH="$LP" AFK_TEST_LOCK_NESTED=1 bash "$LOCKER" 0 >"$TMPROOT/h2.out" 2>&1
 elapsed=$((SECONDS - t0)); wait "$h1"
-if grep -q ACQUIRED "$TMPROOT/h2.out" && (( elapsed < 1 )); then
+if grep -q ACQUIRED "$TMPROOT/h2.out" && (( elapsed < 2 )); then
   ok "a nested child (AFK_TEST_LOCK_NESTED=1) does not re-take the lock"
 else
   bad "a nested child does not re-take the lock" "elapsed=${elapsed}s out=$(cat "$TMPROOT/h2.out")"
@@ -157,7 +162,7 @@ N=14
 overlap_seen=0
 for round in 1 2 3; do
   LP="$TMPROOT/lock7-$round"; mkdir "$LP.d"
-  ( sleep 30 ) & deadpid=$!; kill "$deadpid" 2>/dev/null; wait "$deadpid" 2>/dev/null
+  ( trap '' EXIT; exit 0 ) & deadpid=$!; wait "$deadpid" 2>/dev/null
   echo "$deadpid" >"$LP.d/pid"; echo "pid=$deadpid cwd=/nowhere start=1970-01-01T00:00:00Z" >"$LP.d/holder"
   RACELOG="$TMPROOT/race-$round.log"; : >"$RACELOG"
   pids=()
@@ -208,6 +213,60 @@ else
     "rc=$rc elapsed=${elapsed}s grandchild_alive=$alive out=$(cat "$TMPROOT/h8b.out")"
 fi
 [[ -n "$gcpid" ]] && kill -9 "$gcpid" 2>/dev/null
+
+# Backdate a path's mtime by <seconds> (GNU touch, with a BSD/macOS fallback).
+backdate() { # <path> <seconds-ago>
+  local past=$(( $(date +%s) - $2 ))
+  touch -d "@$past" "$1" 2>/dev/null ||
+    touch -t "$(date -r "$past" +%Y%m%d%H%M.%S 2>/dev/null)" "$1"
+}
+
+# 9a: MAJOR regression — a holder that dies between `mkdir` and writing its
+# pid leaves an empty, permanently-unreclaimable-by-the-old-code directory.
+# After the grace period, a new acquirer reclaims it.
+LP="$TMPROOT/lock9a"; mkdir "$LP.d"
+backdate "$LP.d" 5
+t0=$SECONDS
+AFK_TEST_LOCK_PATH="$LP" AFK_TEST_LOCK_FORCE_MKDIR=1 AFK_TEST_LOCK_EMPTY_GRACE_S=2 \
+  AFK_TEST_LOCK_TIMEOUT=5 bash "$LOCKER" 0 >"$TMPROOT/h9a.out" 2>&1
+rc=$?; elapsed=$((SECONDS - t0))
+if (( rc == 0 )) && grep -q ACQUIRED "$TMPROOT/h9a.out" && (( elapsed < 5 )); then
+  ok "empty mkdir lock older than the grace period is reclaimed (${elapsed}s)"
+else
+  bad "empty mkdir lock older than the grace period is reclaimed" \
+    "rc=$rc elapsed=${elapsed}s out=$(cat "$TMPROOT/h9a.out")"
+fi
+
+# 9b: a FRESH empty directory (within the grace period) must NOT be
+# reclaimed — a short timeout against it must time out, not succeed.
+LP="$TMPROOT/lock9b"; mkdir "$LP.d"
+AFK_TEST_LOCK_PATH="$LP" AFK_TEST_LOCK_FORCE_MKDIR=1 AFK_TEST_LOCK_EMPTY_GRACE_S=30 \
+  AFK_TEST_LOCK_TIMEOUT=1 bash "$LOCKER" 0 >"$TMPROOT/h9b.out" 2>&1
+rc=$?
+if (( rc == 3 )) && ! grep -q ACQUIRED "$TMPROOT/h9b.out"; then
+  ok "a fresh empty mkdir lock (within grace) is not reclaimed"
+else
+  bad "a fresh empty mkdir lock (within grace) is not reclaimed" \
+    "rc=$rc out=$(cat "$TMPROOT/h9b.out")"
+fi
+rm -rf "$LP.d"
+
+# 10: MINOR regression — the mkdir-fallback timeout is elapsed WALL TIME, not
+# a count of poll iterations: POLL_S=0.02 with TIMEOUT=2 must take ~2s, not
+# ~14*0.02s.
+LP="$TMPROOT/lock10"
+AFK_TEST_LOCK_PATH="$LP" AFK_TEST_LOCK_FORCE_MKDIR=1 bash "$LOCKER" 5 >/dev/null 2>&1 &
+h1=$!
+sleep 0.3; t0=$SECONDS
+AFK_TEST_LOCK_PATH="$LP" AFK_TEST_LOCK_FORCE_MKDIR=1 AFK_TEST_LOCK_POLL_S=0.02 \
+  AFK_TEST_LOCK_TIMEOUT=2 bash "$LOCKER" 0 >"$TMPROOT/h10.out" 2>&1
+rc=$?; elapsed=$((SECONDS - t0)); kill "$h1" 2>/dev/null; wait "$h1" 2>/dev/null
+if (( rc == 3 )) && (( elapsed >= 2 && elapsed <= 4 )); then
+  ok "timeout is elapsed wall time, not poll-iteration count (${elapsed}s for TIMEOUT=2)"
+else
+  bad "timeout is elapsed wall time, not poll-iteration count" \
+    "rc=$rc elapsed=${elapsed}s out=$(cat "$TMPROOT/h10.out")"
+fi
 
 printf '\n\033[1m%d passed, %d failed\033[0m\n' "$PASS" "$FAIL"
 (( FAIL == 0 )) || exit 1

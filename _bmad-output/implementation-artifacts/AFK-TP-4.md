@@ -478,3 +478,82 @@ tests and two real bug fixes.
 after reading both first. The instruction was Edit-only; I'm flagging this
 rather than leaving it unmentioned. `tests/run-tests.sh` and
 `tests/lifecycle-mutation-tests.sh` were changed with Edit throughout.
+
+### Second post-review fix (delta re-review; rebase onto master ae29dd0)
+
+Rebased cleanly onto `origin/master` at `ae29dd0` (`git fetch && git rebase
+origin/master`; one conflict, in the `tests/run-tests.sh` section list where
+#78 added sections 21-24 for the four Paperclip suites in the old inline
+`if/then/bash "$script"/else` style — resolved by converting each to the same
+one-line `run_gate "<label>" "<script>"` call as the other 15 gates, keeping
+the section numbering contiguous (Paperclip now 21-24, the lock gate moved to
+25). Their child launches close the lock fd automatically since `run_gate`
+itself does that (`bash "$script" {AFK_TEST_LOCK_FD}<&- 2>&1`) — no
+Paperclip-specific change was needed for that part. `tests/suite-lock.sh` was
+already in the section-0 shellcheck list from the prior fix.
+
+**MAJOR — empty-pid permanent hang.** A holder killed between winning
+`mkdir "$lockdir.d"` and writing its pid leaves a directory with a live
+mkdir but no pid file. The dead-pid staleness check (`[[ -n "$ownerpid" ]]`)
+never fires on an empty pid, so with the default `AFK_TEST_LOCK_TIMEOUT=0`
+every future waiter blocks forever. Fixed in `tests/suite-lock.sh`: a
+directory with no pid file whose mtime is older than
+`AFK_TEST_LOCK_EMPTY_GRACE_S` (default 30s) is now reclaimable, under the
+same second-mkdir mutex as the dead-pid path, re-confirming under that mutex
+that the directory is STILL empty and STILL that old before deleting — the
+same "observe, then re-check under the mutex" shape as the dead-pid fix.
+Portable mtime via a new `afk_test_lock_mtime()` (`stat -c %Y`, falling back
+to `stat -f %m` for BSD/macOS), guarded so a `stat` failure (empty result)
+never enters the arithmetic comparison.
+
+**MINOR — timeout counted poll iterations, not elapsed time.** The mkdir
+fallback's timeout compared a `waited` counter (incremented once per poll) to
+`AFK_TEST_LOCK_TIMEOUT`, so with a short `AFK_TEST_LOCK_POLL_S` (as the
+contention test uses) the "timeout" fired almost immediately instead of after
+the declared number of seconds. Fixed by capturing `wait_start=$SECONDS` once
+per `afk_test_lock_acquire` call and comparing `SECONDS - wait_start` against
+the declared timeout — real elapsed wall time regardless of poll granularity.
+
+**New tests in `tests/runner-lock-tests.sh`:**
+- Test 9a: an empty mkdir'd directory backdated past the grace period
+  (`touch -d @<epoch>`, with a `date -r`-based fallback for non-GNU `touch`)
+  is reclaimed.
+- Test 9b: a FRESH empty directory (mtime now, within the default 30s grace)
+  is NOT reclaimed — a 1s-timeout acquirer against it must time out, not
+  succeed.
+- Test 10: `AFK_TEST_LOCK_POLL_S=0.02` with `AFK_TEST_LOCK_TIMEOUT=2` against
+  a live mkdir-fallback holder takes ~2s (asserted `2 <= elapsed <= 4`), not
+  ~0.28s (14 polls x 0.02s) — proving the fix is elapsed time, not a count.
+
+**A real, unrelated bug found and fixed while chasing test flakiness.**
+Verifying the above, `tests/runner-lock-tests.sh` intermittently (roughly
+1-in-4 to 1-in-6 runs) cascaded into 8-11 failures, all "No such file or
+directory" under `$TMPROOT` from test 7 onward. Root cause: bash subshells
+inherit the parent's `EXIT` trap, and this file's dead-pid simulation used
+`( sleep 30 ) & deadpid=$!; kill "$deadpid"` — if the external `kill` arrived
+before the subshell executed anything of its own (a real race under load,
+confirmed empirically: `BASHPID` differed from `$$`, `BASH_SUBSHELL=1`), the
+subshell's inherited `EXIT` trap fired on the signal, running
+`rm -rf "$TMPROOT"` **while the main script was still using it**, corrupting
+every test from that point on. Fixed by removing the kill/signal race
+entirely: `( trap '' EXIT; exit 0 ) & deadpid=$!; wait "$deadpid"` — the
+subshell disables its own inherited trap as its very first statement and then
+exits on its own (no external signal to race against), giving a definitely-
+dead pid with no chance of firing the inherited trap. Verified: reproduced the
+cascade via a debug copy tracing `$$`/`$BASHPID`/`$BASH_SUBSHELL` on every
+trap firing (confirmed a `BASH_SUBSHELL=1` firing before the real one); after
+the fix, 0 failures in 30 consecutive runs (was ~5/30 before). Also widened
+tests 5 and 6's timing tolerance from `elapsed < 1` to `elapsed < 2` — an
+unrelated, pre-existing, load-dependent flake from `$SECONDS`'s 1-second
+granularity landing exactly on a boundary, surfaced by the same verification
+sweep.
+
+**Verification:** `tests/runner-lock-tests.sh` — 0 failures across 30
+consecutive standalone runs (11 passed / 0 failed each), plus the earlier
+single-run confirmations. The four Paperclip suites pass standalone:
+`paperclip-poll-tests.sh` 204/0, `paperclip-pm-registry-tests.sh` 65/0,
+`paperclip-pm-start-tests.sh` 53/0, `paperclip-report-tests.sh` 45/0.
+shellcheck (`-s bash`) clean on `tests/run-tests.sh`,
+`tests/runner-lock-tests.sh`, `tests/suite-lock.sh`. `git diff --check`
+clean. `bash -n tests/run-tests.sh` clean. The full suite was **not** run,
+per instruction — the PM will give a slot after TP-3 and PC-4 finish.
