@@ -636,6 +636,9 @@ afk_lock_evaluate_settled() {
 # established at all; 3 a lock exists whose owner cannot be judged.
 afk_lock_acquire() {
   local attempt=0 rc
+  # Nothing resolved or parsed before the lock is trusted under it (AD-20).
+  afk_boundary_memo_clear
+  ! declare -F afk_manifest_map_invalidate >/dev/null || afk_manifest_map_invalidate
   AFK_LOCK_RECLAIMED="false"; AFK_LOCK_RECLAIMED_DETAILS=""
   [[ -n "${AFK_LOCK_DIR:-}" && -n "${AFK_STATE_DIR:-}" ]] || return 2
   afk_state_dir_ensure "$AFK_STATE_DIR" || return 2
@@ -950,6 +953,7 @@ afk_op_created_dir() {
 afk_remove_created_scaffold() {
   local d
   [[ -n "$AFK_OP_CREATED_DIRS" ]] || return 0
+  afk_boundary_memo_clear
   while IFS= read -r d; do
     [[ -n "$d" ]] || continue
     [[ -d "$d" && ! -L "$d" ]] || continue
@@ -1353,6 +1357,7 @@ afk_build_manifest_json() { # <applied-revision>
 # target revision, never a half-written mixture of the two.
 afk_manifest_commit() { # <manifest-json>
   [[ -n "$AFK_MANIFEST" ]] || return 1
+  ! declare -F afk_manifest_map_invalidate >/dev/null || afk_manifest_map_invalidate
   afk_state_file_write "$AFK_MANIFEST" "$1" || return 1
   return 0
 }

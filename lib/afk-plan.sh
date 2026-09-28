@@ -184,18 +184,18 @@ afk_observe_component() { # <declared row>
     *)    AFK_OB_WANT="file" ;;
   esac
 
-  AFK_OB_GUARD="$(afk_path_guard "$dpath" "$AFK_OB_WANT" "$target_root" "$container")"
-  AFK_OB_APPLIED="$(afk_manifest_component_identity "$id")"
+  afk_path_guard_v AFK_OB_GUARD "$dpath" "$AFK_OB_WANT" "$target_root" "$container"
+  afk_manifest_component_identity_v AFK_OB_APPLIED "$id"
 
   # The canonical side is read whether or not the destination is safe: a plan
   # has to be able to say "this is what the target would be" even when it also
   # has to say "and this destination cannot be touched".
   case "$ownership" in
     MANAGED_COPY_TREE) AFK_OB_CANONICAL="$(afk_tree_identity "$AFK_KIT_ROOT/$srel" "$extra")" ;;
-    MANAGED_COPY_FILE) AFK_OB_CANONICAL="$(afk_sha256_file "$AFK_KIT_ROOT/$srel")" ;;
+    MANAGED_COPY_FILE) afk_sha256_file_v AFK_OB_CANONICAL "$AFK_KIT_ROOT/$srel" ;;
     MANAGED_SECTION)   AFK_OB_CANONICAL="$(afk_file_payload_identity "$AFK_KIT_ROOT/$srel")" ;;
     MANAGED_LINK)
-      if resolved="$(afk_realpath "$extra")"; then AFK_OB_CANONICAL="link:$resolved"; fi ;;
+      if afk_realpath_v resolved "$extra"; then AFK_OB_CANONICAL="link:$resolved"; fi ;;
     *) AFK_OB_CANONICAL="" ;;
   esac
 
@@ -210,7 +210,7 @@ afk_observe_component() { # <declared row>
         AFK_OB_OBSERVED="$(afk_tree_identity "$dpath" "$extra")"
       fi ;;
     MANAGED_COPY_FILE|MACHINE_LOCAL)
-      AFK_OB_OBSERVED="$(afk_sha256_file "$dpath")" ;;
+      afk_sha256_file_v AFK_OB_OBSERVED "$dpath" ;;
     MANAGED_SECTION)
       AFK_OB_OBSERVED="$(afk_section_identity "$dpath" "$extra")"
       rc=$?
@@ -219,7 +219,7 @@ afk_observe_component() { # <declared row>
     MANAGED_LINK)
       if [[ ! -e "$dpath" ]]; then
         AFK_OB_OBSERVED=""
-      elif resolved="$(afk_realpath "$dpath")"; then
+      elif afk_realpath_v resolved "$dpath"; then
         AFK_OB_OBSERVED="link:$resolved"
       fi ;;
   esac
@@ -314,7 +314,12 @@ afk_plan_binding_compute() {
     [[ -n "$row" ]] || continue
     afk_observe_component "$row"
     afk_observation_capture
-    entry="$(jq -nc \
+    # One jq per binding document, not per entry (AD-20); the jq form stays
+    # for any value afk_json_record does not take.
+    afk_json_record entry component s "$AFK_OB_ID" path_observation s "$AFK_OB_GUARD" \
+      observed_identity n "$AFK_OB_OBSERVED" canonical_identity n "$AFK_OB_CANONICAL" \
+      applied_identity n "$AFK_OB_APPLIED" containment_escape n "$AFK_OB_ESCAPE" \
+      section_status s "$AFK_OB_SECTION_RC" || entry="$(jq -nc \
       --arg component "$AFK_OB_ID" \
       --arg guard "$AFK_OB_GUARD" \
       --arg observed "$AFK_OB_OBSERVED" \
