@@ -47,6 +47,16 @@ unset AGENT_ROUTER_URL AGENT_ROUTER_TOKEN AGENT_ROUTER_TOKEN_ENV \
 # unset environment a bare shell would.
 unset AFK_ORCA_BIN ORCA_CLI_COMMAND
 
+# Preflight: a stray "${TMPDIR:-/tmp}/.git" (seen on this host, unrelated to
+# this suite) makes fixtures created under it look like they're inside a real
+# Git checkout, breaking "non-Git source" / gates_log_dir_for / dispatch
+# gateway assertions in confusing ways far from this line. Loud warning only —
+# never fails the gate, since it may be none of this run's business to remove.
+if [[ -e "${TMPDIR:-/tmp}/.git" ]]; then
+  printf '\033[33m!! WARNING: %s exists — fixtures built under it may look like a Git checkout and break unrelated assertions\033[0m\n' \
+    "${TMPDIR:-/tmp}/.git" >&2
+fi
+
 KIT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DISPATCH="$KIT_ROOT/files/model-router/scripts/dispatch.sh"
 MAKE_STAMP="$KIT_ROOT/files/model-router/scripts/make-stamp.sh"
@@ -55,7 +65,36 @@ GH_HEALTH="$KIT_ROOT/files/model-router/scripts/github-health.sh"
 CLAUDE_EVIDENCE_VERIFY="$KIT_ROOT/files/model-router/scripts/verify-claude-evidence.sh"
 CLAUDE_EVIDENCE_TESTS="$KIT_ROOT/tests/claude-evidence-tests.sh"
 
-TMPROOT="$(mktemp -d)"; trap 'rm -rf "$TMPROOT"' EXIT
+# AFK-TP-4 AC-1: a host-wide lock so two full runs on one VM never overlap.
+# The algorithm is shared verbatim with lifecycle-mutation-tests.sh and
+# runner-lock-tests.sh via tests/suite-lock.sh (each runs as its own `bash`
+# process, so it can't be sourced across them any other way).
+# shellcheck source=tests/suite-lock.sh
+source "$KIT_ROOT/tests/suite-lock.sh"
+afk_test_lock_acquire; AFK_TEST_LOCK_RC=$?
+(( AFK_TEST_LOCK_RC != 0 )) && exit "$AFK_TEST_LOCK_RC"
+
+# AC-2 (AD-18): each child suite's wall time next to its ok/bad line, plus the
+# total at the end. A warning never changes the exit code.
+GATE_SUITE_BUDGET_S=240
+GATE_TOTAL_BUDGET_S=720
+run_gate() { # <friendly label> <script path>
+  local label="$1" script="$2" t0=$SECONDS out elapsed
+  if [[ ! -f "$script" ]]; then bad "$label present" "missing: $script"; return; fi
+  if out="$(bash "$script" {AFK_TEST_LOCK_FD}<&- 2>&1)"; then
+    elapsed=$((SECONDS - t0))
+    ok "$label: $(tail -1 <<<"$out") (${elapsed}s)"
+  else
+    elapsed=$((SECONDS - t0))
+    bad "$label (${elapsed}s)" "$(tail -1 <<<"$out")"
+    printf '%s\n' "$out" | tail -40
+  fi
+  (( elapsed > GATE_SUITE_BUDGET_S )) &&
+    printf '  \033[33mBUDGET\033[0m %s took %ss (over the %ss single-suite budget)\n' \
+      "$label" "$elapsed" "$GATE_SUITE_BUDGET_S"
+}
+
+TMPROOT="$(mktemp -d)"; trap 'rm -rf "$TMPROOT"; afk_test_lock_release' EXIT
 WORK_OLD="$TMPROOT/old"
 
 PASS=0 FAIL=0 SKIPPED=0
@@ -187,7 +226,9 @@ SC_SCRIPTS=("$DISPATCH" "$MAKE_STAMP" "$USAGE_CHECK" "$GH_HEALTH" \
             "$KIT_ROOT/tests/session-gate-contract-tests.sh" \
             "$KIT_ROOT/tests/auto-update-enroll-tests.sh" \
             "$KIT_ROOT/tests/catalog-sync-tests.sh" \
-            "$KIT_ROOT/tests/dispatch-secret-scan-tests.sh")
+            "$KIT_ROOT/tests/dispatch-secret-scan-tests.sh" \
+            "$KIT_ROOT/tests/runner-lock-tests.sh" \
+            "$KIT_ROOT/tests/suite-lock.sh")
 # The lifecycle surface. Checked at warning level and above, with two codes
 # excluded for a structural reason rather than a stylistic one: the lifecycle
 # files are always sourced together and share one result model, so a variable
@@ -1071,7 +1112,7 @@ run_dispatch() { # run_dispatch <story> [cycle] -> echoes exit code, stderr to $
       AGENT_FLOW_GATEWAY_TOKEN_REF="${STUB_TOKEN_REF-op://stubvault/agw-claude-code/credential}" \
       AGENT_FLOW_OP_ENV_FILE="${STUB_OP_ENV_FILE-$WORK/op-env}" \
       CLAUDE_CONFIG_DIR="" \
-      bash "$DISPATCH" "$1" "${2:-1}" ) >"$WORK/out" 2>"$WORK/err"
+      bash "$DISPATCH" "$1" "${2:-1}" ) >"$WORK/out" 2>"$WORK/err" {AFK_TEST_LOCK_FD}<&-
   echo $?
 }
 
@@ -1368,7 +1409,7 @@ out_rc="$( cd "$WT" && PATH="$BIN:$PATH" HOME="$HOME_DIR" \
     AGENT_DIR="" AGENT_FLOW_APPROVED_HOME="" AGENT_FLOW_APPROVED_PATH="" \
     AGENT_ROUTER_URL="https://router.invalid" AGENT_ROUTER_TOKEN=t \
     AGENT_FLOW_LAUNCH_TIMEOUT=20 CLAUDE_CONFIG_DIR="/somewhere/else" \
-    bash "$DISPATCH" s-vendor.md 1 >/dev/null 2>"$WORK/err"; echo $? )"
+    bash "$DISPATCH" s-vendor.md 1 >/dev/null 2>"$WORK/err" {AFK_TEST_LOCK_FD}<&-; echo $? )"
 assert_eq "non-default CLAUDE_CONFIG_DIR -> fails closed" "$out_rc" "2"
 assert_contains "CLAUDE_CONFIG_DIR: named as unsupported" "$(cat "$WORK/err")" "unsupported"
 
@@ -3582,17 +3623,7 @@ head1 "6. Lifecycle gate — tests/lifecycle-tests.sh"
 # is surfaced rather than buried — including the case where it fails without
 # reaching a single assertion.
 
-LIFECYCLE_TESTS="$KIT_ROOT/tests/lifecycle-tests.sh"
-if [[ -f "$LIFECYCLE_TESTS" ]]; then
-  if lifecycle_out="$(bash "$LIFECYCLE_TESTS" 2>&1)"; then
-    ok "lifecycle gate: $(tail -1 <<<"$lifecycle_out")"
-  else
-    bad "lifecycle gate" "$(tail -1 <<<"$lifecycle_out")"
-    printf '%s\n' "$lifecycle_out" | tail -40
-  fi
-else
-  bad "lifecycle gate present" "missing: $LIFECYCLE_TESTS"
-fi
+run_gate "lifecycle gate" "$KIT_ROOT/tests/lifecycle-tests.sh"
 
 # ===========================================================================
 head1 "7. Lifecycle mutation gate — tests/lifecycle-mutation-tests.sh"
@@ -3603,17 +3634,7 @@ head1 "7. Lifecycle mutation gate — tests/lifecycle-mutation-tests.sh"
 # under mktemp. It is aggregated here for the same reason and in the same way:
 # its own process, its output tail surfaced on failure.
 
-MUTATION_TESTS="$KIT_ROOT/tests/lifecycle-mutation-tests.sh"
-if [[ -f "$MUTATION_TESTS" ]]; then
-  if mutation_out="$(bash "$MUTATION_TESTS" 2>&1)"; then
-    ok "lifecycle mutation gate: $(tail -1 <<<"$mutation_out")"
-  else
-    bad "lifecycle mutation gate" "$(tail -1 <<<"$mutation_out")"
-    printf '%s\n' "$mutation_out" | tail -40
-  fi
-else
-  bad "lifecycle mutation gate present" "missing: $MUTATION_TESTS"
-fi
+run_gate "lifecycle mutation gate" "$KIT_ROOT/tests/lifecycle-mutation-tests.sh"
 
 # ===========================================================================
 head1 "8. Lifecycle concurrency gate — tests/lifecycle-concurrency-tests.sh"
@@ -3624,17 +3645,7 @@ head1 "8. Lifecycle concurrency gate — tests/lifecycle-concurrency-tests.sh"
 # reclamation and release boundaries deliberately. Aggregated the same way as
 # the other two: its own process, its output tail surfaced on failure.
 
-CONCURRENCY_TESTS="$KIT_ROOT/tests/lifecycle-concurrency-tests.sh"
-if [[ -f "$CONCURRENCY_TESTS" ]]; then
-  if concurrency_out="$(bash "$CONCURRENCY_TESTS" 2>&1)"; then
-    ok "lifecycle concurrency gate: $(tail -1 <<<"$concurrency_out")"
-  else
-    bad "lifecycle concurrency gate" "$(tail -1 <<<"$concurrency_out")"
-    printf '%s\n' "$concurrency_out" | tail -40
-  fi
-else
-  bad "lifecycle concurrency gate present" "missing: $CONCURRENCY_TESTS"
-fi
+run_gate "lifecycle concurrency gate" "$KIT_ROOT/tests/lifecycle-concurrency-tests.sh"
 
 # ===========================================================================
 head1 "9. Lifecycle readiness gate — tests/lifecycle-readiness-tests.sh"
@@ -3647,17 +3658,7 @@ head1 "9. Lifecycle readiness gate — tests/lifecycle-readiness-tests.sh"
 # Aggregated the same way as the other three: its own process, its output tail
 # surfaced on failure.
 
-READINESS_TESTS="$KIT_ROOT/tests/lifecycle-readiness-tests.sh"
-if [[ -f "$READINESS_TESTS" ]]; then
-  if readiness_out="$(bash "$READINESS_TESTS" 2>&1)"; then
-    ok "lifecycle readiness gate: $(tail -1 <<<"$readiness_out")"
-  else
-    bad "lifecycle readiness gate" "$(tail -1 <<<"$readiness_out")"
-    printf '%s\n' "$readiness_out" | tail -40
-  fi
-else
-  bad "lifecycle readiness gate present" "missing: $READINESS_TESTS"
-fi
+run_gate "lifecycle readiness gate" "$KIT_ROOT/tests/lifecycle-readiness-tests.sh"
 
 # ===========================================================================
 head1 "10. Lifecycle dispatch gate — tests/lifecycle-dispatch-tests.sh"
@@ -3669,107 +3670,37 @@ head1 "10. Lifecycle dispatch gate — tests/lifecycle-dispatch-tests.sh"
 # cannot prove it created. Real local Git repositories, a stubbed Orca, no
 # network. Aggregated the same way as the other four.
 
-DISPATCH_TESTS="$KIT_ROOT/tests/lifecycle-dispatch-tests.sh"
-if [[ -f "$DISPATCH_TESTS" ]]; then
-  if dispatch_out="$(bash "$DISPATCH_TESTS" 2>&1)"; then
-    ok "lifecycle dispatch gate: $(tail -1 <<<"$dispatch_out")"
-  else
-    bad "lifecycle dispatch gate" "$(tail -1 <<<"$dispatch_out")"
-    printf '%s\n' "$dispatch_out" | tail -40
-  fi
-else
-  bad "lifecycle dispatch gate present" "missing: $DISPATCH_TESTS"
-fi
+run_gate "lifecycle dispatch gate" "$KIT_ROOT/tests/lifecycle-dispatch-tests.sh"
 
 # ===========================================================================
 head1 "11. AFK runtime experience gate"
 # ===========================================================================
-RUNTIME_TESTS="$KIT_ROOT/tests/runtime-experience-tests.sh"
-if [[ -f "$RUNTIME_TESTS" ]]; then
-  if runtime_out="$(bash "$RUNTIME_TESTS" 2>&1)"; then
-    ok "runtime experience gate: $(tail -1 <<<"$runtime_out")"
-  else
-    bad "runtime experience gate" "$(tail -1 <<<"$runtime_out")"
-    printf '%s\n' "$runtime_out" | tail -40
-  fi
-else
-  bad "runtime experience gate present" "missing: $RUNTIME_TESTS"
-fi
+run_gate "runtime experience gate" "$KIT_ROOT/tests/runtime-experience-tests.sh"
 
 # ===========================================================================
 head1 "12. Orca-visible status gate"
 # ===========================================================================
-VISIBLE_STATUS_TESTS="$KIT_ROOT/tests/orca-visible-status-tests.sh"
-if [[ -f "$VISIBLE_STATUS_TESTS" ]]; then
-  if visible_status_out="$(bash "$VISIBLE_STATUS_TESTS" 2>&1)"; then
-    ok "Orca-visible status gate: $(tail -1 <<<"$visible_status_out")"
-  else
-    bad "Orca-visible status gate" "$(tail -1 <<<"$visible_status_out")"
-    printf '%s\n' "$visible_status_out" | tail -40
-  fi
-else
-  bad "Orca-visible status gate present" "missing: $VISIBLE_STATUS_TESTS"
-fi
+run_gate "Orca-visible status gate" "$KIT_ROOT/tests/orca-visible-status-tests.sh"
 
 # ===========================================================================
 head1 "13. Worker memory and continuation gate"
 # ===========================================================================
-WORKER_MEMORY_TESTS="$KIT_ROOT/tests/worker-memory-continuity-tests.sh"
-if [[ -f "$WORKER_MEMORY_TESTS" ]]; then
-  if worker_memory_out="$(bash "$WORKER_MEMORY_TESTS" 2>&1)"; then
-    ok "worker memory and continuation gate: $(tail -1 <<<"$worker_memory_out")"
-  else
-    bad "worker memory and continuation gate" "$(tail -1 <<<"$worker_memory_out")"
-    printf '%s\n' "$worker_memory_out" | tail -40
-  fi
-else
-  bad "worker memory and continuation gate present" "missing: $WORKER_MEMORY_TESTS"
-fi
+run_gate "worker memory and continuation gate" "$KIT_ROOT/tests/worker-memory-continuity-tests.sh"
 
 # ===========================================================================
 head1 "14. Release update gate"
 # ===========================================================================
-RELEASE_UPDATE_TESTS="$KIT_ROOT/tests/release-update-tests.sh"
-if [[ -f "$RELEASE_UPDATE_TESTS" ]]; then
-  if release_update_out="$(bash "$RELEASE_UPDATE_TESTS" 2>&1)"; then
-    ok "release update gate: $(tail -1 <<<"$release_update_out")"
-  else
-    bad "release update gate" "$(tail -1 <<<"$release_update_out")"
-    printf '%s\n' "$release_update_out" | tail -40
-  fi
-else
-  bad "release update gate present" "missing: $RELEASE_UPDATE_TESTS"
-fi
+run_gate "release update gate" "$KIT_ROOT/tests/release-update-tests.sh"
 
 # ===========================================================================
 head1 "15. Harness session-start integration gate"
 # ===========================================================================
-SESSION_START_TESTS="$KIT_ROOT/tests/session-start-integration-tests.sh"
-if [[ -f "$SESSION_START_TESTS" ]]; then
-  if session_start_out="$(bash "$SESSION_START_TESTS" 2>&1)"; then
-    ok "harness session-start integration gate: $(tail -1 <<<"$session_start_out")"
-  else
-    bad "harness session-start integration gate" "$(tail -1 <<<"$session_start_out")"
-    printf '%s\n' "$session_start_out" | tail -40
-  fi
-else
-  bad "harness session-start integration gate present" "missing: $SESSION_START_TESTS"
-fi
+run_gate "harness session-start integration gate" "$KIT_ROOT/tests/session-start-integration-tests.sh"
 
 # ===========================================================================
 head1 "16. Native worker/PM pressure integration gate"
 # ===========================================================================
-WORKER_PRESSURE_TESTS="$KIT_ROOT/tests/worker-pressure-integration-tests.sh"
-if [[ -f "$WORKER_PRESSURE_TESTS" ]]; then
-  if worker_pressure_out="$(bash "$WORKER_PRESSURE_TESTS" 2>&1)"; then
-    ok "native worker/PM pressure gate: $(tail -1 <<<"$worker_pressure_out")"
-  else
-    bad "native worker/PM pressure gate" "$(tail -1 <<<"$worker_pressure_out")"
-    printf '%s\n' "$worker_pressure_out" | tail -40
-  fi
-else
-  bad "native worker/PM pressure gate present" "missing: $WORKER_PRESSURE_TESTS"
-fi
+run_gate "native worker/PM pressure gate" "$KIT_ROOT/tests/worker-pressure-integration-tests.sh"
 
 # ===========================================================================
 head1 "17. Modular runtime contract gates"
@@ -3781,16 +3712,7 @@ for modular_gate in \
   "$KIT_ROOT/tests/release-reconciler-contract-tests.sh" \
   "$KIT_ROOT/tests/release-support-contract-tests.sh" \
   "$KIT_ROOT/tests/session-gate-contract-tests.sh"; do
-  if [[ -f "$modular_gate" ]]; then
-    if modular_out="$(bash "$modular_gate" 2>&1)"; then
-      ok "modular runtime gate: $(basename "$modular_gate"): $(tail -1 <<<"$modular_out")"
-    else
-      bad "modular runtime gate: $(basename "$modular_gate")" "$(tail -1 <<<"$modular_out")"
-      printf '%s\n' "$modular_out" | tail -40
-    fi
-  else
-    bad "modular runtime gate present" "missing: $modular_gate"
-  fi
+  run_gate "modular runtime gate: $(basename "$modular_gate")" "$modular_gate"
 done
 
 # ===========================================================================
@@ -3801,17 +3723,7 @@ head1 "18. Usage-report gate — tests/lifecycle-usage-tests.sh"
 # same way as the other lifecycle gates: its own process, its output tail
 # surfaced on failure.
 
-USAGE_TESTS="$KIT_ROOT/tests/lifecycle-usage-tests.sh"
-if [[ -f "$USAGE_TESTS" ]]; then
-  if usage_out="$(bash "$USAGE_TESTS" 2>&1)"; then
-    ok "usage-report gate: $(tail -1 <<<"$usage_out")"
-  else
-    bad "usage-report gate" "$(tail -1 <<<"$usage_out")"
-    printf '%s\n' "$usage_out" | tail -40
-  fi
-else
-  bad "usage-report gate present" "missing: $USAGE_TESTS"
-fi
+run_gate "usage-report gate" "$KIT_ROOT/tests/lifecycle-usage-tests.sh"
 
 # ===========================================================================
 head1 "19. Auto-update enrollment gate — tests/auto-update-enroll-tests.sh"
@@ -3819,17 +3731,7 @@ head1 "19. Auto-update enrollment gate — tests/auto-update-enroll-tests.sh"
 # `agent-flow-kit enroll-auto-update` (lib/afk-auto-update.sh): stubbed op,
 # ssh-keygen, systemctl, loginctl, launchctl and git; no network.
 
-ENROLL_TESTS="$KIT_ROOT/tests/auto-update-enroll-tests.sh"
-if [[ -f "$ENROLL_TESTS" ]]; then
-  if enroll_out="$(bash "$ENROLL_TESTS" 2>&1)"; then
-    ok "auto-update enrollment gate: $(tail -1 <<<"$enroll_out")"
-  else
-    bad "auto-update enrollment gate" "$(tail -1 <<<"$enroll_out")"
-    printf '%s\n' "$enroll_out" | tail -40
-  fi
-else
-  bad "auto-update enrollment gate present" "missing: $ENROLL_TESTS"
-fi
+run_gate "auto-update enrollment gate" "$KIT_ROOT/tests/auto-update-enroll-tests.sh"
 
 # ===========================================================================
 head1 "20. Trusted catalog sync gate — tests/catalog-sync-tests.sh"
@@ -3837,17 +3739,7 @@ head1 "20. Trusted catalog sync gate — tests/catalog-sync-tests.sh"
 # `catalog-sync` (lib/afk-catalog-sync.sh) and the catalog resolution order:
 # stubbed git ls-remote and curl serving a fixture manifest; no network.
 
-CATALOG_TESTS="$KIT_ROOT/tests/catalog-sync-tests.sh"
-if [[ -f "$CATALOG_TESTS" ]]; then
-  if catalog_out="$(bash "$CATALOG_TESTS" 2>&1)"; then
-    ok "trusted catalog sync gate: $(tail -1 <<<"$catalog_out")"
-  else
-    bad "trusted catalog sync gate" "$(tail -1 <<<"$catalog_out")"
-    printf '%s\n' "$catalog_out" | tail -40
-  fi
-else
-  bad "trusted catalog sync gate present" "missing: $CATALOG_TESTS"
-fi
+run_gate "trusted catalog sync gate" "$KIT_ROOT/tests/catalog-sync-tests.sh"
 
 # ===========================================================================
 head1 "21. Paperclip poll gate — tests/paperclip-poll-tests.sh"
@@ -3857,17 +3749,7 @@ head1 "21. Paperclip poll gate — tests/paperclip-poll-tests.sh"
 # same as everything else after merge, at the cost of roughly +1-1.5 min
 # serial (offset by TP-2's fork-free helpers).
 
-POLL_TESTS="$KIT_ROOT/tests/paperclip-poll-tests.sh"
-if [[ -f "$POLL_TESTS" ]]; then
-  if poll_out="$(bash "$POLL_TESTS" 2>&1)"; then
-    ok "paperclip poll gate: $(tail -1 <<<"$poll_out")"
-  else
-    bad "paperclip poll gate" "$(tail -1 <<<"$poll_out")"
-    printf '%s\n' "$poll_out" | tail -40
-  fi
-else
-  bad "paperclip poll gate present" "missing: $POLL_TESTS"
-fi
+run_gate "paperclip poll gate" "$KIT_ROOT/tests/paperclip-poll-tests.sh"
 
 # ===========================================================================
 head1 "22. Paperclip PM registry gate — tests/paperclip-pm-registry-tests.sh"
@@ -3875,17 +3757,7 @@ head1 "22. Paperclip PM registry gate — tests/paperclip-pm-registry-tests.sh"
 # `pm-registry-lookup`/`pm-start`/`pm-registry-reap` (lib/afk-pm-registry.sh):
 # no network, no real Orca.
 
-REGISTRY_TESTS="$KIT_ROOT/tests/paperclip-pm-registry-tests.sh"
-if [[ -f "$REGISTRY_TESTS" ]]; then
-  if registry_out="$(bash "$REGISTRY_TESTS" 2>&1)"; then
-    ok "paperclip pm-registry gate: $(tail -1 <<<"$registry_out")"
-  else
-    bad "paperclip pm-registry gate" "$(tail -1 <<<"$registry_out")"
-    printf '%s\n' "$registry_out" | tail -40
-  fi
-else
-  bad "paperclip pm-registry gate present" "missing: $REGISTRY_TESTS"
-fi
+run_gate "paperclip pm-registry gate" "$KIT_ROOT/tests/paperclip-pm-registry-tests.sh"
 
 # ===========================================================================
 head1 "23. Paperclip PM start gate — tests/paperclip-pm-start-tests.sh"
@@ -3893,17 +3765,7 @@ head1 "23. Paperclip PM start gate — tests/paperclip-pm-start-tests.sh"
 # AFK-PC-2b's PM-start classification (lib/afk-paperclip-start.sh) and
 # `paperclip-timer`: no network, no real harness, no real systemd unit.
 
-PM_START_TESTS="$KIT_ROOT/tests/paperclip-pm-start-tests.sh"
-if [[ -f "$PM_START_TESTS" ]]; then
-  if pm_start_out="$(bash "$PM_START_TESTS" 2>&1)"; then
-    ok "paperclip pm-start gate: $(tail -1 <<<"$pm_start_out")"
-  else
-    bad "paperclip pm-start gate" "$(tail -1 <<<"$pm_start_out")"
-    printf '%s\n' "$pm_start_out" | tail -40
-  fi
-else
-  bad "paperclip pm-start gate present" "missing: $PM_START_TESTS"
-fi
+run_gate "paperclip pm-start gate" "$KIT_ROOT/tests/paperclip-pm-start-tests.sh"
 
 # ===========================================================================
 head1 "24. Paperclip report gate — tests/paperclip-report-tests.sh"
@@ -3912,19 +3774,22 @@ head1 "24. Paperclip report gate — tests/paperclip-report-tests.sh"
 # way to write to Paperclip. No network; a real temp git repo stands in for
 # the issue's project repo.
 
-REPORT_TESTS="$KIT_ROOT/tests/paperclip-report-tests.sh"
-if [[ -f "$REPORT_TESTS" ]]; then
-  if report_out="$(bash "$REPORT_TESTS" 2>&1)"; then
-    ok "paperclip report gate: $(tail -1 <<<"$report_out")"
-  else
-    bad "paperclip report gate" "$(tail -1 <<<"$report_out")"
-    printf '%s\n' "$report_out" | tail -40
-  fi
-else
-  bad "paperclip report gate present" "missing: $REPORT_TESTS"
-fi
+run_gate "paperclip report gate" "$KIT_ROOT/tests/paperclip-report-tests.sh"
 
 # ===========================================================================
+head1 "25. Test-suite lock gate — tests/runner-lock-tests.sh"
+# ===========================================================================
+# AFK-TP-4 AC-3: the lock mechanism's own hermetic gate, using its own lock
+# path so it never contends with the real lock this run already holds.
+run_gate "test-suite lock gate" "$KIT_ROOT/tests/runner-lock-tests.sh"
+
+# ===========================================================================
+# AC-2: total wall time, with a BUDGET warning (never a failure) over 720s.
+printf '\ntotal wall time: %ss\n' "$SECONDS"
+(( SECONDS > GATE_TOTAL_BUDGET_S )) &&
+  printf '\033[33mBUDGET\033[0m total run took %ss (over the %ss total budget)\n' \
+    "$SECONDS" "$GATE_TOTAL_BUDGET_S"
+
 if (( SKIPPED > 0 )); then
   printf '\n\033[1m%d passed, %d failed, %d skipped\033[0m\n' "$PASS" "$FAIL" "$SKIPPED"
   printf '\033[33mskipped checks computed no verdict — they are not passes\033[0m\n'

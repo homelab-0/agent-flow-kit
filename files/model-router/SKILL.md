@@ -169,6 +169,15 @@ payload_refs:
 ---
 ```
 
+**Every story's template also carries a `Test runtime impact:` line**, right
+under its title, before the Epic line: the seconds a story adds to or removes
+from the gates, and which suite. PM planning check (AD-18): a story projected
+to add more than 60s of gate time needs either a stated reason in that line or
+an offsetting saving named in the same story or a companion one — an unstated
+60s+ addition is a planning gap, not a nitpick. `run-tests.sh` reports each
+suite's actual wall time and the run's total against a BUDGET warning at
+dispatch time, so drift from what the story projected shows up immediately.
+
 There is no `route:` block any more, and no `local_gpu:` pre-assessment.
 dispatch.sh refuses a story that still carries a `route:` block rather than
 silently ignoring it, because a stale local route block that looks authoritative
