@@ -39,6 +39,13 @@ AFK_LIVE_VALIDATOR_BIN="${AGENT_STAMP_VALIDATE:-}"
 AFK_LIVE_CATALOG_PATH="${AGENT_STAMP_VALIDATE_CATALOG_PATH:-}"
 unset AGENT_ROUTER_URL AGENT_ROUTER_TOKEN AGENT_ROUTER_TOKEN_ENV \
       AGENT_STAMP_VALIDATE AGENT_STAMP_VALIDATE_CATALOG_PATH
+# AC-3: an inherited AFK_ORCA_BIN/ORCA_CLI_COMMAND (e.g. AFK_ORCA_BIN=orca-ide
+# in a PM's own shell) makes a child suite's PATH-stubbed `orca` a no-op —
+# ${AFK_ORCA_BIN:-orca} resolves to the inherited name instead of the stub,
+# and the suite calls the real Orca (381 passed / 38 failed on master
+# 41ee163, found in the HC-2A c2 gate). Every child suite must see the same
+# unset environment a bare shell would.
+unset AFK_ORCA_BIN ORCA_CLI_COMMAND
 
 KIT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DISPATCH="$KIT_ROOT/files/model-router/scripts/dispatch.sh"
@@ -66,6 +73,19 @@ assert_contains() { if [[ "$2" == *"$3"* ]]; then ok "$1"; else bad "$1" "missin
 assert_absent()   { if [[ "$2" != *"$3"* ]]; then ok "$1"; else bad "$1" "should NOT contain: $3"; fi; }
 assert_no_file()    { if [[ -f "$2" ]]; then bad "$1" "file exists: $2"; else ok "$1"; fi; }
 assert_empty_file() { if [[ -s "$2" ]]; then bad "$1" "non-empty: $2"; else ok "$1"; fi; }
+
+# AC-3 regression (#59/HC-2A c2): with AFK_ORCA_BIN=orca-ide inherited from a
+# caller (a dispatch gate, a PM's own shell), lifecycle-dispatch-tests.sh's
+# PATH-stubbed `orca` never matches, and the suite reaches the real Orca
+# instead (381 passed / 38 failed on master 41ee163). The unset above must
+# hold in THIS process, and a fresh child launched from here must never see
+# either variable regardless of what run-tests.sh's own caller had set.
+assert_eq "AC-3: AFK_ORCA_BIN is unset in this process before any child launches" \
+  "${AFK_ORCA_BIN:-<unset>}" "<unset>"
+assert_eq "AC-3: ORCA_CLI_COMMAND is unset in this process before any child launches" \
+  "${ORCA_CLI_COMMAND:-<unset>}" "<unset>"
+assert_eq "AC-3: a child process launched from here inherits neither variable" \
+  "$(bash -c 'printf "%s:%s" "${AFK_ORCA_BIN:-CLEAN}" "${ORCA_CLI_COMMAND:-CLEAN}"')" "CLEAN:CLEAN"
 
 # ===========================================================================
 head1 "0. shellcheck — every script the kit ships"
@@ -210,6 +230,23 @@ head1 "1. Pure builders (dispatch.sh sourced, main() not run)"
 
 # shellcheck source=/dev/null
 source "$DISPATCH"
+# AC-1: dispatch.sh sets its OWN `set -euo pipefail`, and sourcing (as opposed
+# to running it as a subprocess) makes that leak into THIS shell permanently:
+# every bare `x="$(cmd)"` assignment below whose command or pipeline can
+# legitimately return non-zero (a grep that finds nothing, for instance) would
+# otherwise silently kill the whole script the first time it does — with no
+# error message, since errexit doesn't print one, and the failing command's
+# own exit code as the script's final one. The rest of this file, before and
+# after this line, is written assuming `-e` is off; restore that.
+set +o errexit
+
+# AC-1 regression: a later bare command substitution whose command matches
+# nothing (rc=1) must not abort the rest of this script now that errexit is
+# contained above. If it did, this assertion — and everything after it,
+# including the final summary line — would never run at all.
+AFK_RT1A_NO_MATCH="$(printf 'no-match-here\n' | grep -E 'definitely-absent-pattern' | tail -1)"
+assert_eq "AC-1: a later non-matching grep does not abort the runner (errexit contained)" \
+  "${AFK_RT1A_NO_MATCH:-<ran-to-completion>}" "<ran-to-completion>"
 
 # --- effort: the closed set, validated fail-closed -------------------------
 for e in low medium high xhigh; do
