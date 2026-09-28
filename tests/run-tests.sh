@@ -202,10 +202,11 @@ SC_LIFECYCLE=("$KIT_ROOT/bin/agent-flow-kit" "$KIT_ROOT/lib/afk-common.sh" \
               "$KIT_ROOT/lib/afk-auto-update.sh" "$KIT_ROOT/lib/afk-catalog-sync.sh" "$KIT_ROOT/lib/afk-paperclip.sh" \
               "$KIT_ROOT/lib/afk-pm-registry.sh" \
               "$KIT_ROOT/lib/afk-paperclip-report.sh" "$KIT_ROOT/lib/afk-paperclip-plan.sh" \
-              "$KIT_ROOT/lib/afk-paperclip-start.sh" \
+              "$KIT_ROOT/lib/afk-paperclip-start.sh" "$KIT_ROOT/lib/afk-accept.sh" \
               "$KIT_ROOT/tests/lockctl-helper.sh" "$KIT_ROOT/tests/paperclip-poll-tests.sh" \
               "$KIT_ROOT/tests/paperclip-pm-registry-tests.sh" "$KIT_ROOT/tests/paperclip-report-tests.sh" \
-              "$KIT_ROOT/tests/paperclip-pm-start-tests.sh" "$KIT_ROOT/tests/paperclip-plan-tests.sh")
+              "$KIT_ROOT/tests/paperclip-pm-start-tests.sh" "$KIT_ROOT/tests/paperclip-plan-tests.sh" \
+              "$KIT_ROOT/tests/paperclip-accept-tests.sh")
 
 if (( ${#SC_CMD[@]} > 0 )); then
   ok "shellcheck runs here: ${SC_CMD[0]} ${SC_VERSION:-(version not reported)}"
