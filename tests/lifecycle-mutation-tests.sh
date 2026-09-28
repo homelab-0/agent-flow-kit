@@ -29,50 +29,11 @@ CONTRACT_DOC="$KIT_ROOT/docs/LIFECYCLE-CONTRACT.md"
 # AFK-TP-4 AC-1: same host-wide suite lock as tests/run-tests.sh, so a
 # standalone run of this suite still excludes other full runs. Skipped via
 # AFK_TEST_LOCK_NESTED=1 when run-tests.sh launched this as its child suite
-# (it already holds the lock) or via AFK_TEST_LOCK=off for CI runners.
-AFK_TEST_LOCK_MKDIR=""
-afk_test_lock_acquire() {
-  [[ "${AFK_TEST_LOCK:-}" == "off" || "${AFK_TEST_LOCK_NESTED:-}" == "1" ]] && return 0
-  local lockdir="${AFK_TEST_LOCK_PATH:-${XDG_RUNTIME_DIR:-/tmp}/agent-flow-kit-test-suite.lock}"
-  local timeout="${AFK_TEST_LOCK_TIMEOUT:-0}" waited=0 ownerpid printed=0
-  local mine; mine="pid=$$ cwd=$PWD start=$(date -u +%FT%TZ)"
-  if [[ "${AFK_TEST_LOCK_FORCE_MKDIR:-}" != "1" ]] && command -v flock >/dev/null 2>&1; then
-    exec {AFK_TEST_LOCK_FD}<>"$lockdir"
-    if ! flock -n "$AFK_TEST_LOCK_FD" 2>/dev/null; then
-      printf 'waiting on suite lock, held by: %s\n' "$(cat "$lockdir" 2>/dev/null || echo unknown)"
-      if (( timeout > 0 )); then
-        flock -w "$timeout" "$AFK_TEST_LOCK_FD" 2>/dev/null ||
-          { printf 'suite lock wait timed out after %ss\n' "$timeout" >&2; return 3; }
-      else
-        flock "$AFK_TEST_LOCK_FD"
-      fi
-    fi
-    printf '%s\n' "$mine" >"$lockdir"
-  else
-    while ! mkdir "$lockdir.d" 2>/dev/null; do
-      ownerpid="$(cat "$lockdir.d/pid" 2>/dev/null || true)"
-      if [[ -n "$ownerpid" ]] && ! kill -0 "$ownerpid" 2>/dev/null; then
-        if mkdir "$lockdir.d.reclaim" 2>/dev/null; then
-          rm -rf "$lockdir.d"; rmdir "$lockdir.d.reclaim"
-        fi
-        continue
-      fi
-      if (( printed == 0 )); then
-        printf 'waiting on suite lock, held by: %s\n' "$(cat "$lockdir.d/holder" 2>/dev/null || echo unknown)"
-        printed=1
-      fi
-      (( timeout > 0 && waited >= timeout )) &&
-        { printf 'suite lock wait timed out after %ss\n' "$timeout" >&2; return 3; }
-      sleep 1; waited=$((waited + 1))
-    done
-    echo "$$" >"$lockdir.d/pid"
-    printf '%s\n' "$mine" >"$lockdir.d/holder"
-    AFK_TEST_LOCK_MKDIR="$lockdir.d"
-  fi
-  export AFK_TEST_LOCK_NESTED=1
-  return 0
-}
-afk_test_lock_release() { [[ -n "$AFK_TEST_LOCK_MKDIR" ]] && rm -rf "$AFK_TEST_LOCK_MKDIR"; }
+# (it already holds the lock) or via AFK_TEST_LOCK=off for CI runners. The
+# algorithm is shared verbatim via tests/suite-lock.sh (each of these gates
+# runs as its own `bash` process, so it can't be sourced any other way).
+# shellcheck source=tests/suite-lock.sh
+source "$KIT_ROOT/tests/suite-lock.sh"
 afk_test_lock_acquire; AFK_TEST_LOCK_RC=$?
 (( AFK_TEST_LOCK_RC != 0 )) && exit "$AFK_TEST_LOCK_RC"
 

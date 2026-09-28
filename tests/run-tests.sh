@@ -66,56 +66,11 @@ CLAUDE_EVIDENCE_VERIFY="$KIT_ROOT/files/model-router/scripts/verify-claude-evide
 CLAUDE_EVIDENCE_TESTS="$KIT_ROOT/tests/claude-evidence-tests.sh"
 
 # AFK-TP-4 AC-1: a host-wide lock so two full runs on one VM never overlap.
-# `flock` where available; a race-safe `mkdir` fallback (stale-pid reclaim via
-# a second, contended mkdir) where it isn't. AFK_TEST_LOCK_NESTED=1 is set
-# once held so a child suite this script launches (section 7) does not take
-# it again; AFK_TEST_LOCK=off bypasses it for CI; AFK_TEST_LOCK_TIMEOUT bounds
-# the wait (exit 3). AFK_TEST_LOCK_PATH overrides the path for hermetic tests.
-AFK_TEST_LOCK_MKDIR=""
-afk_test_lock_acquire() {
-  [[ "${AFK_TEST_LOCK:-}" == "off" || "${AFK_TEST_LOCK_NESTED:-}" == "1" ]] && return 0
-  local lockdir="${AFK_TEST_LOCK_PATH:-${XDG_RUNTIME_DIR:-/tmp}/agent-flow-kit-test-suite.lock}"
-  local timeout="${AFK_TEST_LOCK_TIMEOUT:-0}" waited=0 ownerpid printed=0
-  local mine; mine="pid=$$ cwd=$PWD start=$(date -u +%FT%TZ)"
-  if [[ "${AFK_TEST_LOCK_FORCE_MKDIR:-}" != "1" ]] && command -v flock >/dev/null 2>&1; then
-    exec {AFK_TEST_LOCK_FD}<>"$lockdir"
-    if ! flock -n "$AFK_TEST_LOCK_FD" 2>/dev/null; then
-      printf 'waiting on suite lock, held by: %s\n' "$(cat "$lockdir" 2>/dev/null || echo unknown)"
-      if (( timeout > 0 )); then
-        flock -w "$timeout" "$AFK_TEST_LOCK_FD" 2>/dev/null ||
-          { printf 'suite lock wait timed out after %ss\n' "$timeout" >&2; return 3; }
-      else
-        flock "$AFK_TEST_LOCK_FD"
-      fi
-    fi
-    printf '%s\n' "$mine" >"$lockdir"
-  else
-    while ! mkdir "$lockdir.d" 2>/dev/null; do
-      ownerpid="$(cat "$lockdir.d/pid" 2>/dev/null || true)"
-      if [[ -n "$ownerpid" ]] && ! kill -0 "$ownerpid" 2>/dev/null; then
-        # Stale: only the process that wins this second, contended mkdir may
-        # reclaim, so two waiters racing here never both delete/recreate it.
-        if mkdir "$lockdir.d.reclaim" 2>/dev/null; then
-          rm -rf "$lockdir.d"; rmdir "$lockdir.d.reclaim"
-        fi
-        continue
-      fi
-      if (( printed == 0 )); then
-        printf 'waiting on suite lock, held by: %s\n' "$(cat "$lockdir.d/holder" 2>/dev/null || echo unknown)"
-        printed=1
-      fi
-      (( timeout > 0 && waited >= timeout )) &&
-        { printf 'suite lock wait timed out after %ss\n' "$timeout" >&2; return 3; }
-      sleep 1; waited=$((waited + 1))
-    done
-    echo "$$" >"$lockdir.d/pid"
-    printf '%s\n' "$mine" >"$lockdir.d/holder"
-    AFK_TEST_LOCK_MKDIR="$lockdir.d"
-  fi
-  export AFK_TEST_LOCK_NESTED=1
-  return 0
-}
-afk_test_lock_release() { [[ -n "$AFK_TEST_LOCK_MKDIR" ]] && rm -rf "$AFK_TEST_LOCK_MKDIR"; }
+# The algorithm is shared verbatim with lifecycle-mutation-tests.sh and
+# runner-lock-tests.sh via tests/suite-lock.sh (each runs as its own `bash`
+# process, so it can't be sourced across them any other way).
+# shellcheck source=tests/suite-lock.sh
+source "$KIT_ROOT/tests/suite-lock.sh"
 afk_test_lock_acquire; AFK_TEST_LOCK_RC=$?
 (( AFK_TEST_LOCK_RC != 0 )) && exit "$AFK_TEST_LOCK_RC"
 
@@ -126,7 +81,7 @@ GATE_TOTAL_BUDGET_S=720
 run_gate() { # <friendly label> <script path>
   local label="$1" script="$2" t0=$SECONDS out elapsed
   if [[ ! -f "$script" ]]; then bad "$label present" "missing: $script"; return; fi
-  if out="$(bash "$script" 2>&1)"; then
+  if out="$(bash "$script" {AFK_TEST_LOCK_FD}<&- 2>&1)"; then
     elapsed=$((SECONDS - t0))
     ok "$label: $(tail -1 <<<"$out") (${elapsed}s)"
   else
@@ -272,7 +227,8 @@ SC_SCRIPTS=("$DISPATCH" "$MAKE_STAMP" "$USAGE_CHECK" "$GH_HEALTH" \
             "$KIT_ROOT/tests/auto-update-enroll-tests.sh" \
             "$KIT_ROOT/tests/catalog-sync-tests.sh" \
             "$KIT_ROOT/tests/dispatch-secret-scan-tests.sh" \
-            "$KIT_ROOT/tests/runner-lock-tests.sh")
+            "$KIT_ROOT/tests/runner-lock-tests.sh" \
+            "$KIT_ROOT/tests/suite-lock.sh")
 # The lifecycle surface. Checked at warning level and above, with two codes
 # excluded for a structural reason rather than a stylistic one: the lifecycle
 # files are always sourced together and share one result model, so a variable
@@ -1156,7 +1112,7 @@ run_dispatch() { # run_dispatch <story> [cycle] -> echoes exit code, stderr to $
       AGENT_FLOW_GATEWAY_TOKEN_REF="${STUB_TOKEN_REF-op://stubvault/agw-claude-code/credential}" \
       AGENT_FLOW_OP_ENV_FILE="${STUB_OP_ENV_FILE-$WORK/op-env}" \
       CLAUDE_CONFIG_DIR="" \
-      bash "$DISPATCH" "$1" "${2:-1}" ) >"$WORK/out" 2>"$WORK/err"
+      bash "$DISPATCH" "$1" "${2:-1}" ) >"$WORK/out" 2>"$WORK/err" {AFK_TEST_LOCK_FD}<&-
   echo $?
 }
 
@@ -1453,7 +1409,7 @@ out_rc="$( cd "$WT" && PATH="$BIN:$PATH" HOME="$HOME_DIR" \
     AGENT_DIR="" AGENT_FLOW_APPROVED_HOME="" AGENT_FLOW_APPROVED_PATH="" \
     AGENT_ROUTER_URL="https://router.invalid" AGENT_ROUTER_TOKEN=t \
     AGENT_FLOW_LAUNCH_TIMEOUT=20 CLAUDE_CONFIG_DIR="/somewhere/else" \
-    bash "$DISPATCH" s-vendor.md 1 >/dev/null 2>"$WORK/err"; echo $? )"
+    bash "$DISPATCH" s-vendor.md 1 >/dev/null 2>"$WORK/err" {AFK_TEST_LOCK_FD}<&-; echo $? )"
 assert_eq "non-default CLAUDE_CONFIG_DIR -> fails closed" "$out_rc" "2"
 assert_contains "CLAUDE_CONFIG_DIR: named as unsupported" "$(cat "$WORK/err")" "unsupported"
 
