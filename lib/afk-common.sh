@@ -1067,10 +1067,16 @@ afk_reason_impact() { # <severity>
 # plain printable ASCII, where \" and \\ are the whole escaping job. Anything
 # else (a control character, any non-ASCII byte) returns 1 and the caller
 # builds that record with its jq, exactly as before.
+#
+# Contract: a `j` value must already be JSON produced by this same function
+# (or another trusted jq build) — it is inserted verbatim, unvalidated. Keys
+# must be trusted literals written by the caller, never data; this function
+# only guards that a key looks like an identifier, it never escapes one.
 afk_json_record() {
   local _jr_var="$1" _jr_out="" _jr_x _jr_v
   shift
   while (( $# >= 3 )); do
+    [[ "$1" =~ ^[A-Za-z0-9_]+$ ]] || return 1
     _jr_v="${3//\\/\\\\}"; _jr_v="${_jr_v//\"/\\\"}"
     case "$2" in
       s) _jr_x="\"$_jr_v\"" ;;

@@ -26,6 +26,12 @@
 #   AFK_EQUIV_KEEP=<dir>        keep every raw output there
 # Exit:  0 all identical, 1 any difference.
 
+if [[ -z "${BASH_VERSINFO:-}" || "${BASH_VERSINFO[0]}" -lt 5 ]]; then
+  printf 'primitive-equivalence-tests.sh requires bash 5+, found %s\n' \
+    "${BASH_VERSION:-unknown}" >&2
+  exit 2
+fi
+
 set -uo pipefail
 unset AFK_ORCA_BIN ORCA_CLI_COMMAND AGENT_ROUTER_URL AGENT_ROUTER_TOKEN \
       AGENT_STAMP_VALIDATE_CATALOG_PATH AFK_LIB_DIR AFK_HASH_FORCE_PORTABLE CDPATH
