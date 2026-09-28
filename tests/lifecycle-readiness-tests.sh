@@ -1457,6 +1457,13 @@ head1 "9. The coordinator's own context budget (Story 1.5 lane D)"
 # shellcheck source=../lib/afk-monitor.sh
 . "$KIT_ROOT/lib/afk-monitor.sh"
 
+# AC-2: this section never called new_scenario itself — it relied on whichever
+# section ran immediately before it leaving HOMEDIR/CHECKOUT set, so it only
+# passed because everything runs in order. It now builds its own scenario
+# (bare, like section 1's — run_afk works unadopted), so it passes when run
+# first or on its own too.
+new_scenario pmbudget
+
 BAD=0
 while IFS= read -r code; do
   [[ -n "$(afk_pm_reason_message "$code")" && -n "$(afk_pm_reason_action "$code")" ]] || BAD=$((BAD + 1))
