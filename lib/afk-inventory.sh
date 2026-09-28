@@ -212,7 +212,8 @@ afk_emit_manifest_findings() {
 # AFK_MANIFEST_JSON rebuilds it, and the lock and every manifest write drop it
 # explicitly. The map holds only what the per-call lookup below would answer.
 # A manifest the lookup would ERROR on (a non-object where an object is
-# indexed), or one holding a NUL, is never mapped: those keep the per-call jq,
+# indexed), one holding a NUL, or text that is not exactly one JSON document
+# is never mapped: those keep the per-call jq,
 # so its stderr and empty answer are exactly what they always were.
 AFK_MANIFEST_MAP_SRC="" AFK_MANIFEST_MAP_STATE="none"
 AFK_MANIFEST_MAP_KEYS=() AFK_MANIFEST_MAP_VALS=()
@@ -222,8 +223,11 @@ afk_manifest_map_build() {
   local code
   AFK_MANIFEST_MAP_KEYS=(); AFK_MANIFEST_MAP_VALS=()
   AFK_MANIFEST_MAP_SRC="$AFK_MANIFEST_JSON"; AFK_MANIFEST_MAP_STATE="unmapped"
-  code="$(printf '%s' "$AFK_MANIFEST_JSON" | jq -r '
-    .components as $c
+  # Slurped, and mapped only when the text is exactly ONE document: the
+  # per-call jq answers once per document, so anything else keeps it.
+  code="$(printf '%s' "$AFK_MANIFEST_JSON" | jq -rs '
+    if length != 1 then empty else .[0] end
+    | .components as $c
     | if ($c | type) == "null" then "AFK_MANIFEST_MAP_KEYS=()", "AFK_MANIFEST_MAP_VALS=()"
       elif (($c | type) == "object") and all($c[]; type == "object" or type == "null")
          and ([$c | keys_unsorted[], (.[] | .identity? | strings)] | all(index("\u0000") == null))
@@ -260,7 +264,20 @@ afk_manifest_component_identity_v() {
 
 afk_manifest_component_identity() { # <id>
   local v
-  afk_manifest_component_identity_v v "$1"
+  if [[ "$AFK_MANIFEST_MAP_STATE" == "none" || "$AFK_MANIFEST_MAP_SRC" != "$AFK_MANIFEST_JSON" ]]; then
+    afk_manifest_map_build
+  fi
+  if [[ "$AFK_MANIFEST_MAP_STATE" != "mapped" ]]; then
+    # Unmapped: the per-call jq prints (and exits) exactly as it always did.
+    printf '%s' "$AFK_MANIFEST_JSON" | jq -r --arg id "$1" \
+      'if (.components[$id].identity | type) == "string" then .components[$id].identity else "" end'
+    return
+  fi
+  local i
+  v=""   # the raw value, trailing newlines included, as `jq -r` prints it
+  for (( i = 0; i < ${#AFK_MANIFEST_MAP_KEYS[@]}; i++ )); do
+    [[ "${AFK_MANIFEST_MAP_KEYS[i]}" == "$1" ]] && { v="${AFK_MANIFEST_MAP_VALS[i]}"; break; }
+  done
   printf '%s\n' "$v"
 }
 

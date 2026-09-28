@@ -19,7 +19,8 @@
 # standalone tool, not part of tests/run-tests.sh.
 #
 # Usage: tests/primitive-equivalence-tests.sh
-#   AFK_EQUIV_BASE=<ref>        baseline (default HEAD)
+#   AFK_EQUIV_BASE=<ref>        baseline (default: merge-base with origin/master;
+#                               a baseline identical to the candidate FAILS)
 #   AFK_EQUIV_ONLY="a b"        only these fixtures ("none": primitives only)
 #   AFK_EQUIV_VERBS="status"    only these verbs (status verify plan adopt update)
 #   AFK_EQUIV_KEEP=<dir>        keep every raw output there
@@ -30,7 +31,8 @@ unset AFK_ORCA_BIN ORCA_CLI_COMMAND AGENT_ROUTER_URL AGENT_ROUTER_TOKEN \
       AGENT_STAMP_VALIDATE_CATALOG_PATH AFK_LIB_DIR AFK_HASH_FORCE_PORTABLE CDPATH
 
 KIT_ROOT="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
-BASE="${AFK_EQUIV_BASE:-HEAD}"
+BASE="${AFK_EQUIV_BASE:-$(git -C "$KIT_ROOT" merge-base HEAD origin/master 2>/dev/null)}"
+[[ -n "$BASE" ]] || { printf 'no baseline: set AFK_EQUIV_BASE (no merge-base with origin/master)\n' >&2; exit 1; }
 FIXTURES="${AFK_EQUIV_ONLY:-installed clean ahead drift redirect missing unreadable}"
 VERBS="${AFK_EQUIV_VERBS:-status verify plan adopt update}"
 
@@ -57,6 +59,12 @@ cp -R "$KIT_ROOT/bin/." "$TMPROOT/k-candidate/bin/"
 cp -R "$KIT_ROOT/lib/." "$TMPROOT/k-candidate/lib/"
 printf 'baseline %s (%s) vs working tree %s\n' "$BASE" \
   "$(git -C "$KIT_ROOT" rev-parse --short "$BASE")" "$KIT_ROOT"
+# Comparing a tree with itself proves nothing, so it is a failure, not a pass.
+if diff -rq "$TMPROOT/k-baseline/lib" "$TMPROOT/k-candidate/lib" >/dev/null &&
+   diff -rq "$TMPROOT/k-baseline/bin" "$TMPROOT/k-candidate/bin" >/dev/null; then
+  printf '  \033[31mFAIL\033[0m baseline bin/ and lib/ are identical to the candidate: nothing is compared\n'
+  exit 1
+fi
 
 # --- fixtures (the shapes of tests/lifecycle-mutation-tests.sh) -------------
 
@@ -218,10 +226,10 @@ TREES=("$U/t" "$U/t2" "$U/big" "$U/odd" "$U/locked" "$U/d/sub" "$U/nl"$'\n' "$U/
 EXCLS=("" sub "sub/b.txt,x" "a," "," ",," $'a\nsub' "sub/" "su" "a,,sub" '*' "sub,rel,abs")
 mkdir "$U/empty"
 
-unit_transcript() { # <afk-common.sh> [portable]
+unit_transcript() { # <lib-dir> [portable]
   ( cd "$U" && U="$U" AFK_HASH_FORCE_PORTABLE="${2:-}" bash -c '
     set -uo pipefail
-    . "$1"; shift
+    . "$1/afk-common.sh"; . "$1/afk-inventory.sh"; shift
     q() { local o rc; o="$("$@" 2>/dev/null)"; rc=$?; printf "%s|%q\n" "$rc" "$o"; }
     n=$1; shift; paths=("${@:1:n}"); shift "$n"
     n=$1; shift; bounds=("${@:1:n}"); shift "$n"
@@ -241,6 +249,24 @@ unit_transcript() { # <afk-common.sh> [portable]
     # below runs against a warm memo (the baseline has none) and must agree.
     for b in "${bounds[@]}" "$U/d/sub"; do afk_path_guard "$U/d/f" file "$b" "$b" >/dev/null; done
     for p in "${paths[@]:0:16}"; do guards "$p"; done
+    # A boundary symlink repointed, then removed, after the memo was warmed:
+    # the baseline re-resolves every time, so the memo must too.
+    ln -sfn "$U/t" "$U/bl"; afk_path_guard "$U/t/a" file "$U/bl" "" >/dev/null
+    q afk_path_guard "$U/t/a" file "$U/bl" ""
+    ln -sfn "$U/d" "$U/bl"; q afk_path_guard "$U/t/a" file "$U/bl" ""
+    rm -f "$U/bl"; q afk_path_guard "$U/t/a" file "$U/bl" ""
+    # The recorded identity, per manifest text, called in THIS shell so the
+    # map is built once and reused for every id (the baseline has no map).
+    for m in "{\"components\":{\"a\":{\"identity\":\"x\"},\"b\":{\"identity\":7},\"c\":null,\"q'\''\":{\"identity\":\"sq\"}}}" \
+             "{\"components\":{\"a\":{\"identity\":\"x\"}}} {\"components\":{\"a\":{\"identity\":\"y\"}}}" \
+             "" null "[]" "\"s\"" "{\"components\":[1]}" "{\"components\":{\"a\":\"str\"}}" \
+             "{\"components\":{\"a\":{\"identity\":\"x\\n\\n\"}}}" "{\"components\":{\"a\":{\"identity\":\"x\\u0000y\"}}}" \
+             "{\"components\":{\"a\":{\"identity\":\"1\"},\"a\":{\"identity\":\"2\"}}}" "{\"components\":{}}" "{}"; do
+      AFK_MANIFEST_JSON="$m"
+      for id in a b c "q'\''" z ""; do
+        afk_manifest_component_identity "$id" 2>/dev/null; printf "rc=%s\n" "$?"
+      done
+    done
     for t in "${trees[@]}"; do
       q afk_tree_find_escaping_symlink "$t"
       for e in "${excls[@]}"; do q afk_tree_identity "$t" "$e"; done
@@ -252,16 +278,33 @@ unit_transcript() { # <afk-common.sh> [portable]
 }
 
 printf '\n\033[1mprimitives (direct calls)\033[0m\n'
-U_OLD="$(unit_transcript "$TMPROOT/k-baseline/lib/afk-common.sh")"
+U_OLD="$(unit_transcript "$TMPROOT/k-baseline/lib")"
 if [[ "$U_OLD" != *$'\nEND' ]] || (( $(wc -l <<<"$U_OLD") < 4000 )); then
   bad "primitive driver ran to completion" "$(tail -3 <<<"$U_OLD")"
 fi
 for mode in "" 1; do
   label="primitives${mode:+ (portable hashing)}: $(wc -l <<<"$U_OLD") results identical"
-  if d="$(diff <(printf '%s\n' "$U_OLD") <(unit_transcript "$KIT_ROOT/lib/afk-common.sh" "$mode"))"; then
+  # Both sides go through the same $(…) capture, so bytes it cannot hold (a
+  # NUL) are dropped identically instead of reading as a difference.
+  U_NEW="$(unit_transcript "$KIT_ROOT/lib" "$mode")"
+  if d="$(diff <(printf '%s\n' "$U_OLD") <(printf '%s\n' "$U_NEW"))"; then
     ok "$label"; else bad "$label" "$d"; fi
 done
 chmod 755 "$U/t2/closed"
+
+# Candidate only: taking the lock drops the boundary memo and the manifest map
+# (the baseline has neither), so every check under the lock resolves again.
+LOCK_CASE="$(bash -c 'set -uo pipefail
+  for l in common source inventory commands plan mutate; do . "$1/afk-$l.sh"; done
+  AFK_STATE_DIR="$2/lock-state"; AFK_LOCK_DIR="$2/lock-state/lock"
+  afk_path_guard "$2/t/a" file "$2/t" "" >/dev/null
+  AFK_MANIFEST_JSON="{}"; afk_manifest_component_identity x >/dev/null
+  before="${#AFK_BOUNDARY_MEMO_KEYS[@]} $AFK_MANIFEST_MAP_STATE"
+  afk_lock_acquire; rc=$?
+  printf "%s|%s|%s %s" "$before" "$rc" "${#AFK_BOUNDARY_MEMO_KEYS[@]}" "$AFK_MANIFEST_MAP_STATE"
+  afk_lock_release' _ "$KIT_ROOT/lib" "$U" 2>&1)"
+if [[ "$LOCK_CASE" == "1 mapped|0|0 none" ]]; then ok "afk_lock_acquire drops the boundary memo and the manifest map"
+else bad "afk_lock_acquire drops the boundary memo and the manifest map" "$LOCK_CASE"; fi
 
 TIMES="$TMPROOT/times"
 for fx in $FIXTURES; do

@@ -366,11 +366,11 @@ afk_is_within() { # <child> <root>
 #
 # A boundary is one of 2–3 fixed directories, so a SUCCESSFUL resolution of an
 # absolute declared boundary is memoized for the process (AD-20). A failure is
-# never memoized, a hit is used only while it is still a directory, and the
-# memo is dropped at every lock acquisition (afk_lock_acquire) and whenever the
-# lifecycle removes directories, so every check under the lock resolves again.
-# (Parallel indexed arrays, not an associative one: a sourced lib must still
-# load under the bash 3.2 some tests use to call a single primitive.)
+# never memoized, a hit is used only while the declared path still names that
+# same directory (-ef), and the memo is dropped at every lock acquisition
+# (afk_lock_acquire) and whenever the lifecycle removes directories, so every
+# check under the lock resolves again. (Parallel indexed arrays rather than an
+# associative one keep this code free of declare -A.)
 AFK_BOUNDARY_MEMO_KEYS=() AFK_BOUNDARY_MEMO_VALS=()
 afk_boundary_memo_clear() { AFK_BOUNDARY_MEMO_KEYS=(); AFK_BOUNDARY_MEMO_VALS=(); }
 
@@ -380,7 +380,9 @@ afk_resolve_boundary_v() { # <var> <declared-boundary>
     for (( _ri = 0; _ri < ${#AFK_BOUNDARY_MEMO_KEYS[@]}; _ri++ )); do
       [[ "${AFK_BOUNDARY_MEMO_KEYS[_ri]}" == "$2" ]] || continue
       _rb="${AFK_BOUNDARY_MEMO_VALS[_ri]}"
-      if [[ -d "$_rb" ]]; then printf -v "$1" '%s' "$_rb"; return 0; fi
+      # Still the same directory the declared path names? A boundary that was
+      # repointed or removed since is resolved again, never answered stale.
+      if [[ -d "$_rb" && -d "$2" && "$2" -ef "$_rb" ]]; then printf -v "$1" '%s' "$_rb"; return 0; fi
     done
   fi
   afk_realpath_v _rb "$2" && [[ -d "$_rb" ]] || { printf -v "$1" '%s' ""; return 1; }
