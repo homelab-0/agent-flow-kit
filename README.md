@@ -53,7 +53,15 @@ qualification contract, see [`docs/RUNTIME-EXPERIENCE.md`](docs/RUNTIME-EXPERIEN
   - `scripts/github-health.sh` — platform-health gate (outage → hold, never batch)
 - `tests/run-tests.sh` — the aggregate gate: shellcheck, contract conformance,
   refusal-path proofs, and both lifecycle gates below. Runs offline with stubbed
-  orca/validator/router binaries; launches no harness.
+  orca/validator/router binaries; launches no harness. Before doing any work it
+  takes a host-wide lock (`${XDG_RUNTIME_DIR:-/tmp}/agent-flow-kit-test-suite.lock`,
+  `AFK_TEST_LOCK=off` to disable, `AFK_TEST_LOCK_TIMEOUT=<s>` to bound the wait) so
+  two full runs on one machine never overlap; it prints each child suite's wall
+  time and the run's total, with a `BUDGET` warning (never a failing exit) over
+  240s per suite or 720s total.
+- `tests/runner-lock-tests.sh` — hermetic gate for that lock: contention, the
+  printed holder line, the timeout, stale-lock reclaim, `AFK_TEST_LOCK=off`, and
+  the nested child not re-taking it.
 - `tests/lifecycle-tests.sh` — the read-only lifecycle gate: ownership, drift,
   adaptation, source eligibility, path/symlink refusal, redaction anti-vacuity,
   schema stability and exit semantics, all against throwaway homes and checkouts.
@@ -62,7 +70,8 @@ qualification contract, see [`docs/RUNTIME-EXPERIENCE.md`](docs/RUNTIME-EXPERIEN
   identity and approval invalidation, drift refusal, adaptation dispositions,
   symlink attack, concurrent mutation, backup/rollback, injected mid-operation
   failure, interruption recovery and idempotent no-op — every one of them in an
-  isolated temporary HOME.
+  isolated temporary HOME. Takes the same host-wide lock as `run-tests.sh` when
+  run standalone; skips it when launched as that script's child (already held).
 - `files/humanizer/` — prose de-AI-ification skill, REQUIRED for the PR language
   law (no AI attribution, no internal-methodology vocabulary in public text)
 - `files/claude-global-CLAUDE.md` — the policy layer to merge into a machine's
