@@ -222,7 +222,7 @@ wait_events "$TMP/open-events" 1 || true; sleep 0.15
 eq 'OpenCode compacting/compacted replay publishes once' "$(event_count "$TMP/open-events")" 1
 eq 'OpenCode event publishes CONTINUATION_REQUIRED' "$(jq -r .state "$TMP/open-events"/*.json)" CONTINUATION_REQUIRED
 
-if rg -n 'canonical_continuation_dispatch|--consume-context-event|terminal (create|close)|cat .*transcript|OPENAI_API_KEY|ANTHROPIC_API_KEY' "$ROOT/adapters/worker-context.sh" >/dev/null; then
+if grep -nE 'canonical_continuation_dispatch|--consume-context-event|terminal (create|close)|cat .*transcript|OPENAI_API_KEY|ANTHROPIC_API_KEY' "$ROOT/adapters/worker-context.sh" >/dev/null; then
   no 'worker event publisher has no launch/close/transcript/credential path'
 else
   ok 'worker event publisher has no launch/close/transcript/credential path'
