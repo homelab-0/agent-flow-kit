@@ -334,6 +334,7 @@ adopt_host() {
   if [[ "$RUN_RC" != "0" ]]; then
     bad "fixture: adopt established ownership" \
       "exit $RUN_RC: $(printf '%s' "$RUN_OUT" | jq -r '.operation.reason // "?"' 2>/dev/null)"
+    exit 1
   fi
 }
 
@@ -408,6 +409,11 @@ build_goldens() {
 
   adopt_host
   run_afk status --json
+  if [[ "$RUN_RC" != "0" || -z "$RUN_OUT" ]]; then
+    bad "fixture: golden adopted build-time status succeeded" \
+      "exit $RUN_RC: status --json produced no output to snapshot"
+    exit 1
+  fi
   GOLDEN_ADOPTED_STATUS="$RUN_OUT"
   git -C "$CHECKOUT" cat-file -e HEAD 2>/dev/null || \
     bad "fixture: golden adopted checkout resolves HEAD" "git objects did not copy whole"
@@ -418,6 +424,11 @@ build_goldens() {
   # build, once per suite, or the suite fails loudly before any scenario runs.
   restore_golden adopted
   run_afk status --json
+  if [[ "$RUN_RC" != "0" || -z "$RUN_OUT" ]]; then
+    bad "fixture: golden adopted restore self-check status succeeded" \
+      "exit $RUN_RC: status --json failed after a fresh restore, not just differed"
+    exit 1
+  fi
   if [[ "$RUN_OUT" != "$GOLDEN_ADOPTED_STATUS" ]]; then
     bad "fixture: golden adopted restore is byte-identical to the build" \
       "status --json differs after a fresh restore"
