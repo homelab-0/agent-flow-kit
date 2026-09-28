@@ -185,6 +185,28 @@ assert_eq "non-https api_url: non-zero exit" "$RC" "1"
 assert_eq "non-https api_url: no request made" "$(cat "$LOG" 2>/dev/null)" ""
 assert_contains "non-https api_url refused" "$OUT_TEXT" "PAPERCLIP_CONFIG_INVALID"
 
+new_scenario cfg_paperclip_commit_short_sha
+write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo)" '[$a]')"
+jq '.interim_comment_approval = {paperclip_commit: "4a1b2c3"}' "$CONFIG" >"$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
+run_afk
+assert_eq "short-SHA paperclip_commit: non-zero exit" "$RC" "1"
+assert_eq "short-SHA paperclip_commit: no request made" "$(cat "$LOG" 2>/dev/null)" ""
+assert_contains "short-SHA paperclip_commit refused" "$OUT_TEXT" "PAPERCLIP_CONFIG_INVALID"
+
+new_scenario cfg_paperclip_commit_uppercase
+write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo)" '[$a]')"
+jq '.interim_comment_approval = {paperclip_commit: "4A1B2C3D4E5F60718293A4B5C6D7E8F9A0B1C2D3"}' "$CONFIG" >"$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
+run_afk
+assert_contains "uppercase paperclip_commit refused" "$OUT_TEXT" "PAPERCLIP_CONFIG_INVALID"
+
+new_scenario cfg_paperclip_commit_valid
+write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo)" '[$a]')"
+jq '.interim_comment_approval = {paperclip_commit: "4a1b2c3d4e5f60718293a4b5c6d7e8f9a0b1c2d3"}' "$CONFIG" >"$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+route GET /api/agents/me/inbox-lite 200 "[]"
+run_afk
+assert_eq "valid 40-hex paperclip_commit: config accepted" "$RC" "0"
+
 # ============================================================================
 head1 "2. Key handling (AC-2)"
 # ============================================================================

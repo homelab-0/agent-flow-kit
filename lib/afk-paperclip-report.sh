@@ -36,24 +36,38 @@ afk_pcr_new_uuid() {
 
 # afk_pcr_lock <lockdir> -- the kit's portable mkdir lock (no flock), spun
 # rather than refused, so two concurrent writers serialize instead of racing.
-# Bounded so a genuinely stuck lock is a reported failure, never a hang.
-# A held lock is also released on EXIT, which the entry point's signal
-# handlers reach by exiting: an interrupted writer never strands the lock and
-# wedges every later write for the issue. The entry point's own EXIT handler
-# is chained, not replaced.
+# Bounded so a genuinely stuck lock is a reported failure, never a hang; a
+# retry that times out here never removes the lock -- only the staleness
+# check below (dead or reused holder PID) does that.
+#
+# AC-3: records its holder (PID plus command) the same way the poll lock has
+# since #74 (afk_pcs_lock_is_stale / afk_pcs_lock_stale_reap, lib/afk-
+# paperclip-start.sh), reused here rather than reinvented, with the holder
+# pattern set to this command instead of paperclip-poll. The reap itself is
+# already serialised there (a `.reap` sub-lock), so a live holder is never
+# touched by a concurrent reaper. Retried on a slower cadence than the mkdir
+# spin so a busy lock isn't stat(2)-hammered every 20 ms.
+AFK_PCR_LOCK_STALE_INTERVAL_SECONDS="${AFK_PCR_LOCK_STALE_INTERVAL_SECONDS:-30}"
 AFK_PCR_HELD_LOCK=""
 afk_pcr_lock() {
   local dir="$1" waited=0
   while ! mkdir "$dir" 2>/dev/null; do
+    if (( waited % 100 == 0 )) && declare -F afk_pcs_lock_stale_reap >/dev/null 2>&1 && \
+       afk_pcs_lock_stale_reap "$dir" "$AFK_PCR_LOCK_STALE_INTERVAL_SECONDS" "paperclip-report|paperclip-poll" && \
+       mkdir "$dir" 2>/dev/null; then
+      declare -F afk_warn >/dev/null 2>&1 && afk_warn "PAPERCLIP_LOCK_STALE: reaped a spool lock left by a dead writer"
+      break
+    fi
     sleep 0.02
     waited=$((waited + 1))
     (( waited > 500 )) && return 1
   done
   AFK_PCR_HELD_LOCK="$dir"
-  trap '[[ -n "$AFK_PCR_HELD_LOCK" ]] && rmdir "$AFK_PCR_HELD_LOCK" 2>/dev/null; declare -F afk_release_on_exit >/dev/null && afk_release_on_exit' EXIT
+  printf '%s %s\n' "$$" "$(date +%s)" >"$dir/owner" 2>/dev/null || true
+  trap '[[ -n "$AFK_PCR_HELD_LOCK" ]] && { rm -f "$AFK_PCR_HELD_LOCK/owner" 2>/dev/null; rmdir "$AFK_PCR_HELD_LOCK" 2>/dev/null; }; declare -F afk_release_on_exit >/dev/null && afk_release_on_exit' EXIT
   return 0
 }
-afk_pcr_unlock() { rmdir "$1" 2>/dev/null || true; AFK_PCR_HELD_LOCK=""; }
+afk_pcr_unlock() { rm -f "$1/owner" 2>/dev/null; rmdir "$1" 2>/dev/null || true; AFK_PCR_HELD_LOCK=""; }
 
 # afk_pcr_owner_repo <issue-id> -- sets AFK_PCR_REPO_PATH on success. Resolves
 # the project from the poller ledger, then the repo from the paperclip
@@ -93,40 +107,51 @@ afk_pcr_require_owner() {
 }
 
 # afk_pcr_body_read <path> -- sets AFK_PCR_BODY on success (never printed
-# elsewhere): at most 16 KiB on disk and valid UTF-8, read from a file, never
-# an argument. A direct call (never `$(...)`), for the same reason as above.
+# elsewhere): at most 16 KiB on disk, no embedded NUL, valid UTF-8, read from
+# a file, never an argument. A direct call (never `$(...)`), for the same
+# reason as above.
 #
-# Opens the path exactly once, then does every check (regular file, size,
-# UTF-8) and the content read against that one descriptor. A caller that can
-# replace the path between the initial `-f` check and the open (or race it
-# for a FIFO/device) cannot redirect what gets read or hang the command: the
-# descriptor is re-verified after the open, and the read below is bounded so
-# even a would-be device fd cannot block indefinitely.
+# The open, the regular-file re-check and the bounded read all happen inside
+# one `timeout`-bounded subshell, against one descriptor it opens exactly
+# once -- never the path again. This is what closes the window a plain `-f`
+# check followed by a separate `exec` cannot: a path swapped for a FIFO after
+# the initial check (or a FIFO racing back in) blocks the open() syscall
+# itself, not just the read, and only a wall-clock timeout around the whole
+# open+read recovers from that. `timeout` kills the subshell's process group
+# so a would-be blocked open or read never wedges the caller.
+AFK_PCR_BODY_READ_TIMEOUT="${AFK_PCR_BODY_READ_TIMEOUT:-5}"
 afk_pcr_body_read() {
-  local path="$1" fd size body
+  local path="$1" tmp size size_no_nul body bound=""
   AFK_PCR_BODY=""
+  # GNU timeout, or coreutils' gtimeout on macOS; with neither, the read
+  # cannot be bounded, so it is refused rather than risked unbounded.
+  if command -v timeout >/dev/null 2>&1; then bound=timeout
+  elif command -v gtimeout >/dev/null 2>&1; then bound=gtimeout
+  else AFK_PCR_REFUSAL="PAPERCLIP_BODY_UNREADABLE"; return 1
+  fi
   # A regular file only, checked by name first so an obviously bad path (a
   # FIFO already sitting there, a missing file) is refused without ever
   # opening it.
   [[ -n "$path" && -f "$path" && -r "$path" ]] || { AFK_PCR_REFUSAL="PAPERCLIP_BODY_UNREADABLE"; return 1; }
-  if ! exec {fd}<"$path" 2>/dev/null; then
+  tmp="$(mktemp 2>/dev/null)" || { AFK_PCR_REFUSAL="PAPERCLIP_BODY_UNREADABLE"; return 1; }
+  if ! "$bound" "$AFK_PCR_BODY_READ_TIMEOUT" bash -c '
+        exec {fd}<"$1" 2>/dev/null || exit 1
+        [[ -f "/dev/fd/$fd" ]] || exit 1
+        head -c 16385 <&"$fd"
+      ' _ "$path" >"$tmp" 2>/dev/null; then
+    rm -f -- "$tmp"
     AFK_PCR_REFUSAL="PAPERCLIP_BODY_UNREADABLE"; return 1
   fi
-  # Re-check the opened descriptor itself, not the path again: this is what
-  # closes the window where the path was swapped for a FIFO or device
-  # between the check above and this open.
-  if [[ ! -f "/dev/fd/$fd" ]]; then
-    exec {fd}<&-
-    AFK_PCR_REFUSAL="PAPERCLIP_BODY_UNREADABLE"; return 1
-  fi
-  # Bounded read of one byte past the limit, from the fd only: never the
-  # path again. `read -r -d ''` (via process substitution) preserves
-  # trailing newlines that a bare command substitution would strip.
-  IFS= read -r -d '' body < <(head -c 16385 <&"$fd"; printf '\0')
-  exec {fd}<&-
   local LC_ALL=C
-  size=${#body}
-  (( size >= 0 && size <= 16384 )) || { AFK_PCR_REFUSAL="PAPERCLIP_BODY_TOO_LARGE"; return 1; }
+  size="$(wc -c <"$tmp")"; size="${size//[[:space:]]/}"
+  size_no_nul="$(tr -d '\000' <"$tmp" | wc -c)"; size_no_nul="${size_no_nul//[[:space:]]/}"
+  if [[ "$size" != "$size_no_nul" ]]; then
+    rm -f -- "$tmp"
+    AFK_PCR_REFUSAL="PAPERCLIP_BODY_INVALID"; return 1
+  fi
+  (( size >= 0 && size <= 16384 )) || { rm -f -- "$tmp"; AFK_PCR_REFUSAL="PAPERCLIP_BODY_TOO_LARGE"; return 1; }
+  IFS= read -r -d '' body <"$tmp"
+  rm -f -- "$tmp"
   if ! printf '%s' "$body" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
     AFK_PCR_REFUSAL="PAPERCLIP_BODY_INVALID"; return 1
   fi
