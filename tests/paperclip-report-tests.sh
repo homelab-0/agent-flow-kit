@@ -23,6 +23,27 @@ assert_eq()       { if [[ "$2" == "$3" ]]; then ok "$1"; else bad "$1" "expected
 assert_contains() { if [[ "$2" == *"$3"* ]]; then ok "$1"; else bad "$1" "missing substring: $3 in: $2"; fi; }
 assert_absent()   { if [[ "$2" != *"$3"* ]]; then ok "$1"; else bad "$1" "should NOT contain: $3"; fi; }
 
+# afk_timeout -- the same timeout/gtimeout selection lib/afk-paperclip-report.sh
+# uses for its bounded body read, so these tests never depend on GNU-only
+# `timeout` being on PATH.
+afk_timeout() {
+  local bound
+  if command -v timeout >/dev/null 2>&1; then bound=timeout
+  elif command -v gtimeout >/dev/null 2>&1; then bound=gtimeout
+  else return 127
+  fi
+  "$bound" "$@"
+}
+
+# afk_stale_touch <path> -- backdates <path>'s mtime by ~1000 seconds using
+# `touch -t`, which both GNU and BSD/macOS `touch` accept (unlike GNU-only
+# `touch -d`).
+afk_stale_touch() {
+  local ts
+  ts="$(date -d '-1000 seconds' +%Y%m%d%H%M.%S 2>/dev/null || date -v-1000S +%Y%m%d%H%M.%S)"
+  touch -t "$ts" "$1"
+}
+
 if bash -n "$KIT_ROOT/lib/afk-paperclip-report.sh"; then ok "bash -n lib/afk-paperclip-report.sh"
 else bad "bash -n lib/afk-paperclip-report.sh"; fi
 
@@ -155,7 +176,7 @@ printf 'stable body' >"$RACE_PATH"
   done
 ) &
 SWAPPER=$!
-timeout 5 env -i PATH="$STUBS:$PATH" HOME="$HOME_DIR" LANG=C \
+afk_timeout 5 env -i PATH="$STUBS:$PATH" HOME="$HOME_DIR" LANG=C \
   AFK_STATE_DIR="$STATE" AFK_ORCA_BIN="$STUBS/orca" ORCA_STUB_TERMINALS="$TERMFILE" \
   AFK_PAPERCLIP_CONFIG="$CONFIG" ORCA_TERMINAL_HANDLE="termA" AFK_PCR_BODY_READ_TIMEOUT=2 \
   bash "$AFK" paperclip-report --issue "$ISSUE" --comment-file "$RACE_PATH" --json >/dev/null 2>&1
@@ -177,7 +198,7 @@ SH
 chmod +x "$SWAP_STUBS/mktemp"
 SWAP_PATH="$TMPROOT/swap_body.txt"; printf 'regular at check time' >"$SWAP_PATH"
 swap_start=$SECONDS
-SWAP_OUT="$(timeout 20 env -i PATH="$SWAP_STUBS:$STUBS:$PATH" HOME="$HOME_DIR" LANG=C \
+SWAP_OUT="$(afk_timeout 20 env -i PATH="$SWAP_STUBS:$STUBS:$PATH" HOME="$HOME_DIR" LANG=C \
   AFK_STATE_DIR="$STATE" AFK_ORCA_BIN="$STUBS/orca" ORCA_STUB_TERMINALS="$TERMFILE" \
   AFK_PAPERCLIP_CONFIG="$CONFIG" ORCA_TERMINAL_HANDLE="termA" AFK_PCR_BODY_READ_TIMEOUT=2 \
   SWAP_TO_FIFO="$SWAP_PATH" \
@@ -228,7 +249,7 @@ LOCKDIR="$STATE/paperclip/spool/$ISSUE/.seq.lock"
 # write proceeds instead of timing out.
 mkdir -p "$LOCKDIR"
 printf '999999 0\n' >"$LOCKDIR/owner"
-touch -d '-1000 seconds' "$LOCKDIR"
+afk_stale_touch "$LOCKDIR"
 run_afk termA paperclip-report --issue "$ISSUE" --comment-file "$(body_file "after dead holder")" --json
 assert_eq "dead holder: the write proceeds instead of timing out" "$(jq -r .result <<<"$(tail -1 <<<"$OUT_TEXT")")" "ok"
 assert_absent "  ...PAPERCLIP_LOCK_TIMEOUT is not reported" "$OUT_TEXT" "PAPERCLIP_LOCK_TIMEOUT"
@@ -239,21 +260,28 @@ reset_state
 mkdir -p "$LOCKDIR"
 bash -c 'sleep 20; :' paperclip-report & LIVE_PID=$!
 printf '%s 0\n' "$LIVE_PID" >"$LOCKDIR/owner"
-touch -d '-1000 seconds' "$LOCKDIR"
+afk_stale_touch "$LOCKDIR"
 run_afk termA paperclip-report --issue "$ISSUE" --comment-file "$(body_file "blocked by live holder")" --json
 kill "$LIVE_PID" 2>/dev/null; wait "$LIVE_PID" 2>/dev/null
 assert_contains "live holder: the write times out" "$OUT_TEXT" "PAPERCLIP_LOCK_TIMEOUT"
 assert_eq "  ...the live holder's lock is never removed" "$([[ -d "$LOCKDIR" ]] && echo yes)" "yes"
 
 # A reused PID (alive, but not a paperclip writer) does not pin the lock.
+# The lock-reap logic distinguishes "reused" from "still a writer" by reading
+# /proc/$pid/cmdline, so this assertion only means anything on a platform
+# that has it (Linux); elsewhere it is skipped, not faked.
 reset_state
 mkdir -p "$LOCKDIR"
 sleep 20 & OTHER_PID=$!
 printf '%s 0\n' "$OTHER_PID" >"$LOCKDIR/owner"
-touch -d '-1000 seconds' "$LOCKDIR"
-run_afk termA paperclip-report --issue "$ISSUE" --comment-file "$(body_file "after reused pid")" --json
+afk_stale_touch "$LOCKDIR"
+if [[ -r "/proc/self/cmdline" && -r "/proc/$OTHER_PID/cmdline" ]]; then
+  run_afk termA paperclip-report --issue "$ISSUE" --comment-file "$(body_file "after reused pid")" --json
+  assert_eq "reused pid: the write proceeds" "$(jq -r .result <<<"$(tail -1 <<<"$OUT_TEXT")")" "ok"
+else
+  ok "reused pid: skipped (no readable /proc/<pid>/cmdline on this platform)"
+fi
 kill "$OTHER_PID" 2>/dev/null; wait "$OTHER_PID" 2>/dev/null
-assert_eq "reused pid: the write proceeds" "$(jq -r .result <<<"$(tail -1 <<<"$OUT_TEXT")")" "ok"
 
 head1 "4. Question entries and final closure (AC-2, AC-3)"
 reset_state

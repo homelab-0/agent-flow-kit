@@ -179,6 +179,17 @@ afk_pc_load_config() {
     AFK_PC_REFUSAL="PAPERCLIP_ID_INVALID"; return 1
   fi
 
+  # AC-6: interim_comment_approval.paperclip_commit, when present, must be
+  # the exact commit string GET /api/health reports (afk_pcs_approval_granted
+  # compares it byte-for-byte) -- a short SHA or any non-hex value can never
+  # match, so refuse it here instead of letting it silently fail-closed as
+  # APPROVAL_INTERIM_UNATTESTED on every pass.
+  local interim_commit
+  interim_commit="$(jq -r '.interim_comment_approval.paperclip_commit // empty' <<<"$cfg")"
+  if [[ -n "$interim_commit" ]] && ! [[ "$interim_commit" =~ ^[0-9a-f]{40}$ ]]; then
+    AFK_PC_REFUSAL="PAPERCLIP_CONFIG_INVALID"; return 1
+  fi
+
   n="$(jq '.agents | if type == "array" then length else -1 end' <<<"$cfg")"
   if [[ "$n" -le 0 ]]; then AFK_PC_REFUSAL="PAPERCLIP_CONFIG_INVALID"; return 1; fi
 

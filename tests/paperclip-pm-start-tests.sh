@@ -229,8 +229,8 @@ assert_contains "ambiguous: waiting-for-Josh text recorded" \
 head1 "4. Jarvis-created needs approval, then an exact Josh comment starts it"
 # ============================================================================
 new_scenario needs_approval
-write_config "$(jq -nc --arg cv v1 '{pm_start_enabled:true, interim_comment_approval:{paperclip_commit:$cv}}')"
-route GET /api/health 200 '{"commit":"v1"}'
+write_config "$(jq -nc --arg cv aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa '{pm_start_enabled:true, interim_comment_approval:{paperclip_commit:$cv}}')"
+route GET /api/health 200 '{"commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'
 JARVIS="88888888-8888-8888-8888-888888888888"
 issue_route blocked "$JARVIS" # not the board -> creator gate fails
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
@@ -264,8 +264,8 @@ assert_eq "approved: a later pass never starts a second PM" "$(wc -l <"$ORCA_CRE
 
 # The stop flag holds every start, even an approved one.
 new_scenario approved_but_stopped
-write_config "$(jq -nc --arg cv v1 '{pm_start_enabled:true, interim_comment_approval:{paperclip_commit:$cv}}')"
-route GET /api/health 200 '{"commit":"v1"}'
+write_config "$(jq -nc --arg cv aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa '{pm_start_enabled:true, interim_comment_approval:{paperclip_commit:$cv}}')"
+route GET /api/health 200 '{"commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 mkdir -p "$STATE/paperclip" "$HOME/.config/agent-flow-kit/paperclip"
 : >"$HOME/.config/agent-flow-kit/paperclip/stop"
@@ -307,8 +307,8 @@ assert_contains "unattested: result names the reason" "$OUT_TEXT" "APPROVAL_INTE
 head1 "5b. AC-6: a stale/mismatched or unreachable health commit refuses, fail-closed"
 # ============================================================================
 new_scenario commit_mismatch
-write_config "$(jq -nc --arg cv v1 '{pm_start_enabled:true, interim_comment_approval:{paperclip_commit:$cv}}')"
-route GET /api/health 200 '{"commit":"v2"}' # deployed commit has moved past the interim attestation
+write_config "$(jq -nc --arg cv aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa '{pm_start_enabled:true, interim_comment_approval:{paperclip_commit:$cv}}')"
+route GET /api/health 200 '{"commit":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}' # deployed commit has moved past the interim attestation
 JARVIS="88888888-8888-8888-8888-888888888888"
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 mkdir -p "$STATE/paperclip"
@@ -327,7 +327,7 @@ assert_eq "mismatched commit: no terminal create" "$(wc -l <"$ORCA_CREATE_LOG" |
 assert_contains "mismatched commit: result names the reason" "$OUT_TEXT" "APPROVAL_INTERIM_UNATTESTED"
 
 new_scenario health_unreachable
-write_config "$(jq -nc --arg cv v1 '{pm_start_enabled:true, interim_comment_approval:{paperclip_commit:$cv}}')"
+write_config "$(jq -nc --arg cv aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa '{pm_start_enabled:true, interim_comment_approval:{paperclip_commit:$cv}}')"
 # No /api/health fixture at all: the curl stub falls back to its DEFAULT (a
 # transport-style 000), exactly like an unreachable health endpoint.
 JARVIS="88888888-8888-8888-8888-888888888888"
@@ -351,8 +351,8 @@ assert_contains "health unreachable: result names the reason" "$OUT_TEXT" "APPRO
 head1 "6. A different Josh comment never authorises a start"
 # ============================================================================
 new_scenario josh_wrong_text
-write_config "$(jq -nc --arg cv v1 '{pm_start_enabled:true, interim_comment_approval:{paperclip_commit:$cv}}')"
-route GET /api/health 200 '{"commit":"v1"}'
+write_config "$(jq -nc --arg cv aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa '{pm_start_enabled:true, interim_comment_approval:{paperclip_commit:$cv}}')"
+route GET /api/health 200 '{"commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'
 JARVIS="88888888-8888-8888-8888-888888888888"
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 mkdir -p "$STATE/paperclip"
