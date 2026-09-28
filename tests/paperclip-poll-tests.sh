@@ -1039,7 +1039,10 @@ PD="$(printf 'a%.0s' {1..8})$(printf '0%.0s' {1..56})"; PD8="${PD:0:8}"
 PCOMMIT="d554c4789ed3930f8a53ac9fdf6503b3187097da"
 PATT="{\"attested_on\":\"2026-09-27\",\"paperclip_commit\":\"$PCOMMIT\"}"
 # plan_scenario <name> <comments-json> [<interim-json|none>] [<health code>] [<health body>]
+# Overrides via the environment: PQID (the ledger's open question id), PSENT
+# (question_sent_at as JSON, e.g. null) and PSEQ (the plan file's posted_seq).
 plan_scenario() {
+  local qid="${PQID:-plan-$PD8}" sent="${PSENT:-\"2026-03-01T00:00:00.000Z\"}"
   new_scenario "$1"
   write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
   if [[ "${3:-}" != none ]]; then
@@ -1047,9 +1050,10 @@ plan_scenario() {
       '.interim_comment_approval = $i' "$CONFIG" >"$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
   fi
   seed_working "$ISSUE1" HOM-12 waiting_human \
-    "{\"question_id\":\"plan-$PD8\",\"question_seq\":3,\"question_sent_at\":\"2026-03-01T00:00:00.000Z\",\"action_text_applied\":\"waiting on plan-$PD8\"}"
+    "{\"question_id\":\"$qid\",\"question_seq\":3,\"question_sent_at\":$sent,\"action_text_applied\":\"waiting on $qid\"}"
   mkdir -p "$STATE/paperclip/plans"
-  jq -nc --arg d "$PD" '{schema:"afk-paperclip-plan-record/1", digest:$d, digest8:$d[0:8], question_id:("plan-" + $d[0:8]), posted_seq:3}' \
+  jq -nc --arg d "$PD" --argjson seq "${PSEQ:-3}" \
+    '{schema:"afk-paperclip-plan-record/1", digest:$d, digest8:$d[0:8], question_id:("plan-" + $d[0:8]), posted_seq:$seq}' \
     >"$STATE/paperclip/plans/$ISSUE1.json"
   route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
   route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
@@ -1097,6 +1101,26 @@ assert_contains "  ...unattested" "$OUT_TEXT" "APPROVAL_INTERIM_UNATTESTED"
 
 plan_scenario appr_health_down "[$(jc 1 "approve $PD8")]" "" NETFAIL
 assert_missing "health unreachable -> no record (fail closed)" "$APPROVAL"
+
+plan_scenario appr_unverifiable "[$(jc 1 "approve $PD8" | jq -c 'del(.authorAgentId)')]"
+assert_missing "a comment with no authorAgentId key at all -> no record" "$APPROVAL"
+assert_contains "  ...reported unverifiable" "$OUT_TEXT" "PAPERCLIP_AUTHOR_UNVERIFIABLE"
+
+PSEQ=2 plan_scenario appr_seq_mismatch "[$(jc 1 "approve $PD8")]"
+assert_missing "plan file posted_seq != the sent question_seq -> no record" "$APPROVAL"
+assert_contains "  ...APPROVAL_PLAN_MISMATCH" "$OUT_TEXT" "APPROVAL_PLAN_MISMATCH"
+
+PSENT=null plan_scenario appr_sent_unknown "[$(jc 1 "approve $PD8")]"
+assert_missing "question_sent_at unknown -> no record" "$APPROVAL"
+assert_contains "  ...APPROVAL_BEFORE_PLAN" "$OUT_TEXT" "APPROVAL_BEFORE_PLAN"
+
+PQID=q7 plan_scenario appr_other_question "[$(jc 1 "approve $PD8")]"
+assert_missing "approve <d8> while a non-plan question is open -> no record" "$APPROVAL"
+assert_eq "  ...it stays a plain human comment" "$(find "$NOTICE_DIR" -name 'reply.*.md' | wc -l | tr -d ' ')" "1"
+
+plan_scenario appr_zero_width "[$(jc 1 "approve $PD8"$'​'), $(jc 2 "approve $PD8"$'\r\n')]"
+assert_eq "a zero-width char after the digest is not an approval; CRLF is trimmed and is" \
+  "$(jq -r .comment_id "$APPROVAL" 2>/dev/null)" "c0000000-0000-0000-0000-000000000002"
 
 new_scenario question_send_recorded
 write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"

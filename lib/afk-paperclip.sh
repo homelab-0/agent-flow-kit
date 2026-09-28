@@ -46,8 +46,16 @@ afk_pc_curl() {
   local method="$1" url="$2" key="$3" run="$4" body="${5:-}"
   local -a args=(-sS --connect-timeout 5 --max-time 20 --proto '=https' -X "$method" -w '%{http_code}')
   local hfd="" bfd
-  # An empty key is an unauthenticated call (only GET /api/health): no header.
-  if [[ -n "$key" ]]; then
+  # An empty key is an unauthenticated call, allowed for GET /api/health
+  # only. Any other endpoint with no key is refused here, before a request
+  # is made, as a transport failure: a caller that lost its key can never
+  # fall through to an unauthenticated read or write.
+  if [[ -z "$key" ]]; then
+    if [[ "$method" != GET || "$url" != */api/health ]]; then
+      printf '\n'
+      return 1
+    fi
+  else
     exec {hfd}< <(printf 'Authorization: Bearer %s' "$key")
     args+=(-H "@/dev/fd/$hfd")
   fi
