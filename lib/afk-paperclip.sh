@@ -236,6 +236,48 @@ afk_pc_spool_files() { # <issue_id> -- prints live entry basenames, seq order
     grep -E '^[0-9]+\.json$' | sort -n
 }
 
+# afk_pc_spool_lock/unlock -- the same portable mkdir spin-lock the writer
+# uses (afk_pcr_lock in lib/afk-paperclip-report.sh), kept self-contained
+# here: afk_pc_report_cycle runs inside the poll run's own already-locked
+# section, whose EXIT trap releases a different lock ($AFK_STATE_DIR/
+# paperclip/.lock). The previous EXIT trap's exact command body (never the
+# `trap -- '...' EXIT` registration itself, which would only re-arm it) is
+# captured once and re-run from afk_pc_spool_exit_trap, so an interrupted
+# holder still releases both locks, and a second, third, ... report cycle in
+# the same process (one per issue) does not re-capture its own trap.
+AFK_PC_SPOOL_HELD_LOCK=""
+AFK_PC_SPOOL_PREV_EXIT_TRAP=""
+AFK_PC_SPOOL_TRAP_CHAINED="false"
+afk_pc_spool_exit_trap() {
+  [[ -n "$AFK_PC_SPOOL_HELD_LOCK" ]] && rmdir "$AFK_PC_SPOOL_HELD_LOCK" 2>/dev/null
+  [[ -n "$AFK_PC_SPOOL_PREV_EXIT_TRAP" ]] && eval "$AFK_PC_SPOOL_PREV_EXIT_TRAP"
+}
+afk_pc_spool_lock() { # <lockdir>
+  local dir="$1" waited=0
+  while ! mkdir "$dir" 2>/dev/null; do
+    sleep 0.02
+    waited=$((waited + 1))
+    (( waited > 500 )) && return 1
+  done
+  AFK_PC_SPOOL_HELD_LOCK="$dir"
+  if [[ "$AFK_PC_SPOOL_TRAP_CHAINED" != true ]]; then
+    local prev; prev="$(trap -p EXIT)"
+    if [[ -n "$prev" ]]; then
+      prev="${prev#trap -- }"
+      prev="${prev% EXIT}"
+      eval "AFK_PC_SPOOL_PREV_EXIT_TRAP=$prev"
+    fi
+    AFK_PC_SPOOL_TRAP_CHAINED="true"
+    trap 'afk_pc_spool_exit_trap' EXIT
+  fi
+  return 0
+}
+afk_pc_spool_unlock() { # <lockdir> -- deliberately leaves the chained trap
+  rmdir "$1" 2>/dev/null || true         # in place: at real process exit it
+  AFK_PC_SPOOL_HELD_LOCK=""              # rmdir's an already-gone dir (a
+}                                         # no-op) and still runs the
+                                          # previous trap it chained onto.
+
 afk_pc_spool_dead() { # <issue_id> <entry-file-basename> <reason>
   local dir; dir="$(afk_pc_spool_dir "$1")/dead"
   afk_state_dir_ensure "$dir"
@@ -322,7 +364,25 @@ afk_pc_report_cycle() {
     return 0
   fi
 
-  local -a files=(); mapfile -t files < <(afk_pc_spool_files "$id")
+  # The writer publishes an entry (mv) and then still has to write .seq/
+  # .final before it releases .seq.lock; take the same lock here for a short
+  # snapshot so this pass never lists an entry the writer is still in the
+  # middle of publishing. A lock that can't be taken skips this issue for
+  # this pass rather than reading (and possibly deleting) anything.
+  local spool_dir_for_lock; spool_dir_for_lock="$(afk_pc_spool_dir "$id")"
+  # mkdir (no -p) for the lock itself fails outright, not just contends, when
+  # this issue has never had a spool entry and the directory doesn't exist
+  # yet: ensure it first so a claim-only issue with no spool history is
+  # never mistaken for a held lock.
+  afk_state_dir_ensure "$spool_dir_for_lock"
+  local spool_lock="$spool_dir_for_lock/.seq.lock"
+  if ! afk_pc_spool_lock "$spool_lock"; then
+    actions="$(jq -c --arg t "spool lock unavailable, entries held: $identifier" '. + [$t]' <<<"$actions")"
+    return 0
+  fi
+  local -a files=()
+  mapfile -t files < <(afk_pc_spool_files "$id")
+  afk_pc_spool_unlock "$spool_lock"
   local prev; prev="$(jq -c --arg id "$id" '.issues[$id] // empty' <<<"$ledger")"
   local state qid prev_applied composed pending_final claim_pending
   state="$(jq -r '.state // empty' <<<"$prev")"

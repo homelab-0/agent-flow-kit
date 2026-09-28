@@ -37,7 +37,7 @@ AFK_LIB_DIR="${AFK_LIB_DIR:-$AFK_INSTALL_ROOT/lib}"
 # A missing or unreadable library is an internal failure with a stable message
 # and the usage exit code — never a partially loaded lifecycle that answers
 # questions with whichever functions happened to load.
-for _afk_lib in afk-common afk-source afk-inventory afk-readiness afk-monitor afk-commands afk-plan afk-mutate afk-usage afk-auto-update afk-catalog-sync afk-paperclip afk-pm-registry afk-paperclip-start; do
+for _afk_lib in afk-common afk-source afk-inventory afk-readiness afk-monitor afk-commands afk-plan afk-mutate afk-usage afk-auto-update afk-catalog-sync afk-paperclip afk-pm-registry afk-paperclip-report afk-paperclip-start; do
   if [[ ! -r "$AFK_LIB_DIR/$_afk_lib.sh" ]]; then
     printf 'agent-flow-kit: internal error: required library %s.sh is missing or unreadable under %s\n' \
       "$_afk_lib" "$AFK_LIB_DIR" >&2
@@ -85,6 +85,9 @@ unset _afk_lib
 # shellcheck source=lib/afk-pm-registry.sh
 # shellcheck disable=SC1090,SC1091
 . "$AFK_LIB_DIR/afk-pm-registry.sh"
+# shellcheck source=lib/afk-paperclip-report.sh
+# shellcheck disable=SC1090,SC1091
+. "$AFK_LIB_DIR/afk-paperclip-report.sh"
 # shellcheck source=lib/afk-paperclip-start.sh
 # shellcheck disable=SC1090,SC1091
 . "$AFK_LIB_DIR/afk-paperclip-start.sh"
@@ -104,6 +107,7 @@ if ! declare -F afk_cmd_status >/dev/null 2>&1 \
    || ! declare -F afk_cmd_pm_registry_reap >/dev/null 2>&1 \
    || ! declare -F afk_cmd_paperclip_take >/dev/null 2>&1 \
    || ! declare -F afk_cmd_paperclip_settle >/dev/null 2>&1 \
+   || ! declare -F afk_cmd_paperclip_report >/dev/null 2>&1 \
    || ! declare -F afk_cmd_paperclip_timer >/dev/null 2>&1; then
   printf 'agent-flow-kit: internal error: the lifecycle libraries under %s did not load completely\n' \
     "$AFK_LIB_DIR" >&2
@@ -307,6 +311,17 @@ agent-flow-kit — lifecycle entry point
       Move one claimed notice to notices/settled/. Idempotent; refuses an
       unknown or foreign notice with PAPERCLIP_NOTICE_UNKNOWN.
 
+  agent-flow-kit paperclip-report --issue <id> [--comment-file <path>]
+      [--question <qid>] [--final in_review|done] [--status <text>
+      [--story k/n]] [--json]
+      The PM's only way to write to Paperclip: publishes one spool entry
+      (comment, question or final) or the declared status, never both in one
+      call. Only the registry's live owner (or handoff successor) for the
+      issue's project may call it. The body is always read from
+      --comment-file, never an argument; a seq comes from a locked per-issue
+      counter and is published by a no-clobber rename. Refuses after a final
+      entry with PAPERCLIP_SPOOL_CLOSED.
+
   agent-flow-kit paperclip-timer --install|--remove|--status [--json]
       Linux only: a systemd user service and timer running paperclip-poll
       every 90s (RandomizedDelaySec=15s, Persistent=false). The unit holds no
@@ -449,6 +464,10 @@ afk_option_allowed() { # <command> <option>
       case "$2" in --json|--project) return 0 ;; esac ;;
     paperclip-settle)
       case "$2" in --json|--notice) return 0 ;; esac ;;
+    paperclip-report)
+      case "$2" in
+        --json|--issue|--comment-file|--question|--final|--status|--story) return 0 ;;
+      esac ;;
     paperclip-timer)
       case "$2" in --json|--install|--remove|--status) return 0 ;; esac ;;
   esac
@@ -462,6 +481,7 @@ afk_main() {
   local monitor_verbs=0
   local pm_write="" pm_continuation="false" pm_harness=""
   local pmr_scope="" pc_project="" pc_notice="" pct_action=""
+  local pc_issue="" pc_comment_file="" pc_question="" pc_final="" pc_status_text="" pc_story=""
   local usage_days=""
   local au_mode="enroll" au_key_ref="" au_key_file="" au_prev=""
   local cs_apply="false"
@@ -537,12 +557,34 @@ afk_main() {
               au_mode="${1#--}"
             fi ;;
           --apply)                     cs_apply="true" ;;
-          --install|--status)
-            if [[ -n "$pct_action" && "$pct_action" != "${1#--}" ]]; then
+          --install)
+            if [[ -n "$pct_action" && "$pct_action" != install ]]; then
               afk_warn "paperclip-timer: pass exactly one of --install, --remove or --status"
               return "$AFK_EXIT_USAGE"
             fi
-            pct_action="${1#--}" ;;
+            pct_action="install" ;;
+          --status)
+            # `--status` is shared vocabulary: paperclip-timer's bare action
+            # flag and paperclip-report's `<text>`-taking status write. The
+            # two commands are mutually exclusive, so dispatch on $cmd rather
+            # than letting one case pattern shadow the other.
+            if [[ "$cmd" == paperclip-timer ]]; then
+              if [[ -n "$pct_action" && "$pct_action" != status ]]; then
+                afk_warn "paperclip-timer: pass exactly one of --install, --remove or --status"
+                return "$AFK_EXIT_USAGE"
+              fi
+              pct_action="status"
+            else
+              # The value is status text — never echoed back; only the
+              # closed option vocabulary is.
+              if (( $# < 2 )) || { [[ "$2" == --* ]] && afk_option_allowed "$cmd" "$2"; }; then
+                afk_warn "$1 requires its declared value"
+                afk_usage >&2
+                return "$AFK_EXIT_USAGE"
+              fi
+              pc_status_text="$2"
+              shift
+            fi ;;
           --key-ref|--key-file)
             # A reference or a path, never a key; still not echoed back.
             if (( $# < 2 )); then
@@ -579,6 +621,23 @@ afk_main() {
               --scope)   pmr_scope="$2" ;;
               --project) pc_project="$2" ;;
               --notice)  pc_notice="$2" ;;
+            esac
+            shift ;;
+          --issue|--comment-file|--question|--final|--story)
+            # The value is an issue id, a file path, a short question id, a
+            # final status word, or a story fraction — never echoed back;
+            # only the closed option vocabulary is.
+            if (( $# < 2 )) || { [[ "$2" == --* ]] && afk_option_allowed "$cmd" "$2"; }; then
+              afk_warn "$1 requires its declared value"
+              afk_usage >&2
+              return "$AFK_EXIT_USAGE"
+            fi
+            case "$1" in
+              --issue)        pc_issue="$2" ;;
+              --comment-file) pc_comment_file="$2" ;;
+              --question)     pc_question="$2" ;;
+              --final)        pc_final="$2" ;;
+              --story)        pc_story="$2" ;;
             esac
             shift ;;
           --pm-stamp|--write|--harness)
@@ -658,6 +717,24 @@ afk_main() {
   if [[ "$cmd" == paperclip-settle && -z "$pc_notice" ]]; then
     afk_warn "paperclip-settle needs the --notice id to settle"
     return "$AFK_EXIT_USAGE"
+  fi
+  if [[ "$cmd" == paperclip-report ]]; then
+    if [[ -z "$pc_issue" ]]; then
+      afk_warn "paperclip-report needs the --issue id to write to"
+      return "$AFK_EXIT_USAGE"
+    fi
+    if [[ -n "$pc_status_text" && ( -n "$pc_comment_file" || -n "$pc_question" || -n "$pc_final" ) ]]; then
+      afk_warn "paperclip-report --status never touches the spool; ask a status write or a spool entry, not both."
+      return "$AFK_EXIT_USAGE"
+    fi
+    if [[ -z "$pc_status_text" && -z "$pc_comment_file" ]]; then
+      afk_warn "paperclip-report needs either --status <text> or --comment-file <path>"
+      return "$AFK_EXIT_USAGE"
+    fi
+    if [[ -n "$pc_question" && -n "$pc_final" ]]; then
+      afk_warn "paperclip-report --question and --final are different entries; ask one at a time."
+      return "$AFK_EXIT_USAGE"
+    fi
   fi
   if [[ "$cmd" == paperclip-timer && -z "$pct_action" ]]; then
     afk_warn "paperclip-timer needs exactly one of --install, --remove or --status"
@@ -758,6 +835,11 @@ afk_main() {
     paperclip-settle)
       afk_require_declared_paths || return "$AFK_EXIT_USAGE"
       afk_cmd_paperclip_settle "$json_mode" "$pc_notice"
+      return $? ;;
+    paperclip-report)
+      afk_require_declared_paths || return "$AFK_EXIT_USAGE"
+      afk_cmd_paperclip_report "$json_mode" "$pc_issue" "$pc_comment_file" \
+        "$pc_question" "$pc_final" "$pc_status_text" "$pc_story"
       return $? ;;
     paperclip-timer)
       afk_require_declared_paths || return "$AFK_EXIT_USAGE"
