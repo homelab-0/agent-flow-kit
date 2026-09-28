@@ -37,7 +37,7 @@ AFK_LIB_DIR="${AFK_LIB_DIR:-$AFK_INSTALL_ROOT/lib}"
 # A missing or unreadable library is an internal failure with a stable message
 # and the usage exit code — never a partially loaded lifecycle that answers
 # questions with whichever functions happened to load.
-for _afk_lib in afk-common afk-source afk-inventory afk-readiness afk-monitor afk-commands afk-plan afk-mutate afk-usage afk-auto-update afk-catalog-sync afk-paperclip afk-pm-registry afk-paperclip-report afk-paperclip-plan afk-paperclip-start; do
+for _afk_lib in afk-common afk-source afk-inventory afk-readiness afk-monitor afk-commands afk-plan afk-mutate afk-usage afk-auto-update afk-catalog-sync afk-paperclip afk-pm-registry afk-paperclip-report afk-paperclip-plan afk-paperclip-start afk-accept; do
   if [[ ! -r "$AFK_LIB_DIR/$_afk_lib.sh" ]]; then
     printf 'agent-flow-kit: internal error: required library %s.sh is missing or unreadable under %s\n' \
       "$_afk_lib" "$AFK_LIB_DIR" >&2
@@ -94,6 +94,9 @@ unset _afk_lib
 # shellcheck source=lib/afk-paperclip-start.sh
 # shellcheck disable=SC1090,SC1091
 . "$AFK_LIB_DIR/afk-paperclip-start.sh"
+# shellcheck source=lib/afk-accept.sh
+# shellcheck disable=SC1090,SC1091
+. "$AFK_LIB_DIR/afk-accept.sh"
 
 if ! declare -F afk_cmd_status >/dev/null 2>&1 \
    || ! declare -F afk_render_human >/dev/null 2>&1 \
@@ -113,7 +116,8 @@ if ! declare -F afk_cmd_status >/dev/null 2>&1 \
    || ! declare -F afk_cmd_paperclip_report >/dev/null 2>&1 \
    || ! declare -F afk_cmd_paperclip_plan >/dev/null 2>&1 \
    || ! declare -F afk_cmd_paperclip_approval >/dev/null 2>&1 \
-   || ! declare -F afk_cmd_paperclip_timer >/dev/null 2>&1; then
+   || ! declare -F afk_cmd_paperclip_timer >/dev/null 2>&1 \
+   || ! declare -F afk_cmd_route_accept >/dev/null 2>&1; then
   printf 'agent-flow-kit: internal error: the lifecycle libraries under %s did not load completely\n' \
     "$AFK_LIB_DIR" >&2
   exit 1
@@ -336,6 +340,15 @@ agent-flow-kit — lifecycle entry point
       Read-only: approved only when Josh's approval digest equals the current
       plan digest and the interim attestation still holds.
 
+  agent-flow-kit route-accept --story <story.md> --kind human|override|pm-auto
+      --actor <name> [--reason <text>] [--json]
+  agent-flow-kit route-accept --story <story.md> --verify [--json]
+      Write <story>.acceptance.json binding the stamp's decision digest to who
+      accepted it. pm-auto only for a natural, free, non-excluded Paperclip
+      story in Josh's approved plan with unchanged gates; a Paperclip story
+      accepts pm-auto only (human/override: ACCEPTANCE_KIND_NOT_ALLOWED). --verify is the
+      check dispatch.sh runs on every cycle of a Paperclip story.
+
   agent-flow-kit paperclip-timer --install|--remove|--status [--json]
       Linux only: a systemd user service and timer running paperclip-poll
       every 90s (RandomizedDelaySec=15s, Persistent=false). The unit holds no
@@ -488,6 +501,8 @@ afk_option_allowed() { # <command> <option>
       case "$2" in --json|--issue) return 0 ;; esac ;;
     paperclip-timer)
       case "$2" in --json|--install|--remove|--status) return 0 ;; esac ;;
+    route-accept)
+      case "$2" in --json|--story|--kind|--actor|--reason|--verify) return 0 ;; esac ;;
   esac
   return 1
 }
@@ -503,6 +518,7 @@ afk_main() {
   local usage_days=""
   local au_mode="enroll" au_key_ref="" au_key_file="" au_prev=""
   local cs_apply="false"
+  local ra_kind="" ra_actor="" ra_reason="" ra_verify="false"
 
   cmd="${1:-help}"
   if (( $# > 0 )); then shift; fi
@@ -641,7 +657,8 @@ afk_main() {
               --notice)  pc_notice="$2" ;;
             esac
             shift ;;
-          --issue|--plan-file|--comment-file|--question|--final|--story)
+          --verify)                    ra_verify="true" ;;
+          --issue|--plan-file|--comment-file|--question|--final|--story|--kind|--actor|--reason)
             # The value is an issue id, a file path, a short question id, a
             # final status word, or a story fraction — never echoed back;
             # only the closed option vocabulary is.
@@ -657,6 +674,9 @@ afk_main() {
               --question)     pc_question="$2" ;;
               --final)        pc_final="$2" ;;
               --story)        pc_story="$2" ;;
+              --kind)         ra_kind="$2" ;;
+              --actor)        ra_actor="$2" ;;
+              --reason)       ra_reason="$2" ;;
             esac
             shift ;;
           --pm-stamp|--write|--harness)
@@ -758,6 +778,20 @@ afk_main() {
   if [[ ( "$cmd" == paperclip-plan || "$cmd" == paperclip-approval ) && -z "$pc_issue" ]] ||
      [[ "$cmd" == paperclip-plan && -z "$pc_plan_file" ]]; then
     afk_warn "$cmd needs --issue <id>, and paperclip-plan also needs --plan-file <path>"
+    return "$AFK_EXIT_USAGE"
+  fi
+  local ra_bad=false
+  if [[ "$cmd" == route-accept ]]; then
+    [[ -n "$pc_story" ]] || ra_bad=true
+    if [[ "$ra_verify" == true ]]; then
+      [[ -z "$ra_kind$ra_actor$ra_reason" ]] || ra_bad=true
+    elif [[ ! "$ra_kind" =~ ^(human|override|pm-auto)$ || -z "$ra_actor" ||
+            ( "$ra_kind" == override && -z "$ra_reason" ) ]]; then
+      ra_bad=true
+    fi
+  fi
+  if [[ "$ra_bad" == true ]]; then
+    afk_warn "route-accept needs --story and either --verify alone, or --kind human|override|pm-auto with --actor (and --reason for override)"
     return "$AFK_EXIT_USAGE"
   fi
   if [[ "$cmd" == paperclip-timer && -z "$pct_action" ]]; then
@@ -876,6 +910,10 @@ afk_main() {
     paperclip-timer)
       afk_require_declared_paths || return "$AFK_EXIT_USAGE"
       afk_cmd_paperclip_timer "$json_mode" "$pct_action"
+      return $? ;;
+    route-accept)
+      afk_require_declared_paths || return "$AFK_EXIT_USAGE"
+      afk_cmd_route_accept "$json_mode" "$pc_story" "$ra_kind" "$ra_actor" "$ra_reason" "$ra_verify"
       return $? ;;
     schema)
       afk_cmd_schema || return "$AFK_EXIT_USAGE"
