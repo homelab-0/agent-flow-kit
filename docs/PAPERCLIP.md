@@ -331,8 +331,10 @@ the project's PM, using PC-2a's registry lookup for the agent's `repo_path`:
 - `none`: subject to the creator gate (`createdByUserId == board_user_id`,
   else one `Reply exactly: approve start <identifier>` question comment and
   an exact matching Josh reply — gated on `interim_comment_approval` present
-  and its `paperclip_version` matching the config's own, else
-  `APPROVAL_INTERIM_UNATTESTED`), the daily cap (`pm_start_daily_cap`,
+  and its `paperclip_commit` matching the deployed commit from
+  `GET /api/health` (`afk_pc_health_commit`, shared with the plan-approval
+  check), else `APPROVAL_INTERIM_UNATTESTED`; a failed or unreachable health
+  check is the same fail-closed refusal), the daily cap (`pm_start_daily_cap`,
   default 3, per host per UTC day), and the kit's own readiness check
   (`AFK_PCS_READINESS_BIN`, defaulting to `agent-flow-kit status --json`
   against the repo) — never auto-fixed.

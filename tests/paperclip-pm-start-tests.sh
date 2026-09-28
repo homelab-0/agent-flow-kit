@@ -229,7 +229,8 @@ assert_contains "ambiguous: waiting-for-Josh text recorded" \
 head1 "4. Jarvis-created needs approval, then an exact Josh comment starts it"
 # ============================================================================
 new_scenario needs_approval
-write_config "$(jq -nc --arg cv v1 '{pm_start_enabled:true, paperclip_version:$cv, interim_comment_approval:{paperclip_version:$cv}}')"
+write_config "$(jq -nc --arg cv v1 '{pm_start_enabled:true, interim_comment_approval:{paperclip_commit:$cv}}')"
+route GET /api/health 200 '{"commit":"v1"}'
 JARVIS="88888888-8888-8888-8888-888888888888"
 issue_route blocked "$JARVIS" # not the board -> creator gate fails
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
@@ -263,7 +264,8 @@ assert_eq "approved: a later pass never starts a second PM" "$(wc -l <"$ORCA_CRE
 
 # The stop flag holds every start, even an approved one.
 new_scenario approved_but_stopped
-write_config "$(jq -nc --arg cv v1 '{pm_start_enabled:true, paperclip_version:$cv, interim_comment_approval:{paperclip_version:$cv}}')"
+write_config "$(jq -nc --arg cv v1 '{pm_start_enabled:true, interim_comment_approval:{paperclip_commit:$cv}}')"
+route GET /api/health 200 '{"commit":"v1"}'
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 mkdir -p "$STATE/paperclip" "$HOME/.config/agent-flow-kit/paperclip"
 : >"$HOME/.config/agent-flow-kit/paperclip/stop"
@@ -283,7 +285,7 @@ assert_eq "stopped: no terminal create" "$(wc -l <"$ORCA_CREATE_LOG" | tr -d ' '
 head1 "5. Attestation absent -> APPROVAL_INTERIM_UNATTESTED, no start"
 # ============================================================================
 new_scenario unattested
-write_config '{"pm_start_enabled":true}' # no interim_comment_approval / paperclip_version
+write_config '{"pm_start_enabled":true}' # no interim_comment_approval at all
 JARVIS="88888888-8888-8888-8888-888888888888"
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 mkdir -p "$STATE/paperclip"
@@ -302,10 +304,55 @@ assert_eq "unattested: no terminal create" "$(wc -l <"$ORCA_CREATE_LOG" | tr -d 
 assert_contains "unattested: result names the reason" "$OUT_TEXT" "APPROVAL_INTERIM_UNATTESTED"
 
 # ============================================================================
+head1 "5b. AC-6: a stale/mismatched or unreachable health commit refuses, fail-closed"
+# ============================================================================
+new_scenario commit_mismatch
+write_config "$(jq -nc --arg cv v1 '{pm_start_enabled:true, interim_comment_approval:{paperclip_commit:$cv}}')"
+route GET /api/health 200 '{"commit":"v2"}' # deployed commit has moved past the interim attestation
+JARVIS="88888888-8888-8888-8888-888888888888"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+mkdir -p "$STATE/paperclip"
+jq -n --arg a "$AGENT1" --arg id "$ISSUE1" \
+  '{issues: {($id): {agent_id: $a, project: "proj", identifier: "PROJ-1", state: "pending_claim", since: "2026-01-01T00:00:00Z"}},
+    stranded_reported: [], drain_tampered_reported: false, last_successful_pass: null}' \
+  >"$STATE/paperclip/ledger.json"
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+route GET "/api/issues/$ISSUE1" 200 \
+  "{\"status\":\"blocked\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"createdByUserId\":\"$JARVIS\",\"unblockDescriptor\":{\"owner\":{\"agentId\":\"$AGENT1\"},\"action\":\"paused\"}}"
+route GET "/api/issues/$ISSUE1/comments" 200 \
+  "[{\"id\":\"c0000000-0000-0000-0000-00000000000a\",\"body\":\"approve start PROJ-1\",\"authorUserId\":\"$BOARD\",\"authorAgentId\":null,\"createdAt\":\"2026-02-01T00:00:00Z\"}]"
+route POST "/api/issues/$ISSUE1/comments" 201 '{}'
+run_afk paperclip-poll --json
+assert_eq "mismatched commit: no terminal create" "$(wc -l <"$ORCA_CREATE_LOG" | tr -d ' ')" "0"
+assert_contains "mismatched commit: result names the reason" "$OUT_TEXT" "APPROVAL_INTERIM_UNATTESTED"
+
+new_scenario health_unreachable
+write_config "$(jq -nc --arg cv v1 '{pm_start_enabled:true, interim_comment_approval:{paperclip_commit:$cv}}')"
+# No /api/health fixture at all: the curl stub falls back to its DEFAULT (a
+# transport-style 000), exactly like an unreachable health endpoint.
+JARVIS="88888888-8888-8888-8888-888888888888"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+mkdir -p "$STATE/paperclip"
+jq -n --arg a "$AGENT1" --arg id "$ISSUE1" \
+  '{issues: {($id): {agent_id: $a, project: "proj", identifier: "PROJ-1", state: "pending_claim", since: "2026-01-01T00:00:00Z"}},
+    stranded_reported: [], drain_tampered_reported: false, last_successful_pass: null}' \
+  >"$STATE/paperclip/ledger.json"
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+route GET "/api/issues/$ISSUE1" 200 \
+  "{\"status\":\"blocked\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"createdByUserId\":\"$JARVIS\",\"unblockDescriptor\":{\"owner\":{\"agentId\":\"$AGENT1\"},\"action\":\"paused\"}}"
+route GET "/api/issues/$ISSUE1/comments" 200 \
+  "[{\"id\":\"c0000000-0000-0000-0000-00000000000a\",\"body\":\"approve start PROJ-1\",\"authorUserId\":\"$BOARD\",\"authorAgentId\":null,\"createdAt\":\"2026-02-01T00:00:00Z\"}]"
+route POST "/api/issues/$ISSUE1/comments" 201 '{}'
+run_afk paperclip-poll --json
+assert_eq "health unreachable: no terminal create" "$(wc -l <"$ORCA_CREATE_LOG" | tr -d ' ')" "0"
+assert_contains "health unreachable: result names the reason" "$OUT_TEXT" "APPROVAL_INTERIM_UNATTESTED"
+
+# ============================================================================
 head1 "6. A different Josh comment never authorises a start"
 # ============================================================================
 new_scenario josh_wrong_text
-write_config "$(jq -nc --arg cv v1 '{pm_start_enabled:true, paperclip_version:$cv, interim_comment_approval:{paperclip_version:$cv}}')"
+write_config "$(jq -nc --arg cv v1 '{pm_start_enabled:true, interim_comment_approval:{paperclip_commit:$cv}}')"
+route GET /api/health 200 '{"commit":"v1"}'
 JARVIS="88888888-8888-8888-8888-888888888888"
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 mkdir -p "$STATE/paperclip"

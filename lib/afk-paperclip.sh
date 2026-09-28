@@ -80,6 +80,22 @@ afk_pc_comment() { # <api_url> <issue_id> <key> <run_id> <body>
   afk_pc_curl POST "$1/api/issues/$2/comments" "$3" "$4" "$b"
 }
 
+# afk_pc_health_commit <api_url> <key> -- the one place anything reads the
+# deployed commit, used by every interim-approval attestation check (AC-6).
+# Prints the commit on stdout and returns 0; any transport failure, non-2xx,
+# unparseable body or empty commit is a failure with nothing printed --
+# fail-closed, the same way a missing attestation already is.
+afk_pc_health_commit() {
+  local api_url="$1" key="$2" resp status body commit
+  resp="$(afk_pc_curl GET "$api_url/api/health" "$key" "")"
+  status="${resp%%$'\n'*}"
+  [[ "$status" == 2?? ]] || return 1
+  body="${resp#*$'\n'}"
+  commit="$(jq -r '.commit // empty' <<<"$body" 2>/dev/null)"
+  [[ -n "$commit" ]] || return 1
+  printf '%s' "$commit"
+}
+
 afk_pc_self_block() { # <api_url> <issue_id> <key> <run_id> <agent_id> <action_text> [<clear_blockers:true|false>]
   local b
   if [[ "${7:-false}" == true ]]; then
@@ -260,17 +276,28 @@ AFK_PC_SPOOL_HELD_LOCK=""
 AFK_PC_SPOOL_PREV_EXIT_TRAP=""
 AFK_PC_SPOOL_TRAP_CHAINED="false"
 afk_pc_spool_exit_trap() {
-  [[ -n "$AFK_PC_SPOOL_HELD_LOCK" ]] && rmdir "$AFK_PC_SPOOL_HELD_LOCK" 2>/dev/null
+  [[ -n "$AFK_PC_SPOOL_HELD_LOCK" ]] && { rm -f "$AFK_PC_SPOOL_HELD_LOCK/owner" 2>/dev/null; rmdir "$AFK_PC_SPOOL_HELD_LOCK" 2>/dev/null; }
   [[ -n "$AFK_PC_SPOOL_PREV_EXIT_TRAP" ]] && eval "$AFK_PC_SPOOL_PREV_EXIT_TRAP"
 }
+# AC-3: this lockdir is also `afk_pcr_lock`'s (lib/afk-paperclip-report.sh)
+# spool `.seq.lock` -- the same directory, briefly held from this (reader)
+# side too. Recording an owner here as well means a writer's stale-reap can
+# tell a live reader from a dead one instead of only ever seeing an unowned
+# lock and reaping it on age alone.
 afk_pc_spool_lock() { # <lockdir>
   local dir="$1" waited=0
   while ! mkdir "$dir" 2>/dev/null; do
+    if (( waited % 100 == 0 )) && declare -F afk_pcs_lock_stale_reap >/dev/null 2>&1 && \
+       afk_pcs_lock_stale_reap "$dir" "${AFK_PCR_LOCK_STALE_INTERVAL_SECONDS:-30}" "paperclip-report|paperclip-poll" && \
+       mkdir "$dir" 2>/dev/null; then
+      break
+    fi
     sleep 0.02
     waited=$((waited + 1))
     (( waited > 500 )) && return 1
   done
   AFK_PC_SPOOL_HELD_LOCK="$dir"
+  printf '%s %s\n' "$$" "$(date +%s)" >"$dir/owner" 2>/dev/null || true
   if [[ "$AFK_PC_SPOOL_TRAP_CHAINED" != true ]]; then
     local prev; prev="$(trap -p EXIT)"
     if [[ -n "$prev" ]]; then
@@ -284,10 +311,10 @@ afk_pc_spool_lock() { # <lockdir>
   return 0
 }
 afk_pc_spool_unlock() { # <lockdir> -- deliberately leaves the chained trap
-  rmdir "$1" 2>/dev/null || true         # in place: at real process exit it
-  AFK_PC_SPOOL_HELD_LOCK=""              # rmdir's an already-gone dir (a
-}                                         # no-op) and still runs the
-                                          # previous trap it chained onto.
+  rm -f "$1/owner" 2>/dev/null                # in place: at real process
+  rmdir "$1" 2>/dev/null || true              # exit it rmdir's an already-
+  AFK_PC_SPOOL_HELD_LOCK=""                   # gone dir (a no-op) and still
+}                                              # runs the previous trap.
 
 afk_pc_spool_dead() { # <issue_id> <entry-file-basename> <reason>
   local dir; dir="$(afk_pc_spool_dir "$1")/dead"

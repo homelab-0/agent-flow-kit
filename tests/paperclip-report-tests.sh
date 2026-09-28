@@ -21,6 +21,7 @@ bad() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; [[ -n "${2:-}" ]] && printf ' 
 head1() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 assert_eq()       { if [[ "$2" == "$3" ]]; then ok "$1"; else bad "$1" "expected '$3', got '$2'"; fi; }
 assert_contains() { if [[ "$2" == *"$3"* ]]; then ok "$1"; else bad "$1" "missing substring: $3 in: $2"; fi; }
+assert_absent()   { if [[ "$2" != *"$3"* ]]; then ok "$1"; else bad "$1" "should NOT contain: $3"; fi; }
 
 if bash -n "$KIT_ROOT/lib/afk-paperclip-report.sh"; then ok "bash -n lib/afk-paperclip-report.sh"
 else bad "bash -n lib/afk-paperclip-report.sh"; fi
@@ -110,6 +111,12 @@ run_afk termA paperclip-report --issue "$ISSUE" --comment-file "$TMPROOT/big.txt
 assert_contains "a body over 16 KiB is refused" "$OUT_TEXT" "PAPERCLIP_BODY_TOO_LARGE"
 assert_eq "  ...nothing published" "$(find "$STATE/paperclip/spool" -name '[0-9]*.json' 2>/dev/null | wc -l)" "0"
 
+# AC-2: a NUL byte must refuse the whole body, never silently truncate it.
+printf 'before\000after' >"$TMPROOT/nul.txt"
+run_afk termA paperclip-report --issue "$ISSUE" --comment-file "$TMPROOT/nul.txt" --json
+assert_contains "a body with an embedded NUL is refused" "$OUT_TEXT" "PAPERCLIP_BODY_INVALID"
+assert_eq "  ...nothing published" "$(find "$STATE/paperclip/spool" -name '[0-9]*.json' 2>/dev/null | wc -l)" "0"
+
 head1 "2. Ordering and crash recovery (AC-2)"
 reset_state
 mkdir -p "$STATE/paperclip/spool/$ISSUE/.tmp"
@@ -157,7 +164,7 @@ kill "$SWAPPER" 2>/dev/null; wait "$SWAPPER" 2>/dev/null
 if [[ "$RACE_RC" -ne 124 ]]; then ok "a path swapped mid-race never hangs the reader"
 else bad "a path swapped mid-race never hangs the reader" "timed out (rc=124)"; fi
 
-head1 "3. Concurrency: two backgrounded writers never collide (AC-2)"
+head1 "3. Concurrency: two backgrounded writers never collide (AC-2, AC-5)"
 reset_state
 run_bg() { # <out-file> <args...> -- a standalone invocation, safe backgrounded
   local outfile="$1"; shift
@@ -166,9 +173,14 @@ run_bg() { # <out-file> <args...> -- a standalone invocation, safe backgrounded
     AFK_PAPERCLIP_CONFIG="$CONFIG" ORCA_TERMINAL_HANDLE="termA" \
     bash "$AFK" "$@" >"$outfile" 2>&1
 }
-run_bg "$TMPROOT/c1.out" paperclip-report --issue "$ISSUE" --comment-file "$(body_file concA)" --json &
+# AC-5: separate body files, not one shared path each writer's argument
+# evaluates in turn (which would let the second writer's body clobber the
+# first's before either backgrounded process ever reads it).
+CONC_BODY_A="$TMPROOT/concA.txt"; printf '%s' "concurrent body A" >"$CONC_BODY_A"
+CONC_BODY_B="$TMPROOT/concB.txt"; printf '%s' "concurrent body B" >"$CONC_BODY_B"
+run_bg "$TMPROOT/c1.out" paperclip-report --issue "$ISSUE" --comment-file "$CONC_BODY_A" --json &
 p1=$!
-run_bg "$TMPROOT/c2.out" paperclip-report --issue "$ISSUE" --comment-file "$(body_file concB)" --json &
+run_bg "$TMPROOT/c2.out" paperclip-report --issue "$ISSUE" --comment-file "$CONC_BODY_B" --json &
 p2=$!
 wait "$p1" "$p2"
 s1="$(jq -r .seq "$TMPROOT/c1.out" 2>/dev/null)"
@@ -180,6 +192,44 @@ else
 fi
 assert_eq "  ...exactly two live entries were published" \
   "$(find "$STATE/paperclip/spool/$ISSUE" -maxdepth 1 -name '[0-9]*.json' | wc -l)" "2"
+bodies="$(for f in "$STATE/paperclip/spool/$ISSUE"/[0-9]*.json; do jq -r .body "$f"; done | sort)"
+assert_eq "  ...both bodies were published intact, neither clobbered the other" \
+  "$bodies" "$(printf 'concurrent body A\nconcurrent body B' | sort)"
+
+head1 "3b. AC-3: the spool .seq.lock records its holder and reaps only when stale"
+reset_state
+LOCKDIR="$STATE/paperclip/spool/$ISSUE/.seq.lock"
+
+# A lock left by a dead holder (PID certainly not alive) is reaped and the
+# write proceeds instead of timing out.
+mkdir -p "$LOCKDIR"
+printf '999999 0\n' >"$LOCKDIR/owner"
+touch -d '-1000 seconds' "$LOCKDIR"
+run_afk termA paperclip-report --issue "$ISSUE" --comment-file "$(body_file "after dead holder")" --json
+assert_eq "dead holder: the write proceeds instead of timing out" "$(jq -r .result <<<"$(tail -1 <<<"$OUT_TEXT")")" "ok"
+assert_absent "  ...PAPERCLIP_LOCK_TIMEOUT is not reported" "$OUT_TEXT" "PAPERCLIP_LOCK_TIMEOUT"
+
+# An old lock whose recorded owner is still alive (and is a paperclip writer)
+# is never touched: the write times out and the lock survives untouched.
+reset_state
+mkdir -p "$LOCKDIR"
+bash -c 'sleep 20; :' paperclip-report & LIVE_PID=$!
+printf '%s 0\n' "$LIVE_PID" >"$LOCKDIR/owner"
+touch -d '-1000 seconds' "$LOCKDIR"
+run_afk termA paperclip-report --issue "$ISSUE" --comment-file "$(body_file "blocked by live holder")" --json
+kill "$LIVE_PID" 2>/dev/null; wait "$LIVE_PID" 2>/dev/null
+assert_contains "live holder: the write times out" "$OUT_TEXT" "PAPERCLIP_LOCK_TIMEOUT"
+assert_eq "  ...the live holder's lock is never removed" "$([[ -d "$LOCKDIR" ]] && echo yes)" "yes"
+
+# A reused PID (alive, but not a paperclip writer) does not pin the lock.
+reset_state
+mkdir -p "$LOCKDIR"
+sleep 20 & OTHER_PID=$!
+printf '%s 0\n' "$OTHER_PID" >"$LOCKDIR/owner"
+touch -d '-1000 seconds' "$LOCKDIR"
+run_afk termA paperclip-report --issue "$ISSUE" --comment-file "$(body_file "after reused pid")" --json
+kill "$OTHER_PID" 2>/dev/null; wait "$OTHER_PID" 2>/dev/null
+assert_eq "reused pid: the write proceeds" "$(jq -r .result <<<"$(tail -1 <<<"$OUT_TEXT")")" "ok"
 
 head1 "4. Question entries and final closure (AC-2, AC-3)"
 reset_state

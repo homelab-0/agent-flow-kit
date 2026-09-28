@@ -104,13 +104,22 @@ afk_pcs_start_pm() {
 
 # afk_pcs_approval_granted -- AC-2. Reads api_url/key/id/board_user_id/
 # AFK_PC_CFG from the caller. Sets AFK_PCS_APPROVAL_RESULT on refusal.
+#
+# AC-6 (unify with PC-3b's plan approval): the attestation compares
+# `interim_comment_approval.paperclip_commit` against the deployed commit
+# from `GET /api/health` (afk_pc_health_commit, lib/afk-paperclip.sh), never
+# a locally-declared `paperclip_version`. A health check that fails, times
+# out or returns no commit is the same fail-closed refusal as a missing
+# attestation -- never treated as "attested".
 afk_pcs_approval_granted() {
-  local cfg_version interim interim_version attested=false resp body found=false c
-  cfg_version="$(jq -r '.paperclip_version // empty' <<<"$AFK_PC_CFG" 2>/dev/null)"
+  local interim interim_commit deployed_commit attested=false resp body found=false c
   interim="$(jq -c '.interim_comment_approval // empty' <<<"$AFK_PC_CFG" 2>/dev/null)"
   if [[ -n "$interim" && "$interim" != null ]]; then
-    interim_version="$(jq -r '.paperclip_version // empty' <<<"$interim")"
-    [[ -n "$cfg_version" && "$interim_version" == "$cfg_version" ]] && attested=true
+    interim_commit="$(jq -r '.paperclip_commit // empty' <<<"$interim")"
+    if [[ -n "$interim_commit" ]]; then
+      deployed_commit="$(afk_pc_health_commit "$api_url" "$key")" || deployed_commit=""
+      [[ -n "$deployed_commit" && "$interim_commit" == "$deployed_commit" ]] && attested=true
+    fi
   fi
   if [[ "$attested" != true ]]; then
     AFK_PCS_APPROVAL_RESULT="APPROVAL_INTERIM_UNATTESTED"
@@ -254,23 +263,23 @@ afk_pcs_path_age() { # <path> -> seconds since mtime, or fails
   printf '%s' "$(( $(date +%s) - mtime ))"
 }
 
-afk_pcs_lock_is_stale() { # <lockdir> <interval_seconds>
-  local lockdir="$1" interval="$2" age pid=""
+afk_pcs_lock_is_stale() { # <lockdir> <interval_seconds> [<holder_cmd_pattern>]
+  local lockdir="$1" interval="$2" pattern="${3:-paperclip-poll}" age pid=""
   [[ -d "$lockdir" && ! -L "$lockdir" ]] || return 1
   age="$(afk_pcs_path_age "$lockdir")" || return 1
   (( age > interval * 5 )) || return 1
   [[ -f "$lockdir/owner" ]] && pid="$(awk '{print $1}' "$lockdir/owner" 2>/dev/null)"
   if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
-    # Alive. Only a reused PID (provably not a paperclip-poll) is stale;
-    # without /proc we cannot tell, so the lock stands.
+    # Alive. Only a reused PID (provably not the expected paperclip writer)
+    # is stale; without /proc we cannot tell, so the lock stands.
     [[ -r "/proc/$pid/cmdline" ]] || return 1
-    tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | grep -q 'paperclip-poll' && return 1
+    tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | grep -Eq -- "$pattern" && return 1
   fi
   return 0
 }
 
-afk_pcs_lock_stale_reap() { # <lockdir> <interval_seconds>
-  local lockdir="$1" interval="$2" reaplock="$1.reap" age rc=1
+afk_pcs_lock_stale_reap() { # <lockdir> <interval_seconds> [<holder_cmd_pattern>]
+  local lockdir="$1" interval="$2" pattern="${3:-paperclip-poll}" reaplock="$1.reap" age rc=1
   [[ "$interval" =~ ^[0-9]+$ ]] || interval=90
   # Serialise reapers: without this, a reaper that checked before a peer's
   # reap+mkdir would delete the peer's fresh, live lock. The staleness check
@@ -280,7 +289,7 @@ afk_pcs_lock_stale_reap() { # <lockdir> <interval_seconds>
     (( age > interval )) || return 1
     rmdir "$reaplock" 2>/dev/null; mkdir "$reaplock" 2>/dev/null || return 1
   fi
-  afk_pcs_lock_is_stale "$lockdir" "$interval" && rm -rf -- "$lockdir" && rc=0
+  afk_pcs_lock_is_stale "$lockdir" "$interval" "$pattern" && rm -rf -- "$lockdir" && rc=0
   rmdir "$reaplock" 2>/dev/null
   return "$rc"
 }
