@@ -317,7 +317,7 @@ hold_publication_window() { # <window-file> <publish-file> <let-go-file>
     i=0; while [[ ! -e "$4" ]]; do i=$((i + 1)); (( i < 60000000 )) || break; done
     afk_state_file_write "$AFK_LOCK_DIR/owner.json" "$record" || exit 1
     i=0; while [[ ! -e "$5" ]]; do i=$((i + 1)); (( i < 60000000 )) || break; done
-  ' _ "$KIT_ROOT" "$HOMEDIR/$STATE_DIR_REL" "$1" "$2" "$3" &
+  ' _ "$KIT_ROOT" "$HOMEDIR/$STATE_DIR_REL" "$1" "$2" "$3" {AFK_TEST_LOCK_FD}<&- &
   PUBLISHER_PID=$!
 }
 
@@ -1706,7 +1706,7 @@ contend_update() { # <n>
       done
       HOME="$HOMEDIR" XDG_STATE_HOME="$HOMEDIR/.local/state" AFK_KIT_ROOT="$CHECKOUT" \
         bash "$AFK" update --json > "$out/$i" 2>/dev/null
-    ) &
+    ) {AFK_TEST_LOCK_FD}<&- &
   done
   local waited=0
   while (( $(find "$bar" -mindepth 1 -maxdepth 1 -name 'ready.*' | wc -l) < n )); do
@@ -1830,7 +1830,7 @@ assert_no_file "F6 with the lock carrying no record yet" "$(lock_path)/owner.jso
 
 UPD_OUT="$SC/window-update.json"
 ( HOME="$HOMEDIR" XDG_STATE_HOME="$HOMEDIR/.local/state" AFK_KIT_ROOT="$CHECKOUT" \
-    bash "$AFK" update --json > "$UPD_OUT" 2>/dev/null ) &
+    bash "$AFK" update --json > "$UPD_OUT" 2>/dev/null ) {AFK_TEST_LOCK_FD}<&- &
 UPD_PID=$!
 CONTENDER_PAUSED="false"
 wait_until_contender_pauses "$UPD_PID" && CONTENDER_PAUSED="true"
@@ -2373,7 +2373,7 @@ sig_launch() { # <tool> <match> <second:true|false> <args...>
              AFK_SIGTEST_DIR="$SIGDIR" \
              AFK_SIGTEST_MATCH="$match" \
              AFK_SIGTEST_SECOND="$second" \
-             bash "$AFK" "$@" ) > "$SIGDIR/out" 2> "$SIGDIR/err" &
+             bash "$AFK" "$@" ) > "$SIGDIR/out" 2> "$SIGDIR/err" {AFK_TEST_LOCK_FD}<&- &
   VICTIM_PID=$!
   return 0
 }

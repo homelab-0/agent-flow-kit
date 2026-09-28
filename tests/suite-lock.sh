@@ -22,9 +22,35 @@ AFK_TEST_LOCK_MKDIR=""
 
 # Portable mtime in epoch seconds (GNU vs. BSD stat), or empty on failure —
 # callers must guard on that emptiness rather than let an arithmetic
-# comparison silently misbehave.
+# comparison silently misbehave. Each attempt's own exit status AND output
+# shape are checked before being trusted: GNU stat's `-f` (filesystem status)
+# mode doesn't accept `%m` as a format and, observed live under contention,
+# can print its verbose fallback dump to stdout while still exiting non-zero
+# — a bare `cmd1 || cmd2` would hand that whole multi-line block to a caller
+# as if it were a clean epoch number, and an arithmetic comparison on it
+# reports the FIRST WORD IN IT ("File") as an unbound variable.
 afk_test_lock_mtime() { # <path>
-  stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null
+  local out
+  out="$(stat -c %Y "$1" 2>/dev/null)" && [[ "$out" == [0-9]* ]] && { printf '%s\n' "$out"; return 0; }
+  out="$(stat -f %m "$1" 2>/dev/null)" && [[ "$out" == [0-9]* ]] && { printf '%s\n' "$out"; return 0; }
+  return 1
+}
+
+# Try to win the second, contended "<lockdir.d>.reclaim" mutex. On success,
+# the caller re-checks under it, acts, and must rmdir it, then may retry
+# immediately (no sleep needed — real progress was made). On failure the
+# mutex is already held — briefly, by another live reclaimer racing the same
+# check, or FOREVER, by one that died holding it (orphaned). Either way the
+# caller must NOT immediately retry: busy-looping here never sleeps and never
+# reaches the timeout check, a CPU-burning permanent hang. So failure also
+# best-effort removes the mutex if it is itself older than the grace period,
+# letting a LATER iteration (after the caller's normal sleep) succeed, and
+# always returns 1 so the caller falls through to that sleep.
+afk_test_lock_reclaim_mutex() { # <lockdir.d> <grace-seconds>
+  mkdir "$1.reclaim" 2>/dev/null && return 0
+  local age; age="$(afk_test_lock_mtime "$1.reclaim")"
+  [[ -n "$age" ]] && (( $(date +%s) - age >= $2 )) && rmdir "$1.reclaim" 2>/dev/null
+  return 1
 }
 
 afk_test_lock_acquire() {
@@ -69,14 +95,16 @@ afk_test_lock_acquire() {
         # pid is STILL the same dead one before deleting — a live holder can
         # have taken the dir over (new mkdir, different live pid) in the gap
         # between the observation above and now.
-        if mkdir "$lockdir.d.reclaim" 2>/dev/null; then
+        if afk_test_lock_reclaim_mutex "$lockdir.d" "$grace"; then
           recheck="$(cat "$lockdir.d/pid" 2>/dev/null || true)"
           if [[ -n "$recheck" && "$recheck" == "$ownerpid" ]] && ! kill -0 "$recheck" 2>/dev/null; then
             rm -rf "$lockdir.d"
           fi
           rmdir "$lockdir.d.reclaim"
+          continue
         fi
-        continue
+        # Mutex not won (held live, or was orphaned and just best-effort
+        # cleaned for a later iteration) — fall through to the sleep below.
       fi
       if [[ -z "$ownerpid" ]]; then
         # No pid file yet — either the holder is still writing it (a normal,
@@ -89,15 +117,17 @@ afk_test_lock_acquire() {
         # old before deleting, exactly as the dead-pid path re-confirms.
         dir_age="$(afk_test_lock_mtime "$lockdir.d")"
         if [[ -n "$dir_age" ]] && (( $(date +%s) - dir_age >= grace )); then
-          if mkdir "$lockdir.d.reclaim" 2>/dev/null; then
+          if afk_test_lock_reclaim_mutex "$lockdir.d" "$grace"; then
             recheck="$(cat "$lockdir.d/pid" 2>/dev/null || true)"
             now_epoch="$(afk_test_lock_mtime "$lockdir.d")"
             if [[ -z "$recheck" && -n "$now_epoch" ]] && (( $(date +%s) - now_epoch >= grace )); then
               rm -rf "$lockdir.d"
             fi
             rmdir "$lockdir.d.reclaim"
+            continue
           fi
-          continue
+          # Mutex not won — fall through to the sleep below, same reasoning
+          # as the dead-pid path above.
         fi
       fi
       if (( printed == 0 )); then

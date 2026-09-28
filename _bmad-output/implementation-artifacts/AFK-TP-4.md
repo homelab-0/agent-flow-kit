@@ -557,3 +557,99 @@ shellcheck (`-s bash`) clean on `tests/run-tests.sh`,
 `tests/runner-lock-tests.sh`, `tests/suite-lock.sh`. `git diff --check`
 clean. `bash -n tests/run-tests.sh` clean. The full suite was **not** run,
 per instruction — the PM will give a slot after TP-3 and PC-4 finish.
+
+### Full run at HEAD 0aa0f62 (PM's "go full" slot)
+
+One full `bash tests/run-tests.sh`, `TMPDIR` outside any git repo, no
+`/tmp/.git`: **950 passed, 0 failed**, exit 0, total wall time 3679s. All four
+Paperclip suites passed through `run_gate` (204/0, 65/0, 53/0, 45/0), the lock
+gate 11/0. Full per-suite timing reported to the PM; no fix needed.
+
+### Third post-review fix (orphaned `.reclaim` mutex — CPU-burning hang)
+
+Delta review approved `0aa0f62`. One narrow edge remained: a reclaimer that
+died while holding `$lockdir.d.reclaim` orphans that mutex. Every later
+stale-pid or empty-dir detection then hit `mkdir "$lockdir.d.reclaim"`,
+which fails forever against the orphaned dir, and the old code unconditionally
+`continue`d on that failure — skipping the sleep and the elapsed-timeout
+check entirely. With the default `AFK_TEST_LOCK_TIMEOUT=0` this is a
+permanent, CPU-burning hang (100% of a core, no output, no exit).
+
+Fixed with a small shared helper, `afk_test_lock_reclaim_mutex()`: on a failed
+`mkdir .reclaim`, it best-effort `rmdir`s the mutex if IT is older than the
+same `AFK_TEST_LOCK_EMPTY_GRACE_S` grace period (letting a later iteration
+retry), and always returns 1 so BOTH reclaim call sites (dead-pid and
+empty-dir) now fall through to the existing sleep+elapsed-timeout block on
+failure instead of `continue`-ing past it. Verified directly: ran the
+UNFIXED algorithm (a scratch copy, not committed) against a pre-created
+dead-pid lock with a pre-created `.reclaim`, wrapped in `timeout 8` as a
+safety net — it hung the full 8s with zero output (killed by `timeout`,
+rc=124), exactly the described hang. The fixed algorithm resolves the same
+scenario in ~1s.
+
+**New tests (11a/11b) in `tests/runner-lock-tests.sh`:** 11a pre-creates a
+dead-pid lock plus an OLD (backdated) orphaned `.reclaim` and asserts a
+waiter reclaims within about the grace period; 11b pre-creates a FRESH
+`.reclaim` (not yet past grace) and asserts `AFK_TEST_LOCK_TIMEOUT` still
+fires (rc=3) rather than hanging — wrapped in `timeout 10` so a regression
+fails the test instead of hanging the whole suite.
+
+**A second real bug found while verifying, this one pre-existing (from the
+BLOCKER fix, not this round's change):** `afk_test_lock_mtime()`'s BSD/macOS
+fallback, `stat -f %m PATH`, is not a valid invocation on GNU stat (`-f` means
+filesystem status, and `%m` isn't one of its fields) — and critically, GNU
+stat can print its verbose filesystem-info dump to STDOUT while STILL exiting
+non-zero. The original `stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null`
+only checked the exit status of the OVERALL `||` expression via the caller's
+`[[ -n "$dir_age" ]]` guard, never the individual commands', so this garbage
+multi-line block was captured as if it were a clean epoch number whenever the
+first `stat -c %Y` failed. The subsequent `(( ... - age >= grace ))`
+arithmetic then tried to evaluate that garbage as an expression, and hit the
+literal word `File` (the first token of the dump's `  File: "path"` line) as
+an unbound variable reference under `set -u` — reproduced as an intermittent
+`racer-N-M.err` failure in test 7 (roughly 1-in-10 to 1-in-12 runs once
+isolated with tracing, though it ran 10/10 clean immediately after the fix in
+one measurement and 10/10 failing in another — genuinely load/timing
+dependent, not something I could pin to one exact trigger condition beyond
+"the first `stat -c %Y` sometimes fails under 14-way mkdir/rmdir contention").
+Fixed `afk_test_lock_mtime()` to check each attempt's own exit status AND
+validate its output looks like a bare number (`[[ "$out" == [0-9]* ]]`)
+before trusting it, returning 1 with no output otherwise — every existing
+caller already guards on emptiness, so no caller needed to change.
+**Verified: 25/25 consecutive `runner-lock-tests.sh` runs clean after this
+fix** (10 + 15, split across two sweeps), versus a reproducible 10/10 failure
+rate immediately before it in the same environment.
+
+**Verification (this round):** `runner-lock-tests.sh` 13 passed / 0 failed,
+25/25 consecutive standalone runs clean. shellcheck (`-s bash`) clean on
+`tests/run-tests.sh`, `tests/runner-lock-tests.sh`, `tests/suite-lock.sh`;
+the four touched regions of `tests/lifecycle-mutation-tests.sh` (fd closes
+only, no assertion changed) clean at `--severity=warning --exclude=SC2034,SC2154`.
+`git diff --check` clean. `bash -n` clean on all four files. The mutation
+suite itself was **not** run — the PM will schedule one run since its
+fd-close-only change is covered by inspection and shellcheck, not by a
+standalone execution of that suite in this round.
+
+### CodeRabbit PR findings addressed in this round
+
+- **A (Major, 4127461311)** — the same spin fix as above; already covered.
+  PM ruling: kept the age-based `.reclaim` removal (CodeRabbit's suggestion
+  was to drop it) because every reclaimer still re-verifies the dead pid (or
+  the empty dir's age) under the mutex before deleting, and without the
+  age-based removal an orphaned mutex makes stale locks permanently
+  unreclaimable under the default unbounded timeout.
+- **B (Minor, 4127461278)** — closed `{AFK_TEST_LOCK_FD}<&-` on
+  `tests/lifecycle-mutation-tests.sh`'s four background child launches
+  (`hold_publication_window`'s `bash -c ... &`, `contend_update`'s
+  `( ... ) &` loop, the window-update `( ... ) &`, and `sig_run_and_track`'s
+  `( exec env ... ) &`). No assertion changed.
+- **C (Minor, 4127461287)** — `tests/runner-lock-tests.sh`'s racer now uses
+  a `now_ns()` helper: `$EPOCHREALTIME` (bash 5+) first, then `python3`, then
+  `perl -MTime::HiRes`, and exits 2 with a clear stderr message if none are
+  available — test 7 now checks every racer's exit code and reports a clear
+  FAIL (not a silent pass on an empty log) if any racer failed for any reason,
+  including a missing sub-second clock.
+- **D (Minor, 4127461300)** — test 8 now `skip()`s (a new SKIPPED counter,
+  reported in the final tally) when `setsid` isn't on the host, and FAILs
+  (rather than silently passing) if it ran but the grandchild never wrote its
+  pid file.
