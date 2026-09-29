@@ -82,6 +82,11 @@ code="$(head -1 "$f")"
 if [[ "$method" == GET && "$path" =~ ^/api/issues/[0-9a-f-]{36}$ && -f "$CURL_STUB_FIXTURES/.default_project" ]] &&
    ! grep -q '"projectId"' "$f" && tail -n +2 "$f" | jq -e 'type == "object"' >/dev/null 2>&1; then
   tail -n +2 "$f" | jq -c --arg p "$(cat "$CURL_STUB_FIXTURES/.default_project")" '. + {projectId: $p}'
+# A /me with no runtimeConfig key reports a lease-mode heartbeat (AD-26);
+# `"runtimeConfig": null` in a fixture is served as written.
+elif [[ "$method" == GET && "$path" == /api/agents/me ]] && ! grep -q '"runtimeConfig"' "$f" &&
+     tail -n +2 "$f" | jq -e 'type == "object"' >/dev/null 2>&1; then
+  tail -n +2 "$f" | jq -c '. + {runtimeConfig: {heartbeat: {enabled: true, intervalSec: 0, wakeOnDemand: true}}}'
 else
   tail -n +2 "$f"
 fi
@@ -1841,6 +1846,200 @@ issue 1 in_progress "\"$(pid_n 1)\""
 issue 2 in_progress "\"$(pid_n 2)\""
 run_afk --json
 assert_eq "an explicit host.max_active_issues wins over the intermittent default" "$(lget "$(iid 1)") $(lget "$(iid 2)")" "working working"
+
+# ============================================================================
+head1 "20. Pull adoption, resume, nudge, strand repair, reconciliation (HA-4a, AD-26)"
+# ============================================================================
+PULL_HB='{"enabled":true,"intervalSec":0,"wakeOnDemand":false}'
+me_hb() { route GET /api/agents/me 200 "{\"id\":\"$AGENT1\",\"runtimeConfig\":${1:-null}}"; }
+pull_mode() { set_cfg '.host.adoption = "pull"'; me_hb "{\"heartbeat\":$PULL_HB}"; }
+posts_to() { grep -c "^POST /api/issues/$1/comments$" "$LOG"; }
+lset() { jq --arg id "$(iid "$1")" ".issues[\$id] += $2" "$(LEDGER_OF)" >"$(LEDGER_OF).t" && mv "$(LEDGER_OF).t" "$(LEDGER_OF)"; }
+
+# AC-1, AC-2: the value is validated at load and the agent's heartbeat is
+# checked against it on every pass, in each direction.
+cfg_refused cfg_adoption_bad '.host.adoption = "push"' PAPERCLIP_CONFIG_INVALID
+mode_mismatch() { # <name> <adoption> <runtimeConfig-json>
+  new_scenario "$1"; three_projects; inbox 1; issue 1 in_progress "\"$(pid_n 1)\""
+  set_cfg ".host.adoption = \"$2\""; me_hb "$3"
+  run_afk --json
+  assert_eq "$1: the pass ends with PAPERCLIP_ADOPTION_MODE_MISMATCH" "$RC $(jq -r '.result + " " + .agents[0].result' <<<"$OUT_TEXT" 2>/dev/null | head -1)" \
+    "1 PAPERCLIP_ADOPTION_MODE_MISMATCH PAPERCLIP_ADOPTION_MODE_MISMATCH"
+  assert_eq "$1: nothing claimed, nothing written, the inbox never read" \
+    "$(grep -c -e '^POST' -e '^PATCH' -e 'inbox-lite' "$LOG")$(lget "$(iid 1)")" "0"
+}
+mode_mismatch mode_lease_vs_pull lease "{\"heartbeat\":$PULL_HB}"
+mode_mismatch mode_pull_vs_lease pull '{"heartbeat":{"enabled":true,"intervalSec":0,"wakeOnDemand":true}}'
+mode_mismatch mode_pull_interval pull '{"heartbeat":{"enabled":true,"intervalSec":300,"wakeOnDemand":false}}'
+mode_mismatch mode_no_fields pull null
+mode_mismatch mode_lease_no_fields lease null
+
+# AC-3: a todo issue is adopted by the host's own cycle: self-wake with the
+# issueId, in_progress, the claim comment, then the self-block. A second issue
+# in the same project queues; one this host can't take ends self-blocked with
+# its reason, never left in todo. A second pass (now blocked) claims nothing new.
+new_scenario pull_adopt
+three_projects
+inbox 1 8 4
+pull_mode
+issue 1 todo "\"$(pid_n 1)\""; issue 8 todo "\"$UNMAPPED_P\""; issue 4 todo "\"$(pid_n 1)\""
+run_afk --json
+assert_eq "pull: adopted, queued behind it, refused" "$(lget "$(iid 1)") $(lget "$(iid 4)") $(lget "$(iid 8)")" "working queued waiting_setup"
+assert_contains "pull: the self-wake names the issue" "$(cat "$BODYLOG")" "{\"source\":\"timer\",\"payload\":{\"issueId\":\"$(iid 1)\"}}"
+assert_eq "pull: in_progress, claim comment, self-block, in that order" \
+  "$(grep -e "/api/issues/$(iid 1)" "$LOG" | grep -v -e '^GET' | tr '\n' '|')" \
+  "PATCH /api/issues/$(iid 1)|POST /api/issues/$(iid 1)/comments|PATCH /api/issues/$(iid 1)|"
+assert_eq "pull: one claim comment each for the adopted and the queued issue, none for the refused" \
+  "$(posts_to "$(iid 1)") $(posts_to "$(iid 4)") $(posts_to "$(iid 8)")" "1 1 0"
+assert_eq "pull: the refused issue is self-blocked with its reason" \
+  "$(grep -c "^PATCH /api/issues/$(iid 8)$" "$LOG") $([[ "$(lget "$(iid 8)" .action_text_applied)" == "$(lget "$(iid 8)" .fixed_text)" ]] && echo same) $(lget "$(iid 8)" .fixed_text | cut -c1-17)" \
+  "2 same Waiting for Josh:"
+assert_eq "pull: the queued issue carries the queue text" "$(lget "$(iid 4)" .action_text_applied)" "queued behind PROJ-1"
+: >"$LOG"
+issue 1 blocked "\"$(pid_n 1)\""; issue 4 blocked "\"$(pid_n 1)\""; issue 8 blocked "\"$UNMAPPED_P\""
+run_afk --json
+assert_eq "pull, second pass: no new claim, nothing written" "$(grep -c -e '^POST' -e '^PATCH' "$LOG")" "0"
+
+# AC-3 (lease regression): a lease host still leaves an unheld todo alone.
+new_scenario lease_todo
+three_projects; inbox 1; issue 1 todo "\"$(pid_n 1)\""
+run_afk --json
+assert_eq "lease: an unheld todo issue is left alone" "$(grep -c -e '^POST' -e '^PATCH' "$LOG")$(lget "$(iid 1)")" "0"
+
+# AC-4 (F7): stranded and held_by_board issues set to Todo are resumed: one
+# resume comment, the state the hold interrupted, since and the open question
+# kept, and a stranded issue's recovery issue closed in the same pass.
+REC="f0000000-0000-0000-0000-0000000000aa"
+new_scenario resume_held
+three_projects
+seed 1 stranded proj "$(pid_n 1)" 2026-01-01T00:00:01Z
+lset 1 "{resume_state:\"waiting_human\", question_id:\"q-7\", question_seq:4, recovery_issue_id:\"$REC\", action_text_applied:\"waiting on q-7\"}"
+seed 2 held_by_board proj2 "$(pid_n 2)"; lset 2 '{resume_state:"working"}'
+jq --arg id "$(iid 1)" '.stranded_reported = [$id]' "$(LEDGER_OF)" >"$(LEDGER_OF).t" && mv "$(LEDGER_OF).t" "$(LEDGER_OF)"
+inbox 1 2
+issue 1 todo "\"$(pid_n 1)\""; issue 2 todo "\"$(pid_n 2)\""
+route PATCH "/api/issues/$REC" 200 '{}'
+for mode in lease pull; do
+  [[ "$mode" == pull ]] && { : >"$LOG"; : >"$BODYLOG"; pull_mode; }
+  [[ "$mode" == lease ]] && cp "$(LEDGER_OF)" "$SCEN/seeded.json"
+  [[ "$mode" == pull ]] && cp "$SCEN/seeded.json" "$(LEDGER_OF)"
+  run_afk --json
+  assert_eq "resume ($mode): restored states" "$(lget "$(iid 1)") $(lget "$(iid 2)")" "waiting_human working"
+  assert_eq "resume ($mode): one resume comment each" "$(grep -c 'resumed by AFK PM (test-host)' "$BODYLOG")" "2"
+  assert_eq "resume ($mode): since, question and seq kept" "$(lget "$(iid 1)" .since) $(lget "$(iid 1)" .question_id) $(lget "$(iid 1)" .question_seq)" "2026-01-01T00:00:01Z q-7 4"
+  assert_eq "resume ($mode): re-blocked with the last applied text" "$(lget "$(iid 1)" .action_text_applied)" "waiting on q-7"
+  assert_eq "resume ($mode): the recovery issue is closed, once" "$(grep -c "^PATCH /api/issues/$REC$" "$LOG")" "1"
+  assert_eq "resume ($mode): no claim comment" "$(grep -c 'claimed by AFK PM' "$BODYLOG")" "0"
+done
+
+# AC-4 (P6d): a comment reopened a waiting_human issue. The nudge scans the
+# comments (Josh's `approve <digest8>` becomes the approval record), posts no
+# comment at all, and re-blocks.
+for mode in lease pull; do
+  new_scenario "nudge_approve_$mode"
+  write_config
+  jq --argjson i "$PATT" '.interim_comment_approval = $i' "$CONFIG" >"$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
+  seed_working "$ISSUE1" HOM-12 waiting_human \
+    "{\"question_id\":\"plan-$PD8\",\"question_seq\":3,\"question_sent_at\":\"2026-03-01T00:00:00.000Z\",\"action_text_applied\":\"waiting on plan-$PD8\"}"
+  mkdir -p "$STATE/paperclip/plans"
+  jq -nc --arg d "$PD" '{schema:"afk-paperclip-plan-record/1", digest:$d, digest8:$d[0:8], question_id:("plan-" + $d[0:8]), posted_seq:3, state:"posted"}' \
+    >"$STATE/paperclip/plans/$ISSUE1.json"
+  route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+  [[ "$mode" == pull ]] && pull_mode
+  route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+  route GET "/api/issues/$ISSUE1" 200 '{"status":"todo","identifier":"HOM-12"}'
+  route GET "/api/issues/$ISSUE1/comments" 200 "[$(jc 1 "approve $PD8")]"
+  route GET "/api/issues/$ISSUE1/approvals" 200 '[]'
+  route GET /api/health 200 "{\"commit\":\"$PCOMMIT\"}"
+  route POST "/api/agents/$AGENT1/wakeup" 202 '{"id":"run-n"}'
+  route PATCH "/api/issues/$ISSUE1" 200 '{}'
+  run_afk --json
+  assert_eq "nudge ($mode): the approve comment is the approval record" "$(jq -r '.kind + " " + .digest' "$STATE/paperclip/approvals/$ISSUE1.json" 2>/dev/null)" "plan $PD"
+  assert_eq "nudge ($mode): no comment posted" "$(grep -c "^POST /api/issues/$ISSUE1/comments$" "$LOG")" "0"
+  assert_eq "nudge ($mode): in_progress then the re-block, still waiting_human" \
+    "$(grep -c "^PATCH /api/issues/$ISSUE1$" "$LOG") $(jq -r --arg id "$ISSUE1" '.issues[$id].state' "$STATE/paperclip/ledger.json")" "2 waiting_human"
+  assert_contains "nudge ($mode): re-blocked with the open question" "$(last_block)" "waiting on plan-$PD8"
+done
+
+# AC-4: a nudge on a queued issue keeps its place (queued_at) and posts nothing.
+new_scenario nudge_queued
+three_projects
+seed 1 working proj "$(pid_n 1)"; seed 2 working proj2 "$(pid_n 2)"
+seed 5 queued proj3 "$(pid_n 3)" 2026-01-01T00:00:05Z; seed 6 queued proj3 "$(pid_n 3)" 2026-01-01T00:00:06Z
+lset 5 '{queued_at:"2026-01-01T00:00:05Z", action_text:"queued: test-host busy (2/2 active)", action_text_applied:"queued: test-host busy (2/2 active)"}'
+lset 6 '{queued_at:"2026-01-01T00:00:06Z", action_text:"queued: test-host busy (2/2 active)", action_text_applied:"queued: test-host busy (2/2 active)"}'
+inbox 1 2 5 6
+pull_mode
+issue 1 blocked "\"$(pid_n 1)\""; issue 2 blocked "\"$(pid_n 2)\""; issue 5 blocked "\"$(pid_n 3)\""; issue 6 todo "\"$(pid_n 3)\""
+route GET "/api/issues/$(iid 6)/comments" 200 "[{\"id\":\"c0000000-0000-0000-0000-00000000000b\",\"body\":\"any news?\",\"authorUserId\":\"$BOARD\",\"authorAgentId\":null,\"createdAt\":\"2026-03-01T00:00:00Z\"}]"
+run_afk --json
+assert_eq "nudge (queued): still queued, same queued_at, comment handled" \
+  "$(lget "$(iid 6)") $(lget "$(iid 6)" .queued_at) $(lget "$(iid 6)" .since)" "queued 2026-01-01T00:00:06Z 2026-03-01T00:00:00Z"
+assert_eq "nudge (queued): nothing posted, re-blocked with the queue text" \
+  "$(posts_to "$(iid 6)") $(last_block)" "0 queued: test-host busy (2/2 active)"
+assert_eq "nudge (queued): the other queued issue is untouched" "$(lget "$(iid 5)") $(grep -c "^PATCH /api/issues/$(iid 5)$" "$LOG")" "queued 0"
+
+# AC-5 (P8a): in_progress with no active run. Held issues are repaired by a
+# self-wake and the re-block (or the pending final); an unheld one keeps the
+# log line.
+new_scenario strand_repair
+three_projects
+seed 1 working proj "$(pid_n 1)"; seed 2 working proj2 "$(pid_n 2)"; lset 2 '{pending_final:"in_review"}'
+inbox 1 2 3
+issue 1 in_progress "\"$(pid_n 1)\""; issue 2 in_progress "\"$(pid_n 2)\""; issue 3 in_progress "\"$(pid_n 3)\""
+for n in 1 2 3; do route GET "/api/issues/$(iid $n)/active-run" 200 'null'; done
+run_afk --json
+assert_eq "strand repair: one report per repaired issue" "$(grep -o 'PAPERCLIP_STRAND_REPAIRED: PROJ-[0-9]' <<<"$OUT_TEXT" | sort | tr '\n' ' ')" "PAPERCLIP_STRAND_REPAIRED: PROJ-1 PAPERCLIP_STRAND_REPAIRED: PROJ-2 "
+assert_eq "strand repair: re-blocked with the last applied text, still working" "$(lget "$(iid 1)") $(lget "$(iid 1)" .action_text_applied)" "working AFK host is working on this"
+assert_contains "strand repair: the pending final is re-sent" "$(cat "$BODYLOG")" '{"status":"in_review"}'
+assert_eq "strand repair: the final closes the issue" "$(lget "$(iid 2)")" "closed"
+assert_contains "strand repair: an unheld issue keeps the log line" "$OUT_TEXT" "in_progress without a live run, left alone: PROJ-3"
+assert_eq "strand repair: nothing written to the unheld issue" "$(grep -c -e "^PATCH /api/issues/$(iid 3)$" -e "^POST /api/issues/$(iid 3)/" "$LOG")" "0"
+
+new_scenario strand_no_run
+three_projects
+seed 1 working proj "$(pid_n 1)"
+inbox 1; issue 1 in_progress "\"$(pid_n 1)\""
+route GET "/api/issues/$(iid 1)/active-run" 200 'null'
+route POST "/api/agents/$AGENT1/wakeup" 202 '{}'
+run_afk --json
+assert_contains "strand repair: a 202 with no run id is held and reported" "$OUT_TEXT" "self-wake returned no run, held: PROJ-1"
+assert_eq "  ...nothing written, no repair claimed" "$(grep -c '^PATCH' "$LOG") $(grep -c 'STRAND_REPAIRED' <<<"$OUT_TEXT")" "0 0"
+
+# AC-6 (P8b): a self-wake refused with execution_reconciliation_required parks
+# the issue and opens exactly one NEEDS HUMAN issue across three passes.
+new_scenario reconcile
+three_projects
+seed 1 working proj "$(pid_n 1)"
+inbox 1; pull_mode; issue 1 todo "\"$(pid_n 1)\""
+route POST "/api/agents/$AGENT1/wakeup" 409 '{"error":"Issue execution needs reconciliation","code":"execution_reconciliation_required"}'
+route POST "/api/companies/$COMPANY/issues" 201 '{"id":"f0000000-0000-0000-0000-0000000000bb"}'
+for pass in 1 2 3; do run_afk --json; done
+assert_eq "reconcile: parked, slot released" "$(lget "$(iid 1)")" "reconciliation_blocked"
+assert_eq "reconcile: exactly one NEEDS HUMAN issue over three passes" "$(grep -c "^POST /api/companies/$COMPANY/issues$" "$LOG")" "1"
+assert_contains "reconcile: the issue names the fix, keyed by the issue id" "$(cat "$BODYLOG")" "\"title\":\"NEEDS HUMAN: cancel PROJ-1 and recreate it\""
+assert_contains "  ...idempotent" "$(cat "$BODYLOG")" "\"idempotencyKey\":\"afk-recon-$(iid 1)\""
+assert_eq "reconcile: one self-wake in all (then skipped)" "$(grep -c "^POST /api/agents/$AGENT1/wakeup$" "$LOG")" "1"
+assert_eq "reconcile: one stopped notice with the reason" \
+  "$(cat "$STATE"/paperclip/notices/proj/*."$(iid 1)".stopped.json 2>/dev/null | jq -r .reason)" "RECONCILIATION_REQUIRED"
+assert_contains "reconcile: a later pass reports it locally" "$OUT_TEXT" "PAPERCLIP_RECONCILIATION_REQUIRED, held: PROJ-1"
+
+# AC-7 (F3): approvals are listed every pass for every waiting_human issue; a
+# failed read is reported and the pass still completes.
+new_scenario approvals_read
+three_projects
+seed 1 waiting_human proj "$(pid_n 1)"; lset 1 '{question_id:"q-1", action_text_applied:"waiting on q-1"}'
+seed 2 waiting_human proj2 "$(pid_n 2)"; lset 2 '{question_id:"q-2", action_text_applied:"waiting on q-2"}'
+seed 3 working proj3 "$(pid_n 3)"
+inbox 1 2 3
+issue 1 blocked "\"$(pid_n 1)\""; issue 2 blocked "\"$(pid_n 2)\""; issue 3 blocked "\"$(pid_n 3)\""
+route GET "/api/issues/$(iid 1)/approvals" 200 '[{"id":"ap-1","type":"approve_plan","status":"approved","payload":{"x":1}}]'
+route GET "/api/issues/$(iid 2)/approvals" 500 '{}'
+run_afk --json
+assert_eq "approvals: recorded for PC-8" "$(lget "$(iid 1)" '.approvals_seen.items | tojson')" '[{"id":"ap-1","type":"approve_plan","status":"approved"}]'
+assert_contains "approvals: a failed read is reported" "$OUT_TEXT" "PAPERCLIP_APPROVALS_UNREADABLE, held: PROJ-2"
+assert_eq "approvals: the pass completes; a working issue is not read" \
+  "$(jq -r .result <<<"$OUT_TEXT" 2>/dev/null | head -1) $(grep -c "^GET /api/issues/$(iid 3)/approvals$" "$LOG")" "completed 0"
 
 # ===========================================================================
 printf '\n\033[1m%d passed, %d failed\033[0m\n' "$PASS" "$FAIL"

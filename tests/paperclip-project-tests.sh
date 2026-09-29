@@ -47,6 +47,9 @@ code="$(head -1 "$f")"
 if [[ "$method" == GET && "$path" =~ ^/api/issues/[0-9a-f-]{36}$ && -f "$CURL_STUB_FIXTURES/.default_project" ]] &&
    ! grep -q '"projectId"' "$f"; then
   tail -n +2 "$f" | jq -c --arg p "$(cat "$CURL_STUB_FIXTURES/.default_project")" '. + {projectId: $p}'
+# A /me with no runtimeConfig key reports a lease-mode heartbeat (AD-26).
+elif [[ "$method" == GET && "$path" == /api/agents/me ]] && ! grep -q '"runtimeConfig"' "$f"; then
+  tail -n +2 "$f" | jq -c '. + {runtimeConfig: {heartbeat: {enabled: true, intervalSec: 0, wakeOnDemand: true}}}'
 else
   tail -n +2 "$f"
 fi

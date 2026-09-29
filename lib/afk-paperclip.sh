@@ -201,7 +201,7 @@ afk_pc_create_issue() { # <api_url> <key> <company_id> <title> <assignee> <descr
 # recovery issue. Reads and writes the caller's `ledger`/`actions` locals
 # directly (dynamic scoping — this must be a direct call, never `$(...)`).
 afk_pc_strand() {
-  ledger="$(jq -c --arg id "$5" '.issues[$id].state = "stranded"' <<<"$ledger")"
+  afk_pc_hold "$5" stranded
   local already; already="$(jq --arg id "$5" '.stranded_reported | index($id) != null' <<<"$ledger")"
   if [[ "$already" != true ]]; then
     local create_resp create_body newid
@@ -220,6 +220,39 @@ afk_pc_strand() {
     afk_pc_notice "$8" "$5" "$6" "$7" "$9" "${10}" stranded
     actions="$(jq -c --arg t "stranded: $6" '. + [$t]' <<<"$actions")"
   fi
+}
+
+# afk_pc_hold <id> <stranded|held_by_board> -- the state a later resume
+# restores (F7) is kept in resume_state; a second hold never overwrites it.
+afk_pc_hold() {
+  ledger="$(jq -c --arg id "$1" --arg st "$2" '.issues[$id] |=
+    (if .state | IN("stranded", "held_by_board") then . else .resume_state = .state end | .state = $st)' <<<"$ledger")"
+}
+
+# afk_pc_reconcile <id> <identifier> -- AC-6 (P8b): a self-wake refused with
+# execution_reconciliation_required. Paperclip will not let this host resume
+# the issue, so it is parked as reconciliation_blocked, its slot released,
+# its PM told `stopped`, and Josh gets one issue asking him to cancel and
+# recreate it. Reads the pass locals like afk_pc_strand.
+afk_pc_reconcile() {
+  local row
+  row="$(afk_pc_project_row "$(jq -r --arg id "$1" '.issues[$id].slug // empty' <<<"$ledger")")"
+  ledger="$(jq -c --arg id "$1" '.issues[$id].state = "reconciliation_blocked" | del(.issues[$id].reblock_due)' <<<"$ledger")"
+  [[ -n "$row" ]] && afk_pc_notice "$(jq -r .slug <<<"$row")" "$1" "$2" "$agent_id" \
+    "$(jq -r .repo_path <<<"$row")" "$(jq -r .harness <<<"$row")" stopped '{"reason":"RECONCILIATION_REQUIRED"}'
+  afk_pc_recon_issue "$1" "$2"
+}
+
+# afk_pc_recon_issue <id> <identifier> -- the one NEEDS HUMAN issue for a
+# reconciliation_blocked issue; a failed create is retried next pass under
+# the same idempotencyKey.
+afk_pc_recon_issue() {
+  [[ "$(jq -r --arg id "$1" '.issues[$id].recon_reported // false' <<<"$ledger")" == true ]] && return 0
+  local r
+  r="$(afk_pc_create_issue "$api_url" "$key" "$company_id" "NEEDS HUMAN: cancel $2 and recreate it" "$board_user_id" \
+    "Paperclip refuses to let the AFK host $host_name resume $2 (execution_reconciliation_required). Setting it to Todo does not help. Cancel $2, create it again, and assign the new issue." \
+    "afk-recon-$1")"
+  [[ "${r%%$'\n'*}" == 2?? ]] && ledger="$(jq -c --arg id "$1" '.issues[$id].recon_reported = true' <<<"$ledger")"
 }
 
 # --- config (AC-1) -----------------------------------------------------------
@@ -298,6 +331,12 @@ afk_pc_load_config() {
     host_max=2; [[ "$intermittent" == true ]] && host_max=1
   fi
   [[ "$host_max" =~ ^[1-9][0-9]{0,2}$ ]] || { AFK_PC_REFUSAL="PAPERCLIP_CONFIG_INVALID"; return 1; }
+  # HA-4a (AD-26): host.adoption is "lease" (default) or "pull". Only read
+  # here; HA-4b adds the command that switches it.
+  # HA-5: docs/PAPERCLIP.md documents host.adoption and the heartbeat fields.
+  local adoption
+  adoption="$(jq -r '.host.adoption | if . == null then "lease" elif . == "lease" or . == "pull" then . else "bad" end' <<<"$cfg")"
+  [[ "$adoption" != bad ]] || { AFK_PC_REFUSAL="PAPERCLIP_CONFIG_INVALID"; return 1; }
 
   # Zero projects is valid: every inbox issue then self-blocks as unmapped.
   n="$(jq '.projects // [] | if type == "array" then length else -1 end' <<<"$cfg")"
@@ -338,7 +377,8 @@ afk_pc_load_config() {
 
   AFK_PC_CFG="$(jq -c '.projects = [(.projects // [])[] | .paperclip_project_id |= ascii_downcase
     | .max_active_issues = (.max_active_issues // 1) | .merge = (.merge // "human")]
-    | .host.intermittent = ($i == "true") | .host.max_active_issues = ($m | tonumber)' --arg i "$intermittent" --arg m "$host_max" <<<"$cfg")"
+    | .host.intermittent = ($i == "true") | .host.max_active_issues = ($m | tonumber) | .host.adoption = $ad' \
+    --arg i "$intermittent" --arg m "$host_max" --arg ad "$adoption" <<<"$cfg")"
   return 0
 }
 
@@ -777,6 +817,9 @@ afk_pc_report_cycle() {
   # from the ledger: its spool file is already gone.
   pending_final="$(jq -r '.pending_final // empty' <<<"$prev")"
   claim_pending="$(jq -r '.claim_comment_pending // false' <<<"$prev")"
+  # HA-4a: a cycle the pass asked for (adopt, resume, nudge, strand repair)
+  # runs even when nothing else changed.
+  local due; due="$(jq -r '.reblock_due // empty' <<<"$prev")"
   if [[ -n "$fixed" ]]; then
     composed="$fixed"
   elif [[ "$state" == queued ]]; then
@@ -787,7 +830,7 @@ afk_pc_report_cycle() {
     composed="$(afk_pc_action_text none "" "$status_file_dir/$id.json" "$text_base")"
   fi
 
-  { (( ${#files[@]} > 0 )) || [[ "$composed" != "$prev_applied" || -n "$pending_final" || "$claim_pending" == true ]]; } || return 0
+  { (( ${#files[@]} > 0 )) || [[ "$composed" != "$prev_applied" || -n "$pending_final" || "$claim_pending" == true || -n "$due" ]]; } || return 0
 
   local wr wh wb run_id
   wr="$(afk_pc_curl POST "$api_url/api/agents/$agent_id/wakeup" "$key" "" \
@@ -797,8 +840,18 @@ afk_pc_report_cycle() {
     actions="$(jq -c --arg t "PAPERCLIP_CREDENTIAL_REJECTED: $identifier" '. + [$t]' <<<"$actions")"
     AFK_PC_ABORT=true; return
   fi
+  # AC-6 (P8b): matched on the refusal's error code wherever the body
+  # carries it; activeRecoveryAction is null in this case.
+  if [[ "$wh" != 2?? ]] && jq -e '[.. | strings] | index("execution_reconciliation_required") != null' >/dev/null 2>&1 <<<"$wb"; then
+    afk_pc_reconcile "$id" "$identifier"
+    actions="$(jq -c --arg t "PAPERCLIP_RECONCILIATION_REQUIRED: $identifier" '. + [$t]' <<<"$actions")"
+    return 0
+  fi
   run_id="$(jq -r '.id // empty' <<<"$wb" 2>/dev/null)"
-  [[ "$run_id" =~ ^[A-Za-z0-9_-]+$ ]] || return 0 # no run: the spool is untouched
+  if ! [[ "$run_id" =~ ^[A-Za-z0-9_-]+$ ]]; then # no run: the spool is untouched
+    [[ -n "$due" ]] && actions="$(jq -c --arg t "self-wake returned no run, held: $identifier" '. + [$t]' <<<"$actions")"
+    return 0
+  fi
 
   local pr ph
   pr="$(afk_pc_curl PATCH "$api_url/api/issues/$id" "$key" "$run_id" '{"status":"in_progress"}')"
@@ -826,6 +879,14 @@ afk_pc_report_cycle() {
     local clr; clr="$(afk_pc_comment "$api_url" "$id" "$key" "$run_id" "claimed by AFK PM ($host_name)")"
     [[ "${clr%%$'\n'*}" == 2?? ]] &&
       ledger="$(jq -c --arg id "$id" 'del(.issues[$id].claim_comment_pending)' <<<"$ledger")"
+  fi
+  # F7: a resume says so once; the flag stays until the comment lands.
+  if [[ "$due" == resume ]]; then
+    local rsr; rsr="$(afk_pc_comment "$api_url" "$id" "$key" "$run_id" "resumed by AFK PM ($host_name)")"
+    if [[ "${rsr%%$'\n'*}" == 2?? ]]; then
+      due=resumed
+      ledger="$(jq -c --arg id "$id" '.issues[$id].reblock_due = "nudge"' <<<"$ledger")"
+    fi
   fi
 
   local f entry eid kind body marker outcome mrc q fs
@@ -912,8 +973,9 @@ afk_pc_report_cycle() {
     fr="$(afk_pc_curl PATCH "$api_url/api/issues/$id" "$key" "$run_id" "$(jq -nc --arg s "$final_status" '{status:$s}')")"
     fh="${fr%%$'\n'*}"
     if [[ "$fh" == 2?? ]]; then
-      ledger="$(jq -c --arg id "$id" '.issues[$id].state = "closed" | del(.issues[$id].pending_final)' <<<"$ledger")"
+      ledger="$(jq -c --arg id "$id" '.issues[$id].state = "closed" | del(.issues[$id].pending_final, .issues[$id].reblock_due)' <<<"$ledger")"
       afk_pc_spool_dead_all "$id"
+      [[ "$due" == strand ]] && actions="$(jq -c --arg t "PAPERCLIP_STRAND_REPAIRED: $identifier" '. + [$t]' <<<"$actions")"
       actions="$(jq -c --arg t "final ($final_status): $identifier" '. + [$t]' <<<"$actions")"
       return 0
     fi
@@ -939,8 +1001,10 @@ afk_pc_report_cycle() {
   fi
 
   if afk_pc_self_block "$api_url" "$id" "$key" "$run_id" "$agent_id" "$final_composed"; then
-    ledger="$(jq -c --arg id "$id" --arg t "$final_composed" \
-      '.issues[$id].action_text = $t | .issues[$id].action_text_applied = $t' <<<"$ledger")"
+    ledger="$(jq -c --arg id "$id" --arg t "$final_composed" --argjson keep "$([[ "$due" == resume ]] && echo true || echo false)" \
+      '.issues[$id].action_text = $t | .issues[$id].action_text_applied = $t
+       | if $keep then . else del(.issues[$id].reblock_due) end' <<<"$ledger")"
+    [[ "$due" == strand ]] && actions="$(jq -c --arg t "PAPERCLIP_STRAND_REPAIRED: $identifier" '. + [$t]' <<<"$actions")"
   else
     actions="$(jq -c --arg t "PAPERCLIP_SELF_BLOCK_FAILED: $identifier" '. + [$t]' <<<"$actions")"
   fi
@@ -971,6 +1035,87 @@ afk_pc_maybe_start_pm() {
   afk_pcs_start_pm
 }
 
+# --- shared by the pass's branches (HA-4a) -----------------------------------
+# Each reads and writes the pass's locals directly, like afk_pc_strand, so
+# each must be a direct call, never `$(...)`.
+
+# afk_pc_scan_comments -- Josh's comments newer than `since` on an issue this
+# host holds: a plan decision (PC-3b), or a human_commented notice and reply.
+# Used by the blocked branch and the todo nudge (P6d); moves newest_since.
+afk_pc_scan_comments() {
+  local comments_resp comments_body c ccreated rc cid2
+  comments_resp="$(afk_pc_curl GET "$api_url/api/issues/$id/comments" "$key" "")"
+  comments_body="${comments_resp#*$'\n'}"
+  while IFS= read -r c; do
+    [[ -n "$c" ]] || continue
+    ccreated="$(jq -r '.createdAt // empty' <<<"$c")"
+    [[ -z "$since" || "$ccreated" > "$since" ]] || continue
+    rc=0; afk_pc_is_josh_comment "$c" "$board_user_id" || rc=$?
+    if (( rc == 2 )); then
+      if [[ "$author_unverifiable_reported" == false ]]; then
+        author_unverifiable_reported=true
+        actions="$(jq -c '. + ["PAPERCLIP_AUTHOR_UNVERIFIABLE"]' <<<"$actions")"
+      fi
+    elif (( rc == 0 )); then
+      cid2="$(jq -r '.id // empty' <<<"$c")"
+      afk_pc_uuid_ok "$cid2" || continue # AC-1: ids used in file paths
+      # PC-3b: an exact `approve|reject <digest8>` on the open plan
+      # question is decided there; anything else is a plain comment.
+      if declare -F afk_pcp_on_josh_comment >/dev/null 2>&1 &&
+         afk_pcp_on_josh_comment "$c" "$cid2" "$ccreated"; then
+        [[ -z "$newest_since" || "$ccreated" > "$newest_since" ]] && newest_since="$ccreated"
+        continue
+      fi
+      afk_pc_notice "$slug" "$id" "$identifier" "$agent_id" "$repo_path" "$harness" human_commented \
+        "$(jq -nc --arg cid "$cid2" --arg ca "$ccreated" --arg q "${qid:-}" \
+          'if $q == "" then {comment_id:$cid, created_at:$ca, open_question_id:null} else {comment_id:$cid, created_at:$ca, open_question_id:$q} end')"
+      afk_pc_reply "$slug" "$cid2" "$(jq -r '.body // empty' <<<"$c")"
+      actions="$(jq -c --arg t "human_commented: $identifier" '. + [$t]' <<<"$actions")"
+    fi
+    [[ -z "$newest_since" || "$ccreated" > "$newest_since" ]] && newest_since="$ccreated"
+  done < <(jq -c '.[]' <<<"$comments_body" 2>/dev/null)
+}
+
+# afk_pc_pin_new -- F6: pin a freshly resolved issue to its project as
+# pending_claim; only `since` survives from an older row.
+afk_pc_pin_new() {
+  local since; since="$(jq -r --arg id "$id" '.issues[$id].since // empty' <<<"$ledger")"
+  [[ -n "$since" ]] || since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  ledger="$(jq -c --arg id "$id" --arg a "$agent_id" --arg s "$slug" --arg p "$resolved_pid" --arg ident "$identifier" \
+    --arg t "$(afk_pc_action_text none "" "" "")" --arg since "$since" \
+    '.issues[$id] = {host_agent_id:$a, paperclip_project_id:$p, slug:$s, identifier:$ident,
+       since:$since, state:"pending_claim", action_text:$t}' <<<"$ledger")"
+}
+
+# afk_pc_claim <set-queue-text:true|false> -- the claim of a pending_claim
+# issue: claimed notice, brief, a slot or the queue (AD-24). Sets the
+# caller's final_state; the claim comment goes out in the report cycle.
+afk_pc_claim() {
+  afk_pc_notice "$slug" "$id" "$identifier" "$agent_id" "$repo_path" "$harness" claimed
+  afk_pc_brief "$slug" "$id" "$updated" "$title" "$desc"
+  if (( used_slots_s >= max_active || host_used >= host_max )); then
+    final_state="queued"; newly_queued_ids+="$id"$'\n'
+    [[ "$1" == true ]] && ledger="$(jq -c --arg id "$id" --arg t "$(afk_pc_queue_text)" \
+      '.issues[$id].action_text = $t' <<<"$ledger")"
+  else
+    final_state="working"
+    used_slots_s=$((used_slots_s + 1)); host_used=$((host_used + 1))
+    working_id="$identifier"
+  fi
+  ledger="$(jq -c --arg id "$id" '.issues[$id].claim_comment_pending = true' <<<"$ledger")"
+  actions="$(jq -c --arg t "claimed: $identifier" '. + [$t]' <<<"$actions")"
+}
+
+# afk_pc_close_recovery -- a resumed stranded issue's recovery issue is done.
+afk_pc_close_recovery() {
+  local recid rec_resp
+  recid="$(jq -r --arg id "$id" '.issues[$id].recovery_issue_id // empty' <<<"$ledger")"
+  afk_pc_uuid_ok "$recid" || return 0
+  rec_resp="$(afk_pc_curl PATCH "$api_url/api/issues/$recid" "$key" "" '{"status":"done"}')"
+  [[ "${rec_resp%%$'\n'*}" == 2?? ]] ||
+    actions="$(jq -c --arg t "recovery issue for $identifier not closed (needs a run), left open" '. + [$t]' <<<"$actions")"
+}
+
 # --- the pass (AC-3..AC-10) ---------------------------------------------------
 afk_cmd_paperclip_poll() { # <json_mode>
   local -; set +x # the key lives in locals below; never trace them
@@ -980,7 +1125,7 @@ afk_cmd_paperclip_poll() { # <json_mode>
     return 1
   fi
 
-  local api_url company_id board_user_id host_name maint agent_id key_ref
+  local api_url company_id board_user_id host_name maint agent_id key_ref adoption
   api_url="$(jq -r '.api_url' <<<"$AFK_PC_CFG")"
   company_id="$(jq -r '.company_id' <<<"$AFK_PC_CFG")"
   board_user_id="$(jq -r '.board_user_id' <<<"$AFK_PC_CFG")"
@@ -988,6 +1133,7 @@ afk_cmd_paperclip_poll() { # <json_mode>
   agent_id="$(jq -r '.host.agent_id' <<<"$AFK_PC_CFG")"
   key_ref="$(jq -r '.host.key_ref' <<<"$AFK_PC_CFG")"
   maint="$(jq -r '.maintenance_issue_id // empty' <<<"$AFK_PC_CFG")"
+  adoption="$(jq -r '.host.adoption' <<<"$AFK_PC_CFG")"
 
   local pc_dir="$AFK_STATE_DIR/paperclip"
   afk_state_dir_ensure "$pc_dir"
@@ -1038,6 +1184,14 @@ afk_cmd_paperclip_poll() { # <json_mode>
     if [[ "$(jq -r '.id // empty' <<<"$me_body")" != "$agent_id" ]]; then
       result="PAPERCLIP_KEY_AGENT_MISMATCH"; break
     fi
+    # AD-26 (F2): the agent's heartbeat must match host.adoption on every
+    # pass. A mismatch, or a /me without the fields, claims and writes
+    # nothing. The poller never writes the agent's config.
+    if ! jq -e --arg m "$adoption" '.runtimeConfig.heartbeat as $h | if $m == "pull"
+         then $h.enabled == true and $h.intervalSec == 0 and $h.wakeOnDemand == false
+         else $h.wakeOnDemand == true end' >/dev/null 2>&1 <<<"$me_body"; then
+      result="PAPERCLIP_ADOPTION_MODE_MISMATCH"; break
+    fi
 
     afk_pc_compute_pause "$api_url" "$key" "$maint" "$board_user_id" "$company_id" "$pause_kind"
     pause_kind="$AFK_PC_PAUSE_KIND"
@@ -1073,7 +1227,7 @@ afk_cmd_paperclip_poll() { # <json_mode>
       cstate="$(jq -r --arg id "$cid" '.issues[$id].state // empty' <<<"$ledger")"
       ledger="$(jq -c --arg id "$cid" '.issues[$id].state = "closed"' <<<"$ledger")"
       # A refused or already-stopped issue has no PM to tell.
-      if [[ "$cstate" != waiting_setup && "$cstate" != stopped ]]; then
+      if [[ "$cstate" != waiting_setup && "$cstate" != stopped && "$cstate" != reconciliation_blocked ]]; then
         crow="$(afk_pc_project_row "$(jq -r --arg id "$cid" '.issues[$id].slug // empty' <<<"$ledger")")"
         [[ -n "$crow" ]] && afk_pc_notice "$(jq -r .slug <<<"$crow")" "$cid" "$cidentifier" "$agent_id" \
           "$(jq -r .repo_path <<<"$crow")" "$(jq -r .harness <<<"$crow")" stopped
@@ -1127,6 +1281,17 @@ afk_cmd_paperclip_poll() { # <json_mode>
       IFS=$'\x1f' read -r prev_st pin_pid pin_slug live_pid < <(jq -r --argjson p "${prev:-null}" \
         '[($p.state // ""), ($p.paperclip_project_id // ""), ($p.slug // ""), (.projectId // "" | strings | ascii_downcase)]
          | map(tostring | gsub("[[:cntrl:]]"; "")) | join("\u001f")' <<<"$detail")
+      # AC-6: parked until the issue is closed or leaves this host (the
+      # closed-issue sweep above); one local report per pass meanwhile.
+      if [[ "$prev_st" == reconciliation_blocked ]]; then
+        if [[ "$status" == cancelled || "$status" == "done" ]]; then
+          ledger="$(jq -c --arg id "$id" '.issues[$id].state = "closed"' <<<"$ledger")"
+        else
+          afk_pc_recon_issue "$id" "$identifier"
+          actions="$(jq -c --arg t "PAPERCLIP_RECONCILIATION_REQUIRED, held: $identifier" '. + [$t]' <<<"$actions")"
+        fi
+        continue
+      fi
       if [[ -n "$pin_pid" && "$prev_st" != closed && "$prev_st" != stopped && "$prev_st" != waiting_setup ]]; then
         row="$(afk_pc_project_row "$pin_slug")"
         local changed=false
@@ -1160,16 +1325,22 @@ afk_cmd_paperclip_poll() { # <json_mode>
           sr="$(jq -r '.id // empty' <<<"${sr#*$'\n'}" 2>/dev/null)"
           [[ "$sr" =~ ^[A-Za-z0-9_-]+$ ]] && afk_pc_self_block "$api_url" "$id" "$key" "$sr" "$agent_id" "$stop_text" &&
             ledger="$(jq -c --arg id "$id" --arg t "$stop_text" '.issues[$id].action_text_applied = $t' <<<"$ledger")"
+          [[ "$sr" =~ ^[A-Za-z0-9_-]+$ ]] || ledger="$(jq -c --arg id "$id" '.issues[$id].reblock_due //= "strand"' <<<"$ledger")"
         fi
+        # A comment reopened it (P6d): put the stop text back.
+        [[ "$status" == todo ]] && ledger="$(jq -c --arg id "$id" '.issues[$id].reblock_due //= "nudge"' <<<"$ledger")"
         continue
-      elif [[ ( ( -z "$prev" || "$prev_st" == closed ) && "$status" == in_progress ) ||
-              ( "$prev_st" == waiting_setup && ( "$status" == in_progress || "$status" == blocked ) ) ]]; then
-        # A new issue, a closed one reassigned back to this host (a restart,
-        # re-pinned from scratch), or a refused one: resolve the live projectId.
+      elif [[ ( ( -z "$prev" || "$prev_st" == closed ) && ( "$status" == in_progress || ( "$adoption" == pull && "$status" == todo ) ) ) ||
+              ( "$prev_st" == waiting_setup && "$status" =~ ^(in_progress|blocked|todo)$ ) ]]; then
+        # A new issue (in pull mode also one still in todo, AC-3), a closed
+        # one reassigned back to this host (a restart, re-pinned from
+        # scratch), or a refused one: resolve the live projectId.
         afk_pc_resolve "$detail" "$identifier"
         [[ "$AFK_PC_RES" == PAPERCLIP_PROJECT_UNREADABLE ]] && continue # no write this pass
         if [[ "$AFK_PC_RES" != ok ]]; then
           afk_pc_waiting_setup
+          # Never left in todo: the report cycle self-blocks it with the reason.
+          [[ "$status" == todo ]] && ledger="$(jq -c --arg id "$id" '.issues[$id].reblock_due //= "setup"' <<<"$ledger")"
           continue
         fi
         row="$AFK_PC_RES_ROW"; resolved_pid="$AFK_PC_RES_PID"
@@ -1207,10 +1378,17 @@ afk_cmd_paperclip_poll() { # <json_mode>
           run_resp="$(afk_pc_curl GET "$api_url/api/issues/$id/active-run" "$key" "")"
           run_body="${run_resp#*$'\n'}"
           run_id="$(jq -r '.id // empty' <<<"$run_body" 2>/dev/null)"
-          # No live run means no write is possible (and a header value from
-          # Paperclip must be a plain token): report it and leave the issue.
+          # No live run (and a header value from Paperclip must be a plain
+          # token). AC-5 (P8a): a run that ended while the issue it held is
+          # still in_progress is never escalated, so an issue this host holds
+          # is repaired by its own report cycle (self-wake, then the pending
+          # final or the re-block). Anything else is reported and left.
           if ! [[ "$run_id" =~ ^[A-Za-z0-9_-]+$ ]]; then
-            actions="$(jq -c --arg t "in_progress without a live run, left alone: $identifier" '. + [$t]' <<<"$actions")"
+            if [[ -n "$prev" ]]; then
+              ledger="$(jq -c --arg id "$id" '.issues[$id].reblock_due //= "strand"' <<<"$ledger")"
+            else
+              actions="$(jq -c --arg t "in_progress without a live run, left alone: $identifier" '. + [$t]' <<<"$actions")"
+            fi
             continue
           fi
           local wake_reason clear_blockers=false
@@ -1304,14 +1482,7 @@ afk_cmd_paperclip_poll() { # <json_mode>
                | del(.fixed_text, .refusal_code))' \
             <<<"$ledger")"
 
-          if [[ "$was_stranded" == true ]]; then
-            local recid; recid="$(jq -r --arg id "$id" '.issues[$id].recovery_issue_id // empty' <<<"$ledger")"
-            if afk_pc_uuid_ok "$recid"; then
-              local rec_resp; rec_resp="$(afk_pc_curl PATCH "$api_url/api/issues/$recid" "$key" "" '{"status":"done"}')"
-              [[ "${rec_resp%%$'\n'*}" == 2?? ]] ||
-                actions="$(jq -c --arg t "recovery issue for $identifier not closed (needs a run), left open" '. + [$t]' <<<"$actions")"
-            fi
-          fi
+          [[ "$was_stranded" == true ]] && afk_pc_close_recovery
           ;;
         blocked)
           # AC-5 (V2, amended by prox-ops live test): unblockDescriptor is
@@ -1346,7 +1517,7 @@ afk_cmd_paperclip_poll() { # <json_mode>
               fi
             fi
           elif [[ -n "$owner_agent" && "$owner_agent" == "$agent_id" ]]; then
-            local prev_state qid comments_resp comments_body
+            local prev_state qid
             prev_state="$prev_st"
             [[ "$adopting" == true ]] && prev_state=pending_claim
             qid="$(jq -r '.question_id // empty' <<<"${prev:-null}")"
@@ -1364,41 +1535,8 @@ afk_cmd_paperclip_poll() { # <json_mode>
             [[ -n "$AFK_PCS_ACTION_OVERRIDE" ]] && ledger="$(jq -c --arg id "$id" --arg t "$AFK_PCS_ACTION_OVERRIDE" \
               '.issues[$id].action_text = $t | .issues[$id].action_text_applied = $t' <<<"$ledger")"
 
-            if [[ "$adopting" == false ]]; then
-              comments_resp="$(afk_pc_curl GET "$api_url/api/issues/$id/comments" "$key" "")"
-              comments_body="${comments_resp#*$'\n'}"
-            else
-              comments_body="[]"
-            fi
-            local newest_since="$since" c ccreated
-            while IFS= read -r c; do
-              [[ -n "$c" ]] || continue
-              ccreated="$(jq -r '.createdAt // empty' <<<"$c")"
-              [[ -z "$since" || "$ccreated" > "$since" ]] || continue
-              afk_pc_is_josh_comment "$c" "$board_user_id"; local rc=$?
-              if (( rc == 2 )); then
-                if [[ "$author_unverifiable_reported" == false ]]; then
-                  author_unverifiable_reported=true
-                  actions="$(jq -c '. + ["PAPERCLIP_AUTHOR_UNVERIFIABLE"]' <<<"$actions")"
-                fi
-              elif (( rc == 0 )); then
-                local cid2; cid2="$(jq -r '.id // empty' <<<"$c")"
-                afk_pc_uuid_ok "$cid2" || continue # AC-1: ids used in file paths
-                # PC-3b: an exact `approve|reject <digest8>` on the open plan
-                # question is decided there; anything else is a plain comment.
-                if declare -F afk_pcp_on_josh_comment >/dev/null 2>&1 &&
-                   afk_pcp_on_josh_comment "$c" "$cid2" "$ccreated"; then
-                  [[ -z "$newest_since" || "$ccreated" > "$newest_since" ]] && newest_since="$ccreated"
-                  continue
-                fi
-                afk_pc_notice "$slug" "$id" "$identifier" "$agent_id" "$repo_path" "$harness" human_commented \
-                  "$(jq -nc --arg cid "$cid2" --arg ca "$ccreated" --arg q "${qid:-}" \
-                    'if $q == "" then {comment_id:$cid, created_at:$ca, open_question_id:null} else {comment_id:$cid, created_at:$ca, open_question_id:$q} end')"
-                afk_pc_reply "$slug" "$cid2" "$(jq -r '.body // empty' <<<"$c")"
-                actions="$(jq -c --arg t "human_commented: $identifier" '. + [$t]' <<<"$actions")"
-              fi
-              [[ -z "$newest_since" || "$ccreated" > "$newest_since" ]] && newest_since="$ccreated"
-            done < <(jq -c '.[]' <<<"$comments_body")
+            local newest_since="$since"
+            [[ "$adopting" == false ]] && afk_pc_scan_comments
 
             # A queued issue is promoted by the FIFO sweep after this loop.
             local final_state="$prev_state"
@@ -1406,33 +1544,14 @@ afk_cmd_paperclip_poll() { # <json_mode>
             if [[ "$adopting" == true ]]; then
               # Pinned now, at first adoption (F6); pending_claim until the
               # first unpaused pass, exactly like an adoption during a pause.
-              since="$(jq -r --arg id "$id" '.issues[$id].since // empty' <<<"$ledger")"
-              [[ -n "$since" ]] || since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-              newest_since="$since"
-              ledger="$(jq -c --arg id "$id" --arg a "$agent_id" --arg s "$slug" --arg p "$resolved_pid" --arg ident "$identifier" \
-                --arg t "$(afk_pc_action_text none "" "" "")" --argjson fresh "$fresh" \
-                '.issues[$id] = ((.issues[$id] // {} | if $fresh then {since} else . end) + {host_agent_id:$a, paperclip_project_id:$p, slug:$s, identifier:$ident,
-                   state:"pending_claim", action_text:$t} | del(.fixed_text, .refusal_code, .action_text_applied))' <<<"$ledger")"
+              afk_pc_pin_new
+              since="$(jq -r --arg id "$id" '.issues[$id].since' <<<"$ledger")"; newest_since="$since"
               prev="$(jq -c --arg id "$id" '.issues[$id]' <<<"$ledger")"
             fi
             # AC-10: adopted during a pause, the issue is now self-blocked, not
             # in_progress, so the claim happens here on the first unpaused
             # pass; the claim comment itself goes out in the report cycle.
-            if [[ "$prev_state" == pending_claim && "$pause_kind" == none ]]; then
-              afk_pc_notice "$slug" "$id" "$identifier" "$agent_id" "$repo_path" "$harness" claimed
-              afk_pc_brief "$slug" "$id" "$updated" "$title" "$desc"
-              if (( used_slots_s >= max_active || host_used >= host_max )); then
-                final_state="queued"; newly_queued_ids+="$id"$'\n'
-                [[ "$adopting" == true ]] && ledger="$(jq -c --arg id "$id" --arg t "$(afk_pc_queue_text)" \
-                  '.issues[$id].action_text = $t' <<<"$ledger")"
-              else
-                final_state="working"
-                used_slots_s=$((used_slots_s + 1)); host_used=$((host_used + 1))
-                working_id="$identifier"
-              fi
-              ledger="$(jq -c --arg id "$id" '.issues[$id].claim_comment_pending = true' <<<"$ledger")"
-              actions="$(jq -c --arg t "claimed: $identifier" '. + [$t]' <<<"$actions")"
-            fi
+            [[ "$prev_state" == pending_claim && "$pause_kind" == none ]] && afk_pc_claim "$adopting"
             # Never write into .issues[$id] when there is no prior entry: the
             # ledger was reset invalid, or a previous poller self-blocked this
             # issue without ever creating a ledger row. Writing anyway leaves
@@ -1441,7 +1560,7 @@ afk_cmd_paperclip_poll() { # <json_mode>
             [[ -n "$prev" ]] && ledger="$(jq -c --arg id "$id" --arg st "$final_state" --arg since "${newest_since:-$since}" \
               '.issues[$id].state = $st | .issues[$id].since = $since' <<<"$ledger")"
           elif [[ -n "$owner_user" && "$owner_user" == "$board_user_id" ]]; then
-            [[ -n "$prev" ]] && ledger="$(jq -c --arg id "$id" '.issues[$id].state = "held_by_board"' <<<"$ledger")"
+            [[ -n "$prev" ]] && afk_pc_hold "$id" held_by_board
           else
             # `stranded` too, so a recovery issue whose creation failed is retried
             # (afk_pc_strand itself keeps it to exactly one per issue).
@@ -1471,7 +1590,62 @@ afk_cmd_paperclip_poll() { # <json_mode>
             fi
           fi
           ;;
-        *) : ;; # todo (AC-5e): leave it alone.
+        todo)
+          # AD-26: pull adoption (AC-3) and a held issue back in todo (AC-4,
+          # P6d). A todo issue runs no lease, so a paused pass leaves it for
+          # the first unpaused one; a lease-mode issue this host never held
+          # is left alone (AC-5e). Every write goes out in the issue's own
+          # report cycle below: one self-wake, in_progress, the comment it
+          # owes (claim or resume, never one for a nudge), then the block.
+          [[ "$pause_kind" == none && "$prev_st" != closed ]] || continue
+          if [[ -n "$prev" && -z "$slug" ]]; then
+            actions="$(jq -c --arg t "PAPERCLIP_PROJECT_MISSING (no pin), held: $identifier" '. + [$t]' <<<"$actions")"
+            continue
+          fi
+          local final_state="$prev_st"
+          if [[ -z "$prev" ]]; then
+            [[ -n "$resolved_pid" ]] || continue
+            afk_pc_pin_new
+            afk_pc_claim true
+            ledger="$(jq -c --arg id "$id" --arg st "$final_state" '.issues[$id].state = $st' <<<"$ledger")"
+          elif [[ "$prev_st" == pending_claim ]]; then
+            afk_pc_claim false
+            ledger="$(jq -c --arg id "$id" --arg st "$final_state" '.issues[$id].state = $st' <<<"$ledger")"
+          elif [[ "$prev_st" == stranded || "$prev_st" == held_by_board ]]; then
+            # F7: a resume restores the state the hold interrupted, keeping
+            # since, the open question and the plan and approval records.
+            local rs due=resume; rs="$(jq -r '.resume_state // empty' <<<"$prev")"
+            if [[ "$rs" == pending_claim ]]; then
+              afk_pc_claim false; due=nudge # held before its claim: claim it now
+            elif [[ "$rs" == queued ]]; then
+              final_state=queued; promotable[$id]=1
+            elif (( used_slots_s >= max_active || host_used >= host_max )); then
+              final_state=queued; newly_queued_ids+="$id"$'\n'
+              ledger="$(jq -c --arg id "$id" --arg t "$(afk_pc_queue_text)" '.issues[$id].action_text = $t' <<<"$ledger")"
+            else
+              final_state=working; [[ "$rs" == waiting_human ]] && final_state=waiting_human
+              used_slots_s=$((used_slots_s + 1)); host_used=$((host_used + 1))
+              working_id="$identifier"
+            fi
+            ledger="$(jq -c --arg id "$id" --arg st "$final_state" --arg d "$due" \
+              '.issues[$id] |= (.state = $st | .reblock_due = $d | del(.resume_state))' <<<"$ledger")"
+            [[ "$prev_st" == stranded ]] && afk_pc_close_recovery
+            actions="$(jq -c --arg t "resumed: $identifier" '. + [$t]' <<<"$actions")"
+          else
+            # P6d: Josh commented on a self-blocked issue and it reopened. Not
+            # new work: scan the comments exactly as the blocked branch does,
+            # then re-block. No comment, no claim, no move in the queue.
+            local prev_state="$prev_st" qid since newest_since
+            qid="$(jq -r '.question_id // empty' <<<"$prev")"
+            since="$(jq -r '.since // empty' <<<"$prev")"; newest_since="$since"
+            afk_pc_scan_comments
+            [[ "$prev_st" == queued ]] && promotable[$id]=1
+            ledger="$(jq -c --arg id "$id" --arg since "$newest_since" \
+              '.issues[$id] |= ((if $since == "" then . else .since = $since end) | .reblock_due //= "nudge")' <<<"$ledger")"
+            actions="$(jq -c --arg t "nudged: $identifier" '. + [$t]' <<<"$actions")"
+          fi
+          ;;
+        *) : ;;
       esac
       [[ -n "$slug" ]] && { used_slots[$slug]="$used_slots_s"; working_ids[$slug]="$working_id"; }
     done
@@ -1517,18 +1691,35 @@ afk_cmd_paperclip_poll() { # <json_mode>
         ledger="$(jq -c --arg id "$r_id" --arg t "$r_text" '.issues[$id].action_text = $t' <<<"$ledger")"
     done < <(jq -r --arg a "$agent_id" '.issues | to_entries[] | select(.value.host_agent_id == $a and .value.state == "queued") | [.key, (.value.slug // "")] | join("\u001f")' <<<"$ledger")
 
+    # --- HA-4a AC-7 (F3): native approvals are read, never waited for -------
+    # Every pass, both modes, paused or not: a wake is never the trigger.
+    # Acting on them stays with PC-8, which reads approvals_seen.
+    local a_id a_ident a_resp
+    while IFS=$'\x1f' read -r a_id a_ident; do
+      [[ -n "$a_id" ]] || continue
+      a_resp="$(afk_pc_curl GET "$api_url/api/issues/$a_id/approvals" "$key" "")"
+      if [[ "${a_resp%%$'\n'*}" == 200 ]] && jq -e 'type == "array"' >/dev/null 2>&1 <<<"${a_resp#*$'\n'}"; then
+        ledger="$(jq -c --arg id "$a_id" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson l "${a_resp#*$'\n'}" \
+          '.issues[$id].approvals_seen = {at:$at, items:[$l[] | objects | {id, type, status} | map_values(strings)]}' <<<"$ledger")"
+      else
+        actions="$(jq -c --arg t "PAPERCLIP_APPROVALS_UNREADABLE, held: $a_ident" '. + [$t]' <<<"$actions")"
+      fi
+    done < <(jq -r --arg a "$agent_id" '.issues | to_entries[] | select(.value.host_agent_id == $a and .value.state == "waiting_human")
+      | [.key, (.value.identifier // "" | gsub("[[:cntrl:]]"; ""))] | join("\u001f")' <<<"$ledger")
+
     # --- PC-1b: the report cycle (AC-1..AC-10) --------------------------------
     # Frozen while paused/draining (AC-6): no cycles, nothing deleted. Only
     # issues this host actually holds (working/waiting_human) drain a spool;
     # a refused (waiting_setup) or project-changed (stopped) issue gets only
     # its fixed self-block text, and an issue adopted while queued only its
     # claim comment. Stranded, pending_claim, held_by_board and closed are
-    # untouched.
+    # untouched, unless the pass asked for a cycle (reblock_due, HA-4a).
     if [[ "$pause_kind" == none ]]; then
       local -a report_ids=()
       mapfile -t report_ids < <(jq -r --arg a "$agent_id" \
         '.issues | to_entries[] | select(.value.host_agent_id == $a and ((.value.state | IN("working", "waiting_human", "waiting_setup", "stopped"))
-           or (.value.state == "queued" and (.value.claim_comment_pending == true or .value.action_text != .value.action_text_applied)))) | .key' \
+           or (.value.state == "queued" and (.value.claim_comment_pending == true or .value.action_text != .value.action_text_applied))
+           or (.value.reblock_due != null and (.value.state | IN("closed", "reconciliation_blocked") | not)))) | .key' \
         <<<"$ledger")
       local rid
       for rid in "${report_ids[@]:-}"; do
@@ -1552,6 +1743,7 @@ afk_cmd_paperclip_poll() { # <json_mode>
   local ledger_counts="{}" overall="completed"
   if [[ "$any_agent_ok" == false ]]; then
     overall="PAPERCLIP_UNREACHABLE"
+    [[ "$result" == PAPERCLIP_ADOPTION_MODE_MISMATCH ]] && overall="$result"
   else
     ledger="$(jq -c --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '.last_successful_pass = $t' <<<"$ledger")"
     afk_state_file_write "$ledger_path" "$ledger"

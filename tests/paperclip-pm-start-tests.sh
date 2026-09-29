@@ -53,7 +53,14 @@ key="${method}_${path#/}"; key="${key//\//_}"
 f="$CURL_STUB_FIXTURES/$key"
 [[ -f "$f" ]] || f="$CURL_STUB_FIXTURES/DEFAULT"
 if [[ ! -f "$f" ]]; then printf '000'; exit 0; fi
-code="$(head -1 "$f")"; tail -n +2 "$f"; printf '%s' "$code"
+code="$(head -1 "$f")"
+# A /me with no runtimeConfig key reports a lease-mode heartbeat (AD-26).
+if [[ "$method" == GET && "$path" == /api/agents/me ]] && ! grep -q '"runtimeConfig"' "$f"; then
+  tail -n +2 "$f" | jq -c '. + {runtimeConfig: {heartbeat: {enabled: true, intervalSec: 0, wakeOnDemand: true}}}'
+else
+  tail -n +2 "$f"
+fi
+printf '%s' "$code"
 SH
 
 # orca — worktree show, terminal list (bare and --worktree), terminal create.
