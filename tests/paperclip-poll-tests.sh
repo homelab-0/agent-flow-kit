@@ -2037,9 +2037,63 @@ route GET "/api/issues/$(iid 1)/approvals" 200 '[{"id":"ap-1","type":"approve_pl
 route GET "/api/issues/$(iid 2)/approvals" 500 '{}'
 run_afk --json
 assert_eq "approvals: recorded for PC-8" "$(lget "$(iid 1)" '.approvals_seen.items | tojson')" '[{"id":"ap-1","type":"approve_plan","status":"approved"}]'
-assert_contains "approvals: a failed read is reported" "$OUT_TEXT" "PAPERCLIP_APPROVALS_UNREADABLE, held: PROJ-2"
+assert_contains "approvals: a failed read is reported as not read" "$OUT_TEXT" "PAPERCLIP_APPROVALS_UNREADABLE, approvals not read: PROJ-2"
 assert_eq "approvals: the pass completes; a working issue is not read" \
   "$(jq -r .result <<<"$OUT_TEXT" 2>/dev/null | head -1) $(grep -c "^GET /api/issues/$(iid 3)/approvals$" "$LOG")" "completed 0"
+
+# Review M1: only a readable "no run" is a strand. A failed /active-run read
+# may hide a run AFK didn't mint, so it holds and reports, writing nothing.
+new_scenario strand_unreadable
+three_projects
+seed 1 working proj "$(pid_n 1)"
+inbox 1; issue 1 in_progress "\"$(pid_n 1)\""
+route GET "/api/issues/$(iid 1)/active-run" 500 '{}'
+run_afk --json
+assert_contains "strand: an unreadable active run is held and reported" "$OUT_TEXT" "active run unreadable, held: PROJ-1"
+assert_eq "  ...no self-wake, nothing written, not marked" \
+  "$(grep -c -e '^POST' -e '^PATCH' "$LOG") $(lget "$(iid 1)" '.reblock_due // "none"')" "0 none"
+
+# Review L1: a board-held issue in_progress with no run waits for Josh's Todo.
+new_scenario strand_board_held
+three_projects
+seed 1 held_by_board proj "$(pid_n 1)"; lset 1 '{resume_state:"working"}'
+inbox 1; issue 1 in_progress "\"$(pid_n 1)\""
+route GET "/api/issues/$(iid 1)/active-run" 200 'null'
+run_afk --json
+assert_eq "strand: a board-held issue is not repaired, still held_by_board" \
+  "$(grep -c -e '^POST' -e '^PATCH' "$LOG") $(lget "$(iid 1)")" "0 held_by_board"
+assert_contains "  ...and keeps the left-alone line" "$OUT_TEXT" "in_progress without a live run, left alone: PROJ-1"
+
+# Review M2: in lease mode Josh's Todo on a stranded issue arrives as a wake
+# (in_progress with a run). The resume restores waiting_human, keeps the open
+# question in the block text, drops resume_state, closes the recovery issue,
+# and a later approve <digest8> is accepted.
+new_scenario resume_lease_wake
+write_config
+jq --argjson i "$PATT" '.interim_comment_approval = $i' "$CONFIG" >"$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
+seed_working "$ISSUE1" HOM-12 stranded \
+  "{\"resume_state\":\"waiting_human\",\"question_id\":\"plan-$PD8\",\"question_seq\":3,\"question_sent_at\":\"2026-03-01T00:00:00.000Z\",\"recovery_issue_id\":\"$REC\",\"action_text_applied\":\"waiting on plan-$PD8\"}"
+mkdir -p "$STATE/paperclip/plans"
+jq -nc --arg d "$PD" '{schema:"afk-paperclip-plan-record/1", digest:$d, digest8:$d[0:8], question_id:("plan-" + $d[0:8]), posted_seq:3, state:"posted"}' \
+  >"$STATE/paperclip/plans/$ISSUE1.json"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+route GET "/api/issues/$ISSUE1" 200 '{"status":"in_progress","identifier":"HOM-12","title":"T","description":"D","updatedAt":"x"}'
+route GET "/api/issues/$ISSUE1/active-run" 200 '{"id":"run-w","contextSnapshot":{"wakeReason":"issue_status_changed"}}'
+route GET "/api/issues/$ISSUE1/approvals" 200 '[]'
+route POST "/api/issues/$ISSUE1/comments" 201 '{}'
+route PATCH "/api/issues/$ISSUE1" 200 '{}'
+route PATCH "/api/issues/$REC" 200 '{}'
+route GET /api/health 200 "{\"commit\":\"$PCOMMIT\"}"
+run_afk --json
+assert_eq "lease resume: waiting_human restored, resume_state dropped" \
+  "$(jq -r --arg id "$ISSUE1" '.issues[$id] | .state + " " + (.resume_state // "none")' "$STATE/paperclip/ledger.json")" "waiting_human none"
+assert_eq "lease resume: the block text keeps the open question" "$(last_block)" "waiting on plan-$PD8"
+assert_eq "lease resume: the recovery issue is closed" "$(grep -c "^PATCH /api/issues/$REC$" "$LOG")" "1"
+route GET "/api/issues/$ISSUE1" 200 "{\"status\":\"blocked\",\"identifier\":\"HOM-12\",\"unblockDescriptor\":{\"owner\":{\"agentId\":\"$AGENT1\"}}}"
+route GET "/api/issues/$ISSUE1/comments" 200 "[$(jc 1 "approve $PD8" 2026-03-02T00:00:00.000Z)]"
+run_afk --json
+assert_eq "lease resume: a later approve <digest8> is accepted" "$(jq -r '.kind + " " + .digest' "$STATE/paperclip/approvals/$ISSUE1.json" 2>/dev/null)" "plan $PD"
 
 # ===========================================================================
 printf '\n\033[1m%d passed, %d failed\033[0m\n' "$PASS" "$FAIL"

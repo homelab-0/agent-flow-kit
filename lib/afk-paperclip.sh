@@ -1382,9 +1382,13 @@ afk_cmd_paperclip_poll() { # <json_mode>
           # token). AC-5 (P8a): a run that ended while the issue it held is
           # still in_progress is never escalated, so an issue this host holds
           # is repaired by its own report cycle (self-wake, then the pending
-          # final or the re-block). Anything else is reported and left.
+          # final or the re-block), but only on a readable "no run": a failed
+          # read may hide a run AFK didn't mint. A stranded or board-held issue
+          # waits for Josh's Todo, the resume signal. Anything else is left.
           if ! [[ "$run_id" =~ ^[A-Za-z0-9_-]+$ ]]; then
-            if [[ -n "$prev" ]]; then
+            if [[ -n "$prev" && "${run_resp%%$'\n'*}" != 200 && "${run_resp%%$'\n'*}" != 204 ]]; then
+              actions="$(jq -c --arg t "active run unreadable, held: $identifier" '. + [$t]' <<<"$actions")"
+            elif [[ -n "$prev" && "$prev_st" != stranded && "$prev_st" != held_by_board ]]; then
               ledger="$(jq -c --arg id "$id" '.issues[$id].reblock_due //= "strand"' <<<"$ledger")"
             else
               actions="$(jq -c --arg t "in_progress without a live run, left alone: $identifier" '. + [$t]' <<<"$actions")"
@@ -1400,7 +1404,13 @@ afk_cmd_paperclip_poll() { # <json_mode>
           was_stranded="false"
           [[ "$prev_st" == stranded ]] && was_stranded="true"
 
-          local prior_state_ip="$prev_st"
+          local prior_state_ip="$prev_st" resume_from=""
+          # F7 in lease mode: Josh's Todo on a held issue arrives as this
+          # wake, so the resume restores the interrupted state here too.
+          if [[ "$prev_st" == stranded || "$prev_st" == held_by_board ]]; then
+            resume_from="$(jq -r '.resume_state // empty' <<<"$prev")"
+            [[ "$resume_from" == pending_claim ]] && prior_state_ip=pending_claim
+          fi
 
           if [[ "$pause_kind" != none ]]; then
             action="$(afk_pc_action_text "$pause_kind" "" "" "")"
@@ -1442,9 +1452,16 @@ afk_cmd_paperclip_poll() { # <json_mode>
             # acknowledgment comment naming the reason, then re-self-block.
             local prior_state queued_text=""
             prior_state="$prev_st"
+            [[ "$resume_from" == queued ]] && prior_state=queued
             afk_pc_comment "$api_url" "$id" "$key" "$run_id" \
               "AFK host acknowledged: ${wake_reason:-a Paperclip wake}" >/dev/null
-            if [[ "$prior_state" == working || "$prior_state" == waiting_human ]]; then
+            if [[ "$resume_from" == working || "$resume_from" == waiting_human ]] &&
+               ! (( used_slots_s >= max_active || host_used >= host_max )); then
+              # The hold released its slot; the resume takes one again.
+              new_state="$resume_from"
+              used_slots_s=$((used_slots_s + 1)); host_used=$((host_used + 1))
+              working_id="$identifier"
+            elif [[ "$prior_state" == working || "$prior_state" == waiting_human ]]; then
               new_state="$prior_state"
             elif [[ "$prior_state" == queued ]]; then
               # Promotion is one FIFO sweep after this loop (AD-24).
@@ -1479,7 +1496,7 @@ afk_cmd_paperclip_poll() { # <json_mode>
           ledger="$(jq -c --arg id "$id" --arg a "$agent_id" --arg s "$slug" --arg p "$resolved_pid" --arg ident "$identifier" \
             --arg st "$new_state" --arg since "$since" --arg act "$action" --argjson fresh "$fresh" \
             '.issues[$id] = ((.issues[$id] // {} | if $fresh then {since} else . end) + {host_agent_id:$a, paperclip_project_id:$p, slug:$s, identifier:$ident, state:$st, since:$since, action_text:$act, action_text_applied:$act}
-               | del(.fixed_text, .refusal_code))' \
+               | del(.fixed_text, .refusal_code) | if .state | IN("stranded", "held_by_board") then . else del(.resume_state) end)' \
             <<<"$ledger")"
 
           [[ "$was_stranded" == true ]] && afk_pc_close_recovery
@@ -1702,7 +1719,7 @@ afk_cmd_paperclip_poll() { # <json_mode>
         ledger="$(jq -c --arg id "$a_id" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson l "${a_resp#*$'\n'}" \
           '.issues[$id].approvals_seen = {at:$at, items:[$l[] | objects | {id, type, status} | map_values(strings)]}' <<<"$ledger")"
       else
-        actions="$(jq -c --arg t "PAPERCLIP_APPROVALS_UNREADABLE, held: $a_ident" '. + [$t]' <<<"$actions")"
+        actions="$(jq -c --arg t "PAPERCLIP_APPROVALS_UNREADABLE, approvals not read: $a_ident" '. + [$t]' <<<"$actions")"
       fi
     done < <(jq -r --arg a "$agent_id" '.issues | to_entries[] | select(.value.host_agent_id == $a and .value.state == "waiting_human")
       | [.key, (.value.identifier // "" | gsub("[[:cntrl:]]"; ""))] | join("\u001f")' <<<"$ledger")
