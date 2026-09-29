@@ -316,10 +316,13 @@ afk_pc_action_text() { # <pause-kind: none|stopped|maintenance> <queued-behind-o
 }
 
 # afk_pc_queue_text -- the AD-24 queued text for an issue that cannot take a
-# slot: the project's own slot outranks the host cap. Reads the caller's pass
+# slot: the project's own slot outranks the host cap. Prints nothing when
+# neither limit is reached. Reads the caller's pass
 # locals (used_slots_s, max_active, working_id, host_used, host_max, host_name).
 afk_pc_queue_text() {
   local qb="" ht=""
+  # No limit reached: no queued text, so a caller keeps the existing one.
+  (( used_slots_s >= max_active || host_used >= host_max )) || return 0
   if (( used_slots_s >= max_active )); then qb="$working_id"
   else ht="$(printf 'queued: %s busy (%s/%s active)' "$host_name" "$host_used" "$host_max")"; fi
   afk_pc_action_text none "$qb" "" "" "" "" "$ht"
@@ -652,6 +655,9 @@ afk_pc_report_cycle() {
   [[ -n "$fixed" ]] && files=()
   qid="$(jq -r '.question_id // empty' <<<"$prev")"
   prev_applied="$(jq -r '.action_text_applied // .action_text // empty' <<<"$prev")"
+  # A promoted issue must not keep the queued text it was blocked with.
+  local text_base="$prev_applied"
+  [[ "$state" == working && "$prev_applied" == queued* ]] && text_base=""
   # A final whose comment went out but whose status PATCH failed is retried
   # from the ledger: its spool file is already gone.
   pending_final="$(jq -r '.pending_final // empty' <<<"$prev")"
@@ -663,7 +669,7 @@ afk_pc_report_cycle() {
   elif [[ "$state" == waiting_human && -n "$qid" ]]; then
     composed="$(afk_pc_action_text none "" "" "$prev_applied" "$qid")"
   else
-    composed="$(afk_pc_action_text none "" "$status_file_dir/$id.json" "$prev_applied")"
+    composed="$(afk_pc_action_text none "" "$status_file_dir/$id.json" "$text_base")"
   fi
 
   { (( ${#files[@]} > 0 )) || [[ "$composed" != "$prev_applied" || -n "$pending_final" || "$claim_pending" == true ]]; } || return 0
@@ -814,7 +820,7 @@ afk_pc_report_cycle() {
   elif [[ "$post_state" == waiting_human && -n "$post_qid" ]]; then
     final_composed="$(afk_pc_action_text none "" "" "$prev_applied" "$post_qid")"
   else
-    final_composed="$(afk_pc_action_text none "" "$status_file_dir/$id.json" "$prev_applied")"
+    final_composed="$(afk_pc_action_text none "" "$status_file_dir/$id.json" "$text_base")"
   fi
 
   if afk_pc_self_block "$api_url" "$id" "$key" "$run_id" "$agent_id" "$final_composed"; then
@@ -969,7 +975,8 @@ afk_cmd_paperclip_poll() { # <json_mode>
     # inbox never counts as a held working slot for the issues below.
     # HA-2 (AD-24): `working` and `waiting_human` hold a slot; nothing else does.
     # host_used is the host-wide count against host.max_active_issues.
-    local -A used_slots=() working_ids=() promotable=() newly_queued=()
+    local -A used_slots=() working_ids=() promotable=()
+    local newly_queued_ids=""
     local s_slug s_n s_w host_max host_used
     host_max="$(jq -r '.host.max_active_issues' <<<"$AFK_PC_CFG")"
     host_used="$(jq -r --arg a "$agent_id" '[.issues[] | select(.host_agent_id == $a and (.state | IN("working", "waiting_human")))] | length' <<<"$ledger")"
@@ -1121,7 +1128,7 @@ afk_cmd_paperclip_poll() { # <json_mode>
             afk_pc_notice "$slug" "$id" "$identifier" "$agent_id" "$repo_path" "$harness" claimed
             afk_pc_brief "$slug" "$id" "$updated" "$title" "$desc"
             if (( used_slots_s >= max_active || host_used >= host_max )); then
-              new_state="queued"; newly_queued[$id]=1
+              new_state="queued"; newly_queued_ids+="$id"$'\n'
               action="$(afk_pc_queue_text)"
             else
               new_state="working"
@@ -1151,8 +1158,9 @@ afk_cmd_paperclip_poll() { # <json_mode>
               # Promotion is one FIFO sweep after this loop (AD-24).
               new_state="queued"; promotable[$id]=1
               queued_text="$(afk_pc_queue_text)"
+              [[ -n "$queued_text" ]] || queued_text="$(jq -r '.action_text' <<<"$prev")"
             elif (( used_slots_s >= max_active || host_used >= host_max )); then
-              new_state="queued"; newly_queued[$id]=1
+              new_state="queued"; newly_queued_ids+="$id"$'\n'
               queued_text="$(afk_pc_queue_text)"
             else
               new_state="working"
@@ -1299,7 +1307,7 @@ afk_cmd_paperclip_poll() { # <json_mode>
               afk_pc_notice "$slug" "$id" "$identifier" "$agent_id" "$repo_path" "$harness" claimed
               afk_pc_brief "$slug" "$id" "$updated" "$title" "$desc"
               if (( used_slots_s >= max_active || host_used >= host_max )); then
-                final_state="queued"; newly_queued[$id]=1
+                final_state="queued"; newly_queued_ids+="$id"$'\n'
                 [[ "$adopting" == true ]] && ledger="$(jq -c --arg id "$id" --arg t "$(afk_pc_queue_text)" \
                   '.issues[$id].action_text = $t' <<<"$ledger")"
               else
@@ -1358,7 +1366,7 @@ afk_cmd_paperclip_poll() { # <json_mode>
     # when it leaves; `since` moves with every comment, so it only orders
     # entries that predate queued_at. A comment never sends an issue back.
     ledger="$(jq -c --arg a "$agent_id" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-      --argjson n "$(printf '%s\n' "${!newly_queued[@]}" | jq -R . | jq -sc .)" \
+      --argjson n "$(jq -Rsc 'split("\n") | map(select(. != ""))' <<<"$newly_queued_ids")" \
       '.issues |= with_entries(if .value.host_agent_id != $a then .
          elif .value.state != "queued" then .value |= del(.queued_at)
          elif .value.queued_at == null and (.key | IN($n[])) then .value.queued_at = $now

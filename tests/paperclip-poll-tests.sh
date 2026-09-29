@@ -1625,6 +1625,108 @@ p3="$(grep -c "^PATCH /api/issues/$(iid 3)$" "$LOG")"
 run_afk --json
 assert_eq "nothing changed on the next pass: no second write for it" "$(grep -c "^PATCH /api/issues/$(iid 3)$" "$LOG")" "$p3"
 
+# F1: a promoted issue must not keep the queued text it was blocked with.
+new_scenario cap_promoted_text
+three_projects
+seed 1 working proj "$(pid_n 1)" 2025-12-01T00:00:00Z
+seed 5 queued proj "$(pid_n 1)" 2026-01-01T00:00:05Z
+jq --arg id "$(iid 5)" '.issues[$id] += {queued_at: "2026-01-01T00:00:05Z", action_text: "queued behind PROJ-1", action_text_applied: "queued behind PROJ-1"}' \
+  "$(LEDGER_OF)" >"$(LEDGER_OF).t" && mv "$(LEDGER_OF).t" "$(LEDGER_OF)"
+inbox 1 5
+issue 1 cancelled "\"$(pid_n 1)\""; issue 5 blocked "\"$(pid_n 1)\""
+run_afk --json
+assert_eq "the promoted issue is rewritten to the working text, in Paperclip and in the ledger" \
+  "$(lget "$(iid 5)") $(last_block) $(lget "$(iid 5)" .action_text_applied)" "working AFK host is working on this AFK host is working on this"
+p5="$(grep -c "^PATCH /api/issues/$(iid 5)$" "$LOG")"
+run_afk --json
+assert_eq "  ...and only once" "$(grep -c "^PATCH /api/issues/$(iid 5)$" "$LOG")" "$p5"
+
+# Wake path (F2): PROJ-3 is queued behind PROJ-1 and stays so, with the
+# project text; PROJ-4 (free project, free host) is promoted and is never
+# blocked with a "busy" text.
+new_scenario cap_wake
+three_projects
+seed 1 working proj "$(pid_n 1)" 2025-12-01T00:00:00Z
+seed 3 queued proj "$(pid_n 1)" 2026-01-01T00:00:03Z
+seed 4 queued proj3 "$(pid_n 3)" 2026-01-01T00:00:04Z
+inbox 1 3 4
+issue 1 blocked "\"$(pid_n 1)\""; issue 3 in_progress "\"$(pid_n 1)\""; issue 4 in_progress "\"$(pid_n 3)\""
+run_afk --json
+assert_eq "a wake on a queued issue in a full project keeps the project text" "$(lget "$(iid 3)") $(lget "$(iid 3)" .action_text)" "queued queued behind PROJ-1"
+assert_eq "a wake on a queued issue with room is promoted" "$(lget "$(iid 4)")" "working"
+assert_absent "  ...and no busy text is ever sent for it" "$(cat "$BODYLOG")" "busy ("
+assert_absent "  ...and no self-block ever carries an empty action" "$(cat "$BODYLOG")" '"action":""'
+assert_eq "  ...its ledger text is not a queued text" "$(lget "$(iid 4)" .action_text_applied)" "AFK host is working on this"
+
+# F3: PROJ-3 (pending_claim, the oldest ledger row, so handled first) queues
+# on the host cap, then PROJ-2 closes later in the same pass. PROJ-3 is not
+# promoted this pass, and no text may claim the host is at 1/2.
+new_scenario cap_text_same_pass
+three_projects
+seed 3 pending_claim proj3 "$(pid_n 3)" 2025-11-01T00:00:03Z
+seed 1 working proj "$(pid_n 1)" 2025-12-01T00:00:00Z
+seed 2 working proj2 "$(pid_n 2)" 2025-12-02T00:00:00Z
+inbox 3 1 2
+issue 3 blocked "\"$(pid_n 3)\""; issue 1 blocked "\"$(pid_n 1)\""; issue 2 cancelled "\"$(pid_n 2)\""
+run_afk --json
+assert_eq "PROJ-3 queued on the host cap this pass, and is promoted only on the next" "$(lget "$(iid 3)")" "queued"
+assert_absent "  ...and no busy text with n below the cap is written when a slot frees mid-pass" "$(lget "$(iid 3)" .action_text)$(cat "$BODYLOG")" "busy ("
+
+# The pending_claim path honours the host cap.
+new_scenario cap_pending_claim
+three_projects
+seed 1 working proj "$(pid_n 1)" 2025-12-01T00:00:00Z
+seed 2 working proj2 "$(pid_n 2)" 2025-12-01T00:00:00Z
+seed 3 pending_claim proj3 "$(pid_n 3)" 2026-01-01T00:00:03Z
+inbox 1 2 3
+issue 1 blocked "\"$(pid_n 1)\""; issue 2 blocked "\"$(pid_n 2)\""; issue 3 blocked "\"$(pid_n 3)\""
+run_afk --json
+assert_eq "a pending_claim issue is queued on the host cap, not started" "$(lget "$(iid 3)") $(lget "$(iid 3)" .action_text)" "queued queued: test-host busy (2/2 active)"
+
+# A legacy queued entry has no queued_at: it falls back to since. PROJ-6 is older
+# but has the higher id, so key order alone would pick PROJ-5.
+new_scenario cap_legacy_queued
+three_projects
+seed 1 working proj "$(pid_n 1)" 2025-12-01T00:00:00Z
+seed 5 queued proj3 "$(pid_n 3)" 2026-01-01T00:00:05Z
+seed 6 queued proj2 "$(pid_n 2)" 2026-01-01T00:00:03Z
+inbox 5 6 1
+issue 1 blocked "\"$(pid_n 1)\""; issue 5 blocked "\"$(pid_n 3)\""; issue 6 blocked "\"$(pid_n 2)\""
+run_afk --json
+assert_eq "a queued entry without queued_at is ordered by since" "$(lget "$(iid 6)") $(lget "$(iid 5)")" "working queued"
+
+# waiting_human holds a slot, so it must release the host slot at every site
+# that ends it: closed, stranded (foreign owner and board recovery) and a
+# changed project. PROJ-4 (proj3) is queued only because the host is full.
+release_case() { # <name> <how>
+  new_scenario "$1"
+  three_projects
+  seed 1 waiting_human proj "$(pid_n 1)" 2025-12-01T00:00:00Z
+  seed 2 working proj2 "$(pid_n 2)" 2025-12-01T00:00:00Z
+  seed 4 queued proj3 "$(pid_n 3)" 2026-01-01T00:00:04Z
+  inbox 1 2 4
+  issue 2 blocked "\"$(pid_n 2)\""; issue 4 blocked "\"$(pid_n 3)\""
+  case "$2" in
+    closed) issue 1 cancelled "\"$(pid_n 1)\"" ;;
+    project) issue 1 blocked "\"$(pid_n 3)\"" ;;
+    stranger)
+      issue 1 blocked "\"$(pid_n 1)\""
+      route GET "/api/issues/$(iid 1)" 200 "{\"status\":\"blocked\",\"identifier\":\"PROJ-1\",\"projectId\":\"$(pid_n 1)\",\"unblockDescriptor\":{\"owner\":{\"agentId\":\"$STRANGER\"}}}"
+      route POST "/api/companies/$COMPANY/issues" 201 '{"id":"f0000000-0000-0000-0000-000000000001"}' ;;
+    recovery)
+      issue 1 blocked "\"$(pid_n 1)\""
+      route GET "/api/issues/$(iid 1)" 200 "{\"status\":\"blocked\",\"identifier\":\"PROJ-1\",\"projectId\":\"$(pid_n 1)\",\"unblockDescriptor\":{\"owner\":{\"agentId\":\"$AGENT1\"}},\"activeRecoveryAction\":{\"status\":\"active\",\"ownerType\":\"board\"}}"
+      route POST "/api/companies/$COMPANY/issues" 201 '{"id":"f0000000-0000-0000-0000-000000000001"}' ;;
+  esac
+  run_afk --json
+  assert_eq "waiting_human released at the $2 site: the queued issue is promoted (host 2/2 -> 1/2)" \
+    "$(lget "$(iid 1)") $(lget "$(iid 4)")" "$3 working"
+}
+release_case rel_closed closed closed
+release_case rel_project project stopped
+release_case rel_stranger stranger stranded
+release_case rel_recovery recovery stranded
+
 # AC-1: an intermittent host defaults to one slot.
 new_scenario cap_intermittent
 three_projects
