@@ -1658,6 +1658,18 @@ assert_absent "  ...and no busy text is ever sent for it" "$(cat "$BODYLOG")" "b
 assert_absent "  ...and no self-block ever carries an empty action" "$(cat "$BODYLOG")" '"action":""'
 assert_eq "  ...its ledger text is not a queued text" "$(lget "$(iid 4)" .action_text_applied)" "AFK host is working on this"
 
+# A legacy queued row has no action_text: a wake on it with room never sends
+# the literal "null" as the self-block text.
+new_scenario cap_wake_legacy
+three_projects
+seed 4 queued proj3 "$(pid_n 3)" 2026-01-01T00:00:04Z
+jq --arg id "$(iid 4)" 'del(.issues[$id].action_text, .issues[$id].action_text_applied)' "$(LEDGER_OF)" >"$(LEDGER_OF).t" && mv "$(LEDGER_OF).t" "$(LEDGER_OF)"
+inbox 4
+issue 4 in_progress "\"$(pid_n 3)\""
+run_afk --json
+assert_absent "a wake on a legacy queued row without action_text never sends null" "$(cat "$BODYLOG")" '"action":"null"'
+assert_eq "  ...it falls to the default text" "$(lget "$(iid 4)") $(lget "$(iid 4)" .action_text_applied)" "working AFK host is working on this"
+
 # F3: PROJ-3 (pending_claim, the oldest ledger row, so handled first) queues
 # on the host cap, then PROJ-2 closes later in the same pass. PROJ-3 is not
 # promoted this pass, and no text may claim the host is at 1/2.

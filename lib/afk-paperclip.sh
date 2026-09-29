@@ -1158,7 +1158,8 @@ afk_cmd_paperclip_poll() { # <json_mode>
               # Promotion is one FIFO sweep after this loop (AD-24).
               new_state="queued"; promotable[$id]=1
               queued_text="$(afk_pc_queue_text)"
-              [[ -n "$queued_text" ]] || queued_text="$(jq -r '.action_text' <<<"$prev")"
+              [[ -n "$queued_text" ]] || queued_text="$(jq -r '.action_text // empty' <<<"$prev")"
+              [[ -n "$queued_text" ]] || queued_text="$(afk_pc_action_text none "" "" "")"
             elif (( used_slots_s >= max_active || host_used >= host_max )); then
               new_state="queued"; newly_queued_ids+="$id"$'\n'
               queued_text="$(afk_pc_queue_text)"
