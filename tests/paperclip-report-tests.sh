@@ -87,15 +87,16 @@ write_owner() { # <terminal>
 write_config() {
   mkdir -p "$HOME_DIR/.config/agent-flow-kit"
   jq -nc --arg r "$REPO" --arg a "$AGENT1" \
-    '{api_url:"https://paperclip.test",company_id:"cccccccc-cccc-cccc-cccc-cccccccccccc",
-      board_user_id:"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",host_label:"h",
-      agents:[{agent_id:$a,key_ref:"op://x/y",project:"proj1",repo_path:$r,harness:"claude"}]}' >"$CONFIG"
+    '{schema:"afk-paperclip-config/2",api_url:"https://paperclip.test",company_id:"cccccccc-cccc-cccc-cccc-cccccccccccc",
+      board_user_id:"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+      host:{label:"h",agent_id:$a,key_ref:"op://x/y"},
+      projects:[{paperclip_project_id:"aaaaaaaa-0000-4000-8000-000000000001",slug:"proj1",repo_path:$r,harness:"claude"}]}' >"$CONFIG"
 }
 
 write_ledger() { # [pending_cost_results-json]
   mkdir -p "$STATE/paperclip"
   jq -nc --arg id "$ISSUE" --argjson pending "${1:-[]}" \
-    '{issues:{($id): {project:"proj1", pending_cost_results:$pending}}}' >"$STATE/paperclip/ledger.json"
+    '{issues:{($id): {slug:"proj1", pending_cost_results:$pending}}}' >"$STATE/paperclip/ledger.json"
 }
 
 reset_state() {

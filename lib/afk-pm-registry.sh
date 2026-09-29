@@ -107,10 +107,10 @@ afk_pmr_terminal_disconnected() { # <handle>
     <<<"$AFK_PMR_TERMINALS_JSON" >/dev/null 2>&1
 }
 
-# Project names become directory names under notices/: a plain name only, and
-# never one of the kit's own claimed/settled directories.
-afk_pmr_project_ok() {
-  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ && "$1" != claimed && "$1" != settled ]]
+# Slugs become directory names under notices/: the AD-23 slug regex only, and
+# never one of the kit's own claimed/settled/unreturned directories.
+afk_pmr_slug_ok() {
+  [[ "$1" =~ ^[a-z0-9-]{1,40}$ && "$1" != claimed && "$1" != settled && "$1" != unreturned ]]
 }
 
 # --- AC-1: lookup by git common-dir ------------------------------------------
@@ -280,8 +280,8 @@ afk_cmd_pm_registry_reap() { # <json_mode> <scope_key>
   if [[ -n "$claim_key" && -d "$AFK_STATE_DIR/paperclip/notices/claimed/$claim_key" ]]; then
     for f in "$AFK_STATE_DIR/paperclip/notices/claimed/$claim_key"/*; do
       [[ -f "$f" ]] || continue
-      proj="$(jq -r '.project // empty' "$f" 2>/dev/null)"
-      if afk_pmr_project_ok "$proj" \
+      proj="$(jq -r '.slug // empty' "$f" 2>/dev/null)"
+      if afk_pmr_slug_ok "$proj" \
          && afk_state_dir_ensure "$AFK_STATE_DIR/paperclip/notices/$proj" \
          && mv -n -- "$f" "$AFK_STATE_DIR/paperclip/notices/$proj/$(basename -- "$f")" 2>/dev/null \
          && [[ ! -e "$f" ]]; then
@@ -331,15 +331,15 @@ afk_cmd_pm_registry_reap() { # <json_mode> <scope_key>
 }
 
 # --- AC-4: paperclip-take -----------------------------------------------------
-afk_cmd_paperclip_take() { # <json_mode> <project>
-  local json_mode="$1" project="$2" repo_path terminal lookup state claim_terminal claim_key
+afk_cmd_paperclip_take() { # <json_mode> <slug>
+  local json_mode="$1" slug="$2" repo_path terminal lookup state claim_terminal claim_key
   local notices_dir claimed_dir out="[]" f base moved doc id event brief_path reply_path
-  afk_pmr_project_ok "$project" || { afk_pmr_emit_refusal "PAPERCLIP_PROJECT_UNKNOWN" "$json_mode"; return 1; }
+  afk_pmr_slug_ok "$slug" || { afk_pmr_emit_refusal "PAPERCLIP_PROJECT_UNKNOWN" "$json_mode"; return 1; }
   if ! afk_pc_load_config; then
     afk_pmr_emit_refusal "$AFK_PC_REFUSAL" "$json_mode"
     return 4
   fi
-  repo_path="$(jq -r --arg p "$project" '[.agents[] | select(.project==$p)][0].repo_path // empty' <<<"$AFK_PC_CFG")"
+  repo_path="$(jq -r '.repo_path // empty' <<<"$(afk_pc_project_row "$slug")")"
   [[ -n "$repo_path" ]] || { afk_pmr_emit_refusal "PAPERCLIP_PROJECT_UNKNOWN" "$json_mode"; return 4; }
   terminal="${ORCA_TERMINAL_HANDLE:-}"
   [[ -n "$terminal" ]] || { afk_pmr_emit_refusal "PAPERCLIP_NOT_OWNER" "$json_mode"; return 2; }
@@ -363,7 +363,7 @@ afk_cmd_paperclip_take() { # <json_mode> <project>
   claim_key="$(afk_pmr_claim_key_for_terminal "$claim_terminal" 2>/dev/null)" \
     || { afk_pmr_emit_refusal "PAPERCLIP_NOT_OWNER" "$json_mode"; return 2; }
 
-  notices_dir="$AFK_STATE_DIR/paperclip/notices/$project"
+  notices_dir="$AFK_STATE_DIR/paperclip/notices/$slug"
   claimed_dir="$AFK_STATE_DIR/paperclip/notices/claimed/$claim_key"
   afk_state_dir_ensure "$claimed_dir" || { afk_pmr_emit_refusal "PAPERCLIP_REGISTRY_WRITE_FAILED" "$json_mode"; return 1; }
 

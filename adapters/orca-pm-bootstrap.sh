@@ -8,19 +8,19 @@ intent="$2"
 # AFK-PC-2b: a first-ever PM start has no predecessor, so it carries a sibling
 # intent kind that skips the handoff receipt and run-continuity checks below.
 # The resume text is still one argv data value, validated as fixed kit text
-# with only <project>/<harness> interpolated (never Paperclip bytes), and is
+# with only <slug>/<harness> interpolated (never Paperclip bytes), and is
 # never evaluated.
-if [[ "$(jq -r '.schema // empty' "$intent" 2>/dev/null)" == "afk-pm-bootstrap-first-start-intent/1" ]]; then
+if [[ "$(jq -r '.schema // empty' "$intent" 2>/dev/null)" == "afk-pm-bootstrap-first-start-intent/2" ]]; then
   jq -e 'def s: type=="string" and length>0;
-    (.project|s) and (.project|test("^[a-z0-9-]+$")) and
+    (.slug|s) and (.slug|test("^[a-z0-9-]{1,40}$")) and
     (.harness|IN("claude","codex","opencode")) and (.resume_instruction|s) and
     (.worktree.id|s) and (.worktree.path|s)' "$intent" >/dev/null 2>&1 || exit 1
   fs_harness="$(jq -r .harness "$intent")"; fs_resume="$(jq -r .resume_instruction "$intent")"
   fs_wi="$(jq -r .worktree.id "$intent")"; fs_wp="$(jq -r .worktree.path "$intent")"
-  fs_project="$(jq -r .project "$intent")"
+  fs_slug="$(jq -r .slug "$intent")"
   # The only text this kind may carry is the fixed kit instruction; rebuild it
   # and refuse anything else, so an edited intent cannot become a prompt.
-  [[ "$fs_resume" == "You are the BMAD PM for project $fs_project. Register with \`agent-flow-kit pm-start --harness $fs_harness\`, then run \`agent-flow-kit paperclip-take --project $fs_project\` and read the brief file it names." ]] || exit 1
+  [[ "$fs_resume" == "You are the BMAD PM for project $fs_slug. Register with \`agent-flow-kit pm-start --harness $fs_harness\`, then run \`agent-flow-kit paperclip-take --slug $fs_slug\` and read the brief file it names." ]] || exit 1
   fs_actual_path="$(pwd -P 2>/dev/null || true)"
   [[ "$fs_actual_path" == "$fs_wp" && -n "${ORCA_TERMINAL_HANDLE:-}" ]] || exit 1
   [[ -z "${ORCA_WORKTREE_PATH:-}" || "${ORCA_WORKTREE_PATH}" == "$fs_wp" ]] || exit 1

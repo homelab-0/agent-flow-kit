@@ -191,7 +191,7 @@ afk_pcp_attested() {
 # The poller's hook for a comment that already passed the Josh test. Returns
 # 1 when the comment is not a plan decision (the caller writes the plain
 # human_commented notice), 0 when it was handled here. Reads the poller's
-# api_url/id/identifier/project/agent_id/repo_path/harness/prev_state/qid/
+# api_url/id/identifier/slug/agent_id/repo_path/harness/prev_state/qid/
 # ledger locals and appends to `actions`, like afk_pc_strand.
 afk_pcp_on_josh_comment() {
   local LC_ALL=C body verb d8 plans="$AFK_STATE_DIR/paperclip/plans"
@@ -229,7 +229,7 @@ afk_pcp_on_josh_comment() {
     else
       actions="$(jq -c --arg t "approval_rejected: $identifier" '. + [$t]' <<<"$actions")"
     fi
-    afk_pc_notice "$project" "$id" "$identifier" "$agent_id" "$repo_path" "$harness" "$ev" "$x"
+    afk_pc_notice "$slug" "$id" "$identifier" "$agent_id" "$repo_path" "$harness" "$ev" "$x"
     return 0
   fi
   local sent_seq sent_at
@@ -265,12 +265,12 @@ afk_pcp_on_josh_comment() {
     fi
   fi
   if [[ -n "$reason" ]]; then
-    afk_pc_notice "$project" "$id" "$identifier" "$agent_id" "$repo_path" "$harness" approval_refused \
+    afk_pc_notice "$slug" "$id" "$identifier" "$agent_id" "$repo_path" "$harness" approval_refused \
       "$(jq -c --arg r "$reason" '. + {reason:$r}' <<<"$x")"
     actions="$(jq -c --arg t "$reason: $identifier" '. + [$t]' <<<"$actions")"
     return 0
   fi
-  afk_pc_notice "$project" "$id" "$identifier" "$agent_id" "$repo_path" "$harness" approval_granted \
+  afk_pc_notice "$slug" "$id" "$identifier" "$agent_id" "$repo_path" "$harness" approval_granted \
     "$(jq -c --arg d "$digest" '. + {digest:$d, digest8:$d[0:8]}' <<<"$x")"
   actions="$(jq -c --arg t "approval_granted: $identifier" '. + [$t]' <<<"$actions")"
   return 0

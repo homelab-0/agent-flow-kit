@@ -52,15 +52,16 @@ COMMIT="d554c4789ed3930f8a53ac9fdf6503b3187097da"
 
 write_config() { # [<interim-json>]
   jq -nc --arg r "$REPO" --argjson i "${1:-null}" \
-    '{api_url:"https://paperclip.test",company_id:"cccccccc-cccc-cccc-cccc-cccccccccccc",
-      board_user_id:"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",host_label:"h",
-      agents:[{agent_id:"11111111-1111-1111-1111-111111111111",key_ref:"op://x/y",project:"proj1",repo_path:$r,harness:"claude"}]}
+    '{schema:"afk-paperclip-config/2",api_url:"https://paperclip.test",company_id:"cccccccc-cccc-cccc-cccc-cccccccccccc",
+      board_user_id:"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+      host:{label:"h",agent_id:"11111111-1111-1111-1111-111111111111",key_ref:"op://x/y"},
+      projects:[{paperclip_project_id:"aaaaaaaa-0000-4000-8000-000000000001",slug:"proj1",repo_path:$r,harness:"claude"}]}
      + (if $i == null then {} else {interim_comment_approval:$i} end)' >"$CONFIG"
 }
 reset_state() {
   rm -rf "$STATE"; mkdir -p "$STATE/paperclip"
   write_config
-  jq -nc --arg id "$ISSUE" '{issues:{($id):{project:"proj1", identifier:"HOM-12"}}}' >"$STATE/paperclip/ledger.json"
+  jq -nc --arg id "$ISSUE" '{issues:{($id):{slug:"proj1", identifier:"HOM-12"}}}' >"$STATE/paperclip/ledger.json"
   local sk; sk="terminal-$(printf 'terminal\0%s' termA | sha256sum | awk '{print $1}')"
   mkdir -p "$STATE/pm/scopes/$sk"
   jq -nc --arg wp "$REPO" \
