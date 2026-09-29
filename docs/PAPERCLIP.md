@@ -1,6 +1,6 @@
 # Paperclip integration (`agent-flow-kit paperclip-poll`)
 
-One deterministic poller per host holds every project agent's Paperclip key
+One deterministic poller per host holds the host agent's one Paperclip key
 and is the only thing on that host that writes to Paperclip. It runs one
 bounded pass at a time: no loop, no sleep, no wait. It claims and classifies
 issues, and drains the spool of queued PM status back to Paperclip (the
@@ -8,27 +8,49 @@ report cycle, below).
 
 ## Config
 
-`${AFK_PAPERCLIP_CONFIG:-$HOME/.config/agent-flow-kit/paperclip.json}`:
+`${AFK_PAPERCLIP_CONFIG:-$HOME/.config/agent-flow-kit/paperclip.json}`, schema
+`afk-paperclip-config/2` (AD-23):
 
 ```json
 {
+  "schema": "afk-paperclip-config/2",
   "api_url": "https://paperclip.example",
   "company_id": "<uuid>",
   "board_user_id": "emXp8Svi8ncWyL1EORTkRNQYjFjCdQon",
-  "host_label": "devbox",
+  "host": {
+    "label": "devbox",
+    "agent_id": "<uuid>",
+    "key_ref": "op://vault/item/field"
+  },
   "maintenance_issue_id": "<uuid, optional>",
-  "agents": [
+  "projects": [
     {
-      "agent_id": "<uuid>",
-      "key_ref": "op://vault/item/field",
-      "project": "agent-flow-kit",
+      "paperclip_project_id": "<uuid>",
+      "slug": "agent-flow-kit",
       "repo_path": "/home/user/repo",
       "harness": "claude",
-      "max_active_issues": 1
+      "max_active_issues": 1,
+      "merge": "human"
     }
   ]
 }
 ```
+
+Field rules:
+
+- `host` is the host's one Paperclip agent and its one key reference. Adding
+  or removing a project never creates, rotates or retires a key.
+- `projects[]` is keyed by the Paperclip project id. Every entry needs a
+  unique `paperclip_project_id`, a unique `slug`, and a `repo_path` that is
+  absolute and points at a distinct repository (compared by
+  `git rev-parse --git-common-dir`, so two paths into one repo count as one).
+  Zero projects is valid: every issue then self-blocks as unmapped.
+- `slug` matches `^[a-z0-9-]{1,40}$` and names every path, notice directory,
+  intent file and terminal title. `claimed`, `settled` and `unreturned` are
+  reserved. Paperclip's project name never reaches a path.
+- `harness` is `claude`, `codex` or `opencode`. `max_active_issues` is an
+  integer from 1 to 999 (default 1). `merge` is `human` (default) or `pm`.
+- `api_url` must be `https://`.
 
 Every id used in a file path (company, agent, maintenance issue, and every id
 read back from a Paperclip response) is checked as a UUID before it is used
@@ -37,10 +59,69 @@ that way. `board_user_id` is never used in a file path; it is checked against
 user ids are Better-Auth style ids, not UUIDs. `board_user_id` may never be
 the literal string `board` or `local-board`. A missing config reports
 `PAPERCLIP_NOT_CONFIGURED`; an invalid one reports `PAPERCLIP_CONFIG_INVALID`
-or `PAPERCLIP_ID_INVALID`.
-Neither makes a network call. `interim_comment_approval.paperclip_commit`,
+or `PAPERCLIP_ID_INVALID`; a config without the v2 schema reports
+`PAPERCLIP_CONFIG_SCHEMA_OLD` and is never read (see
+[Migrating a v1 config](#migrating-a-v1-config)).
+None of these makes a network call. `interim_comment_approval.paperclip_commit`,
 when present, must be 40 lowercase hex characters or config load itself
 refuses with `PAPERCLIP_CONFIG_INVALID`.
+
+### Onboarding a project: `agent-flow-kit paperclip-project`
+
+Create the Project in the Paperclip UI, then run one command on the host:
+
+- **`paperclip-project add --project-id <uuid> --slug <s> --repo <abs-path>
+  [--harness claude|codex|opencode] [--max-active n] [--merge human|pm]
+  [--accept-mismatch] [--json]`** applies the loader's own checks (slug,
+  absolute path, a git repo, a `.afk/gates-allowlist` on the default branch, a
+  unique project id, slug and common-dir), then reads
+  `GET /api/projects/<id>` with the host key. It refuses a project that is not
+  readable (`PAPERCLIP_PROJECT_UNREADABLE`) or archived
+  (`PAPERCLIP_PROJECT_ARCHIVED`). When the project has a `codebase.repoUrl`
+  that differs from the repo's normalized `origin`, it prints both normalized
+  forms and refuses with `PAPERCLIP_PROJECT_REPO_MISMATCH` unless
+  `--accept-mismatch` is given; even then the poller still self-blocks the
+  project's issues on the mismatch, and the command says so. The write is
+  atomic (temp file, rename, mode 600), keeps every other field, and never
+  writes to Paperclip.
+- **`set --slug <s> [--harness] [--max-active] [--merge]`** changes fields.
+- **`remove --slug <s>`** refuses with `PAPERCLIP_PROJECT_IN_USE` while a
+  ledger issue pinned to the slug is not closed.
+- **`list [--json]`** prints the table with a readiness column: the
+  resolution result for the project itself (`ok` or the refusal code from the
+  table below), computed with the host key.
+- `--merge pm` on a repo whose origin is `agent-flow-kit` is refused with
+  `PAPERCLIP_MERGE_KIT_REPO` by `add` and `set`. The check is by the origin's
+  repository name only, so a clone with no `origin` or a differently named fork
+  is not caught; HA-3 extends the merge policy.
+- `remove` and `--migrate` treat a ledger file that exists but does not parse
+  as held work and refuse.
+
+### Migrating a v1 config
+
+A v1 config (`agents[]`, one agent and key per project) is never read: the
+poller and every verb refuse it with `PAPERCLIP_CONFIG_SCHEMA_OLD`. Convert it
+once with **`agent-flow-kit paperclip-config --migrate --project-id <uuid>
+[--slug <s>] [--json]`**:
+
+- The single `agents[]` entry's `agent_id` and `key_ref` become
+  `host.agent_id` and `host.key_ref`; `host_label` becomes `host.label`; its
+  `project`, `repo_path`, `harness` and `max_active_issues` become one
+  `projects[]` row. Other top-level fields are kept.
+- `--project-id` is required because v1 never recorded a Paperclip project id.
+  The slug is the lowercased v1 `project` when that is a valid slug; otherwise
+  pass `--slug`.
+- `pm_merge_allowed` is dropped, and the command says so.
+- Refusals: more than one agent (`PAPERCLIP_MIGRATE_MULTI_AGENT`), any ledger
+  issue that is not closed or any file under `notices/claimed/*/`
+  (`PAPERCLIP_MIGRATE_STATE_HELD`), or a config that is already v2
+  (`PAPERCLIP_MIGRATE_NOT_NEEDED`).
+- The old file is copied next to the config as `paperclip.json.v1.<timestamp>`
+  (mode 600) before the atomic replace, and the result must pass the loader
+  first.
+- Migration moves only the config. A pending notice under the old project
+  name in `notices/`, and any `pm-start-intents/<name>.json`, are not renamed
+  to the slug; with no open issues there should be none.
 
 ### Migrating from `paperclip_version`
 
@@ -59,9 +140,57 @@ match the full SHA the endpoint returns:
 }
 ```
 
+## Projects
+
+Two keys pick the work: the issue's assignee picks the host, and its
+`projectId` picks the project. The repo always comes from this host's
+`projects[]`, never from Paperclip text. Each pass reads the issue's live
+`projectId` (`GET /api/issues/<id>`), then the project (`GET
+/api/projects/<id>`), and resolves in this order:
+
+| Case | Reason code | Outcome |
+|---|---|---|
+| `projectId` null or absent | `PAPERCLIP_PROJECT_MISSING` | self-block `Waiting for Josh: set a Project on <identifier>` |
+| id not in this host's `projects[]` | `PAPERCLIP_PROJECT_UNMAPPED` | self-block `Waiting for Josh: project not set up on <host>; assign to a host that has it` |
+| `GET /api/projects/<id>` not 200 | `PAPERCLIP_PROJECT_UNREADABLE` | no write; held as it was this pass and reported locally. A 404 on 3 consecutive passes becomes `PAPERCLIP_PROJECT_MISSING` |
+| project `archivedAt` set | `PAPERCLIP_PROJECT_ARCHIVED` | self-block `Waiting for Josh: project archived` |
+| `codebase.repoUrl` set and different from the repo's normalized `origin` | `PAPERCLIP_PROJECT_REPO_MISMATCH` | self-block `Waiting for Josh: project repo differs from <host>'s` |
+| repo missing, not a git repo, no `.afk/gates-allowlist` on the default branch, or an unreadable `origin` while `repoUrl` is set | `PAPERCLIP_PROJECT_REPO_NOT_READY` | self-block `Waiting for Josh: <slug> repo not ready on <host> (<sub-code>)` |
+
+The sub-code is `REPO_MISSING`, `NOT_A_GIT_REPO`, `ORIGIN_UNREADABLE` or
+`GATES_ALLOWLIST_MISSING`. A refusal text ends with
+` · <project id, first 8 hex> "<name>"`, the name control-stripped and cut to
+32 characters; it is dropped, and then the reason cut, to stay within the
+120-character limit. A long `REPO_NOT_READY` text can lose its sub-code in
+Paperclip while the local report keeps it.
+
+- **`waiting_setup`.** An issue that refuses is ledger state `waiting_setup`.
+  It holds no slot, sends no notice, starts no PM and gets no claim comment;
+  its report cycle is the self-block alone. It is re-resolved from the live
+  `projectId` every pass and written only when the outcome changes. Once it
+  resolves it is adopted as if new, in `since` order.
+- **Pinning and `PROJECT_CHANGED`.** An adopted issue is pinned to its
+  project id and slug at first adoption. If its live `projectId` later differs
+  (null, another project, or the pinned project no longer on this host), the
+  poller stops it: one `stopped` notice with reason `PROJECT_CHANGED` to the
+  pinned slug, the slot is released, and the self-block reads `Stopped:
+  project changed after claim; reassign to restart`.
+- **Origin normalization.** `git remote get-url origin` is parsed in scp form
+  (`user@host:path`) or URL form into `host/path`: the host is lowercased;
+  `user@`, the port, a trailing `/` and one trailing `.git` are dropped. The
+  path keeps its case, since a case difference is a different repository.
+- **`paperclip-take --slug <slug>`** claims the notices for one configured
+  slug. The old `--project` flag is refused with `PAPERCLIP_FLAG_RENAMED`,
+  never aliased.
+- **`status/<issue-id>.json` ownership.** `paperclip-report --status` writes
+  it, and it owns the file's content. The poller deletes it in exactly one
+  case: an issue re-adopted after it closed (`afk_pc_spool_reopen`), so that
+  issue starts without its previous declaration. A stopped or `waiting_setup`
+  issue keeps its file.
+
 ## Notices
 
-Under `$AFK_STATE_DIR/paperclip/notices/<project>/`, one file per event,
+Under `$AFK_STATE_DIR/paperclip/notices/<slug>/`, one file per event,
 never rewritten: `claimed`, `promoted`, `human_commented`, `stopped`,
 `stranded`. A `claimed` notice also writes a
 `brief.<issue-id>.<updatedAt digits>.md` with the issue title and
@@ -77,7 +206,11 @@ beyond what those two file types already declare.
 `PAPERCLIP_KEY_UNAUTHORIZED`, `PAPERCLIP_POLL_BUSY`, `PAPERCLIP_PAUSED`,
 `PAPERCLIP_DRAIN_TAMPERED`, `PAPERCLIP_DRAIN_UNREADABLE`,
 `PAPERCLIP_AUTHOR_UNVERIFIABLE`, `PAPERCLIP_SELF_BLOCK_FAILED`, `PAPERCLIP_UNREACHABLE`,
-`PAPERCLIP_CREDENTIAL_REJECTED`, `PAPERCLIP_RATE_LIMITED`.
+`PAPERCLIP_CREDENTIAL_REJECTED`, `PAPERCLIP_RATE_LIMITED`,
+`PAPERCLIP_CONFIG_SCHEMA_OLD`, the `PAPERCLIP_PROJECT_*` codes in the table
+under [Projects](#projects), and the `PAPERCLIP_MIGRATE_*`,
+`PAPERCLIP_PROJECT_IN_USE` and `PAPERCLIP_MERGE_KIT_REPO` refusals of the
+onboarding verbs.
 
 ## The report cycle and the spool (`agent-flow-kit paperclip-poll`, AFK-PC-1b)
 
@@ -124,7 +257,7 @@ A `422`/`400` moves that one entry to `spool/<issue-id>/dead/` with a
 `.reason` file and continues with the rest. A `404`/`410` drops the whole
 issue from the ledger and moves everything left in its spool to `dead/`,
 the same place a closed issue's spool ends up once it is no longer held.
-A `429` keeps the entry and backs off for the rest of that agent's pass. A
+A `429` keeps the entry and backs off for the rest of the pass. A
 `409` leaves the entry for the next pass. None of this runs while paused or
 draining, and a `stranded` issue's spool is simply held.
 
@@ -168,7 +301,7 @@ sessions never act on the same one.
   staleness itself (refuses `PM_OWNER_LIVE`, `PM_HANDOFF_IN_PROGRESS` or
   `ORCA_UNAVAILABLE` otherwise), atomically moves that scope's
   `ownership.json` to `pm/reaped/<scope>.<epoch>.json`, and returns every
-  notice claimed under that owner's terminal back to `notices/<project>/`.
+  notice claimed under that owner's terminal back to `notices/<slug>/`.
   A notice that cannot be returned — an invalid or unknown project, or a
   same-named file already at the destination — is never left silently
   behind under the dead terminal's claim key: it is moved instead to
@@ -179,7 +312,7 @@ sessions never act on the same one.
   `notices_stranded` counts them; a nonzero count exits `3` even though the
   owner was reaped successfully.
 
-- **`agent-flow-kit paperclip-take --project <name> [--json]`**: only the
+- **`agent-flow-kit paperclip-take --slug <slug> [--json]`**: only the
   registry's live owner for that project's `repo_path` may call it (identity
   is `ORCA_TERMINAL_HANDLE`, checked against the owner's `terminal`; during a
   handoff, the named successor terminal may call it instead — anyone else
@@ -187,7 +320,7 @@ sessions never act on the same one.
   never authorizes a take: `ORCA_TERMINAL_HANDLE` matching a disconnected
   owner's terminal, or a successor named in one of several ambiguous
   handoffs, both get `PAPERCLIP_NOT_OWNER`. Claims every notice under
-  `notices/<project>/` in order by an atomic `mv` into
+  `notices/<slug>/` in order by an atomic `mv` into
   `notices/claimed/<claim-key>/` before reading it, where `<claim-key>` is
   `terminal-<sha256 of the caller's terminal handle>` — the same key
   `pm-registry-reap` derives from a stale owner's `terminal`, so a reaped
@@ -207,9 +340,9 @@ status files directly (AD-7/AD-8). `agent-flow-kit paperclip-report` is the
 one command that writes there, and it enforces ordering, closure and who's
 allowed to:
 
-- **Caller.** The verb resolves the issue's project from the poller ledger
-  (`$AFK_STATE_DIR/paperclip/ledger.json`, `issues[<id>].project`), then that
-  project's `repo_path` from the paperclip config. The caller must be the
+- **Caller.** The verb resolves the issue's pinned slug from the poller ledger
+  (`$AFK_STATE_DIR/paperclip/ledger.json`, `issues[<id>].slug`), then that
+  project's `repo_path` from the config's `projects[]`. The caller must be the
   registry's live owner (or the named handoff successor) for that repo — the
   same check as `paperclip-take`, via `ORCA_TERMINAL_HANDLE`. Otherwise it
   refuses with `PAPERCLIP_NOT_OWNER`. An unknown issue id, or one not in the
@@ -406,7 +539,7 @@ ignored or, if unverifiable, reported and left untouched (fail-closed).
 Opt-in via `pm_start_enabled: true` in `paperclip.json` (default off, so an
 existing install sees no behaviour change). When set, every pass that finds
 an issue self-blocked and owned by this host re-evaluates whether to start
-the project's PM, using PC-2a's registry lookup for the agent's `repo_path`:
+the project's PM, using PC-2a's registry lookup for the project's `repo_path`:
 
 - `live`: nothing starts; the PM pulls its own notices.
 - `handoff_in_progress` / `ambiguous` / `handoff_stalled`: nothing starts;
@@ -425,10 +558,10 @@ the project's PM, using PC-2a's registry lookup for the agent's `repo_path`:
   against the repo) — never auto-fixed.
 
 A start creates exactly one visible Orca terminal titled
-`PM <project> (paperclip)`, running `adapters/orca-pm-bootstrap.sh` with a
-`afk-pm-bootstrap-first-start-intent/1` intent (a sibling of the handoff
+`PM <slug> (paperclip)`, running `adapters/orca-pm-bootstrap.sh` with a
+`afk-pm-bootstrap-first-start-intent/2` intent (a sibling of the handoff
 intent, for a PM with no predecessor). The first instruction is fixed kit
-text naming only `<project>` (`^[a-z0-9-]+$`) and `<harness>` (the enum);
+text naming only `<slug>` (`^[a-z0-9-]{1,40}$`) and `<harness>` (the enum);
 no Paperclip issue title, description or comment ever reaches the terminal,
 the prompt, an argv, or the intent file. The Orca terminal nudge for a live
 PM is not implemented (Orca has no foreground-process check; see AD-7).
