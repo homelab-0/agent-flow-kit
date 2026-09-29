@@ -969,7 +969,7 @@ afk_cmd_paperclip_poll() { # <json_mode>
       # slug/repo_path/harness/max_active are what every notice, brief, PM
       # start and verb below reads. They come from the host's projects[] row
       # only, never from issue text or the project's name.
-      local slug="" repo_path="" harness="" max_active=1 row="" pin_pid="" pin_slug="" live_pid="" resolved_pid=""
+      local slug="" repo_path="" harness="" max_active=1 row="" pin_pid="" pin_slug="" live_pid="" resolved_pid="" fresh=false
       IFS=$'\x1f' read -r prev_st pin_pid pin_slug live_pid < <(jq -r --argjson p "${prev:-null}" \
         '[($p.state // ""), ($p.paperclip_project_id // ""), ($p.slug // ""), (.projectId // "" | strings | ascii_downcase)]
          | map(tostring | gsub("[[:cntrl:]]"; "")) | join("\u001f")' <<<"$detail")
@@ -1020,9 +1020,11 @@ afk_cmd_paperclip_poll() { # <json_mode>
         fi
         row="$AFK_PC_RES_ROW"; resolved_pid="$AFK_PC_RES_PID"
         # A previously refused or closed issue that now resolves is adopted
-        # as new: a fresh ledger row, only `since` carried over.
+        # as new: its row is replaced (only `since` carried over) where it is
+        # actually adopted below. Until then the old row stays, so a pass that
+        # cannot adopt it yet (no live run, a board hold) re-resolves it next time.
         if [[ -n "$prev" ]]; then
-          ledger="$(jq -c --arg id "$id" '.issues[$id] |= {since}' <<<"$ledger")"
+          fresh=true
           # A restart after a final: reopen the spool and drop the old declared
           # status, or the new PM's first report is refused as closed.
           [[ "$prev_st" == closed ]] && afk_pc_spool_reopen "$id"
@@ -1136,8 +1138,8 @@ afk_cmd_paperclip_poll() { # <json_mode>
           # status or a queued spool entry, never on a text it just applied.
           # The project is pinned here, at first adoption (F6).
           ledger="$(jq -c --arg id "$id" --arg a "$agent_id" --arg s "$slug" --arg p "$resolved_pid" --arg ident "$identifier" \
-            --arg st "$new_state" --arg since "$since" --arg act "$action" \
-            '.issues[$id] = ((.issues[$id] // {}) + {host_agent_id:$a, paperclip_project_id:$p, slug:$s, identifier:$ident, state:$st, since:$since, action_text:$act, action_text_applied:$act}
+            --arg st "$new_state" --arg since "$since" --arg act "$action" --argjson fresh "$fresh" \
+            '.issues[$id] = ((.issues[$id] // {} | if $fresh then {since} else . end) + {host_agent_id:$a, paperclip_project_id:$p, slug:$s, identifier:$ident, state:$st, since:$since, action_text:$act, action_text_applied:$act}
                | del(.fixed_text, .refusal_code))' \
             <<<"$ledger")"
 
@@ -1251,8 +1253,8 @@ afk_cmd_paperclip_poll() { # <json_mode>
               [[ -n "$since" ]] || since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
               newest_since="$since"
               ledger="$(jq -c --arg id "$id" --arg a "$agent_id" --arg s "$slug" --arg p "$resolved_pid" --arg ident "$identifier" \
-                --arg t "$(afk_pc_action_text none "" "" "")" \
-                '.issues[$id] = ((.issues[$id] // {}) + {host_agent_id:$a, paperclip_project_id:$p, slug:$s, identifier:$ident,
+                --arg t "$(afk_pc_action_text none "" "" "")" --argjson fresh "$fresh" \
+                '.issues[$id] = ((.issues[$id] // {} | if $fresh then {since} else . end) + {host_agent_id:$a, paperclip_project_id:$p, slug:$s, identifier:$ident,
                    state:"pending_claim", action_text:$t} | del(.fixed_text, .refusal_code, .action_text_applied))' <<<"$ledger")"
               prev="$(jq -c --arg id "$id" '.issues[$id]' <<<"$ledger")"
             fi

@@ -1417,6 +1417,20 @@ run_afk --json
 assert_eq "accepted -> refused is reported exactly once" \
   "$(grep -o 'PAPERCLIP_PROJECT_REFUSAL_CHANGED: aaaaaaaa refused' <<<"$OUT_TEXT" | wc -l | tr -d ' ')" "1"
 
+# A refused or closed issue that resolves on a pass where it can't be adopted
+# yet (no live run) keeps its row, and is adopted once a run exists.
+new_scenario res_resolves_without_run
+write_config "[$(proj_json "$PROJ1" proj "$REPO1"), $(proj_json "$PROJ2" proj2 "$REPO2")]"
+seed 1 waiting_setup proj "$PROJ1"; seed 2 closed proj2 "$PROJ2"
+inbox 1 2; issue 1 in_progress "\"$PROJ1\""; issue 2 in_progress "\"$PROJ2\""
+route GET "/api/issues/$(iid 1)/active-run" 200 '{}'; route GET "/api/issues/$(iid 2)/active-run" 200 '{}'
+run_afk --json
+assert_eq "no live run on the resolving pass: both rows are kept as they were" "$(lget "$(iid 1)") $(lget "$(iid 2)")" "waiting_setup closed"
+route GET "/api/issues/$(iid 1)/active-run" 200 '{"id":"run-1"}'; route GET "/api/issues/$(iid 2)/active-run" 200 '{"id":"run-2"}'
+run_afk --json
+assert_eq "  ...and both are adopted once a run exists" "$(lget "$(iid 1)") $(lget "$(iid 2)")" "working working"
+assert_eq "  ...each with a full, pinned row" "$(lget "$(iid 1)" '| "\(.host_agent_id) \(.slug)"') $(lget "$(iid 2)" .slug)" "$AGENT1 proj proj2"
+
 # --- F11: unreadable is a hold; three consecutive 404s become MISSING --------
 new_scenario res_unreadable
 write_config "[$(proj_json "$PROJ1" proj "$REPO1"), $(proj_json "$PROJ2" proj2 "$REPO2")]"
