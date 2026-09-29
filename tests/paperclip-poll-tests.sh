@@ -26,9 +26,10 @@ assert_missing()  { if [[ -e "$2" ]]; then bad "$1" "exists: $2"; else ok "$1"; 
 
 STUBS="$TMPROOT/stubs"; mkdir -p "$STUBS"
 
+# op succeeds only with a service-account token, like the real one.
 cat >"$STUBS/op" <<'SH'
 #!/usr/bin/env bash
-[[ "$1" == read ]] || exit 2
+[[ "$1" == read && -n "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]] || exit 2
 case "$2" in
   op://test/agent1) printf 'KEY-AGENT1-SECRET-VALUE\n' ;;
   op://test/agent2) printf 'KEY-AGENT2-SECRET-VALUE\n' ;;
@@ -48,6 +49,7 @@ url="${args[$((n - 1))]}"
 tmp="${url#*://}"
 path="/${tmp#*/}"
 printf '%s %s\n' "$method" "$path" >>"$CURL_STUB_LOG"
+env >>"$CURL_STUB_LOG.env" # a child that is not op: it must never see the token
 printf '%s\n' "$*" >>"$CURL_STUB_LOG.argv" # the full argv, as ps would show it
 # curl reads a header/body from a file with the `@<path>` syntax (afk_pc_curl
 # passes `-H @<(...)` / `--data-binary @<(...)`), so the argument to match is
@@ -85,6 +87,19 @@ else
 fi
 printf '%s' "$code"
 SH
+# stat passes through to the real one. When $TMPROOT/stat-swap names
+# "<replacement> <path>", the first stat of that path or of an open fd then
+# moves the replacement over the path: a swap right after the check.
+cat >"$STUBS/stat" <<SH
+#!/usr/bin/env bash
+$(command -v stat) "\$@"; rc=\$?
+if read -r src dst 2>/dev/null <"$TMPROOT/stat-swap"; then
+  for a in "\$@"; do
+    if [[ "\$a" == /dev/fd/* || "\$a" == "\$dst" ]]; then rm -f "$TMPROOT/stat-swap"; mv -f "\$src" "\$dst"; break; fi
+  done
+fi
+exit \$rc
+SH
 chmod +x "$STUBS"/*
 
 # route <method> <path> <code> [<body>] — install one fixture response.
@@ -110,6 +125,9 @@ new_scenario() {
   : >"$LOG"; : >"$KEYLOG"; : >"$BODYLOG"
 }
 
+# OPTOK: the token an interactive shell carries; empty models the timer's
+# unit. OPENV: an op env file path passed as AFK_OP_ENV_FILE.
+OPTOK="test-op-token" OPENV=""
 RC=0 OUT_TEXT=""
 run_afk() { # [--json]
   local out err
@@ -117,7 +135,8 @@ run_afk() { # [--json]
   [[ -n "${1:-}" ]] && extra=("$1")
   out="$(env -i PATH="$STUBS:$PATH" HOME="$HOME" LANG=C \
     AFK_STATE_DIR="$STATE" AFK_PAPERCLIP_CONFIG="$CONFIG" \
-    AFK_OP_BIN="$STUBS/op" AFK_CURL_BIN="$STUBS/curl" \
+    AFK_OP_BIN="$STUBS/op" AFK_CURL_BIN="$STUBS/curl" ${OPTOK:+OP_SERVICE_ACCOUNT_TOKEN="$OPTOK"} \
+    ${OPENV:+AFK_OP_ENV_FILE="$OPENV"} \
     CURL_STUB_LOG="$LOG" CURL_STUB_KEYLOG="$KEYLOG" CURL_STUB_BODYLOG="$BODYLOG" CURL_STUB_FIXTURES="$FIXDIR" \
     bash ${AFK_XTRACE:+-x} "$AFK" paperclip-poll "${extra[@]}" 2>"$SCEN/err")"
   RC=$?
@@ -321,6 +340,71 @@ assert_contains "xtrace: the pass really ran (control)" "$(cat "$STATE"/papercli
 assert_absent "the key never appears in any curl argv" "$(cat "$LOG.argv")" "KEY-AGENT1-SECRET-VALUE"
 assert_absent "the key never appears under bash -x" "$OUT_TEXT" "KEY-AGENT1-SECRET-VALUE"
 assert_eq "the key never appears in any state file" "$(grep -rl KEY-AGENT1-SECRET-VALUE "$STATE" 2>/dev/null)" ""
+
+# ============================================================================
+head1 "2b. The key without an interactive shell's token"
+# ============================================================================
+# key_scenario <name> -- a pass that reaches the inbox once the key is read.
+key_scenario() {
+  new_scenario "$1"; write_config
+  route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+  route GET /api/agents/me/inbox-lite 200 '[]'
+}
+envfile() { # <path> <mode>
+  mkdir -p "$(dirname "$1")"
+  printf 'OP_SERVICE_ACCOUNT_TOKEN=ops_FILE-TOKEN-SECRET\n' >"$1"; chmod "$2" "$1"
+}
+
+key_scenario key_env_token
+run_afk --json
+assert_contains "token in the environment: the key is read" "$(cat "$KEYLOG")" "KEY-AGENT1-SECRET-VALUE"
+
+key_scenario key_env_file
+envfile "$HOME/.op-agent-env" 600
+OPTOK="" AFK_XTRACE=1 run_afk --json
+assert_contains "no token, mode-600 env file: the key is read" "$(cat "$KEYLOG")" "KEY-AGENT1-SECRET-VALUE"
+assert_eq "no token, mode-600 env file: the pass completes" "$RC" "0"
+assert_contains "control: curl's environment was recorded" "$(cat "$LOG.env")" "CURL_STUB_LOG="
+assert_absent "the token never reaches a child that is not op" "$(cat "$LOG.env")" "FILE-TOKEN-SECRET"
+assert_absent "the token never appears under bash -x" "$OUT_TEXT" "FILE-TOKEN-SECRET"
+
+key_scenario key_env_file_644
+envfile "$HOME/.op-agent-env" 644
+printf 'touch %q\n' "$SCEN/sourced" >>"$HOME/.op-agent-env"
+OPTOK="" run_afk --json
+assert_contains "a mode-644 env file is refused" "$OUT_TEXT" "PAPERCLIP_OP_ENV_UNSAFE"
+assert_missing "a mode-644 env file is never sourced" "$SCEN/sourced"
+assert_absent "the refusal never prints the file's contents" "$OUT_TEXT" "FILE-TOKEN-SECRET"
+assert_eq "a refused env file: no HTTP call" "$(cat "$LOG")" ""
+
+key_scenario key_env_swap
+envfile "$HOME/.op-agent-env" 600
+printf 'OP_SERVICE_ACCOUNT_TOKEN=ops_SWAPPED\ntouch %q\n' "$SCEN/swapped-sourced" >"$SCEN/swap.env"; chmod 600 "$SCEN/swap.env"
+printf '%s %s\n' "$SCEN/swap.env" "$HOME/.op-agent-env" >"$TMPROOT/stat-swap"
+OPTOK="" run_afk --json
+assert_missing "control: the path was swapped after the check" "$TMPROOT/stat-swap"
+assert_missing "a file swapped in after the check is never sourced" "$SCEN/swapped-sourced"
+assert_contains "the checked file is the one sourced: the key is read" "$(cat "$KEYLOG")" "KEY-AGENT1-SECRET-VALUE"
+
+key_scenario key_env_missing
+OPTOK="" run_afk --json
+assert_contains "no token, no env file -> PAPERCLIP_VAULT_UNAVAILABLE" "$OUT_TEXT" "PAPERCLIP_VAULT_UNAVAILABLE"
+
+key_scenario key_env_var
+envfile "$SCEN/elsewhere.env" 600
+OPTOK="" OPENV="$SCEN/elsewhere.env" run_afk --json
+assert_contains "AFK_OP_ENV_FILE replaces the default path" "$(cat "$KEYLOG")" "KEY-AGENT1-SECRET-VALUE"
+
+key_scenario key_env_override
+envfile "$SCEN/elsewhere.env" 600
+set_cfg ".host.op_env_file = \"$SCEN/elsewhere.env\""
+OPTOK="" OPENV="$SCEN/nowhere.env" run_afk --json
+assert_contains "host.op_env_file overrides the default" "$(cat "$KEYLOG")" "KEY-AGENT1-SECRET-VALUE"
+
+key_scenario key_env_relative
+set_cfg '.host.op_env_file = "relative/op.env"'
+run_afk --json
+assert_contains "a relative host.op_env_file is PAPERCLIP_CONFIG_INVALID" "$OUT_TEXT" "PAPERCLIP_CONFIG_INVALID"
 
 # ============================================================================
 head1 "3. Lock (AC-3)"
