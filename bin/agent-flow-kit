@@ -122,6 +122,7 @@ if ! declare -F afk_cmd_status >/dev/null 2>&1 \
    || ! declare -F afk_cmd_paperclip_timer >/dev/null 2>&1 \
    || ! declare -F afk_cmd_paperclip_project >/dev/null 2>&1 \
    || ! declare -F afk_cmd_paperclip_config >/dev/null 2>&1 \
+   || ! declare -F afk_cmd_paperclip_merge_policy >/dev/null 2>&1 \
    || ! declare -F afk_cmd_route_accept >/dev/null 2>&1; then
   printf 'agent-flow-kit: internal error: the lifecycle libraries under %s did not load completely\n' \
     "$AFK_LIB_DIR" >&2
@@ -347,6 +348,11 @@ agent-flow-kit — lifecycle entry point
       Read-only: approved only when Josh's approval digest equals the current
       plan digest and the interim attestation still holds.
 
+  agent-flow-kit paperclip-merge-policy --issue <id> [--json]
+      Read-only: pm or human for the project the issue is pinned to, from
+      this host's projects[].merge (human when absent, always human for
+      agent-flow-kit). Run it before merging any paperclip: PR.
+
   agent-flow-kit route-accept --story <story.md> --kind human|override|pm-auto
       --actor <name> [--reason <text>] [--json]
   agent-flow-kit route-accept --story <story.md> --verify [--json]
@@ -523,7 +529,7 @@ afk_option_allowed() { # <command> <option>
       esac ;;
     paperclip-plan)
       case "$2" in --json|--issue|--plan-file) return 0 ;; esac ;;
-    paperclip-approval)
+    paperclip-approval|paperclip-merge-policy)
       case "$2" in --json|--issue) return 0 ;; esac ;;
     paperclip-timer)
       case "$2" in --json|--install|--remove|--status) return 0 ;; esac ;;
@@ -828,7 +834,7 @@ afk_main() {
       return "$AFK_EXIT_USAGE"
     fi
   fi
-  if [[ ( "$cmd" == paperclip-plan || "$cmd" == paperclip-approval ) && -z "$pc_issue" ]] ||
+  if [[ ( "$cmd" == paperclip-plan || "$cmd" == paperclip-approval || "$cmd" == paperclip-merge-policy ) && -z "$pc_issue" ]] ||
      [[ "$cmd" == paperclip-plan && -z "$pc_plan_file" ]]; then
     afk_warn "$cmd needs --issue <id>, and paperclip-plan also needs --plan-file <path>"
     return "$AFK_EXIT_USAGE"
@@ -976,6 +982,10 @@ afk_main() {
     paperclip-approval)
       afk_require_declared_paths || return "$AFK_EXIT_USAGE"
       afk_cmd_paperclip_approval "$json_mode" "$pc_issue"
+      return $? ;;
+    paperclip-merge-policy)
+      afk_require_declared_paths || return "$AFK_EXIT_USAGE"
+      afk_cmd_paperclip_merge_policy "$json_mode" "$pc_issue"
       return $? ;;
     paperclip-timer)
       afk_require_declared_paths || return "$AFK_EXIT_USAGE"
