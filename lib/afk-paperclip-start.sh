@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # afk-paperclip-start.sh — AFK-PC-2b: start the first PM for a Paperclip
-# project when the registry says `none`, and the `paperclip-timer` verb.
+# project when the registry says `none`, and the `paperclip-timer` verb. The
+# project is always the issue's pinned slug and its projects[] row (AD-23).
 #
 # afk_pcs_start_pm is called from lib/afk-paperclip.sh's `claimed`-notice
 # classification hook and reads/writes its caller's locals directly (api_url,
-# key, id, identifier, project, repo_path, harness, board_user_id, host_label,
+# key, id, identifier, slug, repo_path, harness, board_user_id, host_name,
 # company_id, detail, ledger, actions) exactly like afk_pc_strand does. This
 # file is SOURCED, never executed.
 
@@ -41,7 +42,7 @@ afk_pcs_start_pm() {
       AFK_PCS_ACTION_OVERRIDE="queued: no PM (busy with handoff)"
       return 0 ;;
     ambiguous | handoff_stalled)
-      AFK_PCS_ACTION_OVERRIDE="Waiting for Josh: PM state unclear on $host_label"
+      AFK_PCS_ACTION_OVERRIDE="Waiting for Josh: PM state unclear on $host_name"
       afk_pcs_report_pm_state_ambiguous
       return 0 ;;
     none) : ;;
@@ -82,9 +83,9 @@ afk_pcs_start_pm() {
     return 0
   fi
 
-  # AC-5: <project>/<harness> are validated before they ever reach the fixed
+  # AC-5: <slug>/<harness> are validated before they ever reach the fixed
   # instruction text.
-  if ! [[ "$project" =~ ^[a-z0-9-]+$ ]]; then
+  if ! afk_pc_slug_ok "$slug"; then
     AFK_PCS_ACTION_OVERRIDE="queued: no PM (start refused: PAPERCLIP_PROJECT_NAME_UNSAFE)"
     return 0
   fi
@@ -200,7 +201,7 @@ afk_pcs_readiness_check() {
 }
 
 # afk_pcs_create_terminal -- AC-5. One visible Orca terminal, idempotent by
-# title (never a second one for the same project). Reads repo_path/project/
+# title (never a second one for the same project). Reads repo_path/slug/
 # harness/id from the caller; writes the start into `ledger` on success.
 afk_pcs_create_terminal() {
   local orca_bin bound seconds shown observed_id observed_path title
@@ -216,7 +217,7 @@ afk_pcs_create_terminal() {
   observed_path="$(cd "$observed_path" 2>/dev/null && pwd -P || true)"
   [[ -n "$observed_id" && -n "$observed_path" ]] || return 1
 
-  title="PM $project (paperclip)"
+  title="PM $slug (paperclip)"
   local listed count prior
   listed="$($bound "$seconds" "$orca_bin" terminal list --worktree "id:$observed_id" --json 2>/dev/null)" || return 1
   # The harness rewrites the terminal title once it runs, so the title alone
@@ -229,12 +230,12 @@ afk_pcs_create_terminal() {
   (( count > 0 )) && return 1 # already visible: never start a second one
 
   local resume intent intent_file bootstrap command created terminal
-  resume="You are the BMAD PM for project $project. Register with \`agent-flow-kit pm-start --harness $harness\`, then run \`agent-flow-kit paperclip-take --project $project\` and read the brief file it names."
-  intent="$(jq -nc --arg proj "$project" --arg h "$harness" --arg wi "$observed_id" --arg wp "$observed_path" \
+  resume="You are the BMAD PM for project $slug. Register with \`agent-flow-kit pm-start --harness $harness\`, then run \`agent-flow-kit paperclip-take --slug $slug\` and read the brief file it names."
+  intent="$(jq -nc --arg proj "$slug" --arg h "$harness" --arg wi "$observed_id" --arg wp "$observed_path" \
     --arg resume "$resume" \
     '{schema:"afk-pm-bootstrap-first-start-intent/1", project:$proj, harness:$h,
       worktree:{id:$wi, path:$wp}, resume_instruction:$resume}')" || return 1
-  intent_file="$AFK_STATE_DIR/paperclip/pm-start-intents/$project.json"
+  intent_file="$AFK_STATE_DIR/paperclip/pm-start-intents/$slug.json"
   afk_state_file_write "$intent_file" "$intent" || return 1
 
   bootstrap="${AFK_PM_BOOTSTRAP_BIN:-$AFK_KIT_ROOT/adapters/orca-pm-bootstrap.sh}"
@@ -244,9 +245,9 @@ afk_pcs_create_terminal() {
   terminal="$(jq -r '.result.terminal.handle // .handle // empty' <<<"$created" 2>/dev/null)"
   [[ -n "$terminal" ]] || return 1
 
-  ledger="$(jq -c --arg id "$id" --arg t "$terminal" --arg proj "$project" --arg h "$harness" \
+  ledger="$(jq -c --arg id "$id" --arg t "$terminal" --arg slug "$slug" --arg h "$harness" \
     --arg r "$repo_path" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '.pm_started = ((.pm_started // {}) + {($id): {terminal:$t, project:$proj, harness:$h, repo:$r, at:$at}})' \
+    '.pm_started = ((.pm_started // {}) + {($id): {terminal:$t, slug:$slug, harness:$h, repo:$r, at:$at}})' \
     <<<"$ledger")"
   return 0
 }

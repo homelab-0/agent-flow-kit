@@ -74,7 +74,15 @@ printf '%s' "$cnt" >"$CURL_STUB_FIXTURES/.n_$key"
 if [[ ! -f "$f" ]]; then printf '000'; exit 0; fi
 code="$(head -1 "$f")"
 [[ "$code" == NETFAIL ]] && exit 7
-tail -n +2 "$f"
+# An issue detail with no projectId key gets the scenario's default project
+# (write_config), so every fixture is in a mapped project unless it says
+# otherwise; `"projectId": null` in a fixture is served as written.
+if [[ "$method" == GET && "$path" =~ ^/api/issues/[0-9a-f-]{36}$ && -f "$CURL_STUB_FIXTURES/.default_project" ]] &&
+   ! grep -q '"projectId"' "$f" && tail -n +2 "$f" | jq -e 'type == "object"' >/dev/null 2>&1; then
+  tail -n +2 "$f" | jq -c --arg p "$(cat "$CURL_STUB_FIXTURES/.default_project")" '. + {projectId: $p}'
+else
+  tail -n +2 "$f"
+fi
 printf '%s' "$code"
 SH
 chmod +x "$STUBS"/*
@@ -127,24 +135,56 @@ AGENT2="22222222-2222-2222-2222-222222222222"
 MAINT="dddddddd-dddd-dddd-dddd-dddddddddddd"
 STRANGER="99999999-9999-9999-9999-999999999999"
 
-write_config() { # <agents-json>
-  jq -n --arg api "https://paperclip.test" --arg co "$COMPANY" --arg bu "$BOARD" \
-    --arg hl "test-host" --argjson agents "$1" \
-    '{api_url: $api, company_id: $co, board_user_id: $bu, host_label: $hl, agents: $agents}' \
-    >"$CONFIG"
+PROJ1="aaaaaaaa-0000-4000-8000-000000000001"
+PROJ2="aaaaaaaa-0000-4000-8000-000000000002"
+
+# mkrepo <path> -- a git repo whose default branch carries .afk/gates-allowlist,
+# with an origin remote, so it resolves as ready (AD-23 REPO_NOT_READY).
+mkrepo() {
+  mkdir -p "$1"
+  git -C "$1" init -q -b main
+  mkdir -p "$1/.afk"; printf 'bash tests/run-tests.sh\n' >"$1/.afk/gates-allowlist"
+  git -C "$1" add .afk/gates-allowlist
+  git -C "$1" -c user.name=t -c user.email=t@t commit -qm init
+  git -C "$1" remote add origin "git@github.com:test/${1##*/}.git"
+}
+REPO1="$TMPROOT/repos/repo1"; mkrepo "$REPO1"
+REPO2="$TMPROOT/repos/repo2"; mkrepo "$REPO2"
+
+proj_json() { # <project-id> <slug> <repo> [max_active]
+  jq -nc --arg p "$1" --arg s "$2" --arg r "$3" --argjson m "${4:-1}" \
+    '{paperclip_project_id:$p, slug:$s, repo_path:$r, harness:"claude", max_active_issues:$m}'
 }
 
-write_config_maint() { # <agents-json> <maint-id>
-  jq -n --arg api "https://paperclip.test" --arg co "$COMPANY" --arg bu "$BOARD" \
-    --arg hl "test-host" --arg mi "$2" --argjson agents "$1" \
-    '{api_url: $api, company_id: $co, board_user_id: $bu, host_label: $hl, maintenance_issue_id: $mi, agents: $agents}' \
-    >"$CONFIG"
+project_body() { # <project-id> <name> [<archivedAt>] [<repoUrl>]
+  jq -nc --arg p "$1" --arg n "$2" --arg a "${3:-}" --arg u "${4:-}" \
+    '{id:$p, name:$n, archivedAt:(if $a == "" then null else $a end),
+      codebase:{repoUrl:(if $u == "" then null else $u end)}}'
 }
 
-agent_json() { # <agent_id> <key_ref> <project> <repo> [max_active]
-  jq -nc --arg a "$1" --arg k "$2" --arg p "$3" --arg r "$4" --argjson m "${5:-1}" \
-    '{agent_id:$a, key_ref:$k, project:$p, repo_path:$r, harness:"claude", max_active_issues:$m}'
+# write_config [<projects-json-array>] -- a v2 host config (AD-23). The first
+# project becomes the stub's default projectId for issue details, and every
+# project is served as a live, unarchived project.
+write_config() {
+  local projects="${1:-[$(proj_json "$PROJ1" proj "$REPO1")]}" pid
+  jq -n --arg api "https://paperclip.test" --arg co "$COMPANY" --arg bu "$BOARD" \
+    --arg ag "$AGENT1" --argjson projects "$projects" \
+    '{schema: "afk-paperclip-config/2", api_url: $api, company_id: $co, board_user_id: $bu,
+      host: {label: "test-host", agent_id: $ag, key_ref: "op://test/agent1"}, projects: $projects}' \
+    >"$CONFIG"
+  jq -r '.[0].paperclip_project_id // empty' <<<"$projects" >"$FIXDIR/.default_project"
+  [[ -s "$FIXDIR/.default_project" ]] || rm -f "$FIXDIR/.default_project"
+  while IFS= read -r pid; do
+    [[ -n "$pid" ]] && route GET "/api/projects/$pid" 200 "$(project_body "$pid" "Project ${pid:0:8}")"
+  done < <(jq -r '.[].paperclip_project_id' <<<"$projects")
 }
+
+write_config_maint() { # <maint-id> [<projects-json-array>]
+  write_config "${2:-}"
+  jq --arg mi "$1" '.maintenance_issue_id = $mi' "$CONFIG" >"$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
+}
+
+set_cfg() { jq "$1" "$CONFIG" >"$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"; }
 
 # ============================================================================
 head1 "0. bash -n"
@@ -162,7 +202,7 @@ assert_eq "missing config: no request made" "$(cat "$LOG" 2>/dev/null)" ""
 assert_contains "missing config: reason" "$OUT_TEXT" "PAPERCLIP_NOT_CONFIGURED"
 
 new_scenario cfg_bad_uuid
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo)" '[$a]')"
+write_config
 jq '.company_id = "not-a-uuid"' "$CONFIG" >"$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
 run_afk
 assert_eq "bad company_id: non-zero exit" "$RC" "1"
@@ -170,13 +210,13 @@ assert_eq "bad company_id: no request made" "$(cat "$LOG" 2>/dev/null)" ""
 assert_contains "bad company_id: reason" "$OUT_TEXT" "PAPERCLIP_ID_INVALID"
 
 new_scenario cfg_board_literal
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo)" '[$a]')"
+write_config
 jq '.board_user_id = "board"' "$CONFIG" >"$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
 run_afk
 assert_contains "board_user_id 'board' refused" "$OUT_TEXT" "PAPERCLIP_ID_INVALID"
 
 new_scenario cfg_board_real_format
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo)" '[$a]')"
+write_config
 jq '.board_user_id = "emXp8Svi8ncWyL1EORTkRNQYjFjCdQon"' "$CONFIG" >"$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 route GET "/api/agents/me/inbox-lite" 200 "[]"
@@ -184,7 +224,7 @@ run_afk
 assert_eq "board_user_id real-format id (32-char Better-Auth style) accepted" "$RC" "0"
 
 new_scenario cfg_board_slash
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo)" '[$a]')"
+write_config
 jq '.board_user_id = "a/b"' "$CONFIG" >"$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
 run_afk
 assert_eq "board_user_id 'a/b': non-zero exit" "$RC" "1"
@@ -192,7 +232,7 @@ assert_eq "board_user_id 'a/b': no request made" "$(cat "$LOG" 2>/dev/null)" ""
 assert_contains "board_user_id 'a/b' refused" "$OUT_TEXT" "PAPERCLIP_ID_INVALID"
 
 new_scenario cfg_board_spaces
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo)" '[$a]')"
+write_config
 jq '.board_user_id = "has a space"' "$CONFIG" >"$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
 run_afk
 assert_eq "board_user_id with spaces: non-zero exit" "$RC" "1"
@@ -200,12 +240,12 @@ assert_eq "board_user_id with spaces: no request made" "$(cat "$LOG" 2>/dev/null
 assert_contains "board_user_id with spaces refused" "$OUT_TEXT" "PAPERCLIP_ID_INVALID"
 
 new_scenario cfg_duplicate
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo)" '[$a, $a]')"
+write_config "[$(proj_json "$PROJ1" proj "$REPO1"), $(proj_json "$PROJ1" proj2 "$REPO2")]"
 run_afk
-assert_contains "duplicate agent_id refused" "$OUT_TEXT" "PAPERCLIP_CONFIG_INVALID"
+assert_contains "duplicate project id refused" "$OUT_TEXT" "PAPERCLIP_CONFIG_INVALID"
 
 new_scenario cfg_http_url
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo)" '[$a]')"
+write_config
 jq '.api_url = "http://paperclip.test"' "$CONFIG" >"$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
 run_afk
 assert_eq "non-https api_url: non-zero exit" "$RC" "1"
@@ -213,7 +253,7 @@ assert_eq "non-https api_url: no request made" "$(cat "$LOG" 2>/dev/null)" ""
 assert_contains "non-https api_url refused" "$OUT_TEXT" "PAPERCLIP_CONFIG_INVALID"
 
 new_scenario cfg_paperclip_commit_short_sha
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo)" '[$a]')"
+write_config
 jq '.interim_comment_approval = {paperclip_commit: "4a1b2c3"}' "$CONFIG" >"$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
 run_afk
 assert_eq "short-SHA paperclip_commit: non-zero exit" "$RC" "1"
@@ -221,13 +261,13 @@ assert_eq "short-SHA paperclip_commit: no request made" "$(cat "$LOG" 2>/dev/nul
 assert_contains "short-SHA paperclip_commit refused" "$OUT_TEXT" "PAPERCLIP_CONFIG_INVALID"
 
 new_scenario cfg_paperclip_commit_uppercase
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo)" '[$a]')"
+write_config
 jq '.interim_comment_approval = {paperclip_commit: "4A1B2C3D4E5F60718293A4B5C6D7E8F9A0B1C2D3"}' "$CONFIG" >"$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
 run_afk
 assert_contains "uppercase paperclip_commit refused" "$OUT_TEXT" "PAPERCLIP_CONFIG_INVALID"
 
 new_scenario cfg_paperclip_commit_valid
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo)" '[$a]')"
+write_config
 jq '.interim_comment_approval = {paperclip_commit: "4a1b2c3d4e5f60718293a4b5c6d7e8f9a0b1c2d3"}' "$CONFIG" >"$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 route GET /api/agents/me/inbox-lite 200 "[]"
@@ -238,26 +278,26 @@ assert_eq "valid 40-hex paperclip_commit: config accepted" "$RC" "0"
 head1 "2. Key handling (AC-2)"
 # ============================================================================
 new_scenario key_unreadable
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/badref proj /repo)" '[$a]')"
+write_config; set_cfg '.host.key_ref = "op://test/badref"'
 run_afk --json
 assert_contains "unreadable key -> PAPERCLIP_VAULT_UNAVAILABLE" "$OUT_TEXT" "PAPERCLIP_VAULT_UNAVAILABLE"
 assert_eq "unreadable key: no HTTP call for that agent" "$(cat "$LOG" 2>/dev/null)" ""
 
 new_scenario key_mismatch
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo)" '[$a]')"
+write_config
 route GET /api/agents/me 200 '{"id":"22222222-2222-2222-2222-222222222222"}'
 run_afk --json
 assert_contains "agent/key mismatch reason" "$OUT_TEXT" "PAPERCLIP_KEY_AGENT_MISMATCH"
 
 new_scenario key_ambiguous_me
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo)" '[$a]')"
+write_config
 route GET /api/agents/me 503 ''
 run_afk --json
 assert_contains "ambiguous /me -> unreachable, never a credential refusal" "$OUT_TEXT" "unreachable"
 assert_absent "ambiguous /me is never reported as a credential refusal" "$OUT_TEXT" "MISMATCH"
 
 new_scenario key_never_logged
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo)" '[$a]')"
+write_config
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 route GET /api/agents/me/inbox-lite 200 '[]'
 run_afk --json
@@ -268,7 +308,7 @@ assert_contains "the key WAS actually sent (control on the assertion above)" "$(
 
 # Same, through a full adoption (argv, notices, brief) and under `bash -x`.
 new_scenario key_never_logged_xtrace
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo)" '[$a]')"
+write_config
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 route GET /api/agents/me/inbox-lite 200 '[{"id":"e1111111-1111-1111-1111-111111111111"}]'
 route GET /api/issues/e1111111-1111-1111-1111-111111111111 200 \
@@ -286,7 +326,7 @@ assert_eq "the key never appears in any state file" "$(grep -rl KEY-AGENT1-SECRE
 head1 "3. Lock (AC-3)"
 # ============================================================================
 new_scenario lock_busy
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo)" '[$a]')"
+write_config
 mkdir -p "$STATE/paperclip/.lock"
 run_afk
 assert_eq "lock held: exit 0 (busy is not a failure)" "$RC" "0"
@@ -295,7 +335,7 @@ assert_eq "lock held: no request made" "$(cat "$LOG" 2>/dev/null)" ""
 
 new_scenario lock_quote_path
 STATE="$SCEN/ho'me/.local/state/agent-flow-kit"; mkdir -p "$STATE"
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo)" '[$a]')"
+write_config
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 route GET "/api/agents/me/inbox-lite" 200 '[]'
 run_afk --json
@@ -309,7 +349,7 @@ ISSUE1="e1111111-1111-1111-1111-111111111111"
 ISSUE2="e2222222-2222-2222-2222-222222222222"
 
 new_scenario fresh_adopt
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+write_config
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
 route GET "/api/issues/$ISSUE1" 200 \
@@ -327,7 +367,7 @@ assert_eq "fresh adoption: one brief" "$(find "$NOTICE_DIR" -name 'brief.*' 2>/d
 assert_contains "brief has no Paperclip-only leak beyond title/description" "$(cat "$NOTICE_DIR"/brief.* 2>/dev/null)" "D"
 
 new_scenario brief_no_digits_in_updated_at
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+write_config
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
 route GET "/api/issues/$ISSUE1" 200 \
@@ -364,11 +404,11 @@ assert_eq "capacity: first issue stays working" "$(jq -r --arg id "$ISSUE1" '.is
 head1 "5. Promotion and the Josh test (AC-5b, AC-8)"
 # ============================================================================
 new_scenario promote_and_josh
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+write_config
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 mkdir -p "$STATE/paperclip"
 jq -n --arg a "$AGENT1" --arg id "$ISSUE1" \
-  '{issues: {($id): {agent_id: $a, project: "proj", identifier: "PROJ-1", state: "working", since: "2026-01-01T00:00:00Z", action_text: "AFK host is working on this"}},
+  '{issues: {($id): {host_agent_id: $a, paperclip_project_id: "aaaaaaaa-0000-4000-8000-000000000001", slug: "proj", identifier: "PROJ-1", state: "working", since: "2026-01-01T00:00:00Z", action_text: "AFK host is working on this"}},
     stranded_reported: [], drain_tampered_reported: false, last_successful_pass: null}' \
   >"$STATE/paperclip/ledger.json"
 route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
@@ -392,11 +432,11 @@ assert_contains "a missing authorAgentId key reports unverifiable" "$OUT_TEXT" "
 head1 "6. held_by_board and stranding (AC-5b2, AC-5c)"
 # ============================================================================
 new_scenario board_hold
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+write_config
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 mkdir -p "$STATE/paperclip"
 jq -n --arg a "$AGENT1" --arg id "$ISSUE1" \
-  '{issues: {($id): {agent_id: $a, project: "proj", identifier: "PROJ-1", state: "working", since: "2026-01-01T00:00:00Z", action_text: "AFK host is working on this"}},
+  '{issues: {($id): {host_agent_id: $a, paperclip_project_id: "aaaaaaaa-0000-4000-8000-000000000001", slug: "proj", identifier: "PROJ-1", state: "working", since: "2026-01-01T00:00:00Z", action_text: "AFK host is working on this"}},
     stranded_reported: [], drain_tampered_reported: false, last_successful_pass: null}' \
   >"$STATE/paperclip/ledger.json"
 route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
@@ -408,11 +448,11 @@ assert_eq "board hold -> held_by_board" "$(jq -r --arg id "$ISSUE1" '.issues[$id
 assert_eq "board hold creates no recovery issue" "$(grep -c "^POST /api/companies/" "$LOG")" "0"
 
 new_scenario stranded
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+write_config
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 mkdir -p "$STATE/paperclip"
 jq -n --arg a "$AGENT1" --arg id "$ISSUE1" \
-  '{issues: {($id): {agent_id: $a, project: "proj", identifier: "PROJ-1", state: "working", since: "2026-01-01T00:00:00Z", action_text: "AFK host is working on this"}},
+  '{issues: {($id): {host_agent_id: $a, paperclip_project_id: "aaaaaaaa-0000-4000-8000-000000000001", slug: "proj", identifier: "PROJ-1", state: "working", since: "2026-01-01T00:00:00Z", action_text: "AFK host is working on this"}},
     stranded_reported: [], drain_tampered_reported: false, last_successful_pass: null}' \
   >"$STATE/paperclip/ledger.json"
 route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
@@ -442,11 +482,11 @@ assert_eq "re-adopted stranded issue: back to working" "$(jq -r --arg id "$ISSUE
 
 # A failed create is not "reported": the next pass retries under the same key.
 new_scenario stranded_create_fails
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+write_config
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 mkdir -p "$STATE/paperclip"
 jq -n --arg a "$AGENT1" --arg id "$ISSUE1" \
-  '{issues: {($id): {agent_id: $a, project: "proj", identifier: "PROJ-1", state: "working", since: "x", action_text: "y"}},
+  '{issues: {($id): {host_agent_id: $a, paperclip_project_id: "aaaaaaaa-0000-4000-8000-000000000001", slug: "proj", identifier: "PROJ-1", state: "working", since: "x", action_text: "y"}},
     stranded_reported: [], drain_tampered_reported: false, last_successful_pass: null}' >"$STATE/paperclip/ledger.json"
 route GET /api/agents/me/inbox-lite 200 "[{\"id\":\"$ISSUE1\"}]"
 route GET "/api/issues/$ISSUE1" 200 "{\"status\":\"blocked\",\"identifier\":\"PROJ-1\",\"unblockDescriptor\":{\"owner\":{\"agentId\":\"$STRANGER\"}}}"
@@ -461,11 +501,11 @@ assert_eq "failed recovery create: retried and reported on the next pass" "$(jq 
 head1 "7. Closed issues (AC-5d)"
 # ============================================================================
 new_scenario closed
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+write_config
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 mkdir -p "$STATE/paperclip"
 jq -n --arg a "$AGENT1" --arg id "$ISSUE1" \
-  '{issues: {($id): {agent_id: $a, project: "proj", identifier: "PROJ-1", state: "working", since: "2026-01-01T00:00:00Z", action_text: "AFK host is working on this"}},
+  '{issues: {($id): {host_agent_id: $a, paperclip_project_id: "aaaaaaaa-0000-4000-8000-000000000001", slug: "proj", identifier: "PROJ-1", state: "working", since: "2026-01-01T00:00:00Z", action_text: "AFK host is working on this"}},
     stranded_reported: [], drain_tampered_reported: false, last_successful_pass: null}' \
   >"$STATE/paperclip/ledger.json"
 route GET "/api/agents/me/inbox-lite" 200 '[]'
@@ -475,11 +515,11 @@ assert_eq "closed: one stopped notice" \
   "$(find "$STATE/paperclip/notices/proj" -name '*.stopped.json' 2>/dev/null | wc -l | tr -d ' ')" "1"
 
 new_scenario close_and_new_same_pass
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+write_config
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 mkdir -p "$STATE/paperclip"
 jq -n --arg a "$AGENT1" --arg id "$ISSUE1" \
-  '{issues: {($id): {agent_id: $a, project: "proj", identifier: "PROJ-1", state: "working", since: "2026-01-01T00:00:00Z", action_text: "AFK host is working on this"}},
+  '{issues: {($id): {host_agent_id: $a, paperclip_project_id: "aaaaaaaa-0000-4000-8000-000000000001", slug: "proj", identifier: "PROJ-1", state: "working", since: "2026-01-01T00:00:00Z", action_text: "AFK host is working on this"}},
     stranded_reported: [], drain_tampered_reported: false, last_successful_pass: null}' \
   >"$STATE/paperclip/ledger.json"
 route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"},{\"id\":\"$ISSUE2\"}]"
@@ -496,7 +536,7 @@ assert_eq "same-pass close frees the slot: the new issue is working, not queued"
   "$(jq -r --arg id "$ISSUE2" '.issues[$id].state' "$LEDGER")" "working"
 
 new_scenario orphan_self_block
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+write_config
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
 route GET "/api/issues/$ISSUE1" 200 \
@@ -511,7 +551,7 @@ assert_eq "an orphaned self-block with no prior ledger entry creates none" \
 head1 "8. Stop flag and drain (AC-9)"
 # ============================================================================
 new_scenario stop_flag
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+write_config
 mkdir -p "$HOME/.config/agent-flow-kit/paperclip"; : >"$HOME/.config/agent-flow-kit/paperclip/stop"
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
@@ -527,7 +567,7 @@ assert_contains "stop flag: action text is Stopped" "$(cat "$BODYLOG")" "Stopped
 assert_eq "stop flag: no comment of any kind" "$(grep -c "^POST /api/issues/$ISSUE1/comments$" "$LOG")" "0"
 
 new_scenario drain_unreadable
-write_config_maint "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')" "$MAINT"
+write_config_maint "$MAINT"
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 route GET "/api/issues/$MAINT" NETFAIL
 route GET "/api/agents/me/inbox-lite" 200 '[]'
@@ -535,7 +575,7 @@ run_afk --json
 assert_contains "drain unreadable -> paused" "$OUT_TEXT" "PAPERCLIP_PAUSED"
 
 new_scenario drain_tampered
-write_config_maint "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')" "$MAINT"
+write_config_maint "$MAINT"
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 route GET "/api/issues/$MAINT" 200 \
   "{\"status\":\"in_progress\",\"assigneeUserId\":\"$AGENT2\",\"assigneeAgentId\":null}"
@@ -548,25 +588,22 @@ run_afk --json
 assert_eq "tampered drain reported only once across passes" "$(grep -c "^POST /api/companies/$COMPANY/issues$" "$LOG")" "1"
 
 # ============================================================================
-head1 "9. Two agents: one fails, the other still runs (AC-2)"
+head1 "9. One host key for every project (HA-1a AC-2)"
 # ============================================================================
-new_scenario two_agents
-write_config "$(jq -nc \
-  --argjson a1 "$(agent_json "$AGENT1" op://test/badref proj1 /repo1)" \
-  --argjson a2 "$(agent_json "$AGENT2" op://test/agent2 proj2 /repo2)" \
-  '[$a1, $a2]')"
-route GET /api/agents/me 200 "{\"id\":\"$AGENT2\"}"
+new_scenario one_host_key
+write_config "[$(proj_json "$PROJ1" proj "$REPO1"), $(proj_json "$PROJ2" proj2 "$REPO2")]"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 route GET "/api/agents/me/inbox-lite" 200 '[]'
 run_afk --json
-assert_contains "agent1 vault-unavailable reported" "$OUT_TEXT" "PAPERCLIP_VAULT_UNAVAILABLE"
-assert_eq "agent2 still completed and the ledger was written" "$RC" "0"
-assert_contains "agent2's key was used" "$(cat "$KEYLOG")" "KEY-AGENT2-SECRET-VALUE"
+assert_eq "two projects, one host: pass completed" "$RC" "0"
+assert_eq "the inbox is read once per pass, not once per project" "$(grep -c '^GET /api/agents/me/inbox-lite$' "$LOG")" "1"
+assert_eq "only the host key was ever sent" "$(sort -u "$KEYLOG")" "KEY-AGENT1-SECRET-VALUE"
 
 # ============================================================================
 head1 "10. Unreachable pass (AC-3)"
 # ============================================================================
 new_scenario unreachable
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo)" '[$a]')"
+write_config
 route GET /api/agents/me NETFAIL
 run_afk --json
 assert_eq "unreachable: non-zero exit" "$RC" "1"
@@ -577,11 +614,11 @@ head1 "11. Paperclip-initiated wakes (AC-5a amendment)"
 # ============================================================================
 wake_scenario() { # <name> <wake-reason-json-or-empty>
   new_scenario "$1"
-  write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+  write_config
   route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
   mkdir -p "$STATE/paperclip"
   jq -n --arg a "$AGENT1" --arg id "$ISSUE1" \
-    '{issues: {($id): {agent_id: $a, project: "proj", identifier: "PROJ-1", state: "working", since: "2026-01-01T00:00:00Z", action_text: "AFK host is working on this"}},
+    '{issues: {($id): {host_agent_id: $a, paperclip_project_id: "aaaaaaaa-0000-4000-8000-000000000001", slug: "proj", identifier: "PROJ-1", state: "working", since: "2026-01-01T00:00:00Z", action_text: "AFK host is working on this"}},
       stranded_reported: [], drain_tampered_reported: false, last_successful_pass: null}' \
     >"$STATE/paperclip/ledger.json"
   route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
@@ -611,7 +648,7 @@ assert_contains "paused issue_blockers_resolved wake: still clears blockedByIssu
 assert_eq "paused wake keeps the ledger state" "$(jq -r --arg id "$ISSUE1" '.issues[$id].state' "$STATE/paperclip/ledger.json")" "working"
 
 new_scenario self_block_fails
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+write_config
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 route GET /api/agents/me/inbox-lite 200 "[{\"id\":\"$ISSUE1\"}]"
 route GET "/api/issues/$ISSUE1" 200 '{"status":"in_progress","identifier":"PROJ-1","title":"T","description":"D","updatedAt":"x"}'
@@ -622,7 +659,7 @@ run_afk --json
 assert_contains "a failed self-block is reported, never silent" "$OUT_TEXT" "PAPERCLIP_SELF_BLOCK_FAILED"
 
 new_scenario no_live_run
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+write_config
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 route GET /api/agents/me/inbox-lite 200 "[{\"id\":\"$ISSUE1\"}]"
 route GET "/api/issues/$ISSUE1" 200 '{"status":"in_progress","identifier":"PROJ-1","title":"T","description":"D","updatedAt":"x"}'
@@ -632,11 +669,11 @@ assert_eq "no live run: nothing is written to Paperclip" "$(grep -c -e '^POST' -
 assert_missing "no live run: no claimed notice" "$STATE/paperclip/notices/proj"
 
 new_scenario inbox_not_array
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+write_config
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 mkdir -p "$STATE/paperclip"
 jq -n --arg a "$AGENT1" --arg id "$ISSUE1" \
-  '{issues: {($id): {agent_id: $a, project: "proj", identifier: "PROJ-1", state: "working", since: "x", action_text: "y"}},
+  '{issues: {($id): {host_agent_id: $a, paperclip_project_id: "aaaaaaaa-0000-4000-8000-000000000001", slug: "proj", identifier: "PROJ-1", state: "working", since: "x", action_text: "y"}},
     stranded_reported: [], drain_tampered_reported: false, last_successful_pass: null}' >"$STATE/paperclip/ledger.json"
 route GET /api/agents/me/inbox-lite 200 '{"error":"unexpected shape"}'
 run_afk --json
@@ -647,7 +684,7 @@ assert_eq "a non-array inbox: non-zero exit, nothing completed" "$RC" "1"
 head1 "12. Drain: board-actor check on the last status change (AC-9 amendment)"
 # ============================================================================
 new_scenario drain_agent_actor
-write_config_maint "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')" "$MAINT"
+write_config_maint "$MAINT"
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 route GET "/api/issues/$MAINT" 200 \
   "{\"status\":\"in_progress\",\"assigneeUserId\":\"$BOARD\",\"assigneeAgentId\":null}"
@@ -660,7 +697,7 @@ assert_eq "drain by an agent actor: not treated as paused" "$(grep -c PAPERCLIP_
 assert_contains "drain by an agent actor: tampered" "$OUT_TEXT" "PAPERCLIP_DRAIN_TAMPERED"
 
 new_scenario drain_board_actor
-write_config_maint "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')" "$MAINT"
+write_config_maint "$MAINT"
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 route GET "/api/issues/$MAINT" 200 \
   "{\"status\":\"in_progress\",\"assigneeUserId\":\"$BOARD\",\"assigneeAgentId\":null}"
@@ -679,11 +716,11 @@ head1 "13. Board recovery via activeRecoveryAction (AC-5 amendment, prox-ops V2)
 # verdict comes only from activeRecoveryAction on the plain issue detail.
 recovery_scenario() { # <name> <activeRecoveryAction-json-or-null> <descriptor-json>
   new_scenario "$1"
-  write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+  write_config
   route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
   mkdir -p "$STATE/paperclip"
   jq -n --arg a "$AGENT1" --arg id "$ISSUE1" \
-    '{issues: {($id): {agent_id: $a, project: "proj", identifier: "PROJ-1", state: "working", since: "2026-01-01T00:00:00Z", action_text: "AFK host is working on this"}},
+    '{issues: {($id): {host_agent_id: $a, paperclip_project_id: "aaaaaaaa-0000-4000-8000-000000000001", slug: "proj", identifier: "PROJ-1", state: "working", since: "2026-01-01T00:00:00Z", action_text: "AFK host is working on this"}},
       stranded_reported: [], drain_tampered_reported: false, last_successful_pass: null}' \
     >"$STATE/paperclip/ledger.json"
   route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
@@ -726,7 +763,7 @@ seed_working() {
   local xtra="${4:-}"; [[ -n "$xtra" ]] || xtra='{}'
   mkdir -p "$STATE/paperclip"
   jq -n --arg a "$AGENT1" --arg id "$1" --arg ident "$2" --arg st "$3" --argjson extra "$xtra" \
-    '{issues: {($id): ({agent_id:$a, project:"proj", identifier:$ident, state:$st, since:"2026-01-01T00:00:00Z",
+    '{issues: {($id): ({host_agent_id:$a, paperclip_project_id:"aaaaaaaa-0000-4000-8000-000000000001", slug:"proj", identifier:$ident, state:$st, since:"2026-01-01T00:00:00Z",
         action_text:"AFK host is working on this", action_text_applied:"AFK host is working on this"} + $extra)},
       stranded_reported: [], drain_tampered_reported: false, last_successful_pass: null}' \
     >"$STATE/paperclip/ledger.json"
@@ -740,7 +777,7 @@ E2="c2222222-2222-2222-2222-222222222222"
 E3="c3333333-3333-3333-3333-333333333333"
 
 new_scenario cycle_three_entries
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+write_config
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 seed_working "$ISSUE1" PROJ-1 working
 route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
@@ -758,7 +795,7 @@ assert_eq "3 entries: re-blocked (in_progress + final self-block)" "$(grep -c "^
 assert_eq "3 entries: spool emptied" "$(find "$STATE/paperclip/spool/$ISSUE1" -maxdepth 1 -name '*.json' 2>/dev/null | wc -l | tr -d ' ')" "0"
 
 new_scenario cycle_lock_held_skips
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+write_config
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 seed_working "$ISSUE1" PROJ-1 working
 route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
@@ -776,7 +813,7 @@ assert_eq "lock held: the entry is untouched, not deleted" \
 rmdir "$STATE/paperclip/spool/$ISSUE1/.seq.lock"
 
 new_scenario cycle_final_then_dead
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+write_config
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 seed_working "$ISSUE1" PROJ-1 working
 route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
@@ -792,7 +829,7 @@ assert_missing "final: the final entry itself is gone" "$STATE/paperclip/spool/$
 assert_eq "final: the later entry moved to dead/" "$(find "$STATE/paperclip/spool/$ISSUE1/dead" -name '003.json' 2>/dev/null | wc -l | tr -d ' ')" "1"
 
 new_scenario cycle_question
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+write_config
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 seed_working "$ISSUE1" PROJ-1 working
 route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
@@ -805,7 +842,7 @@ assert_eq "question: ledger state waiting_human" "$(jq -r --arg id "$ISSUE1" '.i
 assert_contains "question: self-block text names the question id" "$(cat "$BODYLOG")" "waiting on q7"
 
 new_scenario cycle_stuck_sending_blocks_final
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+write_config
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 seed_working "$ISSUE1" PROJ-1 working \
   "{\"sending\":{\"entry_id\":\"$E1\",\"issue_id\":\"$ISSUE1\",\"at\":\"2026-01-01T00:00:00Z\"}}"
@@ -821,7 +858,7 @@ assert_eq "stuck sending: still not closed" "$(jq -r --arg id "$ISSUE1" '.issues
 assert_eq "stuck sending: the final entry was never sent" "$(find "$STATE/paperclip/spool/$ISSUE1" -maxdepth 1 -name '002.json' 2>/dev/null | wc -l | tr -d ' ')" "1"
 
 new_scenario cycle_404_drops_issue
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+write_config
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 seed_working "$ISSUE1" PROJ-1 working
 route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
@@ -834,7 +871,7 @@ assert_eq "404: the issue is dropped (closed)" "$(jq -r --arg id "$ISSUE1" '.iss
 assert_eq "404: its entry moved to dead/" "$(find "$STATE/paperclip/spool/$ISSUE1/dead" -name '001.json' 2>/dev/null | wc -l | tr -d ' ')" "1"
 
 new_scenario cycle_429_keeps_entry
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+write_config
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 seed_working "$ISSUE1" PROJ-1 working
 route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
@@ -847,7 +884,7 @@ assert_eq "429: the entry is kept" "$(find "$STATE/paperclip/spool/$ISSUE1" -max
 assert_contains "429: reported as rate limited" "$OUT_TEXT" "PAPERCLIP_RATE_LIMITED"
 
 new_scenario cycle_500_readback_found
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+write_config
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 seed_working "$ISSUE1" PROJ-1 working
 route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
@@ -862,7 +899,7 @@ assert_eq "500 + marker found: counted as sent" \
 assert_eq "500 + marker found: exactly one POST, no duplicate" "$(grep -c "^POST /api/issues/$ISSUE1/comments$" "$LOG")" "1"
 
 new_scenario cycle_500_readback_not_found
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+write_config
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 seed_working "$ISSUE1" PROJ-1 working
 route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
@@ -880,7 +917,7 @@ assert_eq "500 + no marker: re-posted exactly once on the next pass" "$(grep -c 
 assert_missing "the entry is finally gone" "$STATE/paperclip/spool/$ISSUE1/001.json"
 
 new_scenario cycle_422_dead_rest_continue
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+write_config
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 seed_working "$ISSUE1" PROJ-1 working
 route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
@@ -896,7 +933,7 @@ assert_missing "422: the next entry still went out" "$STATE/paperclip/spool/$ISS
 assert_eq "422: still re-blocked (in_progress + self-block)" "$(grep -c "^PATCH /api/issues/$ISSUE1$" "$LOG")" "2"
 
 new_scenario cycle_no_run_leaves_spool
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+write_config
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 seed_working "$ISSUE1" PROJ-1 working
 route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
@@ -907,7 +944,7 @@ assert_eq "no run: no PATCH at all" "$(grep -c "^PATCH /api/issues/$ISSUE1$" "$L
 assert_eq "no run: the spool is untouched" "$(find "$STATE/paperclip/spool/$ISSUE1" -maxdepth 1 -name '001.json' 2>/dev/null | wc -l | tr -d ' ')" "1"
 
 new_scenario cycle_403_credential
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+write_config
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 seed_working "$ISSUE1" PROJ-1 working
 route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
@@ -918,7 +955,7 @@ assert_contains "403: credential reason" "$OUT_TEXT" "PAPERCLIP_CREDENTIAL_REJEC
 assert_eq "403: nothing posted" "$(grep -c "^POST /api/issues/$ISSUE1/comments$" "$LOG")" "0"
 
 new_scenario cycle_paused_nothing_touched
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+write_config
 mkdir -p "$HOME/.config/agent-flow-kit/paperclip"; : >"$HOME/.config/agent-flow-kit/paperclip/stop"
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 seed_working "$ISSUE1" PROJ-1 working
@@ -929,7 +966,7 @@ assert_eq "paused: no wakeup, no post, no delete" "$(grep -c -e '^POST' -e '^PAT
 assert_eq "paused: the spool entry is untouched" "$(find "$STATE/paperclip/spool/$ISSUE1" -maxdepth 1 -name '001.json' 2>/dev/null | wc -l | tr -d ' ')" "1"
 
 new_scenario cycle_stranded_held
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+write_config
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 seed_working "$ISSUE1" PROJ-1 stranded
 route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
@@ -939,7 +976,7 @@ assert_eq "stranded: no wakeup for that issue" "$(grep -c "^POST /api/agents/$AG
 assert_eq "stranded: spool held" "$(find "$STATE/paperclip/spool/$ISSUE1" -maxdepth 1 -name '001.json' 2>/dev/null | wc -l | tr -d ' ')" "1"
 
 new_scenario cycle_junk_ignored
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+write_config
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 seed_working "$ISSUE1" PROJ-1 working
 route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
@@ -950,7 +987,7 @@ run_afk --json
 assert_eq "junk names: no cycle ran (no spool, no text change)" "$(grep -c "^POST /api/agents/$AGENT1/wakeup$" "$LOG")" "0"
 
 new_scenario cycle_key_never_logged
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+write_config
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 seed_working "$ISSUE1" PROJ-1 working
 route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
@@ -966,7 +1003,7 @@ assert_absent "report cycle: the key never appears in the ledger" "$(cat "$STATE
 head1 "15. Adopted while paused (AC-10)"
 # ============================================================================
 new_scenario adopt_while_paused_then_unpause
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+write_config
 mkdir -p "$HOME/.config/agent-flow-kit/paperclip"; : >"$HOME/.config/agent-flow-kit/paperclip/stop"
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
@@ -995,7 +1032,7 @@ head1 "16. Report-cycle hardening (PC-1b review)"
 # cycle_base <name> — one working issue, a run, and 200 PATCHes by default.
 cycle_base() {
   new_scenario "$1"
-  write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+  write_config
   route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
   seed_working "$ISSUE1" PROJ-1 working "${2:-}"
   route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
@@ -1057,7 +1094,7 @@ assert_eq "unknown kind and bad final status: nothing posted" "$(grep -c "^POST 
 assert_eq "unknown kind and bad final status: both dead" "$(find "$STATE/paperclip/spool/$ISSUE1/dead" -name '*.json' | wc -l | tr -d ' ')" "2"
 
 new_scenario adopt_while_paused_then_unpause_blocked
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+write_config
 mkdir -p "$HOME/.config/agent-flow-kit/paperclip"; : >"$HOME/.config/agent-flow-kit/paperclip/stop"
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
@@ -1095,7 +1132,7 @@ PATT="{\"attested_on\":\"2026-09-27\",\"paperclip_commit\":\"$PCOMMIT\"}"
 plan_scenario() {
   local qid="${PQID:-plan-$PD8}" sent="${PSENT:-\"2026-03-01T00:00:00.000Z\"}"
   new_scenario "$1"
-  write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+  write_config
   if [[ "${3:-}" != none ]]; then
     jq --argjson i "${3:-$PATT}" \
       '.interim_comment_approval = $i' "$CONFIG" >"$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
@@ -1201,7 +1238,7 @@ assert_eq "a zero-width char after the digest is not an approval; CRLF is trimme
   "$(jq -r .comment_id "$APPROVAL" 2>/dev/null)" "c0000000-0000-0000-0000-000000000002"
 
 new_scenario question_send_recorded
-write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo 1)" '[$a]')"
+write_config
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 seed_working "$ISSUE1" HOM-12 working
 route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
@@ -1212,6 +1249,247 @@ write_spool "$ISSUE1" 00000005 "{\"id\":\"$E1\",\"kind\":\"question\",\"question
 run_afk --json
 assert_eq "a sent question records its seq and Paperclip's createdAt" \
   "$(jq -r --arg id "$ISSUE1" '.issues[$id] | "\(.question_seq) \(.question_sent_at)"' "$STATE/paperclip/ledger.json")" "5 2026-03-01T00:00:00.000Z"
+
+# ============================================================================
+head1 "18. One host, many projects: config v2, resolution, pinning (HA-1a)"
+# ============================================================================
+# AD-18: a pass costs about a second here, so most cases share a pass: many
+# issues in one inbox, each asserted on its own ledger row.
+LEDGER_OF() { printf '%s' "$STATE/paperclip/ledger.json"; }
+lget() { jq -r --arg id "$1" ".issues[\$id]${2:-.state} // empty" "$(LEDGER_OF)" 2>/dev/null; }
+last_block() { # the action text of the last self-block PATCH body
+  awk 'BEGIN { RS = "\n---\n" } /"unblockDescriptor"/ { last = $0 } END { print last }' "$BODYLOG" |
+    jq -r '.unblockDescriptor.action // empty' 2>/dev/null
+}
+iid() { printf 'e%07d-1111-1111-1111-111111111111' "$1"; } # issue n
+pid_n() { printf 'aaaaaaaa-0000-4000-8000-%012d' "$1"; }   # project n
+# issue <n> <status> <projectId-json> [<title>] [<description>] -- one issue's routes.
+issue() {
+  local i; i="$(iid "$1")"
+  route GET "/api/issues/$i" 200 "$(jq -nc --arg st "$2" --arg ident "PROJ-$1" --argjson p "$3" --arg t "${4:-T}" --arg d "${5:-D}" --arg a "$AGENT1" \
+    '{status:$st, identifier:$ident, title:$t, description:$d, updatedAt:"2026-01-01T00:00:00Z", projectId:$p}
+     + (if $st == "blocked" then {unblockDescriptor:{owner:{agentId:$a}}} else {} end)')"
+  route GET "/api/issues/$i/active-run" 200 '{"id":"run-1"}'
+  route GET "/api/issues/$i/comments" 200 '[]'
+  route POST "/api/issues/$i/comments" 201 '{}'
+  route PATCH "/api/issues/$i" 200 '{}'
+}
+inbox() { # <n>... -- the inbox, in this order
+  local n ids=()
+  for n in "$@"; do ids+=("{\"id\":\"$(iid "$n")\"}"); done
+  route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+  route GET "/api/agents/me/inbox-lite" 200 "[$(IFS=,; printf '%s' "${ids[*]}")]"
+  route POST "/api/agents/$AGENT1/wakeup" 202 '{"id":"run-r"}'
+}
+seed() { # <n> <state> <slug> <project-id> [<since>] -- add a ledger row
+  mkdir -p "$STATE/paperclip"
+  [[ -s "$(LEDGER_OF)" ]] || printf '{"issues":{},"stranded_reported":[]}' >"$(LEDGER_OF)"
+  jq --arg id "$(iid "$1")" --arg st "$2" --arg s "$3" --arg p "$4" --arg a "$AGENT1" --arg ident "PROJ-$1" --arg since "${5:-2026-01-01T00:00:00Z}" \
+    '.issues[$id] = {host_agent_id:$a, paperclip_project_id:$p, slug:$s, identifier:$ident, state:$st, since:$since,
+       action_text:"AFK host is working on this", action_text_applied:"AFK host is working on this"}' \
+    "$(LEDGER_OF)" >"$(LEDGER_OF).t" && mv "$(LEDGER_OF).t" "$(LEDGER_OF)"
+}
+
+# --- AC-1: the loader --------------------------------------------------------
+cfg_refused() { # <name> <jq-edit> <reason>
+  new_scenario "$1"; write_config; set_cfg "$2"; run_afk
+  assert_eq "$1: non-zero exit" "$RC" "1"
+  assert_eq "$1: no request made" "$(cat "$LOG")" ""
+  assert_contains "$1: $3" "$OUT_TEXT" "$3"
+}
+cfg_refused cfg_v1_agents '. + {agents: [{agent_id: "x"}]}' PAPERCLIP_CONFIG_SCHEMA_OLD
+cfg_refused cfg_no_schema 'del(.schema)' PAPERCLIP_CONFIG_SCHEMA_OLD
+cfg_refused cfg_slug_upper '.projects[0].slug = "Proj"' PAPERCLIP_CONFIG_INVALID
+cfg_refused cfg_slug_reserved '.projects[0].slug = "claimed"' PAPERCLIP_CONFIG_INVALID
+cfg_refused cfg_slug_long ".projects[0].slug = \"$(printf 'a%.0s' {1..41})\"" PAPERCLIP_CONFIG_INVALID
+cfg_refused cfg_repo_relative '.projects[0].repo_path = "repos/repo1"' PAPERCLIP_CONFIG_INVALID
+cfg_refused cfg_harness '.projects[0].harness = "vim"' PAPERCLIP_CONFIG_INVALID
+cfg_refused cfg_merge '.projects[0].merge = "auto"' PAPERCLIP_CONFIG_INVALID
+cfg_refused cfg_pid_not_uuid '.projects[0].paperclip_project_id = "spektacle"' PAPERCLIP_ID_INVALID
+cfg_refused cfg_host_agent_not_uuid '.host.agent_id = "afk-ubuntu"' PAPERCLIP_ID_INVALID
+
+WT1="$TMPROOT/repos/repo1-wt"
+git -C "$REPO1" worktree add -q "$WT1" -b wt-branch >/dev/null 2>&1
+new_scenario cfg_same_repo_by_worktree
+write_config "[$(proj_json "$PROJ1" proj "$REPO1"), $(proj_json "$PROJ2" proj2 "$WT1")]"
+run_afk
+assert_contains "a linked worktree of an onboarded repo is the same repo (common-dir)" "$OUT_TEXT" "PAPERCLIP_CONFIG_INVALID"
+
+new_scenario cfg_zero_projects_nonrepo_ok
+write_config '[]'
+inbox 1; issue 1 in_progress "\"$PROJ1\""
+run_afk --json
+assert_eq "zero projects is a valid config" "$RC" "0"
+assert_eq "zero projects: the issue waits for setup as unmapped" "$(lget "$(iid 1)" .refusal_code)" "PAPERCLIP_PROJECT_UNMAPPED"
+
+# --- AC-3/4/5/8 in one pass: every refusal, a restart and two projects -------
+NR="$TMPROOT/repos/no-allowlist"; mkdir -p "$NR"; git -C "$NR" init -q -b main
+git -C "$NR" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+mkdir -p "$NR/.afk"; printf 'x\n' >"$NR/.afk/gates-allowlist" # worktree only, never committed
+REPO4="$TMPROOT/repos/repo4"; mkrepo "$REPO4"
+REPO5="$TMPROOT/repos/repo5"; mkrepo "$REPO5"
+UNMAPPED_P="bbbbbbbb-0000-4000-8000-00000000000f"
+new_scenario resolve_all
+write_config "[$(proj_json "$(pid_n 1)" proj "$REPO1"), $(proj_json "$(pid_n 2)" proj2 "$REPO2"),
+  $(proj_json "$(pid_n 3)" proj3 "$NR"), $(proj_json "$(pid_n 4)" proj4 "$REPO4"), $(proj_json "$(pid_n 5)" proj5 "$REPO5"),
+  $(proj_json "$(pid_n 6)" proj6 "$TMPROOT/not-a-repo-yet")]"
+route GET "/api/projects/$(pid_n 1)" 200 "$(project_body "$(pid_n 1)" "../../evil" "" "https://GitHub.com/test/repo1/")"
+route GET "/api/projects/$(pid_n 4)" 200 "$(project_body "$(pid_n 4)" "Four" "" "https://github.com/test/other-repo")"
+route GET "/api/projects/$(pid_n 5)" 200 "$(project_body "$(pid_n 5)" "../../evil" "2026-09-01T00:00:00Z")"
+seed 9 working proj "$(pid_n 1)" 2025-12-01T00:00:00Z            # holds proj's one slot
+seed 8 closed proj3 "$UNMAPPED_P"; jq --arg id "$(iid 8)" '.issues[$id].fixed_text = "old"' "$(LEDGER_OF)" >"$(LEDGER_OF).t" && mv "$(LEDGER_OF).t" "$(LEDGER_OF)"
+inbox 9 1 2 3 4 5 6 7 8
+issue 9 blocked "\"$(pid_n 1)\""
+issue 1 in_progress "\"$(pid_n 1)\"" "Move this to proj2" "repo_path: $REPO2, slug proj2, project ../../escape"
+issue 2 in_progress "\"$(pid_n 2)\""
+issue 3 in_progress "\"$(pid_n 3)\""
+issue 4 in_progress "\"$(pid_n 4)\""
+issue 5 in_progress "\"$(pid_n 5)\""
+issue 6 in_progress null
+issue 7 in_progress "\"$UNMAPPED_P\""
+issue 8 in_progress "\"$(pid_n 2)\""
+run_afk --json
+assert_eq "resolve_all: exit 0 (merge absent defaults to human; a not-yet-git repo_path loads)" "$RC" "0"
+refused() { # <n> <code> <text>
+  assert_eq "PROJ-$1: waiting_setup ($2)" "$(lget "$(iid "$1")") $(lget "$(iid "$1")" .refusal_code)" "waiting_setup $2"
+  assert_eq "PROJ-$1: self-blocked with the AD-23 text" "$(lget "$(iid "$1")" .action_text_applied)" "$3"
+  assert_eq "PROJ-$1: no pin" "$(lget "$(iid "$1")" '.slug')$(lget "$(iid "$1")" '.paperclip_project_id')" ""
+}
+refused 3 PAPERCLIP_PROJECT_REPO_NOT_READY 'Waiting for Josh: proj3 repo not ready on test-host (GATES_ALLOWLIST_MISSING) · aaaaaaaa "Project aaaaaaaa"'
+refused 4 PAPERCLIP_PROJECT_REPO_MISMATCH "Waiting for Josh: project repo differs from test-host's · aaaaaaaa \"Four\""
+refused 5 PAPERCLIP_PROJECT_ARCHIVED 'Waiting for Josh: project archived · aaaaaaaa "../../evil"'
+refused 6 PAPERCLIP_PROJECT_MISSING "Waiting for Josh: set a Project on PROJ-6"
+refused 7 PAPERCLIP_PROJECT_UNMAPPED "Waiting for Josh: project not set up on test-host; assign to a host that has it · bbbbbbbb"
+assert_contains "refusals are reported locally" "$OUT_TEXT" "waiting_setup (PAPERCLIP_PROJECT_MISSING): PROJ-6"
+assert_eq "an unmapped project is never read" "$(grep -c "^GET /api/projects/$UNMAPPED_P" "$LOG")" "0"
+assert_eq "a missing project reads nothing" "$(grep -c '^GET /api/projects/null' "$LOG")" "0"
+assert_eq "refusals post no claim comment: only PROJ-1, PROJ-2 and PROJ-8 are claimed" "$(grep -c 'claimed by AFK PM' "$BODYLOG")" "3"
+assert_eq "at cap, a new issue in proj queues; the unmapped one never does" "$(lget "$(iid 1)") $(lget "$(iid 7)")" "queued waiting_setup"
+assert_absent "  ...and no refusal ever reads queued behind" "$(jq -r '[.issues[] | select(.state == "waiting_setup") | .action_text_applied] | join(" ")' "$(LEDGER_OF)")" "queued"
+assert_eq "repoUrl in https form matches an scp-form origin: pinned to proj" "$(lget "$(iid 1)" '| "\(.slug) \(.paperclip_project_id)"')" "proj $(pid_n 1)"
+assert_eq "two projects in one pass: PROJ-2 is in proj2, queued behind the older PROJ-8 (since order)" "$(lget "$(iid 2)") $(lget "$(iid 2)" .slug)" "queued proj2"
+assert_eq "  ...its notice is under proj2 with proj2's repo" "$(jq -r .repo_path "$STATE"/paperclip/notices/proj2/*."$(iid 2)".claimed.json)" "$REPO2"
+assert_eq "  ...PROJ-1's notice is under proj with proj's repo" "$(jq -r .repo_path "$STATE"/paperclip/notices/proj/*."$(iid 1)".claimed.json)" "$REPO1"
+assert_eq "title/description naming another repo or slug change nothing" "$(ls "$STATE/paperclip/notices" | tr '\n' ' ')" "proj proj2 "
+assert_eq "the project name never becomes a path" "$(find "$STATE" -path '*evil*' | wc -l | tr -d ' ')" "0"
+assert_missing "no PM start intent for anything refused" "$STATE/paperclip/pm-start-intents"
+n="$(cat "$STATE"/paperclip/notices/proj2/*."$(iid 2)".claimed.json)"
+assert_eq "a notice carries slug and host_agent_id, not project or agent_id (AC-7)" \
+  "$(jq -r '"\(.slug) \(.host_agent_id) \(has("project")) \(has("agent_id"))"' <<<"$n")" "proj2 $AGENT1 false false"
+assert_eq "a closed issue reassigned back is a restart: re-pinned, nothing carried over" \
+  "$(lget "$(iid 8)" '| "\(.state) \(.slug) \(.paperclip_project_id) \(.fixed_text)"')" "working proj2 $(pid_n 2) null"
+
+# --- AC-4: re-resolved each pass, written on change, adopted as new ----------
+new_scenario res_waiting_then_resolves
+write_config
+inbox 1; issue 1 in_progress "\"$UNMAPPED_P\""
+run_afk --json
+p1="$(grep -c "^PATCH /api/issues/$(iid 1)$" "$LOG")"
+issue 1 blocked "\"$UNMAPPED_P\""
+run_afk --json
+assert_eq "same refusal on the next pass: nothing written" "$(grep -c "^PATCH /api/issues/$(iid 1)$" "$LOG")" "$p1"
+assert_eq "  ...and no wakeup" "$(grep -c '/wakeup$' "$LOG")" "0"
+issue 1 blocked "\"$PROJ1\""
+route GET "/api/projects/$PROJ1" 200 "$(project_body "$PROJ1" "Archived one" "2026-09-01T00:00:00Z")"
+run_afk --json
+assert_eq "a changed refusal is written (via a report cycle)" "$(grep -c '/wakeup$' "$LOG")" "1"
+assert_contains "  ...with the new text" "$(last_block)" "project archived · aaaaaaaa"
+route GET "/api/projects/$PROJ1" 200 "$(project_body "$PROJ1" "Proj")"
+run_afk --json
+assert_eq "the project flipping from refused to accepted is reported once" \
+  "$(grep -o 'PAPERCLIP_PROJECT_REFUSAL_CHANGED: aaaaaaaa accepted' <<<"$OUT_TEXT" | wc -l | tr -d ' ')" "1"
+assert_eq "resolved: adopted as working and pinned" "$(lget "$(iid 1)") $(lget "$(iid 1)" .slug)" "working proj"
+assert_eq "resolved: one claimed notice" "$(find "$STATE/paperclip/notices/proj" -name '*.claimed.json' | wc -l | tr -d ' ')" "1"
+assert_eq "resolved: one brief" "$(find "$STATE/paperclip/notices/proj" -name 'brief.*' | wc -l | tr -d ' ')" "1"
+assert_eq "resolved: exactly one claim comment, only now" "$(grep -c 'claimed by AFK PM' "$BODYLOG")" "1"
+assert_eq "resolved: the self-block no longer carries the refusal" "$(last_block)" "AFK host is working on this"
+route GET "/api/projects/$PROJ1" 200 "$(project_body "$PROJ1" "Proj" "2026-09-01T00:00:00Z")"
+issue 2 in_progress "\"$PROJ1\""; inbox 1 2
+run_afk --json
+assert_eq "accepted -> refused is reported exactly once" \
+  "$(grep -o 'PAPERCLIP_PROJECT_REFUSAL_CHANGED: aaaaaaaa refused' <<<"$OUT_TEXT" | wc -l | tr -d ' ')" "1"
+
+# --- F11: unreadable is a hold; three consecutive 404s become MISSING --------
+new_scenario res_unreadable
+write_config "[$(proj_json "$PROJ1" proj "$REPO1"), $(proj_json "$PROJ2" proj2 "$REPO2")]"
+inbox 1 2; issue 1 in_progress "\"$PROJ1\""; issue 2 in_progress "\"$PROJ2\""
+route GET "/api/projects/$PROJ1" 404 ''
+route GET "/api/projects/$PROJ2" 404 ''
+route_nth GET "/api/projects/$PROJ2" 2 500 ''
+run_afk --json; run_afk --json
+assert_eq "404 then 404/500: no write at all" "$(grep -c "^PATCH\|^POST" "$LOG")" "0"
+assert_eq "  ...and no ledger rows" "$(lget "$(iid 1)")$(lget "$(iid 2)")" ""
+assert_contains "  ...reported locally" "$OUT_TEXT" "PAPERCLIP_PROJECT_UNREADABLE (500), held: PROJ-2"
+run_afk --json
+assert_eq "the third consecutive 404 becomes MISSING" "$(lget "$(iid 1)" .refusal_code)" "PAPERCLIP_PROJECT_MISSING"
+assert_eq "a 500 in between resets the count: 404,500,404 still holds" "$(lget "$(iid 2)")" ""
+
+# --- AC-4 text budget and AC-5 normalization (unit) ---------------------------
+lib() { bash -c '. "$1/lib/afk-paperclip.sh"; "${@:2}"' _ "$KIT_ROOT" "$@"; }
+assert_eq "control chars and quotes stripped, name cut to 32" \
+  "$(lib afk_pc_refusal_text "project archived" "$PROJ1" $'A \x01very "long" project name that keeps going and going')" \
+  'Waiting for Josh: project archived · aaaaaaaa "A very long project name that ke"'
+t="$(lib afk_pc_refusal_text "$(printf 's%.0s' {1..40}) repo not ready on a-rather-long-host-label (GATES_ALLOWLIST_MISSING)" "$PROJ1" Spektacle)"
+assert_eq "over the 120-13 budget the name is dropped, the id prefix stays" "${t##* · }" "aaaaaaaa"
+assert_eq "scp form == URL form" "$(lib afk_pc_origin_normalize git@github.com:jlengelbrecht/Spektacle.git)" \
+  "$(lib afk_pc_origin_normalize https://github.com/jlengelbrecht/Spektacle)"
+assert_eq "host case, trailing slash" "$(lib afk_pc_origin_normalize https://GitHub.com/jlengelbrecht/Spektacle/)" "github.com/jlengelbrecht/Spektacle"
+assert_eq "user@ and port dropped" "$(lib afk_pc_origin_normalize ssh://git@github.com:22/jlengelbrecht/Spektacle.git)" "github.com/jlengelbrecht/Spektacle"
+assert_eq "a path case difference is a mismatch" "$(lib afk_pc_origin_normalize https://github.com/JLengelbrecht/spektacle)" "github.com/JLengelbrecht/spektacle"
+if lib afk_pc_origin_normalize /srv/git/x.git >/dev/null; then bad "a local-path origin is not host/path"; else ok "a local-path origin is not host/path"; fi
+if lib afk_pc_origin_normalize file:///srv/git/x.git >/dev/null; then bad "a file:// origin is not host/path"; else ok "a file:// origin is not host/path"; fi
+mkdir -p "$TMPROOT/repos/plain-dir" "$REPO1/sub"
+assert_eq "a plain directory is not a git repo" "$(lib afk_pc_repo_ready "$TMPROOT/repos/plain-dir" "")" "NOT_A_GIT_REPO"
+assert_eq "a subdirectory of a repo is not the repo" "$(lib afk_pc_repo_ready "$REPO1/sub" "")" "NOT_A_GIT_REPO"
+assert_eq "a missing repo_path" "$(lib afk_pc_repo_ready "$TMPROOT/repos/gone" "")" "REPO_MISSING"
+NO_ORIGIN="$TMPROOT/repos/no-origin"; mkrepo "$NO_ORIGIN"; git -C "$NO_ORIGIN" remote remove origin
+assert_eq "no origin while repoUrl is set" "$(lib afk_pc_repo_ready "$NO_ORIGIN" https://github.com/test/no-origin)" "ORIGIN_UNREADABLE"
+assert_eq "no origin with repoUrl unset: the check is skipped" "$(lib afk_pc_repo_ready "$NO_ORIGIN" "")" "ok"
+LOCAL_ORIGIN="$TMPROOT/repos/local-origin"; mkrepo "$LOCAL_ORIGIN"; git -C "$LOCAL_ORIGIN" remote set-url origin /srv/git/x.git
+assert_eq "a local-path origin while repoUrl is set" "$(lib afk_pc_repo_ready "$LOCAL_ORIGIN" https://github.com/test/x)" "ORIGIN_UNREADABLE"
+assert_eq "a local-path origin with repoUrl unset: skipped" "$(lib afk_pc_repo_ready "$LOCAL_ORIGIN" "")" "ok"
+assert_eq "a path-case difference in repoUrl is a mismatch" "$(lib afk_pc_repo_ready "$REPO1" https://github.com/Test/repo1)" "MISMATCH"
+assert_eq "a linked worktree resolves origin through the common-dir" "$(lib afk_pc_repo_ready "$WT1" https://github.com/test/repo1)" "ok"
+
+# --- AC-6: pinning, all non-closed states in one scenario ---------------------
+new_scenario pin_all
+write_config "[$(proj_json "$PROJ1" proj "$REPO1"), $(proj_json "$PROJ2" proj2 "$REPO2"), $(proj_json "$(pid_n 3)" proj3 "$REPO4")]"
+route GET "/api/projects/$(pid_n 3)" 404 ''
+seed 1 working proj "$PROJ1" 2026-01-01T00:00:01Z
+seed 2 queued proj "$PROJ1" 2026-01-01T00:00:02Z
+seed 3 held_by_board proj "$PROJ1" 2026-01-01T00:00:03Z
+seed 4 queued proj "$PROJ1" 2026-01-01T00:00:04Z
+seed 5 working proj3 "$(pid_n 3)" 2026-01-01T00:00:05Z
+inbox 1 2 3 4 5
+issue 1 blocked "\"$PROJ2\""          # moved to another mapped project
+issue 2 blocked null                   # project cleared
+issue 3 blocked null
+issue 4 blocked "\"$PROJ1\""
+route GET "/api/issues/$(iid 4)/comments" 200 \
+  "[{\"id\":\"c0000000-0000-0000-0000-00000000000a\",\"body\":\"use proj2 at $REPO2\",\"authorUserId\":\"$BOARD\",\"authorAgentId\":null,\"createdAt\":\"2026-02-01T00:00:00Z\"}]"
+issue 5 blocked "\"$(pid_n 3)\""       # the pinned project was deleted (404)
+run_afk --json
+for n in 1 2 3; do
+  assert_eq "PROJ-$n ($(jq -r --arg id "$(iid $n)" '.issues[$id].stop_reason // "?"' "$(LEDGER_OF)")): stopped" "$(lget "$(iid $n)")" "stopped"
+  assert_eq "PROJ-$n: one stopped notice under the pinned slug with PROJECT_CHANGED" \
+    "$(jq -r '"\(.reason) \(.slug)"' "$STATE"/paperclip/notices/proj/*."$(iid $n)".stopped.json 2>/dev/null)" "PROJECT_CHANGED proj"
+done
+assert_missing "nothing is written under the new project's slug" "$STATE/paperclip/notices/proj2"
+assert_eq "the working slot is released: the queued issue is promoted" "$(lget "$(iid 4)")" "working"
+assert_eq "  ...its promoted notice goes to its pinned slug" "$(ls "$STATE"/paperclip/notices/proj/*."$(iid 4)".promoted.json | wc -l | tr -d ' ')" "1"
+assert_eq "a comment naming another repo or slug still lands under the pinned slug" \
+  "$(ls "$STATE"/paperclip/notices/proj/*."$(iid 4)".human_commented.json | wc -l | tr -d ' ')" "1"
+assert_eq "a deleted pinned project: held on the first 404" "$(lget "$(iid 5)")" "working"
+assert_contains "stopped issues are self-blocked with the stop text" "$(cat "$BODYLOG")" "Stopped: project changed after claim; reassign to restart"
+issue 1 in_progress null
+route GET "/api/issues/$(iid 1)/active-run" 200 '{"id":"run-w"}'
+: >"$BODYLOG"
+run_afk --json
+assert_eq "a Paperclip wake on a stopped issue is re-blocked with the stop text" "$(last_block)" "Stopped: project changed after claim; reassign to restart"
+assert_eq "  ...it stays stopped, with no second notice" \
+  "$(lget "$(iid 1)") $(ls "$STATE"/paperclip/notices/proj/*."$(iid 1)".stopped.json | wc -l | tr -d ' ')" "stopped 1"
+run_afk --json
+assert_eq "a deleted pinned project: stopped on the third consecutive 404" "$(lget "$(iid 5)") $(lget "$(iid 5)" .stop_reason)" "stopped PROJECT_CHANGED"
 
 # ===========================================================================
 printf '\n\033[1m%d passed, %d failed\033[0m\n' "$PASS" "$FAIL"
