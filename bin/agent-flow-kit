@@ -37,7 +37,7 @@ AFK_LIB_DIR="${AFK_LIB_DIR:-$AFK_INSTALL_ROOT/lib}"
 # A missing or unreadable library is an internal failure with a stable message
 # and the usage exit code — never a partially loaded lifecycle that answers
 # questions with whichever functions happened to load.
-for _afk_lib in afk-common afk-source afk-inventory afk-readiness afk-monitor afk-commands afk-plan afk-mutate afk-usage afk-auto-update afk-catalog-sync afk-paperclip afk-pm-registry afk-paperclip-report afk-paperclip-plan afk-paperclip-start afk-accept; do
+for _afk_lib in afk-common afk-source afk-inventory afk-readiness afk-monitor afk-commands afk-plan afk-mutate afk-usage afk-auto-update afk-catalog-sync afk-paperclip afk-pm-registry afk-paperclip-report afk-paperclip-plan afk-paperclip-start afk-paperclip-project afk-accept; do
   if [[ ! -r "$AFK_LIB_DIR/$_afk_lib.sh" ]]; then
     printf 'agent-flow-kit: internal error: required library %s.sh is missing or unreadable under %s\n' \
       "$_afk_lib" "$AFK_LIB_DIR" >&2
@@ -94,6 +94,9 @@ unset _afk_lib
 # shellcheck source=lib/afk-paperclip-start.sh
 # shellcheck disable=SC1090,SC1091
 . "$AFK_LIB_DIR/afk-paperclip-start.sh"
+# shellcheck source=lib/afk-paperclip-project.sh
+# shellcheck disable=SC1090,SC1091
+. "$AFK_LIB_DIR/afk-paperclip-project.sh"
 # shellcheck source=lib/afk-accept.sh
 # shellcheck disable=SC1090,SC1091
 . "$AFK_LIB_DIR/afk-accept.sh"
@@ -117,6 +120,8 @@ if ! declare -F afk_cmd_status >/dev/null 2>&1 \
    || ! declare -F afk_cmd_paperclip_plan >/dev/null 2>&1 \
    || ! declare -F afk_cmd_paperclip_approval >/dev/null 2>&1 \
    || ! declare -F afk_cmd_paperclip_timer >/dev/null 2>&1 \
+   || ! declare -F afk_cmd_paperclip_project >/dev/null 2>&1 \
+   || ! declare -F afk_cmd_paperclip_config >/dev/null 2>&1 \
    || ! declare -F afk_cmd_route_accept >/dev/null 2>&1; then
   printf 'agent-flow-kit: internal error: the lifecycle libraries under %s did not load completely\n' \
     "$AFK_LIB_DIR" >&2
@@ -351,6 +356,25 @@ agent-flow-kit — lifecycle entry point
       accepts pm-auto only (human/override: ACCEPTANCE_KIND_NOT_ALLOWED). --verify is the
       check dispatch.sh runs on every cycle of a Paperclip story.
 
+  agent-flow-kit paperclip-project add --project-id <uuid> --slug <s> --repo <abs-path>
+      [--harness claude|codex|opencode] [--max-active <n>] [--merge human|pm]
+      [--accept-mismatch] [--json]
+  agent-flow-kit paperclip-project set --slug <s> [--harness <h>] [--max-active <n>]
+      [--merge human|pm] [--json]
+  agent-flow-kit paperclip-project remove --slug <s> [--json]
+  agent-flow-kit paperclip-project list [--json]
+      Onboard a Paperclip Project on this host: edits the host's projects[]
+      table (atomic write, mode 600). `add` reads GET /api/projects/<id> with
+      the host key and refuses a missing or archived project and a repoUrl
+      that differs from the repo's origin (--accept-mismatch overrides, but
+      the poller still self-blocks). `remove` refuses while an issue pinned
+      to the slug is not closed. Never writes to Paperclip.
+
+  agent-flow-kit paperclip-config --migrate --project-id <uuid> [--slug <s>] [--json]
+      One-shot v1 to v2 config migration (exactly one v1 agent; refuses while
+      any issue is not closed or a notice is claimed). Keeps the old file as
+      paperclip.json.v1.<timestamp>.
+
   agent-flow-kit paperclip-timer --install|--remove|--status [--json]
       Linux only: a systemd user service and timer running paperclip-poll
       every 90s (RandomizedDelaySec=15s, Persistent=false). The unit holds no
@@ -503,6 +527,10 @@ afk_option_allowed() { # <command> <option>
       case "$2" in --json|--issue) return 0 ;; esac ;;
     paperclip-timer)
       case "$2" in --json|--install|--remove|--status) return 0 ;; esac ;;
+    paperclip-project)
+      case "$2" in --json|--slug|--project-id|--repo|--harness|--max-active|--merge|--accept-mismatch) return 0 ;; esac ;;
+    paperclip-config)
+      case "$2" in --json|--migrate|--project-id|--slug) return 0 ;; esac ;;
     route-accept)
       case "$2" in --json|--story|--kind|--actor|--reason|--verify) return 0 ;; esac ;;
   esac
@@ -521,6 +549,7 @@ afk_main() {
   local au_mode="enroll" au_key_ref="" au_key_file="" au_prev=""
   local cs_apply="false"
   local ra_kind="" ra_actor="" ra_reason="" ra_verify="false"
+  local pj_verb="" pj_id="" pj_repo="" pj_max="" pj_merge="" pj_accept="false" pj_migrate="false"
 
   cmd="${1:-help}"
   if (( $# > 0 )); then shift; fi
@@ -541,6 +570,9 @@ afk_main() {
         if [[ "$cmd" == paperclip-take && "$1" == --project ]]; then
           afk_warn "PAPERCLIP_FLAG_RENAMED: paperclip-take takes --slug <slug> now, not --project"
           return "$AFK_EXIT_USAGE"
+        fi
+        if [[ "$cmd" == paperclip-project && -z "$pj_verb" && "$1" =~ ^(add|set|remove|list)$ ]]; then
+          pj_verb="$1"; shift; continue
         fi
         if ! afk_option_allowed "$cmd" "$1"; then
           afk_warn "'$(afk_safe_diagnostic "$cmd")' does not accept the argument '$(afk_safe_diagnostic "$1")'"
@@ -665,6 +697,20 @@ afk_main() {
             esac
             shift ;;
           --verify)                    ra_verify="true" ;;
+          --accept-mismatch)           pj_accept="true" ;;
+          --migrate)                   pj_migrate="true" ;;
+          --project-id|--repo|--max-active|--merge)
+            if (( $# < 2 )); then
+              afk_warn "$1 requires its declared value"
+              return "$AFK_EXIT_USAGE"
+            fi
+            case "$1" in
+              --project-id) pj_id="$2" ;;
+              --repo)       pj_repo="$2" ;;
+              --max-active) pj_max="$2" ;;
+              --merge)      pj_merge="$2" ;;
+            esac
+            shift ;;
           --issue|--plan-file|--comment-file|--question|--final|--story|--kind|--actor|--reason)
             # The value is an issue id, a file path, a short question id, a
             # final status word, or a story fraction — never echoed back;
@@ -801,6 +847,23 @@ afk_main() {
     afk_warn "route-accept needs --story and either --verify alone, or --kind human|override|pm-auto with --actor (and --reason for override)"
     return "$AFK_EXIT_USAGE"
   fi
+  if [[ "$cmd" == paperclip-project ]]; then
+    local pj_ok=true
+    case "$pj_verb" in
+      add) [[ -n "$pj_id" && -n "$pc_slug" && -n "$pj_repo" ]] || pj_ok=false ;;
+      set|remove) [[ -n "$pc_slug" ]] || pj_ok=false ;;
+      list) ;;
+      *) pj_ok=false ;;
+    esac
+    if [[ "$pj_ok" != true ]]; then
+      afk_warn "paperclip-project needs a verb: add (--project-id --slug --repo), set/remove (--slug) or list"
+      return "$AFK_EXIT_USAGE"
+    fi
+  fi
+  if [[ "$cmd" == paperclip-config && "$pj_migrate" != true ]]; then
+    afk_warn "paperclip-config needs --migrate"
+    return "$AFK_EXIT_USAGE"
+  fi
   if [[ "$cmd" == paperclip-timer && -z "$pct_action" ]]; then
     afk_warn "paperclip-timer needs exactly one of --install, --remove or --status"
     return "$AFK_EXIT_USAGE"
@@ -917,6 +980,14 @@ afk_main() {
     paperclip-timer)
       afk_require_declared_paths || return "$AFK_EXIT_USAGE"
       afk_cmd_paperclip_timer "$json_mode" "$pct_action"
+      return $? ;;
+    paperclip-project)
+      afk_require_declared_paths || return "$AFK_EXIT_USAGE"
+      afk_cmd_paperclip_project "$json_mode" "$pj_verb" "$pj_id" "$pc_slug" "$pj_repo" "$pm_harness" "$pj_max" "$pj_merge" "$pj_accept"
+      return $? ;;
+    paperclip-config)
+      afk_require_declared_paths || return "$AFK_EXIT_USAGE"
+      afk_cmd_paperclip_config "$json_mode" "$pj_id" "$pc_slug"
       return $? ;;
     route-accept)
       afk_require_declared_paths || return "$AFK_EXIT_USAGE"

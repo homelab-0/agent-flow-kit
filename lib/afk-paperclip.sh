@@ -4,7 +4,7 @@
 # One deterministic poller per host holds the host's one Paperclip agent key
 # (AD-23) and is the only thing that writes to Paperclip. The issue's
 # projectId picks the repo through the host's projects[] table. See
-# docs/PAPERCLIP.md (HA-1b: §Config still describes the v1 agents[] shape).
+# docs/PAPERCLIP.md (§Config, §Projects).
 #
 # Every Paperclip HTTP call goes through afk_pc_curl, which owns the auth
 # header: the key is passed to curl on a file descriptor
@@ -166,7 +166,7 @@ afk_pc_load_config() {
   if [[ ! -r "$path" ]]; then AFK_PC_REFUSAL="PAPERCLIP_NOT_CONFIGURED"; return 1; fi
   cfg="$(jq -c '.' "$path" 2>/dev/null)" || { AFK_PC_REFUSAL="PAPERCLIP_CONFIG_INVALID"; return 1; }
   # A v1 config (one agent and key per project, `agents[]`) is never read.
-  # HA-1b: `paperclip-config --migrate` converts it; docs/PAPERCLIP.md §Config.
+  # `paperclip-config --migrate` converts it; docs/PAPERCLIP.md §Config.
   if jq -e 'type == "object" and (has("agents") or (has("schema") | not))' >/dev/null 2>&1 <<<"$cfg"; then
     AFK_PC_REFUSAL="PAPERCLIP_CONFIG_SCHEMA_OLD"; return 1
   fi
