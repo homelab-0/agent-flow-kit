@@ -700,7 +700,7 @@ afk_main() {
           --accept-mismatch)           pj_accept="true" ;;
           --migrate)                   pj_migrate="true" ;;
           --project-id|--repo|--max-active|--merge)
-            if (( $# < 2 )); then
+            if (( $# < 2 )) || { [[ "$2" == --* ]] && afk_option_allowed "$cmd" "$2"; }; then
               afk_warn "$1 requires its declared value"
               return "$AFK_EXIT_USAGE"
             fi

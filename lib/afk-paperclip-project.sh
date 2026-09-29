@@ -211,8 +211,8 @@ afk_cmd_paperclip_config() {
     | .projects = [{paperclip_project_id: $p, slug: $s, repo_path: $a.repo_path, harness: $a.harness,
                     max_active_issues: ($a.max_active_issues // 1), merge: "human"}]' <<<"$cfg")"
   # The loader must accept what is about to replace the file.
-  local probe; probe="$(mktemp)" || return 1
-  jq '.' <<<"$new" >"$probe"
+  local probe; probe="$(mktemp)" || { emit PAPERCLIP_CONFIG_WRITE_FAILED "probe"; return 1; }
+  jq '.' <<<"$new" >"$probe" || { rm -f -- "$probe"; emit PAPERCLIP_CONFIG_WRITE_FAILED "probe"; return 1; }
   if ! ( AFK_PAPERCLIP_CONFIG="$probe" afk_pc_load_config ); then
     rm -f -- "$probe"; emit PAPERCLIP_CONFIG_INVALID "the migrated config does not load"; return 4
   fi

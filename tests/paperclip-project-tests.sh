@@ -63,7 +63,7 @@ new_scenario() {
 
 RC=0 OUT=""
 afk() { # <command...> -- runs the kit against the scenario's config and stubs
-  OUT="$(env -i PATH="$STUBS:$PATH" HOME="$HOME" LANG=C \
+  OUT="$(env -i PATH="$STUBS:$PATH" HOME="$HOME" LANG=C ${AFK_TEST_TMPDIR:+TMPDIR="$AFK_TEST_TMPDIR"} \
     AFK_STATE_DIR="$STATE" AFK_PAPERCLIP_CONFIG="$CONFIG" AFK_OP_BIN="$STUBS/op" AFK_CURL_BIN="$STUBS/curl" \
     CURL_STUB_LOG="$LOG" CURL_STUB_FIXTURES="$FIXDIR" bash "$AFK" "$@" 2>&1)"
   RC=$?
@@ -342,6 +342,25 @@ afk paperclip-project list --json
 assert_absent "list --json: no key value" "$OUT" "KEY-AGENT1-SECRET-VALUE"
 afk paperclip-project list
 assert_absent "list: no key value" "$OUT" "KEY-AGENT1-SECRET-VALUE"
+
+# ============================================================================
+head1 "6. Triage: a value option never swallows a following option; probe write failure"
+# ============================================================================
+new_scenario flag_swallow
+v2_config
+route GET "/api/projects/$PROJ1" 200 "$(project_body "$PROJ1")"
+afk paperclip-project add --project-id "$PROJ1" --repo --slug proj
+assert_eq "add --repo --slug: a usage error" "$RC" "1"
+assert_contains "add --repo --slug: names the option" "$OUT" "--repo requires its declared value"
+assert_eq "add --repo --slug: nothing written" "$(jq '.projects | length' "$CONFIG")" "0"
+afk paperclip-project set --slug proj --merge --harness codex
+assert_eq "set --merge --harness: a usage error" "$RC" "1"
+
+new_scenario probe_write_fails
+v1_config "$TMPROOT/repos/Spektacle"
+AFK_TEST_TMPDIR="$SCEN/no-such-dir" afk paperclip-config --migrate --project-id "$PROJ1"
+assert_contains "migrate: an unwritable probe is a write failure" "$OUT" "PAPERCLIP_CONFIG_WRITE_FAILED"
+assert_eq "migrate: probe failure leaves the v1 file" "$(jq -r 'has("agents")' "$CONFIG")" "true"
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
