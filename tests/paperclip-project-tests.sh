@@ -30,6 +30,8 @@ cat >"$STUBS/op" <<'SH'
 [[ "$1" == read && "$2" == op://test/agent1 && -n "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]] && { printf 'KEY-AGENT1-SECRET-VALUE\n'; exit 0; }
 exit 1
 SH
+# systemctl: no user manager, so the unit check uses the caller's PATH.
+printf '#!/usr/bin/env bash\nexit 1\n' >"$STUBS/systemctl"
 # A fixture per "<METHOD>_<path>" (slashes as _); first line is the status.
 cat >"$STUBS/curl" <<'SH'
 #!/usr/bin/env bash

@@ -76,15 +76,20 @@ not, as under the systemd timer, the poller sources an op env file inside a
 subshell for that one `op read`, so the token never enters the poller's own
 environment and no other child sees it. The file is the first of
 `host.op_env_file`, `$AFK_OP_ENV_FILE` and `$HOME/.op-agent-env`. It must be
-owned by you and mode 600 (no group or other bits); anything else is refused
-with `PAPERCLIP_OP_ENV_UNSAFE` and never sourced. No file and no token is
+a regular file owned by you, mode 600 or stricter (no group or other bits);
+anything else is refused with `PAPERCLIP_OP_ENV_UNSAFE` and never sourced. The
+file is opened once and checked and sourced through that open file, so
+swapping the path after the check changes nothing. No file and no token is
 `PAPERCLIP_VAULT_UNAVAILABLE`. Neither the file's contents nor the key are
 ever printed.
 
 The timer's unit carries no secret, no key reference and no env file path.
 `paperclip-timer --status` and `paperclip-project list` repeat the key read
-under `env -i` with only `HOME` and the user manager's `PATH`, which is what
-the unit gets, and report `PAPERCLIP_VAULT_UNAVAILABLE` (or
+in the environment the unit gets: `env -i` with `HOME`, plus the user
+manager's `PATH`, `OP_*`, `AFK_OP_ENV_FILE` and `AFK_OP_BIN` from
+`systemctl --user show-environment`. A token or override that only your shell
+carries does not count. The check covers the key read, not the rest of the
+pass. Both commands report `PAPERCLIP_VAULT_UNAVAILABLE` (or
 `PAPERCLIP_OP_ENV_UNSAFE`) when it fails. `paperclip-timer --install` refuses
 with that code rather than install a timer whose every pass would fail.
 

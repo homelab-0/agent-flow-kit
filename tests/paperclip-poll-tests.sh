@@ -87,6 +87,19 @@ else
 fi
 printf '%s' "$code"
 SH
+# stat passes through to the real one. When $TMPROOT/stat-swap names
+# "<replacement> <path>", the first stat of that path or of an open fd then
+# moves the replacement over the path: a swap right after the check.
+cat >"$STUBS/stat" <<SH
+#!/usr/bin/env bash
+$(command -v stat) "\$@"; rc=\$?
+if read -r src dst 2>/dev/null <"$TMPROOT/stat-swap"; then
+  for a in "\$@"; do
+    if [[ "\$a" == /dev/fd/* || "\$a" == "\$dst" ]]; then rm -f "$TMPROOT/stat-swap"; mv -f "\$src" "\$dst"; break; fi
+  done
+fi
+exit \$rc
+SH
 chmod +x "$STUBS"/*
 
 # route <method> <path> <code> [<body>] — install one fixture response.
@@ -363,6 +376,15 @@ assert_contains "a mode-644 env file is refused" "$OUT_TEXT" "PAPERCLIP_OP_ENV_U
 assert_missing "a mode-644 env file is never sourced" "$SCEN/sourced"
 assert_absent "the refusal never prints the file's contents" "$OUT_TEXT" "FILE-TOKEN-SECRET"
 assert_eq "a refused env file: no HTTP call" "$(cat "$LOG")" ""
+
+key_scenario key_env_swap
+envfile "$HOME/.op-agent-env" 600
+printf 'OP_SERVICE_ACCOUNT_TOKEN=ops_SWAPPED\ntouch %q\n' "$SCEN/swapped-sourced" >"$SCEN/swap.env"; chmod 600 "$SCEN/swap.env"
+printf '%s %s\n' "$SCEN/swap.env" "$HOME/.op-agent-env" >"$TMPROOT/stat-swap"
+OPTOK="" run_afk --json
+assert_missing "control: the path was swapped after the check" "$TMPROOT/stat-swap"
+assert_missing "a file swapped in after the check is never sourced" "$SCEN/swapped-sourced"
+assert_contains "the checked file is the one sourced: the key is read" "$(cat "$KEYLOG")" "KEY-AGENT1-SECRET-VALUE"
 
 key_scenario key_env_missing
 OPTOK="" run_afk --json
