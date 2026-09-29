@@ -102,68 +102,169 @@ AFK_OB_ADAPT=""
 AFK_OB_DISPOSITION=""
 AFK_OB_ESCAPE=""
 AFK_OB_SECTION_RC=0
+AFK_OB_LINK_MISSING="false"
 
-# One filesystem pass, two consumers (FR-91).
+# --- the observation ledger (FR-91, AD-19) ----------------------------------
 #
-# The binding and the plan are two projections of the SAME observation. When
-# each computed its own, a change landing between the two passes produced a
-# plan whose expected_destination_identity disagreed with the binding's
-# observed_identity for that component — and since the journal records the
-# binding as pre-mutation evidence while the pre-write guard compares against
-# the plan, the two halves of the safety argument would describe different
-# moments. Revalidation could not see it either: it compares binding to
-# binding. So the observation is captured once, cached, and replayed.
+# A mutating call observes the installation at exactly four points:
+#   O1 plan        one unlocked pass, shared by afk_evaluate_installation and
+#                  afk_plan_compute, so the reported components, the plan and
+#                  its binding are one statement about one moment;
+#   O2 revalidate  one pass under the lock, compared with O1 (the binding);
+#   O3 prewrite    the entry about to be acted on, immediately before it
+#                  (afk_component_prewrite_ok, the TOCTOU guard);
+#   O4 verify      one pass under the lock after the writes, which the
+#                  post-operation report is also built from.
+# A pass fills the ledger for EVERY declared component or it fails and leaves
+# no ledger at all, so nothing can ever bind or report a partial observation.
+# The installed side is hashed afresh by every pass; only the canonical
+# (checkout) side is reused, under afk_canonical_recheck.
 
-AFK_OB_CACHE=""   # ndjson, one complete observation record per component
+declare -gA AFK_OBL=()      # "<component id>|<field>" -> AFK_OB_<field>
+AFK_OBL_STATE="none"        # none | complete
+AFK_OBL_POINT=""            # the observation point that filled it
+AFK_OBL_POINT_NONE="fresh"  # no pass carries it: reporting from it takes a fresh pass
+AFK_OB_FIELDS=(ID OWNERSHIP DEST SREL EXTRA CRITICAL WANT CONTAINER TARGET_ROOT GUARD
+               OBSERVED CANONICAL APPLIED ADAPT DISPOSITION ESCAPE SECTION_RC LINK_MISSING)
 
 afk_observation_capture() {
-  AFK_OB_CACHE="${AFK_OB_CACHE}$(jq -nc \
-    --arg id "$AFK_OB_ID" --arg ownership "$AFK_OB_OWNERSHIP" --arg dest "$AFK_OB_DEST" \
-    --arg srel "$AFK_OB_SREL" --arg extra "$AFK_OB_EXTRA" --arg critical "$AFK_OB_CRITICAL" \
-    --arg want "$AFK_OB_WANT" --arg container "$AFK_OB_CONTAINER" \
-    --arg target_root "$AFK_OB_TARGET_ROOT" --arg guard "$AFK_OB_GUARD" \
-    --arg observed "$AFK_OB_OBSERVED" --arg canonical "$AFK_OB_CANONICAL" \
-    --arg applied "$AFK_OB_APPLIED" --arg adapt "$AFK_OB_ADAPT" \
-    --arg disposition "$AFK_OB_DISPOSITION" --arg escape "$AFK_OB_ESCAPE" \
-    --arg section_rc "$AFK_OB_SECTION_RC" \
-    '{id: $id, ownership: $ownership, dest: $dest, srel: $srel, extra: $extra,
-      critical: $critical, want: $want, container: $container,
-      target_root: $target_root, guard: $guard, observed: $observed,
-      canonical: $canonical, applied: $applied, adapt: $adapt,
-      disposition: $disposition, escape: $escape, section_rc: $section_rc}')"$'\n'
+  local _f _v
+  for _f in "${AFK_OB_FIELDS[@]}"; do
+    _v="AFK_OB_$_f"
+    AFK_OBL["$AFK_OB_ID|$_f"]="${!_v}"
+  done
 }
 
-# Replay a captured observation into the AFK_OB_* globals. Every field is a
-# string in the cache, so an empty value round-trips as an empty line rather
-# than as the four characters "null".
+# Replay one component of a COMPLETE ledger into the AFK_OB_* globals.
 afk_observation_restore() { # <component-id>
-  local rec
-  rec="$(printf '%s' "$AFK_OB_CACHE" | jq -c --arg id "$1" 'select(.id == $id)' 2>/dev/null | head -n 1)"
-  [[ -n "$rec" ]] || return 1
-  {
-    IFS= read -r AFK_OB_ID || return 1
-    IFS= read -r AFK_OB_OWNERSHIP
-    IFS= read -r AFK_OB_DEST
-    IFS= read -r AFK_OB_SREL
-    IFS= read -r AFK_OB_EXTRA
-    IFS= read -r AFK_OB_CRITICAL
-    IFS= read -r AFK_OB_WANT
-    IFS= read -r AFK_OB_CONTAINER
-    IFS= read -r AFK_OB_TARGET_ROOT
-    IFS= read -r AFK_OB_GUARD
-    IFS= read -r AFK_OB_OBSERVED
-    IFS= read -r AFK_OB_CANONICAL
-    IFS= read -r AFK_OB_APPLIED
-    IFS= read -r AFK_OB_ADAPT
-    IFS= read -r AFK_OB_DISPOSITION
-    IFS= read -r AFK_OB_ESCAPE
-    IFS= read -r AFK_OB_SECTION_RC
-  } < <(printf '%s' "$rec" | jq -r '.id, .ownership, .dest, .srel, .extra, .critical,
-                                    .want, .container, .target_root, .guard, .observed,
-                                    .canonical, .applied, .adapt, .disposition, .escape,
-                                    .section_rc')
-  [[ "$AFK_OB_ID" == "$1" ]] || return 1
+  local _f
+  [[ "$AFK_OBL_STATE" == "complete" && -n "$1" && -v "AFK_OBL[$1|ID]" ]] || return 1
+  for _f in "${AFK_OB_FIELDS[@]}"; do
+    printf -v "AFK_OB_$_f" '%s' "${AFK_OBL[$1|$_f]}"
+  done
+  [[ "$AFK_OB_ID" == "$1" ]]
+}
+
+# afk_observation_pass <point> — observe every declared component into the
+# ledger. The inventory is materialized and counted first: an inventory that
+# cannot be enumerated, or a pass that binds fewer components than it
+# declares, leaves the ledger empty and returns 1.
+afk_observation_pass() {
+  local rows row declared=0 bound=0
+  AFK_OBL=(); AFK_OBL_STATE="none"; AFK_OBL_POINT=""
+  rows="$(afk_component_table)" || return 1
+  [[ -n "$rows" ]] || return 1
+  afk_observation_note "$1"
+  while IFS= read -r row; do
+    [[ -n "$row" ]] || continue
+    declared=$((declared + 1))
+    afk_observe_component "$row" || break
+    afk_observation_capture
+    bound=$((bound + 1))
+  done <<< "$rows"
+  if (( declared == 0 || bound != declared )); then
+    AFK_OBL=()
+    return 1
+  fi
+  AFK_OBL_STATE="complete"; AFK_OBL_POINT="$1"
   return 0
+}
+
+# --- the canonical side, once per process (AD-19) ---------------------------
+#
+# The kit checkout's identities are keyed by (ownership, srel, exclusions) and
+# computed once per process, but only while the checkout provably holds still:
+# the fingerprint is taken BEFORE the first identity is hashed, and
+# afk_canonical_recheck takes it again under the lock at O2 and drops every
+# identity if it moved or cannot be read. Caching is off unless a caller
+# enables it (afk_run_mutation), an empty (unreadable) identity is never kept,
+# and a link's "canonical" side is a host path, so it is never kept either.
+#
+# The fingerprint does not trust Git to notice a change. Git can be told not
+# to look (assume-unchanged, skip-worktree, checkStat=minimal, ignored
+# submodules), never looks at ignored files, and never follows a symlink,
+# while the identities hash content, and a file or section source is read
+# THROUGH a symlink. So afk_canonical_walk_v lstats every entry under every
+# canonical source root (files, directories, symlinks: a superset of what
+# afk_tree_identity reads) and stats each symlink's target as well. HEAD and
+# the porcelain status stay in the fingerprint as an extra check.
+
+declare -gA AFK_CANON=()
+AFK_CANON_STATE="off"       # off | empty | on | unavailable
+AFK_CANON_FP=""
+
+# afk_stat_lines_v <var> <-L|-> <path>... — one stat process: size, mtime and
+# ctime (sub-second where reported), inode, mode and name (with the link
+# target), GNU `stat -c` or BSD `stat -f`. Any failure fails the call.
+afk_stat_lines_v() {
+  local _sv="$1" _so="$2" _st
+  shift 2
+  [[ "$_so" == "-L" ]] || _so=""
+  if stat -c %s -- /dev/null >/dev/null 2>&1; then
+    _st="$(stat ${_so:+"$_so"} -c '%s %y %z %i %f %N' -- "$@" 2>/dev/null)" || return 1
+  else
+    _st="$(stat ${_so:+"$_so"} -f '%z %Fm %Fc %i %p %N %SY' -- "$@" 2>/dev/null)" || return 1
+  fi
+  printf -v "$_sv" '%s' "$_st"
+}
+
+afk_canonical_walk_v() { # <var>
+  local _x _o _r _roots=() _w=() _l=() _e _a="" _b=""
+  while IFS='|' read -r _x _o _x _r _x; do
+    case "$_o" in
+      MANAGED_COPY_TREE|MANAGED_COPY_FILE|MANAGED_SECTION) _roots+=("$AFK_KIT_ROOT/$_r") ;;
+    esac
+  done < <(afk_component_table)
+  (( ${#_roots[@]} > 0 )) || return 1
+  # -H: a symlinked source root is walked where it points, as it is read.
+  mapfile -d '' _w < <(find -H "${_roots[@]}" -print0 2>/dev/null; printf 'FINDRC=%s\0' "$?")
+  (( ${#_w[@]} > 1 )) && [[ "${_w[-1]}" == "FINDRC=0" ]] || return 1
+  unset '_w[-1]'
+  for _e in "${_w[@]}"; do [[ ! -L "$_e" ]] || _l+=("$_e"); done
+  afk_stat_lines_v _a - "${_w[@]}" || return 1
+  if (( ${#_l[@]} > 0 )); then afk_stat_lines_v _b -L "${_l[@]}" || return 1; fi
+  printf -v "$1" '%s\n%s' "$_a" "$_b"
+}
+
+afk_canonical_fingerprint_v() { # <var>
+  local _h _s _u=""
+  (( ${#AFK_CO_MANAGED_INPUTS[@]} > 0 )) || return 1
+  _h="$(afk_git rev-parse --verify HEAD 2>/dev/null)" && [[ -n "$_h" ]] || return 1
+  _s="$(afk_git status --porcelain --untracked-files=all --ignored \
+          -- "${AFK_CO_MANAGED_INPUTS[@]}" 2>/dev/null)" || return 1
+  afk_canonical_walk_v _u || return 1
+  printf -v "$1" '%s\n%s\n%s' "$_h" "$_s" "$_u"
+}
+
+afk_canonical_enable() { AFK_CANON=(); AFK_CANON_STATE="empty"; AFK_CANON_FP=""; }
+
+# Under the lock, at O2: reuse only what was computed from the same checkout.
+afk_canonical_recheck() {
+  local fp=""
+  [[ "$AFK_CANON_STATE" == "on" ]] || return 0
+  if ! afk_canonical_fingerprint_v fp || [[ "$fp" != "$AFK_CANON_FP" ]]; then
+    afk_canonical_enable
+  fi
+}
+
+afk_canonical_identity_v() { # <var> <ownership> <srel> <extra>
+  local _k="$2|$3|$4" _id=""
+  if [[ "$AFK_CANON_STATE" == "empty" ]]; then
+    if afk_canonical_fingerprint_v AFK_CANON_FP; then AFK_CANON_STATE="on"
+    else AFK_CANON_STATE="unavailable"; fi
+  fi
+  if [[ "$AFK_CANON_STATE" == "on" && -v "AFK_CANON[$_k]" ]]; then
+    printf -v "$1" '%s' "${AFK_CANON[$_k]}"
+    return 0
+  fi
+  case "$2" in
+    MANAGED_COPY_TREE) _id="$(afk_tree_identity "$AFK_KIT_ROOT/$3" "$4")" ;;
+    MANAGED_COPY_FILE) afk_sha256_file_v _id "$AFK_KIT_ROOT/$3" ;;
+    MANAGED_SECTION)   _id="$(afk_file_payload_identity "$AFK_KIT_ROOT/$3")" ;;
+    *) _id="" ;;
+  esac
+  if [[ "$AFK_CANON_STATE" == "on" && -n "$_id" ]]; then AFK_CANON[$_k]="$_id"; fi
+  printf -v "$1" '%s' "$_id"
 }
 
 afk_observe_component() { # <declared row>
@@ -171,12 +272,14 @@ afk_observe_component() { # <declared row>
   local resolved rc
 
   IFS='|' read -r id ownership skind srel dkind dpath extra critical container target_root <<< "$1"
+  afk_observation_note "${FUNCNAME[1]}" "$id"
 
   AFK_OB_ID="$id"; AFK_OB_OWNERSHIP="$ownership"; AFK_OB_DEST="$dpath"
   AFK_OB_SREL="$srel"; AFK_OB_EXTRA="$extra"; AFK_OB_CRITICAL="$critical"
   AFK_OB_CONTAINER="$container"; AFK_OB_TARGET_ROOT="$target_root"
   AFK_OB_GUARD=""; AFK_OB_OBSERVED=""; AFK_OB_CANONICAL=""; AFK_OB_APPLIED=""
   AFK_OB_ADAPT=""; AFK_OB_DISPOSITION=""; AFK_OB_ESCAPE=""; AFK_OB_SECTION_RC=0
+  AFK_OB_LINK_MISSING="false"
 
   case "$dkind" in
     dir)  AFK_OB_WANT="dir" ;;
@@ -191,9 +294,8 @@ afk_observe_component() { # <declared row>
   # has to be able to say "this is what the target would be" even when it also
   # has to say "and this destination cannot be touched".
   case "$ownership" in
-    MANAGED_COPY_TREE) AFK_OB_CANONICAL="$(afk_tree_identity "$AFK_KIT_ROOT/$srel" "$extra")" ;;
-    MANAGED_COPY_FILE) afk_sha256_file_v AFK_OB_CANONICAL "$AFK_KIT_ROOT/$srel" ;;
-    MANAGED_SECTION)   AFK_OB_CANONICAL="$(afk_file_payload_identity "$AFK_KIT_ROOT/$srel")" ;;
+    MANAGED_COPY_TREE|MANAGED_COPY_FILE|MANAGED_SECTION)
+      afk_canonical_identity_v AFK_OB_CANONICAL "$ownership" "$srel" "$extra" ;;
     MANAGED_LINK)
       if afk_realpath_v resolved "$extra"; then AFK_OB_CANONICAL="link:$resolved"; fi ;;
     *) AFK_OB_CANONICAL="" ;;
@@ -218,13 +320,14 @@ afk_observe_component() { # <declared row>
       if (( rc != 0 )); then AFK_OB_OBSERVED=""; fi ;;
     MANAGED_LINK)
       if [[ ! -e "$dpath" ]]; then
-        AFK_OB_OBSERVED=""
+        AFK_OB_OBSERVED=""; AFK_OB_LINK_MISSING="true"
       elif afk_realpath_v resolved "$dpath"; then
         AFK_OB_OBSERVED="link:$resolved"
       fi ;;
   esac
 
-  if [[ -n "$AFK_OB_OBSERVED" ]]; then
+  # No records, no match: skip the subshell (every read-only verb observes).
+  if [[ -n "$AFK_OB_OBSERVED" && -n "$AFK_ADAPT_RECORDS" ]]; then
     AFK_OB_ADAPT="$(afk_adaptation_match "$id" "$AFK_OB_OBSERVED")" || AFK_OB_ADAPT=""
     if [[ -n "$AFK_OB_ADAPT" ]]; then
       AFK_OB_DISPOSITION="$(afk_adaptation_disposition "$AFK_OB_ADAPT")" || AFK_OB_DISPOSITION=""
@@ -286,13 +389,16 @@ afk_manifest_state_identity() {
   fi
 }
 
+# afk_plan_binding_compute [point] [reuse]
+# Binds a fresh observation pass at <point> (default O1). With "reuse", the
+# complete O1 ledger this process already filled is bound instead of a second
+# pass: that is the plan-time sharing of O1, and nothing else may reuse one.
 afk_plan_binding_compute() {
   local rows row entry entries="" adaptations manifest_identity
-  local declared=0 bound=0
+  local declared=0 bound=0 point="${1:-O1}"
 
   AFK_PLAN_BINDING_ENTRIES=""
   AFK_PLAN_BINDING="{}"
-  AFK_OB_CACHE=""
   manifest_identity="$(afk_manifest_state_identity)"
 
   # The declared inventory is materialized ONCE and counted before anything is
@@ -309,11 +415,14 @@ afk_plan_binding_compute() {
     declared=$((declared + 1))
   done <<< "$rows"
   (( declared > 0 )) || return 1
+  if [[ "${2:-}" != "reuse" || "$point" != "O1" \
+        || "$AFK_OBL_STATE" != "complete" || "$AFK_OBL_POINT" != "O1" ]]; then
+    afk_observation_pass "$point" || return 1
+  fi
 
   while IFS= read -r row; do
     [[ -n "$row" ]] || continue
-    afk_observe_component "$row"
-    afk_observation_capture
+    afk_observation_restore "${row%%|*}" || return 1
     # One jq per binding document, not per entry (AD-20); the jq form stays
     # for any value afk_json_record does not take.
     afk_json_record entry component s "$AFK_OB_ID" path_observation s "$AFK_OB_GUARD" \
@@ -658,7 +767,7 @@ afk_plan_component_adopt() {
 
 # --- plan assembly ----------------------------------------------------------
 
-afk_plan_compute() { # <adopt|update>
+afk_plan_compute() { # <adopt|update> [reuse: bind the O1 ledger afk_evaluate_installation filled]
   local command="$1" row
 
   AFK_PLAN_COMMAND="$command"
@@ -711,7 +820,7 @@ afk_plan_compute() { # <adopt|update>
     fi
   fi
 
-  if ! afk_plan_binding_compute; then
+  if ! afk_plan_binding_compute O1 "${2:-}"; then
     AFK_PLAN_GLOBAL_REFUSAL="${AFK_PLAN_GLOBAL_REFUSAL:-PLAN_NOT_COMPUTABLE}"
     AFK_PLAN_DISPOSITION="REFUSED"
     afk_plan_finalize
@@ -811,7 +920,10 @@ afk_plan_revalidate() {
   AFK_FINDINGS="$saved_findings"
   AFK_ADAPTATIONS="$saved_adaptations"
 
-  if ! afk_plan_binding_compute; then
+  # O2: the installed side is hashed afresh; the canonical side is reused only
+  # if the checkout's HEAD and porcelain status are what they were at O1.
+  afk_canonical_recheck
+  if ! afk_plan_binding_compute O2; then
     AFK_PLAN_STALE_REASON="PLAN_NOT_COMPUTABLE"
     return 1
   fi

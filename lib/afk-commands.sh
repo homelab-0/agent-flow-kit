@@ -73,8 +73,11 @@ afk_installed_integrity_state() {
       else "READY" end'
 }
 
-# afk_evaluate_installation <allow-noncanonical> <allow-rollback>
-# Shared read-only evaluation for every command.
+# afk_evaluate_installation <allow-noncanonical> <allow-rollback> [report-point]
+# Shared read-only evaluation for every command. The manifest, journal, lock
+# and source are always read again; the components come from one fresh
+# observation pass (O1), or with [report-point] from the ledger that point
+# left (see afk_evaluate_components).
 afk_evaluate_installation() {
   local allow_noncanonical="$1" allow_rollback="$2" installed_state lock_state
 
@@ -97,7 +100,7 @@ afk_evaluate_installation() {
       "no operation in progress" "another operation holds the installation lock" "false" "true" ""
   fi
 
-  afk_evaluate_components
+  afk_evaluate_components "${3:-}"
 
   # Scoped readiness runs after component evaluation and never before it: the
   # host, target and route scopes are all judged against installed integrity,
@@ -1091,7 +1094,8 @@ afk_cmd_verify() { # <json-mode>
     AFK_VERIFY_ENTRIES=""; AFK_VERIFY_CHECKS=0; AFK_VERIFY_FAILURES=0; AFK_VERIFY_WARNINGS=0
     afk_verify_note "state-manifest" "manifest_present" "FAIL" \
       "${AFK_MANIFEST_REASON:-INSTALLATION_NOT_ADOPTED}" "an established manifest" "none"
-  elif afk_verify_against_manifest "$AFK_MANIFEST_JSON" "$AFK_APPLIED_REVISION"; then
+  elif afk_verify_against_manifest "$AFK_MANIFEST_JSON" "$AFK_APPLIED_REVISION" reuse; then
+    # Read-only: the checks prove the same O1 observation the report shows.
     verified="true"
   fi
 
@@ -1220,7 +1224,12 @@ afk_run_mutation() {
   AFK_PLAN_JSON="{}"
   AFK_PLAN_IDENTITY=""
   AFK_VERIFY_ENTRIES=""; AFK_VERIFY_CHECKS=0; AFK_VERIFY_FAILURES=0; AFK_VERIFY_WARNINGS=0
+  AFK_OP_REPORT_POINT=""
 
+  # O1: one unlocked observation pass, shared by this evaluation and the plan
+  # below (AD-19). The checkout side is computed once for the whole call and
+  # re-proven under the lock (afk_canonical_recheck).
+  afk_canonical_enable
   afk_evaluate_installation "$allow_noncanonical" "$allow_rollback"
 
   # --- an interrupted operation is resolved before any new mutation (FR-45)
@@ -1229,7 +1238,7 @@ afk_run_mutation() {
       if [[ "$plan_only" == "true" ]]; then
         AFK_OP_RESULT="REFUSED"
         AFK_OP_REASON="OPERATION_INTERRUPTED"
-        afk_plan_compute "$command" || true
+        afk_plan_compute "$command" reuse || true
         afk_mutation_emit "$json_mode" "$AFK_EXIT_OWNER_ACTION" \
           "Resolve the interrupted operation before planning a new one."
         return $?
@@ -1282,7 +1291,7 @@ afk_run_mutation() {
   fi
 
   # --- the complete deterministic plan, before any write (FR-23, FR-40) ----
-  afk_plan_compute "$command" || true
+  afk_plan_compute "$command" reuse || true
   disposition="$AFK_PLAN_DISPOSITION"
   refusal="$AFK_PLAN_GLOBAL_REFUSAL"
 
@@ -1367,14 +1376,19 @@ afk_run_mutation() {
   afk_transaction_execute "$command" || true
   afk_lock_release
 
-  # The installation is re-evaluated from the filesystem afterwards, so the
-  # reported components describe the state that actually exists now rather than
-  # the state the plan predicted. The plan and the pre-commit verification are
-  # carried across that re-evaluation as the operation's own evidence.
+  # The installation is re-evaluated afterwards, so the reported components
+  # describe the state that actually exists now rather than the state the plan
+  # predicted: the manifest, journal and lock are read again, and the
+  # components come from the last observation that still describes the
+  # filesystem (O4 after a commit, O2 when revalidation refused before any
+  # write), or from a fresh pass when neither does (a rollback). The plan and
+  # the pre-commit verification are carried across as the operation's own
+  # evidence.
   plan_snapshot="$AFK_PLAN_JSON"
   verify_entries="$AFK_VERIFY_ENTRIES"; verify_checks="$AFK_VERIFY_CHECKS"
   verify_failures="$AFK_VERIFY_FAILURES"; verify_warnings="$AFK_VERIFY_WARNINGS"
-  afk_evaluate_installation "$allow_noncanonical" "$allow_rollback"
+  afk_evaluate_installation "$allow_noncanonical" "$allow_rollback" \
+    "${AFK_OP_REPORT_POINT:-$AFK_OBL_POINT_NONE}"
   AFK_PLAN_JSON="$plan_snapshot"
   AFK_VERIFY_ENTRIES="$verify_entries"; AFK_VERIFY_CHECKS="$verify_checks"
   AFK_VERIFY_FAILURES="$verify_failures"; AFK_VERIFY_WARNINGS="$verify_warnings"
