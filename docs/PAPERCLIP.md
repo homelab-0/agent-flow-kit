@@ -91,7 +91,11 @@ Create the Project in the Paperclip UI, then run one command on the host:
   resolution result for the project itself (`ok` or the refusal code from the
   table below), computed with the host key.
 - `--merge pm` on a repo whose origin is `agent-flow-kit` is refused with
-  `PAPERCLIP_MERGE_KIT_REPO` by `add` and `set`.
+  `PAPERCLIP_MERGE_KIT_REPO` by `add` and `set`. The check is by the origin's
+  repository name only, so a clone with no `origin` or a differently named fork
+  is not caught; HA-3 extends the merge policy.
+- `remove` and `--migrate` treat a ledger file that exists but does not parse
+  as held work and refuse.
 
 ### Migrating a v1 config
 
@@ -113,7 +117,11 @@ once with **`agent-flow-kit paperclip-config --migrate --project-id <uuid>
   (`PAPERCLIP_MIGRATE_STATE_HELD`), or a config that is already v2
   (`PAPERCLIP_MIGRATE_NOT_NEEDED`).
 - The old file is copied next to the config as `paperclip.json.v1.<timestamp>`
-  before the atomic replace, and the result must pass the loader first.
+  (mode 600) before the atomic replace, and the result must pass the loader
+  first.
+- Migration moves only the config. A pending notice under the old project
+  name in `notices/`, and any `pm-start-intents/<name>.json`, are not renamed
+  to the slug; with no open issues there should be none.
 
 ### Migrating from `paperclip_version`
 
@@ -175,10 +183,10 @@ Paperclip while the local report keeps it.
   slug. The old `--project` flag is refused with `PAPERCLIP_FLAG_RENAMED`,
   never aliased.
 - **`status/<issue-id>.json` ownership.** `paperclip-report --status` writes
-  it. When the poller re-adopts an issue that had closed, been stopped or been
-  refused, it deletes that file (`afk_pc_spool_reopen`), so a re-adopted issue
-  starts without the previous declaration. The report verb owns the file's
-  content and the poller owns its removal on re-adoption.
+  it, and it owns the file's content. The poller deletes it in exactly one
+  case: an issue re-adopted after it closed (`afk_pc_spool_reopen`), so that
+  issue starts without its previous declaration. A stopped or `waiting_setup`
+  issue keeps its file.
 
 ## Notices
 

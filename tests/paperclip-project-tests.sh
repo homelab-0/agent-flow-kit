@@ -292,5 +292,56 @@ mkdir -p "$STATE/paperclip/notices/claimed/k1"; echo '{}' >"$STATE/paperclip/not
 afk paperclip-config --migrate --project-id "$PROJ1"
 assert_contains "a claimed notice" "$OUT" "PAPERCLIP_MIGRATE_STATE_HELD"
 
+# ============================================================================
+head1 "5. Review fixes: corrupt ledger, backup mode, loader probe, unreadable origin, no key in output"
+# ============================================================================
+new_scenario ledger_corrupt_remove
+v2_config "[{\"paperclip_project_id\":\"$PROJ1\",\"slug\":\"proj\",\"repo_path\":\"$REPO1\",\"harness\":\"claude\",\"max_active_issues\":1}]"
+mkdir -p "$STATE/paperclip"; printf 'garbage{' >"$STATE/paperclip/ledger.json"
+afk paperclip-project remove --slug proj
+assert_contains "remove: a corrupt ledger refuses" "$OUT" "PAPERCLIP_PROJECT_IN_USE"
+assert_contains "remove: says the ledger is unreadable" "$OUT" "unreadable"
+assert_eq "remove: corrupt ledger keeps the row" "$(jq '.projects | length' "$CONFIG")" "1"
+
+new_scenario ledger_corrupt_migrate
+v1_config "$TMPROOT/repos/Spektacle"
+mkdir -p "$STATE/paperclip"; printf 'garbage{' >"$STATE/paperclip/ledger.json"
+afk paperclip-config --migrate --project-id "$PROJ1"
+assert_contains "migrate: a corrupt ledger refuses" "$OUT" "PAPERCLIP_MIGRATE_STATE_HELD"
+assert_eq "migrate: corrupt ledger leaves the file" "$(jq -r 'has("agents")' "$CONFIG")" "true"
+
+new_scenario migrate_backup_mode
+v1_config "$TMPROOT/repos/Spektacle"; chmod 644 "$CONFIG"
+afk paperclip-config --migrate --project-id "$PROJ1" --json
+backups=("$CONFIG".v1.*)
+assert_eq "migrate: backup is mode 600 even from a 644 source" "$(stat -c %a "${backups[0]}")" "600"
+assert_absent "migrate --json: no key value" "$OUT" "KEY-AGENT1-SECRET-VALUE"
+
+new_scenario migrate_probe_fails
+v1_config "$TMPROOT/repos/Spektacle"
+jq 'del(.host_label)' "$CONFIG" >"$SCEN/c" && mv "$SCEN/c" "$CONFIG"
+afk paperclip-config --migrate --project-id "$PROJ1"
+assert_contains "migrate: a result the loader refuses is not written" "$OUT" "does not load"
+assert_eq "migrate: probe failure leaves the v1 file" "$(jq -r 'has("agents")' "$CONFIG")" "true"
+assert_eq "migrate: probe failure makes no backup" "$(ls "$CONFIG".v1.* 2>/dev/null | wc -l | tr -d ' ')" "0"
+
+new_scenario add_origin_unreadable
+v2_config
+NOORIGIN="$TMPROOT/repos/noorigin"; mkrepo "$NOORIGIN" "git@github.com:test/x.git"; git -C "$NOORIGIN" remote remove origin
+route GET "/api/projects/$PROJ1" 200 "$(project_body "$PROJ1" "" "https://github.com/test/x")"
+afk paperclip-project add --project-id "$PROJ1" --slug proj --repo "$NOORIGIN"
+assert_contains "add: repoUrl set and origin unreadable" "$OUT" "ORIGIN_UNREADABLE"
+assert_eq "add: origin unreadable writes nothing" "$(jq '.projects | length' "$CONFIG")" "0"
+
+new_scenario no_key_in_output
+v2_config
+route GET "/api/projects/$PROJ1" 200 "$(project_body "$PROJ1")"
+afk paperclip-project add --project-id "$PROJ1" --slug proj --repo "$REPO1" --json
+assert_absent "add --json: no key value" "$OUT" "KEY-AGENT1-SECRET-VALUE"
+afk paperclip-project list --json
+assert_absent "list --json: no key value" "$OUT" "KEY-AGENT1-SECRET-VALUE"
+afk paperclip-project list
+assert_absent "list: no key value" "$OUT" "KEY-AGENT1-SECRET-VALUE"
+
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

@@ -43,6 +43,16 @@ afk_pcj_kit_merge_refused() {
   [[ "$norm" == */agent-flow-kit ]]
 }
 
+# afk_pcj_ledger_check <jq-select-on-.issues[]> [<--arg name> <value>] -- prints
+# "held" when a ledger issue matches, "unreadable" when the ledger file exists
+# but does not parse (never read as "nothing held"), else nothing.
+afk_pcj_ledger_check() {
+  local ledger="$AFK_STATE_DIR/paperclip/ledger.json"
+  [[ -e "$ledger" ]] || return 0
+  if ! jq -e 'type == "object"' "$ledger" >/dev/null 2>&1; then printf unreadable; return 0; fi
+  if jq -e "${@:2}" "any(.issues[]?; $1)" "$ledger" >/dev/null 2>&1; then printf held; fi
+}
+
 # afk_pcj_host_key -- reads the host key into AFK_PCJ_KEY; empty on failure.
 afk_pcj_host_key() {
   local -; set +x
@@ -134,10 +144,10 @@ afk_cmd_paperclip_project() { # <json> <verb> <project-id> <slug> <repo> <harnes
     remove)
       row="$(afk_pc_project_row "$slug")"
       [[ -n "$row" ]] || { afk_pcj_emit "$json" PAPERCLIP_PROJECT_UNKNOWN "$slug"; return 4; }
-      if [[ -r "$AFK_STATE_DIR/paperclip/ledger.json" ]] &&
-         jq -e --arg s "$slug" 'any(.issues[]?; .slug == $s and .state != "closed")' "$AFK_STATE_DIR/paperclip/ledger.json" >/dev/null 2>&1; then
-        afk_pcj_emit "$json" PAPERCLIP_PROJECT_IN_USE "$slug has issues that are not closed"; return 4
-      fi
+      case "$(afk_pcj_ledger_check '.slug == $s and .state != "closed"' --arg s "$slug")" in
+        held) afk_pcj_emit "$json" PAPERCLIP_PROJECT_IN_USE "$slug has issues that are not closed"; return 4 ;;
+        unreadable) afk_pcj_emit "$json" PAPERCLIP_PROJECT_IN_USE "the ledger is unreadable, so $slug may be in use"; return 4 ;;
+      esac
       cfg="$(jq --arg s "$slug" '.projects |= map(select(.slug != $s))' "$(afk_pc_config_path)")" &&
         afk_pcj_write "$cfg" || { afk_pcj_emit "$json" PAPERCLIP_CONFIG_WRITE_FAILED; return 1; }
       afk_pcj_emit "$json" removed "$slug"
@@ -173,7 +183,7 @@ afk_cmd_paperclip_project() { # <json> <verb> <project-id> <slug> <repo> <harnes
 
 # afk_cmd_paperclip_config <json> <project-id> <slug> -- `--migrate` only.
 afk_cmd_paperclip_config() {
-  local json="$1" pid="${2,,}" slug="$3" path cfg n agent proj lower dropped="" ts backup new
+  local json="$1" pid="${2,,}" slug="$3" path cfg n agent proj lower dropped="" ts backup new held
   path="$(afk_pc_config_path)"
   local emit; emit() { afk_pcj_emit "$json" "$@"; }
   [[ -r "$path" ]] || { emit PAPERCLIP_NOT_CONFIGURED; return 4; }
@@ -188,10 +198,9 @@ afk_cmd_paperclip_config() {
   proj="$(jq -r '.project // empty | strings' <<<"$agent")"; lower="${proj,,}"
   [[ -n "$slug" ]] || slug="$lower"
   afk_pc_slug_ok "$slug" || { emit PAPERCLIP_CONFIG_INVALID "pass --slug: '$lower' is not a valid slug"; return 4; }
-  if [[ -r "$AFK_STATE_DIR/paperclip/ledger.json" ]] &&
-     jq -e 'any(.issues[]?; .state != "closed")' "$AFK_STATE_DIR/paperclip/ledger.json" >/dev/null 2>&1 ||
-     [[ -n "$(find "$AFK_STATE_DIR/paperclip/notices/claimed" -type f -print -quit 2>/dev/null)" ]]; then
-    emit PAPERCLIP_MIGRATE_STATE_HELD "an issue is not closed or a notice is still claimed; let the PMs finish first"; return 4
+  held="$(afk_pcj_ledger_check '.state != "closed"')"
+  if [[ -n "$held" ]] || [[ -n "$(find "$AFK_STATE_DIR/paperclip/notices/claimed" -type f -print -quit 2>/dev/null)" ]]; then
+    emit PAPERCLIP_MIGRATE_STATE_HELD "the ledger is unreadable, or an issue is not closed, or a notice is still claimed; let the PMs finish first"; return 4
   fi
   jq -e 'has("pm_merge_allowed")' >/dev/null 2>&1 <<<"$agent" && dropped=" (dropped pm_merge_allowed; merge policy is per project now)"
   new="$(jq --arg p "$pid" --arg s "$slug" '
@@ -209,7 +218,7 @@ afk_cmd_paperclip_config() {
   fi
   rm -f -- "$probe"
   ts="$(date -u +%Y%m%dT%H%M%SZ)"; backup="$path.v1.$ts"
-  ( umask 077; cp -p -- "$path" "$backup" ) || { emit PAPERCLIP_CONFIG_WRITE_FAILED "backup"; return 1; }
+  ( umask 077; cp -- "$path" "$backup" && chmod 600 -- "$backup" ) || { emit PAPERCLIP_CONFIG_WRITE_FAILED "backup"; return 1; }
   afk_pcj_write "$new" || { emit PAPERCLIP_CONFIG_WRITE_FAILED; return 1; }
   if [[ "$json" == true ]]; then
     jq -nc --arg s "$slug" --arg b "$backup" --arg d "$dropped" '{result: "migrated", slug: $s, backup: $b, dropped_pm_merge_allowed: ($d != "")}'
