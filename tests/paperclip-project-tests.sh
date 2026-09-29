@@ -24,11 +24,14 @@ assert_contains() { if [[ "$2" == *"$3"* ]]; then ok "$1"; else bad "$1" "missin
 assert_absent()   { if [[ "$2" != *"$3"* ]]; then ok "$1"; else bad "$1" "should NOT contain: $3"; fi; }
 
 STUBS="$TMPROOT/stubs"; mkdir -p "$STUBS"
+# op succeeds only with a service-account token, like the real one.
 cat >"$STUBS/op" <<'SH'
 #!/usr/bin/env bash
-[[ "$1" == read && "$2" == op://test/agent1 ]] && { printf 'KEY-AGENT1-SECRET-VALUE\n'; exit 0; }
+[[ "$1" == read && "$2" == op://test/agent1 && -n "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]] && { printf 'KEY-AGENT1-SECRET-VALUE\n'; exit 0; }
 exit 1
 SH
+# systemctl: no user manager, so the unit check uses the caller's PATH.
+printf '#!/usr/bin/env bash\nexit 1\n' >"$STUBS/systemctl"
 # A fixture per "<METHOD>_<path>" (slashes as _); first line is the status.
 cat >"$STUBS/curl" <<'SH'
 #!/usr/bin/env bash
@@ -59,6 +62,8 @@ new_scenario() {
   STATE="$HOME/.local/state/agent-flow-kit"
   FIXDIR="$SCEN/fixtures"; mkdir -p "$FIXDIR"
   CONFIG="$SCEN/paperclip.json"; LOG="$SCEN/curl.log"; : >"$LOG"
+  # What the timer's unit reads the key with (list checks it under env -i).
+  printf 'OP_SERVICE_ACCOUNT_TOKEN=ops_FILE-TOKEN\n' >"$HOME/.op-agent-env"; chmod 600 "$HOME/.op-agent-env"
 }
 
 RC=0 OUT=""
@@ -66,6 +71,7 @@ afk() { # <command...> -- runs the kit against the scenario's config and stubs
   OUT="$(env -i PATH="$STUBS:$PATH" HOME="$HOME" LANG=C ${AFK_TEST_TMPDIR:+TMPDIR="$AFK_TEST_TMPDIR"} \
     ${AFK_RELEASE_POLICY:+AFK_RELEASE_POLICY="$AFK_RELEASE_POLICY"} \
     AFK_STATE_DIR="$STATE" AFK_PAPERCLIP_CONFIG="$CONFIG" AFK_OP_BIN="$STUBS/op" AFK_CURL_BIN="$STUBS/curl" \
+    OP_SERVICE_ACCOUNT_TOKEN=test-op-token \
     CURL_STUB_LOG="$LOG" CURL_STUB_FIXTURES="$FIXDIR" bash "$AFK" "$@" 2>&1)"
   RC=$?
 }
@@ -221,6 +227,14 @@ assert_eq "list: readiness of a live project" "$(jq -r '.projects[] | select(.sl
 assert_eq "list: readiness of an archived project" "$(jq -r '.projects[] | select(.slug == "kit") | .readiness' <<<"$OUT")" "PAPERCLIP_PROJECT_ARCHIVED"
 afk paperclip-project list
 assert_contains "list: table has a readiness column" "$OUT" "readiness"
+chmod 644 "$HOME/.op-agent-env"
+afk paperclip-project list --json
+assert_eq "list: an unsafe op env file is reported" "$(jq -r '.projects[0].readiness' <<<"$OUT")" "PAPERCLIP_OP_ENV_UNSAFE"
+rm -f "$HOME/.op-agent-env"
+afk paperclip-project list --json
+assert_eq "list: a key the timer's unit cannot read is PAPERCLIP_VAULT_UNAVAILABLE" \
+  "$(jq -r '[.projects[].readiness] | unique | join(",")' <<<"$OUT")" "PAPERCLIP_VAULT_UNAVAILABLE"
+printf 'OP_SERVICE_ACCOUNT_TOKEN=ops_FILE-TOKEN\n' >"$HOME/.op-agent-env"; chmod 600 "$HOME/.op-agent-env"
 mkdir -p "$STATE/paperclip"
 jq -n --arg id "$ISSUE1" '{issues: {($id): {slug: "proj", state: "working"}}}' >"$STATE/paperclip/ledger.json"
 afk paperclip-project remove --slug proj
