@@ -210,6 +210,18 @@ afk_pc_load_config() {
     AFK_PC_REFUSAL="PAPERCLIP_CONFIG_INVALID"; return 1
   fi
 
+  # HA-2 (AD-24): host.intermittent (boolean, default false) and
+  # host.max_active_issues (integer >= 1; default 2, or 1 when intermittent).
+  # HA-5: docs/PAPERCLIP.md documents both fields.
+  local intermittent host_max
+  intermittent="$(jq -r '.host.intermittent | if . == null then "false" elif type == "boolean" then tostring else "bad" end' <<<"$cfg")"
+  [[ "$intermittent" == true || "$intermittent" == false ]] || { AFK_PC_REFUSAL="PAPERCLIP_CONFIG_INVALID"; return 1; }
+  host_max="$(jq -r '.host.max_active_issues | if . == null then "" elif type == "number" and . == floor then tostring else "bad" end' <<<"$cfg")"
+  if [[ -z "$host_max" ]]; then
+    host_max=2; [[ "$intermittent" == true ]] && host_max=1
+  fi
+  [[ "$host_max" =~ ^[1-9][0-9]{0,2}$ ]] || { AFK_PC_REFUSAL="PAPERCLIP_CONFIG_INVALID"; return 1; }
+
   # Zero projects is valid: every inbox issue then self-blocks as unmapped.
   n="$(jq '.projects // [] | if type == "array" then length else -1 end' <<<"$cfg")"
   if [[ "$n" -lt 0 ]]; then AFK_PC_REFUSAL="PAPERCLIP_CONFIG_INVALID"; return 1; fi
@@ -239,7 +251,8 @@ afk_pc_load_config() {
   done
 
   AFK_PC_CFG="$(jq -c '.projects = [(.projects // [])[] | .paperclip_project_id |= ascii_downcase
-    | .max_active_issues = (.max_active_issues // 1) | .merge = (.merge // "human")]' <<<"$cfg")"
+    | .max_active_issues = (.max_active_issues // 1) | .merge = (.merge // "human")]
+    | .host.intermittent = ($i == "true") | .host.max_active_issues = ($m | tonumber)' --arg i "$intermittent" --arg m "$host_max" <<<"$cfg")"
   return 0
 }
 
@@ -283,8 +296,9 @@ afk_pc_reply() { # <slug> <comment_id> <body>
 
 # --- action text (AC-7, extended by PC-1b AC-2 and HA-1a AC-4) --------------
 # Precedence (AD-7): Stopped > paused > PM state unclear (a start override) >
-# setup refusal > waiting on <qid> > queued behind <id> > declared status.
-afk_pc_action_text() { # <pause-kind: none|stopped|maintenance> <queued-behind-or-empty> <status-file> <prev-action-or-empty> [<question-id-or-empty>] [<refusal-text-or-empty>]
+# setup refusal > waiting on <qid> > queued behind <id> (project) > queued:
+# <host> busy (host) > declared status.
+afk_pc_action_text() { # <pause-kind: none|stopped|maintenance> <queued-behind-or-empty> <status-file> <prev-action-or-empty> [<question-id-or-empty>] [<refusal-text-or-empty>] [<host-busy-text-or-empty>]
   case "$1" in
     stopped) printf 'Stopped'; return 0 ;;
     maintenance) printf 'paused for Paperclip maintenance'; return 0 ;;
@@ -292,12 +306,23 @@ afk_pc_action_text() { # <pause-kind: none|stopped|maintenance> <queued-behind-o
   [[ -n "${6:-}" ]] && { printf '%s' "$6"; return 0; }
   [[ -n "${5:-}" ]] && { printf 'waiting on %s' "$5"; return 0; }
   [[ -n "$2" ]] && { printf 'queued behind %s' "$2"; return 0; }
+  [[ -n "${7:-}" ]] && { printf '%s' "$7"; return 0; }
   if [[ -r "$3" ]]; then
     local t; t="$(jq -r '.text // empty' "$3" 2>/dev/null)"
     [[ -n "$t" ]] && { printf '%s' "$t"; return 0; }
   fi
   if [[ -n "$4" && "$4" != null ]]; then printf '%s' "$4"; return 0; fi
   printf 'AFK host is working on this'
+}
+
+# afk_pc_queue_text -- the AD-24 queued text for an issue that cannot take a
+# slot: the project's own slot outranks the host cap. Reads the caller's pass
+# locals (used_slots_s, max_active, working_id, host_used, host_max, host_name).
+afk_pc_queue_text() {
+  local qb="" ht=""
+  if (( used_slots_s >= max_active )); then qb="$working_id"
+  else ht="$(printf 'queued: %s busy (%s/%s active)' "$host_name" "$host_used" "$host_max")"; fi
+  afk_pc_action_text none "$qb" "" "" "" "" "$ht"
 }
 
 # --- project resolution (HA-1a, AD-23) ----------------------------------------
@@ -633,6 +658,8 @@ afk_pc_report_cycle() {
   claim_pending="$(jq -r '.claim_comment_pending // false' <<<"$prev")"
   if [[ -n "$fixed" ]]; then
     composed="$fixed"
+  elif [[ "$state" == queued ]]; then
+    composed="$(jq -r '.action_text // empty' <<<"$prev")"; [[ -n "$composed" ]] || composed="$prev_applied"
   elif [[ "$state" == waiting_human && -n "$qid" ]]; then
     composed="$(afk_pc_action_text none "" "" "$prev_applied" "$qid")"
   else
@@ -782,6 +809,8 @@ afk_pc_report_cycle() {
   post_qid="$(jq -r --arg id "$id" '.issues[$id].question_id // empty' <<<"$ledger")"
   if [[ -n "$fixed" ]]; then
     final_composed="$fixed"
+  elif [[ "$post_state" == queued ]]; then
+    final_composed="$(jq -r --arg id "$id" '.issues[$id].action_text // empty' <<<"$ledger")"; [[ -n "$final_composed" ]] || final_composed="$prev_applied"
   elif [[ "$post_state" == waiting_human && -n "$post_qid" ]]; then
     final_composed="$(afk_pc_action_text none "" "" "$prev_applied" "$post_qid")"
   else
@@ -938,13 +967,17 @@ afk_cmd_paperclip_poll() { # <json_mode>
     # Slots are per project (max_active_issues on its row). Computed after
     # the closed-issue loop above, so an issue that just dropped out of the
     # inbox never counts as a held working slot for the issues below.
-    local -A used_slots=() working_ids=()
-    local s_slug s_n s_w
+    # HA-2 (AD-24): `working` and `waiting_human` hold a slot; nothing else does.
+    # host_used is the host-wide count against host.max_active_issues.
+    local -A used_slots=() working_ids=() promotable=() newly_queued=()
+    local s_slug s_n s_w host_max host_used
+    host_max="$(jq -r '.host.max_active_issues' <<<"$AFK_PC_CFG")"
+    host_used="$(jq -r --arg a "$agent_id" '[.issues[] | select(.host_agent_id == $a and (.state | IN("working", "waiting_human")))] | length' <<<"$ledger")"
     while IFS=$'\x1f' read -r s_slug s_n s_w; do
       [[ -n "$s_slug" ]] || continue
       used_slots[$s_slug]="$s_n"; working_ids[$s_slug]="$s_w"
     done < <(jq -r --argjson c "$AFK_PC_CFG" --arg a "$agent_id" \
-      '. as $l | $c.projects[].slug as $s | [$l.issues[] | select(.host_agent_id == $a and .slug == $s and .state == "working")]
+      '. as $l | $c.projects[].slug as $s | [$l.issues[] | select(.host_agent_id == $a and .slug == $s and (.state | IN("working", "waiting_human")))]
        | [$s, (length | tostring), (.[0].identifier // "" | gsub("[[:cntrl:]]"; ""))] | join("\u001f")' <<<"$ledger")
 
     local id
@@ -1087,13 +1120,13 @@ afk_cmd_paperclip_poll() { # <json_mode>
             afk_pc_comment "$api_url" "$id" "$key" "$run_id" "claimed by AFK PM ($host_name)" >/dev/null
             afk_pc_notice "$slug" "$id" "$identifier" "$agent_id" "$repo_path" "$harness" claimed
             afk_pc_brief "$slug" "$id" "$updated" "$title" "$desc"
-            if (( used_slots_s >= max_active )); then
-              new_state="queued"
-              action="$(afk_pc_action_text none "$working_id" "" "")"
+            if (( used_slots_s >= max_active || host_used >= host_max )); then
+              new_state="queued"; newly_queued[$id]=1
+              action="$(afk_pc_queue_text)"
             else
               new_state="working"
               action="$(afk_pc_action_text none "" "" "")"
-              used_slots_s=$((used_slots_s + 1))
+              used_slots_s=$((used_slots_s + 1)); host_used=$((host_used + 1))
               working_id="$identifier"
             fi
             afk_pc_maybe_start_pm
@@ -1108,23 +1141,28 @@ afk_cmd_paperclip_poll() { # <json_mode>
             # reason) — Paperclip auto-started this run, we never requested
             # it. Handle exactly like a report cycle: one short
             # acknowledgment comment naming the reason, then re-self-block.
-            local prior_state queued_behind=""
+            local prior_state queued_text=""
             prior_state="$prev_st"
             afk_pc_comment "$api_url" "$id" "$key" "$run_id" \
               "AFK host acknowledged: ${wake_reason:-a Paperclip wake}" >/dev/null
             if [[ "$prior_state" == working || "$prior_state" == waiting_human ]]; then
               new_state="$prior_state"
-            elif (( used_slots_s >= max_active )); then
-              new_state="queued"
-              queued_behind="$working_id"
+            elif [[ "$prior_state" == queued ]]; then
+              # Promotion is one FIFO sweep after this loop (AD-24).
+              new_state="queued"; promotable[$id]=1
+              queued_text="$(afk_pc_queue_text)"
+            elif (( used_slots_s >= max_active || host_used >= host_max )); then
+              new_state="queued"; newly_queued[$id]=1
+              queued_text="$(afk_pc_queue_text)"
             else
               new_state="working"
-              used_slots_s=$((used_slots_s + 1))
+              used_slots_s=$((used_slots_s + 1)); host_used=$((host_used + 1))
               working_id="$identifier"
             fi
             local wake_qid=""
             [[ "$new_state" == waiting_human ]] && wake_qid="$(jq -r '.question_id // empty' <<<"$prev")"
-            action="$(afk_pc_action_text none "$queued_behind" "$status_file_dir/$id.json" "$(jq -r '.action_text' <<<"$prev")" "$wake_qid")"
+            action="$(afk_pc_action_text none "" "$status_file_dir/$id.json" "$(jq -r '.action_text' <<<"$prev")" "$wake_qid")"
+            [[ "$new_state" == queued ]] && action="$queued_text"
             afk_pc_self_block "$api_url" "$id" "$key" "$run_id" "$agent_id" "$action" "$clear_blockers" ||
               actions="$(jq -c --arg t "PAPERCLIP_SELF_BLOCK_FAILED: $identifier" '. + [$t]' <<<"$actions")"
             actions="$(jq -c --arg t "wake acknowledged: $identifier" '. + [$t]' <<<"$actions")"
@@ -1178,8 +1216,9 @@ afk_cmd_paperclip_poll() { # <json_mode>
             if [[ -n "$prev" ]]; then
               afk_pc_strand "$api_url" "$key" "$company_id" "$board_user_id" "$id" "$identifier" \
                 "$agent_id" "$slug" "$repo_path" "$harness"
-              if [[ "$prev_st" == working ]]; then
+              if [[ "$prev_st" == working || "$prev_st" == waiting_human ]]; then
                 (( used_slots_s > 0 )) && used_slots_s=$((used_slots_s - 1))
+                (( host_used > 0 )) && host_used=$((host_used - 1))
                 [[ "$working_id" == "$identifier" ]] && working_id=""
               fi
             fi
@@ -1238,14 +1277,9 @@ afk_cmd_paperclip_poll() { # <json_mode>
               [[ -z "$newest_since" || "$ccreated" > "$newest_since" ]] && newest_since="$ccreated"
             done < <(jq -c '.[]' <<<"$comments_body")
 
+            # A queued issue is promoted by the FIFO sweep after this loop.
             local final_state="$prev_state"
-            if [[ "$prev_state" == queued && "$used_slots_s" -lt "$max_active" ]]; then
-              final_state="working"
-              used_slots_s=$((used_slots_s + 1))
-              working_id="$identifier"
-              afk_pc_notice "$slug" "$id" "$identifier" "$agent_id" "$repo_path" "$harness" promoted
-              actions="$(jq -c --arg t "promoted: $identifier" '. + [$t]' <<<"$actions")"
-            fi
+            [[ "$prev_state" == queued ]] && promotable[$id]=1
             if [[ "$adopting" == true ]]; then
               # Pinned now, at first adoption (F6); pending_claim until the
               # first unpaused pass, exactly like an adoption during a pause.
@@ -1264,13 +1298,13 @@ afk_cmd_paperclip_poll() { # <json_mode>
             if [[ "$prev_state" == pending_claim && "$pause_kind" == none ]]; then
               afk_pc_notice "$slug" "$id" "$identifier" "$agent_id" "$repo_path" "$harness" claimed
               afk_pc_brief "$slug" "$id" "$updated" "$title" "$desc"
-              if (( used_slots_s >= max_active )); then
-                final_state="queued"
-                [[ "$adopting" == true ]] && ledger="$(jq -c --arg id "$id" --arg t "$(afk_pc_action_text none "$working_id" "" "")" \
+              if (( used_slots_s >= max_active || host_used >= host_max )); then
+                final_state="queued"; newly_queued[$id]=1
+                [[ "$adopting" == true ]] && ledger="$(jq -c --arg id "$id" --arg t "$(afk_pc_queue_text)" \
                   '.issues[$id].action_text = $t' <<<"$ledger")"
               else
                 final_state="working"
-                used_slots_s=$((used_slots_s + 1))
+                used_slots_s=$((used_slots_s + 1)); host_used=$((host_used + 1))
                 working_id="$identifier"
               fi
               ledger="$(jq -c --arg id "$id" '.issues[$id].claim_comment_pending = true' <<<"$ledger")"
@@ -1291,8 +1325,9 @@ afk_cmd_paperclip_poll() { # <json_mode>
             if [[ -n "$prev" && ( "$prev_st" == working || "$prev_st" == queued || "$prev_st" == waiting_human || "$prev_st" == stranded ) ]]; then
               afk_pc_strand "$api_url" "$key" "$company_id" "$board_user_id" "$id" "$identifier" \
                 "$agent_id" "$slug" "$repo_path" "$harness"
-              if [[ "$prev_st" == working ]]; then
+              if [[ "$prev_st" == working || "$prev_st" == waiting_human ]]; then
                 (( used_slots_s > 0 )) && used_slots_s=$((used_slots_s - 1))
+                (( host_used > 0 )) && host_used=$((host_used - 1))
                 [[ "$working_id" == "$identifier" ]] && working_id=""
               fi
             fi
@@ -1306,8 +1341,9 @@ afk_cmd_paperclip_poll() { # <json_mode>
             actions="$(jq -c --arg t "stopped: $identifier" '. + [$t]' <<<"$actions")"
             # A working slot closing mid-pass must free up immediately, or an
             # issue claimed later in this same pass sees a stale used_slots.
-            if [[ "$prev_st" == working ]]; then
+            if [[ "$prev_st" == working || "$prev_st" == waiting_human ]]; then
               (( used_slots_s > 0 )) && used_slots_s=$((used_slots_s - 1))
+              (( host_used > 0 )) && host_used=$((host_used - 1))
               [[ "$working_id" == "$identifier" ]] && working_id=""
             fi
           fi
@@ -1316,6 +1352,47 @@ afk_cmd_paperclip_poll() { # <json_mode>
       esac
       [[ -n "$slug" ]] && { used_slots[$slug]="$used_slots_s"; working_ids[$slug]="$working_id"; }
     done
+
+    # --- HA-2 (AD-24): FIFO promotion --------------------------------------
+    # queued_at is set once, when an issue first enters `queued`, and dropped
+    # when it leaves; `since` moves with every comment, so it only orders
+    # entries that predate queued_at. A comment never sends an issue back.
+    ledger="$(jq -c --arg a "$agent_id" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      --argjson n "$(printf '%s\n' "${!newly_queued[@]}" | jq -R . | jq -sc .)" \
+      '.issues |= with_entries(if .value.host_agent_id != $a then .
+         elif .value.state != "queued" then .value |= del(.queued_at)
+         elif .value.queued_at == null and (.key | IN($n[])) then .value.queued_at = $now
+         else . end)' <<<"$ledger")"
+    # Oldest first; an issue is promoted only when its own project and the
+    # host both have a free slot. No Paperclip field orders the queue.
+    local q_id q_slug q_ident q_row q_max
+    while IFS=$'\x1f' read -r q_id q_slug q_ident; do
+      [[ -n "$q_id" && -n "${promotable[$q_id]:-}" ]] || continue
+      (( host_used < host_max )) || break
+      q_row="$(afk_pc_project_row "$q_slug")"
+      [[ -n "$q_row" ]] || continue
+      q_max="$(jq -r .max_active_issues <<<"$q_row")"
+      (( ${used_slots[$q_slug]:-0} < q_max )) || continue
+      used_slots[$q_slug]=$(( ${used_slots[$q_slug]:-0} + 1 )); host_used=$((host_used + 1))
+      working_ids[$q_slug]="$q_ident"
+      ledger="$(jq -c --arg id "$q_id" '.issues[$id].state = "working" | del(.issues[$id].queued_at)' <<<"$ledger")"
+      afk_pc_notice "$q_slug" "$q_id" "$q_ident" "$agent_id" "$(jq -r .repo_path <<<"$q_row")" "$(jq -r .harness <<<"$q_row")" promoted
+      actions="$(jq -c --arg t "promoted: $q_ident" '. + [$t]' <<<"$actions")"
+    done < <(jq -r --arg a "$agent_id" '[.issues | to_entries[] | select(.value.host_agent_id == $a and .value.state == "queued")]
+      | sort_by([.value.queued_at // .value.since // "", .key])[] | [.key, (.value.slug // ""), (.value.identifier // "" | gsub("[[:cntrl:]]"; ""))] | join("\u001f")' <<<"$ledger")
+
+    # A queued issue's self-block text follows its reason (its project's slot,
+    # or the host cap); the report cycle writes it only when it changed.
+    local r_id r_slug r_row r_text
+    while IFS=$'\x1f' read -r r_id r_slug; do
+      [[ -n "$r_id" ]] || continue
+      r_row="$(afk_pc_project_row "$r_slug")"; [[ -n "$r_row" ]] || continue
+      used_slots_s="${used_slots[$r_slug]:-0}"; max_active="$(jq -r .max_active_issues <<<"$r_row")"
+      working_id="${working_ids[$r_slug]:-}"
+      r_text="$(afk_pc_queue_text)"
+      [[ "$r_text" == queued* ]] &&
+        ledger="$(jq -c --arg id "$r_id" --arg t "$r_text" '.issues[$id].action_text = $t' <<<"$ledger")"
+    done < <(jq -r --arg a "$agent_id" '.issues | to_entries[] | select(.value.host_agent_id == $a and .value.state == "queued") | [.key, (.value.slug // "")] | join("\u001f")' <<<"$ledger")
 
     # --- PC-1b: the report cycle (AC-1..AC-10) --------------------------------
     # Frozen while paused/draining (AC-6): no cycles, nothing deleted. Only
@@ -1328,7 +1405,7 @@ afk_cmd_paperclip_poll() { # <json_mode>
       local -a report_ids=()
       mapfile -t report_ids < <(jq -r --arg a "$agent_id" \
         '.issues | to_entries[] | select(.value.host_agent_id == $a and ((.value.state | IN("working", "waiting_human", "waiting_setup", "stopped"))
-           or (.value.state == "queued" and .value.claim_comment_pending == true))) | .key' \
+           or (.value.state == "queued" and (.value.claim_comment_pending == true or .value.action_text != .value.action_text_applied)))) | .key' \
         <<<"$ledger")
       local rid
       for rid in "${report_ids[@]:-}"; do
@@ -1432,9 +1509,10 @@ afk_pc_project_changed() {
   prow="$(afk_pc_project_row "$pslug")"
   afk_pc_notice "$pslug" "$id" "$identifier" "$agent_id" "$(jq -r '.repo_path // empty' <<<"${prow:-null}")" \
     "$(jq -r '.harness // empty' <<<"${prow:-null}")" stopped '{"reason":"PROJECT_CHANGED"}'
-  if [[ "$prev_st" == working && -n "${used_slots[$pslug]:-}" ]]; then
+  if [[ ( "$prev_st" == working || "$prev_st" == waiting_human ) && -n "${used_slots[$pslug]:-}" ]]; then
     local u="${used_slots[$pslug]}"
     (( u > 0 )) && used_slots[$pslug]=$((u - 1))
+    (( host_used > 0 )) && host_used=$((host_used - 1))
     [[ "${working_ids[$pslug]:-}" == "$identifier" ]] && working_ids[$pslug]=""
   fi
   ledger="$(jq -c --arg id "$id" --arg t "$stop_text" \
