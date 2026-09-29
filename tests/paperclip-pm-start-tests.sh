@@ -31,7 +31,8 @@ STUBS="$TMPROOT/stubs"; mkdir -p "$STUBS"
 
 cat >"$STUBS/op" <<'SH'
 #!/usr/bin/env bash
-[[ "$1" == read ]] || exit 2
+# op succeeds only with a service-account token, like the real one.
+[[ "$1" == read && -n "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]] || exit 2
 [[ "$2" == op://test/agent1 ]] && { printf 'KEY-AGENT1\n'; exit 0; }
 exit 1
 SH
@@ -142,7 +143,7 @@ run_afk() { # <cmd> [args...]
   local out err
   out="$(env -i PATH="$STUBS:$PATH" HOME="${HOME:-$SCEN/home}" LANG=C \
     AFK_STATE_DIR="$STATE" AFK_PAPERCLIP_CONFIG="$CONFIG" \
-    AFK_OP_BIN="$STUBS/op" AFK_CURL_BIN="$STUBS/curl" AFK_ORCA_BIN="$STUBS/orca" \
+    AFK_OP_BIN="$STUBS/op" AFK_CURL_BIN="$STUBS/curl" AFK_ORCA_BIN="$STUBS/orca" OP_SERVICE_ACCOUNT_TOKEN=test-op-token \
     AFK_PCS_READINESS_BIN="$STUBS/readiness" READINESS_OK="${READINESS_OK:-true}" READINESS_REASON="${READINESS_REASON:-}" \
     CURL_STUB_LOG="$LOG" CURL_STUB_BODYLOG="$BODYLOG" CURL_STUB_FIXTURES="$FIXDIR" \
     ORCA_WT_FILE="$ORCA_WT_FILE" ORCA_TERMLIST_FILE="$ORCA_TERMLIST_FILE" ORCA_TERMLIST_WT_FILE="$ORCA_TERMLIST_WT_FILE" \
@@ -444,6 +445,14 @@ head1 "9. paperclip-timer install/status/remove"
 # ============================================================================
 new_scenario timer_linux
 write_config '{}'
+# The unit gets no token: the key must be readable from the op env file alone.
+run_afk paperclip-timer --install --json
+assert_eq "install without an op env file: refused" "$RC" "1"
+assert_contains "install without an op env file: PAPERCLIP_VAULT_UNAVAILABLE" "$OUT_TEXT" "PAPERCLIP_VAULT_UNAVAILABLE"
+assert_eq "install refused: no unit written" "$(test -e "$SCEN/systemd-user/afk-paperclip-poll.service" && echo yes || echo no)" "no"
+run_afk paperclip-timer --status --json
+assert_contains "status without an op env file: PAPERCLIP_VAULT_UNAVAILABLE" "$OUT_TEXT" "PAPERCLIP_VAULT_UNAVAILABLE"
+printf 'OP_SERVICE_ACCOUNT_TOKEN=ops_FILE-TOKEN\n' >"$HOME/.op-agent-env"; chmod 600 "$HOME/.op-agent-env"
 run_afk paperclip-timer --install --json
 assert_eq "install: exit 0" "$RC" "0"
 UNIT="$SCEN/systemd-user/afk-paperclip-poll.timer"
@@ -454,6 +463,8 @@ assert_eq "install: Persistent=false" "$(grep -c '^Persistent=false$' "$UNIT")" 
 SVC="$SCEN/systemd-user/afk-paperclip-poll.service"
 assert_absent "install: the service holds no secret" "$(cat "$SVC" "$UNIT")" "op://"
 assert_absent "install: the service holds no key reference" "$(cat "$SVC" "$UNIT")" "KEY"
+assert_absent "install: the service holds no token" "$(cat "$SVC" "$UNIT")" "FILE-TOKEN"
+assert_absent "install: the service names no op env file" "$(cat "$SVC" "$UNIT")" "op-agent-env"
 
 run_afk paperclip-timer --status --json
 assert_contains "status: reports PAPERCLIP_POLLER_STALE with no pass yet" "$OUT_TEXT" "PAPERCLIP_POLLER_STALE"
