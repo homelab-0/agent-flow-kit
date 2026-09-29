@@ -126,6 +126,26 @@ once with **`agent-flow-kit paperclip-config --migrate --project-id <uuid>
   name in `notices/`, and any `pm-start-intents/<name>.json`, are not renamed
   to the slug; with no open issues there should be none.
 
+### Repairing a v2 config the loader refuses
+
+The merge checks below refuse the whole config, not just one project row, so
+the poller and every verb stop until the file is fixed. This fails closed on
+purpose. `paperclip-project set` loads the config first, so it cannot repair
+these rows, and `--migrate` handles only v1 files. Edit the config
+(`~/.config/agent-flow-kit/paperclip.json`, mode 600) by hand, then run
+`agent-flow-kit paperclip-project list` to confirm it loads:
+
+- `PAPERCLIP_CONFIG_INVALID` naming `pm_merge_allowed`: delete that key
+  wherever it appears. It never granted anything. Set merge per project with
+  `paperclip-project set --slug <s> --merge human|pm` once the file loads.
+- `PAPERCLIP_MERGE_KIT_REPO`: in the named `projects[<slug>]` row, set
+  `"merge": "human"`. The agent-flow-kit repo, and any repo with no readable
+  `origin`, can never be `pm`.
+- `PAPERCLIP_RELEASE_POLICY_UNREADABLE`: the kit's
+  `lifecycle/release-policy.json` (or `$AFK_RELEASE_POLICY`) is missing or
+  unreadable. Repair the kit install. Until then, set `"merge": "human"` on
+  every `pm` row so the other projects keep running.
+
 ### Migrating from `paperclip_version`
 
 An older config's `paperclip_version` field is no longer read by the PM-start

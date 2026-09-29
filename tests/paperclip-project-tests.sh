@@ -492,7 +492,7 @@ assert_eq "widen: the verb makes no network call" "$(wc -l <"$LOG" | tr -d ' ')"
 # ============================================================================
 head1 "10. The playbook merge step is the same in both managed policy files"
 # ============================================================================
-step='**Merge.** Before merging any `paperclip:` PR, run `agent-flow-kit paperclip-merge-policy --issue <id>`. `pm`: normal merge policy applies. `human` (the default, and always for `agent-flow-kit`): post `NEEDS HUMAN: merge <PR>` and never merge yourself. The post-PR triage worker records the answer.'
+step='**Merge.** Before merging any `paperclip:` PR, run `agent-flow-kit paperclip-merge-policy --issue <id>`. `pm`: normal merge policy applies. `human` (the default, and always for `agent-flow-kit`): post `NEEDS HUMAN: merge <PR>` and never merge yourself. A non-zero exit, or any answer other than `pm`, counts as `human`. The post-PR triage worker records the answer.'
 for f in claude-global-CLAUDE.md codex-AGENTS.md; do
   assert_contains "playbook: $f carries the merge step" "$(cat "$KIT_ROOT/files/$f")" "$step"
 done

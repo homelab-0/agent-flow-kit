@@ -257,7 +257,7 @@ or `paperclip:HOM-<n>`. That home is the only tracker for the epic; never mix:
   4. **Route and accept.** For each story: `/v1/route`, then `make-stamp.sh`. Then `agent-flow-kit route-accept --kind pm-auto` **only** for a natural free-lane decision. A hard exclusion means `Stopped` or a re-plan — never a question to Josh. Metered or any other decision: report `Waiting for Josh: route` in chat.
   5. **Dispatch and report.** Dispatch as usual. After each story event, `paperclip-report --comment-file` with one short line (and the PR link). Keep `paperclip-report --status "story k/n …"` current.
   6. **Settle.** Each notice acted on: `agent-flow-kit paperclip-settle --notice <id>`.
-  7. **Merge.** Before merging any `paperclip:` PR, run `agent-flow-kit paperclip-merge-policy --issue <id>`. `pm`: normal merge policy applies. `human` (the default, and always for `agent-flow-kit`): post `NEEDS HUMAN: merge <PR>` and never merge yourself. The post-PR triage worker records the answer.
+  7. **Merge.** Before merging any `paperclip:` PR, run `agent-flow-kit paperclip-merge-policy --issue <id>`. `pm`: normal merge policy applies. `human` (the default, and always for `agent-flow-kit`): post `NEEDS HUMAN: merge <PR>` and never merge yourself. A non-zero exit, or any answer other than `pm`, counts as `human`. The post-PR triage worker records the answer.
   8. **Finish.** `paperclip-report --final in_review|done --comment-file` with a summary: what shipped, PR links, gate summary, token use by lane. No secrets, stamp bodies, or transcripts.
 - Promotion between homes (e.g. a local epic goes public in Linear) happens only when
   Josh explicitly says so; the PM may suggest it but never does it unprompted.
