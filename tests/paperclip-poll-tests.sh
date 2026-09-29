@@ -118,7 +118,10 @@ run_afk() { # [--json]
 }
 
 COMPANY="cccccccc-cccc-cccc-cccc-cccccccccccc"
-BOARD="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+# Real Paperclip board user ids are Better-Auth style ids, not UUIDs
+# (AFK-PC-FIX-2) -- keep this fixture in that shape so the suite exercises
+# the real format, not just a UUID that happens to also be a valid id.
+BOARD="emXp8Svi8ncWyL1EORTkRNQYjFjCdQon"
 AGENT1="11111111-1111-1111-1111-111111111111"
 AGENT2="22222222-2222-2222-2222-222222222222"
 MAINT="dddddddd-dddd-dddd-dddd-dddddddddddd"
@@ -171,6 +174,30 @@ write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj
 jq '.board_user_id = "board"' "$CONFIG" >"$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
 run_afk
 assert_contains "board_user_id 'board' refused" "$OUT_TEXT" "PAPERCLIP_ID_INVALID"
+
+new_scenario cfg_board_real_format
+write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo)" '[$a]')"
+jq '.board_user_id = "emXp8Svi8ncWyL1EORTkRNQYjFjCdQon"' "$CONFIG" >"$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+route GET "/api/agents/me/inbox-lite" 200 "[]"
+run_afk
+assert_eq "board_user_id real-format id (32-char Better-Auth style) accepted" "$RC" "0"
+
+new_scenario cfg_board_slash
+write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo)" '[$a]')"
+jq '.board_user_id = "a/b"' "$CONFIG" >"$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
+run_afk
+assert_eq "board_user_id 'a/b': non-zero exit" "$RC" "1"
+assert_eq "board_user_id 'a/b': no request made" "$(cat "$LOG" 2>/dev/null)" ""
+assert_contains "board_user_id 'a/b' refused" "$OUT_TEXT" "PAPERCLIP_ID_INVALID"
+
+new_scenario cfg_board_spaces
+write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo)" '[$a]')"
+jq '.board_user_id = "has a space"' "$CONFIG" >"$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
+run_afk
+assert_eq "board_user_id with spaces: non-zero exit" "$RC" "1"
+assert_eq "board_user_id with spaces: no request made" "$(cat "$LOG" 2>/dev/null)" ""
+assert_contains "board_user_id with spaces refused" "$OUT_TEXT" "PAPERCLIP_ID_INVALID"
 
 new_scenario cfg_duplicate
 write_config "$(jq -nc --argjson a "$(agent_json "$AGENT1" op://test/agent1 proj /repo)" '[$a, $a]')"
