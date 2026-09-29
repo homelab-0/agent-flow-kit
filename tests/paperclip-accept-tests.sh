@@ -27,9 +27,10 @@ PLAND="$(printf 'p' | sha256sum | awk '{print $1}')"
 HOME_DIR="$TMPROOT/home"; STATE="$TMPROOT/state"; CONFIG="$TMPROOT/paperclip.json"
 mkdir -p "$HOME_DIR" "$STATE/paperclip/plans" "$STATE/paperclip/approvals"
 jq -nc --arg c "$COMMIT" --arg r "$TMPROOT" \
-  '{api_url:"https://paperclip.test",company_id:"cccccccc-cccc-cccc-cccc-cccccccccccc",
-    board_user_id:"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",host_label:"h",
-    agents:[{agent_id:"11111111-1111-1111-1111-111111111111",key_ref:"op://x/y",project:"proj1",repo_path:$r,harness:"claude"}],
+  '{schema:"afk-paperclip-config/2",api_url:"https://paperclip.test",company_id:"cccccccc-cccc-cccc-cccc-cccccccccccc",
+    board_user_id:"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+    host:{label:"h",agent_id:"11111111-1111-1111-1111-111111111111",key_ref:"op://x/y"},
+    projects:[{paperclip_project_id:"aaaaaaaa-0000-4000-8000-000000000001",slug:"proj1",repo_path:$r,harness:"claude"}],
     interim_comment_approval:{attested_on:"2026-09-27",paperclip_commit:$c}}' >"$CONFIG"
 jq -nc --arg d "$PLAND" '{schema:"afk-paperclip-plan-record/1", digest:$d,
   stories:[{id:"HOM-12.S1", gates:["bash tests/a.sh","bash tests/b.sh"]}]}' >"$STATE/paperclip/plans/$ISSUE.json"

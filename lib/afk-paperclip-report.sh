@@ -70,19 +70,20 @@ afk_pcr_lock() {
 afk_pcr_unlock() { rm -f "$1/owner" 2>/dev/null; rmdir "$1" 2>/dev/null || true; AFK_PCR_HELD_LOCK=""; }
 
 # afk_pcr_owner_repo <issue-id> -- sets AFK_PCR_REPO_PATH on success. Resolves
-# the project from the poller ledger, then the repo from the paperclip
-# config's agents list — the same source paperclip-take reads. A direct call
-# (never `$(...)`): AFK_PCR_REFUSAL is set on failure and must reach the
+# the issue's pinned slug from the poller ledger, then the repo from that
+# slug's projects[] row in the paperclip config -- the same source
+# paperclip-take reads, never the issue's live projectId (AD-23). A direct
+# call (never `$(...)`): AFK_PCR_REFUSAL is set on failure and must reach the
 # caller's shell, not a subshell.
 afk_pcr_owner_repo() {
-  local id="$1" ledger_path="$AFK_STATE_DIR/paperclip/ledger.json" ledger="" project
+  local id="$1" ledger_path="$AFK_STATE_DIR/paperclip/ledger.json" ledger="" slug
   AFK_PCR_REPO_PATH=""
   [[ -r "$ledger_path" ]] && ledger="$(jq -c '.' "$ledger_path" 2>/dev/null)"
   [[ -n "$ledger" ]] || ledger='{"issues":{}}'
-  project="$(jq -r --arg id "$id" '.issues[$id].project // empty' <<<"$ledger")"
-  [[ -n "$project" ]] || { AFK_PCR_REFUSAL="PAPERCLIP_ISSUE_UNKNOWN"; return 1; }
+  slug="$(jq -r --arg id "$id" '.issues[$id].slug // empty' <<<"$ledger")"
+  [[ -n "$slug" ]] || { AFK_PCR_REFUSAL="PAPERCLIP_ISSUE_UNKNOWN"; return 1; }
   if ! afk_pc_load_config; then AFK_PCR_REFUSAL="$AFK_PC_REFUSAL"; return 1; fi
-  AFK_PCR_REPO_PATH="$(jq -r --arg p "$project" '[.agents[] | select(.project==$p)][0].repo_path // empty' <<<"$AFK_PC_CFG")"
+  AFK_PCR_REPO_PATH="$(jq -r '.repo_path // empty' <<<"$(afk_pc_project_row "$slug")")"
   [[ -n "$AFK_PCR_REPO_PATH" ]] || { AFK_PCR_REFUSAL="PAPERCLIP_ISSUE_UNKNOWN"; return 1; }
   return 0
 }

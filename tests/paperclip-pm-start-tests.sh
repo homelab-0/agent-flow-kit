@@ -89,12 +89,19 @@ if [[ "${READINESS_OK:-true}" == true ]]; then printf '{"readiness":{"INSTALLED_
 if [[ "${READINESS_OK}" == integrity ]]; then printf '{"readiness":{"INSTALLED_INTEGRITY":{"state":"NOT_READY","reason":"INTEGRITY_DRIFT"}}}'; exit 0; fi
 printf '{"route":{"reason":"%s"}}' "${READINESS_REASON:-NOT_READY}"; exit 3
 SH
+# harness — stands in for claude when the real bootstrap adapter execs it;
+# records the argv it was given, one argument per line.
+cat >"$STUBS/harness" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >"$HARNESS_ARGV_LOG"
+SH
 chmod +x "$STUBS"/*
 
 COMPANY="cccccccc-cccc-cccc-cccc-cccccccccccc"
 BOARD="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 AGENT1="11111111-1111-1111-1111-111111111111"
 ISSUE1="e1111111-1111-1111-1111-111111111111"
+PROJ1="aaaaaaaa-0000-4000-8000-000000000001"
 
 # new_scenario <name> — fresh HOME, fixtures, git repo and Orca fixtures.
 new_scenario() {
@@ -108,7 +115,8 @@ new_scenario() {
   : >"$LOG"; : >"$BODYLOG"; : >"$SYSTEMCTL_LOG"; : >"$ORCA_CREATE_LOG"
   REPO="$SCEN/repo"; git init -q "$REPO"
   git -C "$REPO" config user.email t@test; git -C "$REPO" config user.name t
-  : >"$REPO/f"; git -C "$REPO" -c commit.gpgsign=false add f
+  : >"$REPO/f"; mkdir -p "$REPO/.afk"; printf 'bash tests/run-tests.sh\n' >"$REPO/.afk/gates-allowlist"
+  git -C "$REPO" -c commit.gpgsign=false add f .afk/gates-allowlist
   git -C "$REPO" -c commit.gpgsign=false commit -qm init >/dev/null
   ORCA_WT_FILE="$SCEN/orca-wt.json"
   jq -nc --arg p "$REPO" '{result:{worktree:{id:"wt-1", path:$p}}}' >"$ORCA_WT_FILE"
@@ -121,10 +129,12 @@ new_scenario() {
 
 write_config() { # <extra-json-merge>
   jq -n --arg api "https://paperclip.test" --arg co "$COMPANY" --arg bu "$BOARD" --arg hl "test-host" \
-    --arg a "$AGENT1" --arg r "$REPO" --argjson extra "${1:-\{\}}" \
-    '{api_url: $api, company_id: $co, board_user_id: $bu, host_label: $hl,
-      agents: [{agent_id:$a, key_ref:"op://test/agent1", project:"proj", repo_path:$r, harness:"claude", max_active_issues:1}]}
+    --arg a "$AGENT1" --arg r "$REPO" --arg p "$PROJ1" --argjson extra "${1:-\{\}}" \
+    '{schema: "afk-paperclip-config/2", api_url: $api, company_id: $co, board_user_id: $bu,
+      host: {label: $hl, agent_id: $a, key_ref: "op://test/agent1"},
+      projects: [{paperclip_project_id:$p, slug:"proj", repo_path:$r, harness:"claude", max_active_issues:1}]}
      * $extra' >"$CONFIG"
+  route GET "/api/projects/$PROJ1" 200 "{\"id\":\"$PROJ1\",\"name\":\"Proj\",\"archivedAt\":null,\"codebase\":{\"repoUrl\":null}}"
 }
 
 RC=0 OUT_TEXT=""
@@ -152,7 +162,7 @@ route() { # <method> <path> <code> [<body>]
 
 issue_route() { # <status> <created_by>
   route GET "/api/issues/$ISSUE1" 200 \
-    "{\"status\":\"$1\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"updatedAt\":\"2026-01-01T00:00:00Z\",\"createdByUserId\":\"$2\"}"
+    "{\"status\":\"$1\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"updatedAt\":\"2026-01-01T00:00:00Z\",\"createdByUserId\":\"$2\",\"projectId\":\"$PROJ1\"}"
 }
 
 do_pass() { # a full claim-side pass adopting ISSUE1 fresh
@@ -175,6 +185,8 @@ assert_eq "none+Josh: pass exit 0" "$RC" "0"
 assert_eq "none+Josh: exactly one terminal create" "$(wc -l <"$ORCA_CREATE_LOG" | tr -d ' ')" "1"
 INTENT_FILE="$STATE/paperclip/pm-start-intents/proj.json"
 assert_contains "none+Josh: fixed instruction text present" "$(cat "$INTENT_FILE")" "You are the BMAD PM for project proj"
+assert_contains "none+Josh: the started PM is told to take by --slug" "$(cat "$INTENT_FILE")" "paperclip-take --slug proj"
+assert_contains "none+Josh: the terminal title names the slug" "$(cat "$ORCA_CREATE_LOG")" "PM proj (paperclip)"
 assert_absent "none+Josh: no issue title in the create argv" "$(cat "$ORCA_CREATE_LOG")" "T\""
 assert_absent "none+Josh: no issue description in the create argv" "$(cat "$ORCA_CREATE_LOG")" "\"D\""
 INTENT_FILE="$STATE/paperclip/pm-start-intents/proj.json"
@@ -182,6 +194,24 @@ assert_absent "none+Josh: no issue title in the bootstrap intent" "$(cat "$INTEN
 assert_absent "none+Josh: no issue description in the bootstrap intent" "$(cat "$INTENT_FILE" 2>/dev/null)" "\"D\""
 LEDGER="$STATE/paperclip/ledger.json"
 assert_eq "none+Josh: ledger records the terminal" "$(jq -r --arg id "$ISSUE1" '.pm_started[$id].terminal' "$LEDGER")" "term-created-1"
+# The real adapter validates the intent the lib wrote (the fixed text is
+# rebuilt and byte-compared there), so the two copies can never drift.
+run_adapter() { # <intent-file>
+  (cd "$REPO_ABS" && env -i PATH="$STUBS:$PATH" HOME="$SCEN/home" LANG=C ORCA_TERMINAL_HANDLE=term-created-1 \
+    AFK_ORCA_BIN="$STUBS/orca" ORCA_WT_FILE="$ORCA_WT_FILE" AFK_CLAUDE_BIN="$STUBS/harness" HARNESS_ARGV_LOG="$SCEN/harness.argv" \
+    bash "$KIT_ROOT/adapters/orca-pm-bootstrap.sh" --intent "$1" >/dev/null 2>&1)
+}
+: >"$SCEN/harness.argv"
+run_adapter "$INTENT_FILE"; ARC=$?
+assert_eq "none+Josh: the real adapter accepts the lib-written intent" "$ARC" "0"
+assert_contains "  ...and starts the harness with the fixed --slug instruction" "$(cat "$SCEN/harness.argv")" "paperclip-take --slug proj"
+assert_eq "  ...the intent names the slug under the key slug" "$(jq -r '"\(.schema) \(.slug) \(has("project"))"' "$INTENT_FILE")" \
+  "afk-pm-bootstrap-first-start-intent/2 proj false"
+jq '.resume_instruction |= sub("--slug"; "--project")' "$INTENT_FILE" >"$SCEN/edited-intent.json"
+: >"$SCEN/harness.argv"
+run_adapter "$SCEN/edited-intent.json"; ARC=$?
+assert_eq "  ...an intent whose text differs from the lib's is refused" "$ARC|$(cat "$SCEN/harness.argv")" "1|"
+assert_eq "none+Josh: pm_started records the slug" "$(jq -r --arg id "$ISSUE1" '.pm_started[$id] | "\(.slug) \(has("project"))"' "$LEDGER")" "proj false"
 assert_eq "none+Josh: ledger counts one start today" "$(jq -r '.pm_starts | to_entries[0].value' "$LEDGER")" "1"
 
 # ============================================================================
@@ -236,12 +266,12 @@ issue_route blocked "$JARVIS" # not the board -> creator gate fails
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 mkdir -p "$STATE/paperclip"
 jq -n --arg a "$AGENT1" --arg id "$ISSUE1" \
-  '{issues: {($id): {agent_id: $a, project: "proj", identifier: "PROJ-1", state: "pending_claim", since: "2026-01-01T00:00:00Z"}},
+  '{issues: {($id): {host_agent_id: $a, paperclip_project_id: "aaaaaaaa-0000-4000-8000-000000000001", slug: "proj", identifier: "PROJ-1", state: "pending_claim", since: "2026-01-01T00:00:00Z"}},
     stranded_reported: [], drain_tampered_reported: false, last_successful_pass: null}' \
   >"$STATE/paperclip/ledger.json"
 route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
 route GET "/api/issues/$ISSUE1" 200 \
-  "{\"status\":\"blocked\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"createdByUserId\":\"$JARVIS\",\"unblockDescriptor\":{\"owner\":{\"agentId\":\"$AGENT1\"},\"action\":\"paused\"}}"
+  "{\"status\":\"blocked\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"createdByUserId\":\"$JARVIS\",\"projectId\":\"$PROJ1\",\"unblockDescriptor\":{\"owner\":{\"agentId\":\"$AGENT1\"},\"action\":\"paused\"}}"
 route GET "/api/issues/$ISSUE1/comments" 200 '[]'
 route POST "/api/issues/$ISSUE1/comments" 201 '{}'
 run_afk paperclip-poll --json
@@ -270,12 +300,12 @@ route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 mkdir -p "$STATE/paperclip" "$HOME/.config/agent-flow-kit/paperclip"
 : >"$HOME/.config/agent-flow-kit/paperclip/stop"
 jq -n --arg a "$AGENT1" --arg id "$ISSUE1" \
-  '{issues: {($id): {agent_id: $a, project: "proj", identifier: "PROJ-1", state: "pending_claim", since: "2026-01-01T00:00:00Z"}},
+  '{issues: {($id): {host_agent_id: $a, paperclip_project_id: "aaaaaaaa-0000-4000-8000-000000000001", slug: "proj", identifier: "PROJ-1", state: "pending_claim", since: "2026-01-01T00:00:00Z"}},
     stranded_reported: [], drain_tampered_reported: false, last_successful_pass: null}' \
   >"$STATE/paperclip/ledger.json"
 route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
 route GET "/api/issues/$ISSUE1" 200 \
-  "{\"status\":\"blocked\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"createdByUserId\":\"$BOARD\",\"unblockDescriptor\":{\"owner\":{\"agentId\":\"$AGENT1\"},\"action\":\"paused\"}}"
+  "{\"status\":\"blocked\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"createdByUserId\":\"$BOARD\",\"projectId\":\"$PROJ1\",\"unblockDescriptor\":{\"owner\":{\"agentId\":\"$AGENT1\"},\"action\":\"paused\"}}"
 route GET "/api/issues/$ISSUE1/comments" 200 '[]'
 route POST "/api/issues/$ISSUE1/comments" 201 '{}'
 run_afk paperclip-poll --json
@@ -290,12 +320,12 @@ JARVIS="88888888-8888-8888-8888-888888888888"
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 mkdir -p "$STATE/paperclip"
 jq -n --arg a "$AGENT1" --arg id "$ISSUE1" \
-  '{issues: {($id): {agent_id: $a, project: "proj", identifier: "PROJ-1", state: "pending_claim", since: "2026-01-01T00:00:00Z"}},
+  '{issues: {($id): {host_agent_id: $a, paperclip_project_id: "aaaaaaaa-0000-4000-8000-000000000001", slug: "proj", identifier: "PROJ-1", state: "pending_claim", since: "2026-01-01T00:00:00Z"}},
     stranded_reported: [], drain_tampered_reported: false, last_successful_pass: null}' \
   >"$STATE/paperclip/ledger.json"
 route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
 route GET "/api/issues/$ISSUE1" 200 \
-  "{\"status\":\"blocked\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"createdByUserId\":\"$JARVIS\",\"unblockDescriptor\":{\"owner\":{\"agentId\":\"$AGENT1\"},\"action\":\"paused\"}}"
+  "{\"status\":\"blocked\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"createdByUserId\":\"$JARVIS\",\"projectId\":\"$PROJ1\",\"unblockDescriptor\":{\"owner\":{\"agentId\":\"$AGENT1\"},\"action\":\"paused\"}}"
 route GET "/api/issues/$ISSUE1/comments" 200 \
   "[{\"id\":\"c0000000-0000-0000-0000-00000000000a\",\"body\":\"approve start PROJ-1\",\"authorUserId\":\"$BOARD\",\"authorAgentId\":null,\"createdAt\":\"2026-02-01T00:00:00Z\"}]"
 route POST "/api/issues/$ISSUE1/comments" 201 '{}'
@@ -313,12 +343,12 @@ JARVIS="88888888-8888-8888-8888-888888888888"
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 mkdir -p "$STATE/paperclip"
 jq -n --arg a "$AGENT1" --arg id "$ISSUE1" \
-  '{issues: {($id): {agent_id: $a, project: "proj", identifier: "PROJ-1", state: "pending_claim", since: "2026-01-01T00:00:00Z"}},
+  '{issues: {($id): {host_agent_id: $a, paperclip_project_id: "aaaaaaaa-0000-4000-8000-000000000001", slug: "proj", identifier: "PROJ-1", state: "pending_claim", since: "2026-01-01T00:00:00Z"}},
     stranded_reported: [], drain_tampered_reported: false, last_successful_pass: null}' \
   >"$STATE/paperclip/ledger.json"
 route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
 route GET "/api/issues/$ISSUE1" 200 \
-  "{\"status\":\"blocked\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"createdByUserId\":\"$JARVIS\",\"unblockDescriptor\":{\"owner\":{\"agentId\":\"$AGENT1\"},\"action\":\"paused\"}}"
+  "{\"status\":\"blocked\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"createdByUserId\":\"$JARVIS\",\"projectId\":\"$PROJ1\",\"unblockDescriptor\":{\"owner\":{\"agentId\":\"$AGENT1\"},\"action\":\"paused\"}}"
 route GET "/api/issues/$ISSUE1/comments" 200 \
   "[{\"id\":\"c0000000-0000-0000-0000-00000000000a\",\"body\":\"approve start PROJ-1\",\"authorUserId\":\"$BOARD\",\"authorAgentId\":null,\"createdAt\":\"2026-02-01T00:00:00Z\"}]"
 route POST "/api/issues/$ISSUE1/comments" 201 '{}'
@@ -334,12 +364,12 @@ JARVIS="88888888-8888-8888-8888-888888888888"
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 mkdir -p "$STATE/paperclip"
 jq -n --arg a "$AGENT1" --arg id "$ISSUE1" \
-  '{issues: {($id): {agent_id: $a, project: "proj", identifier: "PROJ-1", state: "pending_claim", since: "2026-01-01T00:00:00Z"}},
+  '{issues: {($id): {host_agent_id: $a, paperclip_project_id: "aaaaaaaa-0000-4000-8000-000000000001", slug: "proj", identifier: "PROJ-1", state: "pending_claim", since: "2026-01-01T00:00:00Z"}},
     stranded_reported: [], drain_tampered_reported: false, last_successful_pass: null}' \
   >"$STATE/paperclip/ledger.json"
 route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
 route GET "/api/issues/$ISSUE1" 200 \
-  "{\"status\":\"blocked\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"createdByUserId\":\"$JARVIS\",\"unblockDescriptor\":{\"owner\":{\"agentId\":\"$AGENT1\"},\"action\":\"paused\"}}"
+  "{\"status\":\"blocked\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"createdByUserId\":\"$JARVIS\",\"projectId\":\"$PROJ1\",\"unblockDescriptor\":{\"owner\":{\"agentId\":\"$AGENT1\"},\"action\":\"paused\"}}"
 route GET "/api/issues/$ISSUE1/comments" 200 \
   "[{\"id\":\"c0000000-0000-0000-0000-00000000000a\",\"body\":\"approve start PROJ-1\",\"authorUserId\":\"$BOARD\",\"authorAgentId\":null,\"createdAt\":\"2026-02-01T00:00:00Z\"}]"
 route POST "/api/issues/$ISSUE1/comments" 201 '{}'
@@ -357,12 +387,12 @@ JARVIS="88888888-8888-8888-8888-888888888888"
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 mkdir -p "$STATE/paperclip"
 jq -n --arg a "$AGENT1" --arg id "$ISSUE1" \
-  '{issues: {($id): {agent_id: $a, project: "proj", identifier: "PROJ-1", state: "pending_claim", since: "2026-01-01T00:00:00Z"}},
+  '{issues: {($id): {host_agent_id: $a, paperclip_project_id: "aaaaaaaa-0000-4000-8000-000000000001", slug: "proj", identifier: "PROJ-1", state: "pending_claim", since: "2026-01-01T00:00:00Z"}},
     stranded_reported: [], drain_tampered_reported: false, last_successful_pass: null}' \
   >"$STATE/paperclip/ledger.json"
 route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
 route GET "/api/issues/$ISSUE1" 200 \
-  "{\"status\":\"blocked\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"createdByUserId\":\"$JARVIS\",\"unblockDescriptor\":{\"owner\":{\"agentId\":\"$AGENT1\"},\"action\":\"paused\"}}"
+  "{\"status\":\"blocked\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"createdByUserId\":\"$JARVIS\",\"projectId\":\"$PROJ1\",\"unblockDescriptor\":{\"owner\":{\"agentId\":\"$AGENT1\"},\"action\":\"paused\"}}"
 route GET "/api/issues/$ISSUE1/comments" 200 \
   "[{\"id\":\"c0000000-0000-0000-0000-00000000000a\",\"body\":\"sounds good\",\"authorUserId\":\"$BOARD\",\"authorAgentId\":null,\"createdAt\":\"2026-02-01T00:00:00Z\"}]"
 route POST "/api/issues/$ISSUE1/comments" 201 '{}'

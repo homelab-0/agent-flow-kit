@@ -307,14 +307,16 @@ agent-flow-kit — lifecycle entry point
   agent-flow-kit pm-registry-reap --scope <key> [--json]
       Re-check one PM scope's own staleness, refuse with PM_OWNER_LIVE unless
       it is provably stale, then move its ownership.json to pm/reaped/ and
-      return its claimed Paperclip notices to their project. Never touches a
+      return its claimed Paperclip notices to their project slug. Never touches a
       live scope or one with a handoff in progress, and never reaps on an
       Orca outage. Calls no LLM.
 
-  agent-flow-kit paperclip-take --project <name> [--json]
-      Claim every pending Paperclip notice for one project, in order, as
-      paths only. Only the registry's live owner (or the named handoff
-      successor) for that project's repo may call it.
+  agent-flow-kit paperclip-take --slug <slug> [--json]
+      Claim every pending Paperclip notice for one project slug (a row of
+      the host's projects[] table), in order, as paths only. Only the
+      registry's live owner (or the named handoff successor) for that
+      project's repo may call it. The old --project flag is refused with
+      PAPERCLIP_FLAG_RENAMED.
 
   agent-flow-kit paperclip-settle --notice <id> [--json]
       Move one claimed notice to notices/settled/. Idempotent; refuses an
@@ -488,7 +490,7 @@ afk_option_allowed() { # <command> <option>
     pm-registry-reap)
       case "$2" in --json|--scope) return 0 ;; esac ;;
     paperclip-take)
-      case "$2" in --json|--project) return 0 ;; esac ;;
+      case "$2" in --json|--slug) return 0 ;; esac ;;
     paperclip-settle)
       case "$2" in --json|--notice) return 0 ;; esac ;;
     paperclip-report)
@@ -513,7 +515,7 @@ afk_main() {
   local inspect="false" plan_only="false" approval=""
   local monitor_verbs=0
   local pm_write="" pm_continuation="false" pm_harness=""
-  local pmr_scope="" pc_project="" pc_notice="" pct_action=""
+  local pmr_scope="" pc_slug="" pc_notice="" pct_action=""
   local pc_issue="" pc_plan_file="" pc_comment_file="" pc_question="" pc_final="" pc_status_text="" pc_story=""
   local usage_days=""
   local au_mode="enroll" au_key_ref="" au_key_file="" au_prev=""
@@ -535,6 +537,11 @@ afk_main() {
         afk_usage
         return "$AFK_EXIT_OK" ;;
       *)
+        # AD-23: --project became --slug; the old flag is refused, never aliased.
+        if [[ "$cmd" == paperclip-take && "$1" == --project ]]; then
+          afk_warn "PAPERCLIP_FLAG_RENAMED: paperclip-take takes --slug <slug> now, not --project"
+          return "$AFK_EXIT_USAGE"
+        fi
         if ! afk_option_allowed "$cmd" "$1"; then
           afk_warn "'$(afk_safe_diagnostic "$cmd")' does not accept the argument '$(afk_safe_diagnostic "$1")'"
           afk_usage >&2
@@ -643,8 +650,8 @@ afk_main() {
           --ack)
             if (( $# < 2 )); then afk_warn "--ack requires a successor acknowledgement document"; return "$AFK_EXIT_USAGE"; fi
             AFK_PM_ACK_FILE="$2"; shift ;;
-          --scope|--project|--notice)
-            # The value is a scope key, project name or notice id — never
+          --scope|--slug|--notice)
+            # The value is a scope key, project slug or notice id — never
             # echoed back; only the closed option vocabulary is.
             if (( $# < 2 )); then
               afk_warn "$1 requires its declared value"
@@ -653,7 +660,7 @@ afk_main() {
             fi
             case "$1" in
               --scope)   pmr_scope="$2" ;;
-              --project) pc_project="$2" ;;
+              --slug)    pc_slug="$2" ;;
               --notice)  pc_notice="$2" ;;
             esac
             shift ;;
@@ -749,8 +756,8 @@ afk_main() {
     afk_warn "pm-registry-reap needs the --scope key of the PM registration to re-check"
     return "$AFK_EXIT_USAGE"
   fi
-  if [[ "$cmd" == paperclip-take && -z "$pc_project" ]]; then
-    afk_warn "paperclip-take needs the --project name to claim notices for"
+  if [[ "$cmd" == paperclip-take && -z "$pc_slug" ]]; then
+    afk_warn "paperclip-take needs the --slug of the project to claim notices for"
     return "$AFK_EXIT_USAGE"
   fi
   if [[ "$cmd" == paperclip-settle && -z "$pc_notice" ]]; then
@@ -888,7 +895,7 @@ afk_main() {
       return $? ;;
     paperclip-take)
       afk_require_declared_paths || return "$AFK_EXIT_USAGE"
-      afk_cmd_paperclip_take "$json_mode" "$pc_project"
+      afk_cmd_paperclip_take "$json_mode" "$pc_slug"
       return $? ;;
     paperclip-settle)
       afk_require_declared_paths || return "$AFK_EXIT_USAGE"
