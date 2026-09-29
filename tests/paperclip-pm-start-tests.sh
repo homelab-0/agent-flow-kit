@@ -89,6 +89,12 @@ if [[ "${READINESS_OK:-true}" == true ]]; then printf '{"readiness":{"INSTALLED_
 if [[ "${READINESS_OK}" == integrity ]]; then printf '{"readiness":{"INSTALLED_INTEGRITY":{"state":"NOT_READY","reason":"INTEGRITY_DRIFT"}}}'; exit 0; fi
 printf '{"route":{"reason":"%s"}}' "${READINESS_REASON:-NOT_READY}"; exit 3
 SH
+# harness — stands in for claude when the real bootstrap adapter execs it;
+# records the argv it was given, one argument per line.
+cat >"$STUBS/harness" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >"$HARNESS_ARGV_LOG"
+SH
 chmod +x "$STUBS"/*
 
 COMPANY="cccccccc-cccc-cccc-cccc-cccccccccccc"
@@ -188,6 +194,23 @@ assert_absent "none+Josh: no issue title in the bootstrap intent" "$(cat "$INTEN
 assert_absent "none+Josh: no issue description in the bootstrap intent" "$(cat "$INTENT_FILE" 2>/dev/null)" "\"D\""
 LEDGER="$STATE/paperclip/ledger.json"
 assert_eq "none+Josh: ledger records the terminal" "$(jq -r --arg id "$ISSUE1" '.pm_started[$id].terminal' "$LEDGER")" "term-created-1"
+# The real adapter validates the intent the lib wrote (the fixed text is
+# rebuilt and byte-compared there), so the two copies can never drift.
+run_adapter() { # <intent-file>
+  (cd "$REPO_ABS" && env -i PATH="$STUBS:$PATH" HOME="$SCEN/home" LANG=C ORCA_TERMINAL_HANDLE=term-created-1 \
+    AFK_ORCA_BIN="$STUBS/orca" ORCA_WT_FILE="$ORCA_WT_FILE" AFK_CLAUDE_BIN="$STUBS/harness" HARNESS_ARGV_LOG="$SCEN/harness.argv" \
+    bash "$KIT_ROOT/adapters/orca-pm-bootstrap.sh" --intent "$1" >/dev/null 2>&1)
+}
+: >"$SCEN/harness.argv"
+run_adapter "$INTENT_FILE"; ARC=$?
+assert_eq "none+Josh: the real adapter accepts the lib-written intent" "$ARC" "0"
+assert_contains "  ...and starts the harness with the fixed --slug instruction" "$(cat "$SCEN/harness.argv")" "paperclip-take --slug proj"
+assert_eq "  ...the intent names the slug under the key slug" "$(jq -r '"\(.schema) \(.slug) \(has("project"))"' "$INTENT_FILE")" \
+  "afk-pm-bootstrap-first-start-intent/2 proj false"
+jq '.resume_instruction |= sub("--slug"; "--project")' "$INTENT_FILE" >"$SCEN/edited-intent.json"
+: >"$SCEN/harness.argv"
+run_adapter "$SCEN/edited-intent.json"; ARC=$?
+assert_eq "  ...an intent whose text differs from the lib's is refused" "$ARC|$(cat "$SCEN/harness.argv")" "1|"
 assert_eq "none+Josh: pm_started records the slug" "$(jq -r --arg id "$ISSUE1" '.pm_started[$id] | "\(.slug) \(has("project"))"' "$LEDGER")" "proj false"
 assert_eq "none+Josh: ledger counts one start today" "$(jq -r '.pm_starts | to_entries[0].value' "$LEDGER")" "1"
 

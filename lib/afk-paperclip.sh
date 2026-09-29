@@ -330,24 +330,30 @@ afk_pc_repo_ready() {
   top="$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null)" || top=""
   real="$(cd "$repo" 2>/dev/null && pwd -P)"
   [[ -n "$top" && "$(cd "$top" 2>/dev/null && pwd -P)" == "$real" ]] || { printf 'NOT_A_GIT_REPO'; return 1; }
-  ref="$(git -C "$repo" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)" || ref=""
-  [[ -n "$ref" ]] || ref=HEAD
-  [[ "$(git -C "$repo" cat-file -t "$ref:.afk/gates-allowlist" 2>/dev/null)" == blob ]] ||
-    { printf 'GATES_ALLOWLIST_MISSING'; return 1; }
+  # AD-23 order: REPO_MISMATCH before REPO_NOT_READY, so a mapping to the
+  # wrong local repo is reported as that, not as a missing allowlist there.
   if [[ -n "$want" ]]; then
     origin="$(git -C "$repo" remote get-url origin 2>/dev/null)" || origin=""
     norm="$(afk_pc_origin_normalize "$origin")" || { printf 'ORIGIN_UNREADABLE'; return 1; }
     [[ "$norm" == "$(afk_pc_origin_normalize "$want" 2>/dev/null)" ]] || { printf 'MISMATCH'; return 1; }
   fi
+  ref="$(git -C "$repo" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)" || ref=""
+  [[ -n "$ref" ]] || ref=HEAD
+  [[ "$(git -C "$repo" cat-file -t "$ref:.afk/gates-allowlist" 2>/dev/null)" == blob ]] ||
+    { printf 'GATES_ALLOWLIST_MISSING'; return 1; }
   printf 'ok'
 }
 
 # afk_pc_refusal_text <reason> <project-id-or-empty> <name-or-empty> -- the
-# AD-23 self-block text with its ` · <id8> "<name>"` tail. The budget is 120
-# minus 13: HA-4 appends the AD-27 ` · <host> HH:MMZ` suffix to this text.
+# AD-23 self-block text with its ` · <id8> "<name>"` tail. The whole text is
+# held to 120 minus 13 (HA-4 appends the AD-27 ` · <host> HH:MMZ` suffix): the
+# name is dropped first, then the reason itself is cut (ending in `…`) so the
+# ` · <id8>` tail always fits.
 afk_pc_refusal_text() {
   jq -rn --arg r "$1" --arg p "${2:0:8}" --arg n "$3" '
-    ("Waiting for Josh: " + $r) as $t
+    (if $p == "" then 107 else 96 end) as $max
+    | ("Waiting for Josh: " + $r) as $full
+    | (if ($full | length) > $max then $full[0:$max - 1] + "…" else $full end) as $t
     | ($n | gsub("[[:cntrl:]\"]"; "") | .[0:32]) as $name
     | if $p == "" then $t
       elif $name != "" and ($t + " · " + $p + " \"" + $name + "\"" | length) <= 107 then $t + " · " + $p + " \"" + $name + "\""
@@ -398,7 +404,8 @@ afk_pc_resolve() {
   afk_pc_count_404 200
   local slug_r repo_r
   IFS=$'\x1f' read -r name archived repo_url slug_r repo_r < <(jq -r --argjson r "$AFK_PC_RES_ROW" \
-    '[(.name // "" | strings), (.archivedAt // "" | tostring), (.codebase.repoUrl // "" | strings), $r.slug, $r.repo_path]
+    'def str: if type == "string" then . else "" end;
+     [(.name | str), (.archivedAt // "" | tostring), (.codebase.repoUrl | str), $r.slug, $r.repo_path]
      | map(gsub("[[:cntrl:]]"; "")) | join("\u001f")' <<<"$body")
   if [[ -n "$archived" ]]; then
     AFK_PC_RES=PAPERCLIP_PROJECT_ARCHIVED
@@ -509,6 +516,18 @@ afk_pc_spool_dead_all() { # <issue_id> -- everything remaining, e.g. after a
     [[ -n "$base" ]] || continue
     afk_pc_spool_dead "$1" "$base" "PAPERCLIP_ISSUE_CLOSED"
   done < <(afk_pc_spool_files "$1")
+}
+
+# afk_pc_spool_reopen <issue_id> -- an issue re-adopted after it closed:
+# remove the spool's `.final` marker under the writer's lock, and the stale
+# declared status. Entries already retired stay in dead/.
+afk_pc_spool_reopen() {
+  local dir; dir="$(afk_pc_spool_dir "$1")"
+  if [[ -e "$dir/.final" ]] && afk_pc_spool_lock "$dir/.seq.lock"; then
+    rm -f -- "$dir/.final"
+    afk_pc_spool_unlock "$dir/.seq.lock"
+  fi
+  rm -f -- "$AFK_STATE_DIR/paperclip/status/$1.json"
 }
 
 # afk_pc_marker_seen <api_url> <key> <issue_id> <marker> <agent_id> -- AC-4
@@ -1004,6 +1023,9 @@ afk_cmd_paperclip_poll() { # <json_mode>
         # as new: a fresh ledger row, only `since` carried over.
         if [[ -n "$prev" ]]; then
           ledger="$(jq -c --arg id "$id" '.issues[$id] |= {since}' <<<"$ledger")"
+          # A restart after a final: reopen the spool and drop the old declared
+          # status, or the new PM's first report is refused as closed.
+          [[ "$prev_st" == closed ]] && afk_pc_spool_reopen "$id"
           prev=""; prev_st=""
         fi
       elif [[ "$prev_st" == waiting_setup && ( "$status" == cancelled || "$status" == "done" ) ]]; then
@@ -1020,7 +1042,8 @@ afk_cmd_paperclip_poll() { # <json_mode>
           actions="$(jq -c --arg t "PAPERCLIP_PROJECT_MISSING (no pin), held: $identifier" '. + [$t]' <<<"$actions")"
         continue
       fi
-      local used_slots_s="${used_slots[$slug]:-0}" working_id="${working_ids[$slug]:-}"
+      local used_slots_s=0 working_id=""
+      [[ -n "$slug" ]] && { used_slots_s="${used_slots[$slug]:-0}"; working_id="${working_ids[$slug]:-}"; }
 
       case "$status" in
         in_progress)
@@ -1397,8 +1420,10 @@ afk_pc_waiting_setup() {
 # afk_pc_project_changed -- AC-6: the live projectId no longer matches the
 # pin (null, another project, or the pinned project deleted). One `stopped`
 # notice with PROJECT_CHANGED to the pinned slug's directory, the slot is
-# released, and the issue self-blocks with the fixed stop text (now if a run
-# is live, otherwise from its report cycle). Reads the caller's pass locals.
+# released, and state `stopped` carries the fixed stop text. The self-block
+# itself goes out from this issue's report cycle (the same pass unless
+# paused); a later Paperclip wake is re-blocked by the pass's `stopped`
+# branch. Reads the caller's pass locals.
 afk_pc_project_changed() {
   local pslug prow
   pslug="$(jq -r '.slug // empty' <<<"$prev")"

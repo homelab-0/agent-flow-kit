@@ -1334,11 +1334,15 @@ write_config "[$(proj_json "$(pid_n 1)" proj "$REPO1"), $(proj_json "$(pid_n 2)"
   $(proj_json "$(pid_n 3)" proj3 "$NR"), $(proj_json "$(pid_n 4)" proj4 "$REPO4"), $(proj_json "$(pid_n 5)" proj5 "$REPO5"),
   $(proj_json "$(pid_n 6)" proj6 "$TMPROOT/not-a-repo-yet")]"
 route GET "/api/projects/$(pid_n 1)" 200 "$(project_body "$(pid_n 1)" "../../evil" "" "https://GitHub.com/test/repo1/")"
+route GET "/api/projects/$(pid_n 3)" 200 "{\"id\":\"$(pid_n 3)\",\"name\":5,\"archivedAt\":null,\"codebase\":{\"repoUrl\":null}}"
 route GET "/api/projects/$(pid_n 4)" 200 "$(project_body "$(pid_n 4)" "Four" "" "https://github.com/test/other-repo")"
 route GET "/api/projects/$(pid_n 5)" 200 "$(project_body "$(pid_n 5)" "../../evil" "2026-09-01T00:00:00Z")"
 seed 9 working proj "$(pid_n 1)" 2025-12-01T00:00:00Z            # holds proj's one slot
 seed 8 closed proj3 "$UNMAPPED_P"; jq --arg id "$(iid 8)" '.issues[$id].fixed_text = "old"' "$(LEDGER_OF)" >"$(LEDGER_OF).t" && mv "$(LEDGER_OF).t" "$(LEDGER_OF)"
-inbox 9 1 2 3 4 5 6 7 8
+mkdir -p "$STATE/paperclip/spool/$(iid 8)" "$STATE/paperclip/status"
+: >"$STATE/paperclip/spool/$(iid 8)/.final"; printf '{"text":"old status"}' >"$STATE/paperclip/status/$(iid 8).json"
+inbox 9 1 2 3 4 5 6 7 8 10
+issue 10 todo "\"$(pid_n 1)\""                                   # assigned, not started
 issue 9 blocked "\"$(pid_n 1)\""
 issue 1 in_progress "\"$(pid_n 1)\"" "Move this to proj2" "repo_path: $REPO2, slug proj2, project ../../escape"
 issue 2 in_progress "\"$(pid_n 2)\""
@@ -1355,7 +1359,9 @@ refused() { # <n> <code> <text>
   assert_eq "PROJ-$1: self-blocked with the AD-23 text" "$(lget "$(iid "$1")" .action_text_applied)" "$3"
   assert_eq "PROJ-$1: no pin" "$(lget "$(iid "$1")" '.slug')$(lget "$(iid "$1")" '.paperclip_project_id')" ""
 }
-refused 3 PAPERCLIP_PROJECT_REPO_NOT_READY 'Waiting for Josh: proj3 repo not ready on test-host (GATES_ALLOWLIST_MISSING) · aaaaaaaa "Project aaaaaaaa"'
+refused 3 PAPERCLIP_PROJECT_REPO_NOT_READY 'Waiting for Josh: proj3 repo not ready on test-host (GATES_ALLOWLIST_MISSING) · aaaaaaaa'
+assert_absent "a non-string project name shifts no field: no local path in the text" "$(lget "$(iid 3)" .action_text_applied)" "/"
+assert_eq "a todo issue in the inbox is left alone, with nothing on stderr" "$(lget "$(iid 10)")|$(cat "$SCEN/err")" "|"
 refused 4 PAPERCLIP_PROJECT_REPO_MISMATCH "Waiting for Josh: project repo differs from test-host's · aaaaaaaa \"Four\""
 refused 5 PAPERCLIP_PROJECT_ARCHIVED 'Waiting for Josh: project archived · aaaaaaaa "../../evil"'
 refused 6 PAPERCLIP_PROJECT_MISSING "Waiting for Josh: set a Project on PROJ-6"
@@ -1378,6 +1384,8 @@ assert_eq "a notice carries slug and host_agent_id, not project or agent_id (AC-
   "$(jq -r '"\(.slug) \(.host_agent_id) \(has("project")) \(has("agent_id"))"' <<<"$n")" "proj2 $AGENT1 false false"
 assert_eq "a closed issue reassigned back is a restart: re-pinned, nothing carried over" \
   "$(lget "$(iid 8)" '| "\(.state) \(.slug) \(.paperclip_project_id) \(.fixed_text)"')" "working proj2 $(pid_n 2) null"
+assert_missing "  ...its spool is reopened (.final removed) so the new PM can report" "$STATE/paperclip/spool/$(iid 8)/.final"
+assert_missing "  ...and the old declared status is dropped" "$STATE/paperclip/status/$(iid 8).json"
 
 # --- AC-4: re-resolved each pass, written on change, adopted as new ----------
 new_scenario res_waiting_then_resolves
@@ -1431,6 +1439,9 @@ assert_eq "control chars and quotes stripped, name cut to 32" \
   'Waiting for Josh: project archived · aaaaaaaa "A very long project name that ke"'
 t="$(lib afk_pc_refusal_text "$(printf 's%.0s' {1..40}) repo not ready on a-rather-long-host-label (GATES_ALLOWLIST_MISSING)" "$PROJ1" Spektacle)"
 assert_eq "over the 120-13 budget the name is dropped, the id prefix stays" "${t##* · }" "aaaaaaaa"
+assert_eq "  ...and the whole text fits 107 characters" "$(jq -rn --arg t "$t" '$t | length <= 107')" "true"
+t="$(lib afk_pc_refusal_text "set a Project on $(printf 'X%.0s' {1..120})" "" "")"
+assert_eq "a long text with no project tail is cut to 107 too" "$(jq -rn --arg t "$t" '$t | length <= 107 and endswith("…")')" "true"
 assert_eq "scp form == URL form" "$(lib afk_pc_origin_normalize git@github.com:jlengelbrecht/Spektacle.git)" \
   "$(lib afk_pc_origin_normalize https://github.com/jlengelbrecht/Spektacle)"
 assert_eq "host case, trailing slash" "$(lib afk_pc_origin_normalize https://GitHub.com/jlengelbrecht/Spektacle/)" "github.com/jlengelbrecht/Spektacle"
@@ -1449,6 +1460,10 @@ LOCAL_ORIGIN="$TMPROOT/repos/local-origin"; mkrepo "$LOCAL_ORIGIN"; git -C "$LOC
 assert_eq "a local-path origin while repoUrl is set" "$(lib afk_pc_repo_ready "$LOCAL_ORIGIN" https://github.com/test/x)" "ORIGIN_UNREADABLE"
 assert_eq "a local-path origin with repoUrl unset: skipped" "$(lib afk_pc_repo_ready "$LOCAL_ORIGIN" "")" "ok"
 assert_eq "a path-case difference in repoUrl is a mismatch" "$(lib afk_pc_repo_ready "$REPO1" https://github.com/Test/repo1)" "MISMATCH"
+NR2="$TMPROOT/repos/no-allowlist-2"; mkdir -p "$NR2"; git -C "$NR2" init -q -b main
+git -C "$NR2" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init; git -C "$NR2" remote add origin git@github.com:test/nr2.git
+assert_eq "wrong repo AND no allowlist: MISMATCH wins (AD-23 order)" "$(lib afk_pc_repo_ready "$NR2" https://github.com/test/other)" "MISMATCH"
+assert_eq "  ...the right repo with no allowlist is NOT_READY" "$(lib afk_pc_repo_ready "$NR2" https://github.com/test/nr2)" "GATES_ALLOWLIST_MISSING"
 assert_eq "a linked worktree resolves origin through the common-dir" "$(lib afk_pc_repo_ready "$WT1" https://github.com/test/repo1)" "ok"
 
 # --- AC-6: pinning, all non-closed states in one scenario ---------------------
@@ -1460,7 +1475,12 @@ seed 2 queued proj "$PROJ1" 2026-01-01T00:00:02Z
 seed 3 held_by_board proj "$PROJ1" 2026-01-01T00:00:03Z
 seed 4 queued proj "$PROJ1" 2026-01-01T00:00:04Z
 seed 5 working proj3 "$(pid_n 3)" 2026-01-01T00:00:05Z
-inbox 1 2 3 4 5
+seed 6 waiting_human proj "$PROJ1" 2026-01-01T00:00:06Z
+seed 7 dep_waiting proj "$PROJ1" 2026-01-01T00:00:07Z
+seed 8 pending_claim proj "$PROJ1" 2026-01-01T00:00:08Z
+seed 9 stranded proj "$PROJ1" 2026-01-01T00:00:09Z
+inbox 1 2 3 4 5 6 7 8 9
+issue 6 blocked "\"$PROJ2\""; issue 7 blocked null; issue 8 blocked "\"$PROJ2\""; issue 9 blocked null
 issue 1 blocked "\"$PROJ2\""          # moved to another mapped project
 issue 2 blocked null                   # project cleared
 issue 3 blocked null
@@ -1469,7 +1489,7 @@ route GET "/api/issues/$(iid 4)/comments" 200 \
   "[{\"id\":\"c0000000-0000-0000-0000-00000000000a\",\"body\":\"use proj2 at $REPO2\",\"authorUserId\":\"$BOARD\",\"authorAgentId\":null,\"createdAt\":\"2026-02-01T00:00:00Z\"}]"
 issue 5 blocked "\"$(pid_n 3)\""       # the pinned project was deleted (404)
 run_afk --json
-for n in 1 2 3; do
+for n in 1 2 3 6 7 8 9; do                # working queued held_by_board waiting_human dep_waiting pending_claim stranded
   assert_eq "PROJ-$n ($(jq -r --arg id "$(iid $n)" '.issues[$id].stop_reason // "?"' "$(LEDGER_OF)")): stopped" "$(lget "$(iid $n)")" "stopped"
   assert_eq "PROJ-$n: one stopped notice under the pinned slug with PROJECT_CHANGED" \
     "$(jq -r '"\(.reason) \(.slug)"' "$STATE"/paperclip/notices/proj/*."$(iid $n)".stopped.json 2>/dev/null)" "PROJECT_CHANGED proj"

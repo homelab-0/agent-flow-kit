@@ -233,7 +233,7 @@ afk_pcs_create_terminal() {
   resume="You are the BMAD PM for project $slug. Register with \`agent-flow-kit pm-start --harness $harness\`, then run \`agent-flow-kit paperclip-take --slug $slug\` and read the brief file it names."
   intent="$(jq -nc --arg proj "$slug" --arg h "$harness" --arg wi "$observed_id" --arg wp "$observed_path" \
     --arg resume "$resume" \
-    '{schema:"afk-pm-bootstrap-first-start-intent/1", project:$proj, harness:$h,
+    '{schema:"afk-pm-bootstrap-first-start-intent/2", slug:$proj, harness:$h,
       worktree:{id:$wi, path:$wp}, resume_instruction:$resume}')" || return 1
   intent_file="$AFK_STATE_DIR/paperclip/pm-start-intents/$slug.json"
   afk_state_file_write "$intent_file" "$intent" || return 1
