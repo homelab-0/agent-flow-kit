@@ -90,10 +90,13 @@ Create the Project in the Paperclip UI, then run one command on the host:
 - **`list [--json]`** prints the table with a readiness column: the
   resolution result for the project itself (`ok` or the refusal code from the
   table below), computed with the host key.
-- `--merge pm` on a repo whose origin is `agent-flow-kit` is refused with
-  `PAPERCLIP_MERGE_KIT_REPO` by `add` and `set`. The check is by the origin's
-  repository name only, so a clone with no `origin` or a differently named fork
-  is not caught; HA-3 extends the merge policy.
+- `--merge pm` on the agent-flow-kit repo is refused with
+  `PAPERCLIP_MERGE_KIT_REPO` by `add`, `set` and at config load. The kit repo
+  is the kit checkout's own git common-dir, or an origin equal (ignoring case)
+  to the release repo in `lifecycle/release-policy.json`. A repo with no
+  readable origin is refused too. A fork under another owner is not the kit
+  repo. When the release policy cannot be read, `merge: pm` is refused with
+  `PAPERCLIP_RELEASE_POLICY_UNREADABLE`.
 - `remove` and `--migrate` treat a ledger file that exists but does not parse
   as held work and refuse.
 

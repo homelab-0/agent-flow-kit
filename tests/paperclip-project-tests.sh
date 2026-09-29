@@ -391,7 +391,32 @@ AFK_RELEASE_POLICY="$SCEN/policy.json" afk paperclip-project list
 assert_contains "load: the kit checkout's own common-dir is the kit repo" "$OUT" "PAPERCLIP_MERGE_KIT_REPO"
 v2_config "[$(row "$PROJ1" proj "$REPO1" pm)]"
 AFK_RELEASE_POLICY="$SCEN/missing.json" afk paperclip-project list
-assert_contains "load: an unreadable release policy fails closed for merge pm" "$OUT" "PAPERCLIP_MERGE_KIT_REPO"
+assert_contains "load: an unreadable release policy fails closed for merge pm" "$OUT" "PAPERCLIP_RELEASE_POLICY_UNREADABLE"
+assert_contains "load: the policy message says merge pm cannot be verified" "$OUT" "merge: pm cannot be verified"
+AFK_RELEASE_POLICY="$SCEN/missing.json" afk paperclip-project set --slug proj --merge pm
+assert_contains "set: an unreadable release policy is refused by name" "$OUT" "PAPERCLIP_RELEASE_POLICY_UNREADABLE"
+v2_config "[$(row "$PROJ1" kit "$KITREPO" pm)]"
+afk paperclip-project list
+assert_contains "load: the kit refusal names the row and the fix" "$OUT" "projects[kit] has merge: pm"
+assert_contains "load: the kit refusal says to set merge to human" "$OUT" "set merge to human"
+KIT_HTTPS="https://github.com/$(sed -E 's#^.*github\.com[:/]##; s#\.git$##' <<<"$KIT_ORIGIN").git"
+KITHTTPS="$TMPROOT/repos/kit-https"; mkrepo "$KITHTTPS" "$KIT_HTTPS"
+v2_config "[$(row "$PROJ1" kit "$KITHTTPS" pm)]"
+afk paperclip-project list
+assert_contains "load: an https origin for the release repo is the kit repo" "$OUT" "PAPERCLIP_MERGE_KIT_REPO"
+KITCASE="$TMPROOT/repos/kit-case"; KIT_PATH="${KIT_HTTPS#https://github.com/}"; KIT_PATH="${KIT_PATH%.git}"
+mkrepo "$KITCASE" "https://GitHub.com/${KIT_PATH^^}.git"
+v2_config "[$(row "$PROJ1" kit "$KITCASE" pm)]"
+afk paperclip-project list
+assert_contains "load: a case-variant release origin is the kit repo" "$OUT" "PAPERCLIP_MERGE_KIT_REPO"
+KITNOORIGIN="$TMPROOT/repos/kit-noorigin"; mkrepo "$KITNOORIGIN" "$KIT_ORIGIN"
+git -C "$KITNOORIGIN" remote rename origin upstream
+v2_config "[$(row "$PROJ1" kit "$KITNOORIGIN" pm)]"
+afk paperclip-project list
+assert_contains "load: merge pm on a repo with no origin fails closed" "$OUT" "PAPERCLIP_MERGE_KIT_REPO"
+v2_config "[$(row "$PROJ1" kit "$KITNOORIGIN" human)]"
+afk paperclip-project list
+assert_eq "load: merge human on a repo with no origin still loads" "$RC" "0"
 v2_config "[$(row "$PROJ1" proj "$REPO1")]"
 jq '.pm_merge_allowed = true' "$CONFIG" >"$CONFIG.t" && mv "$CONFIG.t" "$CONFIG"
 afk paperclip-project list
@@ -434,6 +459,7 @@ assert_eq "verb: unpinned issue refused" "$(jq -r .result <<<"$OUT")" "PAPERCLIP
 assert_eq "verb: unpinned exits non-zero" "$RC" "4"
 afk paperclip-merge-policy --issue "e9999999-9999-9999-9999-999999999999"
 assert_contains "verb: unknown issue refused" "$OUT" "PAPERCLIP_ISSUE_UNKNOWN"
+assert_contains "verb: refusals carry the verb's own name" "$OUT" "agent-flow-kit paperclip-merge-policy: "
 assert_eq "verb: unknown exits non-zero" "$RC" "4"
 afk paperclip-merge-policy --issue "../ledger"
 assert_contains "verb: a non-uuid issue is unknown" "$OUT" "PAPERCLIP_ISSUE_UNKNOWN"

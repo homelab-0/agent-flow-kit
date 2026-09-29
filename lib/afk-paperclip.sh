@@ -244,8 +244,15 @@ afk_pc_load_config() {
     case "$harness" in claude | codex | opencode) ;; *) AFK_PC_REFUSAL="PAPERCLIP_CONFIG_INVALID"; return 1 ;; esac
     [[ "$max" =~ ^[1-9][0-9]{0,2}$ ]] || { AFK_PC_REFUSAL="PAPERCLIP_CONFIG_INVALID"; return 1; }
     case "$merge" in human | pm) ;; *) AFK_PC_REFUSAL="PAPERCLIP_CONFIG_INVALID"; return 1 ;; esac
-    if [[ "$merge" == pm ]] && afk_pc_is_kit_repo "$repo_path"; then
-      AFK_PC_REFUSAL="PAPERCLIP_MERGE_KIT_REPO"; return 1
+    if [[ "$merge" == pm ]]; then
+      AFK_PC_REFUSAL="$(afk_pc_kit_merge_code "$repo_path")"
+      if [[ "$AFK_PC_REFUSAL" == PAPERCLIP_MERGE_KIT_REPO ]]; then
+        printf '%s\n' "agent-flow-kit: PAPERCLIP_MERGE_KIT_REPO: projects[$slug] has merge: pm but $repo_path is the agent-flow-kit repo, or has no readable origin; edit $path and set merge to human" >&2
+        return 1
+      elif [[ -n "$AFK_PC_REFUSAL" ]]; then
+        printf '%s\n' "agent-flow-kit: $AFK_PC_REFUSAL: projects[$slug] has merge: pm, but the kit's release policy (${AFK_RELEASE_POLICY:-${AFK_INSTALL_ROOT:-}/lifecycle/release-policy.json}) cannot be read, so merge: pm cannot be verified; repair the kit install, or edit $path and set merge to human" >&2
+        return 1
+      fi
     fi
     pid="${pid,,}"
     # Two paths into one repository (a linked worktree, a symlink) are the
@@ -357,19 +364,33 @@ afk_pc_origin_normalize() {
   printf '%s/%s' "${host,,}" "$path"
 }
 
-# afk_pc_is_kit_repo <repo_path> -- true when the repo is agent-flow-kit itself
-# (AD-25): the same git common-dir as this kit checkout, or an origin equal to
-# the release repo in lifecycle/release-policy.json (.trust.remote_url). An
-# unreadable release policy counts as the kit repo, so `merge: pm` fails closed.
+# afk_pc_is_kit_repo <repo_path> -- 0 when the repo is agent-flow-kit itself
+# (AD-25): the same git common-dir as this kit checkout, or an origin equal
+# (ignoring case) to the release repo in lifecycle/release-policy.json
+# (.trust.remote_url). A repo with no readable origin also returns 0, and an
+# unreadable release policy returns 2, so `merge: pm` fails closed. 1 only
+# when the repo is shown not to be the kit.
 afk_pc_is_kit_repo() {
   local root="${AFK_INSTALL_ROOT:-}" policy kit_common="" common release origin
   policy="${AFK_RELEASE_POLICY:-$root/lifecycle/release-policy.json}"
   [[ -n "$root" ]] && kit_common="$(git -C "$root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
   common="$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
   [[ -n "$kit_common" && "$common" == "$kit_common" ]] && return 0
-  release="$(afk_pc_origin_normalize "$(jq -r '.trust.remote_url // empty | strings' "$policy" 2>/dev/null)")" || return 0
-  origin="$(afk_pc_origin_normalize "$(git -C "$1" remote get-url origin 2>/dev/null)")" || return 1
-  [[ "$origin" == "$release" ]]
+  release="$(afk_pc_origin_normalize "$(jq -r '.trust.remote_url // empty | strings' "$policy" 2>/dev/null)")" || return 2
+  origin="$(afk_pc_origin_normalize "$(git -C "$1" remote get-url origin 2>/dev/null)")" || return 0
+  [[ "${origin,,}" == "${release,,}" ]]
+}
+
+# afk_pc_kit_merge_code <repo_path> -- prints the refusal code for `merge: pm`
+# on this repo (PAPERCLIP_MERGE_KIT_REPO or PAPERCLIP_RELEASE_POLICY_UNREADABLE),
+# or nothing when pm is allowed.
+afk_pc_kit_merge_code() {
+  local rc=0
+  afk_pc_is_kit_repo "$1" || rc=$?
+  case "$rc" in
+    0) printf PAPERCLIP_MERGE_KIT_REPO ;;
+    2) printf PAPERCLIP_RELEASE_POLICY_UNREADABLE ;;
+  esac
 }
 
 # afk_pc_repo_ready <repo_path> <repo_url-or-empty> -- prints "ok", or the
