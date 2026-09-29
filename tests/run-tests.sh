@@ -3784,6 +3784,13 @@ head1 "25. Test-suite lock gate — tests/runner-lock-tests.sh"
 run_gate "test-suite lock gate" "$KIT_ROOT/tests/runner-lock-tests.sh"
 
 # ===========================================================================
+head1 "26. Paperclip accept gate — tests/paperclip-accept-tests.sh"
+# ===========================================================================
+# route-accept and dispatch's Paperclip acceptance checks (lib/afk-accept.sh),
+# plus the .afk/ protected-path check. Sources dispatch.sh; no network.
+run_gate "paperclip accept gate" "$KIT_ROOT/tests/paperclip-accept-tests.sh"
+
+# ===========================================================================
 # AC-2: total wall time, with a BUDGET warning (never a failure) over 720s.
 printf '\ntotal wall time: %ss\n' "$SECONDS"
 (( SECONDS > GATE_TOTAL_BUDGET_S )) &&
