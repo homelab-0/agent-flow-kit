@@ -338,6 +338,11 @@ afk_cmd_paperclip_timer() { # <json_mode> <action: install|remove|status>
         afk_pc_emit_refusal "PAPERCLIP_TIMER_UNSUPPORTED_PLATFORM" "$json_mode"
         return 1
       fi
+      # The unit carries no secret, so the pass must be able to read the key
+      # with only what the unit gives it.
+      local code
+      if ! afk_pc_load_config; then code="$AFK_PC_REFUSAL"; else code="$(afk_pc_unit_key_check)"; fi
+      if [[ -n "$code" ]]; then afk_pc_emit_refusal "$code" "$json_mode"; return 1; fi
       local sysd_dir; sysd_dir="$(afk_pct_systemd_dir)"
       mkdir -p -- "$sysd_dir" 2>/dev/null || { afk_pc_emit_refusal "PAPERCLIP_TIMER_WRITE_FAILED" "$json_mode"; return 1; }
       afk_pct_service >"$sysd_dir/$AFK_PCT_UNIT.service" 2>/dev/null || { afk_pc_emit_refusal "PAPERCLIP_TIMER_WRITE_FAILED" "$json_mode"; return 1; }
@@ -357,7 +362,8 @@ afk_cmd_paperclip_timer() { # <json_mode> <action: install|remove|status>
       if [[ "$json_mode" == true ]]; then jq -nc '{result:"removed"}'; else printf 'paperclip-timer: removed\n'; fi
       return 0 ;;
     status)
-      local enabled active lockdir reaped="false" last_pass="" reason=""
+      local enabled active lockdir reaped="false" last_pass="" reason="" key_code
+      if ! afk_pc_load_config; then key_code="$AFK_PC_REFUSAL"; else key_code="$(afk_pc_unit_key_check)"; fi
       enabled="$(systemctl --user is-enabled "$AFK_PCT_UNIT.timer" 2>/dev/null </dev/null)"
       active="$(systemctl --user is-active "$AFK_PCT_UNIT.timer" 2>/dev/null </dev/null)"
       lockdir="$AFK_STATE_DIR/paperclip/.lock"
@@ -373,6 +379,8 @@ afk_cmd_paperclip_timer() { # <json_mode> <action: install|remove|status>
       else
         reason="PAPERCLIP_POLLER_STALE"
       fi
+      # A key the unit cannot read is the cause a stale pass would only hint at.
+      [[ -n "$key_code" ]] && reason="$key_code"
       if [[ "$json_mode" == true ]]; then
         jq -nc --arg e "${enabled:-unknown}" --arg a "${active:-unknown}" \
           --arg lp "$last_pass" --arg r "$reason" --argjson sr "$reaped" \

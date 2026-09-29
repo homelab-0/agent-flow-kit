@@ -61,7 +61,8 @@ afk_pcj_ledger_check() {
 # afk_pcj_host_key -- reads the host key into AFK_PCJ_KEY; empty on failure.
 afk_pcj_host_key() {
   local -; set +x
-  AFK_PCJ_KEY="$("$AFK_PC_OP" read "$(jq -r '.host.key_ref' <<<"$AFK_PC_CFG")" 2>/dev/null)"
+  AFK_PCJ_KEY="$(afk_pc_read_key "$(jq -r '.host.key_ref' <<<"$AFK_PC_CFG")")"
+  AFK_PCJ_KEY_CODE="$(afk_pc_key_code $?)"
   [[ -n "$AFK_PCJ_KEY" ]]
 }
 
@@ -94,7 +95,7 @@ afk_cmd_paperclip_project() { # <json> <verb> <project-id> <slug> <repo> <harnes
       afk_pcj_kit_merge_refused "$json" "$repo" "$merge" && return 4
       local api_url resp code body
       api_url="$(jq -r '.api_url' <<<"$cfg")"
-      afk_pcj_host_key || { afk_pcj_emit "$json" PAPERCLIP_VAULT_UNAVAILABLE; return 4; }
+      afk_pcj_host_key || { afk_pcj_emit "$json" "$AFK_PCJ_KEY_CODE"; return 4; }
       resp="$(afk_pc_curl GET "$api_url/api/projects/$pid" "$AFK_PCJ_KEY" "")"
       code="${resp%%$'\n'*}"; body="${resp#*$'\n'}"
       if [[ "$code" != 200 ]] || ! jq -e 'type == "object"' >/dev/null 2>&1 <<<"$body"; then
@@ -157,18 +158,22 @@ afk_cmd_paperclip_project() { # <json> <verb> <project-id> <slug> <repo> <harnes
 
     list)
       # Readiness is the resolution result for the project itself, through the
-      # same function an issue resolves with. It reads the host key once.
-      local api_url key="" host_name ledger='{}' actions='[]' id out="[]" ready
+      # same function an issue resolves with. It reads the host key once, and
+      # a key the timer's unit environment cannot read makes no project ready.
+      local api_url key="" host_name ledger='{}' actions='[]' id out="[]" ready unit_code
       api_url="$(jq -r '.api_url' <<<"$cfg")"; host_name="$(jq -r '.host.label' <<<"$cfg")"
       afk_pcj_host_key && key="$AFK_PCJ_KEY"
+      unit_code="$(afk_pc_unit_key_check)"
       while IFS= read -r row; do
         [[ -n "$row" ]] || continue
-        if [[ -n "$key" ]]; then
+        if [[ -n "$unit_code" ]]; then
+          ready="$unit_code"
+        elif [[ -n "$key" ]]; then
           id="$(jq -r .paperclip_project_id <<<"$row")"
           afk_pc_resolve "$(jq -nc --arg p "$id" '{projectId: $p}')" "-"
           ready="$AFK_PC_RES"
         else
-          ready="PAPERCLIP_VAULT_UNAVAILABLE"
+          ready="$AFK_PCJ_KEY_CODE"
         fi
         out="$(jq -c --argjson r "$row" --arg ready "$ready" '. + [$r + {readiness: $ready}]' <<<"$out")"
       done < <(jq -c '.projects[]' <<<"$cfg")

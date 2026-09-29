@@ -31,7 +31,8 @@ STUBS="$TMPROOT/stubs"; mkdir -p "$STUBS"
 
 cat >"$STUBS/op" <<'SH'
 #!/usr/bin/env bash
-[[ "$1" == read ]] || exit 2
+# op succeeds only with a service-account token, like the real one.
+[[ "$1" == read && -n "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]] || exit 2
 [[ "$2" == op://test/agent1 ]] && { printf 'KEY-AGENT1\n'; exit 0; }
 exit 1
 SH
@@ -77,6 +78,8 @@ printf 'systemctl %s\n' "$*" >>"$SYSTEMCTL_LOG"
 case "$*" in
   *is-enabled*) printf '%s\n' "${SYSTEMCTL_ENABLED:-enabled}"; exit 0 ;;
   *is-active*) printf '%s\n' "${SYSTEMCTL_ACTIVE:-active}"; exit 0 ;;
+  # The user manager's environment, which the unit inherits.
+  *show-environment*) [[ -n "${SYSTEMCTL_SHOWENV:-}" ]] && cat "$SYSTEMCTL_SHOWENV"; exit 0 ;;
   *) exit 0 ;;
 esac
 SH
@@ -142,11 +145,11 @@ run_afk() { # <cmd> [args...]
   local out err
   out="$(env -i PATH="$STUBS:$PATH" HOME="${HOME:-$SCEN/home}" LANG=C \
     AFK_STATE_DIR="$STATE" AFK_PAPERCLIP_CONFIG="$CONFIG" \
-    AFK_OP_BIN="$STUBS/op" AFK_CURL_BIN="$STUBS/curl" AFK_ORCA_BIN="$STUBS/orca" \
+    AFK_OP_BIN="$STUBS/op" AFK_CURL_BIN="$STUBS/curl" AFK_ORCA_BIN="$STUBS/orca" OP_SERVICE_ACCOUNT_TOKEN=test-op-token \
     AFK_PCS_READINESS_BIN="$STUBS/readiness" READINESS_OK="${READINESS_OK:-true}" READINESS_REASON="${READINESS_REASON:-}" \
     CURL_STUB_LOG="$LOG" CURL_STUB_BODYLOG="$BODYLOG" CURL_STUB_FIXTURES="$FIXDIR" \
     ORCA_WT_FILE="$ORCA_WT_FILE" ORCA_TERMLIST_FILE="$ORCA_TERMLIST_FILE" ORCA_TERMLIST_WT_FILE="$ORCA_TERMLIST_WT_FILE" \
-    ORCA_CREATE_LOG="$ORCA_CREATE_LOG" SYSTEMCTL_LOG="$SYSTEMCTL_LOG" \
+    ORCA_CREATE_LOG="$ORCA_CREATE_LOG" SYSTEMCTL_LOG="$SYSTEMCTL_LOG" ${SYSTEMCTL_SHOWENV:+SYSTEMCTL_SHOWENV="$SYSTEMCTL_SHOWENV"} \
     SYSTEMCTL_ENABLED="${SYSTEMCTL_ENABLED:-enabled}" SYSTEMCTL_ACTIVE="${SYSTEMCTL_ACTIVE:-active}" \
     AFK_PCT_SYSTEMD_DIR="$SCEN/systemd-user" \
     bash "$AFK" "$@" 2>"$SCEN/err")"
@@ -444,6 +447,14 @@ head1 "9. paperclip-timer install/status/remove"
 # ============================================================================
 new_scenario timer_linux
 write_config '{}'
+# The unit gets no token: the key must be readable from the op env file alone.
+run_afk paperclip-timer --install --json
+assert_eq "install without an op env file: refused" "$RC" "1"
+assert_contains "install without an op env file: PAPERCLIP_VAULT_UNAVAILABLE" "$OUT_TEXT" "PAPERCLIP_VAULT_UNAVAILABLE"
+assert_eq "install refused: no unit written" "$(test -e "$SCEN/systemd-user/afk-paperclip-poll.service" && echo yes || echo no)" "no"
+run_afk paperclip-timer --status --json
+assert_contains "status without an op env file: PAPERCLIP_VAULT_UNAVAILABLE" "$OUT_TEXT" "PAPERCLIP_VAULT_UNAVAILABLE"
+printf 'OP_SERVICE_ACCOUNT_TOKEN=ops_FILE-TOKEN\n' >"$HOME/.op-agent-env"; chmod 600 "$HOME/.op-agent-env"
 run_afk paperclip-timer --install --json
 assert_eq "install: exit 0" "$RC" "0"
 UNIT="$SCEN/systemd-user/afk-paperclip-poll.timer"
@@ -454,6 +465,8 @@ assert_eq "install: Persistent=false" "$(grep -c '^Persistent=false$' "$UNIT")" 
 SVC="$SCEN/systemd-user/afk-paperclip-poll.service"
 assert_absent "install: the service holds no secret" "$(cat "$SVC" "$UNIT")" "op://"
 assert_absent "install: the service holds no key reference" "$(cat "$SVC" "$UNIT")" "KEY"
+assert_absent "install: the service holds no token" "$(cat "$SVC" "$UNIT")" "FILE-TOKEN"
+assert_absent "install: the service names no op env file" "$(cat "$SVC" "$UNIT")" "op-agent-env"
 
 run_afk paperclip-timer --status --json
 assert_contains "status: reports PAPERCLIP_POLLER_STALE with no pass yet" "$OUT_TEXT" "PAPERCLIP_POLLER_STALE"
@@ -474,6 +487,59 @@ run_afk paperclip-timer --remove --json
 assert_eq "remove: exit 0" "$RC" "0"
 assert_eq "remove: the timer unit is gone" "$(test -e "$UNIT" && echo yes || echo no)" "no"
 assert_eq "remove: the service unit is gone" "$(test -e "$SVC" && echo yes || echo no)" "no"
+
+# ============================================================================
+head1 "9b. The timer check reads the key with the user manager's environment"
+# ============================================================================
+# mgr_scenario <name> -- a config, no default op env file, and a manager bin
+# directory with bash, jq, stat and id but no op.
+mgr_scenario() {
+  new_scenario "$1"; write_config '{}'
+  MGRBIN="$SCEN/mgrbin"; mkdir -p "$MGRBIN"
+  for b in bash jq stat id; do ln -s "$(command -v "$b")" "$MGRBIN/$b"; done
+  SYSTEMCTL_SHOWENV="$SCEN/showenv"
+}
+envfile600() { printf 'OP_SERVICE_ACCOUNT_TOKEN=ops_FILE-TOKEN\n' >"$1"; chmod 600 "$1"; }
+
+mgr_scenario mgr_no_op
+envfile600 "$HOME/.op-agent-env"
+printf 'PATH=%s\n' "$MGRBIN" >"$SYSTEMCTL_SHOWENV"
+run_afk paperclip-timer --status --json
+assert_contains "the caller's AFK_OP_BIN does not count: no op on the manager PATH" "$OUT_TEXT" "PAPERCLIP_VAULT_UNAVAILABLE"
+printf 'PATH=%s\nAFK_OP_BIN=%s\n' "$MGRBIN" "$STUBS/op" >"$SYSTEMCTL_SHOWENV"
+run_afk paperclip-timer --status --json
+assert_absent "the manager's AFK_OP_BIN counts" "$OUT_TEXT" "PAPERCLIP_VAULT_UNAVAILABLE"
+assert_contains "the manager's AFK_OP_BIN: the check passed (only staleness left)" "$OUT_TEXT" "PAPERCLIP_POLLER_STALE"
+
+mgr_scenario mgr_token
+printf 'PATH=%s\nOP_SERVICE_ACCOUNT_TOKEN=ops_MGR-TOKEN\n' "$STUBS:/usr/bin:/bin" >"$SYSTEMCTL_SHOWENV"
+run_afk paperclip-timer --install --json
+assert_eq "a token in the manager's environment: install succeeds" "$RC" "0"
+assert_absent "a manager token never lands in the unit" "$(cat "$SCEN/systemd-user/"* 2>/dev/null)" "MGR-TOKEN"
+assert_absent "a manager token is never printed" "$OUT_TEXT" "MGR-TOKEN"
+
+mgr_scenario mgr_env_file
+envfile600 "$SCEN/mgr.env"
+printf 'PATH=%s\nAFK_OP_ENV_FILE=%s\n' "$STUBS:/usr/bin:/bin" "$SCEN/mgr.env" >"$SYSTEMCTL_SHOWENV"
+run_afk paperclip-timer --install --json
+assert_eq "AFK_OP_ENV_FILE in the manager's environment: install succeeds" "$RC" "0"
+
+mgr_scenario unit_cfg_env_file
+envfile600 "$SCEN/cfg.env"
+jq --arg f "$SCEN/cfg.env" '.host.op_env_file = $f' "$CONFIG" >"$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
+printf 'PATH=%s\n' "$STUBS:/usr/bin:/bin" >"$SYSTEMCTL_SHOWENV"
+run_afk paperclip-timer --install --json
+assert_eq "host.op_env_file is honoured by the unit check" "$RC" "0"
+
+mgr_scenario unit_symlink
+envfile600 "$SCEN/target.env"; ln -s "$SCEN/target.env" "$HOME/.op-agent-env"
+printf 'PATH=%s\n' "$STUBS:/usr/bin:/bin" >"$SYSTEMCTL_SHOWENV"
+run_afk paperclip-timer --install --json
+assert_eq "a symlink to a mode-600 env file is followed" "$RC" "0"
+chmod 644 "$SCEN/target.env"
+run_afk paperclip-timer --status --json
+assert_contains "a symlink to a mode-644 env file is PAPERCLIP_OP_ENV_UNSAFE" "$OUT_TEXT" "PAPERCLIP_OP_ENV_UNSAFE"
+SYSTEMCTL_SHOWENV=""
 
 # ============================================================================
 head1 "10. macOS refuses paperclip-timer"

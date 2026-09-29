@@ -51,6 +51,8 @@ Field rules:
 - `harness` is `claude`, `codex` or `opencode`. `max_active_issues` is an
   integer from 1 to 999 (default 1). `merge` is `human` (default) or `pm`.
 - `api_url` must be `https://`.
+- `host.op_env_file` is optional and, when present, an absolute path. See
+  [How the poller reads the key](#how-the-poller-reads-the-key).
 
 Every id used in a file path (company, agent, maintenance issue, and every id
 read back from a Paperclip response) is checked as a UUID before it is used
@@ -65,6 +67,31 @@ or `PAPERCLIP_ID_INVALID`; a config without the v2 schema reports
 None of these makes a network call. `interim_comment_approval.paperclip_commit`,
 when present, must be 40 lowercase hex characters or config load itself
 refuses with `PAPERCLIP_CONFIG_INVALID`.
+
+### How the poller reads the key
+
+The poller reads `host.key_ref` with `op read`. If `OP_SERVICE_ACCOUNT_TOKEN`
+is already in the environment, as in an interactive shell, `op` uses it. If
+not, as under the systemd timer, the poller sources an op env file inside a
+subshell for that one `op read`, so the token never enters the poller's own
+environment and no other child sees it. The file is the first of
+`host.op_env_file`, `$AFK_OP_ENV_FILE` and `$HOME/.op-agent-env`. It must be
+a regular file owned by you, mode 600 or stricter (no group or other bits);
+anything else is refused with `PAPERCLIP_OP_ENV_UNSAFE` and never sourced. The
+file is opened once and checked and sourced through that open file, so
+swapping the path after the check changes nothing. No file and no token is
+`PAPERCLIP_VAULT_UNAVAILABLE`. Neither the file's contents nor the key are
+ever printed.
+
+The timer's unit carries no secret, no key reference and no env file path.
+`paperclip-timer --status` and `paperclip-project list` repeat the key read
+in the environment the unit gets: `env -i` with `HOME`, plus the user
+manager's `PATH`, `OP_*`, `AFK_OP_ENV_FILE` and `AFK_OP_BIN` from
+`systemctl --user show-environment`. A token or override that only your shell
+carries does not count. The check covers the key read, not the rest of the
+pass. Both commands report `PAPERCLIP_VAULT_UNAVAILABLE` (or
+`PAPERCLIP_OP_ENV_UNSAFE`) when it fails. `paperclip-timer --install` refuses
+with that code rather than install a timer whose every pass would fail.
 
 ### Onboarding a project: `agent-flow-kit paperclip-project`
 
@@ -225,7 +252,7 @@ beyond what those two file types already declare.
 ## Refusal and pause reasons
 
 `PAPERCLIP_NOT_CONFIGURED`, `PAPERCLIP_CONFIG_INVALID`, `PAPERCLIP_ID_INVALID`,
-`PAPERCLIP_VAULT_UNAVAILABLE`, `PAPERCLIP_KEY_AGENT_MISMATCH`,
+`PAPERCLIP_VAULT_UNAVAILABLE`, `PAPERCLIP_OP_ENV_UNSAFE`, `PAPERCLIP_KEY_AGENT_MISMATCH`,
 `PAPERCLIP_KEY_UNAUTHORIZED`, `PAPERCLIP_POLL_BUSY`, `PAPERCLIP_PAUSED`,
 `PAPERCLIP_DRAIN_TAMPERED`, `PAPERCLIP_DRAIN_UNREADABLE`,
 `PAPERCLIP_AUTHOR_UNVERIFIABLE`, `PAPERCLIP_SELF_BLOCK_FAILED`, `PAPERCLIP_UNREACHABLE`,
@@ -596,7 +623,9 @@ every 90s (`OnUnitActiveSec`/`OnActiveSec`, `RandomizedDelaySec=15s`,
 `Persistent=false`). The unit holds no secret and no key reference; the
 poller reads its config at run time. `--status` also reports
 `PAPERCLIP_POLLER_STALE` when the ledger's `last_successful_pass` is older
-than 3 intervals. macOS refuses with `PAPERCLIP_TIMER_UNSUPPORTED_PLATFORM`.
+than 3 intervals, and `PAPERCLIP_VAULT_UNAVAILABLE` when the unit could not
+read the key; `--install` refuses on the same check (see
+[How the poller reads the key](#how-the-poller-reads-the-key)). macOS refuses with `PAPERCLIP_TIMER_UNSUPPORTED_PLATFORM`.
 
 **Stale lock (AC-7b):** the poll lock (`paperclip/.lock`) now carries an
 owner PID file. A lock older than 5 poll intervals whose owner PID is

@@ -35,6 +35,73 @@ afk_pc_config_path() {
   printf '%s' "${AFK_PAPERCLIP_CONFIG:-${HOME:-}/.config/agent-flow-kit/paperclip.json}"
 }
 
+# --- the host key read (docs/PAPERCLIP.md §How the poller reads the key) -----
+# afk_pc_op_env_file -- host.op_env_file, else $AFK_OP_ENV_FILE, else
+# $HOME/.op-agent-env.
+afk_pc_op_env_file() {
+  local f=""
+  [[ -n "${AFK_PC_CFG:-}" ]] && f="$(jq -r '.host.op_env_file // empty' <<<"$AFK_PC_CFG" 2>/dev/null)"
+  printf '%s' "${f:-${AFK_OP_ENV_FILE:-${HOME:-}/.op-agent-env}}"
+}
+
+# afk_pc_read_key <key_ref> -- prints the host key. Every host-key read goes
+# through here. With no OP_SERVICE_ACCOUNT_TOKEN in the environment, the op
+# env file is sourced in a subshell for this one `op read`, so the token never
+# enters this process's environment or reaches any other child. The file is
+# opened once, and owner, mode and type are checked on that open file before
+# it is sourced from it, so a path swapped after the check is never read.
+# Returns 1 for PAPERCLIP_VAULT_UNAVAILABLE, 2 for PAPERCLIP_OP_ENV_UNSAFE.
+afk_pc_read_key() {
+  local -; set +x
+  local ref="$1" file meta key afk_pc_fd
+  if [[ -n "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]]; then
+    key="$("$AFK_PC_OP" read "$ref" 2>/dev/null)"
+  else
+    file="$(afk_pc_op_env_file)"
+    [[ -f "$file" && -r "$file" ]] || return 1
+    { exec {afk_pc_fd}<"$file"; } 2>/dev/null || return 1
+    meta="$(stat -L -c '%a %u' -- "/dev/fd/$afk_pc_fd" 2>/dev/null || stat -L -f '%Lp %u' -- "/dev/fd/$afk_pc_fd" 2>/dev/null)"
+    if [[ ! -f "/dev/fd/$afk_pc_fd" || ! "$meta" =~ ^([0-7]+)\ ([0-9]+)$ ]] || (( 8#${BASH_REMATCH[1]} & 8#077 )) ||
+       [[ "${BASH_REMATCH[2]}" != "$(id -u)" ]]; then
+      exec {afk_pc_fd}<&-
+      printf '%s\n' "agent-flow-kit: PAPERCLIP_OP_ENV_UNSAFE: $file must be owned by you and mode 600 or stricter; not sourced" >&2
+      return 2
+    fi
+    # shellcheck source=/dev/null
+    key="$(set -a; . "/dev/fd/$afk_pc_fd" >/dev/null 2>&1; set +a; "$AFK_PC_OP" read "$ref" 2>/dev/null {afk_pc_fd}<&-)"
+    exec {afk_pc_fd}<&-
+  fi
+  [[ -n "$key" ]] || return 1
+  printf '%s\n' "$key"
+}
+
+# afk_pc_key_code <rc> -- the refusal code for an afk_pc_read_key status.
+afk_pc_key_code() {
+  case "$1" in 0) ;; 2) printf PAPERCLIP_OP_ENV_UNSAFE ;; *) printf PAPERCLIP_VAULT_UNAVAILABLE ;; esac
+}
+
+# afk_pc_unit_key_check -- reads the host key the way the systemd unit would.
+# The unit inherits the user manager's environment, so the check starts from
+# `env -i` with HOME and takes PATH and the key-source variables (OP_*,
+# AFK_OP_ENV_FILE, AFK_OP_BIN) from `systemctl --user show-environment`. They
+# reach the child on fd 3, never on a command line. A token or override that
+# only the calling shell carries does not count. Prints nothing when the read
+# works, else the refusal code. Needs AFK_PC_CFG; the key goes to /dev/null.
+afk_pc_unit_key_check() {
+  local lib code
+  lib="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/afk-paperclip.sh"
+  # shellcheck disable=SC2016
+  code="$(env -i HOME="${HOME:-}" PATH="${PATH:-/usr/bin:/bin}" AFK_PC_CFG="$AFK_PC_CFG" "${BASH:-bash}" -c '
+      while IFS= read -r l; do
+        [[ "$l" =~ ^(PATH|OP_[A-Za-z0-9_]+|AFK_OP_ENV_FILE|AFK_OP_BIN)= ]] && export "$l"
+      done <&3
+      exec 3<&-
+      . "$1" || exit 1; afk_pc_read_key "$2" >/dev/null 2>&1; afk_pc_key_code $?' \
+    _ "$lib" "$(jq -r '.host.key_ref' <<<"$AFK_PC_CFG")" \
+    3< <(systemctl --user show-environment 2>/dev/null </dev/null) 2>/dev/null)" || code=PAPERCLIP_VAULT_UNAVAILABLE
+  printf '%s' "$code"
+}
+
 # --- the one HTTP entry point (AC-2, quality bar) ---------------------------
 # afk_pc_curl <method> <url> <key> <run-id-or-empty> [<body-json>]
 # stdout: "<3-digit status, or empty on a transport failure>\n<response body>".
@@ -188,6 +255,10 @@ afk_pc_load_config() {
   host_key="$(jq -r '.host.key_ref // empty | strings' <<<"$cfg")"
   maint="$(jq -r '.maintenance_issue_id // empty' <<<"$cfg")"
   if [[ -z "$api_url" || -z "$company_id" || -z "$board_user_id" || -z "$host_name" || -z "$host_key" ]]; then
+    AFK_PC_REFUSAL="PAPERCLIP_CONFIG_INVALID"; return 1
+  fi
+  # host.op_env_file is optional; when present it is an absolute path.
+  if ! jq -e '.host.op_env_file | . == null or (type == "string" and startswith("/"))' >/dev/null 2>&1 <<<"$cfg"; then
     AFK_PC_REFUSAL="PAPERCLIP_CONFIG_INVALID"; return 1
   fi
   # The host key is sent as a bearer token to $api_url; refuse anything that
@@ -957,8 +1028,7 @@ afk_cmd_paperclip_poll() { # <json_mode>
   local any_agent_ok=false result="" actions="[]" key=""
   local stop_text="Stopped: project changed after claim; reassign to restart"
   while :; do
-    key="$("$AFK_PC_OP" read "$key_ref" 2>/dev/null)"
-    [[ -n "$key" ]] || { result="PAPERCLIP_VAULT_UNAVAILABLE"; break; }
+    key="$(afk_pc_read_key "$key_ref")" || { result="$(afk_pc_key_code $?)"; break; }
 
     local me_resp me_body me_http
     me_resp="$(afk_pc_curl GET "$api_url/api/agents/me" "$key" "")"
