@@ -99,19 +99,19 @@ lookup() { # <repo_path> -> prints JSON; also honors ORCA_STUB_MODE/ORCA_TERMINA
     ' _ "$1"
 }
 
-write_paperclip_config() { # <project> <repo_path>
+write_paperclip_config() { # <slug> <repo_path>
   mkdir -p "$HOME_DIR/.config/agent-flow-kit"
   jq -nc --arg p "$1" --arg r "$2" \
-    '{api_url:"https://paperclip.test",company_id:"cccccccc-cccc-cccc-cccc-cccccccccccc",
-      board_user_id:"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",host_label:"h",
-      agents:[{agent_id:"11111111-1111-1111-1111-111111111111",key_ref:"op://x/y",
-        project:$p,repo_path:$r,harness:"claude"}]}' >"$HOME_DIR/.config/agent-flow-kit/paperclip.json"
+    '{schema:"afk-paperclip-config/2",api_url:"https://paperclip.test",company_id:"cccccccc-cccc-cccc-cccc-cccccccccccc",
+      board_user_id:"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+      host:{label:"h",agent_id:"11111111-1111-1111-1111-111111111111",key_ref:"op://x/y"},
+      projects:[{paperclip_project_id:"aaaaaaaa-0000-4000-8000-000000000001",slug:$p,repo_path:$r,harness:"claude"}]}' >"$HOME_DIR/.config/agent-flow-kit/paperclip.json"
 }
 
-write_notice() { # <project> <epoch> <issue_id> <event>
+write_notice() { # <slug> <epoch> <issue_id> <event>
   mkdir -p "$STATE/paperclip/notices/$1"
   jq -nc --arg id "$3" --arg ev "$4" --arg p "$1" \
-    '{id:$id,identifier:"AB",agent_id:"11111111-1111-1111-1111-111111111111",project:$p,
+    '{id:$id,identifier:"AB",host_agent_id:"11111111-1111-1111-1111-111111111111",slug:$p,
       repo_path:"'"$REPO"'",harness:"claude",event:$ev,time:"2026-09-27T00:00:00Z"}' \
     >"$STATE/paperclip/notices/$1/$2.$3.$4.json"
 }
@@ -165,7 +165,7 @@ SK="$(write_owner termA 11111111-1111-1111-1111-111111111111 "$REPO")"
 write_paperclip_config proj1 "$REPO"
 write_notice proj1 1000 66666666-6666-6666-6666-666666666666 claimed
 set_terminals '{"terminals":[{"handle":"termA","connected":true,"orphaned":false}]}'
-ORCA_TERMINAL_HANDLE=termA run_afk paperclip-take --project proj1 --json
+ORCA_TERMINAL_HANDLE=termA run_afk paperclip-take --slug proj1 --json
 assert_eq "take (owner) claims the seeded notice" "$RC" "0"
 
 run_afk pm-registry-reap --scope "$SK" --json
@@ -200,21 +200,32 @@ write_notice proj1 1000 66666666-6666-6666-6666-666666666666 claimed
 write_notice proj1 2000 77777777-7777-7777-7777-777777777777 claimed
 set_terminals '{"terminals":[{"handle":"termA","connected":true,"orphaned":false}]}'
 
-ORCA_TERMINAL_HANDLE=termZ run_afk paperclip-take --project proj1 --json
+ORCA_TERMINAL_HANDLE=termZ run_afk paperclip-take --slug proj1 --json
 assert_eq "take by a non-owner refuses" "$(jq -r .result <<<"$OUT_TEXT")" "PAPERCLIP_NOT_OWNER"
 assert_eq "  ...exit code 2" "$RC" "2"
 
-ORCA_TERMINAL_HANDLE=termA run_afk paperclip-take --project ../proj1 --json
+ORCA_TERMINAL_HANDLE=termA run_afk paperclip-take --slug ../proj1 --json
 assert_eq "take refuses a path-shaped project name" "$(jq -r .result <<<"$OUT_TEXT")" "PAPERCLIP_PROJECT_UNKNOWN"
 
+ORCA_TERMINAL_HANDLE=termA run_afk paperclip-take --slug Proj1 --json
+assert_eq "take refuses a slug outside ^[a-z0-9-]{1,40}$" "$(jq -r .result <<<"$OUT_TEXT")" "PAPERCLIP_PROJECT_UNKNOWN"
+
+ORCA_TERMINAL_HANDLE=termA run_afk paperclip-take --slug claimed --json
+assert_eq "take refuses the kit's own claimed/ directory as a slug" "$(jq -r .result <<<"$OUT_TEXT")" "PAPERCLIP_PROJECT_UNKNOWN"
+
 ORCA_TERMINAL_HANDLE=termA run_afk paperclip-take --project proj1 --json
+assert_contains "the old --project flag is refused, not aliased" "$OUT_TEXT" "PAPERCLIP_FLAG_RENAMED"
+assert_eq "  ...as a usage error" "$RC" "1"
+assert_eq "  ...and nothing was claimed" "$(find "$STATE/paperclip/notices/claimed" -type f 2>/dev/null | wc -l | tr -d ' ')" "0"
+
+ORCA_TERMINAL_HANDLE=termA run_afk paperclip-take --slug proj1 --json
 assert_eq "take by the owner succeeds" "$RC" "0"
 assert_eq "  ...claims in ascending order" "$(jq -r '.[0].id' <<<"$OUT_TEXT")" "66666666-6666-6666-6666-666666666666"
 assert_eq "  ...prints a path, not the notice contents" "$(jq -r '.[0].notice' <<<"$OUT_TEXT")" \
   "$STATE/paperclip/notices/claimed/$(scope_key termA)/1000.66666666-6666-6666-6666-666666666666.claimed.json"
 assert_contains "  ...no raw Paperclip text ever appears" "$(jq -c <<<"$OUT_TEXT")" '"notice":'
 
-ORCA_TERMINAL_HANDLE=termA run_afk paperclip-take --project proj1 --json
+ORCA_TERMINAL_HANDLE=termA run_afk paperclip-take --slug proj1 --json
 assert_eq "a second take never returns the same notices" "$(jq -c <<<"$OUT_TEXT")" "[]"
 
 ID=66666666-6666-6666-6666-666666666666
@@ -242,10 +253,10 @@ write_paperclip_config proj1 "$REPO"
 write_notice proj1 1000 66666666-6666-6666-6666-666666666666 claimed
 set_terminals '{"terminals":[{"handle":"termA","connected":true,"orphaned":false}]}'
 
-ORCA_TERMINAL_HANDLE=termA run_afk paperclip-take --project proj1 --json
+ORCA_TERMINAL_HANDLE=termA run_afk paperclip-take --slug proj1 --json
 assert_eq "the old owner is refused during a handoff" "$(jq -r .result <<<"$OUT_TEXT")" "PAPERCLIP_HANDOFF_IN_PROGRESS"
 
-ORCA_TERMINAL_HANDLE=termC run_afk paperclip-take --project proj1 --json
+ORCA_TERMINAL_HANDLE=termC run_afk paperclip-take --slug proj1 --json
 assert_eq "the named successor may take during a handoff" "$RC" "0"
 assert_eq "  ...it claims the notice" "$(jq -r '.[0].id' <<<"$OUT_TEXT")" "66666666-6666-6666-6666-666666666666"
 
@@ -263,7 +274,7 @@ assert_eq "  ...reason is PM_OWNER_DISCONNECTED" "$(jq -r .reason <<<"$out")" "P
 assert_eq "  ...it is not in the stale list" "$(jq -c .stale <<<"$out")" "[]"
 assert_eq "  ...it is named in owners" "$(jq -r '.owners[0].terminal' <<<"$out")" "termA"
 
-ORCA_TERMINAL_HANDLE=termA run_afk paperclip-take --project proj1 --json
+ORCA_TERMINAL_HANDLE=termA run_afk paperclip-take --slug proj1 --json
 assert_eq "take refuses a disconnected owner's own terminal" "$(jq -r .result <<<"$OUT_TEXT")" "PAPERCLIP_NOT_OWNER"
 assert_eq "  ...exit code 2" "$RC" "2"
 
@@ -289,7 +300,7 @@ assert_eq "  ...both successors are named" "$(jq -c '[.handoffs[].successor.term
 
 write_paperclip_config proj1 "$REPO"
 write_notice proj1 1000 66666666-6666-6666-6666-666666666666 claimed
-ORCA_TERMINAL_HANDLE=termC run_afk paperclip-take --project proj1 --json
+ORCA_TERMINAL_HANDLE=termC run_afk paperclip-take --slug proj1 --json
 assert_eq "no successor may take while the handoff is ambiguous" "$(jq -r .result <<<"$OUT_TEXT")" "PAPERCLIP_NOT_OWNER"
 
 # ============================================================================
@@ -305,14 +316,14 @@ write_notice proj1 1000 "$IDA" claimed
 write_notice proj1 2000 "$IDB" claimed
 write_notice proj1 3000 "$IDC" claimed
 set_terminals '{"terminals":[{"handle":"termA","connected":true,"orphaned":false}]}'
-ORCA_TERMINAL_HANDLE=termA run_afk paperclip-take --project proj1 --json
+ORCA_TERMINAL_HANDLE=termA run_afk paperclip-take --slug proj1 --json
 assert_eq "take claims all three seeded notices" "$RC" "0"
 
 CLAIMED_DIR="$STATE/paperclip/notices/claimed/$(scope_key termA)"
 UNRETURNED_DIR="$STATE/paperclip/notices/unreturned/$SK7"
 
 # A: an invalid project on the claimed notice.
-jq -c '.project="../bad"' "$CLAIMED_DIR/1000.$IDA.claimed.json" >"$CLAIMED_DIR/1000.$IDA.claimed.json.tmp" \
+jq -c '.slug="../bad"' "$CLAIMED_DIR/1000.$IDA.claimed.json" >"$CLAIMED_DIR/1000.$IDA.claimed.json.tmp" \
   && mv "$CLAIMED_DIR/1000.$IDA.claimed.json.tmp" "$CLAIMED_DIR/1000.$IDA.claimed.json"
 
 # B: the project destination is already occupied by a duplicate, so the
