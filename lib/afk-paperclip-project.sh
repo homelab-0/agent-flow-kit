@@ -35,12 +35,9 @@ afk_pcj_common() {
 }
 
 # afk_pcj_kit_merge_refused <repo> <merge> -- --merge pm on agent-flow-kit's own
-# repo is refused (AD-23; HA-3 adds the rest of the merge policy).
+# repo is refused (AD-25).
 afk_pcj_kit_merge_refused() {
-  local norm
-  [[ "$2" == pm ]] || return 1
-  norm="$(afk_pc_origin_normalize "$(git -C "$1" remote get-url origin 2>/dev/null)")" || return 1
-  [[ "$norm" == */agent-flow-kit ]]
+  [[ "$2" == pm ]] && afk_pc_is_kit_repo "$1"
 }
 
 # afk_pcj_ledger_check <jq-select-on-.issues[]> [<--arg name> <value>] -- prints
@@ -224,5 +221,41 @@ afk_cmd_paperclip_config() {
     jq -nc --arg s "$slug" --arg b "$backup" --arg d "$dropped" '{result: "migrated", slug: $s, backup: $b, dropped_pm_merge_allowed: ($d != "")}'
   else
     printf 'migrated to v2: project %s; old config kept at %s%s\n' "$slug" "$backup" "$dropped"
+  fi
+}
+
+# afk_cmd_paperclip_merge_policy <json> <issue> -- AD-25, read-only. `pm` or
+# `human` for the project the ledger pinned the issue to. Only the host's
+# projects[] row is read: never the live projectId, the repo or Paperclip.
+afk_cmd_paperclip_merge_policy() {
+  local json="$1" id="${2,,}" ledger="$AFK_STATE_DIR/paperclip/ledger.json" pin slug pid row merge reason
+  local emit; emit() { afk_pcj_emit "$json" "$@"; }
+  afk_pc_load_config || { emit "$AFK_PC_REFUSAL"; return 4; }
+  afk_pc_uuid_ok "$id" || { emit PAPERCLIP_ISSUE_UNKNOWN; return 4; }
+  if [[ -e "$ledger" ]] && ! jq -e 'type == "object"' "$ledger" >/dev/null 2>&1; then
+    emit PAPERCLIP_LEDGER_UNREADABLE; return 4
+  fi
+  pin="$(jq -c --arg id "$id" '.issues[$id] // empty' "$ledger" 2>/dev/null)"
+  [[ -n "$pin" ]] || { emit PAPERCLIP_ISSUE_UNKNOWN; return 4; }
+  IFS=$'\x1f' read -r slug pid < <(jq -r '[(.slug // "" | strings), (.paperclip_project_id // "" | strings)]
+    | map(gsub("[[:cntrl:]]"; "?")) | join("\u001f")' <<<"$pin")
+  if [[ "$(jq -r '.state // ""' <<<"$pin")" == waiting_setup || -z "$slug" || -z "$pid" ]]; then
+    emit PAPERCLIP_ISSUE_UNPINNED "the issue has no pinned project yet"; return 4
+  fi
+  row="$(jq -c --arg s "$slug" --arg p "${pid,,}" \
+    'first(.projects[] | select(.slug == $s and .paperclip_project_id == $p)) // empty' <<<"$AFK_PC_CFG")"
+  merge=human reason=DEFAULT
+  if [[ -z "$row" ]]; then
+    reason=PROJECT_NOT_CONFIGURED
+  elif jq -e --arg s "$slug" 'first(.projects[] | select(.slug == $s)) | has("merge")' "$(afk_pc_config_path)" >/dev/null 2>&1; then
+    merge="$(jq -r '.merge' <<<"$row")" reason=CONFIGURED
+    if [[ "$merge" == pm ]] && afk_pc_is_kit_repo "$(jq -r '.repo_path' <<<"$row")"; then
+      merge=human reason=PAPERCLIP_MERGE_KIT_REPO
+    fi
+  fi
+  if [[ "$json" == true ]]; then
+    jq -nc --arg i "$id" --arg s "$slug" --arg m "$merge" --arg r "$reason" '{issue: $i, slug: $s, merge: $m, reason: $r}'
+  else
+    printf '%s (%s, project %s)\n' "$merge" "$reason" "$slug"
   fi
 }

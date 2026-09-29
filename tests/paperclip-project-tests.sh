@@ -64,6 +64,7 @@ new_scenario() {
 RC=0 OUT=""
 afk() { # <command...> -- runs the kit against the scenario's config and stubs
   OUT="$(env -i PATH="$STUBS:$PATH" HOME="$HOME" LANG=C ${AFK_TEST_TMPDIR:+TMPDIR="$AFK_TEST_TMPDIR"} \
+    ${AFK_RELEASE_POLICY:+AFK_RELEASE_POLICY="$AFK_RELEASE_POLICY"} \
     AFK_STATE_DIR="$STATE" AFK_PAPERCLIP_CONFIG="$CONFIG" AFK_OP_BIN="$STUBS/op" AFK_CURL_BIN="$STUBS/curl" \
     CURL_STUB_LOG="$LOG" CURL_STUB_FIXTURES="$FIXDIR" bash "$AFK" "$@" 2>&1)"
   RC=$?
@@ -85,7 +86,10 @@ mkrepo() { # <path> <origin-url>
 }
 REPO1="$TMPROOT/repos/repo1"; mkrepo "$REPO1" "git@github.com:test/repo1.git"
 REPO2="$TMPROOT/repos/repo2"; mkrepo "$REPO2" "git@github.com:test/repo2.git"
-KITREPO="$TMPROOT/repos/agent-flow-kit"; mkrepo "$KITREPO" "git@github.com:test/agent-flow-kit.git"
+# The kit repo is the release repo named in the kit's own release policy.
+KIT_ORIGIN="$(jq -r '.trust.remote_url' "$KIT_ROOT/lifecycle/release-policy.json")"
+KITREPO="$TMPROOT/repos/agent-flow-kit"; mkrepo "$KITREPO" "$KIT_ORIGIN"
+FORKREPO="$TMPROOT/repos/fork/agent-flow-kit"; mkrepo "$FORKREPO" "git@github.com:test/agent-flow-kit.git"
 NOALLOW="$TMPROOT/repos/noallow"; mkdir -p "$NOALLOW"; git -C "$NOALLOW" init -q -b main
 NOTGIT="$TMPROOT/repos/notgit"; mkdir -p "$NOTGIT"
 
@@ -361,6 +365,111 @@ v1_config "$TMPROOT/repos/Spektacle"
 AFK_TEST_TMPDIR="$SCEN/no-such-dir" afk paperclip-config --migrate --project-id "$PROJ1"
 assert_contains "migrate: an unwritable probe is a write failure" "$OUT" "PAPERCLIP_CONFIG_WRITE_FAILED"
 assert_eq "migrate: probe failure leaves the v1 file" "$(jq -r 'has("agents")' "$CONFIG")" "true"
+
+# ============================================================================
+head1 "7. Merge policy (AD-25): load-time refusals"
+# ============================================================================
+row() { # <pid> <slug> <repo> [<merge>] -- one projects[] row; no merge key when omitted
+  jq -nc --arg p "$1" --arg s "$2" --arg r "$3" --arg m "${4:-}" \
+    '{paperclip_project_id:$p, slug:$s, repo_path:$r, harness:"claude", max_active_issues:1}
+     + (if $m == "" then {} else {merge:$m} end)'
+}
+new_scenario merge_load
+v2_config "[$(row "$PROJ1" kit "$KITREPO" pm)]"
+afk paperclip-project list
+assert_contains "load: merge pm on the release repo refused" "$OUT" "PAPERCLIP_MERGE_KIT_REPO"
+assert_eq "load: kit refusal exits non-zero" "$RC" "4"
+v2_config "[$(row "$PROJ1" kit "$KITREPO" human)]"
+afk paperclip-project list
+assert_eq "load: merge human on the kit repo is fine" "$RC" "0"
+v2_config "[$(row "$PROJ1" fork "$FORKREPO" pm)]"
+afk paperclip-project list
+assert_eq "load: a fork that shares the name is not the kit repo" "$RC" "0"
+printf '{"trust":{"remote_url":"https://example.test/other/repo.git"}}\n' >"$SCEN/policy.json"
+v2_config "[$(row "$PROJ1" kit "$KIT_ROOT" pm)]"
+AFK_RELEASE_POLICY="$SCEN/policy.json" afk paperclip-project list
+assert_contains "load: the kit checkout's own common-dir is the kit repo" "$OUT" "PAPERCLIP_MERGE_KIT_REPO"
+v2_config "[$(row "$PROJ1" proj "$REPO1" pm)]"
+AFK_RELEASE_POLICY="$SCEN/missing.json" afk paperclip-project list
+assert_contains "load: an unreadable release policy fails closed for merge pm" "$OUT" "PAPERCLIP_MERGE_KIT_REPO"
+v2_config "[$(row "$PROJ1" proj "$REPO1")]"
+jq '.pm_merge_allowed = true' "$CONFIG" >"$CONFIG.t" && mv "$CONFIG.t" "$CONFIG"
+afk paperclip-project list
+assert_contains "load: top-level pm_merge_allowed refused" "$OUT" "PAPERCLIP_CONFIG_INVALID"
+assert_contains "load: the message names the key" "$OUT" "pm_merge_allowed"
+assert_contains "load: the message points at paperclip-project set --merge" "$OUT" "paperclip-project set --slug <s> --merge"
+v2_config "[$(row "$PROJ1" proj "$REPO1")]"
+jq '.projects[0].pm_merge_allowed = false' "$CONFIG" >"$CONFIG.t" && mv "$CONFIG.t" "$CONFIG"
+afk paperclip-poll
+assert_contains "load: a nested pm_merge_allowed (even false) refused" "$OUT" "PAPERCLIP_CONFIG_INVALID"
+assert_contains "load: nested key named" "$OUT" "pm_merge_allowed"
+
+# ============================================================================
+head1 "8. paperclip-merge-policy: answers from the pinned project row"
+# ============================================================================
+ISSUE2="e2222222-2222-2222-2222-222222222222"
+ISSUE3="e3333333-3333-3333-3333-333333333333"
+ISSUE4="e4444444-4444-4444-4444-444444444444"
+PROJ3="aaaaaaaa-0000-4000-8000-000000000003"
+new_scenario merge_verb
+REPO3="$TMPROOT/repos/repo3"; mkrepo "$REPO3" "git@github.com:test/repo3.git"
+v2_config "[$(row "$PROJ1" p1 "$REPO1" pm), $(row "$PROJ2" p2 "$REPO2" human), $(row "$PROJ3" p3 "$REPO3")]"
+mkdir -p "$STATE/paperclip"
+jq -n --arg i1 "$ISSUE1" --arg i2 "$ISSUE2" --arg i3 "$ISSUE3" --arg i4 "$ISSUE4" \
+  --arg p1 "$PROJ1" --arg p2 "$PROJ2" --arg p3 "$PROJ3" '{issues: {
+    ($i1): {state:"working", slug:"p1", paperclip_project_id:$p1},
+    ($i2): {state:"working", slug:"p2", paperclip_project_id:$p2},
+    ($i3): {state:"working", slug:"p3", paperclip_project_id:$p3, merge:"pm"},
+    ($i4): {state:"waiting_setup", refusal_code:"PAPERCLIP_PROJECT_UNMAPPED"}}}' >"$STATE/paperclip/ledger.json"
+afk paperclip-merge-policy --issue "$ISSUE1" --json
+assert_eq "verb: pm" "$OUT" "{\"issue\":\"$ISSUE1\",\"slug\":\"p1\",\"merge\":\"pm\",\"reason\":\"CONFIGURED\"}"
+assert_eq "verb: pm exits 0" "$RC" "0"
+afk paperclip-merge-policy --issue "$ISSUE2"
+assert_eq "verb: human (plain)" "$OUT" "human (CONFIGURED, project p2)"
+assert_eq "verb: human exits 0" "$RC" "0"
+afk paperclip-merge-policy --issue "$ISSUE3" --json
+assert_eq "verb: default human" "$(jq -c '[.merge, .reason]' <<<"$OUT")" '["human","DEFAULT"]'
+afk paperclip-merge-policy --issue "$ISSUE4" --json
+assert_eq "verb: unpinned issue refused" "$(jq -r .result <<<"$OUT")" "PAPERCLIP_ISSUE_UNPINNED"
+assert_eq "verb: unpinned exits non-zero" "$RC" "4"
+afk paperclip-merge-policy --issue "e9999999-9999-9999-9999-999999999999"
+assert_contains "verb: unknown issue refused" "$OUT" "PAPERCLIP_ISSUE_UNKNOWN"
+assert_eq "verb: unknown exits non-zero" "$RC" "4"
+afk paperclip-merge-policy --issue "../ledger"
+assert_contains "verb: a non-uuid issue is unknown" "$OUT" "PAPERCLIP_ISSUE_UNKNOWN"
+afk paperclip-merge-policy
+assert_eq "verb: --issue required" "$RC" "1"
+# The pinned row, never the live projectId: p1 moved to a new project id in config.
+jq '.projects[0].paperclip_project_id = "aaaaaaaa-0000-4000-8000-00000000000f"' "$CONFIG" >"$CONFIG.t" && mv "$CONFIG.t" "$CONFIG"
+afk paperclip-merge-policy --issue "$ISSUE1" --json
+assert_eq "verb: a slug re-pointed at another project answers human" "$(jq -c '[.merge, .reason]' <<<"$OUT")" '["human","PROJECT_NOT_CONFIGURED"]'
+printf 'not json' >"$STATE/paperclip/ledger.json"
+afk paperclip-merge-policy --issue "$ISSUE1"
+assert_contains "verb: an unreadable ledger is refused" "$OUT" "PAPERCLIP_LEDGER_UNREADABLE"
+
+# ============================================================================
+head1 "9. AD-25: nothing but host config can grant merge"
+# ============================================================================
+new_scenario merge_widen
+v2_config "[$(row "$PROJ1" p1 "$REPO1")]"
+printf 'merge: pm\n' >"$REPO1/.afk/merge"
+printf '{"merge":"pm","pm_merge_allowed":true}\n' >"$REPO1/.afk/paperclip.json"
+git -C "$REPO1" add .afk && git -C "$REPO1" -c user.name=t -c user.email=t@t commit -qm 'claim merge'
+route GET "/api/projects/$PROJ1" 200 "$(jq -nc --arg p "$PROJ1" '{id:$p, name:"Proj", merge:"pm", pmMergeAllowed:true}')"
+route GET "/api/issues/$ISSUE1" 200 "$(jq -nc --arg p "$PROJ1" '{id:"x", projectId:$p, merge:"pm"}')"
+mkdir -p "$STATE/paperclip"
+jq -n --arg i "$ISSUE1" --arg p "$PROJ1" '{issues: {($i): {state:"working", slug:"p1", paperclip_project_id:$p, merge:"pm"}}}' >"$STATE/paperclip/ledger.json"
+afk paperclip-merge-policy --issue "$ISSUE1" --json
+assert_eq "widen: .afk files, a Paperclip field and a ledger field leave human" "$(jq -c '[.merge, .reason]' <<<"$OUT")" '["human","DEFAULT"]'
+assert_eq "widen: the verb makes no network call" "$(wc -l <"$LOG" | tr -d ' ')" "0"
+
+# ============================================================================
+head1 "10. The playbook merge step is the same in both managed policy files"
+# ============================================================================
+step='**Merge.** Before merging any `paperclip:` PR, run `agent-flow-kit paperclip-merge-policy --issue <id>`. `pm`: normal merge policy applies. `human` (the default, and always for `agent-flow-kit`): post `NEEDS HUMAN: merge <PR>` and never merge yourself. The post-PR triage worker records the answer.'
+for f in claude-global-CLAUDE.md codex-AGENTS.md; do
+  assert_contains "playbook: $f carries the merge step" "$(cat "$KIT_ROOT/files/$f")" "$step"
+done
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

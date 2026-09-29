@@ -257,7 +257,7 @@ or `paperclip:HOM-<n>`. That home is the only tracker for the epic; never mix:
   4. **Route and accept.** For each story: `/v1/route`, then `make-stamp.sh`. Then `agent-flow-kit route-accept --kind pm-auto` **only** for a natural free-lane decision. A hard exclusion means `Stopped` or a re-plan — never a question to Josh. Metered or any other decision: report `Waiting for Josh: route` in chat.
   5. **Dispatch and report.** Dispatch as usual. After each story event, `paperclip-report --comment-file` with one short line (and the PR link). Keep `paperclip-report --status "story k/n …"` current.
   6. **Settle.** Each notice acted on: `agent-flow-kit paperclip-settle --notice <id>`.
-  7. **Merge.** Follow normal merge policy, except for self-deploying repos (`agent-flow-kit` always): post `NEEDS HUMAN: merge <PR>` and never merge yourself.
+  7. **Merge.** Before merging any `paperclip:` PR, run `agent-flow-kit paperclip-merge-policy --issue <id>`. `pm`: normal merge policy applies. `human` (the default, and always for `agent-flow-kit`): post `NEEDS HUMAN: merge <PR>` and never merge yourself. The post-PR triage worker records the answer.
   8. **Finish.** `paperclip-report --final in_review|done --comment-file` with a summary: what shipped, PR links, gate summary, token use by lane. No secrets, stamp bodies, or transcripts.
 - Promotion between homes (e.g. a local epic goes public in Linear) happens only when
   Josh explicitly says so; the PM may suggest it but never does it unprompted.
@@ -283,8 +283,8 @@ The PM may squash-merge a story PR into develop ON ITS OWN iff ALL hold:
   diff to justify a merge (three-role separation stands).
 - Squash-merge, develop only. NEVER main, promotion PRs, releases, or --admin.
   Promotions to prod remain Josh's decision, always.
-- For `paperclip:` work, a self-deploying repo (`agent-flow-kit` always, and any
-  repo not listed as safe in poller config) is never PM-merged. The PM posts
+- For `paperclip:` work, a repo whose `paperclip-merge-policy` answer is `human`
+  (the default, and always `agent-flow-kit`) is never PM-merged. The PM posts
   `NEEDS HUMAN: merge <PR>`, and Josh merges on GitHub himself.
 - **Ideal state before any merge decision: PR fully clean — CI green including
   CodeRabbit and the Sentry gate — THEN the PM decides.** Engineer toward clean:
