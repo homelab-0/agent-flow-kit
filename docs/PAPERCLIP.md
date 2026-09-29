@@ -90,10 +90,13 @@ Create the Project in the Paperclip UI, then run one command on the host:
 - **`list [--json]`** prints the table with a readiness column: the
   resolution result for the project itself (`ok` or the refusal code from the
   table below), computed with the host key.
-- `--merge pm` on a repo whose origin is `agent-flow-kit` is refused with
-  `PAPERCLIP_MERGE_KIT_REPO` by `add` and `set`. The check is by the origin's
-  repository name only, so a clone with no `origin` or a differently named fork
-  is not caught; HA-3 extends the merge policy.
+- `--merge pm` on the agent-flow-kit repo is refused with
+  `PAPERCLIP_MERGE_KIT_REPO` by `add`, `set` and at config load. The kit repo
+  is the kit checkout's own git common-dir, or an origin equal (ignoring case)
+  to the release repo in `lifecycle/release-policy.json`. A repo with no
+  readable origin is refused too. A fork under another owner is not the kit
+  repo. When the release policy cannot be read, `merge: pm` is refused with
+  `PAPERCLIP_RELEASE_POLICY_UNREADABLE`.
 - `remove` and `--migrate` treat a ledger file that exists but does not parse
   as held work and refuse.
 
@@ -122,6 +125,26 @@ once with **`agent-flow-kit paperclip-config --migrate --project-id <uuid>
 - Migration moves only the config. A pending notice under the old project
   name in `notices/`, and any `pm-start-intents/<name>.json`, are not renamed
   to the slug; with no open issues there should be none.
+
+### Repairing a v2 config the loader refuses
+
+The merge checks below refuse the whole config, not just one project row, so
+the poller and every verb stop until the file is fixed. This fails closed on
+purpose. `paperclip-project set` loads the config first, so it cannot repair
+these rows, and `--migrate` handles only v1 files. Edit the config
+(`~/.config/agent-flow-kit/paperclip.json`, mode 600) by hand, then run
+`agent-flow-kit paperclip-project list` to confirm it loads:
+
+- `PAPERCLIP_CONFIG_INVALID` naming `pm_merge_allowed`: delete that key
+  wherever it appears. It never granted anything. Set merge per project with
+  `paperclip-project set --slug <s> --merge human|pm` once the file loads.
+- `PAPERCLIP_MERGE_KIT_REPO`: in the named `projects[<slug>]` row, set
+  `"merge": "human"`. The agent-flow-kit repo, and any repo with no readable
+  `origin`, can never be `pm`.
+- `PAPERCLIP_RELEASE_POLICY_UNREADABLE`: the kit's
+  `lifecycle/release-policy.json` (or `$AFK_RELEASE_POLICY`) is missing or
+  unreadable. Repair the kit install. Until then, set `"merge": "human"` on
+  every `pm` row so the other projects keep running.
 
 ### Migrating from `paperclip_version`
 
