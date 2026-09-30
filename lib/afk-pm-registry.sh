@@ -6,8 +6,8 @@
 # library) is independently sourceable: nothing here reads a variable it did
 # not declare or receive as an argument.
 #
-# Never reap on uncertainty: when Orca cannot be queried, every owner is
-# treated as live, never stale. Every scope key, session/claim key and notice
+# Never reap on uncertainty: an owner Orca cannot prove stale (AD-28 R5) is
+# kept, so nothing is reaped and no second PM starts. Every scope key, session/claim key and notice
 # id is validated before it is ever used in a path.
 
 if [[ -n "${AFK_PM_REGISTRY_SOURCED:-}" ]]; then
@@ -61,52 +61,40 @@ afk_pmr_handoff_timeout_min() {
   printf '30'
 }
 
-# --- Orca liveness (AC-2) ----------------------------------------------------
-# Sets AFK_PMR_TERMINALS_JSON and AFK_PMR_ORCA_STATE (OK|ORCA_UNAVAILABLE). An
-# unresolved CLI, a missing bounding tool, a timeout, a non-zero exit, an
-# incomplete list or unparsable output are all ORCA_UNAVAILABLE — never
-# treated as "no terminals".
-afk_pmr_orca_terminals() {
-  local out parsed
-  AFK_PMR_TERMINALS_JSON="[]"; AFK_PMR_ORCA_STATE="ORCA_UNAVAILABLE"
-  afk_orca_run --bound 5 pm-registry-list -- terminal list --json || return 1
-  out="$AFK_ORCA_OUT"
-  # A partial or malformed list is uncertainty, not "no terminals": refuse an
-  # ok:false/error envelope, a truncated list, a missing terminals array, and
-  # any entry without a string handle and boolean connected/orphaned.
-  parsed="$(jq -ce 'if type!="object" or .ok==false or (.error // null)!=null then empty else
-    (.result // .) as $r |
-    if ($r|type)!="object" or ($r.truncated // false)!=false or ($r.terminals|type)!="array" then empty
-    elif all($r.terminals[]; type=="object" and (.handle|type)=="string" and (.handle|length)>0 and
-      (.connected|type)=="boolean" and (.orphaned|type)=="boolean")
-    then $r.terminals | map({handle, connected, orphaned}) else empty end end' \
-    <<<"$out" 2>/dev/null)" || return 1
-  [[ -n "$parsed" ]] || return 1
-  AFK_PMR_TERMINALS_JSON="$parsed"; AFK_PMR_ORCA_STATE="OK"
-  return 0
+# --- Orca liveness (AD-28 R5) -----------------------------------------------
+# An owner is judged by afk_orca_terminal_state (lib/afk-orca.sh): the
+# recorded identity tuple joined against the complete terminal list, the
+# worktree ps agent rows, and the runtime id. Only `stale` is reapable;
+# detached, disconnected and unknown owners are never reaped and never
+# replaced. An ownership row without a tuple (afk-pm-ownership/2, written
+# before tuples existed) reads as unknown until its own PM re-registers.
+AFK_PMR_OWNER_SCHEMAS='["afk-pm-ownership/2","afk-pm-ownership/3"]'
+
+afk_pmr_owner_state() { # <owner-json>: sets AFK_PMR_STATE and AFK_PMR_REASON
+  # The join judges .identity.handle and reap acts on .terminal: a row where
+  # they differ proves nothing about the terminal it names.
+  if jq -e '.schema=="afk-pm-ownership/3" and .identity.handle==.terminal' <<<"$1" >/dev/null 2>&1; then
+    afk_orca_terminal_state "$(jq -c '.identity // {}' <<<"$1")"
+    AFK_PMR_STATE="$AFK_ORCA_TERMINAL_STATE"; AFK_PMR_REASON="$AFK_ORCA_TERMINAL_REASON"
+  else
+    AFK_PMR_STATE="unknown"; AFK_PMR_REASON="PM_IDENTITY_UNRECORDED"
+  fi
+  [[ "$AFK_PMR_STATE" != detached && "$AFK_PMR_STATE" != disconnected ]] || AFK_PMR_STATE="unknown"
 }
 
-# Stale is provable only as "absent" or "orphaned" (AC-2). A listed terminal
-# that is merely disconnected is neither live nor stale, so it is never reaped.
-# ORCA-2: orphaned:true alone stops counting as stale (AD-28 R5).
-afk_pmr_terminal_stale() { # <handle>
-  [[ -n "$1" && "$AFK_PMR_ORCA_STATE" == OK ]] || return 1
-  jq -e --arg h "$1" 'map(select(.handle==$h)) | all(.[]; .orphaned==true)' \
-    <<<"$AFK_PMR_TERMINALS_JSON" >/dev/null 2>&1
-}
-
-# A terminal Orca still lists, but marks connected:false and orphaned:false,
-# is a PM whose Orca session dropped without Orca declaring it orphaned. It is
-# not stale (afk_pmr_terminal_stale above returns false for it, so reap
-# refuses PM_OWNER_LIVE), and it must also never be counted as a live owner —
-# otherwise a disconnected PM's terminal handle would still pass
-# paperclip-take's identity check. Returns true only when the handle is
-# actually listed (an absent handle is stale, not disconnected).
-afk_pmr_terminal_disconnected() { # <handle>
-  [[ -n "$1" && "$AFK_PMR_ORCA_STATE" == OK ]] || return 1
-  jq -e --arg h "$1" \
-    'map(select(.handle==$h)) as $m | ($m|length) > 0 and all($m[]; .connected==false and .orphaned==false)' \
-    <<<"$AFK_PMR_TERMINALS_JSON" >/dev/null 2>&1
+# afk_pmr_caller_owns <lookup-json> <terminal>: the caller's own terminal is
+# the owner. A live owner qualifies. So does the single unknown owner, but only
+# when it is unknown because its tab lost its pane (a PM running this command
+# is evidently running), because its row predates identity tuples, or because
+# Orca can't be asked right now. A caller in a remote-runtime session never
+# qualifies (AD-28 R3).
+afk_pmr_caller_owns() {
+  [[ -z "${ORCA_ENVIRONMENT:-}" && -z "${ORCA_PAIRING_CODE:-}" ]] || return 1
+  jq -e --arg t "$2" '
+    (.state=="live" and .owner.terminal==$t) or
+    (.state=="unknown" and (.owners|length)==1 and .owners[0].terminal==$t and
+     (.owners[0].reason|IN("PM_TERMINAL_DETACHED","PM_IDENTITY_UNRECORDED","ORCA_UNAVAILABLE","ORCA_LIST_INCOMPLETE")))' \
+    <<<"$1" >/dev/null 2>&1
 }
 
 # Slugs become directory names under notices/: the AD-23 slug regex only, and
@@ -119,15 +107,16 @@ afk_pmr_slug_ok() {
 # afk_pm_registry_lookup <repo_path> -> prints one JSON object on stdout.
 afk_pm_registry_lookup() {
   local repo_path="$1" target_common d scope_key owner_file owner_doc owner_common
-  local handoff_doc terminal orca_state stale="[]"
-  local -a candidates=() handoffs=() disconnected=()
+  local handoff_doc orca_state stale="[]"
+  local -a candidates=() handoffs=() unknown=()
   target_common="$(git -C "$repo_path" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || target_common=""
   if [[ -z "$target_common" ]]; then
     jq -nc '{state:"none",owner:null,owners:null,handoff:null,reason:null,orca:"OK",stale:[]}'
     return 0
   fi
-  afk_pmr_orca_terminals || true
-  orca_state="$AFK_PMR_ORCA_STATE"
+  afk_orca_liveness_reset
+  afk_orca_list_state || true
+  orca_state="$AFK_ORCA_LIST_CODE"
 
   if [[ -d "${AFK_STATE_DIR:-}/pm/scopes" ]]; then
     for d in "$AFK_STATE_DIR/pm/scopes"/*/; do
@@ -136,7 +125,7 @@ afk_pm_registry_lookup() {
       afk_pmr_scope_key_ok "$scope_key" || continue
       owner_file="$d/ownership.json"
       [[ -f "$owner_file" ]] || continue
-      owner_doc="$(jq -ce 'select(.schema=="afk-pm-ownership/2" and .owned==true and
+      owner_doc="$(jq -ce --argjson sc "$AFK_PMR_OWNER_SCHEMAS" 'select((.schema|IN($sc[])) and .owned==true and
         (.terminal|type)=="string" and (.terminal|length)>0 and
         (.worktree.path|type)=="string" and (.worktree.path|length)>0)' "$owner_file" 2>/dev/null)" || continue
       owner_common="$(git -C "$(jq -r .worktree.path <<<"$owner_doc")" \
@@ -146,23 +135,19 @@ afk_pm_registry_lookup() {
 
       handoff_doc=""
       if [[ -f "$d/handoff.json" ]]; then
-        handoff_doc="$(jq -ce 'select(.schema=="afk-pm-handoff/2")' "$d/handoff.json" 2>/dev/null)" || handoff_doc=""
+        handoff_doc="$(jq -ce 'select(.schema|IN("afk-pm-handoff/2","afk-pm-handoff/3"))' "$d/handoff.json" 2>/dev/null)" || handoff_doc=""
       fi
       if [[ -n "$handoff_doc" ]] && jq -e '.state=="SUCCESSOR_LAUNCHED" or .state=="ACKED"' <<<"$handoff_doc" >/dev/null 2>&1; then
         handoffs+=("$(jq -c --arg sk "$scope_key" '. + {scope:$sk}' <<<"$handoff_doc")")
         continue
       fi
 
-      terminal="$(jq -r .terminal <<<"$owner_doc")"
-      if afk_pmr_terminal_stale "$terminal"; then
-        stale="$(jq -c --argjson o "$owner_doc" '. + [{scope:$o.scope,terminal:$o.terminal}]' <<<"$stale")"
-        continue
-      fi
-      if afk_pmr_terminal_disconnected "$terminal"; then
-        disconnected+=("$owner_doc")
-        continue
-      fi
-      candidates+=("$owner_doc")
+      afk_pmr_owner_state "$owner_doc"
+      case "$AFK_PMR_STATE" in
+        stale) stale="$(jq -c --argjson o "$owner_doc" '. + [{scope:$o.scope,terminal:$o.terminal}]' <<<"$stale")" ;;
+        live) candidates+=("$owner_doc") ;;
+        *) unknown+=("$(jq -c --arg r "$AFK_PMR_REASON" '. + {reason:$r}' <<<"$owner_doc")") ;;
+      esac
     done
   fi
 
@@ -196,14 +181,15 @@ afk_pm_registry_lookup() {
 
   local n=${#candidates[@]}
   if (( n == 0 )); then
-    if (( ${#disconnected[@]} > 0 )); then
+    # Every owner that is not provably live or stale keeps the repo busy.
+    if (( ${#unknown[@]} > 0 )); then
       local darr="[]" o
-      for o in "${disconnected[@]}"; do
+      for o in "${unknown[@]}"; do
         darr="$(jq -c --argjson o "$o" \
-          '. + [{scope:$o.scope,terminal:$o.terminal,harness:$o.harness,session:$o.session,worktree:$o.worktree}]' <<<"$darr")"
+          '. + [{scope:$o.scope,terminal:$o.terminal,harness:$o.harness,session:$o.session,worktree:$o.worktree,reason:$o.reason}]' <<<"$darr")"
       done
       jq -nc --argjson owners "$darr" --argjson stale "$stale" --arg orca "$orca_state" \
-        '{state:"unknown",owner:null,owners:$owners,handoff:null,reason:"PM_OWNER_DISCONNECTED",orca:$orca,stale:$stale}'
+        '{state:"unknown",owner:null,owners:$owners,handoff:null,reason:$owners[0].reason,orca:$orca,stale:$stale}'
       return 0
     fi
     jq -nc --argjson stale "$stale" --arg orca "$orca_state" \
@@ -240,19 +226,18 @@ afk_cmd_pm_registry_reap() { # <json_mode> <scope_key>
   dir="$AFK_STATE_DIR/pm/scopes/$scope_key"
   owner_file="$dir/ownership.json"
   [[ -f "$owner_file" ]] || { afk_pmr_emit_refusal "PM_SCOPE_EMPTY" "$json_mode"; return 4; }
-  owner_doc="$(jq -ce 'select(.schema=="afk-pm-ownership/2" and .owned==true and
+  owner_doc="$(jq -ce --argjson sc "$AFK_PMR_OWNER_SCHEMAS" 'select((.schema|IN($sc[])) and .owned==true and
     (.terminal|type)=="string" and (.terminal|length)>0)' "$owner_file" 2>/dev/null)" \
     || { afk_pmr_emit_refusal "PM_SCOPE_EMPTY" "$json_mode"; return 4; }
-  afk_pmr_orca_terminals || true
-  if [[ "$AFK_PMR_ORCA_STATE" != OK ]]; then
-    afk_pmr_emit_refusal "ORCA_UNAVAILABLE" "$json_mode"
-    return 5
-  fi
+  # Re-prove stale with a fresh join immediately before the reap.
+  afk_orca_liveness_reset
+  afk_pmr_owner_state "$owner_doc"
+  case "$AFK_PMR_STATE" in
+    stale) : ;;
+    live) afk_pmr_emit_refusal "PM_OWNER_LIVE" "$json_mode"; return 2 ;;
+    *) afk_pmr_emit_refusal "PM_OWNER_UNKNOWN" "$json_mode"; return 5 ;;
+  esac
   terminal="$(jq -r .terminal <<<"$owner_doc")"
-  if ! afk_pmr_terminal_stale "$terminal"; then
-    afk_pmr_emit_refusal "PM_OWNER_LIVE" "$json_mode"
-    return 2
-  fi
 
   epoch="$(date +%s)"
   afk_state_dir_ensure "$AFK_STATE_DIR/pm/reaped" || { afk_pmr_emit_refusal "PM_REGISTRY_WRITE_FAILED" "$json_mode"; return 1; }
@@ -350,8 +335,8 @@ afk_cmd_paperclip_take() { # <json_mode> <slug>
   state="$(jq -r .state <<<"$lookup")"
   claim_terminal=""
   case "$state" in
-    live)
-      [[ "$terminal" == "$(jq -r .owner.terminal <<<"$lookup")" ]] && claim_terminal="$terminal" ;;
+    live | unknown)
+      afk_pmr_caller_owns "$lookup" "$terminal" && claim_terminal="$terminal" ;;
     handoff_in_progress | handoff_stalled)
       local succ; succ="$(jq -r '.handoff.successor.terminal // empty' <<<"$lookup")"
       if [[ -n "$succ" && "$terminal" == "$succ" ]]; then

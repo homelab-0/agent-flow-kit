@@ -198,6 +198,122 @@ eq "an explicit --bound 60 is clamped too" \
   "$(in_shell ORCA_CLI_COMMAND="$TMP/cli-orca" AFK_ORCA_GRACE_SECONDS=10 AFK_ORCA_TRACE=1 -- \
     'afk_orca_run --bound 60 t -- status 2>&1 >/dev/null' 2>&1 | grep -o 'bound=[0-9]* grace=[0-9]*')" "bound=50 grace=10"
 
+# --- (h) identity tuple and the liveness join (AD-28 R4, R5) -----------------
+# A stub whose answers come from files, shaped like Orca 1.4.216/217 output
+# (orca-model.md section 4, OQ-4): the list and ps carry _meta.runtimeId, and
+# an unknown handle is the terminal_handle_stale envelope with exit 1.
+cat >"$TMP/lv-orca" <<'STUB'
+#!/bin/bash
+[[ "${1:-}" == --version ]] && { echo 1.4.217; exit 0; }
+printf '%s\n' "$*" >>"$LV/argv"
+case "$1 $2" in
+  "terminal list") cat "$LV/list" ;;
+  "worktree ps") cat "$LV/ps" ;;
+  "terminal show") cat "$LV/show"; exit "$(cat "$LV/show.rc" 2>/dev/null || echo 0)" ;;
+  *) exit 1 ;;
+esac
+STUB
+chmod +x "$TMP/lv-orca"
+LV="$TMP/lv"; mkdir -p "$LV"
+RA=runtime-a
+TUPLE='{"handle":"term_pm","runtime_id":"runtime-a","tab_id":"tab-1","leaf_id":"leaf-1","agent_type":"claude"}'
+lv_list() { # <runtime> <terminals-json> [truncated]
+  jq -nc --arg rt "$1" --argjson t "$2" --argjson tr "${3:-false}" \
+    '{ok:true,result:{terminals:$t,totalCount:($t|length),truncated:$tr},_meta:{runtimeId:$rt}}' >"$LV/list"
+}
+lv_term() { # <connected> <orphaned>
+  jq -nc --argjson c "$1" --argjson o "$2" \
+    '[{handle:"term_pm",connected:$c,orphaned:$o,tabId:"tab-1",leafId:"leaf-1"}]'
+}
+lv_ps() { # <runtime> <agents-json>
+  jq -nc --arg rt "$1" --argjson a "$2" \
+    '{ok:true,result:{worktrees:[{path:"/w",agents:$a}],totalCount:1,truncated:false},_meta:{runtimeId:$rt}}' >"$LV/ps"
+}
+lv_row() { # <paneKey> <state>
+  jq -nc --arg p "$1" --arg s "$2" \
+    '[{paneKey:$p,state:$s,agentType:"claude",prompt:"SECRET-PROMPT",lastAssistantMessage:"SECRET-REPLY"}]'
+}
+lv_stale_show() { # <runtime>
+  jq -nc --arg rt "$1" '{ok:false,error:{code:"terminal_handle_stale",message:"terminal_handle_stale"},_meta:{runtimeId:$rt}}' >"$LV/show"
+  echo 1 >"$LV/show.rc"
+}
+lv() { # [tuple] -> "state reason"
+  rm -f "$LV/argv"
+  env -i HOME="$H" PATH="$BASE_PATH" LV="$LV" ORCA_CLI_COMMAND="$TMP/lv-orca" \
+    bash -c '. "$1"; afk_orca_terminal_state "$2"; printf "%s %s" "$AFK_ORCA_TERMINAL_STATE" "$AFK_ORCA_TERMINAL_REASON"' _ "$LIB" "${1:-$TUPLE}"
+}
+reset_config
+lv_list "$RA" "$(lv_term true false)"; lv_ps "$RA" "$(lv_row tab-1:leaf-1 "done")"
+eq "(h) an idle PM (done row) is live" "$(lv)" "live null"
+eq "(h) the list call pages explicitly" "$(grep -c -- '^terminal list --limit 1000 --json$' "$LV/argv")" "1"
+lv_ps "$RA" "$(lv_row tab-1:leaf-1 waiting)"
+eq "(h) a PM at a permission prompt (waiting row) is live" "$(lv)" "live null"
+lv_list "$RA" "$(lv_term true true)"; lv_ps "$RA" "$(lv_row tab-1:leaf-1 working)"
+eq "(h) a working PM that is orphaned:true is detached, never stale" "$(lv)" "detached PM_TERMINAL_DETACHED"
+lv_list "$RA" "$(lv_term true false)"; lv_ps "$RA" '[]'
+eq "(h) a listed PM whose agent row is gone (exited to shell) is detached" "$(lv)" "detached PM_TERMINAL_DETACHED"
+lv_ps "$RA" "$(lv_row pty:3:pty:3 working)"
+eq "(h) a re-attached pty:N:pty:N pane key never matches a UUID pane" "$(lv)" "detached PM_TERMINAL_DETACHED"
+lv_ps "$RA" "$(jq -c '.[0].agentType="codex"' <<<"$(lv_row tab-1:leaf-1 "done")")"
+eq "(h) a row of another agent type is not the registered PM" "$(lv)" "detached PM_TERMINAL_DETACHED"
+lv_ps runtime-b "$(lv_row tab-1:leaf-1 "done")"
+eq "(h) agent rows from another runtime are never joined" "$(lv)" "unknown ORCA_UNAVAILABLE"
+jq -nc --arg rt "$RA" --argjson a "$(lv_row tab-1:leaf-1 "done")" \
+  '{ok:true,result:{worktrees:[{agents:$a}],totalCount:3,truncated:true},_meta:{runtimeId:$rt}}' >"$LV/ps"
+eq "(h) a truncated worktree ps is unknown" "$(lv)" "unknown ORCA_LIST_INCOMPLETE"
+echo '{"ok":false,"error":{"code":"runtime_unavailable"}}' >"$LV/ps"
+eq "(h) a failing worktree ps is unknown" "$(lv)" "unknown ORCA_UNAVAILABLE"
+# Live 1.4.217 shape: the list reports a re-attached tab as pty:N and
+# orphaned, while show and ps keep the UUID pane.
+lv_list "$RA" '[{"handle":"term_pm","connected":true,"orphaned":true,"tabId":"pty:3","leafId":"pty:3"}]'
+lv_ps "$RA" "$(lv_row tab-1:leaf-1 working)"
+eq "(h) a pty:N orphaned list entry with a UUID agent row is detached" "$(lv)" "detached PM_TERMINAL_DETACHED"
+lv_list "$RA" "$(lv_term false false)"
+eq "(h) connected:false is disconnected" "$(lv)" "disconnected PM_OWNER_DISCONNECTED"
+lv_list "$RA" '[]'; lv_stale_show "$RA"
+eq "(h) absent from a complete list plus terminal_handle_stale is stale" "$(lv)" "stale PM_TERMINAL_STALE"
+eq "(h) every liveness call shares the 5 s bound" \
+  "$(env -i HOME="$H" PATH="$BASE_PATH" LV="$LV" ORCA_CLI_COMMAND="$TMP/lv-orca" AFK_ORCA_TRACE=1 \
+    bash -c '. "$1"; afk_orca_terminal_state "$2" 2>&1 >/dev/null | grep -o "afk-liveness-[a-z]* .* bound=[0-9]*" | sed "s/ .* bound=/ bound=/"' _ "$LIB" "$TUPLE")" \
+  "afk-liveness-list bound=5
+afk-liveness-show bound=5"
+lv_stale_show runtime-b
+eq "(h) a stale answer from another runtime proves nothing" "$(lv)" "unknown PM_TERMINAL_UNPROVEN"
+echo '{"ok":false,"error":{"code":"runtime_unavailable"}}' >"$LV/show"
+eq "(h) absent with any other show answer is unknown" "$(lv)" "unknown PM_TERMINAL_UNPROVEN"
+lv_list "$RA" '[]' true; lv_stale_show "$RA"
+eq "(h) absent from a truncated list is unknown" "$(lv)" "unknown ORCA_LIST_INCOMPLETE"
+lv_list runtime-b '[]'
+eq "(h) absent after a runtime change is unknown, never stale" "$(lv)" "unknown PM_RUNTIME_MISMATCH"
+absent "(h) ...and terminal show is never asked for a foreign handle" "$(grep -l '^terminal show' "$LV/argv" 2>/dev/null)"
+echo '{"ok":true,"result":{"terminals":[]}}' >"$LV/list"
+eq "(h) a list without a runtime id is unknown" "$(lv)" "unknown ORCA_UNAVAILABLE"
+echo 'not json' >"$LV/list"
+eq "(h) an unparsable list is unknown" "$(lv)" "unknown ORCA_UNAVAILABLE"
+eq "(h) a tuple without a pane is unknown" "$(lv '{"handle":"term_pm","runtime_id":"runtime-a"}')" "unknown PM_IDENTITY_UNRECORDED"
+jq -nc '{ok:true,result:{terminal:{handle:"term_pm",tabId:"tab-1",leafId:"leaf-1",incarnationId:"inc-1",
+  executionHostId:"local",worktreeId:"wt-1",connected:true,orphaned:false,preview:"SECRET"}},_meta:{runtimeId:"runtime-a"}}' >"$LV/show"
+echo 0 >"$LV/show.rc"
+eq "(h) the identity tuple comes from terminal show and the runtime id" \
+  "$(env -i HOME="$H" PATH="$BASE_PATH" LV="$LV" ORCA_CLI_COMMAND="$TMP/lv-orca" \
+    bash -c '. "$1"; afk_orca_identity term_pm claude && jq -c "del(.recorded_at)" <<<"$AFK_ORCA_IDENTITY"' _ "$LIB")" \
+  '{"handle":"term_pm","runtime_id":"runtime-a","execution_host_id":"local","worktree_id":"wt-1","tab_id":"tab-1","leaf_id":"leaf-1","incarnation_id":"inc-1","agent_type":"claude"}'
+jq '.result.terminal.tabId=null' "$LV/show" >"$LV/show.tmp" && mv "$LV/show.tmp" "$LV/show"
+eq "(h) the show payload does not outlive the identity read" \
+  "$(env -i HOME="$H" PATH="$BASE_PATH" LV="$LV" ORCA_CLI_COMMAND="$TMP/lv-orca" \
+    bash -c '. "$1"; afk_orca_identity term_pm claude; printf "%s" "${#AFK_ORCA_OUT}"' _ "$LIB")" "0"
+eq "(h) the identity read honours --bound" \
+  "$(env -i HOME="$H" PATH="$BASE_PATH" LV="$LV" ORCA_CLI_COMMAND="$TMP/lv-orca" AFK_ORCA_TRACE=1 \
+    bash -c '. "$1"; afk_orca_identity --bound 2 term_pm claude 2>&1 >/dev/null | grep -o "afk-identity OK rc=0 bound=2"' _ "$LIB")" \
+  "afk-identity OK rc=0 bound=2"
+eq "(h) no tuple without a pane" \
+  "$(env -i HOME="$H" PATH="$BASE_PATH" LV="$LV" ORCA_CLI_COMMAND="$TMP/lv-orca" \
+    bash -c '. "$1"; afk_orca_identity term_pm claude; printf "%s|%s" "$?" "$AFK_ORCA_IDENTITY"' _ "$LIB")" "1|"
+lv_list "$RA" "$(lv_term true false)"; lv_ps "$RA" "$(lv_row tab-1:leaf-1 working)"
+eq "(h) worktree ps text never survives the join" \
+  "$(env -i HOME="$H" PATH="$BASE_PATH" LV="$LV" ORCA_CLI_COMMAND="$TMP/lv-orca" \
+    bash -c '. "$1"; afk_orca_terminal_state "$2"; set | grep -c -e "SECRET-""PROMPT" -e "SECRET-""REPLY"' _ "$LIB" "$TUPLE")" "0"
+
 # --- (g) the real CLI under the systemd user manager's PATH ------------------
 if [[ -x "${HOME:-/nonexistent}/.local/bin/orca-ide" && ! -e "$HOME/.config/agent-flow-kit/host.json" ]]; then
   sys_path="$(systemctl --user show-environment 2>/dev/null | sed -n 's/^PATH=//p')"

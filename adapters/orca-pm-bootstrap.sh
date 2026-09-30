@@ -71,7 +71,7 @@ tries="${AFK_PM_BOOTSTRAP_POLLS:-50}"; delay="${AFK_PM_BOOTSTRAP_POLL_SECONDS:-0
 while ((tries-- > 0)); do
   if jq -e --arg id "$tid" --arg t "$ORCA_TERMINAL_HANDLE" --arg h "$harness" --arg wi "$wi" --arg wp "$wp" \
     --arg continuation_sha "$continuation_sha" \
-    '.schema=="afk-pm-handoff/2" and .transition_id==$id and .state=="SUCCESSOR_LAUNCHED" and
+    '(.schema|IN("afk-pm-handoff/2","afk-pm-handoff/3")) and .transition_id==$id and .state=="SUCCESSOR_LAUNCHED" and
      .continuation_sha256==$continuation_sha and .successor.terminal==$t and .successor.harness==$h and
      .successor.worktree.id==$wi and .successor.worktree.path==$wp' \
     "$pm_dir/handoff.json" >/dev/null 2>&1; then break; fi

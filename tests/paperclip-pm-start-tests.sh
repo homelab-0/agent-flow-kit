@@ -71,7 +71,15 @@ cat >"$STUBS/orca-cli" <<'SH'
 case "$1 $2" in
   "worktree show") cat "$ORCA_WT_FILE" ;;
   "terminal list")
-    if [[ "${3:-}" == --worktree ]]; then cat "$ORCA_TERMLIST_WT_FILE"; else cat "$ORCA_TERMLIST_FILE"; fi ;;
+    if [[ "${3:-}" == --worktree ]]; then cat "$ORCA_TERMLIST_WT_FILE"
+    else jq -c '. + {_meta:{runtimeId:"rt-1"}}' "$ORCA_TERMLIST_FILE"; fi ;;
+  # Every listed terminal runs claude on pane tab-<handle>:leaf-<handle>.
+  "worktree ps")
+    jq -c '{result:{worktrees:[{agents:[.result.terminals[] | {paneKey:("tab-"+.handle+":leaf-"+.handle),
+      state:"working",agentType:"claude"}]}]},_meta:{runtimeId:"rt-1"}}' "$ORCA_TERMLIST_FILE" ;;
+  "terminal show")
+    [[ "${4:-}" == term-created-1 ]] || exit 1
+    printf '{"result":{"terminal":{"handle":"term-created-1","tabId":"tab-c","leafId":"leaf-c"}},"_meta":{"runtimeId":"rt-1"}}' ;;
   "terminal create")
     printf '%s\n' "$*" >>"$ORCA_CREATE_LOG"
     printf '{"result":{"terminal":{"handle":"term-created-1"}}}' ;;
@@ -210,6 +218,9 @@ assert_absent "none+Josh: no issue title in the bootstrap intent" "$(cat "$INTEN
 assert_absent "none+Josh: no issue description in the bootstrap intent" "$(cat "$INTENT_FILE" 2>/dev/null)" "\"D\""
 LEDGER="$STATE/paperclip/ledger.json"
 assert_eq "none+Josh: ledger records the terminal" "$(jq -r --arg id "$ISSUE1" '.pm_started[$id].terminal' "$LEDGER")" "term-created-1"
+assert_eq "none+Josh: the ledger row records the identity tuple" \
+  "$(jq -r --arg id "$ISSUE1" '.pm_started[$id].identity | "\(.runtime_id) \(.tab_id):\(.leaf_id) \(.agent_type)"' "$LEDGER")" \
+  "rt-1 tab-c:leaf-c claude"
 # The real adapter validates the intent the lib wrote (the fixed text is
 # rebuilt and byte-compared there), so the two copies can never drift.
 run_adapter() { # <intent-file>
@@ -240,7 +251,8 @@ SK="$(scope_key term-live-1)"
 mkdir -p "$STATE/pm/scopes/$SK"
 REPO_ABS="$(cd "$REPO" && pwd -P)"
 jq -nc --arg t term-live-1 --arg s sess-1 --arg wp "$REPO_ABS" \
-  '{schema:"afk-pm-ownership/2", owned:true, terminal:$t, session:$s, harness:"claude", worktree:{path:$wp}}' \
+  '{schema:"afk-pm-ownership/3", owned:true, terminal:$t, session:$s, harness:"claude", worktree:{path:$wp},
+    identity:{handle:$t, runtime_id:"rt-1", tab_id:("tab-"+$t), leaf_id:("leaf-"+$t), agent_type:"claude"}}' \
   >"$STATE/pm/scopes/$SK/ownership.json"
 printf '{"result":{"terminals":[{"handle":"term-live-1","connected":true,"orphaned":false}]}}' >"$ORCA_TERMLIST_FILE"
 issue_route in_progress "$BOARD"
@@ -255,10 +267,12 @@ write_config '{"pm_start_enabled":true}'
 SK1="$(scope_key term-amb-1)"; SK2="$(scope_key term-amb-2)"
 mkdir -p "$STATE/pm/scopes/$SK1" "$STATE/pm/scopes/$SK2"
 jq -nc --arg t term-amb-1 --arg s s1 --arg wp "$REPO_ABS" \
-  '{schema:"afk-pm-ownership/2", owned:true, terminal:$t, session:$s, harness:"claude", worktree:{path:$wp}}' \
+  '{schema:"afk-pm-ownership/3", owned:true, terminal:$t, session:$s, harness:"claude", worktree:{path:$wp},
+    identity:{handle:$t, runtime_id:"rt-1", tab_id:("tab-"+$t), leaf_id:("leaf-"+$t), agent_type:"claude"}}' \
   >"$STATE/pm/scopes/$SK1/ownership.json"
 jq -nc --arg t term-amb-2 --arg s s2 --arg wp "$REPO_ABS" \
-  '{schema:"afk-pm-ownership/2", owned:true, terminal:$t, session:$s, harness:"claude", worktree:{path:$wp}}' \
+  '{schema:"afk-pm-ownership/3", owned:true, terminal:$t, session:$s, harness:"claude", worktree:{path:$wp},
+    identity:{handle:$t, runtime_id:"rt-1", tab_id:("tab-"+$t), leaf_id:("leaf-"+$t), agent_type:"claude"}}' \
   >"$STATE/pm/scopes/$SK2/ownership.json"
 printf '{"result":{"terminals":[{"handle":"term-amb-1","connected":true,"orphaned":false},{"handle":"term-amb-2","connected":true,"orphaned":false}]}}' \
   >"$ORCA_TERMLIST_FILE"
@@ -270,6 +284,25 @@ assert_eq "ambiguous: one out-of-band issue created" "$(grep -c "^POST /api/comp
 LEDGER="$STATE/paperclip/ledger.json"
 assert_contains "ambiguous: waiting-for-Josh text recorded" \
   "$(jq -r --arg id "$ISSUE1" '.issues[$id].action_text' "$LEDGER")" "Waiting for Josh: PM state unclear on test-host"
+
+# ============================================================================
+head1 "3b. unknown -> no create, and the queued text names the reason"
+# ============================================================================
+new_scenario unknown_state
+write_config '{"pm_start_enabled":true}'
+SKU="$(scope_key term-old-rt)"
+mkdir -p "$STATE/pm/scopes/$SKU"
+# Recorded under runtime rt-0; Orca now reports rt-1 (an Orca update).
+jq -nc --arg t term-old-rt --arg wp "$REPO_ABS" \
+  '{schema:"afk-pm-ownership/3", owned:true, terminal:$t, session:"s", harness:"claude", worktree:{path:$wp},
+    identity:{handle:$t, runtime_id:"rt-0", tab_id:"tab-x", leaf_id:"leaf-x", agent_type:"claude"}}' \
+  >"$STATE/pm/scopes/$SKU/ownership.json"
+issue_route in_progress "$BOARD"
+do_pass
+assert_eq "unknown: no terminal create" "$(wc -l <"$ORCA_CREATE_LOG" | tr -d ' ')" "0"
+assert_eq "unknown: the queued text names the lookup's reason" \
+  "$(jq -r --arg id "$ISSUE1" '.issues[$id].action_text' "$STATE/paperclip/ledger.json")" "queued: PM state unknown (PM_RUNTIME_MISMATCH)"
+assert_eq "unknown: the owner is kept" "$([[ -f "$STATE/pm/scopes/$SKU/ownership.json" ]] && echo kept)" "kept"
 
 # ============================================================================
 head1 "4. Jarvis-created needs approval, then an exact Josh comment starts it"

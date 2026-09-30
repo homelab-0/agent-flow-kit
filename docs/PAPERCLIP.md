@@ -328,28 +328,88 @@ sessions never act on the same one.
 
 - **`afk_pm_registry_lookup <repo_path>`** (library function): one JSON
   object, `state` one of `none`, `live`, `unknown`, `handoff_in_progress`,
-  `handoff_stalled`, `ambiguous`. Liveness comes from `orca terminal list
-  --json`, and a listed terminal falls into exactly one of three buckets:
-  live (`connected: true`, `orphaned: false`), stale (absent from the list,
-  or listed with `orphaned: true`), or disconnected (listed with
-  `connected: false` and `orphaned: false`). A disconnected owner is neither
-  live nor stale — it is never reaped, and it never satisfies
-  `paperclip-take` either. When the only owner found is disconnected, the
-  lookup reports `state: "unknown"` with `reason: "PM_OWNER_DISCONNECTED"`
-  and names it in `owners`. If Orca cannot be queried at all, the `orca`
-  field reports `ORCA_UNAVAILABLE` and every owner is treated as live —
-  **never reap on uncertainty**. `handoff_in_progress`/`handoff_stalled`
+  `handoff_stalled`, `ambiguous`. A PM registration records the terminal's
+  identity tuple (`handle`, `runtime_id`, `execution_host_id`,
+  `worktree_id`, `tab_id`, `leaf_id`, `incarnation_id`, `agent_type`,
+  `recorded_at`, from `terminal show` and `_meta.runtimeId`) in an
+  `afk-pm-ownership/3` row when Orca can show the terminal. When it can't,
+  the row stays `afk-pm-ownership/2`. The read runs inside the status line,
+  so it is bounded to 2 s, and a failed read is retried at most once every
+  `AFK_PM_IDENTITY_RETRY_SECONDS` (default 300). Liveness is a join of that tuple against the
+  complete `terminal list`, the `worktree ps` agent rows and the runtime id,
+  and each owner is in exactly one of five states:
+  - **live**: listed with `connected: true` in the recorded runtime, and
+    `worktree ps` shows an agent row whose `paneKey` is exactly
+    `tab_id:leaf_id` with the registered agent type. Any agent state counts
+    (`done` is idle at the prompt).
+  - **detached**: listed but `orphaned: true`, or listed with no agent row
+    (the agent exited to its shell, or its tab lost its pane). `orphaned`
+    means "no pane in the current layout", not "dead". Reported as
+    `unknown` with `PM_TERMINAL_DETACHED`.
+  - **disconnected**: listed with `connected: false`. Reported as `unknown`
+    with `PM_OWNER_DISCONNECTED`.
+  - **stale**: in the same runtime, absent from a complete list **and**
+    `terminal show` answers `terminal_handle_stale`. Only this state is
+    reapable.
+  - **unknown**: Orca can't be queried (`ORCA_UNAVAILABLE`), the list is
+    incomplete (`ORCA_LIST_INCOMPLETE`), the runtime id differs
+    (`PM_RUNTIME_MISMATCH`; an Orca update restarts the runtime and
+    reissues every handle while the agents keep running), the terminal is
+    absent without the stale proof (`PM_TERMINAL_UNPROVEN`), or the row has
+    no usable tuple: an older `afk-pm-ownership/2` row, or a tuple whose
+    handle isn't the row's `terminal` (`PM_IDENTITY_UNRECORDED`, until its
+    own PM's next registration rewrites it).
+
+  When no owner is live, any detached, disconnected or unknown owner makes
+  the lookup `state: "unknown"`, with each owner and its `reason` named in
+  `owners`: the repo stays busy and nothing starts. The `orca` field reports
+  the list itself: `OK`, `ORCA_UNAVAILABLE` or `ORCA_LIST_INCOMPLETE`.
+  **Never reap on uncertainty.**
+
+  **Recovering an owner that stays `unknown`.** Two cases don't clear by
+  themselves. `PM_RUNTIME_MISMATCH` persists after every Orca update or
+  host reboot, whether the PM survived or not. `PM_IDENTITY_UNRECORDED`
+  persists for a dead PM's old `/2` row, because only its own PM rewrites
+  it. The kit never reaps either. The operator procedure:
+  1. Find the scope in the lookup's `owners[]` (`scope`, `terminal`,
+     `worktree.path`).
+  2. Check whether an agent process still runs for that session: look in
+     `worktree ps` for an agent row in that worktree, and in the harness's
+     own session records (for Claude, `~/.claude/sessions/<pid>.json` with
+     that session id and a live pid). A live PM can't re-register while its
+     old `ownership.json` exists (`pm-start` refuses), so the steps below
+     are the same for a live PM and a dead one. Only the last step differs.
+  3. Remove that scope's `ownership.json` (and nothing else) from
+     `$AFK_STATE_DIR/pm/scopes/<scope>/`.
+  4. If the PM is alive, run `agent-flow-kit pm-start --harness <harness>`
+     from that PM's own terminal straight away, so the poller never sees
+     the repo without an owner. If it is dead, run `pm-start` from a new PM
+     terminal, or let the poller start one.
+
+  Before enabling the poller on a host, list the scopes whose rows are `/2`
+  or carry an old `runtime_id`, and clear the dead ones this way.
+  Re-binding an owner after a runtime change, and an operator-authorized
+  reap, are planned separately.
+
+  The PM handoff's successor and close adapters follow the same rule for the
+  terminals they create and close: `orphaned` never counts as dead, and a
+  close or a replacement is proven only by absence from the list plus
+  `terminal_handle_stale`, both in the runtime recorded when the terminal
+  was bound. A binding without a runtime id never proves a release.
+
+  `handoff_in_progress`/`handoff_stalled`
   come from a scope's `handoff.json` in state `SUCCESSOR_LAUNCHED` or
   `ACKED`, aged against `pm_handoff_timeout_min` (default 30, from
   `~/.config/agent-flow-kit/pm-registry.json`). When more than one scope for
   the same repo has such a handoff in flight, the lookup never picks one by
   glob order: it reports `state: "ambiguous"` with `reason:
   "PM_HANDOFF_AMBIGUOUS"` and names every one of them in `handoffs`. `stale`
-  always lists every owner found dead.
+  always lists every owner proven stale.
 
 - **`agent-flow-kit pm-registry-reap --scope <key> [--json]`**: re-proves
-  staleness itself (refuses `PM_OWNER_LIVE`, `PM_HANDOFF_IN_PROGRESS` or
-  `ORCA_UNAVAILABLE` otherwise), atomically moves that scope's
+  staleness with a fresh join immediately before acting (refuses
+  `PM_OWNER_LIVE`, `PM_OWNER_UNKNOWN` or `PM_HANDOFF_IN_PROGRESS`
+  otherwise), atomically moves that scope's
   `ownership.json` to `pm/reaped/<scope>.<epoch>.json`, and returns every
   notice claimed under that owner's terminal back to `notices/<slug>/`.
   A notice that cannot be returned — an invalid or unknown project, or a
@@ -366,10 +426,16 @@ sessions never act on the same one.
   registry's live owner for that project's `repo_path` may call it (identity
   is `ORCA_TERMINAL_HANDLE`, checked against the owner's `terminal`; during a
   handoff, the named successor terminal may call it instead — anyone else
-  gets `PAPERCLIP_HANDOFF_IN_PROGRESS`). A disconnected or ambiguous owner
-  never authorizes a take: `ORCA_TERMINAL_HANDLE` matching a disconnected
-  owner's terminal, or a successor named in one of several ambiguous
-  handoffs, both get `PAPERCLIP_NOT_OWNER`. Claims every notice under
+  gets `PAPERCLIP_HANDOFF_IN_PROGRESS`). The single `unknown` owner may
+  also take from its own terminal, but only when it is unknown because its
+  tab is detached (`PM_TERMINAL_DETACHED`: the PM is evidently running), its
+  row has no tuple yet (`PM_IDENTITY_UNRECORDED`), or Orca can't be asked
+  (`ORCA_UNAVAILABLE`, `ORCA_LIST_INCOMPLETE`). A caller with
+  `ORCA_ENVIRONMENT` or `ORCA_PAIRING_CODE` set is a remote-runtime session
+  and never qualifies. A disconnected or ambiguous
+  owner never authorizes a take: `ORCA_TERMINAL_HANDLE` matching a
+  disconnected owner's terminal, or a successor named in one of several
+  ambiguous handoffs, both get `PAPERCLIP_NOT_OWNER`. Claims every notice under
   `notices/<slug>/` in order by an atomic `mv` into
   `notices/claimed/<claim-key>/` before reading it, where `<claim-key>` is
   `terminal-<sha256 of the caller's terminal handle>` — the same key
@@ -592,6 +658,10 @@ an issue self-blocked and owned by this host re-evaluates whether to start
 the project's PM, using PC-2a's registry lookup for the project's `repo_path`:
 
 - `live`: nothing starts; the PM pulls its own notices.
+- `unknown`: nothing starts; an owner that isn't provably stale is kept.
+  The self-block text reads `queued: PM state unknown (<reason>)` with the
+  lookup's reason (for example `PM_RUNTIME_MISMATCH`), since a detached PM
+  may still be running; see the recovery procedure above.
 - `handoff_in_progress` / `ambiguous` / `handoff_stalled`: nothing starts;
   the self-block text says so, and an ambiguous/stalled registry state opens
   one out-of-band "NEEDS HUMAN" issue per repo (an `idempotencyKey`).

@@ -33,7 +33,7 @@ pm_binding() { # harness session
   actual="$(pwd -P 2>/dev/null || true)"; [[ -n "$actual" ]] || return 1
   owner="$pm_dir/ownership.json"
   jq -e --arg h "$harness" --arg s "$session" --arg t "$terminal" --arg p "$actual" '
-    .schema=="afk-pm-ownership/2" and .owned==true and .role=="PM"
+    (.schema|IN("afk-pm-ownership/2","afk-pm-ownership/3")) and .owned==true and .role=="PM"
     and .harness==$h and .session==$s and .terminal==$t and .worktree.path==$p
     and (.worktree.id|type)=="string" and (.worktree.id|length)>0' "$owner" >/dev/null 2>&1
 }

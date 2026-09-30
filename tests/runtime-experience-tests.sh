@@ -1517,7 +1517,10 @@ fake_orca="$TMP/orca"; orca_terminals="$TMP/orca-terminals.json"; orca_bound="$T
 printf '[]\n' >"$orca_terminals"; printf '[]\n' >"$orca_bound"
 # shellcheck disable=SC2016
 {
-  printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' '[[ "${1:-}" != --version ]] || { echo 1.4.216; exit 0; }' 'printf "%s\n" "$*" >>"$AFK_FAKE_ORCA_LOG"'
+  printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' '[[ "${1:-}" != --version ]] || { echo 1.4.216; exit 0; }'
+  # List and show answers carry the runtime id, as Orca's do (AFK_FAKE_RUNTIME_ID, default runtime-a).
+  printf '%s\n' 'if [[ -z "${AFK_FAKE_META_INNER:-}" && ( "$1 $2" == "terminal list" || "$1 $2" == "terminal show" ) ]]; then rc=0; out="$(AFK_FAKE_META_INNER=1 "$0" "$@")" || rc=$?; if jq -e '\''type=="object"'\'' <<<"$out" >/dev/null 2>&1; then jq -c --arg rt "${AFK_FAKE_RUNTIME_ID:-runtime-a}" '\''. + {_meta:{runtimeId:$rt}}'\'' <<<"$out"; else printf "%s" "$out"; fi; exit "$rc"; fi'
+  printf '%s\n' 'printf "%s\n" "$*" >>"$AFK_FAKE_ORCA_LOG"'
   printf '%s\n' 'if [[ "$1 $2" == "worktree show" ]]; then if [[ -n "${AFK_FAKE_WORKTREE_SHOW_JSON:-}" ]]; then printf "%s\n" "$AFK_FAKE_WORKTREE_SHOW_JSON"; exit "${AFK_FAKE_WORKTREE_SHOW_RC:-0}"; fi; jq -nc --arg p "$AFK_FAKE_WORKTREE_PATH" --arg id "${AFK_FAKE_WORKTREE_ID:-child-worktree-id}" '\''{result:{worktree:{id:$id,path:$p}}}'\''; exit; fi'
   printf '%s\n' 'if [[ "$1 $2" == "orchestration run-current" ]]; then [[ -n "${AFK_FAKE_RUN_ID:-}" ]] || exit 1; jq -nc --arg id "$AFK_FAKE_RUN_ID" '\''{result:{run:{id:$id}}}'\''; exit; fi'
   printf '%s\n' 'if [[ "$1 $2" == "orchestration run-use" ]]; then id=""; terminal=""; while (($#)); do case "$1" in --id) id="$2"; shift 2;; --from) terminal="$2"; shift 2;; *) shift;; esac; done; jq -nc --arg id "$id" --arg t "$terminal" '\''{result:{run:{id:$id},coordinatorTerminalHandle:$t}}'\''; exit; fi'
@@ -1657,6 +1660,25 @@ if [[ -f "$launch_pm/transitions/pm-launch/replacement-close-binding.json" \
   && jq -e 'length==0' "$orca_terminals" >/dev/null; then
   ok "successor replacement journal survives close timeout with old launch evidence"
 else no "successor replacement journal survives close timeout with old launch evidence"; fi
+eq "the replacement binding records its runtime" \
+  "$(jq -r .runtime_id "$launch_pm/transitions/pm-launch/replacement-close-binding.json")" "runtime-a"
+before_runtime_b_creates="$(grep -c '^terminal create ' "$TMP/orca-log" || true)"
+if env "${orca_env[@]}" AFK_FAKE_RUNTIME_ID=runtime-b "$ROOT/adapters/orca-pm-successor.sh" \
+  "$launch_pm/intent.json" pm-launch >/dev/null 2>&1; then
+  no "successor replacement refuses absence in another runtime"
+else ok "successor replacement refuses absence in another runtime"; fi
+if [[ ! -e "$launch_pm/transitions/pm-launch/replacement-close-receipt.json" ]]; then ok
+else no "runtime-b absence wrote a replacement close receipt"; fi
+rb_binding="$launch_pm/transitions/pm-launch/replacement-close-binding.json"
+cp "$rb_binding" "$TMP/replacement-binding.json"
+jq -c 'del(.runtime_id)' "$TMP/replacement-binding.json" >"$rb_binding"
+if env "${orca_env[@]}" "$ROOT/adapters/orca-pm-successor.sh" "$launch_pm/intent.json" pm-launch >/dev/null 2>&1; then
+  no "a replacement binding without a runtime never proves absence"
+else ok "a replacement binding without a runtime never proves absence"; fi
+if [[ ! -e "$launch_pm/transitions/pm-launch/replacement-close-receipt.json" ]]; then ok
+else no "a runtime-less replacement binding wrote a close receipt"; fi
+cp "$TMP/replacement-binding.json" "$rb_binding"
+eq "no runtime-unproven replacement creates a successor" "$(grep -c '^terminal create ' "$TMP/orca-log" || true)" "$before_runtime_b_creates"
 dead_receipt="$(env "${orca_env[@]}" AFK_FAKE_CREATE_HANDLE=replacement-terminal \
   "$ROOT/adapters/orca-pm-successor.sh" "$launch_pm/intent.json" pm-launch)"
 if jq -e '.accepted==true and .terminal=="replacement-terminal"' <<<"$dead_receipt" >/dev/null; then
@@ -1681,6 +1703,21 @@ if jq -e '.accepted==true and .terminal=="replacement-terminal"' <<<"$preledger_
 else no "replacement receipt replays before the caller ledger is durable"; fi
 eq "pre-ledger replay creates no duplicate successor" \
   "$(grep -c '^terminal create ' "$TMP/orca-log" || true)" "$before_preledger_replay_creates"
+
+# orphaned:true means the tab lost its pane, not that the successor died
+# (AD-28 R5). A connected, orphaned successor is replayed as-is: never closed,
+# never replaced.
+jq 'map(if .handle=="replacement-terminal" then .orphaned=true else . end)' \
+  "$orca_terminals" >"$orca_terminals.tmp"; mv "$orca_terminals.tmp" "$orca_terminals"; cp "$orca_terminals" "$orca_bound"
+before_orphan_closes="$(grep -c '^terminal close ' "$TMP/orca-log" || true)"
+orphan_replay="$(env "${orca_env[@]}" "$ROOT/adapters/orca-pm-successor.sh" "$launch_pm/intent.json" pm-launch)"
+if jq -e '.accepted==true and .terminal=="replacement-terminal"' <<<"$orphan_replay" >/dev/null; then
+  ok "an orphaned live successor is kept on replay"
+else no "an orphaned live successor is kept on replay"; fi
+eq "  ...it is never closed" "$(grep -c '^terminal close ' "$TMP/orca-log" || true)" "$before_orphan_closes"
+eq "  ...and never replaced" "$(grep -c '^terminal create ' "$TMP/orca-log" || true)" "$before_preledger_replay_creates"
+jq 'map(if .handle=="replacement-terminal" then .orphaned=false else . end)' \
+  "$orca_terminals" >"$orca_terminals.tmp"; mv "$orca_terminals.tmp" "$orca_terminals"; cp "$orca_terminals" "$orca_bound"
 
 # The consumed first-generation journal cannot poison a later death.  The next
 # source gets its own generation-bound close and create attempt.
@@ -1800,6 +1837,22 @@ if [[ -f "$crash_close_pm/close-binding.json" ]] && jq -e '.terminal=="crash-ter
   ok "pre-close binding survives the crash window"
 else no "pre-close binding survives the crash window"; fi
 before_recovery_closes="$(grep -c '^terminal close ' "$TMP/orca-log" || true)"
+eq "the pre-close binding records its runtime" "$(jq -r .runtime_id "$crash_close_pm/close-binding.json")" "runtime-a"
+# After an Orca restart every old handle is absent and answers stale while its
+# process may still run: absence in another runtime is never a release.
+runtime_b_close_output="$TMP/runtime-b-close-output"
+if env "${orca_env[@]}" AFK_FAKE_RUNTIME_ID=runtime-b "$ROOT/adapters/orca-pm-close.sh" \
+  "$crash_close_pm/intent.json" >"$runtime_b_close_output" 2>/dev/null; then
+  no "close replay refuses absence in another runtime"
+else ok "close replay refuses absence in another runtime"; fi
+if [[ ! -s "$runtime_b_close_output" ]]; then ok; else no "runtime-b absence emitted a close receipt"; fi
+cp "$crash_close_pm/close-binding.json" "$TMP/crash-binding.json"
+jq -c 'del(.runtime_id)' "$TMP/crash-binding.json" >"$crash_close_pm/close-binding.json"
+if env "${orca_env[@]}" "$ROOT/adapters/orca-pm-close.sh" "$crash_close_pm/intent.json" >"$runtime_b_close_output" 2>/dev/null; then
+  no "a binding without a runtime never takes the recovered-absence branch"
+else ok "a binding without a runtime never takes the recovered-absence branch"; fi
+if [[ ! -s "$runtime_b_close_output" ]]; then ok; else no "a runtime-less binding emitted a close receipt"; fi
+cp "$TMP/crash-binding.json" "$crash_close_pm/close-binding.json"
 malformed_list_labels=(
   "missing list envelope"
   "non-array terminal list"
