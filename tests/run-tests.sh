@@ -227,6 +227,7 @@ SC_SCRIPTS=("$DISPATCH" "$MAKE_STAMP" "$USAGE_CHECK" "$GH_HEALTH" \
             "$KIT_ROOT/tests/session-gate-contract-tests.sh" \
             "$KIT_ROOT/tests/auto-update-enroll-tests.sh" \
             "$KIT_ROOT/tests/catalog-sync-tests.sh" \
+            "$KIT_ROOT/tests/make-stamp-override-tests.sh" \
             "$KIT_ROOT/tests/dispatch-secret-scan-tests.sh" \
             "$KIT_ROOT/tests/runner-lock-tests.sh" \
             "$KIT_ROOT/tests/suite-lock.sh")
@@ -3353,7 +3354,8 @@ else
 fi
 
 # override records provenance and moves the FINAL fields
-if bash "$MAKE_STAMP" --response "$WORK/route-response.json" --story-id STORY-TEST-9 \
+if AGENT_STAMP_VALIDATE_CATALOG_PATH="$KIT_ROOT/tests/fixtures/make-stamp-override-catalog.yaml" \
+   bash "$MAKE_STAMP" --response "$WORK/route-response.json" --story-id STORY-TEST-9 \
      --override-harness codex --override-profile openai/strong \
      --override-actor josh --override-reason "cross-provider review" \
      --out "$WORK/ov.stamp.json" >/dev/null 2>&1; then
@@ -3805,6 +3807,13 @@ head1 "28. Orca resolver gate — tests/orca-resolver-tests.sh"
 # bounded runner and its fixed classification. Stubs, plus the host's real
 # orca-ide --version when it exists (skipped otherwise).
 run_gate "Orca resolver gate" "$KIT_ROOT/tests/orca-resolver-tests.sh"
+
+# ===========================================================================
+head1 "29. make-stamp override pool gate — tests/make-stamp-override-tests.sh"
+# ===========================================================================
+# An override takes its entitlement pool from the trusted catalog: fixture
+# catalog, --response mode, no network.
+run_gate "make-stamp override pool gate" "$KIT_ROOT/tests/make-stamp-override-tests.sh"
 
 # ===========================================================================
 # AC-2: total wall time, with a BUDGET warning (never a failure) over 720s.
