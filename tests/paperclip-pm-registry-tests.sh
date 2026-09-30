@@ -159,6 +159,19 @@ write_notice() { # <slug> <epoch> <issue_id> <event>
     >"$STATE/paperclip/notices/$1/$2.$3.$4.json"
 }
 
+head1 "0. registry helper resolution in a flat installed runtime"
+INSTALLED_ROOT="$TMPROOT/flat-runtime"
+mkdir -p "$INSTALLED_ROOT/lib"
+cp "$KIT_ROOT/lib/afk-orca.sh" "$KIT_ROOT/lib/afk-pm-registry.sh" "$INSTALLED_ROOT/lib/"
+cp "$KIT_ROOT/adapters/runtime-scope.sh" "$INSTALLED_ROOT/runtime-scope.sh"
+installed_claim_key="$(env -i PATH="$STUBS:$PATH" AFK_INSTALL_ROOT="$INSTALLED_ROOT" \
+  bash -c '. "$AFK_INSTALL_ROOT/lib/afk-pm-registry.sh" && afk_pmr_claim_key_for_terminal installed-registry')"
+expected_claim_key="terminal-$(printf 'terminal\0%s' installed-registry | sha256sum | awk '{print $1}')"
+assert_eq "registry loads the sibling runtime-scope.sh with no adapters directory" \
+  "$installed_claim_key" "$expected_claim_key"
+assert_eq "the installed registry fixture has no adapters directory" \
+  "$(test -d "$INSTALLED_ROOT/adapters" && echo yes || echo no)" no
+
 # ============================================================================
 head1 "1. registry lookup"
 # ============================================================================
