@@ -2,7 +2,7 @@
   "schema": "afk-status-policy/1",
   "render_budget_ms": 250,
   "refresh_interval_seconds": 5,
-  "staleness_threshold_seconds": 30,
+  "staleness_threshold_seconds": 180,
   "reason_codes": [
     "STATUS_FRESH",
     "STATUS_STALE",
