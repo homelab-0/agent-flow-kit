@@ -52,10 +52,15 @@ export ORCA_TERMINAL_HANDLE='' ORCA_WORKTREE_ID=''
 export AFK_STATUS_CACHE="$TMP/status-cache.json" AFK_STATUS_CACHE_DIR="$TMP/status-cache-dir" AFK_STATUS_REFRESH_SECONDS=999999
 jq -nc '{schema_version:"1.0",kind:"lifecycle_result",source_eligibility:{},orchestration:{state:"ACTIVE",session:{}},dispatch_monitor:{state:"WATCHING",dispatches:[]}}' >"$AFK_STATUS_CACHE"
 
+# A hermetic owner status line (the host's own ~/.local/state is never read):
+# AFK adds nothing to a plain chat, and the owner's line must still print.
+PRIOR_STATE="$TMP/prior-state"; mkdir -p "$PRIOR_STATE/adapters"
+jq -nc --arg b "$PRIOR_STATE/adapters/prior.json" '{backup:$b}' >"$PRIOR_STATE/adapters/claude.json"
+jq -nc '{value:{command:"printf OWNER-LINE"}}' >"$PRIOR_STATE/adapters/prior.json"
 START_MS="$(date +%s%3N)"
-STATUS_OUT="$("$RUNTIME/claude/statusline.sh" <"$INPUT")"
+STATUS_OUT="$(env AFK_STATE_DIR="$PRIOR_STATE" "$RUNTIME/claude/statusline.sh" <"$INPUT")"; STATUS_RC=$?
 ELAPSED_MS=$(( $(date +%s%3N) - START_MS ))
-contains "$STATUS_OUT" AFK && ok 'Claude statusline still renders under worker pressure' || no 'Claude statusline still renders under worker pressure'
+[[ "$STATUS_RC" == 0 && "$STATUS_OUT" == 'OWNER-LINE' ]] && ok 'Claude statusline still renders under worker pressure' || no "Claude statusline still renders under worker pressure ($STATUS_OUT)"
 (( ELAPSED_MS < 1000 )) && ok 'Claude pressure publisher never blocks rendering' || no "Claude pressure publisher never blocks rendering (${ELAPSED_MS}ms)"
 wait_events "$EVENTS" 1 || true
 CHECK_EVENT="$(event_for "$EVENTS" CHECKPOINT_DUE)"
@@ -99,10 +104,10 @@ printf '#!/usr/bin/env bash\nenv | sort >"%s"\nprintf "%%s\\n" "$*" >"%s"\nexit 
 FAIL_EVENTS="$TMP/fail-events"; export AFK_STORY_PATH="$STORY" AFK_STORY_ID=story AFK_DISPATCH_ID=dispatch-fail
 export AFK_WORKER_IDENTITY=worker:dispatch-fail AFK_CONTEXT_EVENT_DIR="$FAIL_EVENTS" AFK_CONTEXT_EVENT_HOOK="$FAIL_HOOK"
 START_MS="$(date +%s%3N)"
-AFK_SECRET_DO_NOT_EXPOSE=credential \
-  "$RUNTIME/claude/statusline.sh" <"$INPUT" >"$TMP/fail-status.out"
+env AFK_STATE_DIR="$PRIOR_STATE" AFK_SECRET_DO_NOT_EXPOSE=credential \
+  "$RUNTIME/claude/statusline.sh" <"$INPUT" >"$TMP/fail-status.out"; FAIL_RC=$?
 ELAPSED_MS=$(( $(date +%s%3N) - START_MS )); sleep 0.2
-[[ -s "$TMP/fail-status.out" && $ELAPSED_MS -lt 1000 ]] && ok 'publisher failure is fail-open for Claude rendering' || no 'publisher failure is fail-open for Claude rendering'
+[[ "$FAIL_RC" == 0 && "$(<"$TMP/fail-status.out")" == 'OWNER-LINE' && $ELAPSED_MS -lt 1000 ]] && ok 'publisher failure is fail-open for Claude rendering' || no 'publisher failure is fail-open for Claude rendering'
 if [[ -e "$FAIL_ENV" ]] && ! grep -Fq 'AFK_SECRET_DO_NOT_EXPOSE' "$FAIL_ENV"; then ok 'publisher receives no ambient credential'; else no 'publisher receives no ambient credential'; fi
 eq 'failed publisher writes no delivery receipt' "$(find "$FAIL_EVENTS" -maxdepth 1 -name '*.done' 2>/dev/null | wc -l | tr -d ' ')" 0
 export AFK_CONTEXT_EVENT_HOOK="$ROOT/files/model-router/scripts/dispatch.sh"
