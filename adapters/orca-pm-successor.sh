@@ -8,11 +8,9 @@ jq -e --arg id "$transition" 'def s: type=="string" and length>0;
   (.worktree.path|s) and (.pm_dir|s) and (.resume_instruction|s) and
   (.continuation_sha256|s)' "$intent" >/dev/null 2>&1 || exit 1
 
-orca_bin="${ORCA_CLI_COMMAND:-${AFK_ORCA_BIN:-orca}}"
-bound=""; command -v timeout >/dev/null 2>&1 && bound=timeout
-[[ -n "$bound" ]] || { command -v gtimeout >/dev/null 2>&1 && bound=gtimeout; }
-[[ -n "$bound" ]] || exit 1
-seconds="${AFK_ORCA_TIMEOUT_SECONDS:-5}"; [[ "$seconds" =~ ^[1-9][0-9]*$ ]] || exit 1
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+if [[ -r "$here/lib/afk-orca.sh" ]]; then . "$here/lib/afk-orca.sh"; else . "$here/../lib/afk-orca.sh"; fi
 worktree_id="$(jq -r .worktree.id "$intent")"; worktree_path="$(jq -r .worktree.path "$intent")"
 harness="$(jq -r .harness "$intent")"; run_id="$(jq -r '.run_id // empty' "$intent")"
 pm_dir="$(jq -r .pm_dir "$intent")"; continuation_sha="$(jq -r .continuation_sha256 "$intent")"
@@ -56,7 +54,8 @@ terminal_show_released() { # <terminal-show-json>
 
 terminal_observe() { # <handle> <title>
   local shown
-  shown="$($bound "$seconds" "$orca_bin" terminal show --terminal "$1" --json)" || return 1
+  afk_orca_run pm-successor-show -- terminal show --terminal "$1" --json || return 1
+  shown="$AFK_ORCA_OUT"
   jq -ce --arg handle "$1" --arg title "$2" --arg wi "$observed_id" --arg wp "$observed_path" '
     select(type=="object" and ((has("ok")|not) or .ok==true) and
       ((has("error")|not) or .error==null)) |
@@ -72,6 +71,7 @@ terminal_live() {
     <<<"$1" >/dev/null 2>&1
 }
 
+# ORCA-2: orphaned:true alone stops counting as dead (AD-28 R5).
 terminal_dead() {
   jq -e 'if has("connected") then .connected==false or (.orphaned // false)==true
     else ((.status // "")|ascii_downcase|IN("exited","closed","dead","failed","terminated","stopped","complete","completed")) end' \
@@ -93,11 +93,13 @@ close_bound_terminal() { # <handle> <title> <binding-file> <receipt-file> <bindi
     jq -e --argjson expected "$close_receipt" '.==$expected' "$4" >/dev/null 2>&1 || return 1
     return 0
   fi
-  listed="$($bound "$seconds" "$orca_bin" terminal list --worktree "id:$observed_id" --json)" || return 1
+  afk_orca_run --bound 5 pm-successor-list -- terminal list --worktree "id:$observed_id" --json || return 1
+  listed="$AFK_ORCA_OUT"
   terminal_list_valid "$listed" || return 1
   if ! jq -e --arg handle "$1" '.result.terminals[]? | select(.handle==$handle)' \
     <<<"$listed" >/dev/null 2>&1; then
-    shown="$("$bound" "$seconds" "$orca_bin" terminal show --terminal "$1" --json 2>&1)" || show_rc=$?
+    afk_orca_run pm-successor-show -- terminal show --terminal "$1" --json || show_rc=1
+    shown="$AFK_ORCA_OUT"
     if (( show_rc != 0 )); then
       terminal_show_released "$shown" || return 1
       atomic_write_verified "$4" "$close_receipt"
@@ -108,17 +110,20 @@ close_bound_terminal() { # <handle> <title> <binding-file> <receipt-file> <bindi
   # The caller's earlier dead observation may have raced a reconnect.
   observed_terminal="$(terminal_observe "$1" "$2")" || return 1
   terminal_dead "$observed_terminal" || return 1
-  "$bound" "$seconds" "$orca_bin" terminal close --terminal "$1" --tab --json >/dev/null || return 1
-  listed="$($bound "$seconds" "$orca_bin" terminal list --worktree "id:$observed_id" --json)" || return 1
+  afk_orca_run pm-successor-close -- terminal close --terminal "$1" --tab --json || return 1
+  afk_orca_run --bound 5 pm-successor-list -- terminal list --worktree "id:$observed_id" --json || return 1
+  listed="$AFK_ORCA_OUT"
   terminal_list_valid "$listed" || return 1
   jq -e --arg handle "$1" '[.result.terminals[]? | select(.handle==$handle)]|length==0' \
     <<<"$listed" >/dev/null 2>&1 || return 1
-  shown="$("$bound" "$seconds" "$orca_bin" terminal show --terminal "$1" --json 2>&1)" || show_rc=$?
+  afk_orca_run pm-successor-show -- terminal show --terminal "$1" --json || show_rc=1
+  shown="$AFK_ORCA_OUT"
   (( show_rc != 0 )) && terminal_show_released "$shown" || return 1
   atomic_write_verified "$4" "$close_receipt"
 }
 
-shown="$($bound "$seconds" "$orca_bin" worktree show --worktree "path:$worktree_path" --json)" || exit 1
+afk_orca_run pm-successor-worktree -- worktree show --worktree "path:$worktree_path" --json || exit 1
+shown="$AFK_ORCA_OUT"
 jq -e 'type=="object" and ((has("ok")|not) or .ok==true) and
   ((has("error")|not) or .error==null)' <<<"$shown" >/dev/null 2>&1 || exit 1
 observed_id="$(jq -r '.result.worktree.id // .result.id // .worktree.id // .id // empty' <<<"$shown" 2>/dev/null)"
@@ -227,8 +232,10 @@ consume_completed_replacement() { # <current-launch-receipt-json>
   rm -f -- "$replacement_consumed_file" || return 1
 }
 
-listed="$($bound "$seconds" "$orca_bin" terminal list --worktree "id:$observed_id" --json)"
+afk_orca_run --bound 5 pm-successor-list -- terminal list --worktree "id:$observed_id" --json || exit 1
+listed="$AFK_ORCA_OUT"
 terminal_list_valid "$listed" || exit 1
+# ORCA-6: dedupe by the recorded identity tuple, not the title (AD-28 R4).
 matches="$(jq -c --arg title "$title" '[.result.terminals[]? | select(.title==$title)]' <<<"$listed" 2>/dev/null)" || exit 1
 count="$(jq 'length' <<<"$matches")"; ((count <= 1)) || exit 1
 receipt=""
@@ -314,7 +321,8 @@ if ((count == 0)); then
     if [[ -f "$attempt_file" ]]; then exit 1; fi
     atomic_write_verified "$attempt_file" "$expected_attempt" || exit 1
   fi
-  created="$($bound "$seconds" "$orca_bin" terminal create --worktree "id:$observed_id" --title "$title" --command "$command" --json)"
+  afk_orca_run pm-successor-create -- terminal create --worktree "id:$observed_id" --title "$title" --command "$command" --json || exit 1
+  created="$AFK_ORCA_OUT"
   terminal="$(jq -r '.result.terminal.handle // .handle // empty' <<<"$created" 2>/dev/null)"
   [[ -n "$terminal" ]] || exit 1
   observed_terminal="$(terminal_observe "$terminal" "$title")" || exit 1

@@ -21,7 +21,6 @@ terminal="${ORCA_TERMINAL_HANDLE:-}"
 # ORCA_WORKTREE_ID/PATH is the managed-session marker. Its value is not used as
 # a selector: only the exact terminal handle may be targeted.
 [[ -n "$terminal" && ( -n "${ORCA_WORKTREE_ID:-}" || -n "${ORCA_WORKTREE_PATH:-}" ) ]] || exit 0
-orca_bin="${ORCA_CLI_COMMAND:-${AFK_ORCA_BIN:-orca}}"
 
 if [[ "$MODE" == background ]]; then
   nohup "$0" --harness "$HARNESS" </dev/null >/dev/null 2>&1 &
@@ -67,11 +66,15 @@ if [[ "$MODE" == enable ]]; then
   exit 0
 fi
 
-bound=""; command -v timeout >/dev/null 2>&1 && bound=timeout
-[[ -n "$bound" ]] || { command -v gtimeout >/dev/null 2>&1 && bound=gtimeout; }
-[[ -n "$bound" ]] || exit 0
+# shellcheck disable=SC1091
+if [[ -r "$HERE/lib/afk-orca.sh" ]]; then . "$HERE/lib/afk-orca.sh"; else . "$HERE/../lib/afk-orca.sh"; fi
+afk_orca_bound_tool >/dev/null || exit 0
 timeout_seconds="${AFK_ORCA_TITLE_TIMEOUT_SECONDS:-2}"
 [[ "$timeout_seconds" =~ ^[1-9][0-9]*$ ]] || exit 0
+# The resolver's --version handshake gets this adapter's own bound too, never
+# the library's 10 s default (an env value can only lower it).
+[[ "${AFK_ORCA_TIMEOUT_SECONDS:-}" =~ ^[1-9][0-9]*$ ]] && (( AFK_ORCA_TIMEOUT_SECONDS < timeout_seconds )) \
+  || AFK_ORCA_TIMEOUT_SECONDS="$timeout_seconds"
 max_length="${AFK_ORCA_TITLE_MAX_LENGTH:-120}"
 [[ "$max_length" =~ ^[1-9][0-9]*$ && "$max_length" -le 160 ]] || exit 0
 
@@ -83,7 +86,8 @@ safe_prior() {
 
 show_exact() {
   local shown got_handle got_title
-  shown="$($bound "$timeout_seconds" "$orca_bin" terminal show --terminal "$terminal" --json 2>/dev/null)" || return 1
+  afk_orca_run --bound "$timeout_seconds" title-show -- terminal show --terminal "$terminal" --json || return 1
+  shown="$AFK_ORCA_OUT"
   got_handle="$(jq -r '.result.terminal.handle // .terminal.handle // .result.handle // .handle // empty' <<<"$shown" 2>/dev/null)"
   [[ "$got_handle" == "$terminal" ]] || return 1
   got_title="$(jq -r '.result.terminal.title // .terminal.title // .result.title // .title // empty' <<<"$shown" 2>/dev/null)"
@@ -92,7 +96,8 @@ show_exact() {
 
 rename_exact() {
   local title="$1" receipt receipt_handle receipt_title
-  receipt="$($bound "$timeout_seconds" "$orca_bin" terminal rename --terminal "$terminal" --title "$title" --json 2>/dev/null)" || return 1
+  afk_orca_run --bound "$timeout_seconds" title-rename -- terminal rename --terminal "$terminal" --title "$title" --json || return 1
+  receipt="$AFK_ORCA_OUT"
   receipt_handle="$(jq -r '.result.rename.handle // .result.terminal.handle // .terminal.handle // .result.handle // .handle // empty' <<<"$receipt" 2>/dev/null)"
   receipt_title="$(jq -r '.result.rename.title // .result.terminal.title // .terminal.title // .result.title // .title // empty' <<<"$receipt" 2>/dev/null)"
   [[ "$receipt_handle" == "$terminal" && "$receipt_title" == "$title" ]] || return 1
@@ -103,6 +108,7 @@ if [[ "$MODE" == restore ]]; then
   [[ -n "$owned" ]] || exit 0
   state="$(jq -r .state <<<"$owned")"
   [[ "$state" == OWNED || "$state" == RESTORING ]] || exit 0
+  afk_orca_bin >/dev/null || exit 0 # verify once, outside the $(...) below
   current="$(show_exact)" || exit 0
   installed="$(jq -r .installed_title <<<"$owned")"
   prior="$(jq -r .prior_title <<<"$owned")"
@@ -142,6 +148,7 @@ if [[ -n "$owned" ]]; then
   owned="$(jq -c --argjson now "$now" '.last_attempt_epoch=$now' <<<"$owned")"
   atomic_write "$owned" || exit 0
 fi
+afk_orca_bin >/dev/null || exit 0 # verify once, outside the $(...) below
 current="$(show_exact)" || exit 0
 
 if [[ -z "$owned" ]]; then

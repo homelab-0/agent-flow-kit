@@ -1517,7 +1517,7 @@ fake_orca="$TMP/orca"; orca_terminals="$TMP/orca-terminals.json"; orca_bound="$T
 printf '[]\n' >"$orca_terminals"; printf '[]\n' >"$orca_bound"
 # shellcheck disable=SC2016
 {
-  printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' 'printf "%s\n" "$*" >>"$AFK_FAKE_ORCA_LOG"'
+  printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' '[[ "${1:-}" != --version ]] || { echo 1.4.216; exit 0; }' 'printf "%s\n" "$*" >>"$AFK_FAKE_ORCA_LOG"'
   printf '%s\n' 'if [[ "$1 $2" == "worktree show" ]]; then if [[ -n "${AFK_FAKE_WORKTREE_SHOW_JSON:-}" ]]; then printf "%s\n" "$AFK_FAKE_WORKTREE_SHOW_JSON"; exit "${AFK_FAKE_WORKTREE_SHOW_RC:-0}"; fi; jq -nc --arg p "$AFK_FAKE_WORKTREE_PATH" --arg id "${AFK_FAKE_WORKTREE_ID:-child-worktree-id}" '\''{result:{worktree:{id:$id,path:$p}}}'\''; exit; fi'
   printf '%s\n' 'if [[ "$1 $2" == "orchestration run-current" ]]; then [[ -n "${AFK_FAKE_RUN_ID:-}" ]] || exit 1; jq -nc --arg id "$AFK_FAKE_RUN_ID" '\''{result:{run:{id:$id}}}'\''; exit; fi'
   printf '%s\n' 'if [[ "$1 $2" == "orchestration run-use" ]]; then id=""; terminal=""; while (($#)); do case "$1" in --id) id="$2"; shift 2;; --from) terminal="$2"; shift 2;; *) shift;; esac; done; jq -nc --arg id "$id" --arg t "$terminal" '\''{result:{run:{id:$id},coordinatorTerminalHandle:$t}}'\''; exit; fi'
@@ -1526,7 +1526,9 @@ printf '[]\n' >"$orca_terminals"; printf '[]\n' >"$orca_bound"
   printf '%s\n' 'if [[ "$1 $2" == "terminal create" ]]; then title=""; command=""; handle="${AFK_FAKE_CREATE_HANDLE:-new-terminal}"; while (($#)); do case "$1" in --title) title="$2"; shift 2;; --command) command="$2"; shift 2;; *) shift;; esac; done; jq --arg handle "$handle" --arg title "$title" --arg wi "${AFK_FAKE_WORKTREE_ID:-child-worktree-id}" --arg wp "$AFK_FAKE_WORKTREE_PATH" '\''.+[{handle:$handle,title:$title,status:"running",connected:true,orphaned:false,worktreeId:$wi,worktreePath:$wp}]'\'' "$AFK_FAKE_TERMINALS" >"$AFK_FAKE_TERMINALS.tmp"; mv "$AFK_FAKE_TERMINALS.tmp" "$AFK_FAKE_TERMINALS"; cp "$AFK_FAKE_TERMINALS" "$AFK_FAKE_BOUND"; printf "%s" "$command" >"$AFK_FAKE_COMMAND"; [[ "${AFK_FAKE_CREATE_CRASH_AFTER_EFFECT:-0}" != 1 ]] || exit 97; jq -nc --arg handle "$handle" '\''{result:{terminal:{handle:$handle}}}'\''; exit; fi'
   printf '%s\n' 'if [[ "$1 $2" == "terminal close" ]]; then target=""; while (($#)); do case "$1" in --terminal) target="$2"; shift 2;; *) shift;; esac; done; jq --arg t "$target" '\''map(select(.handle!=$t))'\'' "$AFK_FAKE_TERMINALS" >"$AFK_FAKE_TERMINALS.tmp"; mv "$AFK_FAKE_TERMINALS.tmp" "$AFK_FAKE_TERMINALS"; jq --arg t "$target" '\''map(select(.handle!=$t))'\'' "$AFK_FAKE_BOUND" >"$AFK_FAKE_BOUND.tmp"; mv "$AFK_FAKE_BOUND.tmp" "$AFK_FAKE_BOUND"; jq -nc '\''{ok:true}'\''; exit; fi' 'exit 1'
 } >"$fake_orca"; chmod +x "$fake_orca"
-orca_env=(AFK_ORCA_BIN="$fake_orca" AFK_FAKE_ORCA_LOG="$TMP/orca-log" AFK_FAKE_WORKTREE_PATH="$ROOT" AFK_FAKE_TERMINALS="$orca_terminals" AFK_FAKE_BOUND="$orca_bound" AFK_FAKE_COMMAND="$TMP/orca-command")
+# The fake reaches the adapters only through the resolver's host config.
+printf '{"orca_bin":"%s"}\n' "$fake_orca" >"$TMP/orca-host.json"
+orca_env=(AFK_HOST_CONFIG="$TMP/orca-host.json" AFK_FAKE_ORCA_LOG="$TMP/orca-log" AFK_FAKE_WORKTREE_PATH="$ROOT" AFK_FAKE_TERMINALS="$orca_terminals" AFK_FAKE_BOUND="$orca_bound" AFK_FAKE_COMMAND="$TMP/orca-command")
 
 # Exercise the installed public PM entrypoint, not only its adapter. The command
 # must write the exact registration intent and identify itself in the lifecycle

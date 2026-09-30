@@ -201,6 +201,7 @@ SC_SCRIPTS=("$DISPATCH" "$MAKE_STAMP" "$USAGE_CHECK" "$GH_HEALTH" \
             "$KIT_ROOT/bin/afk-release-reconcile" "$KIT_ROOT/bin/afk-session-freshness" \
             "$KIT_ROOT/bin/afk-session-start" \
             "$KIT_ROOT/adapters/runtime-scope.sh" \
+            "$KIT_ROOT/tests/orca-resolver-tests.sh" \
             "$KIT_ROOT/adapters/render-status.sh" "$KIT_ROOT/adapters/manage.sh" \
             "$KIT_ROOT/adapters/manage-core.sh" "$KIT_ROOT/adapters/manage-transactions.sh" \
             "$KIT_ROOT/adapters/hindsight.sh" "$KIT_ROOT/adapters/publish-runtime.sh" \
@@ -235,7 +236,7 @@ SC_SCRIPTS=("$DISPATCH" "$MAKE_STAMP" "$USAGE_CHECK" "$GH_HEALTH" \
 # assigned in afk-common.sh and read in afk-inventory.sh looks unused (SC2034)
 # or unassigned (SC2154) to a single-file analysis. `set -u` in the entry point
 # is the real guard against an unset read.
-SC_LIFECYCLE=("$KIT_ROOT/bin/agent-flow-kit" "$KIT_ROOT/lib/afk-common.sh" \
+SC_LIFECYCLE=("$KIT_ROOT/bin/agent-flow-kit" "$KIT_ROOT/lib/afk-common.sh" "$KIT_ROOT/lib/afk-orca.sh" \
               "$KIT_ROOT/lib/afk-source.sh" "$KIT_ROOT/lib/afk-inventory.sh" \
               "$KIT_ROOT/lib/afk-readiness.sh" "$KIT_ROOT/lib/afk-monitor.sh" \
               "$KIT_ROOT/lib/afk-commands.sh" \
@@ -3796,6 +3797,14 @@ head1 "27. Paperclip project gate — tests/paperclip-project-tests.sh"
 # paperclip-project add|set|remove|list and paperclip-config --migrate
 # (lib/afk-paperclip-project.sh): no network, stub curl/op, temp git repos.
 run_gate "paperclip project gate" "$KIT_ROOT/tests/paperclip-project-tests.sh"
+
+# ===========================================================================
+head1 "28. Orca resolver gate — tests/orca-resolver-tests.sh"
+# ===========================================================================
+# lib/afk-orca.sh (AD-28 R1, R2): resolution order, no PATH fallback, the
+# bounded runner and its fixed classification. Stubs, plus the host's real
+# orca-ide --version when it exists (skipped otherwise).
+run_gate "Orca resolver gate" "$KIT_ROOT/tests/orca-resolver-tests.sh"
 
 # ===========================================================================
 # AC-2: total wall time, with a BUDGET warning (never a failure) over 720s.
