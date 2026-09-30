@@ -181,6 +181,23 @@ eq "(f) no timeout or gtimeout: PROBE_BOUND_UNAVAILABLE, never unbounded" \
     /bin/bash -c ". '$LIB'; afk_orca_run t -- status; printf %s \"\$AFK_ORCA_CODE\"")" "PROBE_BOUND_UNAVAILABLE"
 absent "(f) the unbounded call never ran" "$TMP/cli.argv"
 
+# --- bound plus grace never exceeds 60 s (AD-28 R2) ---------------------------
+reset_config; mkdir -p "$TMP/tlog"
+cat >"$TMP/tlog/timeout" <<STUB
+#!/bin/bash
+printf '%s\n' "\$*" >>"$TMP/timeout.args"
+exec "$(command -v timeout)" "\$@"
+STUB
+chmod +x "$TMP/tlog/timeout"
+env -i HOME="$H" PATH="$TMP/tlog:$BASE_PATH" TMP="$TMP" ORCA_CLI_COMMAND="$TMP/cli-orca" \
+  AFK_ORCA_GRACE_SECONDS=10 AFK_ORCA_TIMEOUT_SECONDS=60 \
+  bash -c ". '$LIB'; afk_orca_run t -- status; afk_orca_run --bound 60 t -- status" >/dev/null
+eq "the handshake and both calls are clamped to bound 50 with grace 10" \
+  "$(awk '{print $2, $3}' "$TMP/timeout.args" | sort | uniq -c | awk '{print $1, $2, $3}')" "3 10 50"
+eq "an explicit --bound 60 is clamped too" \
+  "$(in_shell ORCA_CLI_COMMAND="$TMP/cli-orca" AFK_ORCA_GRACE_SECONDS=10 AFK_ORCA_TRACE=1 -- \
+    'afk_orca_run --bound 60 t -- status 2>&1 >/dev/null' 2>&1 | grep -o 'bound=[0-9]* grace=[0-9]*')" "bound=50 grace=10"
+
 # --- (g) the real CLI under the systemd user manager's PATH ------------------
 if [[ -x "${HOME:-/nonexistent}/.local/bin/orca-ide" && ! -e "$HOME/.config/agent-flow-kit/host.json" ]]; then
   sys_path="$(systemctl --user show-environment 2>/dev/null | sed -n 's/^PATH=//p')"

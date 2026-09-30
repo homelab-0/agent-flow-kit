@@ -71,6 +71,10 @@ if [[ -r "$HERE/lib/afk-orca.sh" ]]; then . "$HERE/lib/afk-orca.sh"; else . "$HE
 afk_orca_bound_tool >/dev/null || exit 0
 timeout_seconds="${AFK_ORCA_TITLE_TIMEOUT_SECONDS:-2}"
 [[ "$timeout_seconds" =~ ^[1-9][0-9]*$ ]] || exit 0
+# The resolver's --version handshake gets this adapter's own bound too, never
+# the library's 10 s default (an env value can only lower it).
+[[ "${AFK_ORCA_TIMEOUT_SECONDS:-}" =~ ^[1-9][0-9]*$ ]] && (( AFK_ORCA_TIMEOUT_SECONDS < timeout_seconds )) \
+  || AFK_ORCA_TIMEOUT_SECONDS="$timeout_seconds"
 max_length="${AFK_ORCA_TITLE_MAX_LENGTH:-120}"
 [[ "$max_length" =~ ^[1-9][0-9]*$ && "$max_length" -le 160 ]] || exit 0
 

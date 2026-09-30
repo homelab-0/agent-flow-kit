@@ -28,7 +28,7 @@ else bad "bash -n lib/afk-pm-registry.sh"; fi
 
 STUBS="$TMPROOT/stubs"; mkdir -p "$STUBS"
 TERMFILE="$TMPROOT/terminals.json"
-cat > "$STUBS/orca" <<'SH'
+cat > "$STUBS/orca-cli" <<'SH'
 #!/usr/bin/env bash
 [[ "${1:-}" == --version ]] && { echo 1.4.216; exit 0; }
 if [[ "$1 $2" == "terminal list" ]]; then
@@ -38,9 +38,12 @@ if [[ "$1 $2" == "terminal list" ]]; then
 fi
 exit 1
 SH
-chmod +x "$STUBS/orca"
+chmod +x "$STUBS/orca-cli"
 # The stub reaches the kit only through the resolver's host config.
-printf '{"orca_bin":"%s"}\n' "$STUBS/orca" >"$STUBS/host.json"
+printf '{"orca_bin":"%s"}\n' "$STUBS/orca-cli" >"$STUBS/host.json"
+# A decoy named orca on PATH. Kit code must never run it (AD-28 R10);
+# the real stub is orca-cli and reaches the kit only through the resolver.
+printf '#!/bin/sh\n: >"%s"\nexit 1\n' "$STUBS/.bare-orca-ran" >"$STUBS/orca"; chmod +x "$STUBS/orca"
 set_terminals() { printf '%s' "$1" >"$TERMFILE"; } # {"terminals":[...]}
 
 REPO="$TMPROOT/repo"
@@ -359,5 +362,7 @@ assert_contains "  ...C is named in the stranded report by its source path" \
   "$(jq -r '[.stranded[].source] | join(",")' <<<"$OUT_TEXT")" "$CLAIMED_DIR/3000.$IDC.claimed.json"
 
 # ============================================================================
+assert_eq "the PATH decoy orca never ran" \
+  "$([[ -e "$STUBS/.bare-orca-ran" ]] && echo ran || echo never)" "never"
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

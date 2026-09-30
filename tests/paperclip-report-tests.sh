@@ -49,7 +49,7 @@ else bad "bash -n lib/afk-paperclip-report.sh"; fi
 
 STUBS="$TMPROOT/stubs"; mkdir -p "$STUBS"
 TERMFILE="$TMPROOT/terminals.json"
-cat > "$STUBS/orca" <<'SH'
+cat > "$STUBS/orca-cli" <<'SH'
 #!/usr/bin/env bash
 [[ "${1:-}" == --version ]] && { echo 1.4.216; exit 0; }
 if [[ "$1 $2" == "terminal list" ]]; then
@@ -59,8 +59,11 @@ fi
 exit 1
 SH
 # The stub reaches the kit only through the resolver's host config.
-printf '{"orca_bin":"%s"}\n' "$STUBS/orca" >"$STUBS/host.json"
-chmod +x "$STUBS/orca"
+printf '{"orca_bin":"%s"}\n' "$STUBS/orca-cli" >"$STUBS/host.json"
+# A decoy named orca on PATH. Kit code must never run it (AD-28 R10);
+# the real stub is orca-cli and reaches the kit only through the resolver.
+printf '#!/bin/sh\n: >"%s"\nexit 1\n' "$STUBS/.bare-orca-ran" >"$STUBS/orca"; chmod +x "$STUBS/orca"
+chmod +x "$STUBS/orca-cli"
 set_terminals() { printf '%s' "$1" >"$TERMFILE"; }
 
 REPO="$TMPROOT/repo"
@@ -380,6 +383,8 @@ assert_eq "every spool entry was consumed, none dead-lettered" \
 assert_eq "  ...and the live directory is empty" \
   "$(find "$STATE/paperclip/spool/$ISSUE" -maxdepth 1 -name '[0-9]*.json' | wc -l)" "0"
 
+assert_eq "the PATH decoy orca never ran" \
+  "$([[ -e "$STUBS/.bare-orca-ran" ]] && echo ran || echo never)" "never"
 head1 "Summary"
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

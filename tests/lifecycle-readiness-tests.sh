@@ -346,7 +346,7 @@ install_kit() {
 # --- the stub dependency set ----------------------------------------------
 BIN="$TMPROOT/bin"; mkdir -p "$BIN"
 
-cat > "$BIN/orca" <<'STUB'
+cat > "$BIN/orca-cli" <<'STUB'
 #!/usr/bin/env bash
 [[ "${1:-}" == --version ]] && { echo 1.4.216; exit 0; }
 case "${1:-} ${2:-}" in
@@ -474,13 +474,16 @@ printf '{"catalog_version":"%s"}' "${STUB_ROUTER_CATALOG:-sha256:abc}"
 STUB
 
 chmod +x "$BIN"/*
+# A decoy named orca on PATH. Kit code must never run it (AD-28 R10);
+# the real stub is orca-cli and reaches the kit only through the resolver.
+printf '#!/bin/sh\n: >"%s"\nexit 1\n' "$BIN/.bare-orca-ran" >"$BIN/orca"; chmod +x "$BIN/orca"
 
 # --- stub selection, passed explicitly and reset per scenario -------------
 STUB_ORCA=ok; STUB_ORCA_CAPS=full; STUB_VALIDATOR=honest
 STUB_CLAUDE_AUTH=sub; STUB_CLAUDE_CAPS=full; STUB_CODEX_AUTH=sub
 STUB_ROUTER=ok; STUB_ROUTER_CATALOG="sha256:abc"
 LIVE_TIMEOUT_MS=5000
-ORCA_BIN_OVERRIDE="$BIN/orca"
+ORCA_BIN_OVERRIDE="$BIN/orca-cli"
 CLAUDE_BIN_OVERRIDE="claude"; CODEX_BIN_OVERRIDE="codex"
 ROUTER_URL="https://router.invalid"; ROUTER_TOKEN="stub-token"
 ENV_ANTHROPIC_API_KEY=""; ENV_OP_TOKEN=""
@@ -490,7 +493,7 @@ stub_reset() {
   STUB_CLAUDE_AUTH=sub; STUB_CLAUDE_CAPS=full; STUB_CODEX_AUTH=sub
   STUB_ROUTER=ok; STUB_ROUTER_CATALOG="sha256:abc"
   LIVE_TIMEOUT_MS=5000
-  ORCA_BIN_OVERRIDE="$BIN/orca"
+  ORCA_BIN_OVERRIDE="$BIN/orca-cli"
   CLAUDE_BIN_OVERRIDE="claude"; CODEX_BIN_OVERRIDE="codex"
   ROUTER_URL="https://router.invalid"; ROUTER_TOKEN="stub-token"
   ENV_ANTHROPIC_API_KEY=""; ENV_OP_TOKEN=""
@@ -1610,6 +1613,8 @@ unset AFK_PM_DIR
 rm -f "$PMD/usage.json"
 
 # ===========================================================================
+assert_eq "the PATH decoy orca never ran" \
+  "$([[ -e "$BIN/.bare-orca-ran" ]] && echo ran || echo never)" "never"
 if (( SKIPPED > 0 )); then
   printf '\n\033[33mskipped checks computed no verdict — they are not passes\033[0m\n'
   printf '\033[1m%d passed, %d failed, %d skipped\033[0m\n' "$PASS" "$FAIL" "$SKIPPED"

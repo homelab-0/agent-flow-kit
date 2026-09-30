@@ -23,8 +23,8 @@
 # --environment is passed, and `timeout -k <grace> <bound>` (gtimeout when
 # there is no timeout). Bound defaults to 10 s, or a call site's --bound;
 # AFK_ORCA_TIMEOUT_SECONDS replaces the default and can only lower a --bound.
-# Grace defaults to 3 s (AFK_ORCA_GRACE_SECONDS). Nothing waits longer than
-# 60 s in one call.
+# Grace defaults to 3 s (AFK_ORCA_GRACE_SECONDS). The bound is clamped so
+# bound plus grace never exceeds 60 s in one call.
 #
 # Return protocol: call afk_orca_run directly, never inside $(...), and read
 #   AFK_ORCA_CODE  OK | ORCA_TIMEOUT | ORCA_ERROR:<code> | ORCA_CLI_FAILED |
@@ -83,15 +83,15 @@ afk_orca_candidate() {
 # set. Call it once in the main shell before any $(...) that runs Orca, so the
 # verdict is cached where the subshells inherit it.
 afk_orca_bin() {
-  local cand tool out rc
+  local cand tool out rc grace
   if [[ -z "$_AFK_ORCA_STATE" ]]; then
     _AFK_ORCA_STATE="ORCA_CLI_NOT_RESOLVED"
     if ! tool="$(afk_orca_bound_tool)"; then
       _AFK_ORCA_STATE="PROBE_BOUND_UNAVAILABLE"
     elif cand="$(afk_orca_candidate)" && [[ -f "$cand" && -x "$cand" ]]; then
-      out="$(env -u ORCA_ENVIRONMENT -u ORCA_PAIRING_CODE TERM=dumb "$tool" \
-        -k "$(afk_orca_seconds "${AFK_ORCA_GRACE_SECONDS:-}" 3 10)" \
-        "$(afk_orca_seconds "${AFK_ORCA_TIMEOUT_SECONDS:-}" 10 60)" \
+      grace="$(afk_orca_seconds "${AFK_ORCA_GRACE_SECONDS:-}" 3 10)"
+      out="$(env -u ORCA_ENVIRONMENT -u ORCA_PAIRING_CODE TERM=dumb "$tool" -k "$grace" \
+        "$(afk_orca_seconds "${AFK_ORCA_TIMEOUT_SECONDS:-}" 10 $((60 - grace)))" \
         "$cand" --version </dev/null 2>/dev/null)"
       rc=$?
       out="${out%%$'\n'*}"; out="${out//[[:space:]]/}"
@@ -110,11 +110,12 @@ afk_orca_bin() {
 afk_orca_run() {
   local bound grace keep_env=false purpose tool bin out rc code a has_json=false
   AFK_ORCA_OUT=""; AFK_ORCA_CODE="ORCA_CLI_FAILED"; AFK_ORCA_RC=0
-  bound="$(afk_orca_seconds "${AFK_ORCA_TIMEOUT_SECONDS:-}" 10 60)"
+  # Bound plus grace never exceeds 60 s (AD-28 R2).
   grace="$(afk_orca_seconds "${AFK_ORCA_GRACE_SECONDS:-}" 3 10)"
+  bound="$(afk_orca_seconds "${AFK_ORCA_TIMEOUT_SECONDS:-}" 10 $((60 - grace)))"
   while [[ "${1:-}" == --* ]]; do
     case "$1" in
-      --bound) bound="$(afk_orca_seconds "${2:-}" "$bound" 60)"
+      --bound) bound="$(afk_orca_seconds "${2:-}" "$bound" $((60 - grace)))"
                [[ -z "${AFK_ORCA_TIMEOUT_SECONDS:-}" ]] \
                  || bound="$(afk_orca_seconds "$AFK_ORCA_TIMEOUT_SECONDS" "$bound" "$bound")"
                shift 2 ;;
@@ -165,11 +166,11 @@ afk_orca_run() {
     fi
   fi
   AFK_ORCA_CODE="$code"
-  afk_orca_trace "$purpose"
+  afk_orca_trace "$purpose" "bound=$bound grace=$grace"
   [[ "$code" == OK ]]
 }
 
-afk_orca_trace() { # <purpose>
+afk_orca_trace() { # <purpose> [detail]
   [[ "${AFK_ORCA_TRACE:-}" == 1 ]] || return 0
-  printf 'afk-orca: %s %s rc=%s\n' "$1" "$AFK_ORCA_CODE" "$AFK_ORCA_RC" >&2
+  printf 'afk-orca: %s %s rc=%s%s\n' "$1" "$AFK_ORCA_CODE" "$AFK_ORCA_RC" "${2:+ $2}" >&2
 }

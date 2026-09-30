@@ -65,7 +65,7 @@ SH
 
 # orca — worktree show, terminal list (bare and --worktree), terminal create.
 # No launch, no real terminal: every response is a fixture this test controls.
-cat >"$STUBS/orca" <<'SH'
+cat >"$STUBS/orca-cli" <<'SH'
 #!/usr/bin/env bash
 [[ "${1:-}" == --version ]] && { echo 1.4.216; exit 0; }
 case "$1 $2" in
@@ -79,7 +79,10 @@ case "$1 $2" in
 esac
 SH
 # The stub reaches the kit only through the resolver's host config.
-printf '{"orca_bin":"%s"}\n' "$STUBS/orca" >"$STUBS/host.json"
+printf '{"orca_bin":"%s"}\n' "$STUBS/orca-cli" >"$STUBS/host.json"
+# A decoy named orca on PATH. Kit code must never run it (AD-28 R10);
+# the real stub is orca-cli and reaches the kit only through the resolver.
+printf '#!/bin/sh\n: >"%s"\nexit 1\n' "$STUBS/.bare-orca-ran" >"$STUBS/orca"; chmod +x "$STUBS/orca"
 
 # systemctl — enable/disable/is-enabled/is-active/daemon-reload, logged only.
 cat >"$STUBS/systemctl" <<'SH'
@@ -606,5 +609,7 @@ assert_absent "reused pid: not busy" "$OUT_TEXT" "PAPERCLIP_POLL_BUSY"
 assert_contains "reused pid: PAPERCLIP_LOCK_STALE reported" "$OUT_TEXT" "PAPERCLIP_LOCK_STALE"
 
 # ============================================================================
+assert_eq "the PATH decoy orca never ran" \
+  "$([[ -e "$STUBS/.bare-orca-ran" ]] && echo ran || echo never)" "never"
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

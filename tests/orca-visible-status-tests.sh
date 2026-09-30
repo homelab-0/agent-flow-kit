@@ -108,5 +108,15 @@ jq 'map(if .handle=="self" then .title="Hermes prior" else . end)' "$terminals" 
 env "${common[@]}" AFK_ORCA_TITLE_STATE_DIR="$TMP/hermes-state" "$ROOT/adapters/hermes/status-card.sh" >/dev/null
 if wait_title_contains 'cli=hermes/'; then ok; else no "Hermes did not publish the universal title"; fi
 
+# The resolver's --version handshake runs inside the adapter's own bound, not
+# the library's 10 s default.
+printf '#!/usr/bin/env bash\nsleep 30\n' >"$TMP/hang-version-orca"; chmod +x "$TMP/hang-version-orca"
+printf '{"orca_bin":"%s"}\n' "$TMP/hang-version-orca" >"$TMP/hang-host.json"
+start_ms="$(date +%s%3N)"
+env "${common[@]}" AFK_HOST_CONFIG="$TMP/hang-host.json" AFK_ORCA_TITLE_STATE_DIR="$TMP/hang-state" \
+  AFK_ORCA_TITLE_INTERVAL_SECONDS=0 AFK_ORCA_TITLE_TIMEOUT_SECONDS=1 "$ROOT/adapters/orca-title.sh" --harness codex
+elapsed_ms=$(( $(date +%s%3N) - start_ms ))
+if ((elapsed_ms < 4000)); then ok; else no "a hanging handshake held the title tick for ${elapsed_ms}ms"; fi
+
 printf '%s passed, %s failed\n' "$pass" "$fail"
 ((fail == 0))
