@@ -217,6 +217,8 @@ if [[ -n "$OV_HARNESS$OV_PROFILE" ]]; then
   [[ -n "$OV_CATALOG" ]] \
     || die "override refused: no trusted catalog resolved (AGENT_STAMP_VALIDATE_CATALOG_PATH, launcher.catalog_path, or the synced current.yaml), so the entitlement pool for $FINAL_PROFILE cannot be established"
   ov_field() { FP="$FINAL_PROFILE" FH="$FINAL_HARNESS" yq -o=json -I=0 "$1" "$OV_CATALOG" 2>/dev/null; }
+  [[ "$(ov_field '.profiles | tag')" == '"!!map"' ]] \
+    || die "override refused: trusted catalog $OV_CATALOG is unreadable or malformed"
   [[ "$(ov_field '.profiles | has(strenv(FP))')" == true ]] \
     || die "override refused: profile $FINAL_PROFILE is not in the trusted catalog"
   [[ "$(ov_field '[.routing_pairs[]? | select(.harness == strenv(FH) and .model_profile == strenv(FP))] | length')" -ge 1 ]] \

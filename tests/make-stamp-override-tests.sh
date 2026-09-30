@@ -13,7 +13,8 @@ MAKE_STAMP="$KIT_ROOT/files/model-router/scripts/make-stamp.sh"
 CATALOG="$KIT_ROOT/tests/fixtures/make-stamp-override-catalog.yaml"
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 
-unset AFK_ORCA_BIN ORCA_CLI_COMMAND AGENT_ROUTER_URL AGENT_ROUTER_TOKEN
+unset AFK_ORCA_BIN ORCA_CLI_COMMAND AGENT_ROUTER_URL AGENT_ROUTER_TOKEN \
+      AFK_ROUTE_AVAILABLE_BINDINGS_CONTRACT AGENT_ROUTER_TOKEN_ENV
 export HOME="$WORK/home" AGENT_FLOW_CONFIG="$WORK/none.yaml" SUBSCRIPTIONS_FILE=""
 mkdir -p "$HOME"
 
@@ -63,6 +64,8 @@ else bad "local override mints" "$(tail -2 "$WORK/err")"; fi
 echo "no override leaves the decision untouched"
 AGENT_STAMP_VALIDATE_CATALOG_PATH="" bash "$MAKE_STAMP" --response "$WORK/resp.json" --story-id T-1 --out "$WORK/n.json" 2>/dev/null
 assert_eq "no override: pool unchanged"    "$(jq -r .entitlement_pool "$WORK/n.json")" anthropic-max
+proj='{harness,model_profile,effort,cost_class,entitlement_pool,metered,placement_policy,placement_required,catalog_version,expires_at}'
+assert_eq "no override: decision fields byte-for-byte" "$(jq -c "$proj" "$WORK/n.json")" "$(jq -c "$proj" "$WORK/resp.json")"
 assert_eq "no override: override is null"  "$(jq -c .override "$WORK/n.json")" null
 
 echo "fail closed"
@@ -71,6 +74,8 @@ refused "profile unknown"     "$CATALOG" codex openai/nope "not in the trusted c
 refused "pair not in routing_pairs" "$CATALOG" claude openai/strong "not a routing pair"
 
 yq '.profiles["openai/strong"].entitlements = []' "$CATALOG" > "$WORK/zero.yaml"
+printf 'profiles: [unterminated\n  not: yaml: at all' > "$WORK/garbage.yaml"
+refused "garbage catalog" "$WORK/garbage.yaml" codex openai/strong "unreadable or malformed"
 refused "zero entitlements"   "$WORK/zero.yaml" codex openai/strong "0 entitlements"
 yq '.profiles["openai/strong"].entitlements += [{"pool":"anthropic-max","cost_class":"subscription"}]' "$CATALOG" > "$WORK/two.yaml"
 refused "two entitlements"    "$WORK/two.yaml" codex openai/strong "2 entitlements"
@@ -93,7 +98,9 @@ routed() { # <request> <out>
   AGENT_STAMP_VALIDATE_CATALOG_PATH="$WORK/metered.yaml" bash "$MAKE_STAMP" --request "$1" \
     --override-harness codex --override-profile openai/strong --override-actor josh --override-reason t --out "$2" 2>"$WORK/err"
 }
-if routed "$WORK/req-no.json" "$WORK/m0.json"; then bad "metered with allow_metered false: refused" "a stamp was written"; else ok "metered with allow_metered false: refused"; fi
+if routed "$WORK/req-no.json" "$WORK/m0.json"; then bad "metered with allow_metered false: refused" "a stamp was written"
+elif [[ -e "$WORK/m0.json" ]] || ! grep -q "allow_metered" "$WORK/err"; then bad "metered with allow_metered false: refused for the right reason" "$(tail -1 "$WORK/err")"
+else ok "metered with allow_metered false: refused on allow_metered, no stamp written"; fi
 if routed "$WORK/req-yes.json" "$WORK/m1.json"; then
   assert_eq "metered with allow_metered true: pool, metered" "$(jq -r '[.entitlement_pool,.cost_class,.metered]|join("/")' "$WORK/m1.json")" openai-plus/metered/true
 else bad "metered with allow_metered true mints" "$(tail -2 "$WORK/err")"; fi
