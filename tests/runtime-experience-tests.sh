@@ -96,7 +96,7 @@ cp "$TMP/status.json" "$TMP/cache.json"; touch -d '@100' "$TMP/cache.json"
 # The generated fixture expands this at runtime.
 # shellcheck disable=SC2016
 printf '#!/usr/bin/env bash\nprintf invoked >"$AFK_SLOW_MARKER"\nsleep 1\n' >"$TMP/slow"; chmod +x "$TMP/slow"
-out="$(AFK_SLOW_MARKER="$TMP/slow-marker" AFK_STATUS_BIN="$TMP/slow" "$ROOT/adapters/render-status.sh" --cache "$TMP/cache.json" --now 200 --harness claude)"
+out="$(AFK_SLOW_MARKER="$TMP/slow-marker" AFK_STATUS_BIN="$TMP/slow" "$ROOT/adapters/render-status.sh" --cache "$TMP/cache.json" --now 300 --harness claude)"
 if [[ "$out" == STALE* ]]; then ok; else no "stale fallback"; fi
 if [[ ! -e "$TMP/slow-marker" ]]; then ok; else no "renderer invoked slow producer"; fi
 out="$(AFK_SLOW_MARKER="$TMP/slow-marker" AFK_STATUS_BIN="$TMP/slow" "$ROOT/adapters/render-status.sh" --cache "$TMP/missing.json" --now 200 --harness claude)"
@@ -119,7 +119,7 @@ claude_input="$TMP/claude-input.json"
 jq -nc '{session_id:"session-1",model:{id:"claude-opus",display_name:"Opus"},context_window:{total_input_tokens:42,total_output_tokens:7,context_window_size:200000,used_percentage:12},rate_limits:{five_hour:{used_percentage:21},seven_day:{used_percentage:31}}}' >"$claude_input"
 touch "$TMP/cache.json"
 out="$(AFK_STATE_DIR="$state" AFK_STATUS_CACHE="$TMP/cache.json" AFK_STATUS_CACHE_DIR="$TMP/runtime-cache" AFK_STATUS_REFRESH_SECONDS=999999 AFK_PRIOR_RECEIVED="$received" "$ROOT/adapters/claude/statusline.sh" <"$claude_input")"
-if [[ "$out" == *'cli=claude/Opus'* && "$out" == *'OWNER-STATUS'* ]]; then ok; else no "Claude composed status preserves owner shell semantics"; fi
+if [[ "$(tail -n1 <<<"$out")" == 'OWNER-STATUS' && "$(head -n1 <<<"$out")" == *'! AFK NEEDS YOU'* ]]; then ok; else no "Claude composed status preserves owner shell semantics"; fi
 if cmp "$claude_input" "$received" >/dev/null; then ok; else no "Claude prior command received exact stdin"; fi
 eq "Claude prior invoked once" "$(wc -l <"$received" | tr -d ' ')" 1
 "$ROOT/adapters/manage.sh" remove claude --home "$home" --state-dir "$state" --adapter-root "$ROOT/adapters" >/dev/null || no "Claude removal"
@@ -2004,5 +2004,123 @@ jq '.state="ACKED"' "$pmd/handoff.json" >"$pmd/h"; mv "$pmd/h" "$pmd/handoff.jso
 different_home="$TMP/different-pm-home"; different_state="$TMP/different-pm-state"; mkdir -p "$different_home" "$different_state"
 set +e; HOME="$different_home" AFK_STATE_DIR="$different_state" AFK_PM_DIR="$pmd" "$ROOT/bin/agent-flow-kit" pm-checkpoint --continuation --write "$TMP/different-cont.json" --json >/dev/null 2>&1; different_rc=$?; set -e
 eq "different active continuation refuses" "$different_rc" 2; eq "active continuation unchanged" "$(sha256sum "$pmd/continuation.json")" "$active_before"
+# --- AFK-VIS-1A: Claude status line layout (design checklist 1-10, 12) ---
+set +e
+vis="$TMP/vis"; mkdir -p "$vis/rt" "$vis/pm" "$vis/state/adapters" "$vis/wd"; vnow="$(date +%s)"
+vstatus() { jq -nc --argjson x "${1:-{\}}" '{schema_version:"1.0",kind:"lifecycle_result",orchestration:{state:"NOT_AVAILABLE",session:null},dispatch_monitor:{state:"IDLE",dispatches:[]},overall:{state:"READY_WITH_WARNINGS"},extra:{auto_update:{enrolled:true,health:"ok",platform:"linux",update_available:false,last_result:{state:"CURRENT"}},catalog:{findings:[]}}} * $x'; }
+vcache() { vstatus "$2" >"$vis/$1.json"; touch -d "@$((vnow - ${3:-30}))" "$vis/$1.json"; }
+vplain() { AFK_STATUS_CACHE_DIR="$vis/rt" "$ROOT/adapters/render-status.sh" --harness claude --form claude --now "$vnow" --cache "$vis/$1.json" "${@:2}"; }
+vpm() { (cd "$vis/wd" && AFK_PM_DIR="$vis/pm" ORCA_TERMINAL_HANDLE=vt AFK_RUNTIME_SESSION_ID=vs vplain "$@"); }
+jq -nc --arg p "$(cd "$vis/wd" && pwd -P)" '{schema:"afk-pm-ownership/2",owned:true,role:"PM",harness:"claude",session:"vs",terminal:"vt",worktree:{path:$p,id:"w"}}' >"$vis/pm/ownership.json"
+vwidth() { jq -Rr 'gsub("\u001b\\[[0-9;]*m";"")|length'; }
+esc=$'\033'
+vcache plain '{}'
+eq "plain chat with a current updater: AFK prints nothing" "$(vplain plain)" ""
+vcache pmline '{"dispatch_monitor":{"dispatches":[{"state":"WORKING"},{"state":"BLOCKED"},{"state":"SETTLED"},{"state":"DONE"}]},"extra":{"pm_handoff":{"state":"ACKED"}}}'
+out="$(vpm pmline)"; plain_out="$(vpm pmline | sed "s/$esc\[[0-9;]*m//g")"
+eq "PM line counts only active dispatches" "$plain_out" "L	AFK PM · 1 blocked · 1 worker · handing off to successor"
+eq "role is PM only through the ownership binding" "$(vplain pmline | sed "s/$esc\[[0-9;]*m//g")" "L	AFK · 1 blocked · handing off to successor"
+# Update and health states (2.5), stale at 90 s vs 200 s (F9).
+vcache upd '{"extra":{"auto_update":{"update_available":true,"enrolled":true,"platform":"linux"}}}'
+eq "Linux enrolled update-ready wording" "$(vplain upd | sed "s/$esc\[[0-9;]*m//g")" "L	AFK · update ready: applies at next session start"
+vcache updm '{"extra":{"auto_update":{"update_available":true,"enrolled":false,"platform":"darwin"}}}'
+eq "Mac update-available wording" "$(vplain updm | sed "s/$esc\[[0-9;]*m//g")" "L	AFK · update available: run agent-flow-kit update"
+vcache sick '{"extra":{"auto_update":{"health":"check_stale"},"catalog":{"findings":[{"code":"CATALOG_SYNC_STALE"}]}}}'
+eq "unhealthy updater and stale catalog" "$(vplain sick | sed "s/$esc\[[0-9;]*m//g")" "L	AFK · updater unhealthy: run agent-flow-kit status · catalog stale"
+vcache stale90 '{}' 90; vcache stale200 '{}' 200
+eq "age 90 s shows nothing (plain and PM)" "$(vpm stale90 | sed "s/$esc\[[0-9;]*m//g")" "L	AFK PM"
+eq "age 200 s shows (Nm old) right after the role" "$(vpm stale200 | sed "s/$esc\[[0-9;]*m//g")" "L	AFK PM (3m old)"
+eq "stale plain chat stays silent" "$(vplain stale200)" ""
+# Alerts (2.4): keyword position, severity order, +N more, reason table, verbatim unknown code.
+vcache a_nh '{"orchestration":{"session":{"needs_human":true}},"findings":[{"severity":"owner_action","reason":"WORKER_HEARTBEAT_EXPIRED"}]}'
+vcache a_ck '{"extra":{"pm_budget":{"state":"CHECKPOINT_DUE","reason":"PM_CHECKPOINT_DUE","needs_human":false}}}'
+vcache a_ct '{"extra":{"pm_budget":{"state":"CONTINUATION_REQUIRED","reason":"PM_CONTINUATION_REQUIRED","needs_human":true}},"findings":[{"severity":"owner_action","reason":"PM_CONTINUATION_REQUIRED"}]}'
+vcache a_unk '{"findings":[{"severity":"owner_action","reason":"SOME_FUTURE_CODE"}]}'
+vcache a_many '{"orchestration":{"session":{"needs_human":true}},"extra":{"pm_budget":{"state":"CHECKPOINT_DUE"}}}'
+for st in nh:"NEEDS YOU" ck:CHECKPOINT ct:"HANDOFF NOW"; do
+  a="$(vpm "a_${st%%:*}" | grep '^A')"; ap="$(sed "s/$esc\[[0-9;]*m//g;s/^A	//" <<<"$a")"
+  head20="${ap:0:20}"; kw="${st#*:}"; kw="${kw#\"}"
+  [[ "$head20" == *"${kw%% *}"* && "$a" == *"${esc}[1;7;3"* ]] && ok || no "alert ${st%%:*} keyword in first 20 columns, reverse video: $ap"
+done
+eq "NEEDS_HUMAN detail comes from the reason table" "$(vpm a_nh | sed "s/$esc\[[0-9;]*m//g" | sed -n 's/^A	//p')" " ! AFK NEEDS YOU  a worker went quiet: look at it · PM"
+eq "an unknown reason code prints verbatim" "$(vplain a_unk | sed "s/$esc\[[0-9;]*m//g" | sed -n 's/^A	//p')" " ! AFK NEEDS YOU  SOME_FUTURE_CODE"
+eq "highest severity wins, with +N more" "$(vplain a_many | sed "s/$esc\[[0-9;]*m//g" | sed -n 's/^A	//p')" " ! AFK NEEDS YOU  your decision is needed +1 more"
+eq "continuation is not also reported as needs-you" "$(vplain a_ct | grep -c '^A')" 1
+eq "the alert keeps its age when data is stale" "$(vpm a_nh | sed -n 's/^A	//p' | sed "s/$esc\[[0-9;]*m//g" | grep -c 'a worker went quiet')" 1
+vcache a_stale '{"extra":{"pm_budget":{"state":"CHECKPOINT_DUE"}}}' 260
+[[ "$(vplain a_stale | sed -n 's/^A	//p')" == *"· 4m"* ]] && ok || no "stale alert carries its age"
+# Width and reset for the worst-case fixture (checklist 5), plus debug-noise ban (checklist 3).
+vcache worst '{"orchestration":{"session":{"needs_human":true}},"findings":[{"severity":"owner_action","reason":"AN_EXTREMELY_LONG_UNKNOWN_REASON_CODE_THAT_KEEPS_GOING_AND_GOING_PAST_ANY_WIDTH_BUDGET"}],"dispatch_monitor":{"dispatches":[{"state":"BLOCKED"},{"state":"WORKING"},{"state":"WORKING"},{"state":"WORKING"}]},"extra":{"pm_budget":{"state":"CHECKPOINT_DUE"},"pm_handoff":{"state":"SUCCESSOR_LAUNCHED"},"auto_update":{"update_available":true,"enrolled":false,"platform":"darwin"},"catalog":{"findings":[{"code":"X"}]}}}' 260
+all_out=""
+for f in plain pmline upd updm sick stale200 a_nh a_ck a_ct a_unk a_many worst; do all_out+="$(vpm "$f")"$'\n'; done
+w_ok=1; r_ok=1
+while IFS=$'\t' read -r tag body; do
+  [[ -n "$tag" ]] || continue
+  (( $(vwidth <<<"$body") <= 100 )) || { w_ok=0; printf 'too wide: %s\n' "$body"; }
+  [[ "$body" == *"${esc}[0m" ]] || { r_ok=0; printf 'no reset: %s\n' "$body"; }
+done <<<"$all_out"
+eq "AFK and alert lines are at most 100 columns in every fixture" "$w_ok" 1
+eq "every AFK line ends with a reset" "$r_ok" 1
+[[ "$all_out" != *NOT_EVALUATED* && "$all_out" != *NOT_AVAILABLE* && "$all_out" != *owner=* && "$all_out" != *bridge=* && "$all_out" != *'UNAVAILABLE['* ]] && ok || no "default output carries no debug fields"
+eq "the worst case keeps the label and drops low-rank fields" "$(vpm worst | sed "s/$esc\[[0-9;]*m//g" | sed -n 's/^L	//p' | cut -c1-6)" "AFK PM"
+# NO_COLOR and verbose (checklists 9, 10).
+[[ "$(NO_COLOR=1 vpm worst | grep -c "$esc")" == 0 && "$(NO_COLOR=1 vpm worst)" == *'! AFK NEEDS YOU'* ]] && ok || no "NO_COLOR removes every ESC and keeps ! plus keyword"
+eq "verbose adds exactly one debug line" "$(( $(AFK_STATUS_VERBOSE=1 vpm pmline | wc -l) - $(vpm pmline | wc -l) ))" 1
+[[ "$(AFK_STATUS_VERBOSE=1 vpm pmline | grep '^V')" == *NOT_EVALUATED*"role_source=pm_binding"*"prior=none"* ]] && ok || no "verbose line carries the old dump and provenance"
+# Compositor: byte-identical passthrough, replay, bounds (checklists 1, 2, 7, 8, 12).
+vd="$TMP/vis-comp"; mkdir -p "$vd/state/adapters" "$vd/cache"
+jq -nc --arg b "$vd/state/adapters/prior.json" '{backup:$b}' >"$vd/state/adapters/claude.json"
+vprior() { jq -nc --arg c "$1" '{value:{command:$c}}' >"$vd/state/adapters/prior.json"; }
+printf '\033[94mSession [██░░] 42%%\033[0m | Weekly [██████] 75%%  \nContext [██] 23%% \033[2m|\033[0m Pace\n\n\033[35mline three\033[0m\n' >"$vd/prior.txt"
+printf '\033[94mSession [██░░] 42%%\033[0m | Weekly [██████] 75%%  \nContext [██] 23%% \033[2m|\033[0m Pace\n\033[35mline three\033[0m\n' >"$vd/prior.expected"
+vcomp() { env -u ORCA_TERMINAL_HANDLE AFK_STATE_DIR="$vd/state" AFK_STATUS_CACHE="$1" AFK_STATUS_CACHE_DIR="$vd/cache" AFK_STATUS_REFRESH_SECONDS=999999 "${@:2}" "$ROOT/adapters/claude/statusline.sh" <"$claude_input"; }
+vprior "cat $vd/prior.txt"
+vcomp "$vis/plain.json" >"$vd/out1"
+cmp -s "$vd/out1" "$vd/prior.expected" && ok || no "plain chat prints exactly the owner's lines (byte-identical, empty line dropped)"
+vcomp "$vis/a_ck.json" >"$vd/out2"
+cmp -s <(tail -n +2 "$vd/out2") "$vd/prior.expected" && [[ "$(head -1 "$vd/out2")" == *'! AFK CHECKPOINT'* ]] && ok || no "alert line above, owner's lines byte-identical below"
+eq "last-good copy is private" "$(stat -c %a "$vd/cache/prior-last-good.out" 2>/dev/null || stat -f %Lp "$vd/cache/prior-last-good.out")" 600
+vprior "sleep 30 & echo \$! >$vd/child.pid; wait"
+start="$(date +%s)"; vcomp "$vis/plain.json" AFK_CLAUDE_PRIOR_TIMEOUT_SECONDS=1.37 >"$vd/out3"; took=$(( $(date +%s) - start ))
+cmp -s "$vd/out3" "$vd/prior.expected" && ok || no "a timed-out prior replays the last good lines verbatim"
+(( took <= 4 )) && ok || no "prior is bounded (${took}s)"
+sleep 0.5; kill -0 "$(cat "$vd/child.pid")" 2>/dev/null && no "prior's process group is killed on timeout" || ok
+touch -d "@$((vnow - 400))" "$vd/cache/prior-last-good.out"
+vcomp "$vis/plain.json" AFK_CLAUDE_PRIOR_TIMEOUT_SECONDS=1.37 >"$vd/out4"
+[[ "$(<"$vd/out4")" != *'line three'* ]] && ok || no "a last-good copy older than 300 s is not replayed"
+[[ "$(sed "s/$esc\[[0-9;]*m//g" "$vd/out4")" == *'5h ['* ]] && ok || no "a timeout with no usable replay falls back to the usage line"
+sleep 0.3
+eq "no orphan watchdog sleep after a timeout" "$(pgrep -f 'sleep 1.37' | wc -l | tr -d ' ')" 0
+vprior "true"; rm -f "$vd/cache/prior-last-good.out"
+jq -nc --argjson t "$((vnow - 5))" '{schema:"afk-runtime-observation/1",harness:"claude",observed_at:($t|todate),model:{value:"Opus 5.5"},context:{used_percentage:23,limit_tokens:1000000},rate_limits:{seven_day:{used_percentage:75}}}' >"$vis/rt/runtime-claude.json"
+u="$(vplain plain --usage | sed "s/$esc\[[0-9;]*m//g" | sed -n 's/^U	//p')"
+eq "no prior: usage line omits unknown five_hour" "$u" "7d [██████░░] 75% | ctx 23% of 1M | Opus 5.5"
+# A host with neither timeout nor gtimeout: the renderer and the prior bound still work.
+nb="$TMP/nobound-bin"; mkdir -p "$nb"
+for f in /usr/bin/* /bin/*; do case "${f##*/}" in timeout|gtimeout) ;; *) ln -sf "$f" "$nb/${f##*/}" ;; esac; done 2>/dev/null
+eq "the fixture PATH hides timeout and gtimeout" "$(PATH="$nb" command -v timeout gtimeout | wc -l | tr -d ' ')" 0
+[[ "$(PATH="$nb" vpm a_ck | grep '^A')" == *'! AFK CHECKPOINT'* && "$(PATH="$nb" vpm a_ck)" != *STATUS_TIMEOUT* ]] && ok || no "renderer works without timeout/gtimeout"
+vprior "cat $vd/prior.txt"
+PATH="$nb" vcomp "$vis/a_ck.json" >"$vd/out5"
+cmp -s <(tail -n +2 "$vd/out5") "$vd/prior.expected" && ok || no "compositor works without timeout/gtimeout"
+# Fail-open: no jq, or no scratch space, still prints the owner's lines.
+vprior "cat \"$vd/prior.txt\""
+nj="$TMP/nojq-bin"; mkdir -p "$nj"
+for f in /usr/bin/* /bin/*; do [[ "${f##*/}" == jq ]] || ln -sf "$f" "$nj/${f##*/}"; done 2>/dev/null
+eq "the fixture PATH hides jq" "$(PATH="$nj" command -v jq | wc -l | tr -d ' ')" 0
+PATH="$nj" vcomp "$vis/plain.json" >"$vd/out6"
+cmp -s "$vd/out6" "$vd/prior.expected" && ok || no "without jq the owner's lines still print"
+vcomp "$vis/plain.json" TMPDIR=/nonexistent/afk >"$vd/out7"
+cmp -s "$vd/out7" "$vd/prior.txt" && ok || no "with an unwritable TMPDIR the owner's lines still print"
+# A fast prior leaves no watchdog sleep behind.
+vcomp "$vis/plain.json" AFK_CLAUDE_PRIOR_TIMEOUT_SECONDS=9.37 >/dev/null; sleep 0.3
+eq "no orphan watchdog sleep after a fast prior" "$(pgrep -f 'sleep 9.37' | wc -l | tr -d ' ')" 0
+# The usage line does not depend on the lifecycle cache.
+u="$(vplain missing-cache --usage | sed "s/$esc\[[0-9;]*m//g" | sed -n 's/^U	//p')"
+eq "usage line prints when the lifecycle cache is missing" "$u" "7d [██████░░] 75% | ctx 23% of 1M | Opus 5.5"
+# Alert age is capped.
+vcache a_old '{"extra":{"pm_budget":{"state":"CHECKPOINT_DUE"}}}' 90000
+[[ "$(vplain a_old | sed -n 's/^A	//p')" == *'>16h'* ]] && ok || no "alert age is capped"
+set -e
 printf '%s\n' "$pass passed, $fail failed"
 (( fail == 0 ))

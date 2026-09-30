@@ -21,8 +21,33 @@ concurrent harness sessions from exchanging model, context, or status data.
 Missing evidence is printed as
 `NOT_EVALUATED`, never inferred. The timing contract is declared in
 `adapters/status-policy.json`: producers throttle refreshes to five seconds and
-a cache is visibly `STALE` after 30 seconds. If no usable cache exists, the
-renderer prints `AFK UNAVAILABLE[STATUS_UNAVAILABLE]`.
+a cache is visibly `STALE` after 180 seconds (three times Claude's 60 second
+refresh). If no usable cache exists, the one-line form prints
+`AFK UNAVAILABLE[STATUS_UNAVAILABLE]`.
+
+### Claude status line layout
+
+`render-status.sh --form claude` (used only by `claude/statusline.sh`; the
+one-line form above still feeds the Orca title and the other harnesses) prints
+tagged lines the compositor places. The owner's command (for example
+ccstatusline) runs first with its own bound (`AFK_CLAUDE_PRIOR_TIMEOUT_SECONDS`,
+default 8, portable: no `timeout` needed, the whole process group is killed).
+Its non-empty lines are printed byte for byte, and AFK never joins text onto
+them. If it times out or prints nothing, the last good output (kept per scope,
+mode 600, at most 300 seconds old) is replayed.
+
+- An alert line goes above the owner's lines, in reverse video, only for
+  `NEEDS_HUMAN`, `CONTINUATION_REQUIRED` or `CHECKPOINT_DUE`. Its wording comes
+  from `adapters/status-reasons.json`; an unknown reason code prints verbatim.
+- An AFK line goes below them, only when there is something to say: `AFK PM`
+  (only where the PM ownership binding proves it) with active and blocked
+  workers, handoff, update or updater health, catalog problems, and the age of
+  stale data. A plain chat with a current updater prints nothing.
+- With no owner command (or no output and no replay) a usage line (5h, 7d,
+  context, model) is printed instead, omitting metrics AFK does not know.
+- Every AFK line is at most 100 columns and ends with a reset. `NO_COLOR`
+  removes all escape sequences. `AFK_STATUS_VERBOSE=1` adds one dim debug line
+  with the full field dump.
 
 Every harness also feeds that same cache-only segment to a persistent Orca tab
 title through `adapters/orca-title.sh`. This is a universal Orca surface, not a
