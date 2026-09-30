@@ -104,6 +104,16 @@ case "$1 $2" in
     printf '{"result":{"terminal":{"handle":"term-created-1","tabId":"tab-c","leafId":"leaf-c","worktreeId":"wt-1"}},"_meta":{"runtimeId":"rt-1"}}' ;;
   "terminal create")
     printf '%s\n' "$*" >>"$ORCA_CREATE_LOG"
+    if [[ -n "${BOOTSTRAP_MARKER:-}" ]]; then
+      for ((i = 1; i < $#; i++)); do
+        if [[ "${!i}" == --command ]]; then
+          j=$((i + 1)); bootstrap_command="${!j}"
+          bootstrap_wt_path="$(jq -r '.result.worktree.path' "$ORCA_WT_FILE")"
+          (cd "$bootstrap_wt_path" && eval "$bootstrap_command")
+          break
+        fi
+      done
+    fi
     printf '{"result":{"terminal":{"handle":"term-created-1"}}}'
     if [[ "${KILL_POINT:-}" == create ]]; then
       printf '{"result":{"terminals":[{"handle":"term-created-1","title":"renamed by statusline","connected":true,"orphaned":false}]}}' >"$ORCA_TERMLIST_FILE"
@@ -199,8 +209,15 @@ write_config() { # <extra-json-merge>
 
 RC=0 OUT_TEXT=""
 run_afk() { # <cmd> [args...]
-  local out err
+  local out err; local -a adapter_env=()
+  [[ ${AFK_PM_BOOTSTRAP_BIN+x} ]] && adapter_env+=("AFK_PM_BOOTSTRAP_BIN=$AFK_PM_BOOTSTRAP_BIN")
+  [[ ${AFK_SKILLS_HOME+x} ]] && adapter_env+=("AFK_SKILLS_HOME=$AFK_SKILLS_HOME")
+  [[ ${BOOTSTRAP_MARKER+x} ]] && adapter_env+=("BOOTSTRAP_MARKER=$BOOTSTRAP_MARKER")
+  [[ ${AFK_CLAUDE_BIN+x} ]] && adapter_env+=("AFK_CLAUDE_BIN=$AFK_CLAUDE_BIN")
+  [[ ${HARNESS_ARGV_LOG+x} ]] && adapter_env+=("HARNESS_ARGV_LOG=$HARNESS_ARGV_LOG")
+  [[ ${ORCA_TERMINAL_HANDLE+x} ]] && adapter_env+=("ORCA_TERMINAL_HANDLE=$ORCA_TERMINAL_HANDLE")
   out="$(env -i PATH="$STUBS:$PATH" HOME="${HOME:-$SCEN/home}" LANG=C \
+    AFK_KIT_ROOT="${AFK_KIT_ROOT:-$KIT_ROOT}" \
     AFK_STATE_DIR="$STATE" AFK_PAPERCLIP_CONFIG="$CONFIG" \
     AFK_OP_BIN="$STUBS/op" AFK_CURL_BIN="$STUBS/curl" AFK_HOST_CONFIG="$STUBS/host.json" OP_SERVICE_ACCOUNT_TOKEN=test-op-token \
     AFK_PCS_READINESS_BIN="$STUBS/readiness" READINESS_OK="${READINESS_OK:-true}" READINESS_REASON="${READINESS_REASON:-}" \
@@ -209,8 +226,8 @@ run_afk() { # <cmd> [args...]
     ORCA_WT_FILE="$ORCA_WT_FILE" ORCA_TERMLIST_FILE="$ORCA_TERMLIST_FILE" ORCA_TERMLIST_WT_FILE="$ORCA_TERMLIST_WT_FILE" \
     ORCA_CREATE_LOG="$ORCA_CREATE_LOG" SYSTEMCTL_LOG="$SYSTEMCTL_LOG" ${SYSTEMCTL_SHOWENV:+SYSTEMCTL_SHOWENV="$SYSTEMCTL_SHOWENV"} \
     SYSTEMCTL_ENABLED="${SYSTEMCTL_ENABLED:-enabled}" SYSTEMCTL_ACTIVE="${SYSTEMCTL_ACTIVE:-active}" \
-    AFK_PCT_SYSTEMD_DIR="$SCEN/systemd-user" \
-    bash "$AFK" "$@" 2>"$SCEN/err")"
+    AFK_PCT_SYSTEMD_DIR="$SCEN/systemd-user" "${adapter_env[@]}" \
+    bash "${AFK_BIN_OVERRIDE:-$AFK}" "$@" 2>"$SCEN/err")"
   RC=$?
   err="$(cat "$SCEN/err")"
   OUT_TEXT="$out"$'\n'"$err"
@@ -265,6 +282,72 @@ kill_pass_at() { # claim | notice | create; only kills the pass PID started here
   # the next pass can use the normal stale-lock recovery path.
   [[ -d "$STATE/paperclip/.lock" ]] && touch -d '-1000 seconds' "$STATE/paperclip/.lock"
 }
+
+# Bootstrap adapter resolution: installed flat layout, missing adapters, and
+# explicit override precedence. Orca executes the command only while marked.
+head1 "0. bootstrap adapter resolution"
+new_scenario installed_bootstrap
+write_config '{"pm_start_enabled":true}'
+issue_route in_progress "$BOARD"
+AFK_SKILLS_HOME="$SCEN/skills"; INSTALLED_RUNTIME="$AFK_SKILLS_HOME/afk-runtime"
+mkdir -p "$INSTALLED_RUNTIME"
+cp -R "$KIT_ROOT/bin" "$KIT_ROOT/lib" "$INSTALLED_RUNTIME/"
+cp "$KIT_ROOT/adapters/runtime-scope.sh" "$INSTALLED_RUNTIME/runtime-scope.sh"
+install -m 755 "$KIT_ROOT/adapters/orca-pm-bootstrap.sh" "$INSTALLED_RUNTIME/orca-pm-bootstrap.sh"
+AFK_KIT_ROOT="$INSTALLED_RUNTIME"
+AFK_BIN_OVERRIDE="$INSTALLED_RUNTIME/bin/agent-flow-kit"
+BOOTSTRAP_MARKER=installed-layout
+ORCA_TERMINAL_HANDLE=term-created-1
+AFK_CLAUDE_BIN="$STUBS/harness"; HARNESS_ARGV_LOG="$SCEN/installed-harness.argv"
+[[ ! -d "$INSTALLED_RUNTIME/adapters" ]] && ok "installed runtime has no adapters directory" || bad "installed runtime has no adapters directory"
+# Independently source the copied registry library: the flat sibling helper
+# must satisfy its scope-key primitive without a source-tree adapters path.
+installed_key="$(env -i PATH="$STUBS:$PATH" AFK_INSTALL_ROOT="$INSTALLED_RUNTIME" bash -c \
+  '. "$AFK_INSTALL_ROOT/lib/afk-pm-registry.sh" && afk_pmr_claim_key_for_terminal installed-check')"
+expected_key="terminal-$(printf 'terminal\0%s' installed-check | sha256sum | awk '{print $1}')"
+assert_eq "installed registry sources sibling runtime-scope.sh" "$installed_key" "$expected_key"
+unset AFK_PM_BOOTSTRAP_BIN
+do_pass
+assert_contains "installed entrypoint runs the real flat bootstrap" "$(cat "$HARNESS_ARGV_LOG" 2>/dev/null)" "paperclip-take --slug proj"
+assert_absent "installed flat adapter avoids unavailable hold" "$OUT_TEXT" PM_BOOTSTRAP_UNAVAILABLE
+INTENT_FILE="$STATE/paperclip/pm-start-intents/proj.$ISSUE1.json"
+# Invoke the same real installed adapter directly with the generated intent to
+# prove its sibling lib/ lookup and the intent's bootstrap path independently.
+(cd "$REPO" && env -i PATH="$STUBS:$PATH" HOME="$SCEN/home" LANG=C \
+  ORCA_TERMINAL_HANDLE=term-created-1 AFK_HOST_CONFIG="$STUBS/host.json" \
+  ORCA_WT_FILE="$ORCA_WT_FILE" AFK_CLAUDE_BIN="$STUBS/harness" \
+  HARNESS_ARGV_LOG="$SCEN/direct-installed-harness.argv" \
+  bash "$INSTALLED_RUNTIME/orca-pm-bootstrap.sh" --intent "$INTENT_FILE" >/dev/null 2>&1)
+assert_contains "real flat bootstrap loads sibling lib/ and accepts generated intent" \
+  "$(cat "$SCEN/direct-installed-harness.argv" 2>/dev/null)" "paperclip-take --slug proj"
+unset AFK_BIN_OVERRIDE AFK_PM_BOOTSTRAP_BIN AFK_SKILLS_HOME AFK_KIT_ROOT BOOTSTRAP_MARKER
+unset AFK_CLAUDE_BIN HARNESS_ARGV_LOG ORCA_TERMINAL_HANDLE
+
+new_scenario missing_bootstrap
+write_config '{"pm_start_enabled":true}'
+issue_route in_progress "$BOARD"
+AFK_SKILLS_HOME="$SCEN/no-skills"; mkdir -p "$AFK_SKILLS_HOME/afk-runtime"
+AFK_KIT_ROOT="$SCEN/no-kit-adapters"; mkdir -p "$AFK_KIT_ROOT"
+unset AFK_PM_BOOTSTRAP_BIN BOOTSTRAP_MARKER
+do_pass
+assert_contains "neither bootstrap path executable reports unavailable" \
+  "$(jq -r --arg id "$ISSUE1" '.issues[$id].action_text // empty' "$STATE/paperclip/ledger.json")" PM_BOOTSTRAP_UNAVAILABLE
+assert_eq "missing bootstrap does not create a terminal" "$(wc -l <"$ORCA_CREATE_LOG" | tr -d ' ')" 0
+
+new_scenario override_bootstrap
+write_config '{"pm_start_enabled":true}'
+issue_route in_progress "$BOARD"
+AFK_KIT_ROOT="$KIT_ROOT"; AFK_SKILLS_HOME="$SCEN/skills"; mkdir -p "$AFK_SKILLS_HOME/afk-runtime"
+BOOTSTRAP_MARKER="$SCEN/override-called"; AFK_PM_BOOTSTRAP_BIN="$SCEN/override.sh"
+printf '#!/bin/sh\nprintf override >"%s"\n' "$BOOTSTRAP_MARKER" >"$AFK_PM_BOOTSTRAP_BIN"
+chmod +x "$AFK_PM_BOOTSTRAP_BIN"
+mkdir -p "$AFK_SKILLS_HOME/afk-runtime"
+printf '#!/bin/sh\nprintf installed >"%s"\n' "$SCEN/installed-decoy-called" >"$AFK_SKILLS_HOME/afk-runtime/orca-pm-bootstrap.sh"
+chmod +x "$SCEN/skills/afk-runtime/orca-pm-bootstrap.sh"
+do_pass
+assert_eq "explicit bootstrap override wins" "$(cat "$BOOTSTRAP_MARKER" 2>/dev/null)" override
+assert_absent "installed adapter loses to explicit override" "$(cat "$SCEN/installed-decoy-called" 2>/dev/null)" installed
+unset AFK_PM_BOOTSTRAP_BIN AFK_SKILLS_HOME AFK_KIT_ROOT BOOTSTRAP_MARKER
 
 # ============================================================================
 head1 "1. none + Josh-created -> exactly one terminal create"
