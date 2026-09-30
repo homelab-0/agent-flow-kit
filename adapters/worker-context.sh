@@ -9,6 +9,8 @@ HERE="$(dirname -- "$SELF")"
 # Dynamic sibling resolved from this script's canonical directory.
 # shellcheck disable=SC1091
 . "$HERE/runtime-scope.sh"
+# shellcheck disable=SC1091
+if [[ -r "$HERE/lib/afk-orca.sh" ]]; then . "$HERE/lib/afk-orca.sh"; else . "$HERE/../lib/afk-orca.sh"; fi
 WORKER_INSTRUCTION='AFK CONTINUATION REQUIRED: stop at the next safe boundary. Write or refresh the canonical <story>.continuation.json artifact (schema afk-continuation/1 with completed, current_state, remaining_acceptance, next_steps, updated_at, in_flight, and unretired_findings), print exactly one CONTINUATION-REQUIRED: line with a non-secret reason, then end this worker turn. Do not launch a successor or continue implementation after that boundary; only the owning PM may dispatch the next cycle.'
 PM_INSTRUCTION='AFK PM CONTINUATION REQUIRED: stop taking new work at the next safe boundary. Following the managed PM instructions, write the secret-free continuation with agent-flow-kit pm-checkpoint --continuation --write <json>, then run agent-flow-kit pm-continue without waiting for another human prompt and end this PM turn. Do not directly launch or close a terminal; pm-continue owns the acknowledged handoff.'
 
@@ -100,16 +102,23 @@ publish_state() { # state source [used window]
   local -a args=(--emit-context-event --state "$state" --phase harness-pressure --source "$source")
   [[ "$used" =~ ^[0-9]+$ ]] && args+=(--used-tokens "$used")
   [[ "$window" =~ ^[1-9][0-9]*$ ]] && args+=(--window-tokens "$window")
+  # The hook reaches Orca only through the resolver's verified absolute path,
+  # never PATH (AD-28 R3). Unresolved, it keeps the durable event and skips
+  # the Orca publication.
+  local transport="${AFK_CONTEXT_EVENT_TRANSPORT:-orca}" orca_cli=""
+  if [[ "$transport" != none ]]; then
+    orca_cli="$(afk_orca_bin)" || { orca_cli=""; transport=none; }
+  fi
   env -i HOME="${HOME:-}" PATH="${PATH:-/usr/local/bin:/usr/bin:/bin}" \
     AFK_WORKER_IDENTITY="$AFK_WORKER_IDENTITY" AFK_RUN_ID="$AFK_RUN_ID" \
     AFK_STORY_ID="$AFK_STORY_ID" AFK_STORY_PATH="$AFK_STORY_PATH" AFK_CYCLE="$AFK_CYCLE" \
     AFK_DISPATCH_ID="$AFK_DISPATCH_ID" AFK_OWNING_PM="$AFK_OWNING_PM" \
     AFK_DELEGATING_PM="$AFK_DELEGATING_PM" AFK_CONTEXT_EVENT_DIR="$AFK_CONTEXT_EVENT_DIR" \
     AFK_WORKER_TERMINAL="${AFK_WORKER_TERMINAL:-}" ORCA_TERMINAL_HANDLE="${ORCA_TERMINAL_HANDLE:-}" \
-    AFK_CONTEXT_EVENT_TRANSPORT="${AFK_CONTEXT_EVENT_TRANSPORT:-orca}" \
+    AFK_CONTEXT_EVENT_TRANSPORT="$transport" \
     AFK_CONTEXT_ORCA_TIMEOUT_SECONDS="${AFK_CONTEXT_ORCA_TIMEOUT_SECONDS:-3}" \
-    AFK_ORCA_BIN="${AFK_ORCA_BIN:-}" ORCA_CLI_COMMAND="${ORCA_CLI_COMMAND:-}" \
-    "$bound" "$seconds" "$AFK_CONTEXT_EVENT_HOOK" "${args[@]}" >/dev/null 2>&1 || rc=$?
+    AFK_ORCA_BIN="$orca_cli" ORCA_CLI_COMMAND="$orca_cli" \
+    "$bound" -k 2 "$seconds" "$AFK_CONTEXT_EVENT_HOOK" "${args[@]}" >/dev/null 2>&1 || rc=$?
   if (( rc == 0 )); then
     tmp="$marker.tmp.$$"
     jq -nc --arg dispatch "$AFK_DISPATCH_ID" --arg state "$state" \

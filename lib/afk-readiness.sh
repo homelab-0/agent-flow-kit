@@ -57,6 +57,11 @@ if [[ -n "${AFK_READINESS_SOURCED:-}" ]]; then
 fi
 AFK_READINESS_SOURCED=1
 
+# The one Orca resolver and bounded runner (AD-28 R1, R2).
+# shellcheck source=lib/afk-orca.sh
+# shellcheck disable=SC1091
+declare -F afk_orca_run >/dev/null 2>&1 || . "$(dirname -- "${BASH_SOURCE[0]}")/afk-orca.sh"
+
 # --- declared capability contracts (FR-66) ----------------------------------
 #
 # These describe what THIS executor can drive. They are not routing policy: the
@@ -106,7 +111,8 @@ OPENAI_BASE_URL"
 # declared paths in afk-common.sh, so a lib sourced on its own never reads an
 # unset variable.
 
-AFK_ORCA_BIN="${AFK_ORCA_BIN:-orca}"
+# Orca has no PATH default: lib/afk-orca.sh resolves it (AD-28 R1).
+AFK_ORCA_BIN="${AFK_ORCA_BIN:-}"
 AFK_CLAUDE_BIN="${AFK_CLAUDE_BIN:-claude}"
 AFK_CODEX_BIN="${AFK_CODEX_BIN:-codex}"
 AFK_OPENCODE_BIN="${AFK_OPENCODE_BIN:-opencode}"
@@ -390,7 +396,7 @@ afk_readiness_reason_action() { # <reason> — empty for a code this file does n
     ORCHESTRATION_STATE_UNREADABLE|ORCHESTRATION_STATE_SCHEMA_UNSUPPORTED) \
                                   printf 'Ask the orchestration owner to repair or downgrade the state document; the lifecycle consumes it and never rewrites it.' ;;
     ORCHESTRATION_NEEDS_HUMAN)    printf 'Answer the pending question in the supervised orchestration session.' ;;
-    ORCA_NOT_RESOLVED)            printf 'Install Orca, or point the lifecycle at it with AFK_ORCA_BIN. There is no headless degradation mode.' ;;
+    ORCA_NOT_RESOLVED)            printf 'Install Orca, or set orca_bin in ~/.config/agent-flow-kit/host.json to the absolute path of its CLI. There is no headless degradation mode.' ;;
     ORCA_PROBE_FAILED|ORCA_PROBE_TIMED_OUT) \
                                   printf 'Check that the Orca runtime is up, then re-run the live evaluation.' ;;
     ORCA_CAPABILITY_UNPROVEN|ORCA_CAPABILITY_INCOMPATIBLE) \
@@ -675,7 +681,15 @@ afk_evaluate_executables() {
       opencode)  bin="$AFK_OPENCODE_BIN" ;;
       *)         bin="" ;;
     esac
-    if resolved="$(afk_resolve_executable "$bin")"; then
+    # Orca's candidate comes from the kit resolver, never PATH. Offline, it is
+    # only selected here; the live probe verifies it.
+    if [[ "$name" == orca ]]; then
+      resolved="$(afk_orca_candidate)" && [[ -f "$resolved" && -x "$resolved" ]] \
+        || { bin="$resolved"; resolved=""; }
+    else
+      resolved="$(afk_resolve_executable "$bin")" || resolved=""
+    fi
+    if [[ -n "$resolved" ]]; then
       afk_live_fact "${name}_executable" "PRESENT" "EXECUTABLE_RESOLVED" "PATH_STRUCTURE" "true" "false" "$resolved"
     else
       afk_live_fact "${name}_executable" "ABSENT" "EXECUTABLE_NOT_RESOLVED" "PATH_STRUCTURE" "true" "false" "$bin"
@@ -1166,8 +1180,13 @@ afk_evaluate_workspace_trust() { # <path or empty>
 # --- live probes ------------------------------------------------------------
 
 afk_probe_orca() {
-  local bin="$AFK_ORCA_BIN" cap missing=""
-  if [[ "$(afk_executable_state orca)" != "PRESENT" ]]; then
+  local bin cap missing="" secs evidence
+  bin="$(afk_orca_candidate)" || bin=""
+  secs="$(afk_probe_timeout_seconds)"
+  # A candidate that fails verification is as unresolved as an absent one, and
+  # no other candidate is tried (AD-28 R1).
+  if [[ "$(afk_executable_state orca)" != "PRESENT" ]] \
+     || { ! afk_orca_bin >/dev/null && [[ "$AFK_ORCA_CODE" == ORCA_CLI_NOT_RESOLVED ]]; }; then
     AFK_RD_ORCA="FALSE"
     afk_live_fact "orca_runtime" "UNAVAILABLE" "ORCA_NOT_RESOLVED" "PATH_STRUCTURE" "true" "false" "$bin"
     afk_live_fact "orca_capability" "NOT_EVALUATED" "ORCA_NOT_RESOLVED" "PATH_STRUCTURE" "false" "false" ""
@@ -1179,18 +1198,25 @@ afk_probe_orca() {
   # Read-only runtime reachability. A disposable worker is never created to
   # answer this question (FR-55): routine readiness that manufactures a worker
   # is not readiness, it is work.
-  if ! afk_probe_run "$bin" status --json; then
+  if ! afk_orca_run --bound "$secs" readiness-status -- status --json; then
     AFK_RD_ORCA="UNAVAILABLE"; AFK_RD_LIVE_UNAVAILABLE="true"
-    if [[ "$AFK_PROBE_STATUS" == "TIMEOUT" ]]; then
+    evidence="exit $AFK_ORCA_RC"
+    if [[ "$AFK_ORCA_CODE" == PROBE_BOUND_UNAVAILABLE ]]; then
+      evidence="$AFK_ORCA_CODE"
+      afk_add_finding "live-probe" "KIT_STATE" "UNKNOWN" "PROBE_BOUND_UNAVAILABLE" \
+        "warning" "" "CAPABILITY_PROBE" "a bounded probe" "no timeout tool on this host" \
+        "true" "true" ""
+    fi
+    if [[ "$AFK_ORCA_CODE" == "ORCA_TIMEOUT" ]]; then
       afk_live_fact "orca_runtime" "UNAVAILABLE" "ORCA_PROBE_TIMED_OUT" "CAPABILITY_PROBE" "true" "true" ""
       afk_add_finding "orca" "EXTERNAL_STATE" "UNAVAILABLE" "ORCA_PROBE_TIMED_OUT" \
         "blocking" "HOST_EXECUTION_READY" "CAPABILITY_PROBE" \
         "a status response inside $AFK_LIVE_TIMEOUT_MS ms" "timed out" "true" "true" ""
     else
-      afk_live_fact "orca_runtime" "UNAVAILABLE" "ORCA_PROBE_FAILED" "CAPABILITY_PROBE" "true" "true" "exit $AFK_PROBE_RC"
+      afk_live_fact "orca_runtime" "UNAVAILABLE" "ORCA_PROBE_FAILED" "CAPABILITY_PROBE" "true" "true" "$evidence"
       afk_add_finding "orca" "EXTERNAL_STATE" "UNAVAILABLE" "ORCA_PROBE_FAILED" \
         "blocking" "HOST_EXECUTION_READY" "CAPABILITY_PROBE" \
-        "a readable status response" "exit $AFK_PROBE_RC" "true" "true" ""
+        "a readable status response" "$evidence" "true" "true" ""
     fi
     afk_live_fact "orca_capability" "NOT_EVALUATED" "ORCA_PROBE_FAILED" "CAPABILITY_PROBE" "false" "true" ""
     return 1
@@ -1200,7 +1226,9 @@ afk_probe_orca() {
   # Explicit capabilities are preferred over a version-only assumption (FR-68).
   # A version number that has to be interpreted is a guess about behaviour; a
   # capability list is the dependency answering for itself.
-  if ! afk_probe_run "$bin" capabilities --json; then
+  # ORCA-5: Orca has no `capabilities` command; readiness reads
+  # `status --json` capabilities[] instead (AD-28 R9).
+  if ! afk_orca_run --bound "$secs" readiness-capabilities -- capabilities --json; then
     AFK_RD_ORCA="FALSE"
     afk_live_fact "orca_capability" "UNKNOWN" "ORCA_CAPABILITY_UNPROVEN" "CAPABILITY_PROBE" "true" "false" ""
     afk_add_finding "orca" "EXTERNAL_STATE" "UNKNOWN" "ORCA_CAPABILITY_UNPROVEN" \
@@ -1210,7 +1238,7 @@ afk_probe_orca() {
   fi
   while IFS= read -r cap; do
     [[ -n "$cap" ]] || continue
-    if ! printf '%s' "$AFK_PROBE_OUT" | jq -e --arg c "$cap" \
+    if ! printf '%s' "$AFK_ORCA_OUT" | jq -e --arg c "$cap" \
          '((.capabilities // []) | index($c)) != null' >/dev/null 2>&1; then
       missing="${missing}${cap} "
     fi

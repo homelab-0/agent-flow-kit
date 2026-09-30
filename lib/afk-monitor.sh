@@ -87,6 +87,11 @@ if [[ -n "${AFK_MONITOR_SOURCED:-}" ]]; then
 fi
 AFK_MONITOR_SOURCED=1
 
+# The one Orca resolver and bounded runner (AD-28 R1, R2).
+# shellcheck source=lib/afk-orca.sh
+# shellcheck disable=SC1091
+declare -F afk_orca_run >/dev/null 2>&1 || . "$(dirname -- "${BASH_SOURCE[0]}")/afk-orca.sh"
+
 AFK_SUPPORTED_DISPATCH_SCHEMA_MAJOR="1"
 
 # --- declared local configuration -------------------------------------------
@@ -383,20 +388,6 @@ afk_monitor_bound_unavailable() {
   fi
 }
 
-# afk_probe_run's contract, minus its warn-and-run fallback. The probe runner's
-# own default behaviour is deliberately left alone: readiness answers a
-# different question and its reading of a missing bound belongs to it.
-# Sets the probe runner's variables, with AFK_PROBE_STATUS=BOUND_UNAVAILABLE for
-# the refusal. Returns 0 only for AFK_PROBE_STATUS=OK.
-afk_monitor_probe_strict() { # <argv...>
-  if ! afk_have timeout; then
-    AFK_PROBE_OUT=""; AFK_PROBE_RC=0; AFK_PROBE_STATUS="BOUND_UNAVAILABLE"
-    afk_monitor_bound_unavailable
-    return 1
-  fi
-  afk_probe_run "$@"
-}
-
 # The three remote-branch git calls. An unbounded `git ls-remote` behind a
 # dropped VPN, a black-holed host or a stalled proxy stops the "one bounded
 # pass" from being one; an https remote whose credentials expired is worse,
@@ -441,10 +432,12 @@ afk_monitor_terminals_load() {
   local parsed
   AFK_MON_TERMINALS_JSON="[]"
   AFK_MON_TERMINALS_LOADED="false"
-  if ! afk_monitor_probe_strict "$AFK_ORCA_BIN" terminal list --json; then
+  if ! afk_monitor_orca monitor-list terminal list --json; then
     return 1
   fi
-  parsed="$(printf '%s' "$AFK_PROBE_OUT" | jq -c '
+  # ORCA-5: per-terminal .status does not exist in Orca's list; the liveness
+  # fields replace it (AD-28 R5).
+  parsed="$(printf '%s' "$AFK_ORCA_OUT" | jq -c '
     ((.terminals // .result.terminals // [])
      | map({handle: (.handle // ""), status: ((.status // "UNKNOWN") | ascii_upcase)}))' 2>/dev/null)" || parsed=""
   [[ -n "$parsed" ]] || return 1
@@ -474,8 +467,19 @@ afk_monitor_terminal_status() { # <handle> -> ACTIVE|IDLE|EXITED|AWAITING_ANSWER
 # whose close intent was never recorded comes back as a resumed provider tab the
 # next time Orca reconnects and rediscovers its sessions. Bounded like the
 # listing, and refused rather than run unbounded on a host that cannot bound it.
+# ORCA-5: `--handle` and `--durable` are not Orca flags; the close becomes
+# `terminal close --terminal <h> --tab` with its proof (AD-28 R8).
 afk_monitor_terminal_release() { # <handle>
-  afk_monitor_probe_strict "$AFK_ORCA_BIN" terminal close --handle "$1" --durable --json
+  afk_monitor_orca monitor-close terminal close --handle "$1" --durable --json
+}
+
+# Every monitor Orca call: the kit's resolver and bounded runner, at the live
+# probe bound. A host that cannot bound the call reports it once and refuses.
+afk_monitor_orca() { # <purpose> <orca args...>
+  local purpose="$1"; shift
+  afk_orca_run --bound "$(afk_probe_timeout_seconds)" "$purpose" -- "$@" && return 0
+  [[ "$AFK_ORCA_CODE" != PROBE_BOUND_UNAVAILABLE ]] || afk_monitor_bound_unavailable
+  return 1
 }
 
 # --- registration -----------------------------------------------------------

@@ -8,11 +8,9 @@ jq -e 'def s: type=="string" and length>0;
   (.old.harness|s) and (.old.worktree.id|s) and (.old.worktree.path|s)' "$intent" >/dev/null 2>&1 || exit 1
 transition="$(jq -r .transition_id "$intent")"; terminal="$(jq -r .old.terminal "$intent")"
 worktree_id="$(jq -r .old.worktree.id "$intent")"; worktree_path="$(jq -r .old.worktree.path "$intent")"
-orca_bin="${ORCA_CLI_COMMAND:-${AFK_ORCA_BIN:-orca}}"
-bound=""; command -v timeout >/dev/null 2>&1 && bound=timeout
-[[ -n "$bound" ]] || { command -v gtimeout >/dev/null 2>&1 && bound=gtimeout; }
-[[ -n "$bound" ]] || exit 1
-seconds="${AFK_ORCA_TIMEOUT_SECONDS:-5}"; [[ "$seconds" =~ ^[1-9][0-9]*$ ]] || exit 1
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+if [[ -r "$here/lib/afk-orca.sh" ]]; then . "$here/lib/afk-orca.sh"; else . "$here/../lib/afk-orca.sh"; fi
 
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
@@ -26,7 +24,8 @@ atomic_write_verified() { # <path> <json>
   jq -e --argjson expected "$value" '.==$expected' "$target" >/dev/null 2>&1
 }
 
-shown="$($bound "$seconds" "$orca_bin" worktree show --worktree "path:$worktree_path" --json)" || exit 1
+afk_orca_run pm-close-worktree -- worktree show --worktree "path:$worktree_path" --json || exit 1
+shown="$AFK_ORCA_OUT"
 jq -e 'type=="object" and ((has("ok")|not) or .ok==true) and
   ((has("error")|not) or .error==null)' <<<"$shown" >/dev/null 2>&1 || exit 1
 observed_id="$(jq -r '.result.worktree.id // .result.id // .worktree.id // .id // empty' <<<"$shown" 2>/dev/null)"
@@ -52,7 +51,8 @@ terminal_show_rc=0
 observe_terminal_show() {
   terminal_show_json=""
   terminal_show_rc=0
-  terminal_show_json="$("$bound" "$seconds" "$orca_bin" terminal show --terminal "$terminal" --json 2>&1)" || terminal_show_rc=$?
+  afk_orca_run pm-close-show -- terminal show --terminal "$terminal" --json || terminal_show_rc=1
+  terminal_show_json="$AFK_ORCA_OUT"
 }
 terminal_show_is_released() {
   (( terminal_show_rc != 0 )) &&
@@ -97,7 +97,8 @@ else
   atomic_write_verified "$binding_file" "$binding" || exit 1
 fi
 
-listed="$($bound "$seconds" "$orca_bin" terminal list --worktree "id:$observed_id" --json)"
+afk_orca_run --bound 5 pm-close-list -- terminal list --worktree "id:$observed_id" --json || exit 1
+listed="$AFK_ORCA_OUT"
 terminal_list_is_well_formed "$listed" || exit 1
 present=false
 if jq -e --arg t "$terminal" '.result.terminals[]? | select(.handle==$t)' <<<"$listed" >/dev/null 2>&1; then
@@ -124,8 +125,9 @@ fi
 # Absence before the request proves nothing. Request the durable whole-tab
 # close even on that path; only an accepted request followed by re-observed
 # absence is evidence the transition may consume.
-"$bound" "$seconds" "$orca_bin" terminal close --terminal "$terminal" --tab --json >/dev/null
-listed="$($bound "$seconds" "$orca_bin" terminal list --worktree "id:$observed_id" --json)"
+afk_orca_run pm-close-close -- terminal close --terminal "$terminal" --tab --json || exit 1
+afk_orca_run --bound 5 pm-close-list -- terminal list --worktree "id:$observed_id" --json || exit 1
+listed="$AFK_ORCA_OUT"
 terminal_list_is_well_formed "$listed" || exit 1
 jq -e --arg t "$terminal" '[.result.terminals[]? | select(.handle==$t)]|length==0' <<<"$listed" >/dev/null 2>&1 || exit 1
 observe_terminal_show

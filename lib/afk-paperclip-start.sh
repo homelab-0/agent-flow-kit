@@ -14,6 +14,11 @@ if [[ -n "${AFK_PAPERCLIP_START_SOURCED:-}" ]]; then
 fi
 AFK_PAPERCLIP_START_SOURCED=1
 
+# The one Orca resolver and bounded runner (AD-28 R1, R2).
+# shellcheck source=lib/afk-orca.sh
+# shellcheck disable=SC1091
+declare -F afk_orca_run >/dev/null 2>&1 || . "$(dirname -- "${BASH_SOURCE[0]}")/afk-orca.sh"
+
 AFK_PCT_UNIT="afk-paperclip-poll"
 
 # --- opt-in gate, PM-start action text, and the classification decision -----
@@ -204,14 +209,9 @@ afk_pcs_readiness_check() {
 # title (never a second one for the same project). Reads repo_path/slug/
 # harness/id from the caller; writes the start into `ledger` on success.
 afk_pcs_create_terminal() {
-  local orca_bin bound seconds shown observed_id observed_path title
-  orca_bin="${ORCA_CLI_COMMAND:-${AFK_ORCA_BIN:-orca}}"
-  bound=""; command -v timeout >/dev/null 2>&1 && bound=timeout
-  [[ -n "$bound" ]] || { command -v gtimeout >/dev/null 2>&1 && bound=gtimeout; }
-  [[ -n "$bound" ]] || return 1
-  seconds="${AFK_ORCA_TIMEOUT_SECONDS:-5}"
-
-  shown="$($bound "$seconds" "$orca_bin" worktree show --worktree "path:$repo_path" --json 2>/dev/null)" || return 1
+  local shown observed_id observed_path title
+  afk_orca_run pm-start-worktree -- worktree show --worktree "path:$repo_path" --json || return 1
+  shown="$AFK_ORCA_OUT"
   observed_id="$(jq -r '.result.worktree.id // .result.id // .worktree.id // .id // empty' <<<"$shown" 2>/dev/null)"
   observed_path="$(jq -r '.result.worktree.path // .result.path // .worktree.path // .path // empty' <<<"$shown" 2>/dev/null)"
   observed_path="$(cd "$observed_path" 2>/dev/null && pwd -P || true)"
@@ -219,7 +219,9 @@ afk_pcs_create_terminal() {
 
   title="PM $slug (paperclip)"
   local listed count prior
-  listed="$($bound "$seconds" "$orca_bin" terminal list --worktree "id:$observed_id" --json 2>/dev/null)" || return 1
+  afk_orca_run --bound 5 pm-start-dedupe -- terminal list --worktree "id:$observed_id" --json || return 1
+  listed="$AFK_ORCA_OUT"
+  # ORCA-6: the title half of this dedupe goes (AD-28 R4).
   # The harness rewrites the terminal title once it runs, so the title alone
   # cannot prove "no PM started yet". Any terminal this host started for the
   # same repo that is still listed also blocks a second start.
@@ -241,7 +243,9 @@ afk_pcs_create_terminal() {
   bootstrap="${AFK_PM_BOOTSTRAP_BIN:-$AFK_KIT_ROOT/adapters/orca-pm-bootstrap.sh}"
   [[ -x "$bootstrap" ]] || return 1
   printf -v command '%q --intent %q' "$bootstrap" "$intent_file"
-  created="$($bound "$seconds" "$orca_bin" terminal create --worktree "id:$observed_id" --title "$title" --command "$command" --json 2>/dev/null)"
+  # ORCA-3: the ledger row is persisted before this create (AD-28 R6).
+  afk_orca_run pm-start-create -- terminal create --worktree "id:$observed_id" --title "$title" --command "$command" --json || true
+  created="$AFK_ORCA_OUT"
   terminal="$(jq -r '.result.terminal.handle // .handle // empty' <<<"$created" 2>/dev/null)"
   [[ -n "$terminal" ]] || return 1
 

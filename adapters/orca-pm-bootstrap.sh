@@ -4,6 +4,11 @@
 set -euo pipefail
 [[ "${1:-}" == --intent && -n "${2:-}" ]] || exit 2
 intent="$2"
+# The kit's Orca resolver: lib/ sits beside the installed runtime, or one level
+# up in a checkout.
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+if [[ -r "$here/lib/afk-orca.sh" ]]; then . "$here/lib/afk-orca.sh"; else . "$here/../lib/afk-orca.sh"; fi
 
 # AFK-PC-2b: a first-ever PM start has no predecessor, so it carries a sibling
 # intent kind that skips the handoff receipt and run-continuity checks below.
@@ -24,11 +29,8 @@ if [[ "$(jq -r '.schema // empty' "$intent" 2>/dev/null)" == "afk-pm-bootstrap-f
   fs_actual_path="$(pwd -P 2>/dev/null || true)"
   [[ "$fs_actual_path" == "$fs_wp" && -n "${ORCA_TERMINAL_HANDLE:-}" ]] || exit 1
   [[ -z "${ORCA_WORKTREE_PATH:-}" || "${ORCA_WORKTREE_PATH}" == "$fs_wp" ]] || exit 1
-  fs_orca_bin="${ORCA_CLI_COMMAND:-${AFK_ORCA_BIN:-orca}}"
-  fs_bound=""; command -v timeout >/dev/null 2>&1 && fs_bound=timeout
-  [[ -n "$fs_bound" ]] || { command -v gtimeout >/dev/null 2>&1 && fs_bound=gtimeout; }
-  [[ -n "$fs_bound" ]] || exit 1
-  fs_shown="$($fs_bound "${AFK_ORCA_TIMEOUT_SECONDS:-5}" "$fs_orca_bin" worktree show --worktree "path:$fs_actual_path" --json)" || exit 1
+  afk_orca_run pm-bootstrap-worktree -- worktree show --worktree "path:$fs_actual_path" --json || exit 1
+  fs_shown="$AFK_ORCA_OUT"
   fs_observed_id="$(jq -r '.result.worktree.id // .result.id // .worktree.id // .id // empty' <<<"$fs_shown" 2>/dev/null)"
   fs_observed_path="$(jq -r '.result.worktree.path // .result.path // .worktree.path // .path // empty' <<<"$fs_shown" 2>/dev/null)"
   fs_observed_path="$(cd "$fs_observed_path" 2>/dev/null && pwd -P || true)"
@@ -56,11 +58,8 @@ continuation_sha="$(jq -r .continuation_sha256 "$intent")"
 actual_path="$(pwd -P 2>/dev/null || true)"
 [[ "$actual_path" == "$wp" && -n "${ORCA_TERMINAL_HANDLE:-}" ]] || exit 1
 [[ -z "${ORCA_WORKTREE_PATH:-}" || "${ORCA_WORKTREE_PATH}" == "$wp" ]] || exit 1
-orca_bin="${ORCA_CLI_COMMAND:-${AFK_ORCA_BIN:-orca}}"
-bound=""; command -v timeout >/dev/null 2>&1 && bound=timeout
-[[ -n "$bound" ]] || { command -v gtimeout >/dev/null 2>&1 && bound=gtimeout; }
-[[ -n "$bound" ]] || exit 1
-shown="$($bound "${AFK_ORCA_TIMEOUT_SECONDS:-5}" "$orca_bin" worktree show --worktree "path:$actual_path" --json)" || exit 1
+afk_orca_run pm-bootstrap-worktree -- worktree show --worktree "path:$actual_path" --json || exit 1
+shown="$AFK_ORCA_OUT"
 observed_id="$(jq -r '.result.worktree.id // .result.id // .worktree.id // .id // empty' <<<"$shown" 2>/dev/null)"
 observed_path="$(jq -r '.result.worktree.path // .result.path // .worktree.path // .path // empty' <<<"$shown" 2>/dev/null)"
 observed_path="$(cd "$observed_path" 2>/dev/null && pwd -P || true)"
@@ -85,7 +84,8 @@ done
 # stops before the harness starts.
 run_id="$(jq -r '.run_id // empty' "$intent")"
 if [[ -n "$run_id" ]]; then
-  run_receipt="$($bound "${AFK_ORCA_TIMEOUT_SECONDS:-5}" "$orca_bin" orchestration run-use --id "$run_id" --from "$ORCA_TERMINAL_HANDLE" --json)" || exit 1
+  afk_orca_run pm-bootstrap-run-use -- orchestration run-use --id "$run_id" --from "$ORCA_TERMINAL_HANDLE" --json || exit 1
+  run_receipt="$AFK_ORCA_OUT"
   jq -e --arg id "$run_id" --arg t "$ORCA_TERMINAL_HANDLE" '
     ((.result.run.id // .run.id // .result.id // .id)==$id) and
     ((.result.coordinatorTerminalHandle // .result.terminal.handle // .coordinatorTerminalHandle // .terminal.handle)==$t)' \
