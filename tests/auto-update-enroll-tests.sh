@@ -176,7 +176,7 @@ run_afk() { # <home> <platform> <out-name> args... ; sets RC
     AFK_AUTO_UPDATE_PLATFORM="$p" AFK_OP_BIN="${AFK_TEST_OP:-$STUBS/op}" \
     AFK_RELEASE_POLICY="${AFK_TEST_POLICY:-$POLICY}" AFK_CATALOG_SYNC_TOOL_PATH="$CS_TOOLS" \
     AFK_TEST_PINNED="$PINNED" AFK_TEST_LOG="$LOG" AFK_TEST_SYSTEMCTL_FAIL="${AFK_TEST_SYSTEMCTL_FAIL:-}" \
-    AFK_TEST_TIMEOUT_EXPIRE="${AFK_TEST_TIMEOUT_EXPIRE:-}" \
+    AFK_TEST_TIMEOUT_EXPIRE="${AFK_TEST_TIMEOUT_EXPIRE:-}" AFK_CLAUDE_STATUSLINE="${AFK_TEST_CLAUDE_STATUSLINE:-}" \
     AFK_AU_BASH_CANDIDATES="${AFK_TEST_BASH_CANDIDATES-$STUBS/bash-new}" \
     AFK_TEST_SYSTEMCTL_RESULT="${AFK_TEST_SYSTEMCTL_RESULT:-}" AFK_TEST_SYSTEMCTL_EXITCODE="${AFK_TEST_SYSTEMCTL_EXITCODE:-}" \
     bash "$AFK" "$@" >"$OUT/$o.out" 2>"$OUT/$o.err"
@@ -638,6 +638,70 @@ head1 "No key bytes anywhere but the key file"
 LEAKS="$(grep -rl --exclude-dir=stubs AFKTESTKEYBYTES "$TMPROOT" 2>/dev/null \
   | grep -v -e "/$KEY_REL\$" -e "^$CUSTOM_KEY\$")"
 assert_eq "no output, log, config, unit or state file carries key bytes" "$LEAKS" ""
+
+head1 "Enrollment wires the Claude status line (AFK-VIS-2 AC-1)"
+vis2_home() { # <name> [with-claude] -> a home whose runtime has the adapter manager
+  local h; h="$(new_home "$1")"
+  cp -R "$KIT_ROOT/adapters/." "$h/.agents/skills/afk-runtime/"
+  cp "$KIT_ROOT/bin/afk-session-start" "$h/.agents/skills/afk-runtime/bin/"
+  if [[ -n "${2:-}" ]]; then
+    mkdir -p "$h/.claude"
+    jq -nc '{model:"opus",statusLine:{type:"command",command:"bunx -y ccstatusline-usage@latest",padding:2,refreshInterval:60},env:{KEEP:"1"}}' >"$h/.claude/settings.json"
+  fi
+  printf '%s\n' "$h"
+}
+owner_view() { jq -S 'del(.hooks, .statusLine.command)' "$1"; }
+VW="/.agents/skills/afk-runtime/claude/statusline.sh"
+H="$(vis2_home vis2a claude)"; cp "$H/.claude/settings.json" "$TMPROOT/vis2a-before.json"
+run_afk "$H" linux vis2-status0 status --json
+assert_eq "status on a never-enrolled host: NOT_INSTALLED" "$(jq -r .extra.claude_statusline.state "$OUT/vis2-status0.out")" "CLAUDE_STATUSLINE_NOT_INSTALLED"
+assert_contains "NOT_INSTALLED names the action" "$(jq -r .extra.claude_statusline.action "$OUT/vis2-status0.out")" "enroll-auto-update"
+run_afk "$H" linux vis2-status0h status
+assert_contains "human status shows the finding" "$(cat "$OUT/vis2-status0h.out")" "CLAUDE_STATUSLINE_NOT_INSTALLED (warning)"
+run_afk "$H" linux vis2-enroll enroll-auto-update --key-ref op://develop/good/notesPlain
+assert_eq "enroll with a Claude status line succeeds" "$RC" "0"
+assert_contains "enroll reports the wiring" "$(cat "$OUT/vis2-enroll.out")" "claude_statusline=WIRED;"
+assert_eq "enroll still prints one summary line" "$(wc -l <"$OUT/vis2-enroll.out" | tr -d ' ')" "1"
+assert_eq "the wrapper is the status line" "$(jq -r .statusLine.command "$H/.claude/settings.json")" "$H$VW"
+assert_eq "the owner's command is the saved prior" "$(jq -r .value.command "$H/.local/state/agent-flow-kit/adapters/claude-prior.json")" "bunx -y ccstatusline-usage@latest"
+assert_eq "no other settings key changed" "$(owner_view "$H/.claude/settings.json")" "$(owner_view "$TMPROOT/vis2a-before.json")"
+assert_eq "env keys are never added or changed" "$(jq -c .env "$H/.claude/settings.json")" '{"KEEP":"1"}'
+run_afk "$H" linux vis2-status1 status --json
+assert_eq "status after enroll: COMPOSED" "$(jq -r .extra.claude_statusline.state "$OUT/vis2-status1.out")" "CLAUDE_STATUSLINE_COMPOSED"
+SUM="$(cksum "$H/.claude/settings.json" "$H/.local/state/agent-flow-kit/adapters/claude.json" | tr -d '\n')"
+run_afk "$H" linux vis2-enroll2 enroll-auto-update --key-ref op://develop/good/notesPlain
+assert_contains "second enroll is a no-op for the wiring" "$(cat "$OUT/vis2-enroll2.out")" "claude_statusline=UNCHANGED;"
+assert_eq "second enroll changes no wiring file" "$(cksum "$H/.claude/settings.json" "$H/.local/state/agent-flow-kit/adapters/claude.json" | tr -d '\n')" "$SUM"
+# A pending (interrupted) record is rolled back and re-wired: that is a change, not UNCHANGED.
+jq '.phase="installing"' "$H/.local/state/agent-flow-kit/adapters/claude.json" >"$H/r.tmp" && mv "$H/r.tmp" "$H/.local/state/agent-flow-kit/adapters/claude.json"
+run_afk "$H" linux vis2-enroll-pending enroll-auto-update --key-ref op://develop/good/notesPlain
+assert_contains "a rolled-back pending record reports WIRED, not UNCHANGED" "$(cat "$OUT/vis2-enroll-pending.out")" "claude_statusline=WIRED;"
+assert_eq "the pending record ends active" "$(jq -r .phase "$H/.local/state/agent-flow-kit/adapters/claude.json")" "active"
+jq '.statusLine.command="overwritten-by-configurator"' "$H/.claude/settings.json" >"$H/s.tmp" && mv "$H/s.tmp" "$H/.claude/settings.json"
+run_afk "$H" linux vis2-status2 status --json
+assert_eq "status after an overwrite: OVERWRITTEN" "$(jq -r .extra.claude_statusline.state "$OUT/vis2-status2.out")" "CLAUDE_STATUSLINE_OVERWRITTEN"
+assert_contains "OVERWRITTEN names the recovery" "$(jq -r .extra.claude_statusline.action "$OUT/vis2-status2.out")" "--adopt-current"
+run_afk "$H" linux vis2-enroll3 enroll-auto-update --key-ref op://develop/good/notesPlain
+assert_contains "enroll never overwrites the owner's tool: CONFLICT is named" "$(cat "$OUT/vis2-enroll3.out")" "claude_statusline=CONFLICT (run adapters/manage.sh install claude --adopt-current)"
+assert_eq "conflicted enroll left the owner's command" "$(jq -r .statusLine.command "$H/.claude/settings.json")" "overwritten-by-configurator"
+
+H="$(vis2_home vis2b claude)"; cp "$H/.claude/settings.json" "$TMPROOT/vis2b-before.json"
+AFK_TEST_CLAUDE_STATUSLINE=off run_afk "$H" linux vis2-optout enroll-auto-update --key-ref op://develop/good/notesPlain
+assert_contains "opt-out is skipped with a named reason" "$(cat "$OUT/vis2-optout.out")" "claude_statusline=SKIPPED:OPTED_OUT;"
+assert_eq "opt-out leaves settings.json untouched" "$(jq -S . "$H/.claude/settings.json")" "$(jq -S . "$TMPROOT/vis2b-before.json")"
+assert_missing "opt-out writes no adapter record" "$H/.local/state/agent-flow-kit/adapters/claude.json"
+run_afk "$H" linux vis2-optout-cfg enroll-auto-update --key-ref op://develop/good/notesPlain
+assert_contains "opt-out was per run: the next enroll wires" "$(cat "$OUT/vis2-optout-cfg.out")" "claude_statusline=WIRED;"
+H="$(vis2_home vis2c claude)"
+(umask 077; mkdir -p "$H/.config/agent-flow-kit"); jq -nc '{claude_statusline:"off"}' >"$H/.config/agent-flow-kit/auto-update.json"
+run_afk "$H" linux vis2-optout-rec enroll-auto-update --key-ref op://develop/good/notesPlain
+assert_contains "a recorded opt-out is skipped with a named reason" "$(cat "$OUT/vis2-optout-rec.out")" "claude_statusline=SKIPPED:OPTED_OUT;"
+assert_eq "enrollment keeps the recorded opt-out" "$(jq -r .claude_statusline "$H/.config/agent-flow-kit/auto-update.json")" "off"
+assert_missing "a recorded opt-out writes no adapter record" "$H/.local/state/agent-flow-kit/adapters/claude.json"
+H="$(vis2_home vis2d)"
+run_afk "$H" linux vis2-noclaude enroll-auto-update --key-ref op://develop/good/notesPlain
+assert_contains "no ~/.claude: skipped with a named reason" "$(cat "$OUT/vis2-noclaude.out")" "claude_statusline=SKIPPED:NO_CLAUDE;"
+assert_missing "no ~/.claude: none is created" "$H/.claude"
 
 printf '\n\033[1m%d passed, %d failed\033[0m\n' "$PASS" "$FAIL"
 (( FAIL == 0 )) || exit 1
