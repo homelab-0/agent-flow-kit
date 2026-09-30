@@ -32,6 +32,12 @@ exit 1
 SH
 # systemctl: no user manager, so the unit check uses the caller's PATH.
 printf '#!/usr/bin/env bash\nexit 1\n' >"$STUBS/systemctl"
+# Project readiness checks the timer's Orca handshake before project state.
+cat >"$STUBS/orca-ide" <<'SH'
+#!/usr/bin/env bash
+[[ "${1:-}" == --version ]] && { printf '1.0.0\n'; exit 0; }
+exit 1
+SH
 # A fixture per "<METHOD>_<path>" (slashes as _); first line is the status.
 cat >"$STUBS/curl" <<'SH'
 #!/usr/bin/env bash
@@ -73,7 +79,7 @@ RC=0 OUT=""
 afk() { # <command...> -- runs the kit against the scenario's config and stubs
   OUT="$(env -i PATH="$STUBS:$PATH" HOME="$HOME" LANG=C ${AFK_TEST_TMPDIR:+TMPDIR="$AFK_TEST_TMPDIR"} \
     ${AFK_RELEASE_POLICY:+AFK_RELEASE_POLICY="$AFK_RELEASE_POLICY"} \
-    AFK_STATE_DIR="$STATE" AFK_PAPERCLIP_CONFIG="$CONFIG" AFK_OP_BIN="$STUBS/op" AFK_CURL_BIN="$STUBS/curl" \
+    AFK_STATE_DIR="$STATE" AFK_PAPERCLIP_CONFIG="$CONFIG" AFK_OP_BIN="$STUBS/op" AFK_CURL_BIN="$STUBS/curl" AFK_ORCA_BIN="$STUBS/orca-ide" \
     OP_SERVICE_ACCOUNT_TOKEN=test-op-token \
     CURL_STUB_LOG="$LOG" CURL_STUB_FIXTURES="$FIXDIR" bash "$AFK" "$@" 2>&1)"
   RC=$?

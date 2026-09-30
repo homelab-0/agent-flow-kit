@@ -40,15 +40,30 @@ SH
 cat >"$STUBS/curl" <<'SH'
 #!/usr/bin/env bash
 method="GET"; n=$#; args=("$@")
+post_body=""
 for ((i = 0; i < n; i++)); do [[ "${args[$i]}" == -X ]] && method="${args[$((i + 1))]}"; done
 url="${args[$((n - 1))]}"
 tmp="${url#*://}"; path="/${tmp#*/}"
 printf '%s %s\n' "$method" "$path" >>"$CURL_STUB_LOG"
 for ((i = 0; i < n; i++)); do
   if [[ "${args[$i]}" == --data-binary && "${args[$((i + 1))]}" == @/dev/fd/* ]]; then
-    cat "${args[$((i + 1))]#@}" >>"$CURL_STUB_BODYLOG"; printf '\n---\n' >>"$CURL_STUB_BODYLOG"
+    post_body="$(cat "${args[$((i + 1))]#@}")"
+    printf '%s\n---\n' "$post_body" >>"$CURL_STUB_BODYLOG"
   fi
 done
+if [[ -n "${CURL_STUB_COMMENTS_FILE:-}" && "$path" == */comments ]]; then
+  if [[ "$method" == POST ]]; then
+    body="$(jq -r '.body // empty' <<<"$post_body")"
+    jq -c --arg b "$body" --arg a "$CURL_STUB_AGENT" '. + [{authorAgentId:$a, body:$b}]' \
+      "$CURL_STUB_COMMENTS_FILE" >"$CURL_STUB_COMMENTS_FILE.tmp"
+    mv "$CURL_STUB_COMMENTS_FILE.tmp" "$CURL_STUB_COMMENTS_FILE"
+    if [[ "${KILL_POINT:-}" == claim ]]; then
+      : >"$KILL_MARKER"; while [[ -e "$KILL_MARKER" ]]; do sleep 0.05; done
+    fi
+  elif [[ "$method" == GET ]]; then
+    cat "$CURL_STUB_COMMENTS_FILE"; printf 200; exit 0
+  fi
+fi
 key="${method}_${path#/}"; key="${key//\//_}"
 f="$CURL_STUB_FIXTURES/$key"
 [[ -f "$f" ]] || f="$CURL_STUB_FIXTURES/DEFAULT"
@@ -75,16 +90,27 @@ case "$1 $2" in
     else jq -c '. + {_meta:{runtimeId:"rt-1"}}' "$ORCA_TERMLIST_FILE"; fi ;;
   # Every listed terminal runs claude on pane tab-<handle>:leaf-<handle>.
   "worktree ps")
-    jq -c '{result:{worktrees:[{agents:[.result.terminals[] | {paneKey:("tab-"+.handle+":leaf-"+.handle),
+    jq -c '{result:{worktrees:[{id:"wt-1",agents:[.result.terminals[] | {paneKey:(if .handle=="term-created-1" then "tab-c:leaf-c" else "tab-"+.handle+":leaf-"+.handle end),
       state:"working",agentType:"claude"}]}]},_meta:{runtimeId:"rt-1"}}' "$ORCA_TERMLIST_FILE" ;;
   "terminal show")
     [[ "${4:-}" == term-created-1 ]] || exit 1
-    printf '{"result":{"terminal":{"handle":"term-created-1","tabId":"tab-c","leafId":"leaf-c"}},"_meta":{"runtimeId":"rt-1"}}' ;;
+    printf '{"result":{"terminal":{"handle":"term-created-1","tabId":"tab-c","leafId":"leaf-c","worktreeId":"wt-1"}},"_meta":{"runtimeId":"rt-1"}}' ;;
   "terminal create")
     printf '%s\n' "$*" >>"$ORCA_CREATE_LOG"
-    printf '{"result":{"terminal":{"handle":"term-created-1"}}}' ;;
+    printf '{"result":{"terminal":{"handle":"term-created-1"}}}'
+    if [[ "${KILL_POINT:-}" == create ]]; then
+      printf '{"result":{"terminals":[{"handle":"term-created-1","title":"renamed by statusline","connected":true,"orphaned":false}]}}' >"$ORCA_TERMLIST_FILE"
+      : >"$KILL_MARKER"; while [[ -e "$KILL_MARKER" ]]; do sleep 0.05; done
+    fi ;;
   *) exit 1 ;;
 esac
+SH
+cat >"$STUBS/tr" <<'SH'
+#!/usr/bin/env bash
+if [[ "${KILL_POINT:-}" == notice && -e "$KILL_NOTICE_PATH" && ! -e "$KILL_BRIEF_PATH" ]]; then
+  : >"$KILL_MARKER"; while [[ -e "$KILL_MARKER" ]]; do sleep 0.05; done
+fi
+exec /usr/bin/tr "$@"
 SH
 # The stub reaches the kit only through the resolver's host config.
 printf '{"orca_bin":"%s"}\n' "$STUBS/orca-cli" >"$STUBS/host.json"
@@ -169,6 +195,7 @@ run_afk() { # <cmd> [args...]
     AFK_OP_BIN="$STUBS/op" AFK_CURL_BIN="$STUBS/curl" AFK_HOST_CONFIG="$STUBS/host.json" OP_SERVICE_ACCOUNT_TOKEN=test-op-token \
     AFK_PCS_READINESS_BIN="$STUBS/readiness" READINESS_OK="${READINESS_OK:-true}" READINESS_REASON="${READINESS_REASON:-}" \
     CURL_STUB_LOG="$LOG" CURL_STUB_BODYLOG="$BODYLOG" CURL_STUB_FIXTURES="$FIXDIR" \
+    CURL_STUB_COMMENTS_FILE="${COMMENTS_FILE:-}" CURL_STUB_AGENT="$AGENT1" \
     ORCA_WT_FILE="$ORCA_WT_FILE" ORCA_TERMLIST_FILE="$ORCA_TERMLIST_FILE" ORCA_TERMLIST_WT_FILE="$ORCA_TERMLIST_WT_FILE" \
     ORCA_CREATE_LOG="$ORCA_CREATE_LOG" SYSTEMCTL_LOG="$SYSTEMCTL_LOG" ${SYSTEMCTL_SHOWENV:+SYSTEMCTL_SHOWENV="$SYSTEMCTL_SHOWENV"} \
     SYSTEMCTL_ENABLED="${SYSTEMCTL_ENABLED:-enabled}" SYSTEMCTL_ACTIVE="${SYSTEMCTL_ACTIVE:-active}" \
@@ -196,6 +223,37 @@ do_pass() { # a full claim-side pass adopting ISSUE1 fresh
   route POST "/api/issues/$ISSUE1/comments" 201 '{}'
   route PATCH "/api/issues/$ISSUE1" 200 '{}'
   run_afk paperclip-poll --json
+}
+
+kill_pass_at() { # claim | notice | create; only kills the pass PID started here
+  local point="$1" pass_pid seen=false i
+  KILL_MARKER="$SCEN/kill-ready"
+  KILL_NOTICE_PATH="$STATE/paperclip/notices/proj/0.$ISSUE1.claimed.json"
+  KILL_BRIEF_PATH="$STATE/paperclip/notices/proj/brief.$ISSUE1.20260101000000.md"
+  env -i PATH="$STUBS:$PATH" HOME="$HOME" LANG=C \
+    AFK_STATE_DIR="$STATE" AFK_PAPERCLIP_CONFIG="$CONFIG" AFK_HOST_CONFIG="$STUBS/host.json" \
+    AFK_OP_BIN="$STUBS/op" AFK_CURL_BIN="$STUBS/curl" OP_SERVICE_ACCOUNT_TOKEN=test-op-token \
+    AFK_PCS_READINESS_BIN="$STUBS/readiness" READINESS_OK=true \
+    CURL_STUB_LOG="$LOG" CURL_STUB_BODYLOG="$BODYLOG" CURL_STUB_FIXTURES="$FIXDIR" \
+    CURL_STUB_COMMENTS_FILE="$COMMENTS_FILE" CURL_STUB_AGENT="$AGENT1" \
+    ORCA_WT_FILE="$ORCA_WT_FILE" ORCA_TERMLIST_FILE="$ORCA_TERMLIST_FILE" \
+    ORCA_TERMLIST_WT_FILE="$ORCA_TERMLIST_WT_FILE" ORCA_CREATE_LOG="$ORCA_CREATE_LOG" \
+    KILL_POINT="$point" KILL_MARKER="$KILL_MARKER" KILL_NOTICE_PATH="$KILL_NOTICE_PATH" \
+    KILL_BRIEF_PATH="$KILL_BRIEF_PATH" bash "$AFK" paperclip-poll --json \
+    >"$SCEN/killed.out" 2>&1 &
+  pass_pid=$!
+  for ((i=0; i<200; i++)); do
+    if [[ -e "$KILL_MARKER" ]]; then seen=true; break; fi
+    kill -0 "$pass_pid" 2>/dev/null || break
+    sleep 0.05
+  done
+  assert_eq "$point: reached the kill point" "$seen" true
+  if [[ "$seen" == true ]]; then kill -9 "$pass_pid" 2>/dev/null; fi
+  wait "$pass_pid" 2>/dev/null || true
+  rm -f "$KILL_MARKER"
+  # A SIGKILL leaves the poll lock. Age only this test's dead pass lock so
+  # the next pass can use the normal stale-lock recovery path.
+  [[ -d "$STATE/paperclip/.lock" ]] && touch -d '-1000 seconds' "$STATE/paperclip/.lock"
 }
 
 # ============================================================================
@@ -542,7 +600,7 @@ head1 "9b. The timer check reads the key with the user manager's environment"
 mgr_scenario() {
   new_scenario "$1"; write_config '{}'
   MGRBIN="$SCEN/mgrbin"; mkdir -p "$MGRBIN"
-  for b in bash jq stat id; do ln -s "$(command -v "$b")" "$MGRBIN/$b"; done
+  for b in bash jq stat id env timeout uname; do ln -s "$(command -v "$b")" "$MGRBIN/$b"; done
   SYSTEMCTL_SHOWENV="$SCEN/showenv"
 }
 envfile600() { printf 'OP_SERVICE_ACCOUNT_TOKEN=ops_FILE-TOKEN\n' >"$1"; chmod 600 "$1"; }
@@ -563,6 +621,15 @@ run_afk paperclip-timer --install --json
 assert_eq "a token in the manager's environment: install succeeds" "$RC" "0"
 assert_absent "a manager token never lands in the unit" "$(cat "$SCEN/systemd-user/"* 2>/dev/null)" "MGR-TOKEN"
 assert_absent "a manager token is never printed" "$OUT_TEXT" "MGR-TOKEN"
+assert_contains "the service pins the resolved absolute Orca path" "$(cat "$SCEN/systemd-user/afk-paperclip-poll.service")" "AFK_ORCA_BIN=$STUBS/orca-cli"
+printf '{"orca_bin":"/bin/false"}\n' >"$STUBS/host.json"
+run_afk paperclip-timer --install --json
+assert_contains "install refuses a failed Orca handshake" "$OUT_TEXT" "ORCA_CLI_NOT_RESOLVED"
+run_afk paperclip-timer --status --json
+assert_contains "status reports a failed Orca handshake" "$OUT_TEXT" "ORCA_CLI_NOT_RESOLVED"
+run_afk paperclip-project list --json
+assert_contains "project list reports a failed Orca handshake" "$OUT_TEXT" "ORCA_CLI_NOT_RESOLVED"
+printf '{"orca_bin":"%s"}\n' "$STUBS/orca-cli" >"$STUBS/host.json"
 
 mgr_scenario mgr_env_file
 envfile600 "$SCEN/mgr.env"
@@ -640,6 +707,79 @@ do_pass
 kill "$OTHER_PID" 2>/dev/null; wait "$OTHER_PID" 2>/dev/null
 assert_absent "reused pid: not busy" "$OUT_TEXT" "PAPERCLIP_POLL_BUSY"
 assert_contains "reused pid: PAPERCLIP_LOCK_STALE reported" "$OUT_TEXT" "PAPERCLIP_LOCK_STALE"
+
+head1 "12. Killed passes resume without duplicate claims, notices or terminals"
+for point in claim notice create; do
+  new_scenario "kill_$point"
+  write_config '{"pm_start_enabled":true}'
+  COMMENTS_FILE="$SCEN/comments.json"; printf '[]\n' >"$COMMENTS_FILE"
+  route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+  route GET /api/agents/me/inbox-lite 200 "[{\"id\":\"$ISSUE1\"}]"
+  route GET "/api/issues/$ISSUE1/active-run" 200 '{"id":"run-1"}'
+  route POST "/api/issues/$ISSUE1/comments" 201 '{}'
+  route PATCH "/api/issues/$ISSUE1" 200 '{}'
+  issue_route in_progress "$BOARD"
+  kill_pass_at "$point"
+  case "$point" in
+    claim)
+      assert_eq "claim kill: intent was durable before POST" \
+        "$(jq -r --arg id "$ISSUE1" '.issues[$id].claim' "$STATE/paperclip/ledger.json")" intent ;;
+    notice)
+      assert_eq "notice kill: the claimed notice was journaled" \
+        "$(jq -r --arg id "$ISSUE1" '.issues[$id].claimed_notice' "$STATE/paperclip/ledger.json")" written ;;
+    create)
+      assert_eq "create kill: pm_started intent preceded terminal create" \
+        "$(jq -r --arg id "$ISSUE1" '.pm_started[$id].state' "$STATE/paperclip/ledger.json")" intent
+      assert_eq "create kill: the intent file path was journaled" \
+        "$(jq -r --arg id "$ISSUE1" '.pm_started[$id].intent_file' "$STATE/paperclip/ledger.json")" \
+        "$STATE/paperclip/pm-start-intents/proj.json" ;;
+  esac
+  run_afk paperclip-poll --json
+  assert_eq "$point replay: pass completes" "$RC" 0
+  assert_eq "$point replay: one claim comment" \
+    "$(jq '[.[] | select(.body | contains("claimed by AFK PM"))] | length' "$COMMENTS_FILE")" 1
+  assert_eq "$point replay: marker survives comment read-back" \
+    "$(jq --arg id "$ISSUE1" '[.[] | select(.body | contains("<!-- afk-claim:" + $id + " -->"))] | length' "$COMMENTS_FILE")" 1
+  assert_eq "$point replay: one claimed notice" \
+    "$(find "$STATE/paperclip/notices/proj" -name '*.claimed.json' | wc -l | tr -d ' ')" 1
+  assert_eq "$point replay: one brief" \
+    "$(find "$STATE/paperclip/notices/proj" -name 'brief.*.md' | wc -l | tr -d ' ')" 1
+  assert_eq "$point replay: both artifacts have receipts" \
+    "$(jq -r --arg id "$ISSUE1" '.issues[$id] | .claimed_notice + "/" + .claimed_brief' "$STATE/paperclip/ledger.json")" \
+    written/written
+  assert_eq "$point replay: one terminal create" "$(wc -l <"$ORCA_CREATE_LOG" | tr -d ' ')" 1
+  assert_eq "$point replay: one pm_started row" \
+    "$(jq '.pm_started | length' "$STATE/paperclip/ledger.json")" 1
+  if [[ "$point" == create ]]; then
+    assert_eq "create replay: the join recovers the renamed terminal's handle" \
+      "$(jq -r --arg id "$ISSUE1" '.pm_started[$id].terminal' "$STATE/paperclip/ledger.json")" term-created-1
+  fi
+  assert_eq "$point replay: claim confirmed by read-back" \
+    "$(jq -r --arg id "$ISSUE1" '.issues[$id].claim' "$STATE/paperclip/ledger.json")" confirmed
+done
+COMMENTS_FILE=""
+
+head1 "13. Refused stale-owner reap cannot authorize a PM start"
+COUNT_FILE="$SCEN/lookups"; printf '0\n' >"$COUNT_FILE"
+REAP_START_FILE="$SCEN/unexpected-create"
+reap_result="$(COUNT_FILE="$COUNT_FILE" REAP_START_FILE="$REAP_START_FILE" KIT_ROOT="$KIT_ROOT" bash -c '
+  . "$KIT_ROOT/lib/afk-paperclip-start.sh"
+  AFK_PC_CFG="{\"pm_start_enabled\":true}"
+  detail="{\"createdByUserId\":\"board\"}"
+  board_user_id=board; repo_path=/test/repo; host_name=test-host
+  afk_pm_registry_lookup() {
+    local n; n="$(cat "$COUNT_FILE")"; n=$((n+1)); printf "%s\n" "$n" >"$COUNT_FILE"
+    if (( n == 1 )); then printf "{\"state\":\"none\",\"stale\":[{\"scope\":\"stale-owner\"}]}"
+    else printf "{\"state\":\"unknown\",\"reason\":\"PM_OWNER_LIVE\"}"; fi
+  }
+  afk_cmd_pm_registry_reap() { return 1; }
+  afk_pcs_create_terminal() { : >"$REAP_START_FILE"; }
+  afk_pcs_start_pm
+  printf "%s" "$AFK_PCS_ACTION_OVERRIDE"
+')"
+assert_eq "refused reap: post-reap lookup runs" "$(cat "$COUNT_FILE")" 2
+assert_eq "refused reap: no terminal starts" "$([[ -e "$REAP_START_FILE" ]] && echo yes || echo no)" no
+assert_contains "refused reap: live owner remains authoritative" "$reap_result" PM_OWNER_LIVE
 
 # ============================================================================
 assert_eq "the PATH decoy orca never ran" \

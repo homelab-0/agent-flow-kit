@@ -16,6 +16,8 @@ if [[ -n "${AFK_PAPERCLIP_SOURCED:-}" ]]; then
 fi
 AFK_PAPERCLIP_SOURCED=1
 
+declare -F afk_orca_bin >/dev/null 2>&1 || . "$(dirname -- "${BASH_SOURCE[0]}")/afk-orca.sh"
+
 AFK_PC_UUID_RE='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
 # board_user_id isn't a UUID for real Paperclip accounts (Better-Auth style
 # ids, e.g. "emXp8Svi8ncWyL1EORTkRNQYjFjCdQon"). A UUID still matches this.
@@ -88,16 +90,23 @@ afk_pc_key_code() {
 # only the calling shell carries does not count. Prints nothing when the read
 # works, else the refusal code. Needs AFK_PC_CFG; the key goes to /dev/null.
 afk_pc_unit_key_check() {
-  local lib code
+  local lib orca_lib code bin
   lib="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/afk-paperclip.sh"
+  orca_lib="$(dirname -- "$lib")/afk-orca.sh"
+  # The installed unit receives this exact absolute path. Verify it again in
+  # the manager's environment: a usable interactive shell is not sufficient.
+  bin="$(afk_orca_bin 2>/dev/null)" || { printf ORCA_CLI_NOT_RESOLVED; return 0; }
   # shellcheck disable=SC2016
-  code="$(env -i HOME="${HOME:-}" PATH="${PATH:-/usr/bin:/bin}" AFK_PC_CFG="$AFK_PC_CFG" "${BASH:-bash}" -c '
+  code="$(env -i HOME="${HOME:-}" PATH="${PATH:-/usr/bin:/bin}" AFK_PC_CFG="$AFK_PC_CFG" AFK_ORCA_BIN="$bin" "${BASH:-bash}" -c '
       while IFS= read -r l; do
         [[ "$l" =~ ^(PATH|OP_[A-Za-z0-9_]+|AFK_OP_ENV_FILE|AFK_OP_BIN)= ]] && export "$l"
       done <&3
       exec 3<&-
-      . "$1" || exit 1; afk_pc_read_key "$2" >/dev/null 2>&1; afk_pc_key_code $?' \
-    _ "$lib" "$(jq -r '.host.key_ref' <<<"$AFK_PC_CFG")" \
+      . "$1" || exit 1; afk_pc_read_key "$3" >/dev/null 2>&1
+      key_rc=$?; if (( key_rc != 0 )); then afk_pc_key_code "$key_rc"; exit 0; fi
+      . "$2" || exit 1
+      afk_orca_bin >/dev/null || printf ORCA_CLI_NOT_RESOLVED' \
+    _ "$lib" "$orca_lib" "$(jq -r '.host.key_ref' <<<"$AFK_PC_CFG")" \
     3< <(systemctl --user show-environment 2>/dev/null </dev/null) 2>/dev/null)" || code=PAPERCLIP_VAULT_UNAVAILABLE
   printf '%s' "$code"
 }
@@ -394,7 +403,8 @@ afk_pc_notice() { # <slug> <issue_id> <identifier> <host_agent_id> <repo_path> <
   [[ -n "$extra" ]] || extra='{}'
   afk_pc_slug_ok "$1" || return 1 # never a path from anything but a config slug
   afk_state_dir_ensure "$dir"
-  epoch="$(date +%s)"
+  # The claimed path is stable across a killed pass and its replay.
+  if [[ "$7" == claimed ]]; then epoch=0; else epoch="$(date +%s)"; fi
   payload="$(jq -nc --arg id "$2" --arg identifier "$3" --arg agent "$4" --arg slug "$1" \
     --arg repo "$5" --arg harness "$6" --arg event "$7" \
     --arg time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson extra "$extra" \
@@ -408,8 +418,8 @@ afk_pc_brief() { # <slug> <issue_id> <updated_at> <title> <description>
   afk_pc_slug_ok "$1" || return 1
   afk_state_dir_ensure "$dir"
   digits="$(tr -cd '0-9' <<<"$3")"
-  # updatedAt with no digits at all must never produce brief.<id>..md.
-  [[ -n "$digits" ]] || digits="$(date +%s)"
+  # A stable fallback lets a killed pass find the same brief on replay.
+  [[ -n "$digits" ]] || digits=0
   afk_state_file_write "$dir/brief.$2.$digits.md" "# $4"$'\n\n'"$5"
 }
 
@@ -729,6 +739,68 @@ afk_pc_marker_seen() {
     >/dev/null 2>&1 <<<"$body"
 }
 
+# The attempt flag is durable before POST. A missing read-back after an
+# attempted POST is uncertainty, not permission to post again. Only a comment
+# authored by this host agent clears pending, including after a killed pass.
+afk_pc_claim_comment() {
+  local marker body rc=0 attempted
+  marker="claimed by AFK PM ($host_name)"$'\n\n'"<!-- afk-claim:$id -->"
+  body="$marker"
+  if ! jq -e --arg id "$id" '.issues[$id].claim != null' <<<"$ledger" >/dev/null; then
+    ledger="$(jq -c --arg id "$id" '.issues[$id].claim = "intent" |
+      .issues[$id].claim_comment_pending = true' <<<"$ledger")"
+    afk_state_file_write "$ledger_path" "$ledger" || return 1
+  fi
+  attempted="$(jq -r --arg id "$id" '.issues[$id].claim_attempted // false' <<<"$ledger")"
+  if [[ "$attempted" == true ]]; then
+    afk_pc_marker_seen "$api_url" "$key" "$id" "$marker" "$agent_id" || rc=$?
+    if (( rc == 0 )); then
+      ledger="$(jq -c --arg id "$id" '.issues[$id].claim = "confirmed" |
+        del(.issues[$id].claim_comment_pending)' <<<"$ledger")"
+      afk_state_file_write "$ledger_path" "$ledger"
+      return $?
+    fi
+    return 1
+  fi
+  ledger="$(jq -c --arg id "$id" '.issues[$id].claim_attempted = true' <<<"$ledger")"
+  afk_state_file_write "$ledger_path" "$ledger" || return 1
+  afk_pc_comment "$api_url" "$id" "$key" "${run_id:-}" "$body" >/dev/null
+  rc=0
+  afk_pc_marker_seen "$api_url" "$key" "$id" "$marker" "$agent_id" || rc=$?
+  if (( rc == 0 )); then
+    ledger="$(jq -c --arg id "$id" '.issues[$id].claim = "confirmed" |
+      del(.issues[$id].claim_comment_pending)' <<<"$ledger")"
+    afk_state_file_write "$ledger_path" "$ledger"
+  fi
+  return 0
+}
+
+# Both artifacts have stable paths. Their intent and receipt are journaled,
+# and the file's presence resolves a crash between the write and receipt.
+afk_pc_claim_artifacts() {
+  local notice_path brief_path digits
+  notice_path="$AFK_STATE_DIR/paperclip/notices/$slug/0.$id.claimed.json"
+  digits="$(tr -cd '0-9' <<<"$updated")"
+  [[ -n "$digits" ]] || digits=0
+  brief_path="$AFK_STATE_DIR/paperclip/notices/$slug/brief.$id.$digits.md"
+  if ! jq -e --arg id "$id" '.issues[$id].claimed_notice == "written"' <<<"$ledger" >/dev/null; then
+    ledger="$(jq -c --arg id "$id" --arg p "$notice_path" '.issues[$id].claimed_notice = "intent" |
+      .issues[$id].claimed_notice_path = $p' <<<"$ledger")"
+    afk_state_file_write "$ledger_path" "$ledger" || return 1
+    [[ -e "$notice_path" ]] || afk_pc_notice "$slug" "$id" "$identifier" "$agent_id" "$repo_path" "$harness" claimed || return 1
+    ledger="$(jq -c --arg id "$id" '.issues[$id].claimed_notice = "written"' <<<"$ledger")"
+    afk_state_file_write "$ledger_path" "$ledger" || return 1
+  fi
+  if ! jq -e --arg id "$id" '.issues[$id].claimed_brief == "written"' <<<"$ledger" >/dev/null; then
+    ledger="$(jq -c --arg id "$id" --arg p "$brief_path" '.issues[$id].claimed_brief = "intent" |
+      .issues[$id].claimed_brief_path = $p' <<<"$ledger")"
+    afk_state_file_write "$ledger_path" "$ledger" || return 1
+    [[ -e "$brief_path" ]] || afk_pc_brief "$slug" "$id" "$updated" "$title" "$desc" || return 1
+    ledger="$(jq -c --arg id "$id" '.issues[$id].claimed_brief = "written"' <<<"$ledger")"
+    afk_state_file_write "$ledger_path" "$ledger" || return 1
+  fi
+}
+
 # afk_pc_resolve_sending <issue_id> -- AC-4: a leftover `sending` from a
 # crashed pass is resolved by read-back before anything else is posted. Reads
 # and writes the caller's `ledger` local directly, like afk_pc_strand.
@@ -817,6 +889,9 @@ afk_pc_report_cycle() {
   # from the ledger: its spool file is already gone.
   pending_final="$(jq -r '.pending_final // empty' <<<"$prev")"
   claim_pending="$(jq -r '.claim_comment_pending // false' <<<"$prev")"
+  # An attempted claim is reconciled by the read-only issue sweep. It never
+  # causes a self-wake merely to retry or re-check a possibly posted comment.
+  [[ "$(jq -r '.claim_attempted // false' <<<"$prev")" == true ]] && claim_pending=false
   # HA-4a: a cycle the pass asked for (adopt, resume, nudge, strand repair)
   # runs even when nothing else changed.
   local due; due="$(jq -r '.reblock_due // empty' <<<"$prev")"
@@ -876,9 +951,7 @@ afk_pc_report_cycle() {
 
   # AC-10: the claim comment for an issue adopted during a pause.
   if [[ "$claim_pending" == true ]]; then
-    local clr; clr="$(afk_pc_comment "$api_url" "$id" "$key" "$run_id" "claimed by AFK PM ($host_name)")"
-    [[ "${clr%%$'\n'*}" == 2?? ]] &&
-      ledger="$(jq -c --arg id "$id" 'del(.issues[$id].claim_comment_pending)' <<<"$ledger")"
+    afk_pc_claim_comment || true
   fi
   # F7: a resume says so once; the flag stays until the comment lands.
   if [[ "$due" == resume ]]; then
@@ -1091,8 +1164,10 @@ afk_pc_pin_new() {
 # issue: claimed notice, brief, a slot or the queue (AD-24). Sets the
 # caller's final_state; the claim comment goes out in the report cycle.
 afk_pc_claim() {
-  afk_pc_notice "$slug" "$id" "$identifier" "$agent_id" "$repo_path" "$harness" claimed
-  afk_pc_brief "$slug" "$id" "$updated" "$title" "$desc"
+  ledger="$(jq -c --arg id "$id" '.issues[$id].claim = "intent" |
+    .issues[$id].claim_comment_pending = true' <<<"$ledger")"
+  afk_state_file_write "$ledger_path" "$ledger" || return 1
+  afk_pc_claim_artifacts || return 1
   if (( used_slots_s >= max_active || host_used >= host_max )); then
     final_state="queued"; newly_queued_ids+="$id"$'\n'
     [[ "$1" == true ]] && ledger="$(jq -c --arg id "$id" --arg t "$(afk_pc_queue_text)" \
@@ -1102,7 +1177,6 @@ afk_pc_claim() {
     used_slots_s=$((used_slots_s + 1)); host_used=$((host_used + 1))
     working_id="$identifier"
   fi
-  ledger="$(jq -c --arg id "$id" '.issues[$id].claim_comment_pending = true' <<<"$ledger")"
   actions="$(jq -c --arg t "claimed: $identifier" '. + [$t]' <<<"$actions")"
 }
 
@@ -1254,7 +1328,7 @@ afk_cmd_paperclip_poll() { # <json_mode>
     # inbox never counts as a held working slot for the issues below.
     # HA-2 (AD-24): `working` and `waiting_human` hold a slot; nothing else does.
     # host_used is the host-wide count against host.max_active_issues.
-    local -A used_slots=() working_ids=() promotable=()
+    local -A used_slots=() working_ids=() promotable=() claim_started_this_pass=()
     local newly_queued_ids=""
     local s_slug s_n s_w host_max host_used
     host_max="$(jq -r '.host.max_active_issues' <<<"$AFK_PC_CFG")"
@@ -1283,6 +1357,11 @@ afk_cmd_paperclip_poll() { # <json_mode>
       owner_agent="$(jq -r '.unblockDescriptor.owner.agentId // empty' <<<"$detail")"
       owner_user="$(jq -r '.unblockDescriptor.owner.userId // empty' <<<"$detail")"
       prev="$(jq -c --arg id "$id" '.issues[$id] // empty' <<<"$ledger")"
+      if [[ -n "$prev" ]] && jq -e '.claim_comment_pending == true and .claim_attempted == true' \
+          <<<"$prev" >/dev/null 2>&1; then
+        afk_pc_claim_comment || true
+        prev="$(jq -c --arg id "$id" '.issues[$id] // empty' <<<"$ledger")"
+      fi
 
       # --- which project (AD-23): the pin, or a fresh resolution ------------
       # slug/repo_path/harness/max_active are what every notice, brief, PM
@@ -1442,9 +1521,10 @@ afk_cmd_paperclip_poll() { # <json_mode>
               actions="$(jq -c --arg t "PAPERCLIP_SELF_BLOCK_FAILED: $identifier" '. + [$t]' <<<"$actions")"
             actions="$(jq -c --arg t "paused: $identifier" '. + [$t]' <<<"$actions")"
           elif [[ -z "$prev" || "$prior_state_ip" == pending_claim ]]; then
-            afk_pc_comment "$api_url" "$id" "$key" "$run_id" "claimed by AFK PM ($host_name)" >/dev/null
-            afk_pc_notice "$slug" "$id" "$identifier" "$agent_id" "$repo_path" "$harness" claimed
-            afk_pc_brief "$slug" "$id" "$updated" "$title" "$desc"
+            [[ -n "$prev" ]] || afk_pc_pin_new
+            afk_pc_claim_comment || true
+            claim_started_this_pass[$id]=1
+            afk_pc_claim_artifacts || continue
             if (( used_slots_s >= max_active || host_used >= host_max )); then
               new_state="queued"; newly_queued_ids+="$id"$'\n'
               action="$(afk_pc_queue_text)"
@@ -1511,7 +1591,7 @@ afk_cmd_paperclip_poll() { # <json_mode>
           # The project is pinned here, at first adoption (F6).
           ledger="$(jq -c --arg id "$id" --arg a "$agent_id" --arg s "$slug" --arg p "$resolved_pid" --arg ident "$identifier" \
             --arg st "$new_state" --arg since "$since" --arg act "$action" --argjson fresh "$fresh" \
-            '.issues[$id] = ((.issues[$id] // {} | if $fresh then {since} else . end) + {host_agent_id:$a, paperclip_project_id:$p, slug:$s, identifier:$ident, state:$st, since:$since, action_text:$act, action_text_applied:$act}
+            '.issues[$id] = ((.issues[$id] // {} | if $fresh then {since, claim, claim_attempted, claim_comment_pending, claimed_notice, claimed_notice_path, claimed_brief, claimed_brief_path} else . end) + {host_agent_id:$a, paperclip_project_id:$p, slug:$s, identifier:$ident, state:$st, since:$since, action_text:$act, action_text_applied:$act}
                | del(.fixed_text, .refusal_code) | if .state | IN("stranded", "held_by_board") then . else del(.resume_state) end)' \
             <<<"$ledger")"
 
@@ -1751,12 +1831,13 @@ afk_cmd_paperclip_poll() { # <json_mode>
       local -a report_ids=()
       mapfile -t report_ids < <(jq -r --arg a "$agent_id" \
         '.issues | to_entries[] | select(.value.host_agent_id == $a and ((.value.state | IN("working", "waiting_human", "waiting_setup", "stopped"))
-           or (.value.state == "queued" and (.value.claim_comment_pending == true or .value.action_text != .value.action_text_applied))
+           or (.value.state == "queued" and ((.value.claim_comment_pending == true and .value.claim_attempted != true) or .value.action_text != .value.action_text_applied))
            or (.value.reblock_due != null and (.value.state | IN("closed", "reconciliation_blocked") | not)))) | .key' \
         <<<"$ledger")
       local rid
       for rid in "${report_ids[@]:-}"; do
         [[ -n "$rid" ]] || continue
+        [[ -z "${claim_started_this_pass[$rid]:-}" ]] || continue
         AFK_PC_ABORT=false
         local r_ident; r_ident="$(jq -r --arg id "$rid" '.issues[$id].identifier // empty' <<<"$ledger")"
         afk_pc_report_cycle "$api_url" "$key" "$agent_id" "$rid" "$r_ident" "$status_file_dir"

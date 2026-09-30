@@ -32,13 +32,16 @@ afk_pcs_start_pm() {
   created_by="$(jq -r '.createdByUserId // empty' <<<"$detail" 2>/dev/null)"
 
   lookup="$(afk_pm_registry_lookup "$repo_path")" || return 0
-  local -a stale_scopes=() ; local sk reaped=false
+  local -a stale_scopes=() ; local sk attempted=false
   mapfile -t stale_scopes < <(jq -r '.stale[]?.scope // empty' <<<"$lookup" 2>/dev/null)
   for sk in "${stale_scopes[@]:-}"; do
     [[ -n "$sk" ]] || continue
-    declare -F afk_cmd_pm_registry_reap >/dev/null 2>&1 && afk_cmd_pm_registry_reap false "$sk" >/dev/null 2>&1 && reaped=true
+    attempted=true
+    declare -F afk_cmd_pm_registry_reap >/dev/null 2>&1 && afk_cmd_pm_registry_reap false "$sk" >/dev/null 2>&1 || true
   done
-  [[ "$reaped" == true ]] && lookup="$(afk_pm_registry_lookup "$repo_path")"
+  # A refused reap may mean the owner is live or unknown. The pre-reap
+  # snapshot is no longer authority for starting a replacement.
+  [[ "$attempted" == true ]] && lookup="$(afk_pm_registry_lookup "$repo_path")"
   state="$(jq -r '.state' <<<"$lookup")"
 
   case "$state" in
@@ -61,7 +64,10 @@ afk_pcs_start_pm() {
   esac
   # At most one start per issue, ever (an approval authorises one start). A
   # started PM that has not registered yet still reads `none` here.
-  jq -e --arg id "$id" '.pm_started[$id] != null' <<<"$ledger" >/dev/null 2>&1 && return 0
+  if jq -e --arg id "$id" '.pm_started[$id] != null' <<<"$ledger" >/dev/null 2>&1; then
+    afk_pcs_existing_start
+    return 0
+  fi
 
   # AC-2: the creator gate.
   if [[ -z "$created_by" || "$created_by" != "$board_user_id" ]]; then
@@ -211,9 +217,55 @@ afk_pcs_readiness_check() {
   return 1
 }
 
-# afk_pcs_create_terminal -- AC-5. One visible Orca terminal, idempotent by
-# title (never a second one for the same project). Reads repo_path/slug/
-# harness/id from the caller; writes the start into `ledger` on success.
+# A recorded start blocks another create regardless of its liveness result.
+# The join is still evaluated so a receipt can be distinguished from an
+# unresolved create; an unknown result never licenses another create.
+afk_pcs_existing_start() {
+  local row tuple intent_file intent_wt intent_repo ps_runtime agents handle candidate="" matches=0
+  row="$(jq -c --arg id "$id" '.pm_started[$id] // empty' <<<"$ledger")"
+  [[ -n "$row" ]] || return 1
+  tuple="$(jq -c '.identity // empty' <<<"$row")"
+  if [[ -n "$tuple" && "$tuple" != null ]]; then
+    afk_orca_liveness_reset
+    afk_orca_terminal_state "$tuple"
+    return 0
+  fi
+  # The pass may have died after create and before receiving its handle.
+  # Reconcile only a unique terminal/agent join in the intent's worktree.
+  intent_file="$(jq -r '.intent_file // empty' <<<"$row")"
+  [[ -r "$intent_file" ]] || return 0
+  intent_wt="$(jq -r '.worktree.id // empty' "$intent_file" 2>/dev/null)"
+  intent_repo="$(jq -r '.worktree.path // empty' "$intent_file" 2>/dev/null)"
+  [[ -n "$intent_wt" && "$intent_repo" == "$repo_path" ]] || return 0
+  afk_orca_run --bound 5 pm-start-reconcile-agents -- worktree ps --limit "$AFK_ORCA_LIST_LIMIT" --json || return 0
+  ps_runtime="$(jq -r '._meta.runtimeId // empty' <<<"$AFK_ORCA_OUT" 2>/dev/null)"
+  agents="$(jq -ce --arg w "$intent_wt" --arg p "$intent_repo" '
+    [(.result.worktrees // [])[] | select(.id==$w or .worktreeId==$w or .path==$p)
+      | (.agents // [])[] | {paneKey, agentType}]' <<<"$AFK_ORCA_OUT" 2>/dev/null)"
+  AFK_ORCA_OUT=""
+  [[ -n "$agents" && "$agents" != '[]' ]] || return 0
+  afk_orca_liveness_reset
+  afk_orca_list_state || return 0
+  [[ -n "$ps_runtime" && "$ps_runtime" == "$_AFK_ORCA_LV_RUNTIME" ]] || return 0
+  while IFS= read -r handle; do
+    [[ -n "$handle" ]] || continue
+    afk_orca_identity --bound 5 "$handle" "$harness" || continue
+    if jq -e --arg w "$intent_wt" --arg rt "$ps_runtime" --arg h "$harness" --argjson a "$agents" '
+      (.tab_id + ":" + .leaf_id) as $pane
+      | .runtime_id==$rt and .worktree_id==$w and any($a[]; .paneKey==$pane and .agentType==$h)' <<<"$AFK_ORCA_IDENTITY" >/dev/null 2>&1; then
+      candidate="$AFK_ORCA_IDENTITY"; matches=$((matches + 1))
+    fi
+  done < <(jq -r '.[] | select(.connected==true and .orphaned==false) | .handle' <<<"$_AFK_ORCA_LV_TERMINALS")
+  if (( matches == 1 )); then
+    ledger="$(jq -c --arg id "$id" --argjson identity "$candidate" \
+      '.pm_started[$id] |= (. + {terminal:$identity.handle, identity:$identity, state:"created"})' <<<"$ledger")"
+    afk_state_file_write "$ledger_path" "$ledger" || return 1
+  fi
+  return 0
+}
+
+# afk_pcs_create_terminal -- one create intent per issue and project. Reads
+# repo_path/slug/harness/id from the caller; persists before create.
 afk_pcs_create_terminal() {
   local shown observed_id observed_path title
   afk_orca_run pm-start-worktree -- worktree show --worktree "path:$repo_path" --json || return 1
@@ -224,18 +276,9 @@ afk_pcs_create_terminal() {
   [[ -n "$observed_id" && -n "$observed_path" ]] || return 1
 
   title="PM $slug (paperclip)"
-  local listed count prior
-  afk_orca_run --bound 5 pm-start-dedupe -- terminal list --worktree "id:$observed_id" --limit "$AFK_ORCA_LIST_LIMIT" --json || return 1
-  listed="$AFK_ORCA_OUT"
-  # ORCA-6: the title half of this dedupe goes (AD-28 R4).
-  # The harness rewrites the terminal title once it runs, so the title alone
-  # cannot prove "no PM started yet". Any terminal this host started for the
-  # same repo that is still listed also blocks a second start.
-  prior="$(jq -c --arg r "$repo_path" '[(.pm_started // {})[] | select(.repo == $r) | .terminal]' <<<"$ledger" 2>/dev/null)" || return 1
-  count="$(jq -r --arg t "$title" --argjson h "$prior" \
-    '[.result.terminals[]? | select(.title==$t or (.handle as $x | any($h[]; . == $x)))] | length' <<<"$listed" 2>/dev/null)"
-  [[ "$count" =~ ^[0-9]+$ ]] || return 1
-  (( count > 0 )) && return 1 # already visible: never start a second one
+  local prior
+  prior="$(jq -c --arg r "$repo_path" '[(.pm_started // {})[] | select(.repo == $r)]' <<<"$ledger" 2>/dev/null)" || return 1
+  [[ "$prior" == '[]' ]] || return 1
 
   local resume intent intent_file bootstrap command created terminal
   resume="You are the BMAD PM for project $slug. Register with \`agent-flow-kit pm-start --harness $harness\`, then run \`agent-flow-kit paperclip-take --slug $slug\` and read the brief file it names."
@@ -244,12 +287,19 @@ afk_pcs_create_terminal() {
     '{schema:"afk-pm-bootstrap-first-start-intent/2", slug:$proj, harness:$h,
       worktree:{id:$wi, path:$wp}, resume_instruction:$resume}')" || return 1
   intent_file="$AFK_STATE_DIR/paperclip/pm-start-intents/$slug.json"
-  afk_state_file_write "$intent_file" "$intent" || return 1
+  # A prior intent without a receipt may be a create that completed just
+  # before the pass died. Hold it for reconciliation; never create blindly.
+  [[ ! -e "$intent_file" ]] || return 1
 
   bootstrap="${AFK_PM_BOOTSTRAP_BIN:-$AFK_KIT_ROOT/adapters/orca-pm-bootstrap.sh}"
   [[ -x "$bootstrap" ]] || return 1
+  ledger="$(jq -c --arg id "$id" --arg file "$intent_file" --arg slug "$slug" --arg h "$harness" \
+    --arg r "$repo_path" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '.pm_started = ((.pm_started // {}) + {($id): {terminal:null, intent_file:$file, slug:$slug,
+      harness:$h, repo:$r, at:$at, identity:null, state:"intent"}})' <<<"$ledger")"
+  afk_state_file_write "$ledger_path" "$ledger" || return 1
+  afk_state_file_write "$intent_file" "$intent" || return 1
   printf -v command '%q --intent %q' "$bootstrap" "$intent_file"
-  # ORCA-3: the ledger row is persisted before this create (AD-28 R6).
   afk_orca_run pm-start-create -- terminal create --worktree "id:$observed_id" --title "$title" --command "$command" --json || true
   created="$AFK_ORCA_OUT"
   terminal="$(jq -r '.result.terminal.handle // .handle // empty' <<<"$created" 2>/dev/null)"
@@ -259,10 +309,9 @@ afk_pcs_create_terminal() {
   # Orca can't show it yet; the handle alone still blocks a second start.
   local identity=null
   if afk_orca_identity "$terminal" "$harness"; then identity="$AFK_ORCA_IDENTITY"; fi
-  ledger="$(jq -c --arg id "$id" --arg t "$terminal" --arg slug "$slug" --arg h "$harness" \
-    --arg r "$repo_path" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson identity "$identity" \
-    '.pm_started = ((.pm_started // {}) + {($id): {terminal:$t, slug:$slug, harness:$h, repo:$r, at:$at, identity:$identity}})' \
-    <<<"$ledger")"
+  ledger="$(jq -c --arg id "$id" --arg t "$terminal" --argjson identity "$identity" \
+    '.pm_started[$id] |= (. + {terminal:$t, identity:$identity, state:"created"})' <<<"$ledger")"
+  afk_state_file_write "$ledger_path" "$ledger" || return 1
   return 0
 }
 
@@ -321,11 +370,14 @@ afk_pct_platform() {
 afk_pct_systemd_dir() { printf '%s' "${AFK_PCT_SYSTEMD_DIR:-${HOME:-}/.config/systemd/user}"; }
 
 afk_pct_service() {
+  local bin
+  bin="$(afk_orca_bin)" || return 1
   printf '%s\n' \
     '# Managed by agent-flow-kit paperclip-timer; re-run it rather than editing.' \
     '[Unit]' 'Description=agent-flow-kit Paperclip poll' '' \
     '[Service]' 'Type=oneshot' \
     "Environment=\"AFK_STATE_DIR=$(afk_au_sd "$AFK_STATE_DIR")\"" \
+    "Environment=\"AFK_ORCA_BIN=$(afk_au_sd "$bin")\"" \
     "ExecStart=\"$(afk_au_sd "$AFK_KIT_ROOT")/bin/agent-flow-kit\" paperclip-poll"
 }
 
