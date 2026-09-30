@@ -31,7 +31,10 @@ afk_pcs_start_pm() {
   [[ "$enabled" == true ]] || return 0
   created_by="$(jq -r '.createdByUserId // empty' <<<"$detail" 2>/dev/null)"
 
-  lookup="$(afk_pm_registry_lookup "$repo_path")" || return 0
+  lookup="$(afk_pm_registry_lookup "$repo_path")" || {
+    AFK_PCS_ACTION_OVERRIDE="queued: no PM (start held: PM_REGISTRY_UNAVAILABLE)"
+    return 0
+  }
   local -a stale_scopes=() ; local sk attempted=false
   mapfile -t stale_scopes < <(jq -r '.stale[]?.scope // empty' <<<"$lookup" 2>/dev/null)
   for sk in "${stale_scopes[@]:-}"; do
@@ -60,13 +63,12 @@ afk_pcs_start_pm() {
       [[ "$why" =~ ^[A-Z0-9_]{1,64}$ ]] || why="PM_OWNER_UNKNOWN"
       AFK_PCS_ACTION_OVERRIDE="queued: PM state unknown ($why)"
       return 0 ;;
-    *) return 0 ;;
+    *) AFK_PCS_ACTION_OVERRIDE="queued: no PM (start held: PM_REGISTRY_UNKNOWN)"; return 0 ;;
   esac
   # At most one start per issue, ever (an approval authorises one start). A
   # started PM that has not registered yet still reads `none` here.
   if jq -e --arg id "$id" '.pm_started[$id] != null' <<<"$ledger" >/dev/null 2>&1; then
-    afk_pcs_existing_start
-    return 0
+    afk_pcs_existing_start && return 0
   fi
 
   # AC-2: the creator gate.
@@ -217,38 +219,122 @@ afk_pcs_readiness_check() {
   return 1
 }
 
-# A recorded start blocks another create regardless of its liveness result.
-# The join is still evaluated so a receipt can be distinguished from an
-# unresolved create; an unknown result never licenses another create.
+afk_pcs_hold_start() { AFK_PCS_ACTION_OVERRIDE="queued: no PM (start held: $1)"; }
+
+afk_pcs_row_end() { # <issue-id> <state: ended|failed> <reason>
+  ledger="$(jq -c --arg id "$1" --arg st "$2" --arg why "$3" \
+    '.pm_started[$id] |= (. + {state:$st, ended_reason:$why})' <<<"$ledger")"
+  afk_state_file_write "$ledger_path" "$ledger"
+}
+
+afk_pcs_report_start_unresolved() { # <issue-id> <code>; one NEEDS HUMAN after repeated passes
+  local row_id="$1" code="$2" count reported r rhash
+  count="$(jq -r --arg id "$row_id" '.pm_started[$id].unresolved_passes // 0' <<<"$ledger")"
+  (( count >= 3 )) || return 0
+  reported="$(jq -r --arg id "$row_id" '.pm_start_reported[$id] // false' <<<"$ledger")"
+  [[ "$reported" != true ]] || return 0
+  rhash="$(printf '%s' "$repo_path" | afk_scope_sha256 2>/dev/null)"
+  [[ -n "$rhash" ]] || return 0
+  r="$(afk_pc_create_issue "$api_url" "$key" "$company_id" \
+    "NEEDS HUMAN: PM start unresolved for $slug" "$board_user_id" \
+    "The Orca terminal create for $row_id is unresolved ($code). Inspect the recorded intent, candidate and Orca runtime. Only after proving that no PM terminal was created, set this pm_started row to failed and remove its intent file; otherwise restore its handle and identity. A runtime-id change alone is not proof of staleness." \
+    "afk-pmstart-$rhash-$row_id")"
+  if [[ "${r%%$'\n'*}" == 2?? ]]; then
+    ledger="$(jq -c --arg id "$row_id" '.pm_start_reported[$id] = true' <<<"$ledger")"
+    afk_state_file_write "$ledger_path" "$ledger"
+  fi
+}
+
+afk_pcs_hold_unresolved() { # <issue-id> <code>
+  local row_id="$1" code="$2"
+  [[ "$code" =~ ^[A-Za-z0-9_.:-]{1,80}$ ]] || code=PM_CREATE_RECEIPT_MISSING
+  AFK_PCS_ACTION_OVERRIDE="queued: no PM (start unresolved: $code)"
+  ledger="$(jq -c --arg id "$row_id" --arg code "$code" \
+    '.pm_started[$id] |= (. + {start_error:$code, unresolved_passes:((.unresolved_passes // 0) + 1)})' <<<"$ledger")"
+  afk_state_file_write "$ledger_path" "$ledger" || return 1
+  afk_pcs_report_start_unresolved "$row_id" "$code"
+}
+
+afk_pcs_registry_owns_handle() { # <handle>
+  local file
+  for file in "$AFK_STATE_DIR"/pm/scopes/*/ownership.json; do
+    [[ -f "$file" ]] || continue
+    jq -e --arg h "$1" '.owned == true and (.terminal == $h or .identity.handle == $h)' "$file" >/dev/null 2>&1 && return 0
+  done
+  return 1
+}
+
+# A receipt's exact handle is authoritative. A missing create receipt can
+# yield a candidate, but a worktree agent join alone cannot prove we created
+# that terminal. Only ORCA-2's positive stale proof licenses a new start.
 afk_pcs_existing_start() {
-  local row tuple intent_file intent_wt intent_repo ps_runtime agents handle candidate="" matches=0
+  local row tuple intent_file intent_wt intent_repo ps_runtime agents handle candidate="" matches=0 code
   row="$(jq -c --arg id "$id" '.pm_started[$id] // empty' <<<"$ledger")"
   [[ -n "$row" ]] || return 1
+  case "$(jq -r '.state // empty' <<<"$row")" in ended | failed) return 1 ;; esac
   tuple="$(jq -c '.identity // empty' <<<"$row")"
   if [[ -n "$tuple" && "$tuple" != null ]]; then
     afk_orca_liveness_reset
     afk_orca_terminal_state "$tuple"
+    if [[ "$AFK_ORCA_TERMINAL_STATE" == stale ]]; then
+      afk_pcs_row_end "$id" ended "$AFK_ORCA_TERMINAL_REASON" || {
+        afk_pcs_hold_start PM_LEDGER_WRITE_FAILED; return 0;
+      }
+      return 1
+    fi
+    code="$AFK_ORCA_TERMINAL_REASON"
+    [[ "$code" == null ]] && code=PM_REGISTRATION_PENDING
+    afk_pcs_hold_start "$code"
+    return 0
+  fi
+  handle="$(jq -r '.terminal // empty' <<<"$row")"
+  if [[ -n "$handle" ]]; then
+    if afk_orca_identity --bound 5 "$handle" "$harness" &&
+       [[ "$(jq -r '.handle // empty' <<<"$AFK_ORCA_IDENTITY")" == "$handle" ]]; then
+      ledger="$(jq -c --arg id "$id" --argjson ident "$AFK_ORCA_IDENTITY" \
+        '.pm_started[$id].identity = $ident' <<<"$ledger")"
+      afk_state_file_write "$ledger_path" "$ledger" || {
+        afk_pcs_hold_start PM_LEDGER_WRITE_FAILED; return 0;
+      }
+    fi
+    afk_pcs_hold_start PM_IDENTITY_UNRECORDED
     return 0
   fi
   # The pass may have died after create and before receiving its handle.
   # Reconcile only a unique terminal/agent join in the intent's worktree.
   intent_file="$(jq -r '.intent_file // empty' <<<"$row")"
-  [[ -r "$intent_file" ]] || return 0
+  if [[ -z "$intent_file" || ! -r "$intent_file" ]]; then
+    # The file is durable before create; no file means create never ran.
+    afk_pcs_row_end "$id" failed PM_INTENT_FILE_MISSING || {
+      afk_pcs_hold_start PM_LEDGER_WRITE_FAILED; return 0;
+    }
+    return 1
+  fi
   intent_wt="$(jq -r '.worktree.id // empty' "$intent_file" 2>/dev/null)"
   intent_repo="$(jq -r '.worktree.path // empty' "$intent_file" 2>/dev/null)"
-  [[ -n "$intent_wt" && "$intent_repo" == "$repo_path" ]] || return 0
-  afk_orca_run --bound 5 pm-start-reconcile-agents -- worktree ps --limit "$AFK_ORCA_LIST_LIMIT" --json || return 0
+  if [[ -z "$intent_wt" || "$intent_repo" != "$repo_path" ]]; then
+    afk_pcs_hold_unresolved "$id" PM_INTENT_MISMATCH; return 0
+  fi
+  if ! afk_orca_run --bound 5 pm-start-reconcile-agents -- worktree ps --limit "$AFK_ORCA_LIST_LIMIT" --json; then
+    afk_pcs_hold_unresolved "$id" "${AFK_ORCA_CODE:-ORCA_UNAVAILABLE}"; return 0
+  fi
   ps_runtime="$(jq -r '._meta.runtimeId // empty' <<<"$AFK_ORCA_OUT" 2>/dev/null)"
   agents="$(jq -ce --arg w "$intent_wt" --arg p "$intent_repo" '
     [(.result.worktrees // [])[] | select(.id==$w or .worktreeId==$w or .path==$p)
       | (.agents // [])[] | {paneKey, agentType}]' <<<"$AFK_ORCA_OUT" 2>/dev/null)"
   AFK_ORCA_OUT=""
-  [[ -n "$agents" && "$agents" != '[]' ]] || return 0
+  if [[ -z "$agents" || "$agents" == '[]' ]]; then
+    code="$(jq -r '.start_error // "PM_CREATE_RECEIPT_MISSING"' <<<"$row")"
+    afk_pcs_hold_unresolved "$id" "$code"; return 0
+  fi
   afk_orca_liveness_reset
-  afk_orca_list_state || return 0
-  [[ -n "$ps_runtime" && "$ps_runtime" == "$_AFK_ORCA_LV_RUNTIME" ]] || return 0
+  if ! afk_orca_list_state; then afk_pcs_hold_unresolved "$id" "${AFK_ORCA_LIST_CODE:-ORCA_UNAVAILABLE}"; return 0; fi
+  if [[ -z "$ps_runtime" || "$ps_runtime" != "$_AFK_ORCA_LV_RUNTIME" ]]; then
+    afk_pcs_hold_unresolved "$id" PM_RUNTIME_MISMATCH; return 0
+  fi
   while IFS= read -r handle; do
     [[ -n "$handle" ]] || continue
+    afk_pcs_registry_owns_handle "$handle" && continue
     afk_orca_identity --bound 5 "$handle" "$harness" || continue
     if jq -e --arg w "$intent_wt" --arg rt "$ps_runtime" --arg h "$harness" --argjson a "$agents" '
       (.tab_id + ":" + .leaf_id) as $pane
@@ -258,27 +344,69 @@ afk_pcs_existing_start() {
   done < <(jq -r '.[] | select(.connected==true and .orphaned==false) | .handle' <<<"$_AFK_ORCA_LV_TERMINALS")
   if (( matches == 1 )); then
     ledger="$(jq -c --arg id "$id" --argjson identity "$candidate" \
-      '.pm_started[$id] |= (. + {terminal:$identity.handle, identity:$identity, state:"created"})' <<<"$ledger")"
-    afk_state_file_write "$ledger_path" "$ledger" || return 1
+      '.pm_started[$id].candidate = $identity' <<<"$ledger")"
+    afk_state_file_write "$ledger_path" "$ledger" || {
+      afk_pcs_hold_start PM_LEDGER_WRITE_FAILED; return 1;
+    }
   fi
+  code="$(jq -r '.start_error // "PM_CREATE_RECEIPT_MISSING"' <<<"$row")"
+  afk_pcs_hold_unresolved "$id" "$code"
   return 0
 }
 
 # afk_pcs_create_terminal -- one create intent per issue and project. Reads
 # repo_path/slug/harness/id from the caller; persists before create.
+afk_pcs_prior_starts_clear() {
+  local prior_id row tuple state reason intent_file
+  while IFS= read -r prior_id; do
+    [[ -n "$prior_id" && "$prior_id" != "$id" ]] || continue
+    row="$(jq -c --arg p "$prior_id" '.pm_started[$p]' <<<"$ledger")"
+    [[ "$(jq -r '.repo // empty' <<<"$row")" == "$repo_path" ]] || continue
+    state="$(jq -r '.state // empty' <<<"$row")"
+    [[ "$state" == ended || "$state" == failed ]] && continue
+    tuple="$(jq -c '.identity // empty' <<<"$row")"
+    if [[ -n "$tuple" && "$tuple" != null ]]; then
+      afk_orca_liveness_reset
+      afk_orca_terminal_state "$tuple"
+      if [[ "$AFK_ORCA_TERMINAL_STATE" == stale ]]; then
+        afk_pcs_row_end "$prior_id" ended "$AFK_ORCA_TERMINAL_REASON" || {
+          afk_pcs_hold_start PM_LEDGER_WRITE_FAILED; return 1;
+        }
+        continue
+      fi
+      reason="$AFK_ORCA_TERMINAL_REASON"
+      [[ "$reason" == null ]] && reason=PM_REGISTRATION_PENDING
+    else
+      intent_file="$(jq -r '.intent_file // empty' <<<"$row")"
+      if [[ -z "$(jq -r '.terminal // empty' <<<"$row")" && ! -r "$intent_file" ]]; then
+        afk_pcs_row_end "$prior_id" failed PM_INTENT_FILE_MISSING || {
+          afk_pcs_hold_start PM_LEDGER_WRITE_FAILED; return 1;
+        }
+        continue
+      fi
+      reason="$(jq -r '.start_error // "PM_CREATE_RECEIPT_MISSING"' <<<"$row")"
+      afk_pcs_hold_unresolved "$prior_id" "$reason"
+      return 1
+    fi
+    afk_pcs_hold_start "$reason"
+    return 1
+  done < <(jq -r '(.pm_started // {}) | keys[]' <<<"$ledger")
+  return 0
+}
+
 afk_pcs_create_terminal() {
-  local shown observed_id observed_path title
-  afk_orca_run pm-start-worktree -- worktree show --worktree "path:$repo_path" --json || return 1
+  local shown observed_id observed_path title code
+  if ! afk_orca_run pm-start-worktree -- worktree show --worktree "path:$repo_path" --json; then
+    afk_pcs_hold_start "${AFK_ORCA_CODE:-ORCA_UNAVAILABLE}"; return 1
+  fi
   shown="$AFK_ORCA_OUT"
   observed_id="$(jq -r '.result.worktree.id // .result.id // .worktree.id // .id // empty' <<<"$shown" 2>/dev/null)"
   observed_path="$(jq -r '.result.worktree.path // .result.path // .worktree.path // .path // empty' <<<"$shown" 2>/dev/null)"
   observed_path="$(cd "$observed_path" 2>/dev/null && pwd -P || true)"
-  [[ -n "$observed_id" && -n "$observed_path" ]] || return 1
+  [[ -n "$observed_id" && -n "$observed_path" ]] || { afk_pcs_hold_start PM_WORKTREE_UNPROVEN; return 1; }
 
   title="PM $slug (paperclip)"
-  local prior
-  prior="$(jq -c --arg r "$repo_path" '[(.pm_started // {})[] | select(.repo == $r)]' <<<"$ledger" 2>/dev/null)" || return 1
-  [[ "$prior" == '[]' ]] || return 1
+  afk_pcs_prior_starts_clear || return 1
 
   local resume intent intent_file bootstrap command created terminal
   resume="You are the BMAD PM for project $slug. Register with \`agent-flow-kit pm-start --harness $harness\`, then run \`agent-flow-kit paperclip-take --slug $slug\` and read the brief file it names."
@@ -286,24 +414,41 @@ afk_pcs_create_terminal() {
     --arg resume "$resume" \
     '{schema:"afk-pm-bootstrap-first-start-intent/2", slug:$proj, harness:$h,
       worktree:{id:$wi, path:$wp}, resume_instruction:$resume}')" || return 1
-  intent_file="$AFK_STATE_DIR/paperclip/pm-start-intents/$slug.json"
-  # A prior intent without a receipt may be a create that completed just
-  # before the pass died. Hold it for reconciliation; never create blindly.
-  [[ ! -e "$intent_file" ]] || return 1
+  intent_file="$AFK_STATE_DIR/paperclip/pm-start-intents/$slug.$id.json"
+  # A previous row for this issue can be retried only when its create was
+  # definitely rejected, its file was never written, or stale was proved.
+  local own_state
+  own_state="$(jq -r --arg id "$id" '.pm_started[$id].state // empty' <<<"$ledger")"
+  case "$own_state" in
+    '' | ended | failed) : ;;
+    *) afk_pcs_hold_start PM_START_ALREADY_RECORDED; return 1 ;;
+  esac
 
   bootstrap="${AFK_PM_BOOTSTRAP_BIN:-$AFK_KIT_ROOT/adapters/orca-pm-bootstrap.sh}"
-  [[ -x "$bootstrap" ]] || return 1
+  [[ -x "$bootstrap" ]] || { afk_pcs_hold_start PM_BOOTSTRAP_UNAVAILABLE; return 1; }
   ledger="$(jq -c --arg id "$id" --arg file "$intent_file" --arg slug "$slug" --arg h "$harness" \
     --arg r "$repo_path" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     '.pm_started = ((.pm_started // {}) + {($id): {terminal:null, intent_file:$file, slug:$slug,
       harness:$h, repo:$r, at:$at, identity:null, state:"intent"}})' <<<"$ledger")"
-  afk_state_file_write "$ledger_path" "$ledger" || return 1
-  afk_state_file_write "$intent_file" "$intent" || return 1
+  afk_state_file_write "$ledger_path" "$ledger" || { afk_pcs_hold_start PM_LEDGER_WRITE_FAILED; return 1; }
+  afk_state_file_write "$intent_file" "$intent" || { afk_pcs_hold_start PM_INTENT_WRITE_FAILED; return 1; }
   printf -v command '%q --intent %q' "$bootstrap" "$intent_file"
   afk_orca_run pm-start-create -- terminal create --worktree "id:$observed_id" --title "$title" --command "$command" --json || true
+  code="${AFK_ORCA_CODE:-ORCA_CLI_FAILED}"
   created="$AFK_ORCA_OUT"
   terminal="$(jq -r '.result.terminal.handle // .handle // empty' <<<"$created" 2>/dev/null)"
-  [[ -n "$terminal" ]] || return 1
+  if [[ "$code" == ORCA_ERROR:* ]]; then
+    afk_pcs_row_end "$id" failed "$code" || {
+      afk_pcs_hold_start PM_LEDGER_WRITE_FAILED; return 1;
+    }
+    AFK_PCS_ACTION_OVERRIDE="queued: no PM (start retryable: $code)"
+    return 1
+  fi
+  if [[ "$code" != OK || -z "$terminal" ]]; then
+    [[ "$code" == OK ]] && code=PM_CREATE_HANDLE_MISSING
+    afk_pcs_hold_unresolved "$id" "$code"
+    return 1
+  fi
 
   # The row carries the terminal's identity tuple (AD-28 R4), or null when
   # Orca can't show it yet; the handle alone still blocks a second start.
@@ -311,7 +456,9 @@ afk_pcs_create_terminal() {
   if afk_orca_identity "$terminal" "$harness"; then identity="$AFK_ORCA_IDENTITY"; fi
   ledger="$(jq -c --arg id "$id" --arg t "$terminal" --argjson identity "$identity" \
     '.pm_started[$id] |= (. + {terminal:$t, identity:$identity, state:"created"})' <<<"$ledger")"
-  afk_state_file_write "$ledger_path" "$ledger" || return 1
+  afk_state_file_write "$ledger_path" "$ledger" || {
+    afk_pcs_hold_start PM_RECEIPT_WRITE_FAILED; return 1;
+  }
   return 0
 }
 

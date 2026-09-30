@@ -2117,5 +2117,44 @@ assert_eq "  ...no self-wake, nothing written, none marked for repair" \
   "$(grep -c -e '^POST' -e '^PATCH' "$LOG") $(jq -r '[.issues[] | select(.reblock_due != null)] | length' "$(LEDGER_OF)")" "0 0"
 
 # ===========================================================================
+head1 "Review M3: a closed issue reassigned during a pause is a new adoption"
+new_scenario closed_reassigned_paused
+write_config
+mkdir -p "$STATE/paperclip" "$HOME/.config/agent-flow-kit/paperclip" "$STATE/paperclip/notices/proj"
+: >"$HOME/.config/agent-flow-kit/paperclip/stop"
+old_notice="$STATE/paperclip/notices/proj/1700000000.000000001.$ISSUE1.claimed.json"
+old_brief="$STATE/paperclip/notices/proj/brief.$ISSUE1.1700000000.000000001.md"
+printf '{}\n' >"$old_notice"; printf 'old\n' >"$old_brief"
+jq -nc --arg id "$ISSUE1" --arg a "$AGENT1" --arg p "$PROJ1" --arg n "$old_notice" --arg b "$old_brief" \
+  '{issues:{($id):{host_agent_id:$a,paperclip_project_id:$p,slug:"proj",identifier:"PROJ-1",state:"closed",
+    since:"2026-01-01T00:00:00Z",claim:"confirmed",claim_attempted:true,claimed_notice:"written",
+    claimed_notice_path:$n,claimed_brief:"written",claimed_brief_path:$b,
+    claimed_notice_epoch:1700000000,claim_artifact_counter:1}},last_successful_pass:null}' \
+  >"$STATE/paperclip/ledger.json"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+route GET "/api/issues/$ISSUE1" 200 \
+  "{\"status\":\"in_progress\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"updatedAt\":\"2026-02-01T00:00:00Z\"}"
+route GET "/api/issues/$ISSUE1/active-run" 200 '{"id":"run-1"}'
+route PATCH "/api/issues/$ISSUE1" 200 '{}'
+route POST "/api/issues/$ISSUE1/comments" 201 '{}'
+route GET "/api/issues/$ISSUE1/comments" 200 '[]'
+run_afk --json
+LEDGER="$STATE/paperclip/ledger.json"
+assert_eq "M3 paused re-adoption clears old claim state" \
+  "$(jq -r --arg id "$ISSUE1" '.issues[$id] | "\(.state) \(.claim // "none") \(.claimed_notice // "none")"' "$LEDGER")" \
+  'pending_claim none none'
+rm -f "$HOME/.config/agent-flow-kit/paperclip/stop"
+run_afk --json
+assert_eq "M3 unpaused adoption posts a fresh claim" "$(grep -c 'claimed by AFK PM' "$BODYLOG")" 1
+assert_eq "M3 unpaused adoption writes a fresh notice" \
+  "$([[ "$(jq -r --arg id "$ISSUE1" '.issues[$id].claimed_notice_path' "$LEDGER")" != "$old_notice" ]] && echo yes)" yes
+assert_eq "M3 unpaused adoption writes a fresh brief" \
+  "$([[ "$(jq -r --arg id "$ISSUE1" '.issues[$id].claimed_brief_path' "$LEDGER")" != "$old_brief" ]] && echo yes)" yes
+
+if bash "$KIT_ROOT/tests/paperclip-claim-review-tests.sh"; then ok "review M1/M2 claim regressions"
+else bad "review M1/M2 claim regressions"; fi
+
+# ===========================================================================
 printf '\n\033[1m%d passed, %d failed\033[0m\n' "$PASS" "$FAIL"
 (( FAIL == 0 )) || exit 1

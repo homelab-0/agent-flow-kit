@@ -107,7 +107,9 @@ esac
 SH
 cat >"$STUBS/tr" <<'SH'
 #!/usr/bin/env bash
-if [[ "${KILL_POINT:-}" == notice && -e "$KILL_NOTICE_PATH" && ! -e "$KILL_BRIEF_PATH" ]]; then
+if [[ "${KILL_POINT:-}" == notice ]] &&
+   find "$KILL_NOTICE_PATH" -maxdepth 1 -name '*.claimed.json' -print -quit 2>/dev/null | grep -q . &&
+   ! find "$KILL_NOTICE_PATH" -maxdepth 1 -name 'brief.*.md' -print -quit 2>/dev/null | grep -q .; then
   : >"$KILL_MARKER"; while [[ -e "$KILL_MARKER" ]]; do sleep 0.05; done
 fi
 exec /usr/bin/tr "$@"
@@ -228,8 +230,8 @@ do_pass() { # a full claim-side pass adopting ISSUE1 fresh
 kill_pass_at() { # claim | notice | create; only kills the pass PID started here
   local point="$1" pass_pid seen=false i
   KILL_MARKER="$SCEN/kill-ready"
-  KILL_NOTICE_PATH="$STATE/paperclip/notices/proj/0.$ISSUE1.claimed.json"
-  KILL_BRIEF_PATH="$STATE/paperclip/notices/proj/brief.$ISSUE1.20260101000000.md"
+  KILL_NOTICE_PATH="$STATE/paperclip/notices/proj"
+  KILL_BRIEF_PATH="$KILL_NOTICE_PATH"
   env -i PATH="$STUBS:$PATH" HOME="$HOME" LANG=C \
     AFK_STATE_DIR="$STATE" AFK_PAPERCLIP_CONFIG="$CONFIG" AFK_HOST_CONFIG="$STUBS/host.json" \
     AFK_OP_BIN="$STUBS/op" AFK_CURL_BIN="$STUBS/curl" OP_SERVICE_ACCOUNT_TOKEN=test-op-token \
@@ -265,13 +267,13 @@ issue_route in_progress "$BOARD"
 do_pass
 assert_eq "none+Josh: pass exit 0" "$RC" "0"
 assert_eq "none+Josh: exactly one terminal create" "$(wc -l <"$ORCA_CREATE_LOG" | tr -d ' ')" "1"
-INTENT_FILE="$STATE/paperclip/pm-start-intents/proj.json"
+INTENT_FILE="$STATE/paperclip/pm-start-intents/proj.$ISSUE1.json"
 assert_contains "none+Josh: fixed instruction text present" "$(cat "$INTENT_FILE")" "You are the BMAD PM for project proj"
 assert_contains "none+Josh: the started PM is told to take by --slug" "$(cat "$INTENT_FILE")" "paperclip-take --slug proj"
 assert_contains "none+Josh: the terminal title names the slug" "$(cat "$ORCA_CREATE_LOG")" "PM proj (paperclip)"
 assert_absent "none+Josh: no issue title in the create argv" "$(cat "$ORCA_CREATE_LOG")" "T\""
 assert_absent "none+Josh: no issue description in the create argv" "$(cat "$ORCA_CREATE_LOG")" "\"D\""
-INTENT_FILE="$STATE/paperclip/pm-start-intents/proj.json"
+INTENT_FILE="$STATE/paperclip/pm-start-intents/proj.$ISSUE1.json"
 assert_absent "none+Josh: no issue title in the bootstrap intent" "$(cat "$INTENT_FILE" 2>/dev/null)" "\"T\""
 assert_absent "none+Josh: no issue description in the bootstrap intent" "$(cat "$INTENT_FILE" 2>/dev/null)" "\"D\""
 LEDGER="$STATE/paperclip/ledger.json"
@@ -631,6 +633,28 @@ run_afk paperclip-project list --json
 assert_contains "project list reports a failed Orca handshake" "$OUT_TEXT" "ORCA_CLI_NOT_RESOLVED"
 printf '{"orca_bin":"%s"}\n' "$STUBS/orca-cli" >"$STUBS/host.json"
 
+# The caller can run this Orca stub because its PATH has the helper. The
+# manager's PATH below omits it, so only the child-side handshake catches it.
+cat >"$STUBS/orca-needs-helper" <<'SH'
+#!/usr/bin/env bash
+[[ "${1:-}" == --version ]] || exit 1
+command -v orca-version-helper >/dev/null 2>&1 || exit 1
+printf '1.4.216\n'
+SH
+printf '#!/usr/bin/env bash\nexit 0\n' >"$STUBS/orca-version-helper"
+chmod +x "$STUBS/orca-needs-helper" "$STUBS/orca-version-helper"
+mgr_scenario mgr_orca_path
+envfile600 "$HOME/.op-agent-env"
+printf 'PATH=%s\nAFK_OP_BIN=%s\n' "$MGRBIN" "$STUBS/op" >"$SYSTEMCTL_SHOWENV"
+printf '{"orca_bin":"%s"}\n' "$STUBS/orca-needs-helper" >"$STUBS/host.json"
+run_afk paperclip-timer --install --json
+assert_contains "M5 manager PATH cannot run Orca: install refuses" "$OUT_TEXT" ORCA_CLI_NOT_RESOLVED
+run_afk paperclip-timer --status --json
+assert_contains "M5 manager PATH cannot run Orca: status reports reason" "$OUT_TEXT" ORCA_CLI_NOT_RESOLVED
+run_afk paperclip-project list --json
+assert_contains "M5 manager PATH cannot run Orca: list reports reason" "$OUT_TEXT" ORCA_CLI_NOT_RESOLVED
+printf '{"orca_bin":"%s"}\n' "$STUBS/orca-cli" >"$STUBS/host.json"
+
 mgr_scenario mgr_env_file
 envfile600 "$SCEN/mgr.env"
 printf 'PATH=%s\nAFK_OP_ENV_FILE=%s\n' "$STUBS:/usr/bin:/bin" "$SCEN/mgr.env" >"$SYSTEMCTL_SHOWENV"
@@ -732,7 +756,7 @@ for point in claim notice create; do
         "$(jq -r --arg id "$ISSUE1" '.pm_started[$id].state' "$STATE/paperclip/ledger.json")" intent
       assert_eq "create kill: the intent file path was journaled" \
         "$(jq -r --arg id "$ISSUE1" '.pm_started[$id].intent_file' "$STATE/paperclip/ledger.json")" \
-        "$STATE/paperclip/pm-start-intents/proj.json" ;;
+        "$STATE/paperclip/pm-start-intents/proj.$ISSUE1.json" ;;
   esac
   run_afk paperclip-poll --json
   assert_eq "$point replay: pass completes" "$RC" 0
@@ -751,8 +775,12 @@ for point in claim notice create; do
   assert_eq "$point replay: one pm_started row" \
     "$(jq '.pm_started | length' "$STATE/paperclip/ledger.json")" 1
   if [[ "$point" == create ]]; then
-    assert_eq "create replay: the join recovers the renamed terminal's handle" \
-      "$(jq -r --arg id "$ISSUE1" '.pm_started[$id].terminal' "$STATE/paperclip/ledger.json")" term-created-1
+    assert_eq "create replay: the join records a candidate, not an unproved receipt" \
+      "$(jq -r --arg id "$ISSUE1" '.pm_started[$id] | .state + "/" + (.terminal|tostring) + "/" + .candidate.handle' "$STATE/paperclip/ledger.json")" \
+      intent/null/term-created-1
+    assert_contains "create replay: the unresolved start is visible" \
+      "$(jq -r --arg id "$ISSUE1" '.issues[$id].action_text' "$STATE/paperclip/ledger.json")" \
+      'queued: no PM (start unresolved:'
   fi
   assert_eq "$point replay: claim confirmed by read-back" \
     "$(jq -r --arg id "$ISSUE1" '.issues[$id].claim' "$STATE/paperclip/ledger.json")" confirmed
@@ -780,6 +808,9 @@ reap_result="$(COUNT_FILE="$COUNT_FILE" REAP_START_FILE="$REAP_START_FILE" KIT_R
 assert_eq "refused reap: post-reap lookup runs" "$(cat "$COUNT_FILE")" 2
 assert_eq "refused reap: no terminal starts" "$([[ -e "$REAP_START_FILE" ]] && echo yes || echo no)" no
 assert_contains "refused reap: live owner remains authoritative" "$reap_result" PM_OWNER_LIVE
+
+if bash "$KIT_ROOT/tests/paperclip-pm-review-tests.sh"; then ok "review H1/H2/M4 regressions"
+else bad "review H1/H2/M4 regressions"; fi
 
 # ============================================================================
 assert_eq "the PATH decoy orca never ran" \

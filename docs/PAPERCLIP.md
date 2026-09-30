@@ -153,7 +153,7 @@ once with **`agent-flow-kit paperclip-config --migrate --project-id <uuid>
   (mode 600) before the atomic replace, and the result must pass the loader
   first.
 - Migration moves only the config. A pending notice under the old project
-  name in `notices/`, and any `pm-start-intents/<name>.json`, are not renamed
+  name in `notices/`, and any `pm-start-intents/<slug>.<issue-id>.json`, are not renamed
   to the slug; with no open issues there should be none.
 
 ### Repairing a v2 config the loader refuses
@@ -246,17 +246,20 @@ Paperclip while the local report keeps it.
 Under `$AFK_STATE_DIR/paperclip/notices/<slug>/`, one file per event,
 never rewritten: `claimed`, `promoted`, `human_commented`, `stopped`,
 `stranded`. A `claimed` notice also writes a
-`brief.<issue-id>.<updatedAt digits>.md` with the issue title and
-description; if the issue's `updatedAt` has no digits, the digits fall back
-to `0` so a replay uses the same path. A `human_commented` notice writes a
+`brief.<issue-id>.<epoch>.<counter>.md` with the issue title and
+description. The notice is named `<epoch>.<counter>.<issue-id>.claimed.json`;
+the counter keeps re-adoptions distinct and ordered within one second. A
+`human_commented` notice writes a
 `reply.<comment-id>.md` holding the comment body. Notices never carry Paperclip comment or issue text
 beyond what those two file types already declare.
 
 Before a claim comment is posted, the poller saves an issue ledger row with
 `claim: intent` and a pending flag. It marks the comment confirmed only after
 reading back the fixed claim body and marker from this host agent's comment.
-The claimed notice and brief each have a stable path and a ledger intent and
-receipt, so a killed pass resumes without writing a second artifact.
+The claimed notice and brief each have a full path in their ledger intent
+before the file write. Replay uses that exact path even if `updatedAt`
+changes. A definitely rejected claim POST clears its attempt flag for the
+next pass; an ambiguous POST or failed read-back holds with an action line.
 
 ## Refusal and pause reasons
 
@@ -697,10 +700,25 @@ no Paperclip issue title, description or comment ever reaches the terminal,
 the prompt, an argv, or the intent file. The Orca terminal nudge for a live
 PM is not implemented (Orca has no foreground-process check; see AD-7).
 The title is display text. Before `terminal create`, the poller saves the
-intent file and a `pm_started` ledger row naming it. After the create receipt,
-the row gains the handle and identity tuple. A replay checks the recorded
-intent and Orca liveness, and holds an unresolved create instead of starting
-another terminal.
+issue-specific intent file (`pm-start-intents/<slug>.<issue-id>.json`) and a
+`pm_started` ledger row naming it. After the create receipt, the row gains
+the handle and identity tuple. A rejected `ORCA_ERROR:*` create is marked
+retryable; the next pass can try again. A timeout, CLI failure or missing
+handle is uncertain: the poller holds the start with
+`queued: no PM (start unresolved: <code>)` and opens one NEEDS HUMAN issue
+after three passes. A worktree agent join can record a candidate for the
+operator, but cannot turn an unreceipted create into a confirmed PM.
+
+A prior start blocks another PM in the repo while its terminal is live,
+detached or unknown. Only Orca's positive stale proof ends that row and
+permits a new start. In particular, a changed Orca runtime id is **unknown**:
+it never triggers an automatic restart. For an unresolved row or runtime
+change, stop the timer, inspect the row's `intent_file`, `terminal`,
+`identity` and `candidate` in `paperclip/ledger.json`, and check Orca for
+the terminal. If the PM exists, restore its exact handle and identity. Only
+after independently proving that no create took effect, mark the row
+`state: "failed"` and remove its issue-specific intent file, then restart the
+timer. Keep the ledger backup until the next pass confirms the result.
 
 ## `agent-flow-kit paperclip-timer --install|--remove|--status [--json]`
 

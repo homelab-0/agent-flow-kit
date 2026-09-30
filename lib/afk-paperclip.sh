@@ -398,29 +398,30 @@ afk_pc_project_row() {
 }
 
 # --- notices (AC-6) ----------------------------------------------------------
-afk_pc_notice() { # <slug> <issue_id> <identifier> <host_agent_id> <repo_path> <harness> <event> [<extra-json>]
-  local dir="$AFK_STATE_DIR/paperclip/notices/$1" epoch payload extra="${8:-}"
+afk_pc_notice() { # <slug> <issue_id> <identifier> <host_agent_id> <repo_path> <harness> <event> [<extra-json>] [<chosen-path>]
+  local dir="$AFK_STATE_DIR/paperclip/notices/$1" epoch payload extra="${8:-}" target="${9:-}"
   [[ -n "$extra" ]] || extra='{}'
   afk_pc_slug_ok "$1" || return 1 # never a path from anything but a config slug
   afk_state_dir_ensure "$dir"
-  # The claimed path is stable across a killed pass and its replay.
-  if [[ "$7" == claimed ]]; then epoch=0; else epoch="$(date +%s)"; fi
+  epoch="$(date +%s)"
+  [[ -n "$target" ]] || target="$dir/$epoch.$2.$7.json"
   payload="$(jq -nc --arg id "$2" --arg identifier "$3" --arg agent "$4" --arg slug "$1" \
     --arg repo "$5" --arg harness "$6" --arg event "$7" \
     --arg time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson extra "$extra" \
     '{id: $id, identifier: $identifier, host_agent_id: $agent, slug: $slug,
       repo_path: $repo, harness: $harness, event: $event, time: $time} + $extra')"
-  afk_state_file_write "$dir/$epoch.$2.$7.json" "$payload"
+  afk_state_file_write "$target" "$payload"
 }
 
-afk_pc_brief() { # <slug> <issue_id> <updated_at> <title> <description>
-  local dir="$AFK_STATE_DIR/paperclip/notices/$1" digits
+afk_pc_brief() { # <slug> <issue_id> <updated_at> <title> <description> [<chosen-path>]
+  local dir="$AFK_STATE_DIR/paperclip/notices/$1" digits target="${6:-}"
   afk_pc_slug_ok "$1" || return 1
   afk_state_dir_ensure "$dir"
   digits="$(tr -cd '0-9' <<<"$3")"
   # A stable fallback lets a killed pass find the same brief on replay.
   [[ -n "$digits" ]] || digits=0
-  afk_state_file_write "$dir/brief.$2.$digits.md" "# $4"$'\n\n'"$5"
+  [[ -n "$target" ]] || target="$dir/brief.$2.$digits.md"
+  afk_state_file_write "$target" "# $4"$'\n\n'"$5"
 }
 
 afk_pc_reply() { # <slug> <comment_id> <body>
@@ -743,7 +744,7 @@ afk_pc_marker_seen() {
 # attempted POST is uncertainty, not permission to post again. Only a comment
 # authored by this host agent clears pending, including after a killed pass.
 afk_pc_claim_comment() {
-  local marker body rc=0 attempted
+  local marker body rc=0 attempted posted status outcome
   marker="claimed by AFK PM ($host_name)"$'\n\n'"<!-- afk-claim:$id -->"
   body="$marker"
   if ! jq -e --arg id "$id" '.issues[$id].claim != null' <<<"$ledger" >/dev/null; then
@@ -760,42 +761,78 @@ afk_pc_claim_comment() {
       afk_state_file_write "$ledger_path" "$ledger"
       return $?
     fi
+    actions="$(jq -c --arg t "claim read-back unresolved, held: $identifier" '. + [$t]' <<<"$actions")"
     return 1
   fi
   ledger="$(jq -c --arg id "$id" '.issues[$id].claim_attempted = true' <<<"$ledger")"
   afk_state_file_write "$ledger_path" "$ledger" || return 1
-  afk_pc_comment "$api_url" "$id" "$key" "${run_id:-}" "$body" >/dev/null
+  posted="$(afk_pc_comment "$api_url" "$id" "$key" "${run_id:-}" "$body")"
+  status="${posted%%$'\n'*}"
+  outcome="$(afk_pc_entry_outcome "$status")"
+  case "$outcome" in
+    credential | conflict | dead | backoff | gone)
+      # The server rejected the POST. This is a known non-effect, so the
+      # durable attempt may be cleared and the next pass may retry it.
+      ledger="$(jq -c --arg id "$id" '.issues[$id].claim_attempted = false' <<<"$ledger")"
+      afk_state_file_write "$ledger_path" "$ledger" || return 1
+      actions="$(jq -c --arg t "claim POST rejected ($status), retrying: $identifier" '. + [$t]' <<<"$actions")"
+      [[ "$outcome" == credential || "$outcome" == backoff ]] && AFK_PC_ABORT=true
+      return 1 ;;
+  esac
   rc=0
   afk_pc_marker_seen "$api_url" "$key" "$id" "$marker" "$agent_id" || rc=$?
   if (( rc == 0 )); then
     ledger="$(jq -c --arg id "$id" '.issues[$id].claim = "confirmed" |
       del(.issues[$id].claim_comment_pending)' <<<"$ledger")"
     afk_state_file_write "$ledger_path" "$ledger"
+  else
+    actions="$(jq -c --arg t "claim read-back unresolved, held: $identifier" '. + [$t]' <<<"$actions")"
   fi
   return 0
 }
 
-# Both artifacts have stable paths. Their intent and receipt are journaled,
-# and the file's presence resolves a crash between the write and receipt.
+# Both paths are chosen once and saved before their writes. The epoch and
+# per-issue counter keep a re-adoption distinct and ordered even in one second.
 afk_pc_claim_artifacts() {
-  local notice_path brief_path digits
-  notice_path="$AFK_STATE_DIR/paperclip/notices/$slug/0.$id.claimed.json"
-  digits="$(tr -cd '0-9' <<<"$updated")"
-  [[ -n "$digits" ]] || digits=0
-  brief_path="$AFK_STATE_DIR/paperclip/notices/$slug/brief.$id.$digits.md"
+  local notice_path brief_path epoch old_epoch counter serial dir
+  dir="$AFK_STATE_DIR/paperclip/notices/$slug"
   if ! jq -e --arg id "$id" '.issues[$id].claimed_notice == "written"' <<<"$ledger" >/dev/null; then
-    ledger="$(jq -c --arg id "$id" --arg p "$notice_path" '.issues[$id].claimed_notice = "intent" |
-      .issues[$id].claimed_notice_path = $p' <<<"$ledger")"
+    notice_path="$(jq -r --arg id "$id" '.issues[$id].claimed_notice_path // empty' <<<"$ledger")"
+    if [[ -z "$notice_path" ]]; then
+      epoch="$(date +%s)"
+      old_epoch="$(jq -r --arg id "$id" '.issues[$id].claimed_notice_epoch // 0' <<<"$ledger")"
+      [[ "$old_epoch" =~ ^[0-9]+$ ]] || old_epoch=0
+      (( epoch < old_epoch )) && epoch="$old_epoch"
+      counter="$(jq -r --arg id "$id" '.issues[$id].claim_artifact_counter // 0' <<<"$ledger")"
+      [[ "$counter" =~ ^[0-9]+$ ]] || counter=0
+      counter=$((counter + 1))
+      serial="$(printf '%09d' "$counter")"
+      # Issue ids are hexadecimal; the z prefix places a same-second new
+      # claim after an earlier stopped notice in the PM's filename walk.
+      notice_path="$dir/$epoch.z$serial.$id.claimed.json"
+      ledger="$(jq -c --arg id "$id" --arg p "$notice_path" --argjson e "$epoch" --argjson c "$counter" \
+        '.issues[$id] |= (. + {claimed_notice:"intent",claimed_notice_path:$p,claimed_notice_epoch:$e,claim_artifact_counter:$c})' <<<"$ledger")"
+    else
+      ledger="$(jq -c --arg id "$id" '.issues[$id].claimed_notice = "intent"' <<<"$ledger")"
+    fi
     afk_state_file_write "$ledger_path" "$ledger" || return 1
-    [[ -e "$notice_path" ]] || afk_pc_notice "$slug" "$id" "$identifier" "$agent_id" "$repo_path" "$harness" claimed || return 1
+    [[ -e "$notice_path" ]] || afk_pc_notice "$slug" "$id" "$identifier" "$agent_id" "$repo_path" "$harness" claimed '{}' "$notice_path" || return 1
     ledger="$(jq -c --arg id "$id" '.issues[$id].claimed_notice = "written"' <<<"$ledger")"
     afk_state_file_write "$ledger_path" "$ledger" || return 1
   fi
   if ! jq -e --arg id "$id" '.issues[$id].claimed_brief == "written"' <<<"$ledger" >/dev/null; then
+    brief_path="$(jq -r --arg id "$id" '.issues[$id].claimed_brief_path // empty' <<<"$ledger")"
+    if [[ -z "$brief_path" ]]; then
+      epoch="$(jq -r --arg id "$id" '.issues[$id].claimed_notice_epoch // empty' <<<"$ledger")"
+      counter="$(jq -r --arg id "$id" '.issues[$id].claim_artifact_counter // empty' <<<"$ledger")"
+      [[ "$epoch" =~ ^[0-9]+$ && "$counter" =~ ^[0-9]+$ ]] || return 1
+      serial="$(printf '%09d' "$counter")"
+      brief_path="$dir/brief.$id.$epoch.$serial.md"
+    fi
     ledger="$(jq -c --arg id "$id" --arg p "$brief_path" '.issues[$id].claimed_brief = "intent" |
       .issues[$id].claimed_brief_path = $p' <<<"$ledger")"
     afk_state_file_write "$ledger_path" "$ledger" || return 1
-    [[ -e "$brief_path" ]] || afk_pc_brief "$slug" "$id" "$updated" "$title" "$desc" || return 1
+    [[ -e "$brief_path" ]] || afk_pc_brief "$slug" "$id" "$updated" "$title" "$desc" "$brief_path" || return 1
     ledger="$(jq -c --arg id "$id" '.issues[$id].claimed_brief = "written"' <<<"$ledger")"
     afk_state_file_write "$ledger_path" "$ledger" || return 1
   fi
@@ -952,6 +989,7 @@ afk_pc_report_cycle() {
   # AC-10: the claim comment for an issue adopted during a pause.
   if [[ "$claim_pending" == true ]]; then
     afk_pc_claim_comment || true
+    [[ "$AFK_PC_ABORT" == true ]] && return 0
   fi
   # F7: a resume says so once; the flag stays until the comment lands.
   if [[ "$due" == resume ]]; then
@@ -1150,14 +1188,17 @@ afk_pc_scan_comments() {
 }
 
 # afk_pc_pin_new -- F6: pin a freshly resolved issue to its project as
-# pending_claim; only `since` survives from an older row.
+# pending_claim. Carry only ordering fields; claim receipts belong to one
+# adoption and must be reset when a closed issue returns.
 afk_pc_pin_new() {
   local since; since="$(jq -r --arg id "$id" '.issues[$id].since // empty' <<<"$ledger")"
   [[ -n "$since" ]] || since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   ledger="$(jq -c --arg id "$id" --arg a "$agent_id" --arg s "$slug" --arg p "$resolved_pid" --arg ident "$identifier" \
     --arg t "$(afk_pc_action_text none "" "" "")" --arg since "$since" \
     '.issues[$id] = {host_agent_id:$a, paperclip_project_id:$p, slug:$s, identifier:$ident,
-       since:$since, state:"pending_claim", action_text:$t}' <<<"$ledger")"
+       since:$since, state:"pending_claim", action_text:$t,
+       claimed_notice_epoch:(.issues[$id].claimed_notice_epoch // 0),
+       claim_artifact_counter:(.issues[$id].claim_artifact_counter // 0)}' <<<"$ledger")"
 }
 
 # afk_pc_claim <set-queue-text:true|false> -- the claim of a pending_claim
@@ -1360,6 +1401,7 @@ afk_cmd_paperclip_poll() { # <json_mode>
       if [[ -n "$prev" ]] && jq -e '.claim_comment_pending == true and .claim_attempted == true' \
           <<<"$prev" >/dev/null 2>&1; then
         afk_pc_claim_comment || true
+        [[ "${AFK_PC_ABORT:-false}" == true ]] && break
         prev="$(jq -c --arg id "$id" '.issues[$id] // empty' <<<"$ledger")"
       fi
 
@@ -1513,6 +1555,7 @@ afk_cmd_paperclip_poll() { # <json_mode>
             # pending_claim, not working, so the PM never hears about it until
             # the first unpaused pass runs the real claim below.
             if [[ -z "$prev" ]]; then
+              afk_pc_pin_new
               new_state="pending_claim"
             else
               new_state="$prior_state_ip"
@@ -1523,6 +1566,7 @@ afk_cmd_paperclip_poll() { # <json_mode>
           elif [[ -z "$prev" || "$prior_state_ip" == pending_claim ]]; then
             [[ -n "$prev" ]] || afk_pc_pin_new
             afk_pc_claim_comment || true
+            [[ "${AFK_PC_ABORT:-false}" == true ]] && break
             claim_started_this_pass[$id]=1
             afk_pc_claim_artifacts || continue
             if (( used_slots_s >= max_active || host_used >= host_max )); then
@@ -1591,7 +1635,7 @@ afk_cmd_paperclip_poll() { # <json_mode>
           # The project is pinned here, at first adoption (F6).
           ledger="$(jq -c --arg id "$id" --arg a "$agent_id" --arg s "$slug" --arg p "$resolved_pid" --arg ident "$identifier" \
             --arg st "$new_state" --arg since "$since" --arg act "$action" --argjson fresh "$fresh" \
-            '.issues[$id] = ((.issues[$id] // {} | if $fresh then {since, claim, claim_attempted, claim_comment_pending, claimed_notice, claimed_notice_path, claimed_brief, claimed_brief_path} else . end) + {host_agent_id:$a, paperclip_project_id:$p, slug:$s, identifier:$ident, state:$st, since:$since, action_text:$act, action_text_applied:$act}
+            '.issues[$id] = ((.issues[$id] // {} | if $fresh then {since, claim, claim_attempted, claim_comment_pending, claimed_notice, claimed_notice_path, claimed_brief, claimed_brief_path, claimed_notice_epoch, claim_artifact_counter} else . end) + {host_agent_id:$a, paperclip_project_id:$p, slug:$s, identifier:$ident, state:$st, since:$since, action_text:$act, action_text_applied:$act}
                | del(.fixed_text, .refusal_code) | if .state | IN("stranded", "held_by_board") then . else del(.resume_state) end)' \
             <<<"$ledger")"
 
