@@ -3847,7 +3847,12 @@ head1 "28. Orca resolver gate — tests/orca-resolver-tests.sh"
 run_gate "Orca resolver gate" "$KIT_ROOT/tests/orca-resolver-tests.sh"
 
 # ===========================================================================
-head1 "29. make-stamp override pool gate — tests/make-stamp-override-tests.sh"
+head1 "29. Orca contract gate — tests/orca-contract-tests.sh"
+# The bounded, read-only registry contract and the command/flag coverage check.
+run_gate "Orca contract gate" "$KIT_ROOT/tests/orca-contract-tests.sh"
+
+# ===========================================================================
+head1 "30. make-stamp override pool gate — tests/make-stamp-override-tests.sh"
 # ===========================================================================
 # An override takes its entitlement pool from the trusted catalog: fixture
 # catalog, --response mode, no network.

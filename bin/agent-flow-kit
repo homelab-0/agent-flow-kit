@@ -37,7 +37,7 @@ AFK_LIB_DIR="${AFK_LIB_DIR:-$AFK_INSTALL_ROOT/lib}"
 # A missing or unreadable library is an internal failure with a stable message
 # and the usage exit code — never a partially loaded lifecycle that answers
 # questions with whichever functions happened to load.
-for _afk_lib in afk-common afk-orca afk-source afk-inventory afk-readiness afk-monitor afk-commands afk-plan afk-mutate afk-usage afk-auto-update afk-catalog-sync afk-paperclip afk-pm-registry afk-paperclip-report afk-paperclip-plan afk-paperclip-start afk-paperclip-project afk-accept; do
+for _afk_lib in afk-common afk-orca afk-orca-verify afk-source afk-inventory afk-readiness afk-monitor afk-commands afk-plan afk-mutate afk-usage afk-auto-update afk-catalog-sync afk-paperclip afk-pm-registry afk-paperclip-report afk-paperclip-plan afk-paperclip-start afk-paperclip-project afk-accept; do
   if [[ ! -r "$AFK_LIB_DIR/$_afk_lib.sh" ]]; then
     printf 'agent-flow-kit: internal error: required library %s.sh is missing or unreadable under %s\n' \
       "$_afk_lib" "$AFK_LIB_DIR" >&2
@@ -49,6 +49,7 @@ unset _afk_lib
 # shellcheck source=lib/afk-common.sh
 # shellcheck disable=SC1090,SC1091
 . "$AFK_LIB_DIR/afk-common.sh"
+. "$AFK_LIB_DIR/afk-orca-verify.sh"
 # shellcheck source=lib/afk-source.sh
 # shellcheck disable=SC1090,SC1091
 . "$AFK_LIB_DIR/afk-source.sh"
@@ -253,6 +254,11 @@ agent-flow-kit — lifecycle entry point
       manifest. Observes and proves; never repairs, never activates
       orchestration. Without --live it probes no live service.
       Options: --json --live --synthetic-route --stamp <path> --target <id>
+
+  agent-flow-kit orca-verify --contract [--json]
+      Check the checked-in Orca command and flag contract against one bounded
+      agent-context registry read. Exit 0 pass, 2 missing item, 3 reappeared
+      known defect, 4 Orca unavailable, 5 invalid contract or registry.
 
   agent-flow-kit monitor [options]
       The durable worker-completion watch. Without an action verb it reports
@@ -559,6 +565,26 @@ afk_main() {
 
   cmd="${1:-help}"
   if (( $# > 0 )); then shift; fi
+
+  if [[ "$cmd" == orca-verify ]]; then
+    local contract_json=false
+    if (( $# == 1 )) && [[ "$1" == --contract ]]; then :
+    elif (( $# == 2 )) && [[ "$1" == --contract && "$2" == --json ]]; then contract_json=true
+    else
+      afk_warn "orca-verify requires --contract and accepts only optional --json"
+      return "$AFK_EXIT_USAGE"
+    fi
+    afk_orca_contract_check
+    local verify_rc=$?
+    if [[ "$contract_json" == true ]]; then
+      printf '%s\n' "$AFK_ORCA_VERIFY_JSON"
+    elif (( verify_rc == 0 )); then
+      printf 'Orca contract check passed.\n'
+    else
+      printf 'Orca contract check failed: %s.\n' "$AFK_ORCA_VERIFY_CLASS" >&2
+    fi
+    return "$verify_rc"
+  fi
 
   case "$cmd" in
     help|-h|--help)
