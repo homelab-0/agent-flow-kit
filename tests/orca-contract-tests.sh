@@ -86,6 +86,14 @@ jq '(.known_defects[0].id)=""' "$TMP/contract.json" >"$TMP/changed" && mv "$TMP/
 afk_orca_contract_check; eq 'empty defect id is invalid contract' "$?" 5
 eq 'empty defect id class' "$AFK_ORCA_VERIFY_CLASS" INVALID_CONTRACT
 cp "$ROOT/lifecycle/orca-contract.json" "$TMP/contract.json"
+jq '(.known_defects[0].id)="defect.capabilites-command"' "$TMP/contract.json" >"$TMP/changed" && mv "$TMP/changed" "$TMP/contract.json"
+afk_orca_contract_check; eq 'typo defect id is invalid contract' "$?" 5
+eq 'typo defect id class' "$AFK_ORCA_VERIFY_CLASS" INVALID_CONTRACT
+cp "$ROOT/lifecycle/orca-contract.json" "$TMP/contract.json"
+jq '.known_defects[1].id=.known_defects[0].id' "$TMP/contract.json" >"$TMP/changed" && mv "$TMP/changed" "$TMP/contract.json"
+afk_orca_contract_check; eq 'duplicate defect id is invalid contract' "$?" 5
+eq 'duplicate defect id class' "$AFK_ORCA_VERIFY_CLASS" INVALID_CONTRACT
+cp "$ROOT/lifecycle/orca-contract.json" "$TMP/contract.json"
 
 # A bounded CLI timeout and an Orca error envelope are both unavailable, not
 # resolver failures; preserve the underlying reason in JSON.
@@ -113,7 +121,7 @@ files = [target] if target.is_file() else [
     p for p in target.rglob('*') if p.is_file() and p.suffix in ('.sh', '')
 ]
 known = {entry['command']: set(entry['flags']) for entry in contract['commands']}
-multiword_roots = {'skills', 'terminal', 'worktree', 'repo', 'orchestration'}
+roots = {'skills', 'terminal', 'worktree', 'repo', 'orchestration'}
 direct = {'afk_orca_run', 'orca_json', 'bounded_orca'}
 errors = []
 
@@ -131,94 +139,127 @@ def logical_lines(text):
     if pending:
         yield start, pending
 
-def shell_words(text):
+def words(text):
     try:
-        return [re.sub(r'[;&]+$', '', word) for word in shlex.split(text, comments=True)]
+        return shlex.split(text, comments=True)
     except ValueError:
         return []
 
-def command_and_flags(args):
-    args = [word for word in args if word not in (';', '&&', '||', '|', ')', '}')]
+def command_flags(args):
+    args = [x for x in args if x not in (';', '&&', '||', '|', ')', '}')]
     if not args or args[0].startswith('$'):
-        return None, []
-    if args[0] in multiword_roots:
-        if len(args) < 2 or args[1].startswith('-') or args[1].startswith('$'):
-            return ' '.join(args[:2]), []
+        return None, set()
+    if args[0] in roots:
+        if len(args) < 2 or args[1].startswith(('-', '$')):
+            return ' '.join(args[:2]), set()
         command, rest = ' '.join(args[:2]), args[2:]
     else:
         command, rest = args[0], args[1:]
-    flags = {word[2:] for word in rest if re.fullmatch(r'--[a-z][a-z0-9-]*', word)}
+    flags = {m.group(1) for x in rest if (m := re.match(r'^--([a-z][a-z0-9-]*)', x))}
     return command, flags
 
 def caller_function(lines, line_number):
-    current, answer = None, None
+    current = None
     for number, line in enumerate(lines, 1):
-        header = re.match(r'^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*\{\s*(?:#.*)?$', line)
+        header = re.match(r'^\s*([A-Za-z_]\w*)\s*\(\)\s*\{', line)
         if header:
             current = header.group(1)
         if number == line_number:
-            answer = current
-        if current and re.match(r'^\s*\}\s*$', line):
+            return current
+        if current and re.match(r'^\s*}\s*$', line):
             current = None
-    return answer
+    return None
 
-def invocation_args(words, index, name):
-    if name == 'afk_orca_run':
-        try: divider = words.index('--', index + 1)
-        except ValueError: return None
-        return words[divider + 1:]
-    return words[index + 1:]
-
-# Detect each forwarding function from its implementation. Call sites are then
-# checked using their literal arguments, after the wrapper's purpose argument.
 forwarders = set()
 for path in files:
     text = path.read_text(errors='ignore')
-    for match in re.finditer(r'(?ms)^([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*\{(.*?)(?=^\s*\})', text):
-        body = match.group(2)
-        if 'afk_orca_run' in body and re.search(r'"\$@"|\$\{@\}', body):
+    for match in re.finditer(r'(?ms)^([A-Za-z_]\w*)\s*\(\)\s*\{(.*?)(?=^\s*\})', text):
+        if 'afk_orca_run' in match.group(2) and re.search(r'"\$@"|\$\{@\}', match.group(2)):
             forwarders.add(match.group(1))
+wrappers = direct | forwarders
 
 defect_calls = []
 for defect in contract.get('known_defects', []):
-    fn = re.search(r'([A-Za-z_][A-Za-z0-9_]*)\s*\(', defect.get('where', ''))
-    command, flags = command_and_flags(shell_words(defect.get('call', '')))
+    fn = re.search(r'([A-Za-z_]\w*)\s*\(', defect.get('where', ''))
+    command, flags = command_flags(words(defect.get('call', '')))
     if fn and command:
         defect_calls.append((defect.get('id'), fn.group(1), command, flags))
 
 for path in files:
     physical = path.read_text(errors='ignore').splitlines()
-    for line_number, statement in logical_lines('\n'.join(physical)):
-        words = shell_words(statement)
-        if not words:
+    statements = list(logical_lines('\n'.join(physical)))
+    arrays = {}
+    for _, statement in statements:
+        match = re.search(r'\b([A-Za-z_]\w*)\s*(\+?=)\s*\((.*)\)', statement)
+        if not match:
             continue
-        if re.match(r'^\s*[A-Za-z_][A-Za-z0-9_]*\s*\(\)\s*\{', statement):
+        name, op, value = match.groups()
+        parts = words(value)
+        if any('$' in x and not re.fullmatch(r'\$[A-Za-z_]\w*', x) for x in parts):
+            arrays.pop(name, None)
             continue
-        call_indexes = [(i, word) for i, word in enumerate(words)
-                        if word in direct or word in forwarders]
-        for index, name in call_indexes:
-            args = invocation_args(words, index, name)
-            if args is None:
+        parts = [x for x in parts if x != ')']
+        if op == '+=':
+            if name in arrays:
+                arrays[name].extend(parts)
+            else:
+                arrays.pop(name, None)
+        else:
+            arrays[name] = parts
+    for line_number, statement in statements:
+        if re.match(r'^\s*[A-Za-z_]\w*\s*\(\)\s*\{', statement):
+            continue
+        uncommented = statement.split('#', 1)[0]
+        if re.match(r'^\s*(?:declare\s+-F|local\s+-F)\b', uncommented):
+            continue
+        pattern = r'(?<![A-Za-z0-9_])(' + '|'.join(map(re.escape, wrappers)) + r')(?![A-Za-z0-9_])'
+        for match in re.finditer(pattern, uncommented):
+            name = match.group(1)
+            prefix = uncommented[:match.start()]
+            if name == 'afk_orca_run' and caller_function(physical, line_number) in forwarders:
                 continue
+            if re.search(r'\bfunction\s*$', prefix) or re.search(r'\b[A-Za-z_]\w*\s*\(\s*$', prefix):
+                continue
+            tail = uncommented[match.end():]
+            tail = tail.split('|', 1)[0]
+            tail = re.sub(r'\)\s*"?\s*(?:\|\|.*)?$', '', tail)
+            argv = words(tail)
+            if name == 'afk_orca_run':
+                try:
+                    divider = argv.index('--')
+                except ValueError:
+                    if caller_function(physical, line_number) in forwarders:
+                        continue
+                    errors.append(f'{path}:{line_number}: unauditable afk_orca_run argv')
+                    continue
+                argv = argv[divider + 1:]
             if name in forwarders:
-                args = args[1:]  # first argument is the wrapper's purpose
-            command, flags = command_and_flags(args)
+                if not argv:
+                    errors.append(f'{path}:{line_number}: unauditable {name} argv')
+                    continue
+                argv = argv[1:]
+            if argv:
+                array = re.fullmatch(r'\$\{([A-Za-z_]\w*)\[@\]\}', argv[0])
+                if array:
+                    if array.group(1) not in arrays:
+                        errors.append(f'{path}:{line_number}: unauditable argv array {array.group(1)}')
+                        continue
+                    argv = arrays[array.group(1)] + argv[1:]
+            command, flags = command_flags(argv)
             if not command:
-                continue  # dynamic argv has no literal command to audit here
+                errors.append(f'{path}:{line_number}: unauditable Orca argv for {name}')
+                continue
             owner = caller_function(physical, line_number)
-            known_defect_call = any(
-                owner == fn and command == defect_command and flags == defect_flags
-                and (name not in forwarders or defect_id == 'defect.close-handle-durable')
-                for defect_id, fn, defect_command, defect_flags in defect_calls
-            )
-            contracted = known.get(command)
-            if contracted is None:
-                if not known_defect_call:
+            defect = next((item for item in defect_calls
+                           if owner == item[1] and command == item[2] and flags == item[3]
+                           and (name not in forwarders or item[0] == 'defect.close-handle-durable')), None)
+            if command not in known:
+                if not defect:
                     errors.append(f'{path}:{line_number}: unknown Orca command {command} (caller {owner})')
                 continue
-            if known_defect_call:
+            if defect:
                 continue
-            for flag in sorted(flags - contracted):
+            for flag in sorted(flags - known[command]):
                 errors.append(f'{path}:{line_number}: {command} --{flag}')
 if errors:
     print('\n'.join(errors))
@@ -246,6 +287,21 @@ orca_json terminal create --worktree "id:$selector" --title "$title" \
 SITE
 if coverage_check "$TMP/site.sh" "$TMP/contract-no-command-flag.json" >/dev/null 2>&1; then
   no 'coverage missed a flag on a continued dispatch-style call'
+else
+  ok
+fi
+cp "$ROOT/files/model-router/scripts/dispatch.sh" "$TMP/site.sh"
+if coverage_check "$TMP/site.sh" "$TMP/contract-no-command-flag.json" >/dev/null 2>&1; then
+  no 'coverage missed command-substitution terminal create --command call'
+else
+  ok
+fi
+cp "$ROOT/lifecycle/orca-contract.json" "$TMP/contract-no-send-flag.json"
+jq '(.commands[]|select(.command=="orchestration send").flags) |= map(select(.!="payload"))' \
+  "$TMP/contract-no-send-flag.json" >"$TMP/changed" && mv "$TMP/changed" "$TMP/contract-no-send-flag.json"
+cp "$ROOT/files/model-router/scripts/dispatch.sh" "$TMP/site.sh"
+if coverage_check "$TMP/site.sh" "$TMP/contract-no-send-flag.json" >/dev/null 2>&1; then
+  no 'coverage missed array-built dispatch send --payload call'
 else
   ok
 fi

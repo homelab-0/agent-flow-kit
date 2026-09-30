@@ -16,6 +16,14 @@ afk_orca_contract_check() {
       and all(.flags[]; type=="string" and length>0))
     and (.known_defects|type)=="array" and (.known_defects|length)>0
     and all(.known_defects[]; type=="object" and (.id|type)=="string" and (.id|length)>0)
+    and ([.known_defects[].id] | length == (unique|length))
+    and all(.known_defects[].id;
+      .=="defect.capabilities-command"
+      or .=="defect.close-handle-durable"
+      or .=="defect.terminal-status-field"
+      or .=="defect.dispatch-unwrapped"
+      or .=="defect.dispatch-orphaned-as-dead"
+      or .=="defect.invented-capability-names")
   ' "$contract" >/dev/null 2>&1; then
     AFK_ORCA_VERIFY_CLASS=INVALID_CONTRACT
     AFK_ORCA_VERIFY_JSON='{"ok":false,"class":"INVALID_CONTRACT","items":[]}'
