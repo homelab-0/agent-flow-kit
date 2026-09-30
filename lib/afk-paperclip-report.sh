@@ -97,8 +97,8 @@ afk_pcr_require_owner() {
   lookup="$(afk_pm_registry_lookup "$repo_path")"
   state="$(jq -r .state <<<"$lookup")"
   case "$state" in
-    live)
-      [[ "$terminal" == "$(jq -r .owner.terminal <<<"$lookup")" ]] && claim_terminal="$terminal" ;;
+    live | unknown)
+      afk_pmr_caller_owns "$lookup" "$terminal" && claim_terminal="$terminal" ;;
     handoff_in_progress | handoff_stalled)
       local succ; succ="$(jq -r '.handoff.successor.terminal // empty' <<<"$lookup")"
       [[ -n "$succ" && "$terminal" == "$succ" ]] && claim_terminal="$terminal" ;;

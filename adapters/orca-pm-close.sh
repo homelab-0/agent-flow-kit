@@ -97,7 +97,7 @@ else
   atomic_write_verified "$binding_file" "$binding" || exit 1
 fi
 
-afk_orca_run --bound 5 pm-close-list -- terminal list --worktree "id:$observed_id" --json || exit 1
+afk_orca_run --bound 5 pm-close-list -- terminal list --worktree "id:$observed_id" --limit "$AFK_ORCA_LIST_LIMIT" --json || exit 1
 listed="$AFK_ORCA_OUT"
 terminal_list_is_well_formed "$listed" || exit 1
 present=false
@@ -126,7 +126,7 @@ fi
 # close even on that path; only an accepted request followed by re-observed
 # absence is evidence the transition may consume.
 afk_orca_run pm-close-close -- terminal close --terminal "$terminal" --tab --json || exit 1
-afk_orca_run --bound 5 pm-close-list -- terminal list --worktree "id:$observed_id" --json || exit 1
+afk_orca_run --bound 5 pm-close-list -- terminal list --worktree "id:$observed_id" --limit "$AFK_ORCA_LIST_LIMIT" --json || exit 1
 listed="$AFK_ORCA_OUT"
 terminal_list_is_well_formed "$listed" || exit 1
 jq -e --arg t "$terminal" '[.result.terminals[]? | select(.handle==$t)]|length==0' <<<"$listed" >/dev/null 2>&1 || exit 1

@@ -34,6 +34,9 @@
 #                  the CLI printed (an {ok:false} envelope, when there is one)
 #   AFK_ORCA_RC    the CLI's exit status, 0 when it was never run
 # It returns 0 only when AFK_ORCA_CODE is OK.
+#
+# Identity and liveness (AD-28 R4, R5) are further down: afk_orca_identity
+# records a terminal's tuple, and afk_orca_terminal_state judges one.
 
 if [[ -n "${AFK_ORCA_SOURCED:-}" ]]; then
   return 0
@@ -173,4 +176,128 @@ afk_orca_run() {
 afk_orca_trace() { # <purpose> [detail]
   [[ "${AFK_ORCA_TRACE:-}" == 1 ]] || return 0
   printf 'afk-orca: %s %s rc=%s%s\n' "$1" "$AFK_ORCA_CODE" "$AFK_ORCA_RC" "${2:+ $2}" >&2
+}
+
+# --- Identity and liveness (AD-28 R4, R5) -------------------------------------
+# A recorded terminal is the tuple afk_orca_identity builds from `terminal
+# show`: {handle, runtime_id, execution_host_id, worktree_id, tab_id, leaf_id,
+# incarnation_id, agent_type, recorded_at}. Handles are only comparable inside
+# the runtime that issued them, so runtime_id travels with every handle.
+AFK_ORCA_LIST_LIMIT=1000
+
+# afk_orca_identity_from_show <show-json> <agent_type> -> the tuple, or fails.
+afk_orca_identity_from_show() {
+  jq -ce --arg a "$2" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+    def s: type=="string" and length>0;
+    def so: if type=="string" and length>0 then . else null end;
+    (._meta.runtimeId) as $rt | (.result.terminal // empty) as $t
+    | select(($rt|s) and ($t.handle|s) and ($t.tabId|s) and ($t.leafId|s) and ($a|s))
+    | {handle:$t.handle, runtime_id:$rt, execution_host_id:($t.executionHostId|so),
+       worktree_id:($t.worktreeId|so), tab_id:$t.tabId, leaf_id:$t.leafId,
+       incarnation_id:($t.incarnationId|so), agent_type:$a, recorded_at:$at}' <<<"$1" 2>/dev/null
+}
+
+# afk_orca_identity <handle> <agent_type>: sets AFK_ORCA_IDENTITY to the tuple
+# for a terminal Orca shows right now. Call it directly, never in $(...).
+afk_orca_identity() {
+  AFK_ORCA_IDENTITY=""
+  afk_orca_run afk-identity -- terminal show --terminal "$1" --json || return 1
+  AFK_ORCA_IDENTITY="$(afk_orca_identity_from_show "$AFK_ORCA_OUT" "$2")" || AFK_ORCA_IDENTITY=""
+  [[ -n "$AFK_ORCA_IDENTITY" ]]
+}
+
+# One snapshot per decision: the complete terminal list, its runtime id, and
+# (only when a join needs it) the worktree ps agent rows, projected at once to
+# {paneKey, agentType} so no prompt or reply text outlives the call (S-9).
+afk_orca_liveness_reset() {
+  _AFK_ORCA_LV_CODE=""; _AFK_ORCA_LV_RUNTIME=""; _AFK_ORCA_LV_TERMINALS=""
+  _AFK_ORCA_LV_AGENTS_CODE=""; _AFK_ORCA_LV_AGENTS=""; AFK_ORCA_LIST_CODE=""
+}
+afk_orca_liveness_reset
+
+# afk_orca_list_state: fills the list half of the snapshot and sets
+# AFK_ORCA_LIST_CODE: OK | ORCA_LIST_INCOMPLETE | ORCA_UNAVAILABLE. Call it
+# directly, never in $(...), so the snapshot stays cached in the caller.
+afk_orca_list_state() {
+  if [[ -z "$_AFK_ORCA_LV_CODE" ]]; then
+    _AFK_ORCA_LV_CODE="ORCA_UNAVAILABLE"
+    if afk_orca_run --bound 5 afk-liveness-list -- terminal list --limit "$AFK_ORCA_LIST_LIMIT" --json; then
+      # Every entry needs a string handle and boolean connected/orphaned, or
+      # the whole list is uncertainty, never "no terminals".
+      _AFK_ORCA_LV_TERMINALS="$(jq -ce '(.result // .) as $r
+        | select(($r|type)=="object" and ($r.terminals|type)=="array" and
+            all($r.terminals[]; type=="object" and (.handle|type)=="string" and (.handle|length)>0
+              and (.connected|type)=="boolean" and (.orphaned|type)=="boolean"))
+        | $r.terminals | map({handle, connected, orphaned})' <<<"$AFK_ORCA_OUT" 2>/dev/null)" \
+        && [[ -n "$_AFK_ORCA_LV_TERMINALS" ]] && _AFK_ORCA_LV_CODE="OK"
+      _AFK_ORCA_LV_RUNTIME="$(jq -r '._meta.runtimeId // empty | strings' <<<"$AFK_ORCA_OUT" 2>/dev/null)"
+    elif [[ "$AFK_ORCA_CODE" == ORCA_LIST_INCOMPLETE ]]; then
+      _AFK_ORCA_LV_CODE="ORCA_LIST_INCOMPLETE"
+    fi
+  fi
+  AFK_ORCA_LIST_CODE="$_AFK_ORCA_LV_CODE"
+  [[ "$AFK_ORCA_LIST_CODE" == OK ]]
+}
+
+afk_orca_agents_state() {
+  if [[ -z "$_AFK_ORCA_LV_AGENTS_CODE" ]]; then
+    _AFK_ORCA_LV_AGENTS_CODE="ORCA_UNAVAILABLE"
+    if afk_orca_run --bound 5 afk-liveness-agents -- worktree ps --limit "$AFK_ORCA_LIST_LIMIT" --json; then
+      _AFK_ORCA_LV_AGENTS="$(jq -ce --arg rt "$_AFK_ORCA_LV_RUNTIME" '
+        select(._meta.runtimeId==$rt and (.result.worktrees|type)=="array")
+        | [.result.worktrees[] | (.agents // [])[] | objects
+           | {paneKey, agentType} | select((.paneKey|type)=="string")]' <<<"$AFK_ORCA_OUT" 2>/dev/null)" \
+        && [[ -n "$_AFK_ORCA_LV_AGENTS" ]] && _AFK_ORCA_LV_AGENTS_CODE="OK"
+    elif [[ "$AFK_ORCA_CODE" == ORCA_LIST_INCOMPLETE ]]; then
+      _AFK_ORCA_LV_AGENTS_CODE="ORCA_LIST_INCOMPLETE"
+    fi
+    AFK_ORCA_OUT="" # the raw payload carries conversation text
+  fi
+  [[ "$_AFK_ORCA_LV_AGENTS_CODE" == OK ]]
+}
+
+# afk_orca_terminal_state <tuple-json>: sets AFK_ORCA_TERMINAL_STATE to one of
+# live | detached | disconnected | stale | unknown, and AFK_ORCA_TERMINAL_REASON
+# (null for live). Call it directly. `orphaned` alone never yields stale.
+afk_orca_terminal_state() {
+  local tuple="$1" handle runtime pane agent entry shown_rt
+  AFK_ORCA_TERMINAL_STATE="unknown"; AFK_ORCA_TERMINAL_REASON="PM_IDENTITY_UNRECORDED"
+  jq -e 'def s: type=="string" and length>0;
+    (.handle|s) and (.runtime_id|s) and (.tab_id|s) and (.leaf_id|s) and (.agent_type|s)' \
+    <<<"$tuple" >/dev/null 2>&1 || return 0
+  handle="$(jq -r .handle <<<"$tuple")"; runtime="$(jq -r .runtime_id <<<"$tuple")"
+  pane="$(jq -r '.tab_id + ":" + .leaf_id' <<<"$tuple")"; agent="$(jq -r .agent_type <<<"$tuple")"
+
+  afk_orca_list_state || { AFK_ORCA_TERMINAL_REASON="$AFK_ORCA_LIST_CODE"; return 0; }
+  if [[ -z "$_AFK_ORCA_LV_RUNTIME" ]]; then AFK_ORCA_TERMINAL_REASON="ORCA_UNAVAILABLE"; return 0; fi
+  # A different runtime reissued every handle: absence proves nothing (OQ-2).
+  if [[ "$_AFK_ORCA_LV_RUNTIME" != "$runtime" ]]; then AFK_ORCA_TERMINAL_REASON="PM_RUNTIME_MISMATCH"; return 0; fi
+
+  entry="$(jq -c --arg h "$handle" 'map(select(.handle==$h)) | .[0] // empty' <<<"$_AFK_ORCA_LV_TERMINALS")"
+  if [[ -z "$entry" ]]; then
+    # Stale needs the handle-specific proof as well as absence from a
+    # complete list in the same runtime.
+    afk_orca_run afk-liveness-show -- terminal show --terminal "$handle" --json
+    shown_rt="$(jq -r '._meta.runtimeId // empty | strings' <<<"$AFK_ORCA_OUT" 2>/dev/null)"
+    if [[ "$AFK_ORCA_CODE" == "ORCA_ERROR:terminal_handle_stale" && "$shown_rt" == "$runtime" ]]; then
+      AFK_ORCA_TERMINAL_STATE="stale"; AFK_ORCA_TERMINAL_REASON="PM_TERMINAL_STALE"
+    else
+      AFK_ORCA_TERMINAL_REASON="PM_TERMINAL_UNPROVEN"
+    fi
+    return 0
+  fi
+  if jq -e '.connected==false' <<<"$entry" >/dev/null; then
+    AFK_ORCA_TERMINAL_STATE="disconnected"; AFK_ORCA_TERMINAL_REASON="PM_OWNER_DISCONNECTED"; return 0
+  fi
+  if jq -e '.orphaned==true' <<<"$entry" >/dev/null; then
+    AFK_ORCA_TERMINAL_STATE="detached"; AFK_ORCA_TERMINAL_REASON="PM_TERMINAL_DETACHED"; return 0
+  fi
+  afk_orca_agents_state || { AFK_ORCA_TERMINAL_REASON="$_AFK_ORCA_LV_AGENTS_CODE"; return 0; }
+  # Only an exact pane key counts; re-attached PTYs can report pty:N:pty:N.
+  if jq -e --arg p "$pane" --arg a "$agent" 'any(.[]; .paneKey==$p and .agentType==$a)' \
+    <<<"$_AFK_ORCA_LV_AGENTS" >/dev/null; then
+    AFK_ORCA_TERMINAL_STATE="live"; AFK_ORCA_TERMINAL_REASON="null"
+  else
+    AFK_ORCA_TERMINAL_STATE="detached"; AFK_ORCA_TERMINAL_REASON="PM_TERMINAL_DETACHED"
+  fi
 }

@@ -311,8 +311,8 @@ agent-flow-kit — lifecycle entry point
       Paperclip. Never loops, sleeps or waits. See docs/PAPERCLIP.md.
 
   agent-flow-kit pm-registry-reap --scope <key> [--json]
-      Re-check one PM scope's own staleness, refuse with PM_OWNER_LIVE unless
-      it is provably stale, then move its ownership.json to pm/reaped/ and
+      Re-check one PM scope's own staleness, refuse with PM_OWNER_LIVE or
+      PM_OWNER_UNKNOWN unless it is provably stale, then move its ownership.json to pm/reaped/ and
       return its claimed Paperclip notices to their project slug. Never touches a
       live scope or one with a handoff in progress, and never reaps on an
       Orca outage. Calls no LLM.

@@ -1682,6 +1682,21 @@ else no "replacement receipt replays before the caller ledger is durable"; fi
 eq "pre-ledger replay creates no duplicate successor" \
   "$(grep -c '^terminal create ' "$TMP/orca-log" || true)" "$before_preledger_replay_creates"
 
+# orphaned:true means the tab lost its pane, not that the successor died
+# (AD-28 R5). A connected, orphaned successor is replayed as-is: never closed,
+# never replaced.
+jq 'map(if .handle=="replacement-terminal" then .orphaned=true else . end)' \
+  "$orca_terminals" >"$orca_terminals.tmp"; mv "$orca_terminals.tmp" "$orca_terminals"; cp "$orca_terminals" "$orca_bound"
+before_orphan_closes="$(grep -c '^terminal close ' "$TMP/orca-log" || true)"
+orphan_replay="$(env "${orca_env[@]}" "$ROOT/adapters/orca-pm-successor.sh" "$launch_pm/intent.json" pm-launch)"
+if jq -e '.accepted==true and .terminal=="replacement-terminal"' <<<"$orphan_replay" >/dev/null; then
+  ok "an orphaned live successor is kept on replay"
+else no "an orphaned live successor is kept on replay"; fi
+eq "  ...it is never closed" "$(grep -c '^terminal close ' "$TMP/orca-log" || true)" "$before_orphan_closes"
+eq "  ...and never replaced" "$(grep -c '^terminal create ' "$TMP/orca-log" || true)" "$before_preledger_replay_creates"
+jq 'map(if .handle=="replacement-terminal" then .orphaned=false else . end)' \
+  "$orca_terminals" >"$orca_terminals.tmp"; mv "$orca_terminals.tmp" "$orca_terminals"; cp "$orca_terminals" "$orca_bound"
+
 # The consumed first-generation journal cannot poison a later death.  The next
 # source gets its own generation-bound close and create attempt.
 jq 'map(if .handle=="replacement-terminal" then .status="exited"|.connected=false else . end)' \

@@ -63,7 +63,7 @@ resolve_role() {
   # jq variables in the single-quoted program are not shell expansions.
   # shellcheck disable=SC2016
   bounded_jq -e --arg h "$HARNESS" --arg s "$AFK_RUNTIME_SESSION_ID" --arg t "$ORCA_TERMINAL_HANDLE" --arg p "$here" '
-    .schema=="afk-pm-ownership/2" and .owned==true and .role=="PM" and .harness==$h and .session==$s
+    (.schema|IN("afk-pm-ownership/2","afk-pm-ownership/3")) and .owned==true and .role=="PM" and .harness==$h and .session==$s
     and .terminal==$t and .worktree.path==$p and (.worktree.id|type)=="string" and (.worktree.id|length)>0
     ' "$pm_dir/ownership.json" >/dev/null 2>&1 && ROLE=pm
   return 0
