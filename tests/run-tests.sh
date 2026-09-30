@@ -238,6 +238,7 @@ SC_SCRIPTS=("$DISPATCH" "$MAKE_STAMP" "$USAGE_CHECK" "$GH_HEALTH" \
 # or unassigned (SC2154) to a single-file analysis. `set -u` in the entry point
 # is the real guard against an unset read.
 SC_LIFECYCLE=("$KIT_ROOT/bin/agent-flow-kit" "$KIT_ROOT/lib/afk-common.sh" "$KIT_ROOT/lib/afk-orca.sh" \
+              "$KIT_ROOT/lib/afk-orca-verify.sh" "$KIT_ROOT/tests/orca-contract-tests.sh" \
               "$KIT_ROOT/lib/afk-source.sh" "$KIT_ROOT/lib/afk-inventory.sh" \
               "$KIT_ROOT/lib/afk-readiness.sh" "$KIT_ROOT/lib/afk-monitor.sh" \
               "$KIT_ROOT/lib/afk-commands.sh" \
