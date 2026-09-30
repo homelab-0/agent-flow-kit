@@ -319,7 +319,7 @@ afk_pcs_registry_owns_handle() { # <handle>
 # that terminal. Only ORCA-2's positive stale proof lets a different issue
 # start in the same repo; the original issue stays held after its one start.
 afk_pcs_existing_start() {
-  local row tuple intent_file intent_wt intent_repo ps_runtime agents handle candidate="" matches=0 code
+  local row tuple intent_file intent_wt intent_repo repo_real ps_runtime agents handle candidate="" matches=0 code
   row="$(jq -c --arg id "$id" '.pm_started[$id] // empty' <<<"$ledger")"
   [[ -n "$row" ]] || return 1
   case "$(jq -r '.state // empty' <<<"$row")" in
@@ -370,7 +370,8 @@ afk_pcs_existing_start() {
   fi
   intent_wt="$(jq -r '.worktree.id // empty' "$intent_file" 2>/dev/null)"
   intent_repo="$(jq -r '.worktree.path // empty' "$intent_file" 2>/dev/null)"
-  if [[ -z "$intent_wt" || "$intent_repo" != "$repo_path" ]]; then
+  repo_real="$(cd "$repo_path" 2>/dev/null && pwd -P)"
+  if [[ -z "$intent_wt" || -z "$repo_real" || "$intent_repo" != "$repo_real" ]]; then
     afk_pcs_hold_unresolved "$id" PM_INTENT_MISMATCH; return 0
   fi
   if ! afk_orca_run --bound 5 pm-start-reconcile-agents -- worktree ps --limit "$AFK_ORCA_LIST_LIMIT" --json; then
@@ -404,7 +405,7 @@ afk_pcs_existing_start() {
     ledger="$(jq -c --arg id "$id" --argjson identity "$candidate" \
       '.pm_started[$id].candidate = $identity' <<<"$ledger")"
     afk_state_file_write "$ledger_path" "$ledger" || {
-      afk_pcs_hold_start PM_LEDGER_WRITE_FAILED; return 1;
+      afk_pcs_hold_start PM_LEDGER_WRITE_FAILED; return 0;
     }
   fi
   code="$(jq -r '.start_error // "PM_CREATE_RECEIPT_MISSING"' <<<"$row")"

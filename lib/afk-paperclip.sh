@@ -787,6 +787,7 @@ afk_pc_claim_comment() {
     afk_state_file_write "$ledger_path" "$ledger"
   else
     actions="$(jq -c --arg t "claim read-back unresolved, held: $identifier" '. + [$t]' <<<"$actions")"
+    return 1
   fi
   return 0
 }
@@ -988,8 +989,7 @@ afk_pc_report_cycle() {
 
   # AC-10: the claim comment for an issue adopted during a pause.
   if [[ "$claim_pending" == true ]]; then
-    afk_pc_claim_comment || true
-    if [[ "$AFK_PC_ABORT" == true ]]; then
+    if ! afk_pc_claim_comment; then
       afk_pc_self_block "$api_url" "$id" "$key" "$run_id" "$agent_id" "$composed" ||
         actions="$(jq -c --arg t "PAPERCLIP_SELF_BLOCK_FAILED: $identifier" '. + [$t]' <<<"$actions")"
       return 0
@@ -1569,12 +1569,12 @@ afk_cmd_paperclip_poll() { # <json_mode>
             actions="$(jq -c --arg t "paused: $identifier" '. + [$t]' <<<"$actions")"
           elif [[ -z "$prev" || "$prior_state_ip" == pending_claim ]]; then
             [[ -n "$prev" ]] || afk_pc_pin_new
-            afk_pc_claim_comment || true
-            if [[ "${AFK_PC_ABORT:-false}" == true ]]; then
+            if ! afk_pc_claim_comment; then
               action="$(jq -r --arg id "$id" '.issues[$id].action_text // empty' <<<"$ledger")"
               afk_pc_self_block "$api_url" "$id" "$key" "$run_id" "$agent_id" "$action" ||
                 actions="$(jq -c --arg t "PAPERCLIP_SELF_BLOCK_FAILED: $identifier" '. + [$t]' <<<"$actions")"
-              break
+              [[ "${AFK_PC_ABORT:-false}" == true ]] && break
+              continue
             fi
             claim_started_this_pass[$id]=1
             afk_pc_claim_artifacts || continue

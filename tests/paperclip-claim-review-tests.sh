@@ -15,7 +15,7 @@ afk_orca_bin() { :; } # the claim helpers never run Orca
 afk_pc_curl() { printf '200\n'; cat "$COMMENTS_FILE"; }
 afk_pc_comment() {
   printf '%s\n' "$POST_STATUS" >>"$POST_LOG"
-  if [[ "$POST_STATUS" == 201 ]]; then
+  if [[ "$POST_STATUS" == 201 && "${POST_PERSIST:-true}" == true ]]; then
     jq -c --arg b "$5" --arg a "$agent_id" '. + [{body:$b,authorAgentId:$a}]' "$COMMENTS_FILE" >"$COMMENTS_FILE.tmp"
     mv "$COMMENTS_FILE.tmp" "$COMMENTS_FILE"
   fi
@@ -35,7 +35,7 @@ reset_case() {
   afk_state_file_write "$ledger_path" "$ledger"
   COMMENTS_FILE="$TMPROOT/$name/comments.json"; printf '[]\n' >"$COMMENTS_FILE"
   POST_LOG="$TMPROOT/$name/posts"; : >"$POST_LOG"
-  POST_STATUS=201; actions='[]'; AFK_PC_ABORT=false
+  POST_STATUS=201; POST_PERSIST=true; actions='[]'; AFK_PC_ABORT=false
 }
 
 reset_case definite_failure
@@ -51,6 +51,15 @@ POST_STATUS=201; afk_pc_claim_comment || true
 check 'M1 ambiguous 500 never blindly reposts' "$(wc -l <"$POST_LOG" | tr -d ' ')" 1
 present=no; [[ "$actions" == *'claim read-back unresolved, held'* ]] && present=yes
 check 'M1 ambiguous hold is visible' "$present" yes
+
+reset_case posted_readback_unresolved
+POST_STATUS=201; POST_PERSIST=false
+if afk_pc_claim_comment; then held=no; else held=yes; fi
+check 'review unresolved post-POST read-back returns nonzero' "$held" yes
+check 'review unresolved claim remains intent' \
+  "$(jq -r --arg id "$id" '.issues[$id].claim' <<<"$ledger")" intent
+check 'review unresolved claim keeps the attempt receipt' \
+  "$(jq -r --arg id "$id" '.issues[$id].claim_attempted' <<<"$ledger")" true
 
 reset_case before_post_kill
 ledger="$(jq -c --arg id "$id" '.issues[$id] |= (. + {claim:"intent",claim_attempted:true,claim_comment_pending:true})' <<<"$ledger")"

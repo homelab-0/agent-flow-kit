@@ -61,7 +61,14 @@ if [[ -n "${CURL_STUB_COMMENTS_FILE:-}" && "$path" == */comments ]]; then
       : >"$KILL_MARKER"; while [[ -e "$KILL_MARKER" ]]; do sleep 0.05; done
     fi
   elif [[ "$method" == GET ]]; then
-    cat "$CURL_STUB_COMMENTS_FILE"; printf 200; exit 0
+    comment_key="${method}_${path#/}"; comment_key="${comment_key//\//_}"
+    comment_fixture="$CURL_STUB_FIXTURES/$comment_key"
+    if [[ -f "$comment_fixture" && "$(head -1 "$comment_fixture")" == 200 ]]; then
+      jq -cs '.[0] + .[1]' <(tail -n +2 "$comment_fixture") "$CURL_STUB_COMMENTS_FILE"
+    else
+      cat "$CURL_STUB_COMMENTS_FILE"
+    fi
+    printf 200; exit 0
   fi
 fi
 key="${method}_${path#/}"; key="${key//\//_}"
@@ -158,6 +165,7 @@ PROJ1="aaaaaaaa-0000-4000-8000-000000000001"
 # new_scenario <name> — fresh HOME, fixtures, git repo and Orca fixtures.
 new_scenario() {
   SCEN="$TMPROOT/$1"; mkdir -p "$SCEN"
+  COMMENTS_FILE="$SCEN/comments.json"; printf '[]\n' >"$COMMENTS_FILE"
   HOME="$SCEN/home"; mkdir -p "$HOME"
   STATE="$HOME/.local/state/agent-flow-kit"
   FIXDIR="$SCEN/fixtures"; mkdir -p "$FIXDIR"
@@ -788,6 +796,7 @@ done
 COMMENTS_FILE=""
 
 head1 "13. Refused stale-owner reap cannot authorize a PM start"
+new_scenario refused_reap
 COUNT_FILE="$SCEN/lookups"; printf '0\n' >"$COUNT_FILE"
 REAP_START_FILE="$SCEN/unexpected-create"
 reap_result="$(COUNT_FILE="$COUNT_FILE" REAP_START_FILE="$REAP_START_FILE" KIT_ROOT="$KIT_ROOT" bash -c '

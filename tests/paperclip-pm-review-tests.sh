@@ -50,7 +50,11 @@ afk_orca_identity() {
 }
 afk_pc_create_issue() { printf x >>"$REPORT_FILE"; printf '201\n{"id":"need-human"}'; }
 afk_scope_sha256() { sha256sum | cut -d' ' -f1; }
-afk_state_file_write() { mkdir -p "$(dirname -- "$1")"; printf '%s\n' "$2" >"$1"; }
+afk_state_file_write() {
+  if [[ "${FAIL_CANDIDATE_WRITE:-false}" == true && "$1" == "$ledger_path" ]] &&
+     jq -e '.pm_started[]?.candidate.handle' <<<"$2" >/dev/null 2>&1; then return 1; fi
+  mkdir -p "$(dirname -- "$1")"; printf '%s\n' "$2" >"$1"
+}
 . "$KIT_ROOT/lib/afk-paperclip-start.sh"
 AFK_ORCA_LIST_LIMIT=1000
 
@@ -71,6 +75,7 @@ reset_case() {
   ROW_STATE=live; ROW_REASON=null
   IDENTITY_MODE=ok
   SHOW_RUNTIME=rt-1; LIST_RUNTIME=rt-1
+  FAIL_CANDIDATE_WRITE=false
 }
 prior_row() {
   local intent="$AFK_STATE_DIR/paperclip/pm-start-intents/proj.$A.json"
@@ -172,6 +177,34 @@ LIST_TERMINALS='[{"handle":"interactive","connected":true,"orphaned":false}]'
 afk_pcs_existing_start || true
 check 'M4 unique interactive join remains a candidate' "$(jq -r --arg b "$B" '.pm_started[$b].state + "/" + (.pm_started[$b].terminal|tostring)' <<<"$ledger")" intent/null
 check 'M4 candidate is recorded for operator review' "$(jq -r --arg b "$B" '.pm_started[$b].candidate.handle // empty' <<<"$ledger")" interactive
+
+reset_case candidate_write_failure
+intent="$AFK_STATE_DIR/paperclip/pm-start-intents/proj.$B.json"
+afk_state_file_write "$intent" "$(jq -nc --arg p "$repo_path" '{worktree:{id:"wt-1",path:$p}}')"
+ledger="$(jq -nc --arg b "$B" --arg p "$repo_path" --arg f "$intent" '{pm_started:{($b):{state:"intent",repo:$p,slug:"proj",harness:"claude",terminal:null,identity:null,intent_file:$f}}}')"
+afk_state_file_write "$ledger_path" "$ledger"
+PS_AGENTS='[{"paneKey":"tab-interactive:leaf-interactive","agentType":"claude"}]'
+LIST_TERMINALS='[{"handle":"interactive","connected":true,"orphaned":false}]'
+FAIL_CANDIDATE_WRITE=true
+if afk_pcs_existing_start; then held=yes; else held=no; fi
+check 'review candidate write failure holds the start' "$held" yes
+check 'review candidate write failure preserves its reason' "$AFK_PCS_ACTION_OVERRIDE" \
+  'queued: no PM (start held: PM_LEDGER_WRITE_FAILED)'
+
+reset_case symlink_repo
+real_repo="$repo_path"; repo_path="$TMPROOT/symlink_repo/link"
+ln -s "$real_repo" "$repo_path"
+intent="$AFK_STATE_DIR/paperclip/pm-start-intents/proj.$B.json"
+afk_state_file_write "$intent" "$(jq -nc --arg p "$real_repo" '{worktree:{id:"wt-1",path:$p}}')"
+ledger="$(jq -nc --arg b "$B" --arg p "$repo_path" --arg f "$intent" '{pm_started:{($b):{state:"intent",repo:$p,slug:"proj",harness:"claude",terminal:null,identity:null,intent_file:$f}}}')"
+afk_state_file_write "$ledger_path" "$ledger"
+PS_AGENTS='[{"paneKey":"tab-interactive:leaf-interactive","agentType":"claude"}]'
+LIST_TERMINALS='[{"handle":"interactive","connected":true,"orphaned":false}]'
+afk_pcs_existing_start || true
+check 'review symlink repo reaches the candidate join' \
+  "$(jq -r --arg b "$B" '.pm_started[$b].candidate.handle // empty' <<<"$ledger")" interactive
+check 'review symlink repo is not an intent mismatch' \
+  "$([[ "$AFK_PCS_ACTION_OVERRIDE" == *PM_INTENT_MISMATCH* ]] && echo yes || echo no)" no
 
 reset_case owned_candidate
 intent="$AFK_STATE_DIR/paperclip/pm-start-intents/proj.$B.json"
