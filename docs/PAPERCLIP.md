@@ -83,15 +83,18 @@ swapping the path after the check changes nothing. No file and no token is
 `PAPERCLIP_VAULT_UNAVAILABLE`. Neither the file's contents nor the key are
 ever printed.
 
-The timer's unit carries no secret, no key reference and no env file path.
+The timer's unit carries the absolute `AFK_ORCA_BIN` path resolved at install
+time, but no secret, key reference or env file path. Install checks the
+binary's `--version` handshake under the user manager's environment. A failed
+handshake refuses installation with `ORCA_CLI_NOT_RESOLVED`.
 `paperclip-timer --status` and `paperclip-project list` repeat the key read
 in the environment the unit gets: `env -i` with `HOME`, plus the user
 manager's `PATH`, `OP_*`, `AFK_OP_ENV_FILE` and `AFK_OP_BIN` from
 `systemctl --user show-environment`. A token or override that only your shell
-carries does not count. The check covers the key read, not the rest of the
-pass. Both commands report `PAPERCLIP_VAULT_UNAVAILABLE` (or
-`PAPERCLIP_OP_ENV_UNSAFE`) when it fails. `paperclip-timer --install` refuses
-with that code rather than install a timer whose every pass would fail.
+carries does not count. The check covers the key read and Orca handshake.
+Both commands report `PAPERCLIP_VAULT_UNAVAILABLE`,
+`PAPERCLIP_OP_ENV_UNSAFE`, or `ORCA_CLI_NOT_RESOLVED` when the corresponding
+check fails. `paperclip-timer --install` refuses with that code.
 
 ### Onboarding a project: `agent-flow-kit paperclip-project`
 
@@ -150,7 +153,7 @@ once with **`agent-flow-kit paperclip-config --migrate --project-id <uuid>
   (mode 600) before the atomic replace, and the result must pass the loader
   first.
 - Migration moves only the config. A pending notice under the old project
-  name in `notices/`, and any `pm-start-intents/<name>.json`, are not renamed
+  name in `notices/`, and any `pm-start-intents/<slug>.<issue-id>.json`, are not renamed
   to the slug; with no open issues there should be none.
 
 ### Repairing a v2 config the loader refuses
@@ -243,11 +246,20 @@ Paperclip while the local report keeps it.
 Under `$AFK_STATE_DIR/paperclip/notices/<slug>/`, one file per event,
 never rewritten: `claimed`, `promoted`, `human_commented`, `stopped`,
 `stranded`. A `claimed` notice also writes a
-`brief.<issue-id>.<updatedAt digits>.md` with the issue title and
-description; if the issue's `updatedAt` has no digits, the digits fall back
-to the current epoch. A `human_commented` notice writes a
+`brief.<issue-id>.<epoch>.<counter>.md` with the issue title and
+description. The notice is named `<epoch>.<counter>.<issue-id>.claimed.json`;
+the counter keeps re-adoptions distinct and ordered within one second. A
+`human_commented` notice writes a
 `reply.<comment-id>.md` holding the comment body. Notices never carry Paperclip comment or issue text
 beyond what those two file types already declare.
+
+Before a claim comment is posted, the poller saves an issue ledger row with
+`claim: intent` and a pending flag. It marks the comment confirmed only after
+reading back the fixed claim body and marker from this host agent's comment.
+The claimed notice and brief each have a full path in their ledger intent
+before the file write. Replay uses that exact path even if `updatedAt`
+changes. A definitely rejected claim POST clears its attempt flag for the
+next pass; an ambiguous POST or failed read-back holds with an action line.
 
 ## Refusal and pause reasons
 
@@ -666,6 +678,8 @@ the project's PM, using PC-2a's registry lookup for the project's `repo_path`:
   the self-block text says so, and an ambiguous/stalled registry state opens
   one out-of-band "NEEDS HUMAN" issue per repo (an `idempotencyKey`).
 - Every listed stale owner is reaped with `pm-registry-reap` before deciding.
+  The registry is looked up again after every reap attempt, including a
+  refusal; the earlier lookup never authorizes a start.
 - `none`: subject to the creator gate (`createdByUserId == board_user_id`,
   else one `Reply exactly: approve start <identifier>` question comment and
   an exact matching Josh reply — gated on `interim_comment_approval` present
@@ -685,6 +699,35 @@ text naming only `<slug>` (`^[a-z0-9-]{1,40}$`) and `<harness>` (the enum);
 no Paperclip issue title, description or comment ever reaches the terminal,
 the prompt, an argv, or the intent file. The Orca terminal nudge for a live
 PM is not implemented (Orca has no foreground-process check; see AD-7).
+The title is display text. Before `terminal create`, the poller saves the
+issue-specific intent file (`pm-start-intents/<slug>.<issue-id>.json`) and a
+`pm_started` ledger row naming it. After the create receipt, the row gains
+the handle and create receipt's Orca runtime id, even when `terminal show`
+cannot supply the identity tuple yet. A rejected `ORCA_ERROR:*` create is marked
+retryable; the next pass can try again. A timeout, CLI failure or missing
+handle is uncertain: the poller holds the start with
+`queued: no PM (start unresolved: <code>)` and opens one NEEDS HUMAN issue
+after three passes. A worktree agent join can record a candidate for the
+operator, but cannot turn an unreceipted create into a confirmed PM.
+
+A prior start blocks another PM in the repo while its terminal is live,
+detached or unknown. Orca's positive same-runtime stale proof ends that row
+and permits a **different issue** in the repo to start a PM. Each issue has
+only one effected PM start: an ended row for that same issue stays held as
+`queued: no PM (start held: PM_START_ENDED)` and opens one NEEDS HUMAN issue
+after repeated passes. Only a definite create non-effect or an operator-set
+`failed` row permits that issue to retry. A changed Orca runtime id is
+**unknown** and never triggers an automatic restart. A prior row with a
+handle but no identity is checked on that handle; a complete same-runtime
+list plus `terminal_handle_stale` can prove it ended. For an unresolved row
+or runtime change, stop the timer, inspect the row's `intent_file`, `terminal`,
+`identity` and `candidate` in `paperclip/ledger.json`, and check Orca for
+the terminal. If the PM exists, restore its exact handle and identity. For
+an uncertain create, prove that no create took effect before marking the row
+`state: "failed"`. For an ended row, confirm that no PM is running and make
+an explicit operator decision before setting `failed` to permit a retry.
+Remove the issue-specific intent file and restart the timer. Keep the ledger
+backup until the next pass confirms the result.
 
 ## `agent-flow-kit paperclip-timer --install|--remove|--status [--json]`
 
@@ -693,8 +736,9 @@ every 90s (`OnUnitActiveSec`/`OnActiveSec`, `RandomizedDelaySec=15s`,
 `Persistent=false`). The unit holds no secret and no key reference; the
 poller reads its config at run time. `--status` also reports
 `PAPERCLIP_POLLER_STALE` when the ledger's `last_successful_pass` is older
-than 3 intervals, and `PAPERCLIP_VAULT_UNAVAILABLE` when the unit could not
-read the key; `--install` refuses on the same check (see
+than 3 intervals, and `PAPERCLIP_VAULT_UNAVAILABLE` or
+`ORCA_CLI_NOT_RESOLVED` when the unit cannot read the key or run Orca;
+`--install` refuses on the same check (see
 [How the poller reads the key](#how-the-poller-reads-the-key)). macOS refuses with `PAPERCLIP_TIMER_UNSUPPORTED_PLATFORM`.
 
 **Stale lock (AC-7b):** the poll lock (`paperclip/.lock`) now carries an
