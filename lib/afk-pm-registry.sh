@@ -25,10 +25,12 @@ declare -F afk_orca_run >/dev/null 2>&1 || . "$(dirname -- "${BASH_SOURCE[0]}")/
 # re-implementing, so a "session" key here is bit-for-bit the same form the
 # PM adapter already writes.
 if ! declare -F afk_scope_sha256 >/dev/null 2>&1; then
-  _afk_pmr_rs="${AFK_INSTALL_ROOT:-$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)}/adapters/runtime-scope.sh"
+  _afk_pmr_root="${AFK_INSTALL_ROOT:-$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)}"
+  _afk_pmr_rs="$_afk_pmr_root/runtime-scope.sh"
+  [[ -r "$_afk_pmr_rs" ]] || _afk_pmr_rs="$_afk_pmr_root/adapters/runtime-scope.sh"
   # shellcheck disable=SC1090,SC1091
   [[ -r "$_afk_pmr_rs" ]] && . "$_afk_pmr_rs"
-  unset _afk_pmr_rs
+  unset _afk_pmr_root _afk_pmr_rs
 fi
 
 AFK_PMR_SCOPE_RE='^(terminal|session|worktree)-[0-9a-f]{64}$'
