@@ -1106,6 +1106,17 @@ afk_pc_claim() {
   actions="$(jq -c --arg t "claimed: $identifier" '. + [$t]' <<<"$actions")"
 }
 
+# afk_pc_no_run <active-run response> -- 0 only for a clean "no run": 200 or
+# 204 whose body is empty, null, or an object with no id at all. A malformed
+# id, a body that isn't JSON, or any other status may hide a live run the
+# host didn't start, so the caller holds instead.
+afk_pc_no_run() {
+  local h="${1%%$'\n'*}" b="${1#*$'\n'}"
+  [[ "$h" == 200 || "$h" == 204 ]] || return 1
+  [[ -z "${b//[[:space:]]/}" ]] && return 0
+  jq -e 'type == "null" or (type == "object" and .id == null)' >/dev/null 2>&1 <<<"$b"
+}
+
 # afk_pc_close_recovery -- a resumed stranded issue's recovery issue is done.
 afk_pc_close_recovery() {
   local recid rec_resp
@@ -1321,11 +1332,16 @@ afk_cmd_paperclip_poll() { # <json_mode>
         [[ "$status" == cancelled || "$status" == "done" ]] &&
           ledger="$(jq -c --arg id "$id" '.issues[$id].state = "closed"' <<<"$ledger")"
         if [[ "$status" == in_progress ]]; then
-          local sr; sr="$(afk_pc_curl GET "$api_url/api/issues/$id/active-run" "$key" "")"
-          sr="$(jq -r '.id // empty' <<<"${sr#*$'\n'}" 2>/dev/null)"
-          [[ "$sr" =~ ^[A-Za-z0-9_-]+$ ]] && afk_pc_self_block "$api_url" "$id" "$key" "$sr" "$agent_id" "$stop_text" &&
-            ledger="$(jq -c --arg id "$id" --arg t "$stop_text" '.issues[$id].action_text_applied = $t' <<<"$ledger")"
-          [[ "$sr" =~ ^[A-Za-z0-9_-]+$ ]] || ledger="$(jq -c --arg id "$id" '.issues[$id].reblock_due //= "strand"' <<<"$ledger")"
+          local sresp sr; sresp="$(afk_pc_curl GET "$api_url/api/issues/$id/active-run" "$key" "")"
+          sr="$(jq -r '.id // empty' <<<"${sresp#*$'\n'}" 2>/dev/null)"
+          if [[ "$sr" =~ ^[A-Za-z0-9_-]+$ ]]; then
+            afk_pc_self_block "$api_url" "$id" "$key" "$sr" "$agent_id" "$stop_text" &&
+              ledger="$(jq -c --arg id "$id" --arg t "$stop_text" '.issues[$id].action_text_applied = $t' <<<"$ledger")"
+          elif afk_pc_no_run "$sresp"; then
+            ledger="$(jq -c --arg id "$id" '.issues[$id].reblock_due //= "strand"' <<<"$ledger")"
+          else
+            actions="$(jq -c --arg t "active run unreadable, held: $identifier" '. + [$t]' <<<"$actions")"
+          fi
         fi
         # A comment reopened it (P6d): put the stop text back.
         [[ "$status" == todo ]] && ledger="$(jq -c --arg id "$id" '.issues[$id].reblock_due //= "nudge"' <<<"$ledger")"
@@ -1386,7 +1402,7 @@ afk_cmd_paperclip_poll() { # <json_mode>
           # read may hide a run AFK didn't mint. A stranded or board-held issue
           # waits for Josh's Todo, the resume signal. Anything else is left.
           if ! [[ "$run_id" =~ ^[A-Za-z0-9_-]+$ ]]; then
-            if [[ -n "$prev" && "${run_resp%%$'\n'*}" != 200 && "${run_resp%%$'\n'*}" != 204 ]]; then
+            if [[ -n "$prev" ]] && ! afk_pc_no_run "$run_resp"; then
               actions="$(jq -c --arg t "active run unreadable, held: $identifier" '. + [$t]' <<<"$actions")"
             elif [[ -n "$prev" && "$prev_st" != stranded && "$prev_st" != held_by_board ]]; then
               ledger="$(jq -c --arg id "$id" '.issues[$id].reblock_due //= "strand"' <<<"$ledger")"

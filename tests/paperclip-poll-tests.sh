@@ -2095,6 +2095,27 @@ route GET "/api/issues/$ISSUE1/comments" 200 "[$(jc 1 "approve $PD8" 2026-03-02T
 run_afk --json
 assert_eq "lease resume: a later approve <digest8> is accepted" "$(jq -r '.kind + " " + .digest' "$STATE/paperclip/approvals/$ISSUE1.json" 2>/dev/null)" "plan $PD"
 
+# Only a clean 200/204 with no id at all means "no run". A malformed id or a
+# body that isn't JSON may hide a live run, so the issue is held, in the
+# in_progress branch and in the stopped branch alike.
+STOPT="Stopped: project changed after claim; reassign to restart"
+new_scenario strand_malformed
+three_projects
+seed 1 working proj "$(pid_n 1)"; seed 2 working proj2 "$(pid_n 2)"
+seed 3 stopped proj3 "$(pid_n 3)"
+lset 3 "{fixed_text:\"$STOPT\", action_text:\"$STOPT\", action_text_applied:\"$STOPT\", stop_reason:\"PROJECT_CHANGED\"}"
+inbox 1 2 3
+issue 1 in_progress "\"$(pid_n 1)\""; issue 2 in_progress "\"$(pid_n 2)\""; issue 3 in_progress "\"$(pid_n 3)\""
+route GET "/api/issues/$(iid 1)/active-run" 200 '{"id":"run 1;x"}'
+route GET "/api/issues/$(iid 2)/active-run" 200 'not json'
+route GET "/api/issues/$(iid 3)/active-run" 500 '{}'
+run_afk --json
+assert_contains "no run: a 200 with a malformed run id is held" "$OUT_TEXT" "active run unreadable, held: PROJ-1"
+assert_contains "no run: a 200 whose body isn't JSON is held" "$OUT_TEXT" "active run unreadable, held: PROJ-2"
+assert_contains "no run: a stopped issue's unreadable active run is held" "$OUT_TEXT" "active run unreadable, held: PROJ-3"
+assert_eq "  ...no self-wake, nothing written, none marked for repair" \
+  "$(grep -c -e '^POST' -e '^PATCH' "$LOG") $(jq -r '[.issues[] | select(.reblock_due != null)] | length' "$(LEDGER_OF)")" "0 0"
+
 # ===========================================================================
 printf '\n\033[1m%d passed, %d failed\033[0m\n' "$PASS" "$FAIL"
 (( FAIL == 0 )) || exit 1
