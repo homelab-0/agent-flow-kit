@@ -51,6 +51,12 @@ afk_pcs_start_pm() {
       afk_pcs_report_pm_state_ambiguous
       return 0 ;;
     none) : ;;
+    unknown)
+      # An owner that isn't provably stale keeps the repo busy; say why.
+      local why; why="$(jq -r '.reason // empty' <<<"$lookup")"
+      [[ "$why" =~ ^[A-Z0-9_]{1,64}$ ]] || why="PM_OWNER_UNKNOWN"
+      AFK_PCS_ACTION_OVERRIDE="queued: PM state unknown ($why)"
+      return 0 ;;
     *) return 0 ;;
   esac
   # At most one start per issue, ever (an approval authorises one start). A
@@ -219,7 +225,7 @@ afk_pcs_create_terminal() {
 
   title="PM $slug (paperclip)"
   local listed count prior
-  afk_orca_run --bound 5 pm-start-dedupe -- terminal list --worktree "id:$observed_id" --json || return 1
+  afk_orca_run --bound 5 pm-start-dedupe -- terminal list --worktree "id:$observed_id" --limit "$AFK_ORCA_LIST_LIMIT" --json || return 1
   listed="$AFK_ORCA_OUT"
   # ORCA-6: the title half of this dedupe goes (AD-28 R4).
   # The harness rewrites the terminal title once it runs, so the title alone
@@ -249,9 +255,13 @@ afk_pcs_create_terminal() {
   terminal="$(jq -r '.result.terminal.handle // .handle // empty' <<<"$created" 2>/dev/null)"
   [[ -n "$terminal" ]] || return 1
 
+  # The row carries the terminal's identity tuple (AD-28 R4), or null when
+  # Orca can't show it yet; the handle alone still blocks a second start.
+  local identity=null
+  if afk_orca_identity "$terminal" "$harness"; then identity="$AFK_ORCA_IDENTITY"; fi
   ledger="$(jq -c --arg id "$id" --arg t "$terminal" --arg slug "$slug" --arg h "$harness" \
-    --arg r "$repo_path" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '.pm_started = ((.pm_started // {}) + {($id): {terminal:$t, slug:$slug, harness:$h, repo:$r, at:$at}})' \
+    --arg r "$repo_path" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson identity "$identity" \
+    '.pm_started = ((.pm_started // {}) + {($id): {terminal:$t, slug:$slug, harness:$h, repo:$r, at:$at, identity:$identity}})' \
     <<<"$ledger")"
   return 0
 }

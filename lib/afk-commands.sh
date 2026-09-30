@@ -632,7 +632,7 @@ afk_pm_owner_json() {
   [[ -n "$AFK_PM_DIR" && -f "$AFK_PM_DIR/ownership.json" ]] || return 1
   now="$(date +%s)"
   jq -ce --argjson now "$now" 'def s: type=="string" and length>0;
-    select(.schema=="afk-pm-ownership/2" and .owned==true and .role=="PM" and
+    select((.schema|IN("afk-pm-ownership/2","afk-pm-ownership/3")) and .owned==true and .role=="PM" and
       (.harness|IN("claude","codex","opencode")) and (.session|s) and (.terminal|s) and
       (.worktree.id|s) and (.worktree.path|s) and (.observed_epoch|type)=="number" and
       (.freshness_seconds|type)=="number" and $now>=.observed_epoch and
@@ -859,7 +859,7 @@ afk_pm_handoff_json() {
   [[ -n "$f" ]] || { printf null; return 0; }
   [[ -e "$f" ]] || { printf null; return 0; }
   jq -ce 'def s:type=="string" and length>0;
-    select(.schema=="afk-pm-handoff/2" and (.transition_id|s) and (.continuation_sha256|s) and
+    select((.schema|IN("afk-pm-handoff/2","afk-pm-handoff/3")) and (.transition_id|s) and (.continuation_sha256|s) and
       (.state|IN("OBSERVED","CHECKPOINTED","SUCCESSOR_LAUNCHED","ACKED","OLD_CLOSED")) and
       (.old.session|s) and (.old.terminal|s) and (.old.harness|s) and
       (.old.worktree.id|s) and (.old.worktree.path|s))' "$f" 2>/dev/null
@@ -891,8 +891,9 @@ afk_cmd_pm_continue_locked() { # <json-mode>
     [[ "${ORCA_TERMINAL_HANDLE:-}" == "$(jq -r .terminal <<<"$owner")" && "$current_path" == "$(jq -r .worktree.path <<<"$owner")" ]] \
       || { afk_warn "this terminal does not own the current PM session"; return "$AFK_EXIT_OWNER_ACTION"; }
     handoff="$(jq -nc --arg id "$tid" --arg sha "$sha" --arg at "$now" --argjson old "$owner" \
-      '{schema:"afk-pm-handoff/2",transition_id:$id,state:"OBSERVED",continuation_sha256:$sha,
-        old:($old|{session,terminal,harness,worktree,run_id}),successor:null,observed_at:$at,updated_at:$at}')"
+      '{schema:"afk-pm-handoff/3",transition_id:$id,state:"OBSERVED",continuation_sha256:$sha,
+        old:($old|{session,terminal,harness,worktree,run_id,identity:(.identity // null)}),
+        successor:null,observed_at:$at,updated_at:$at}')"
     afk_pm_handoff_write "$handoff" || return "$AFK_EXIT_USAGE"
   fi
   state="$(jq -r .state <<<"$handoff")"
@@ -923,7 +924,8 @@ afk_cmd_pm_continue_locked() { # <json-mode>
         afk_state_file_write "$transition_dir/launch-receipt.json" "$receipt" || return "$AFK_EXIT_USAGE"
         jq -e --argjson expected "$receipt" '.==$expected' "$transition_dir/launch-receipt.json" >/dev/null 2>&1 || return "$AFK_EXIT_USAGE"
         handoff="$(jq -c --arg at "$now" --argjson r "$receipt" '.state="SUCCESSOR_LAUNCHED"|
-          .successor={session:null,terminal:$r.terminal,harness:$r.harness,worktree:$r.worktree,run_id:$r.run_id}|.updated_at=$at' <<<"$handoff")"
+          .successor={session:null,terminal:$r.terminal,harness:$r.harness,worktree:$r.worktree,run_id:$r.run_id,
+            identity:($r.identity // null)}|.updated_at=$at' <<<"$handoff")"
         afk_pm_handoff_write "$handoff" || return "$AFK_EXIT_USAGE"; state=SUCCESSOR_LAUNCHED
       fi
     fi
