@@ -55,7 +55,7 @@ afk_pcs_start_pm() {
       # An owner that isn't provably stale keeps the repo busy; say why.
       local why; why="$(jq -r '.reason // empty' <<<"$lookup")"
       [[ "$why" =~ ^[A-Z0-9_]{1,64}$ ]] || why="PM_OWNER_UNKNOWN"
-      AFK_PCS_ACTION_OVERRIDE="queued: no PM ($why)"
+      AFK_PCS_ACTION_OVERRIDE="queued: PM state unknown ($why)"
       return 0 ;;
     *) return 0 ;;
   esac

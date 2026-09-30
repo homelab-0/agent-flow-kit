@@ -301,7 +301,7 @@ issue_route in_progress "$BOARD"
 do_pass
 assert_eq "unknown: no terminal create" "$(wc -l <"$ORCA_CREATE_LOG" | tr -d ' ')" "0"
 assert_eq "unknown: the queued text names the lookup's reason" \
-  "$(jq -r --arg id "$ISSUE1" '.issues[$id].action_text' "$STATE/paperclip/ledger.json")" "queued: no PM (PM_RUNTIME_MISMATCH)"
+  "$(jq -r --arg id "$ISSUE1" '.issues[$id].action_text' "$STATE/paperclip/ledger.json")" "queued: PM state unknown (PM_RUNTIME_MISMATCH)"
 assert_eq "unknown: the owner is kept" "$([[ -f "$STATE/pm/scopes/$SKU/ownership.json" ]] && echo kept)" "kept"
 
 # ============================================================================

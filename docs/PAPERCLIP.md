@@ -373,15 +373,18 @@ sessions never act on the same one.
   it. The kit never reaps either. The operator procedure:
   1. Find the scope in the lookup's `owners[]` (`scope`, `terminal`,
      `worktree.path`).
-  2. Confirm that no agent process still runs for that session: check
-     `worktree ps` for an agent row in that worktree, and check the harness's
+  2. Check whether an agent process still runs for that session: look in
+     `worktree ps` for an agent row in that worktree, and in the harness's
      own session records (for Claude, `~/.claude/sessions/<pid>.json` with
-     that session id and a live pid). If one does, don't remove anything:
-     re-register that PM from its own terminal instead.
+     that session id and a live pid). A live PM can't re-register while its
+     old `ownership.json` exists (`pm-start` refuses), so the steps below
+     are the same for a live PM and a dead one. Only the last step differs.
   3. Remove that scope's `ownership.json` (and nothing else) from
      `$AFK_STATE_DIR/pm/scopes/<scope>/`.
-  4. Run `agent-flow-kit pm-start --harness <harness>` from the PM's terminal
-     (or let the poller start one).
+  4. If the PM is alive, run `agent-flow-kit pm-start --harness <harness>`
+     from that PM's own terminal straight away, so the poller never sees
+     the repo without an owner. If it is dead, run `pm-start` from a new PM
+     terminal, or let the poller start one.
 
   Before enabling the poller on a host, list the scopes whose rows are `/2`
   or carry an old `runtime_id`, and clear the dead ones this way.
@@ -656,9 +659,9 @@ the project's PM, using PC-2a's registry lookup for the project's `repo_path`:
 
 - `live`: nothing starts; the PM pulls its own notices.
 - `unknown`: nothing starts; an owner that isn't provably stale is kept.
-  The self-block text reads `queued: no PM (<reason>)` with the lookup's
-  reason (for example `PM_RUNTIME_MISMATCH`); see the recovery procedure
-  above.
+  The self-block text reads `queued: PM state unknown (<reason>)` with the
+  lookup's reason (for example `PM_RUNTIME_MISMATCH`), since a detached PM
+  may still be running; see the recovery procedure above.
 - `handoff_in_progress` / `ambiguous` / `handoff_stalled`: nothing starts;
   the self-block text says so, and an ambiguous/stalled registry state opens
   one out-of-band "NEEDS HUMAN" issue per repo (an `idempotencyKey`).
