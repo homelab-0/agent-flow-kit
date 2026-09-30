@@ -348,6 +348,7 @@ BIN="$TMPROOT/bin"; mkdir -p "$BIN"
 
 cat > "$BIN/orca" <<'STUB'
 #!/usr/bin/env bash
+[[ "${1:-}" == --version ]] && { echo 1.4.216; exit 0; }
 case "${1:-} ${2:-}" in
   "status --json")
     case "${STUB_ORCA:-ok}" in
@@ -479,7 +480,7 @@ STUB_ORCA=ok; STUB_ORCA_CAPS=full; STUB_VALIDATOR=honest
 STUB_CLAUDE_AUTH=sub; STUB_CLAUDE_CAPS=full; STUB_CODEX_AUTH=sub
 STUB_ROUTER=ok; STUB_ROUTER_CATALOG="sha256:abc"
 LIVE_TIMEOUT_MS=5000
-ORCA_BIN_OVERRIDE="orca"
+ORCA_BIN_OVERRIDE="$BIN/orca"
 CLAUDE_BIN_OVERRIDE="claude"; CODEX_BIN_OVERRIDE="codex"
 ROUTER_URL="https://router.invalid"; ROUTER_TOKEN="stub-token"
 ENV_ANTHROPIC_API_KEY=""; ENV_OP_TOKEN=""
@@ -489,7 +490,7 @@ stub_reset() {
   STUB_CLAUDE_AUTH=sub; STUB_CLAUDE_CAPS=full; STUB_CODEX_AUTH=sub
   STUB_ROUTER=ok; STUB_ROUTER_CATALOG="sha256:abc"
   LIVE_TIMEOUT_MS=5000
-  ORCA_BIN_OVERRIDE="orca"
+  ORCA_BIN_OVERRIDE="$BIN/orca"
   CLAUDE_BIN_OVERRIDE="claude"; CODEX_BIN_OVERRIDE="codex"
   ROUTER_URL="https://router.invalid"; ROUTER_TOKEN="stub-token"
   ENV_ANTHROPIC_API_KEY=""; ENV_OP_TOKEN=""
@@ -506,7 +507,7 @@ run_afk() { # <args...>
              XDG_STATE_HOME="$HOMEDIR/.local/state" \
              AFK_KIT_ROOT="$CHECKOUT" \
              AFK_LIVE_TIMEOUT_MS="$LIVE_TIMEOUT_MS" \
-             AFK_ORCA_BIN="$ORCA_BIN_OVERRIDE" \
+             ORCA_CLI_COMMAND="$ORCA_BIN_OVERRIDE" \
              AFK_CLAUDE_BIN="$CLAUDE_BIN_OVERRIDE" \
              AFK_CODEX_BIN="$CODEX_BIN_OVERRIDE" \
              AGENT_ROUTER_URL="$ROUTER_URL" \
@@ -969,7 +970,7 @@ assert_ne "and does not contradict the resolved executable fact" \
   "$(jget '.readiness.HOST_EXECUTION_READY.reason')" "ORCA_NOT_RESOLVED"
 stub_reset
 
-ORCA_BIN_OVERRIDE="orca-not-installed"
+ORCA_BIN_OVERRIDE="$BIN/orca-not-installed"
 run_afk status --json --live
 assert_eq "a genuinely unresolvable Orca keeps the resolution reason" \
   "$(jget '.readiness.HOST_EXECUTION_READY.reason')" "ORCA_NOT_RESOLVED"

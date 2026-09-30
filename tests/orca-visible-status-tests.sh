@@ -15,19 +15,21 @@ fake="$TMP/orca"; terminals="$TMP/terminals.json"; log="$TMP/orca.log"
 printf '%s\n' '[{"handle":"self","title":"User title"},{"handle":"foreign","title":"Foreign title"}]' >"$terminals"
 # shellcheck disable=SC2016
 {
-  printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' 'printf "%s\n" "$*" >>"$AFK_FAKE_LOG"'
+  printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' '[[ "${1:-}" != --version ]] || { echo 1.4.216; exit 0; }' 'printf "%s\n" "$*" >>"$AFK_FAKE_LOG"'
   printf '%s\n' '[[ -z "${AFK_FAKE_DELAY:-}" ]] || sleep "$AFK_FAKE_DELAY"' 'verb="${1:-} ${2:-}"; shift 2; handle=""; title=""'
   printf '%s\n' 'while (($#)); do case "$1" in --terminal) handle="$2"; shift 2;; --title) title="$2"; shift 2;; *) shift;; esac; done'
   printf '%s\n' 'if [[ "$verb" == "terminal show" ]]; then if [[ "${AFK_FAKE_SHOW_FOREIGN:-0}" == 1 ]]; then handle=foreign; fi; jq -nc --argjson terminal "$(jq -c --arg h "$handle" '\''map(select(.handle==$h))[0]'\'' "$AFK_FAKE_TERMINALS")" '\''{result:{terminal:$terminal}}'\''; exit; fi'
   printf '%s\n' 'if [[ "$verb" == "terminal rename" ]]; then jq --arg h "$handle" --arg t "$title" '\''map(if .handle==$h then .title=$t else . end)'\'' "$AFK_FAKE_TERMINALS" >"$AFK_FAKE_TERMINALS.tmp"; mv "$AFK_FAKE_TERMINALS.tmp" "$AFK_FAKE_TERMINALS"; jq -nc --arg h "$handle" --arg t "$title" '\''{result:{rename:{handle:$h,title:$t}}}'\''; exit; fi' 'exit 1'
 } >"$fake"; chmod +x "$fake"
+# The fake reaches the adapter only through the resolver's host config.
+printf '{"orca_bin":"%s"}\n' "$fake" >"$TMP/host.json"
 
 cache="$TMP/status.json"; runtime_cache="$TMP/runtime"; mkdir -p "$runtime_cache"
 jq -n '{schema_version:"1.0",kind:"lifecycle_result",source_eligibility:{revision_relation:"SAME"},orchestration:{state:"ACTIVE",session:{mode:"ORCH",persona:"PM",task:"AFK-TITLE",phase:"implementation",needs_human:false}},dispatch_monitor:{state:"WATCHING",dispatches:[]},findings:[],runtime:{subscription:{state:"ACTIVE"}}}' >"$cache"
-common=(ORCA_CLI_COMMAND="$fake" AFK_FAKE_LOG="$log" AFK_FAKE_TERMINALS="$terminals" AFK_STATUS_CACHE="$cache" AFK_STATUS_CACHE_DIR="$runtime_cache" AFK_ORCA_TITLE_STATE_DIR="$TMP/title-state" ORCA_TERMINAL_HANDLE=self ORCA_WORKTREE_ID=parent-marker)
+common=(AFK_HOST_CONFIG="$TMP/host.json" AFK_FAKE_LOG="$log" AFK_FAKE_TERMINALS="$terminals" AFK_STATUS_CACHE="$cache" AFK_STATUS_CACHE_DIR="$runtime_cache" AFK_ORCA_TITLE_STATE_DIR="$TMP/title-state" ORCA_TERMINAL_HANDLE=self ORCA_WORKTREE_ID=parent-marker)
 
 # No Orca session marker means no observation and no mutation.
-env -u ORCA_WORKTREE_ID -u ORCA_WORKTREE_PATH ORCA_CLI_COMMAND="$fake" AFK_FAKE_LOG="$log" AFK_FAKE_TERMINALS="$terminals" AFK_STATUS_CACHE="$cache" \
+env -u ORCA_WORKTREE_ID -u ORCA_WORKTREE_PATH AFK_HOST_CONFIG="$TMP/host.json" AFK_FAKE_LOG="$log" AFK_FAKE_TERMINALS="$terminals" AFK_STATUS_CACHE="$cache" \
   ORCA_TERMINAL_HANDLE=self "$ROOT/adapters/orca-title.sh" --harness codex
 if [[ ! -e "$log" ]]; then ok; else no "publisher ran outside an Orca-managed session"; fi
 

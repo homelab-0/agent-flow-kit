@@ -27,9 +27,12 @@ else bad "bash -n lib/afk-paperclip-plan.sh"; fi
 STUBS="$TMPROOT/stubs"; mkdir -p "$STUBS"
 cat >"$STUBS/orca" <<'SH'
 #!/usr/bin/env bash
+[[ "${1:-}" == --version ]] && { echo 1.4.216; exit 0; }
 [[ "$1 $2" == "terminal list" ]] && { printf '{"terminals":[{"handle":"termA","connected":true,"orphaned":false}]}'; exit 0; }
 exit 1
 SH
+# The stub reaches the kit only through the resolver's host config.
+printf '{"orca_bin":"%s"}\n' "$STUBS/orca" >"$STUBS/host.json"
 chmod +x "$STUBS/orca"
 
 g() { git -C "$REPO" -c commit.gpgsign=false "$@"; }
@@ -74,7 +77,7 @@ RC=0 OUT_TEXT=""
 run_afk() { # <handle> <args...>
   local handle="$1"; shift
   OUT_TEXT="$(env -i PATH="${FAULT_PATH:+$FAULT_PATH:}$STUBS:$PATH" HOME="$HOME_DIR" LANG=C \
-    AFK_STATE_DIR="$STATE" AFK_ORCA_BIN="$STUBS/orca" \
+    AFK_STATE_DIR="$STATE" AFK_HOST_CONFIG="$STUBS/host.json" \
     AFK_PAPERCLIP_CONFIG="$CONFIG" ORCA_TERMINAL_HANDLE="$handle" \
     bash "$AFK" "$@" 2>&1)"
   RC=$?

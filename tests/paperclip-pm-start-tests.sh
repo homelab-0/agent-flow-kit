@@ -67,6 +67,7 @@ SH
 # No launch, no real terminal: every response is a fixture this test controls.
 cat >"$STUBS/orca" <<'SH'
 #!/usr/bin/env bash
+[[ "${1:-}" == --version ]] && { echo 1.4.216; exit 0; }
 case "$1 $2" in
   "worktree show") cat "$ORCA_WT_FILE" ;;
   "terminal list")
@@ -77,6 +78,8 @@ case "$1 $2" in
   *) exit 1 ;;
 esac
 SH
+# The stub reaches the kit only through the resolver's host config.
+printf '{"orca_bin":"%s"}\n' "$STUBS/orca" >"$STUBS/host.json"
 
 # systemctl — enable/disable/is-enabled/is-active/daemon-reload, logged only.
 cat >"$STUBS/systemctl" <<'SH'
@@ -152,7 +155,7 @@ run_afk() { # <cmd> [args...]
   local out err
   out="$(env -i PATH="$STUBS:$PATH" HOME="${HOME:-$SCEN/home}" LANG=C \
     AFK_STATE_DIR="$STATE" AFK_PAPERCLIP_CONFIG="$CONFIG" \
-    AFK_OP_BIN="$STUBS/op" AFK_CURL_BIN="$STUBS/curl" AFK_ORCA_BIN="$STUBS/orca" OP_SERVICE_ACCOUNT_TOKEN=test-op-token \
+    AFK_OP_BIN="$STUBS/op" AFK_CURL_BIN="$STUBS/curl" AFK_HOST_CONFIG="$STUBS/host.json" OP_SERVICE_ACCOUNT_TOKEN=test-op-token \
     AFK_PCS_READINESS_BIN="$STUBS/readiness" READINESS_OK="${READINESS_OK:-true}" READINESS_REASON="${READINESS_REASON:-}" \
     CURL_STUB_LOG="$LOG" CURL_STUB_BODYLOG="$BODYLOG" CURL_STUB_FIXTURES="$FIXDIR" \
     ORCA_WT_FILE="$ORCA_WT_FILE" ORCA_TERMLIST_FILE="$ORCA_TERMLIST_FILE" ORCA_TERMLIST_WT_FILE="$ORCA_TERMLIST_WT_FILE" \
@@ -208,7 +211,7 @@ assert_eq "none+Josh: ledger records the terminal" "$(jq -r --arg id "$ISSUE1" '
 # rebuilt and byte-compared there), so the two copies can never drift.
 run_adapter() { # <intent-file>
   (cd "$REPO_ABS" && env -i PATH="$STUBS:$PATH" HOME="$SCEN/home" LANG=C ORCA_TERMINAL_HANDLE=term-created-1 \
-    AFK_ORCA_BIN="$STUBS/orca" ORCA_WT_FILE="$ORCA_WT_FILE" AFK_CLAUDE_BIN="$STUBS/harness" HARNESS_ARGV_LOG="$SCEN/harness.argv" \
+    AFK_HOST_CONFIG="$STUBS/host.json" ORCA_WT_FILE="$ORCA_WT_FILE" AFK_CLAUDE_BIN="$STUBS/harness" HARNESS_ARGV_LOG="$SCEN/harness.argv" \
     bash "$KIT_ROOT/adapters/orca-pm-bootstrap.sh" --intent "$1" >/dev/null 2>&1)
 }
 : >"$SCEN/harness.argv"

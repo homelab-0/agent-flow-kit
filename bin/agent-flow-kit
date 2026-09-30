@@ -37,7 +37,7 @@ AFK_LIB_DIR="${AFK_LIB_DIR:-$AFK_INSTALL_ROOT/lib}"
 # A missing or unreadable library is an internal failure with a stable message
 # and the usage exit code — never a partially loaded lifecycle that answers
 # questions with whichever functions happened to load.
-for _afk_lib in afk-common afk-source afk-inventory afk-readiness afk-monitor afk-commands afk-plan afk-mutate afk-usage afk-auto-update afk-catalog-sync afk-paperclip afk-pm-registry afk-paperclip-report afk-paperclip-plan afk-paperclip-start afk-paperclip-project afk-accept; do
+for _afk_lib in afk-common afk-orca afk-source afk-inventory afk-readiness afk-monitor afk-commands afk-plan afk-mutate afk-usage afk-auto-update afk-catalog-sync afk-paperclip afk-pm-registry afk-paperclip-report afk-paperclip-plan afk-paperclip-start afk-paperclip-project afk-accept; do
   if [[ ! -r "$AFK_LIB_DIR/$_afk_lib.sh" ]]; then
     printf 'agent-flow-kit: internal error: required library %s.sh is missing or unreadable under %s\n' \
       "$_afk_lib" "$AFK_LIB_DIR" >&2

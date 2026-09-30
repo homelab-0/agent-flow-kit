@@ -51,12 +51,15 @@ STUBS="$TMPROOT/stubs"; mkdir -p "$STUBS"
 TERMFILE="$TMPROOT/terminals.json"
 cat > "$STUBS/orca" <<'SH'
 #!/usr/bin/env bash
+[[ "${1:-}" == --version ]] && { echo 1.4.216; exit 0; }
 if [[ "$1 $2" == "terminal list" ]]; then
   cat "$ORCA_STUB_TERMINALS"
   exit 0
 fi
 exit 1
 SH
+# The stub reaches the kit only through the resolver's host config.
+printf '{"orca_bin":"%s"}\n' "$STUBS/orca" >"$STUBS/host.json"
 chmod +x "$STUBS/orca"
 set_terminals() { printf '%s' "$1" >"$TERMFILE"; }
 
@@ -111,7 +114,7 @@ run_afk() { # <handle> <args...>
   local handle="$1"; shift
   local out
   out="$(env -i PATH="$STUBS:$PATH" HOME="$HOME_DIR" LANG=C \
-    AFK_STATE_DIR="$STATE" AFK_ORCA_BIN="$STUBS/orca" ORCA_STUB_TERMINALS="$TERMFILE" \
+    AFK_STATE_DIR="$STATE" AFK_HOST_CONFIG="$STUBS/host.json" ORCA_STUB_TERMINALS="$TERMFILE" \
     AFK_PAPERCLIP_CONFIG="$CONFIG" ORCA_TERMINAL_HANDLE="$handle" \
     bash "$AFK" "$@" 2>&1)"
   RC=$?
@@ -178,7 +181,7 @@ printf 'stable body' >"$RACE_PATH"
 ) &
 SWAPPER=$!
 afk_timeout 5 env -i PATH="$STUBS:$PATH" HOME="$HOME_DIR" LANG=C \
-  AFK_STATE_DIR="$STATE" AFK_ORCA_BIN="$STUBS/orca" ORCA_STUB_TERMINALS="$TERMFILE" \
+  AFK_STATE_DIR="$STATE" AFK_HOST_CONFIG="$STUBS/host.json" ORCA_STUB_TERMINALS="$TERMFILE" \
   AFK_PAPERCLIP_CONFIG="$CONFIG" ORCA_TERMINAL_HANDLE="termA" AFK_PCR_BODY_READ_TIMEOUT=2 \
   bash "$AFK" paperclip-report --issue "$ISSUE" --comment-file "$RACE_PATH" --json >/dev/null 2>&1
 RACE_RC=$?
@@ -200,7 +203,7 @@ chmod +x "$SWAP_STUBS/mktemp"
 SWAP_PATH="$TMPROOT/swap_body.txt"; printf 'regular at check time' >"$SWAP_PATH"
 swap_start=$SECONDS
 SWAP_OUT="$(afk_timeout 20 env -i PATH="$SWAP_STUBS:$STUBS:$PATH" HOME="$HOME_DIR" LANG=C \
-  AFK_STATE_DIR="$STATE" AFK_ORCA_BIN="$STUBS/orca" ORCA_STUB_TERMINALS="$TERMFILE" \
+  AFK_STATE_DIR="$STATE" AFK_HOST_CONFIG="$STUBS/host.json" ORCA_STUB_TERMINALS="$TERMFILE" \
   AFK_PAPERCLIP_CONFIG="$CONFIG" ORCA_TERMINAL_HANDLE="termA" AFK_PCR_BODY_READ_TIMEOUT=2 \
   SWAP_TO_FIFO="$SWAP_PATH" \
   bash "$AFK" paperclip-report --issue "$ISSUE" --comment-file "$SWAP_PATH" --json 2>&1)"
@@ -215,7 +218,7 @@ reset_state
 run_bg() { # <out-file> <args...> -- a standalone invocation, safe backgrounded
   local outfile="$1"; shift
   env -i PATH="$STUBS:$PATH" HOME="$HOME_DIR" LANG=C \
-    AFK_STATE_DIR="$STATE" AFK_ORCA_BIN="$STUBS/orca" ORCA_STUB_TERMINALS="$TERMFILE" \
+    AFK_STATE_DIR="$STATE" AFK_HOST_CONFIG="$STUBS/host.json" ORCA_STUB_TERMINALS="$TERMFILE" \
     AFK_PAPERCLIP_CONFIG="$CONFIG" ORCA_TERMINAL_HANDLE="termA" \
     bash "$AFK" "$@" >"$outfile" 2>&1
 }

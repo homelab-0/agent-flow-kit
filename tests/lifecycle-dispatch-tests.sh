@@ -368,6 +368,7 @@ STUB_CLOSE_FAILS=0
 
 cat > "$BIN/orca" <<'STUB'
 #!/usr/bin/env bash
+[[ "${1:-}" == --version ]] && { echo 1.4.216; exit 0; }
 is_listed() { # <handle> — what `terminal list` would show at this instant
   local h s
   while read -r h s; do
@@ -419,7 +420,7 @@ chmod +x "$BIN/orca"
 
 terminal_add()    { printf '%s %s\n' "$1" "$2" >> "$STUB_TERMS"; }
 terminal_listed() { # <handle> -> 0 when Orca still knows about it
-  PATH="$BIN:$PATH" orca terminal list --json </dev/null 2>/dev/null \
+  "$BIN/orca" terminal list --json </dev/null 2>/dev/null \
     | jq -e --arg h "$1" '[.terminals[] | select(.handle == $h)] | length > 0' >/dev/null 2>&1
 }
 durable_close_requested() { # <handle> -> 0 when the durable close intent was recorded
@@ -444,7 +445,7 @@ run_afk() { # <args...>
   # the cases the loop has not read yet.
   RUN_OUT="$(env PATH="$BIN:$PATH" HOME="$HOMEDIR" \
              XDG_STATE_HOME="$HOMEDIR/.local/state" \
-             AFK_KIT_ROOT="$CHECKOUT" \
+             AFK_KIT_ROOT="$CHECKOUT" ORCA_CLI_COMMAND="$BIN/orca" \
              STUB_TERMS="$STUB_TERMS" STUB_CLOSED="$STUB_CLOSED" \
              STUB_CLOSE_FAILS="${STUB_CLOSE_FAILS:-0}" \
              bash "$AFK" "$@" </dev/null 2>"$TMPROOT/stderr")"
@@ -1149,7 +1150,7 @@ else ok "a settled worker's tab does not come back on reconnect"; fi
 # the next listing, so the assertion above is a real proof rather than an
 # accident of a stub that forgets everything.
 terminal_add term-nondurable IDLE
-PATH="$BIN:$PATH" orca terminal close --handle term-nondurable </dev/null >/dev/null 2>&1
+"$BIN/orca" terminal close --handle term-nondurable </dev/null >/dev/null 2>&1
 if terminal_listed term-nondurable; then
   ok "a non-durable close leaves the tab to come back, so the proof is falsifiable"
 else
@@ -1285,6 +1286,7 @@ if [[ -n "$REAL_TIMEOUT" ]]; then
   # then say nothing for two minutes. Derived from the same file so the model of
   # durable closure cannot drift between the two.
   { printf '#!/usr/bin/env bash\n'
+    printf '[[ "${1:-}" == --version ]] && { echo 1.4.216; exit 0; }\n'
     printf 'if [[ "${STUB_ORCA_STALL:-0}" == "1" ]]; then sleep 120; fi\n'
     tail -n +2 "$BIN/orca"; } > "$STALLBIN/orca"
   chmod +x "$STALLBIN/orca"
@@ -1303,7 +1305,7 @@ run_sandboxed() { # <path> <args...> — always under an OUTER bound, so a pass
   t0="$(date +%s)"
   P2_OUT="$("$REAL_TIMEOUT" 45 env PATH="$p" HOME="$HOMEDIR" \
             XDG_STATE_HOME="$HOMEDIR/.local/state" \
-            AFK_KIT_ROOT="$CHECKOUT" \
+            AFK_KIT_ROOT="$CHECKOUT" ORCA_CLI_COMMAND="$STALLBIN/orca" \
             STUB_TERMS="$STUB_TERMS" STUB_CLOSED="$STUB_CLOSED" \
             STUB_CLOSE_FAILS=0 STUB_ORCA_STALL="${STUB_ORCA_STALL:-0}" \
             "$BASH" "$AFK" "$@" </dev/null 2>/dev/null)"

@@ -15,6 +15,11 @@ if [[ -n "${AFK_PM_REGISTRY_SOURCED:-}" ]]; then
 fi
 AFK_PM_REGISTRY_SOURCED=1
 
+# The one Orca resolver and bounded runner (AD-28 R1, R2).
+# shellcheck source=lib/afk-orca.sh
+# shellcheck disable=SC1091
+declare -F afk_orca_run >/dev/null 2>&1 || . "$(dirname -- "${BASH_SOURCE[0]}")/afk-orca.sh"
+
 # afk_scope_sha256 (the scope-key hash primitive) is defined by
 # adapters/runtime-scope.sh, which this file reuses rather than
 # re-implementing, so a "session" key here is bit-for-bit the same form the
@@ -57,19 +62,15 @@ afk_pmr_handoff_timeout_min() {
 }
 
 # --- Orca liveness (AC-2) ----------------------------------------------------
-# Sets AFK_PMR_TERMINALS_JSON and AFK_PMR_ORCA_STATE (OK|ORCA_UNAVAILABLE). A
-# missing bounding tool, a missing orca binary, a non-zero exit or unparsable
-# output are all ORCA_UNAVAILABLE — never treated as "no terminals".
+# Sets AFK_PMR_TERMINALS_JSON and AFK_PMR_ORCA_STATE (OK|ORCA_UNAVAILABLE). An
+# unresolved CLI, a missing bounding tool, a timeout, a non-zero exit, an
+# incomplete list or unparsable output are all ORCA_UNAVAILABLE — never
+# treated as "no terminals".
 afk_pmr_orca_terminals() {
-  local orca_bin bound out parsed
+  local out parsed
   AFK_PMR_TERMINALS_JSON="[]"; AFK_PMR_ORCA_STATE="ORCA_UNAVAILABLE"
-  orca_bin="${ORCA_CLI_COMMAND:-${AFK_ORCA_BIN:-orca}}"
-  bound=""
-  command -v timeout >/dev/null 2>&1 && bound=timeout
-  [[ -n "$bound" ]] || { command -v gtimeout >/dev/null 2>&1 && bound=gtimeout; }
-  [[ -n "$bound" ]] || return 1
-  command -v "$orca_bin" >/dev/null 2>&1 || return 1
-  out="$($bound "${AFK_ORCA_TIMEOUT_SECONDS:-5}" "$orca_bin" terminal list --json 2>/dev/null)" || return 1
+  afk_orca_run --bound 5 pm-registry-list -- terminal list --json || return 1
+  out="$AFK_ORCA_OUT"
   # A partial or malformed list is uncertainty, not "no terminals": refuse an
   # ok:false/error envelope, a truncated list, a missing terminals array, and
   # any entry without a string handle and boolean connected/orphaned.
@@ -87,6 +88,7 @@ afk_pmr_orca_terminals() {
 
 # Stale is provable only as "absent" or "orphaned" (AC-2). A listed terminal
 # that is merely disconnected is neither live nor stale, so it is never reaped.
+# ORCA-2: orphaned:true alone stops counting as stale (AD-28 R5).
 afk_pmr_terminal_stale() { # <handle>
   [[ -n "$1" && "$AFK_PMR_ORCA_STATE" == OK ]] || return 1
   jq -e --arg h "$1" 'map(select(.handle==$h)) | all(.[]; .orphaned==true)' \

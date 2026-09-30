@@ -30,6 +30,7 @@ STUBS="$TMPROOT/stubs"; mkdir -p "$STUBS"
 TERMFILE="$TMPROOT/terminals.json"
 cat > "$STUBS/orca" <<'SH'
 #!/usr/bin/env bash
+[[ "${1:-}" == --version ]] && { echo 1.4.216; exit 0; }
 if [[ "$1 $2" == "terminal list" ]]; then
   [[ "${ORCA_STUB_MODE:-ok}" == fail ]] && exit 1
   cat "$ORCA_STUB_TERMINALS"
@@ -38,6 +39,8 @@ fi
 exit 1
 SH
 chmod +x "$STUBS/orca"
+# The stub reaches the kit only through the resolver's host config.
+printf '{"orca_bin":"%s"}\n' "$STUBS/orca" >"$STUBS/host.json"
 set_terminals() { printf '%s' "$1" >"$TERMFILE"; } # {"terminals":[...]}
 
 REPO="$TMPROOT/repo"
@@ -78,7 +81,7 @@ reset_state() { rm -rf "$STATE"; mkdir -p "$STATE"; }
 run_afk() { # <args...> — env vars ORCA_TERMINAL_HANDLE/ORCA_STUB_MODE read from caller's env
   local out
   out="$(env -i PATH="$STUBS:$PATH" HOME="$HOME_DIR" LANG=C \
-    AFK_STATE_DIR="$STATE" AFK_ORCA_BIN="$STUBS/orca" ORCA_STUB_TERMINALS="$TERMFILE" \
+    AFK_STATE_DIR="$STATE" AFK_HOST_CONFIG="$STUBS/host.json" ORCA_STUB_TERMINALS="$TERMFILE" \
     ORCA_STUB_MODE="${ORCA_STUB_MODE:-ok}" ORCA_TERMINAL_HANDLE="${ORCA_TERMINAL_HANDLE:-}" \
     AFK_PAPERCLIP_CONFIG="$HOME_DIR/.config/agent-flow-kit/paperclip.json" \
     bash "$AFK" "$@" 2>&1)"
@@ -88,7 +91,7 @@ run_afk() { # <args...> — env vars ORCA_TERMINAL_HANDLE/ORCA_STUB_MODE read fr
 
 lookup() { # <repo_path> -> prints JSON; also honors ORCA_STUB_MODE/ORCA_TERMINAL_HANDLE-independent
   env -i PATH="$STUBS:$PATH" HOME="$HOME_DIR" LANG=C \
-    AFK_STATE_DIR="$STATE" AFK_ORCA_BIN="$STUBS/orca" ORCA_STUB_TERMINALS="$TERMFILE" \
+    AFK_STATE_DIR="$STATE" AFK_HOST_CONFIG="$STUBS/host.json" ORCA_STUB_TERMINALS="$TERMFILE" \
     ORCA_STUB_MODE="${ORCA_STUB_MODE:-ok}" AFK_INSTALL_ROOT="$KIT_ROOT" \
     bash -c '
       source "'"$KIT_ROOT"'/lib/afk-common.sh"
