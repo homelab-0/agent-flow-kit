@@ -434,6 +434,40 @@ afk_apply_readiness_exit() {
   return 0
 }
 
+# afk_claude_statusline_json — read-only: is AFK's status line wrapper the
+# command Claude runs? Files only; it never writes and never runs the wrapper.
+afk_claude_statusline_json() {
+  local settings="${HOME:+$HOME/.claude/settings.json}" record="$AFK_STATE_DIR/adapters/claude.json"
+  local wrapper="" current="" state="CLAUDE_STATUSLINE_NOT_INSTALLED" severity="warning" present=false
+  local action="run agent-flow-kit enroll-auto-update or adapters/manage.sh install claude"
+  [[ -n "${HOME:-}" && -d "$HOME/.claude" ]] && present=true
+  [[ -n "$settings" && -r "$settings" ]] && current="$(jq -r '.statusLine.command // ""' "$settings" 2>/dev/null)"
+  if [[ -r "$record" ]] && jq -e '.harness=="claude" and ((.phase // "active")=="active")' "$record" >/dev/null 2>&1; then
+    wrapper="$(jq -r '.command // ""' "$record" 2>/dev/null)"
+    if [[ -n "$wrapper" && "$current" == "$wrapper" ]]; then
+      state="CLAUDE_STATUSLINE_COMPOSED"; severity="ok"; action=""
+    else
+      state="CLAUDE_STATUSLINE_OVERWRITTEN"
+      action="the owner's tools replaced the wrapper; run adapters/manage.sh install claude --adopt-current"
+    fi
+  elif [[ "$present" != true ]]; then
+    severity="info"
+  fi
+  jq -nc --arg s "$state" --arg v "$severity" --arg a "$action" --argjson p "$present" \
+    '{state: $s, severity: $v, claude_present: $p, action: (if $a == "" then null else $a end)}'
+}
+
+afk_claude_statusline_apply_status() {
+  local cs
+  cs="$(afk_claude_statusline_json)" || return 0
+  AFK_R_EXTRA="$(jq -nc --argjson base "$AFK_R_EXTRA" --argjson cs "$cs" '$base + {claude_statusline: $cs}')" || return 0
+}
+
+afk_claude_statusline_render_human() { # after the status document, from AFK_R_EXTRA
+  jq -r '.claude_statusline // empty | "\n  claude status line\n    \(.state) (\(.severity))"
+    + (if .action then "\n    action: \(.action)" else "" end)' <<<"$AFK_R_EXTRA" 2>/dev/null || true
+}
+
 afk_cmd_status() { # <json-mode> <require-source> <allow-noncanonical> <allow-rollback>
   AFK_R_COMMAND="status"
   AFK_R_REQUIRE_SOURCE="$2"
@@ -446,8 +480,10 @@ afk_cmd_status() { # <json-mode> <require-source> <allow-noncanonical> <allow-ro
   afk_pm_apply
   if declare -F afk_auto_update_apply_status >/dev/null; then afk_auto_update_apply_status; fi
   if declare -F afk_catalog_apply_status >/dev/null; then afk_catalog_apply_status; fi
+  afk_claude_statusline_apply_status
   local rc=0
   afk_emit_result "$1" || rc=$?
+  [[ "$1" == "true" ]] || afk_claude_statusline_render_human
   if [[ "$1" != "true" ]] && declare -F afk_catalog_render_human >/dev/null; then afk_catalog_render_human; fi
   return "$rc"
 }
