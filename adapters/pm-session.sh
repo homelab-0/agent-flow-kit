@@ -108,11 +108,11 @@ intent=""; [[ ! -f "$intent_file" ]] || intent="$(jq -c . "$intent_file" 2>/dev/
 # ORCA_WORKTREE_ID (which can name the parent checkout in child worktrees).
 binding=""
 if [[ -n "$owner" ]] && jq -e --arg h "$harness" --arg s "$session" --arg t "$terminal" --arg wp "$actual_path" \
-  '.schema=="afk-pm-ownership/2" and .owned==true and .harness==$h and .session==$s and
+  '(.schema|IN("afk-pm-ownership/2","afk-pm-ownership/3")) and .owned==true and .harness==$h and .session==$s and
    .terminal==$t and .worktree.path==$wp and (.worktree.id|type)=="string" and (.worktree.id|length)>0' <<<"$owner" >/dev/null 2>&1; then
   binding="$(jq -c '{worktree,run_id}' <<<"$owner")"
 elif [[ -n "$owner" && -n "$handoff" ]] && jq -e --arg h "$harness" --arg t "$terminal" --arg wp "$actual_path" \
-  '.schema=="afk-pm-handoff/2" and .state=="SUCCESSOR_LAUNCHED" and .successor.harness==$h and
+  '(.schema|IN("afk-pm-handoff/2","afk-pm-handoff/3")) and .state=="SUCCESSOR_LAUNCHED" and .successor.harness==$h and
    .successor.terminal==$t and .successor.worktree.path==$wp and (.successor.worktree.id|type)=="string"' <<<"$handoff" >/dev/null 2>&1; then
   binding="$(jq -c '{worktree:.successor.worktree,run_id:.successor.run_id}' <<<"$handoff")"
 elif [[ -z "$owner" && ! -e "$handoff_file" && -n "$intent" ]] && jq -e --arg h "$harness" --arg t "$terminal" --arg wp "$actual_path" --argjson now "$epoch" \
@@ -130,7 +130,7 @@ run_id="$bound_run"
 same_owner=false
 if [[ -n "$owner" ]] && jq -e --arg h "$harness" --arg s "$session" --arg t "$terminal" \
   --arg wi "$worktree_id" --arg wp "$declared_path" \
-  '.schema=="afk-pm-ownership/2" and .owned==true and .harness==$h and .session==$s and .terminal==$t and .worktree.id==$wi and .worktree.path==$wp' \
+  '(.schema|IN("afk-pm-ownership/2","afk-pm-ownership/3")) and .owned==true and .harness==$h and .session==$s and .terminal==$t and .worktree.id==$wi and .worktree.path==$wp' \
   <<<"$owner" >/dev/null 2>&1; then
   same_owner=true
   previous="$(jq -c '.previous // null' <<<"$owner")"
@@ -140,11 +140,11 @@ fi
 successor=false
 if [[ "$same_owner" != true && -n "$owner" && -n "$handoff" ]] &&
   jq -e --arg h "$harness" --arg t "$terminal" --arg wi "$worktree_id" --arg wp "$declared_path" \
-    '.schema=="afk-pm-handoff/2" and .state=="SUCCESSOR_LAUNCHED" and
+    '(.schema|IN("afk-pm-handoff/2","afk-pm-handoff/3")) and .state=="SUCCESSOR_LAUNCHED" and
      .successor.harness==$h and .successor.terminal==$t and
      .successor.worktree.id==$wi and .successor.worktree.path==$wp' <<<"$handoff" >/dev/null 2>&1 &&
   jq -e --argjson old "$(jq -c '.old' <<<"$handoff")" \
-    '.schema=="afk-pm-ownership/2" and .owned==true and
+    '(.schema|IN("afk-pm-ownership/2","afk-pm-ownership/3")) and .owned==true and
      .session==$old.session and .terminal==$old.terminal and .harness==$old.harness and
      .worktree.id==$old.worktree.id and .worktree.path==$old.worktree.path' <<<"$owner" >/dev/null 2>&1; then
   successor=true
@@ -165,20 +165,41 @@ if [[ "$successor" == true ]]; then
   [[ "$observed_worktree_id" == "$worktree_id" ]] || exit 0
 fi
 
+# The identity tuple (AD-28 R4) is read from Orca once per terminal and then
+# carried forward. When Orca can't show it, the row stays afk-pm-ownership/2,
+# which the registry reads as unknown, never stale. This runs inside the
+# status line, so the read is bounded to 2 s and a failed read is retried at
+# most once per AFK_PM_IDENTITY_RETRY_SECONDS (default 300), remembered in the
+# row's identity_attempt_epoch.
+identity=""; attempt_epoch=""
+retry="${AFK_PM_IDENTITY_RETRY_SECONDS:-300}"
+[[ "$retry" =~ ^[1-9][0-9]*$ ]] || retry=300
+if [[ "$same_owner" == true ]]; then
+  identity="$(jq -c --arg t "$terminal" 'select(.schema=="afk-pm-ownership/3" and .identity.handle==$t) | .identity' <<<"$owner" 2>/dev/null || true)"
+  attempt_epoch="$(jq -r '.identity_attempt_epoch // empty | numbers' <<<"$owner" 2>/dev/null || true)"
+  [[ "$attempt_epoch" =~ ^[0-9]+$ ]] && (( epoch >= attempt_epoch && epoch - attempt_epoch < retry )) || attempt_epoch=""
+fi
+if [[ -z "$identity" && -z "$attempt_epoch" ]]; then
+  if afk_orca_identity --bound 2 "$terminal" "$harness"; then identity="$AFK_ORCA_IDENTITY"; else attempt_epoch="$epoch"; fi
+fi
 owner_json="$(jq -nc --arg h "$harness" --arg s "$session" --arg t "$terminal" \
   --arg wi "$worktree_id" --arg wp "$declared_path" --arg run "$run_id" \
   --arg at "$now" --argjson epoch "$epoch" --argjson fresh "$freshness" \
-  --argjson previous "$previous" --argjson transition "$transition" \
-  '{schema:"afk-pm-ownership/2",owned:true,role:"PM",harness:$h,session:$s,terminal:$t,
+  --argjson previous "$previous" --argjson transition "$transition" --argjson identity "${identity:-null}" \
+  --argjson attempt "${attempt_epoch:-null}" \
+  '{schema:(if $identity==null then "afk-pm-ownership/2" else "afk-pm-ownership/3" end),
+    owned:true,role:"PM",harness:$h,session:$s,terminal:$t,
     worktree:{id:$wi,path:$wp},run_id:(if $run=="" then null else $run end),
     observed_at:$at,observed_epoch:$epoch,freshness_seconds:$fresh,
-    transition_id:$transition,previous:$previous}')"
+    transition_id:$transition,previous:$previous}
+   + (if $identity!=null then {identity:$identity}
+      elif $attempt!=null then {identity_attempt_epoch:$attempt} else {} end)')"
 atomic_write "$owner_file" "$owner_json" || exit 0
 [[ ! -f "$intent_file" ]] || rm -f -- "$intent_file"
 
 reconcile_successor=false
 if [[ -n "$handoff" ]] && jq -e --argjson owner "$owner_json" '
-  .schema=="afk-pm-handoff/2" and (.state|IN("SUCCESSOR_LAUNCHED","ACKED","OLD_CLOSED")) and
+  (.schema|IN("afk-pm-handoff/2","afk-pm-handoff/3")) and (.state|IN("SUCCESSOR_LAUNCHED","ACKED","OLD_CLOSED")) and
   .transition_id==$owner.transition_id and .successor.terminal==$owner.terminal and
   .successor.harness==$owner.harness and .successor.worktree==$owner.worktree and
   .successor.run_id==$owner.run_id and

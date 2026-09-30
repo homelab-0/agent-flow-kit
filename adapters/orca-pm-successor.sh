@@ -58,42 +58,56 @@ terminal_observe() { # <handle> <title>
   shown="$AFK_ORCA_OUT"
   jq -ce --arg handle "$1" --arg title "$2" --arg wi "$observed_id" --arg wp "$observed_path" '
     select(type=="object" and ((has("ok")|not) or .ok==true) and
-      ((has("error")|not) or .error==null)) |
+      ((has("error")|not) or .error==null)) | . as $doc |
     (.result.terminal // .terminal // empty) |
     select(.handle==$handle and .title==$title and
       (.worktreeId // .worktree.id // "")==$wi and
-      (.worktreePath // .worktree.path // "")==$wp)' <<<"$shown" 2>/dev/null
+      (.worktreePath // .worktree.path // "")==$wp) |
+    . + {afk_runtime_id:($doc._meta.runtimeId // null)}' <<<"$shown" 2>/dev/null
 }
 
+runtime_of() { jq -r '._meta.runtimeId // empty | strings' <<<"$1" 2>/dev/null; }
+
+# `orphaned:true` only means the tab has no pane in the current layout; the
+# agent may be running (AD-28 R5). Liveness reads `connected`, and a close is
+# proven only by absence plus terminal_handle_stale, so an orphaned successor
+# is never closed or replaced.
 terminal_live() {
-  jq -e 'if has("connected") then .connected==true and (.orphaned // false)==false
+  jq -e 'if has("connected") then .connected==true
     else ((.status // "")|ascii_downcase|IN("running","active","idle","waiting","awaiting_answer","busy","ready","connected")) end' \
     <<<"$1" >/dev/null 2>&1
 }
 
-# ORCA-2: orphaned:true alone stops counting as dead (AD-28 R5).
 terminal_dead() {
-  jq -e 'if has("connected") then .connected==false or (.orphaned // false)==true
+  jq -e 'if has("connected") then .connected==false
     else ((.status // "")|ascii_downcase|IN("exited","closed","dead","failed","terminated","stopped","complete","completed")) end' \
     <<<"$1" >/dev/null 2>&1
 }
 
+# The binding records the runtime that judged the terminal dead. Absence plus
+# terminal_handle_stale proves a release only in that same runtime: after an
+# Orca restart every old handle answers stale while its process may run on.
 close_bound_terminal() { # <handle> <title> <binding-file> <receipt-file> <binding-json>
-  local listed shown show_rc=0 observed_terminal close_receipt
-  close_receipt="$(jq -c '.schema="afk-pm-replacement-receipt/1" |
-    . + {closed:true,reobserved_absent:true}' <<<"$5")" || return 1
+  local listed shown show_rc=0 observed_terminal close_receipt binding rt
   if [[ -f "$3" ]]; then
-    jq -e --argjson expected "$5" '.==$expected' "$3" >/dev/null 2>&1 || return 1
+    binding="$(jq -c . "$3" 2>/dev/null)" || return 1
+    jq -e --argjson expected "$5" 'del(.runtime_id)==($expected|del(.runtime_id))' <<<"$binding" >/dev/null 2>&1 || return 1
   else
     observed_terminal="$(terminal_observe "$1" "$2")" || return 1
     terminal_dead "$observed_terminal" || return 1
-    atomic_write_verified "$3" "$5" || return 1
+    rt="$(jq -r '.afk_runtime_id // empty | strings' <<<"$observed_terminal")"
+    [[ -n "$rt" ]] || return 1
+    binding="$(jq -c --arg rt "$rt" 'del(.runtime_id) + {runtime_id:$rt}' <<<"$5")" || return 1
+    atomic_write_verified "$3" "$binding" || return 1
   fi
+  rt="$(jq -r '.runtime_id // empty | strings' <<<"$binding")"
+  close_receipt="$(jq -c '.schema="afk-pm-replacement-receipt/1" |
+    . + {closed:true,reobserved_absent:true}' <<<"$binding")" || return 1
   if [[ -f "$4" ]]; then
     jq -e --argjson expected "$close_receipt" '.==$expected' "$4" >/dev/null 2>&1 || return 1
     return 0
   fi
-  afk_orca_run --bound 5 pm-successor-list -- terminal list --worktree "id:$observed_id" --json || return 1
+  afk_orca_run --bound 5 pm-successor-list -- terminal list --worktree "id:$observed_id" --limit "$AFK_ORCA_LIST_LIMIT" --json || return 1
   listed="$AFK_ORCA_OUT"
   terminal_list_valid "$listed" || return 1
   if ! jq -e --arg handle "$1" '.result.terminals[]? | select(.handle==$handle)' \
@@ -102,6 +116,8 @@ close_bound_terminal() { # <handle> <title> <binding-file> <receipt-file> <bindi
     shown="$AFK_ORCA_OUT"
     if (( show_rc != 0 )); then
       terminal_show_released "$shown" || return 1
+      # A binding without a runtime id never takes this branch.
+      [[ -n "$rt" && "$(runtime_of "$listed")" == "$rt" && "$(runtime_of "$shown")" == "$rt" ]] || return 1
       atomic_write_verified "$4" "$close_receipt"
       return
     fi
@@ -110,8 +126,10 @@ close_bound_terminal() { # <handle> <title> <binding-file> <receipt-file> <bindi
   # The caller's earlier dead observation may have raced a reconnect.
   observed_terminal="$(terminal_observe "$1" "$2")" || return 1
   terminal_dead "$observed_terminal" || return 1
+  [[ -n "$rt" ]] || rt="$(jq -r '.afk_runtime_id // empty | strings' <<<"$observed_terminal")"
+  [[ -n "$rt" ]] || return 1
   afk_orca_run pm-successor-close -- terminal close --terminal "$1" --tab --json || return 1
-  afk_orca_run --bound 5 pm-successor-list -- terminal list --worktree "id:$observed_id" --json || return 1
+  afk_orca_run --bound 5 pm-successor-list -- terminal list --worktree "id:$observed_id" --limit "$AFK_ORCA_LIST_LIMIT" --json || return 1
   listed="$AFK_ORCA_OUT"
   terminal_list_valid "$listed" || return 1
   jq -e --arg handle "$1" '[.result.terminals[]? | select(.handle==$handle)]|length==0' \
@@ -119,6 +137,7 @@ close_bound_terminal() { # <handle> <title> <binding-file> <receipt-file> <bindi
   afk_orca_run pm-successor-show -- terminal show --terminal "$1" --json || show_rc=1
   shown="$AFK_ORCA_OUT"
   (( show_rc != 0 )) && terminal_show_released "$shown" || return 1
+  [[ "$(runtime_of "$listed")" == "$rt" && "$(runtime_of "$shown")" == "$rt" ]] || return 1
   atomic_write_verified "$4" "$close_receipt"
 }
 
@@ -185,7 +204,8 @@ consume_completed_replacement() { # <current-launch-receipt-json>
     (.terminal|type)=="string" and (.terminal|length)>0 and
     (.source_generation|type)=="number" and (.source_generation|floor)==.source_generation and
     .source_generation>=-1 and .replacement_generation==(.source_generation+1) and
-    del(.terminal,.source_generation,.replacement_generation)==($common|.schema="afk-pm-replacement-binding/2")' \
+    ((has("runtime_id")|not) or (.runtime_id|type)=="string") and
+    del(.terminal,.source_generation,.replacement_generation,.runtime_id)==($common|.schema="afk-pm-replacement-binding/2")' \
     <<<"$binding" >/dev/null 2>&1 || return 1
   # The journal is active until a durable launch receipt names its exact next
   # generation.  A receipt for the source generation must never consume it.
@@ -232,7 +252,7 @@ consume_completed_replacement() { # <current-launch-receipt-json>
   rm -f -- "$replacement_consumed_file" || return 1
 }
 
-afk_orca_run --bound 5 pm-successor-list -- terminal list --worktree "id:$observed_id" --json || exit 1
+afk_orca_run --bound 5 pm-successor-list -- terminal list --worktree "id:$observed_id" --limit "$AFK_ORCA_LIST_LIMIT" --json || exit 1
 listed="$AFK_ORCA_OUT"
 terminal_list_valid "$listed" || exit 1
 # ORCA-6: dedupe by the recorded identity tuple, not the title (AD-28 R4).
@@ -292,7 +312,7 @@ elif [[ -f "$replacement_binding_file" || -f "$replacement_receipt_file" ]]; the
   terminal="$(jq -r '.terminal // empty' <<<"$replacement_binding")" || exit 1
   [[ -n "$terminal" ]] || exit 1
   jq -e --argjson expected "$(replacement_binding_for "$terminal" "$(jq -r '.source_generation // empty' <<<"$replacement_binding")")" \
-    '.==$expected' <<<"$replacement_binding" >/dev/null 2>&1 || exit 1
+    'del(.runtime_id)==$expected' <<<"$replacement_binding" >/dev/null 2>&1 || exit 1
   close_bound_terminal "$terminal" "$title" "$replacement_binding_file" \
     "$replacement_receipt_file" "$replacement_binding" || exit 1
   count=0; terminal=""; replacement_authorized=true
@@ -338,9 +358,13 @@ if ((count == 0)); then
   consume_completed_replacement "$receipt" || exit 1
 fi
 [[ -n "$terminal" ]] || exit 1
+# The successor's identity tuple (AD-28 R4) travels into the handoff; null
+# when Orca can't show it, which later reads as unknown.
+identity=null
+if afk_orca_identity "$terminal" "$harness"; then identity="$AFK_ORCA_IDENTITY"; fi
 jq -nc --arg id "$transition" --arg terminal "$terminal" --arg h "$harness" \
   --arg wi "$observed_id" --arg wp "$observed_path" --arg run "$run_id" --arg continuation "$continuation_sha" \
-  --arg command_sha "$command_sha" --arg create_id "$create_id" \
+  --arg command_sha "$command_sha" --arg create_id "$create_id" --argjson identity "$identity" \
   '{schema:"afk-pm-launch-receipt/2",transition_id:$id,accepted:true,terminal:$terminal,
     harness:$h,worktree:{id:$wi,path:$wp},run_id:(if $run=="" then null else $run end),
-    continuation_sha256:$continuation,command_sha256:$command_sha,create_id:$create_id}'
+    continuation_sha256:$continuation,command_sha256:$command_sha,create_id:$create_id,identity:$identity}'
