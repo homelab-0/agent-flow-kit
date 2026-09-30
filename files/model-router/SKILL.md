@@ -124,12 +124,19 @@ scripts/make-stamp.sh --request /tmp/route-req.json --out <stamp> \
   --override-actor josh --override-reason "cross-provider review of a claude-authored diff"
 ```
 
+The entitlement pool follows the overridden profile, read from the trusted
+catalog rather than copied from the recommendation. An override that would need a
+pool choice (the profile has zero or several entitlements), or whose profile or
+harness/profile pair the catalog does not list, is refused; a metered profile is
+refused unless the route request itself carried `allow_metered: true`.
+
 An override may bypass ROUTER SCORING ONLY. It never bypasses `forbidden_for`,
 entitlement and billing restrictions, metered-spend authorization, or capability
 and placement constraints. The override record is audit provenance; the final
 stamped fields are validated on their own merits, and an override that produces a
 combination the router itself could never have emitted fails validation exactly
-as if the router had proposed it.
+as if the router had proposed it. The override is provenance only and grants no
+bypass.
 
 Ask the human before stamping when blast radius is `critical` (auth, data
 migrations, anything irreversible). Otherwise decide, stamp, and show the
