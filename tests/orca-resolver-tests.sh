@@ -272,6 +272,11 @@ lv_list "$RA" "$(lv_term false false)"
 eq "(h) connected:false is disconnected" "$(lv)" "disconnected PM_OWNER_DISCONNECTED"
 lv_list "$RA" '[]'; lv_stale_show "$RA"
 eq "(h) absent from a complete list plus terminal_handle_stale is stale" "$(lv)" "stale PM_TERMINAL_STALE"
+eq "(h) every liveness call shares the 5 s bound" \
+  "$(env -i HOME="$H" PATH="$BASE_PATH" LV="$LV" ORCA_CLI_COMMAND="$TMP/lv-orca" AFK_ORCA_TRACE=1 \
+    bash -c '. "$1"; afk_orca_terminal_state "$2" 2>&1 >/dev/null | grep -o "afk-liveness-[a-z]* .* bound=[0-9]*" | sed "s/ .* bound=/ bound=/"' _ "$LIB" "$TUPLE")" \
+  "afk-liveness-list bound=5
+afk-liveness-show bound=5"
 lv_stale_show runtime-b
 eq "(h) a stale answer from another runtime proves nothing" "$(lv)" "unknown PM_TERMINAL_UNPROVEN"
 echo '{"ok":false,"error":{"code":"runtime_unavailable"}}' >"$LV/show"

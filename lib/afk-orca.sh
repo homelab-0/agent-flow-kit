@@ -281,7 +281,7 @@ afk_orca_terminal_state() {
   if [[ -z "$entry" ]]; then
     # Stale needs the handle-specific proof as well as absence from a
     # complete list in the same runtime.
-    afk_orca_run afk-liveness-show -- terminal show --terminal "$handle" --json
+    afk_orca_run --bound 5 afk-liveness-show -- terminal show --terminal "$handle" --json
     shown_rt="$(jq -r '._meta.runtimeId // empty | strings' <<<"$AFK_ORCA_OUT" 2>/dev/null)"
     AFK_ORCA_OUT=""
     if [[ "$AFK_ORCA_CODE" == "ORCA_ERROR:terminal_handle_stale" && "$shown_rt" == "$runtime" ]]; then
