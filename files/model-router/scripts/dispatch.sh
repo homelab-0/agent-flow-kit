@@ -311,13 +311,15 @@ echo \"CLAUDE_EXIT=\$?\"; unset ANTHROPIC_AUTH_TOKEN"
 # The task travels through the prompt file rather than being interpolated into
 # the command, which is stricter than the codex contract's `"<task>"` sketch and
 # matches the claude contract's data/shell-source invariant.
+# The prompt follows `--` because the persona (YAML front matter, `---`) is
+# prepended to it; without the marker clap reads the whole prompt as a flag.
 build_codex_command() {
   local prompt_file="$1" model="$2" effort="$3" worker_env="${4:-}"
   printf '%s' \
 "env -u OPENAI_API_KEY -u CODEX_API_KEY -u ANTHROPIC_API_KEY \
 ${worker_env:+$worker_env }AFK_WORKER_TERMINAL=\"\${ORCA_TERMINAL_HANDLE:-}\" \
 codex exec --model $(shq "$model") -c model_reasoning_effort=$(shq "$effort") \
--s workspace-write \"\$(cat -- $(shq "$prompt_file"))\"; \
+-s workspace-write -- \"\$(cat -- $(shq "$prompt_file"))\"; \
 echo \"CODEX_EXIT=\$?\""
 }
 
@@ -329,7 +331,7 @@ build_opencode_command() {
   # project/external configuration, so an audited required/advisory plugin is
   # loaded from that isolated config while blind/off remain plugin-free.
   [[ -n "${MEMORY_OPENCODE_PLUGIN:-}" ]] && pure_arg=""
-  printf '%s' "env -i HOME=$(shq "$home") PATH=$(shq "$path") USER=$(shq "$user") LANG=C.UTF-8 TERM=dumb ${worker_env:+$worker_env }AFK_WORKER_TERMINAL=\"\${ORCA_TERMINAL_HANDLE:-}\" XDG_CONFIG_HOME=$(shq "$config_dir") XDG_DATA_HOME=$(shq "$data_dir") XDG_CACHE_HOME=$(shq "$cache_dir") XDG_STATE_HOME=$(shq "$state_dir") OPENCODE_CONFIG=$(shq "$config_dir/opencode.json") OPENCODE_DISABLE_AUTOUPDATE=true OPENCODE_DISABLE_EXTERNAL_SKILLS=true OPENCODE_DISABLE_MODELS_FETCH=true OPENCODE_DISABLE_PROJECT_CONFIG=true OPENCODE_DISABLE_SHARE=true OPENCODE_DISABLE_CLAUDE_CODE=true OPENCODE_DISABLE_CLAUDE_CODE_PROMPT=true OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=true OPENCODE_DISABLE_LSP_DOWNLOAD=true $(shq "$binary") run ${pure_arg:+$pure_arg }--agent $(shq "$agent") --model $(shq "$model") --variant $(shq "$variant") --format json \"\$(cat -- $(shq "$prompt_file"))\" < /dev/null > $(shq "$result_file"); echo \"OPENCODE_EXIT=\$?\""
+  printf '%s' "env -i HOME=$(shq "$home") PATH=$(shq "$path") USER=$(shq "$user") LANG=C.UTF-8 TERM=dumb ${worker_env:+$worker_env }AFK_WORKER_TERMINAL=\"\${ORCA_TERMINAL_HANDLE:-}\" XDG_CONFIG_HOME=$(shq "$config_dir") XDG_DATA_HOME=$(shq "$data_dir") XDG_CACHE_HOME=$(shq "$cache_dir") XDG_STATE_HOME=$(shq "$state_dir") OPENCODE_CONFIG=$(shq "$config_dir/opencode.json") OPENCODE_DISABLE_AUTOUPDATE=true OPENCODE_DISABLE_EXTERNAL_SKILLS=true OPENCODE_DISABLE_MODELS_FETCH=true OPENCODE_DISABLE_PROJECT_CONFIG=true OPENCODE_DISABLE_SHARE=true OPENCODE_DISABLE_CLAUDE_CODE=true OPENCODE_DISABLE_CLAUDE_CODE_PROMPT=true OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=true OPENCODE_DISABLE_LSP_DOWNLOAD=true $(shq "$binary") run ${pure_arg:+$pure_arg }--agent $(shq "$agent") --model $(shq "$model") --variant $(shq "$variant") --format json -- \"\$(cat -- $(shq "$prompt_file"))\" < /dev/null > $(shq "$result_file"); echo \"OPENCODE_EXIT=\$?\""
 }
 
 launch_binding_json() {
