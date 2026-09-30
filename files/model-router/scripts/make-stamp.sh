@@ -223,22 +223,36 @@ if [[ -n "$OV_HARNESS$OV_PROFILE" ]]; then
     || die "override refused: profile $FINAL_PROFILE is not in the trusted catalog"
   [[ "$(ov_field '[.routing_pairs[]? | select(.harness == strenv(FH) and .model_profile == strenv(FP))] | length')" -ge 1 ]] \
     || die "override refused: $FINAL_HARNESS / $FINAL_PROFILE is not a routing pair in the trusted catalog"
-  ov_count="$(ov_field '.profiles[strenv(FP)].entitlements | length')"
+  [[ "$(ov_field '.profiles[strenv(FP)].entitlements | tag')" == '"!!seq"' ]] \
+    || die "override refused: $FINAL_PROFILE has no entitlement list in the trusted catalog $OV_CATALOG (unreadable or malformed)"
+  ov_count="$(ov_field '.profiles[strenv(FP)].entitlements | length')" \
+    || die "override refused: trusted catalog $OV_CATALOG is unreadable or malformed"
   [[ "$ov_count" == 1 ]] \
     || die "override refused: $FINAL_PROFILE has ${ov_count:-0} entitlements in the trusted catalog; choosing a pool is a routing decision, not a stamping one"
-  OV_POOL="$(ov_field '.profiles[strenv(FP)].entitlements[0].pool')"
-  OV_COST="$(ov_field '.profiles[strenv(FP)].entitlements[0].cost_class')"
+  OV_POOL="$(ov_field '.profiles[strenv(FP)].entitlements[0].pool')" \
+    || die "override refused: trusted catalog $OV_CATALOG is unreadable or malformed"
+  OV_COST="$(ov_field '.profiles[strenv(FP)].entitlements[0].cost_class')" \
+    || die "override refused: trusted catalog $OV_CATALOG is unreadable or malformed"
   OV_METERED=false
   case "$OV_COST" in
     '"free"'|'"subscription"') ;;
     '"metered"')
-      [[ -n "$REQUEST" ]] && jq -e '.allow_metered == true' "$REQUEST" >/dev/null 2>&1 \
+      [[ -n "$REQUEST" ]] \
+        || die "override refused: $FINAL_PROFILE is metered and --response mode has no route request to carry allow_metered: true"
+      jq -e '.allow_metered == true' "$REQUEST" >/dev/null 2>&1 \
         || die "override refused: $FINAL_PROFILE is metered and the route request did not carry allow_metered: true"
       OV_METERED=true ;;
     *) die "override refused: $FINAL_PROFILE has an unrecognised cost_class ($OV_COST) in the trusted catalog" ;;
   esac
-  [[ "$OV_POOL" == null || "$OV_POOL" == \"*\" ]] \
-    || die "override refused: $FINAL_PROFILE has a malformed entitlement pool in the trusted catalog"
+  # A pool is a non-empty string. null is legitimate only for a free profile
+  # (local execution); a paid entitlement with no pool is a catalog defect.
+  if [[ "$OV_POOL" == null ]]; then
+    [[ "$OV_COST" == '"free"' ]] \
+      || die "override refused: $FINAL_PROFILE has a $OV_COST entitlement with no pool in the trusted catalog"
+  else
+    [[ "$OV_POOL" == \"*\" && "$OV_POOL" != '""' ]] \
+      || die "override refused: $FINAL_PROFILE has a malformed entitlement pool in the trusted catalog"
+  fi
   PIN="$(jq -nc --argjson p "$OV_POOL" --argjson c "$OV_COST" --argjson m "$OV_METERED" \
            '{entitlement_pool:$p, cost_class:$c, metered:$m}')"
   log "OVERRIDE recorded: ${OV_ACTOR} chose ${FINAL_HARNESS}/${FINAL_PROFILE} over the recommendation."

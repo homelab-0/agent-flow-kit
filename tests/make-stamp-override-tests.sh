@@ -82,6 +82,18 @@ refused "two entitlements"    "$WORK/two.yaml" codex openai/strong "2 entitlemen
 
 yq '.profiles["openai/strong"].entitlements = [{"pool":"openai-plus","cost_class":"metered"}]' "$CATALOG" > "$WORK/metered.yaml"
 refused "metered, response mode carries no allow_metered" "$WORK/metered.yaml" codex openai/strong "allow_metered"
+bad_ent() { yq "$2" "$CATALOG" > "$WORK/$1.yaml"; }
+bad_ent scalar-ent '.profiles["openai/strong"].entitlements = "openai-plus"'
+refused "entitlements is a scalar (no bare exit)" "$WORK/scalar-ent.yaml" codex openai/strong "unreadable or malformed"
+bad_ent empty-pool '.profiles["openai/strong"].entitlements[0].pool = ""'
+refused "empty pool" "$WORK/empty-pool.yaml" codex openai/strong "malformed entitlement pool"
+bad_ent null-pool '.profiles["openai/strong"].entitlements[0].pool = null'
+refused "subscription with null pool" "$WORK/null-pool.yaml" codex openai/strong "no pool"
+bad_ent empty-cost '.profiles["openai/strong"].entitlements[0].cost_class = ""'
+refused "empty cost_class" "$WORK/empty-cost.yaml" codex openai/strong "unrecognised cost_class"
+bad_ent no-cost 'del(.profiles["openai/strong"].entitlements[0].cost_class)'
+refused "missing cost_class" "$WORK/no-cost.yaml" codex openai/strong "unrecognised cost_class"
+refused "metered in --response mode says why" "$WORK/metered.yaml" codex openai/strong "no route request"
 echo '{"story_id":"T-1","title":"t","allow_metered":false}' > "$WORK/req-no.json"
 echo '{"story_id":"T-1","title":"t","allow_metered":true}'  > "$WORK/req-yes.json"
 mkdir -p "$WORK/bin"
