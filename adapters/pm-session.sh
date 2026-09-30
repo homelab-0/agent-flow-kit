@@ -30,19 +30,23 @@ run_id="${ORCA_RUN_ID:-}"
 [[ -n "$pm_dir" && -n "$terminal" ]] || exit 0
 actual_path="$(pwd -P 2>/dev/null || true)"
 [[ -n "$actual_path" ]] || exit 0
-orca_bin="${ORCA_CLI_COMMAND:-${AFK_ORCA_BIN:-orca}}"
-bound=""; command -v timeout >/dev/null 2>&1 && bound=timeout
-[[ -n "$bound" ]] || { command -v gtimeout >/dev/null 2>&1 && bound=gtimeout; }
-[[ -n "$bound" ]] || exit 0
+# shellcheck disable=SC1091
+if [[ -r "$HERE/lib/afk-orca.sh" ]]; then . "$HERE/lib/afk-orca.sh"; else . "$HERE/../lib/afk-orca.sh"; fi
+afk_orca_bound_tool >/dev/null || exit 0
 
+# Sets observed_worktree. Runs in this shell so the resolver's verdict is
+# cached for the rest of the process.
+observed_worktree=""
 observe_worktree() {
   local shown shown_id shown_path
-  shown="$($bound "${AFK_ORCA_TIMEOUT_SECONDS:-5}" "$orca_bin" worktree show --worktree "path:$actual_path" --json)" || return 1
+  observed_worktree=""
+  afk_orca_run pm-session-worktree -- worktree show --worktree "path:$actual_path" --json || return 1
+  shown="$AFK_ORCA_OUT"
   shown_id="$(jq -r '.result.worktree.id // .result.id // .worktree.id // .id // empty' <<<"$shown" 2>/dev/null)"
   shown_path="$(jq -r '.result.worktree.path // .result.path // .worktree.path // .path // empty' <<<"$shown" 2>/dev/null)"
   shown_path="$(cd "$shown_path" 2>/dev/null && pwd -P || true)"
   [[ -n "$shown_id" && "$shown_path" == "$actual_path" ]] || return 1
-  printf '%s' "$shown_id"
+  observed_worktree="$shown_id"
 }
 
 if [[ "$mode" == observe && -z "$session" && -n "$input" && -r "$input" ]]; then
@@ -75,9 +79,11 @@ if [[ "$mode" == start ]]; then
   # Orca terminal.  Existing ownership or any handoff (including malformed
   # state) makes a new registration ambiguous and is refused.
   [[ ! -e "$owner_file" && ! -e "$handoff_file" ]] || exit 1
-  worktree_id="$(observe_worktree)" || exit 1
+  observe_worktree || exit 1
+  worktree_id="$observed_worktree"
   run_id=""
-  if current_run="$($bound "${AFK_ORCA_TIMEOUT_SECONDS:-5}" "$orca_bin" orchestration run-current --from "$terminal" --json 2>/dev/null)"; then
+  if afk_orca_run pm-session-run-current -- orchestration run-current --from "$terminal" --json; then
+    current_run="$AFK_ORCA_OUT"
     run_id="$(jq -r '.result.run.id // .result.id // .run.id // .id // empty' <<<"$current_run" 2>/dev/null || true)"
   fi
   intent_json="$(jq -nc --arg h "$harness" --arg t "$terminal" --arg wi "$worktree_id" \
@@ -154,7 +160,8 @@ fi
 # durable handoff is authorization; Orca must independently report that this
 # event is running in the same exact worktree before ownership can move.
 if [[ "$successor" == true ]]; then
-  observed_worktree_id="$(observe_worktree)" || exit 0
+  observe_worktree || exit 0
+  observed_worktree_id="$observed_worktree"
   [[ "$observed_worktree_id" == "$worktree_id" ]] || exit 0
 fi
 
@@ -180,7 +187,8 @@ if [[ -n "$handoff" ]] && jq -e --argjson owner "$owner_json" '
 fi
 
 if [[ "$reconcile_successor" == true ]]; then
-  observed_worktree_id="$(observe_worktree)" || exit 0
+  observe_worktree || exit 0
+  observed_worktree_id="$observed_worktree"
   [[ "$observed_worktree_id" == "$worktree_id" ]] || exit 0
   tid="$(jq -r '.transition_id' <<<"$handoff")"
   transition_dir="$pm_dir/transitions/$tid"; mkdir -p "$transition_dir" || exit 0

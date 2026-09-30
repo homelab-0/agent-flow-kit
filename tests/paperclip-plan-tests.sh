@@ -25,12 +25,18 @@ if bash -n "$KIT_ROOT/lib/afk-paperclip-plan.sh"; then ok "bash -n lib/afk-paper
 else bad "bash -n lib/afk-paperclip-plan.sh"; fi
 
 STUBS="$TMPROOT/stubs"; mkdir -p "$STUBS"
-cat >"$STUBS/orca" <<'SH'
+cat >"$STUBS/orca-cli" <<'SH'
 #!/usr/bin/env bash
+[[ "${1:-}" == --version ]] && { echo 1.4.216; exit 0; }
 [[ "$1 $2" == "terminal list" ]] && { printf '{"terminals":[{"handle":"termA","connected":true,"orphaned":false}]}'; exit 0; }
 exit 1
 SH
-chmod +x "$STUBS/orca"
+# The stub reaches the kit only through the resolver's host config.
+printf '{"orca_bin":"%s"}\n' "$STUBS/orca-cli" >"$STUBS/host.json"
+# A decoy named orca on PATH. Kit code must never run it (AD-28 R10);
+# the real stub is orca-cli and reaches the kit only through the resolver.
+printf '#!/bin/sh\n: >"%s"\nexit 1\n' "$STUBS/.bare-orca-ran" >"$STUBS/orca"; chmod +x "$STUBS/orca"
+chmod +x "$STUBS/orca-cli"
 
 g() { git -C "$REPO" -c commit.gpgsign=false "$@"; }
 REPO="$TMPROOT/repo"
@@ -74,7 +80,7 @@ RC=0 OUT_TEXT=""
 run_afk() { # <handle> <args...>
   local handle="$1"; shift
   OUT_TEXT="$(env -i PATH="${FAULT_PATH:+$FAULT_PATH:}$STUBS:$PATH" HOME="$HOME_DIR" LANG=C \
-    AFK_STATE_DIR="$STATE" AFK_ORCA_BIN="$STUBS/orca" \
+    AFK_STATE_DIR="$STATE" AFK_HOST_CONFIG="$STUBS/host.json" \
     AFK_PAPERCLIP_CONFIG="$CONFIG" ORCA_TERMINAL_HANDLE="$handle" \
     bash "$AFK" "$@" 2>&1)"
   RC=$?
@@ -217,5 +223,7 @@ assert_eq "  ...a pending_publish record that carries the seq is left" "$(jq -c 
 run_afk termA paperclip-plan --issue "$ISSUE" --plan-file "$(plan_file main "$S_OK")" --json
 assert_eq "no fault -> the record ends posted with its seq" "$(jq -c '[.state, .posted_seq]' "$PLAN" 2>/dev/null)" '["posted",2]'
 
+assert_eq "the PATH decoy orca never ran" \
+  "$([[ -e "$STUBS/.bare-orca-ran" ]] && echo ran || echo never)" "never"
 printf '\n\033[1m%d passed, %d failed\033[0m\n' "$PASS" "$FAIL"
 (( FAIL == 0 )) || exit 1
