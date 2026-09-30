@@ -2122,5 +2122,112 @@ eq "usage line prints when the lifecycle cache is missing" "$u" "7d [███�
 vcache a_old '{"extra":{"pm_budget":{"state":"CHECKPOINT_DUE"}}}' 90000
 [[ "$(vplain a_old | sed -n 's/^A	//p')" == *'>16h'* ]] && ok || no "alert age is capped"
 set -e
+# ===== AFK-VIS-2: Claude status line wiring, recovery and status (separate section) =====
+vis2_mgr() { # <home> <state> args... ; runs the adapter manager against a fixture home
+  local h="$1" st="$2"; shift 2
+  "$ROOT/adapters/manage.sh" "$@" --home "$h" --state-dir "$st" --adapter-root "$ROOT/adapters"
+}
+vis2_status() { # <home> <state> -> claude_statusline state from `status --json`
+  (cd "$TMP" && env -u AFK_ORCA_BIN HOME="$1" AFK_STATE_DIR="$2" "$ROOT/bin/agent-flow-kit" status --json 2>/dev/null \
+    | jq -r '.extra.claude_statusline.state // "MISSING"') || true
+}
+vis2_wrapper="$ROOT/adapters/claude/statusline.sh"
+# Everything except the owned command and the hook groups must be byte-equal.
+vis2_owner_view() { jq -S 'del(.hooks, .statusLine.command)' "$1"; }
+
+# enroll on a host that already has ccstatusline: wrapped, prior saved, record written
+v2h="$TMP/vis2-home-a"; v2s="$TMP/vis2-state-a"; mkdir -p "$v2h/.claude"
+jq -nc '{model:"opus",statusLine:{type:"command",command:"bunx -y ccstatusline-usage@latest",padding:2,refreshInterval:60},permissions:{allow:["Bash(ls)"]}}' >"$v2h/.claude/settings.json"
+cp "$v2h/.claude/settings.json" "$TMP/vis2-a-before.json"
+eq "never-enrolled host reports NOT_INSTALLED" "$(vis2_status "$v2h" "$v2s")" CLAUDE_STATUSLINE_NOT_INSTALLED
+vis2_mgr "$v2h" "$v2s" install claude >/dev/null || no "vis2 install with ccstatusline"
+eq "vis2 wrapper is the status line command" "$(jq -r .statusLine.command "$v2h/.claude/settings.json")" "$vis2_wrapper"
+eq "vis2 prior keeps the owner's command" "$(jq -r .value.command "$v2s/adapters/claude-prior.json")" "bunx -y ccstatusline-usage@latest"
+[[ -f "$v2s/adapters/claude.json" ]] && ok || no "vis2 record written"
+if diff <(vis2_owner_view "$TMP/vis2-a-before.json") <(vis2_owner_view "$v2h/.claude/settings.json") >/dev/null; then ok; else no "vis2 install changed keys other than the command and hooks"; fi
+eq "vis2 no env key is ever written" "$(jq 'has("env")' "$v2h/.claude/settings.json")" false
+eq "wired host reports COMPOSED" "$(vis2_status "$v2h" "$v2s")" CLAUDE_STATUSLINE_COMPOSED
+
+# enroll twice: nothing changes
+v2sum="$(cksum "$v2h/.claude/settings.json" "$v2s/adapters/claude.json" "$v2s/adapters/claude-prior.json")"
+vis2_mgr "$v2h" "$v2s" install claude >/dev/null || no "vis2 second install"
+eq "vis2 second install changes no file" "$(cksum "$v2h/.claude/settings.json" "$v2s/adapters/claude.json" "$v2s/adapters/claude-prior.json")" "$v2sum"
+
+# This proves the reinstall after a script change leaves the prior and settings unchanged;
+# update's in-place overwrite of the script follows because the wiring stores a path.
+# update on an enrolled host: the installed scripts are refreshed in place and
+# the owner's saved prior is untouched (the wiring points at a path, not a copy)
+v2rt="$TMP/vis2-runtime"; mkdir -p "$v2rt"; cp -R "$ROOT/adapters/." "$v2rt/"; mkdir -p "$v2rt/bin"; cp "$ROOT/bin/afk-session-start" "$v2rt/bin/"
+v2h2="$TMP/vis2-home-b"; v2s2="$TMP/vis2-state-b"; mkdir -p "$v2h2/.claude"
+jq -nc '{statusLine:{type:"command",command:"owner-tool",padding:1}}' >"$v2h2/.claude/settings.json"
+"$v2rt/manage.sh" install claude --home "$v2h2" --state-dir "$v2s2" --adapter-root "$v2rt" >/dev/null || no "vis2 runtime install"
+v2prior="$(cksum <"$v2s2/adapters/claude-prior.json")"; v2set="$(cksum <"$v2h2/.claude/settings.json")"
+printf '# refreshed by update\n' >>"$v2rt/claude/statusline.sh"
+"$v2rt/manage.sh" install claude --home "$v2h2" --state-dir "$v2s2" --adapter-root "$v2rt" >/dev/null || no "vis2 post-update reinstall"
+eq "vis2 update keeps the saved prior" "$(cksum <"$v2s2/adapters/claude-prior.json")" "$v2prior"
+eq "vis2 update keeps settings.json" "$(cksum <"$v2h2/.claude/settings.json")" "$v2set"
+[[ "$(tail -n1 "$v2rt/claude/statusline.sh")" == '# refreshed by update' ]] && ok || no "vis2 refreshed script is what settings points at"
+
+# enroll with no statusLine at all: the wrapper is created
+v2h3="$TMP/vis2-home-c"; v2s3="$TMP/vis2-state-c"; mkdir -p "$v2h3/.claude"; printf '{"model":"opus"}\n' >"$v2h3/.claude/settings.json"
+vis2_mgr "$v2h3" "$v2s3" install claude >/dev/null || no "vis2 install without statusLine"
+eq "vis2 wrapper created from nothing" "$(jq -r .statusLine.command "$v2h3/.claude/settings.json")" "$vis2_wrapper"
+eq "vis2 unrelated key survives" "$(jq -r .model "$v2h3/.claude/settings.json")" opus
+
+# the owner's tool overwrites the wrapper: status says so, install refuses, adopt recovers
+jq '.statusLine={type:"command",command:"ccstatusline-configurator-output",padding:4,refreshInterval:9}' "$v2h/.claude/settings.json" >"$TMP/vis2-over.json"
+mv "$TMP/vis2-over.json" "$v2h/.claude/settings.json"
+eq "overwritten wrapper reports OVERWRITTEN" "$(vis2_status "$v2h" "$v2s")" CLAUDE_STATUSLINE_OVERWRITTEN
+set +e; vis2_mgr "$v2h" "$v2s" install claude >/dev/null 2>&1; v2rc=$?; set -e
+eq "plain install still refuses an overwritten wrapper" "$v2rc" 3
+cp "$v2h/.claude/settings.json" "$TMP/vis2-over-before.json"
+vis2_mgr "$v2h" "$v2s" install claude --adopt-current >/dev/null || no "vis2 adopt-current"
+eq "adopt re-points at the wrapper" "$(jq -r .statusLine.command "$v2h/.claude/settings.json")" "$vis2_wrapper"
+eq "adopt keeps padding" "$(jq -r .statusLine.padding "$v2h/.claude/settings.json")" 4
+eq "adopt keeps refreshInterval" "$(jq -r .statusLine.refreshInterval "$v2h/.claude/settings.json")" 9
+eq "adopt saves the NEW command as the prior" "$(jq -r .value.command "$v2s/adapters/claude-prior.json")" ccstatusline-configurator-output
+if diff <(vis2_owner_view "$TMP/vis2-over-before.json") <(vis2_owner_view "$v2h/.claude/settings.json") >/dev/null; then ok; else no "vis2 adopt changed keys other than the command"; fi
+eq "vis2 adopt writes no env key" "$(jq 'has("env")' "$v2h/.claude/settings.json")" false
+eq "adopt backs up the old prior" "$(jq -r .value.command "$(find "$v2h/.config/agent-flow-kit/backups" -name 'claude-prior.*.json' | head -n1)")" "bunx -y ccstatusline-usage@latest"
+eq "adopted host reports COMPOSED" "$(vis2_status "$v2h" "$v2s")" CLAUDE_STATUSLINE_COMPOSED
+v2sum="$(cksum "$v2h/.claude/settings.json" "$v2s/adapters/claude.json" "$v2s/adapters/claude-prior.json")"
+vis2_mgr "$v2h" "$v2s" install claude --adopt-current >/dev/null || no "vis2 second adopt"
+eq "adopt is idempotent" "$(cksum "$v2h/.claude/settings.json" "$v2s/adapters/claude.json" "$v2s/adapters/claude-prior.json")" "$v2sum"
+vis2_mgr "$v2h" "$v2s" install claude >/dev/null || no "vis2 install after adopt"
+vis2_mgr "$v2h" "$v2s" remove claude >/dev/null || no "vis2 remove after adopt"
+eq "remove after adopt restores the adopted owner command" "$(jq -r .statusLine.command "$v2h/.claude/settings.json")" ccstatusline-configurator-output
+
+# adopt refuses a missing or malformed statusLine and changes nothing
+for v2case in missing malformed; do
+  v2h4="$TMP/vis2-home-$v2case"; v2s4="$TMP/vis2-state-$v2case"; mkdir -p "$v2h4/.claude"; printf '{"model":"opus"}\n' >"$v2h4/.claude/settings.json"
+  vis2_mgr "$v2h4" "$v2s4" install claude >/dev/null || no "vis2 install for $v2case"
+  if [[ "$v2case" == missing ]]; then jq 'del(.statusLine)' "$v2h4/.claude/settings.json" >"$TMP/vis2-m.json"
+  else jq '.statusLine="just a string"' "$v2h4/.claude/settings.json" >"$TMP/vis2-m.json"; fi
+  mv "$TMP/vis2-m.json" "$v2h4/.claude/settings.json"; v2sum="$(cksum "$v2h4/.claude/settings.json" "$v2s4/adapters/claude-prior.json")"
+  set +e; v2err="$(vis2_mgr "$v2h4" "$v2s4" install claude --adopt-current 2>&1 >/dev/null)"; v2rc=$?; set -e
+  eq "adopt refuses a $v2case statusLine" "$v2rc" 3
+  [[ "$v2err" == *STATUSLINE_UNUSABLE* ]] && ok || no "adopt names the $v2case refusal"
+  eq "refused adopt changes nothing ($v2case)" "$(cksum "$v2h4/.claude/settings.json" "$v2s4/adapters/claude-prior.json")" "$v2sum"
+done
+# adopt never chains an AFK wrapper, from this or any other runtime root
+for v2wrap in "/other/home/.agents/skills/afk-runtime/claude/statusline.sh" "/opt/x/claude/statusline.sh"; do
+  v2h5="$TMP/vis2-home-chain"; v2s5="$TMP/vis2-state-chain"; rm -rf "$v2h5" "$v2s5"; mkdir -p "$v2h5/.claude"
+  printf '{"statusLine":{"type":"command","command":"owner"}}\n' >"$v2h5/.claude/settings.json"
+  vis2_mgr "$v2h5" "$v2s5" install claude >/dev/null || no "vis2 install for chain"
+  jq --arg c "$v2wrap" '.statusLine.command=$c' "$v2h5/.claude/settings.json" >"$TMP/vis2-c.json"; mv "$TMP/vis2-c.json" "$v2h5/.claude/settings.json"
+  v2sum="$(cksum "$v2h5/.claude/settings.json" "$v2s5/adapters/claude-prior.json" "$v2s5/adapters/claude.json")"
+  set +e; v2err="$(vis2_mgr "$v2h5" "$v2s5" install claude --adopt-current 2>&1 >/dev/null)"; v2rc=$?; set -e
+  eq "adopt refuses to chain a wrapper ($v2wrap)" "$v2rc" 3
+  [[ "$v2err" == *ADOPT_WOULD_CHAIN_WRAPPER* ]] && ok || no "adopt names the chain refusal ($v2wrap)"
+  eq "refused chain changes nothing ($v2wrap)" "$(cksum "$v2h5/.claude/settings.json" "$v2s5/adapters/claude-prior.json" "$v2s5/adapters/claude.json")" "$v2sum"
+done
+set +e; vis2_mgr "$TMP/vis2-home-none" "$TMP/vis2-state-none" install codex --adopt-current >/dev/null 2>&1; v2rc=$?; set -e
+eq "adopt-current is refused for other adapters" "$v2rc" 2
+# status is read-only
+vis2_mgr "$v2h" "$v2s" install claude >/dev/null || no "vis2 reinstall for the read-only check"
+v2sum="$(cksum "$v2h/.claude/settings.json" "$v2s/adapters/claude.json")"; vis2_status "$v2h" "$v2s" >/dev/null
+eq "status never writes the wiring" "$(cksum "$v2h/.claude/settings.json" "$v2s/adapters/claude.json")" "$v2sum"
+# ===== end AFK-VIS-2 =====
+
 printf '%s\n' "$pass passed, $fail failed"
 (( fail == 0 ))

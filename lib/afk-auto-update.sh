@@ -282,8 +282,12 @@ afk_au_sd() { printf '%s' "${1//"%"/"%%"}"; }
 
 afk_au_write_config() { # <key-ref> — the reference, never the key
   local content
-  content="$(jq -n --arg ref "$1" --arg key "$AFK_AU_KEY" --arg platform "$AFK_AU_PLATFORM" \
-    '{schema: "afk-auto-update/1", key_ref: $ref, key_path: $key, platform: $platform}')" || return 1
+  # An owner's recorded status line choice ("claude_statusline": "off") survives.
+  local cs=""
+  [[ -r "$AFK_AU_CONFIG" ]] && cs="$(jq -r '.claude_statusline // empty' "$AFK_AU_CONFIG" 2>/dev/null)"
+  content="$(jq -n --arg ref "$1" --arg key "$AFK_AU_KEY" --arg platform "$AFK_AU_PLATFORM" --arg cs "$cs" \
+    '{schema: "afk-auto-update/1", key_ref: $ref, key_path: $key, platform: $platform}
+     + (if $cs == "" then {} else {claude_statusline: $cs} end)')" || return 1
   afk_au_put "$AFK_AU_CONFIG" "$content" 077
 }
 
@@ -507,6 +511,41 @@ afk_au_remove() {
     "$AFK_AU_PLATFORM" "$AFK_AU_KEY"
 }
 
+# afk_au_claude_statusline — wire AFK's status line into Claude Code through
+# the same adapter manager as `adapters/manage.sh install claude`. Prints one
+# outcome token and never fails enrollment. Skipped, with a named reason, when
+# there is no ~/.claude or the owner opted out (AFK_CLAUDE_STATUSLINE=off, or
+# "claude_statusline": "off" in the machine-local auto-update config). The
+# owner's ccstatusline config is never touched: the manager keeps their
+# command as the prior and composes with it.
+afk_au_claude_statusline() {
+  local mgr="$AFK_SKILLS_HOME/afk-runtime/manage.sh" rec had="" out rc=0
+  if [[ "${AFK_CLAUDE_STATUSLINE:-}" == off ]] \
+     || [[ -r "$AFK_AU_CONFIG" && "$(jq -r '.claude_statusline // empty' "$AFK_AU_CONFIG" 2>/dev/null)" == off ]]; then
+    printf 'SKIPPED:OPTED_OUT'; return 0
+  fi
+  [[ -d "$HOME/.claude" ]] || { printf 'SKIPPED:NO_CLAUDE'; return 0; }
+  [[ -x "$mgr" && ! -L "$mgr" ]] || { printf 'SKIPPED:MANAGER_UNAVAILABLE'; return 0; }
+  rec="$AFK_STATE_DIR/adapters/claude.json"
+  # A record that existed is not proof nothing changed: install may roll back a
+  # pending record and re-wire, so compare the record and statusLine after.
+  had="$(cksum <"$rec" 2>/dev/null)|$(jq -c '.statusLine // null' "$HOME/.claude/settings.json" 2>/dev/null)"
+  out="$(env AFK_SKILLS_HOME="$AFK_SKILLS_HOME" AFK_STATE_DIR="$AFK_STATE_DIR" \
+    "${AFK_AU_BASH:-bash}" "$mgr" install claude --home "$HOME" --state-dir "$AFK_STATE_DIR" --adapter-root "$AFK_SKILLS_HOME/afk-runtime" 2>&1 </dev/null)" || rc=$?
+  if (( rc == 0 )); then
+    if [[ "$had" == "$(cksum <"$rec" 2>/dev/null)|$(jq -c '.statusLine // null' "$HOME/.claude/settings.json" 2>/dev/null)" ]]; then
+      printf 'UNCHANGED'
+    else
+      printf 'WIRED'
+    fi
+  elif [[ "$out" == *USER_CONFIG_CONFLICT* ]]; then
+    printf 'CONFLICT (run adapters/manage.sh install claude --adopt-current)'
+  else
+    printf 'FAILED:%s' "$rc"
+  fi
+  return 0
+}
+
 afk_cmd_enroll_auto_update() { # <enroll|check|remove> <key-ref> <key-file>
   local interval first out rc=0
   if [[ "$1" != enroll && ( -n "$2" || -n "$3" ) ]]; then
@@ -577,8 +616,9 @@ afk_cmd_enroll_auto_update() { # <enroll|check|remove> <key-ref> <key-file>
   else
     first="$(afk_au_check)"
   fi
-  printf 'auto-update: ENROLLED platform=%s interval=%ss key=%s (%s) scheduler=%s first_attempt=%s; %s\n' \
-    "$AFK_AU_PLATFORM" "$interval" "$AFK_AU_KEY" "$AFK_AU_KEY_ACTION" "$AFK_AU_SCHEDULER" "$first" "$AFK_AU_NOTE"
+  local cs; cs="$(afk_au_claude_statusline)"
+  printf 'auto-update: ENROLLED platform=%s interval=%ss key=%s (%s) scheduler=%s first_attempt=%s claude_statusline=%s; %s\n' \
+    "$AFK_AU_PLATFORM" "$interval" "$AFK_AU_KEY" "$AFK_AU_KEY_ACTION" "$AFK_AU_SCHEDULER" "$first" "$cs" "$AFK_AU_NOTE"
   return "$AFK_EXIT_OK"
 }
 

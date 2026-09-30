@@ -12,15 +12,19 @@ HOME_ROOT="${HOME:-}"
 STATE_DIR="${AFK_STATE_DIR:-${XDG_STATE_HOME:-${HOME_ROOT:+$HOME_ROOT/.local/state}}/agent-flow-kit}"
 ADAPTER_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MANAGER_ROOT="$ADAPTER_ROOT"
+ADOPT_CURRENT=false
 while (( $# )); do
   case "$1" in
     --home) (( $# >= 2 )) || exit 2; HOME_ROOT="$2"; shift 2 ;;
     --state-dir) (( $# >= 2 )) || exit 2; STATE_DIR="$2"; shift 2 ;;
     --adapter-root) (( $# >= 2 )) || exit 2; ADAPTER_ROOT="$2"; shift 2 ;;
+    --adopt-current) ADOPT_CURRENT=true; shift ;;
     *) printf 'adapter-manager: unknown option\n' >&2; exit 2 ;;
   esac
 done
-[[ "$ACTION" == install || "$ACTION" == remove ]] || { printf 'usage: manage.sh install|remove claude|codex|opencode|hermes\n' >&2; exit 2; }
+[[ "$ACTION" == install || "$ACTION" == remove ]] || { printf 'usage: manage.sh install|remove claude|codex|opencode|hermes [--adopt-current (install claude only)]\n' >&2; exit 2; }
+[[ "$ADOPT_CURRENT" == false || ( "$ACTION" == install && "$HARNESS" == claude ) ]] \
+  || { printf 'adapter-manager: --adopt-current applies only to: install claude\n' >&2; exit 2; }
 case "$HARNESS" in claude|codex|opencode|hermes) : ;; *) printf 'adapter-manager: unsupported adapter\n' >&2; exit 2 ;; esac
 [[ -n "$HOME_ROOT" && -n "$STATE_DIR" ]] || { printf 'adapter-manager: home and state directory must be declared\n' >&2; exit 2; }
 [[ "$HOME_ROOT" == /* ]] || HOME_ROOT="$INVOCATION_CWD/$HOME_ROOT"
@@ -83,6 +87,41 @@ if [[ "$HARNESS" == claude ]]; then
   backup="$STATE_DIR/adapters/claude-prior.json"; mkdir -p -- "$(dirname "$settings")"
   if [[ "$ACTION" == install ]]; then
     [[ ! -e "$settings" ]] || jq -e 'type=="object" and ((.hooks // {})|type)=="object" and ((.hooks.SessionStart // [])|type)=="array"' "$settings" >/dev/null 2>&1 || { printf 'adapter-manager: USER_CONFIG_UNREADABLE\n' >&2; exit 3; }
+    if [[ "$ADOPT_CURRENT" == true ]]; then
+      # The owner's tools replaced the wrapper: keep THEIR new command as the
+      # prior and re-point the status line at AFK's wrapper. Every other key
+      # of .statusLine and of settings.json is untouched.
+      chk="$(mktemp)"; trap 'rm -f -- "$chk"; release_manager_lock' EXIT
+      # The prior's digest is re-derived below, so an interrupted adoption
+      # stays recoverable: validate its structure, not its old digest.
+      { [[ -r "$record" ]] && record_identity_valid "$record" && jq -e '.phase=="active"' "$record" >/dev/null 2>&1 \
+        && jq --arg d "$(file_sha256 "$backup" 2>/dev/null)" '.backup_sha256=$d' "$record" >"$chk" \
+        && restoration_metadata_valid "$chk"; } \
+        || { printf 'adapter-manager: NOT_INSTALLED: no intact Claude installation record; run install claude first\n' >&2; exit 3; }
+      jq -e '(.statusLine|type)=="object" and ((.statusLine.command|type)=="string") and (.statusLine.command|length)>0' "$settings" >/dev/null 2>&1 \
+        || { printf 'adapter-manager: STATUSLINE_UNUSABLE: settings.json has no statusLine command to adopt; nothing was changed\n' >&2; exit 3; }
+      if [[ "$(jq -r .statusLine.command "$settings")" == "$command" ]]; then printf 'adopt:claude:OK\n'; exit 0; fi
+      # Never adopt an AFK wrapper (any runtime root) as the prior: it would chain itself.
+      adopt_cmd="$(jq -r .statusLine.command "$settings")"
+      case "$adopt_cmd" in
+        */afk-runtime/claude/statusline.sh*|*claude/statusline.sh|*claude/statusline.sh\ *)
+          printf 'adapter-manager: ADOPT_WOULD_CHAIN_WRAPPER: the current statusLine command is already an AFK wrapper; nothing was changed\n' >&2; exit 3 ;;
+      esac
+      backups="$HOME_ROOT/.config/agent-flow-kit/backups"
+      mkdir -p -- "$backups"; chmod 700 "$backups" 2>/dev/null || true
+      cp -p -- "$backup" "$backups/claude-prior.$(date -u +%Y%m%dT%H%M%SZ).$$.json"
+      adopted="$(jq -c .statusLine "$settings")"
+      jq --argjson v "$adopted" '.present=true|.value=$v' "$backup" >"$chk"
+      atomic_json "$chk" "$backup"
+      tmp="${settings}.afk.$$"; trap 'rm -f -- "$chk" "$tmp"; release_manager_lock' EXIT
+      jq --arg c "$command" '.statusLine.command=$c' "$settings" >"$tmp"
+      jq --arg d "$(file_sha256 "$backup")" --argjson st "$(jq -c .statusLine "$tmp")" \
+        '.backup_sha256=$d|.installed_status_line=$st' "$record" >"$chk"
+      atomic_json "$chk" "$record"
+      chmod --reference="$settings" "$tmp" 2>/dev/null || chmod 600 "$tmp"
+      mv -f -- "$tmp" "$settings"
+      printf 'adopt:claude:OK\n'; exit 0
+    fi
     if [[ -r "$record" ]] && [[ "$(jq -r '.command // ""' "$record")" == "$command" ]] \
       && [[ "$(jq -r '.updater // ""' "$record")" == "$updater" ]] \
       && [[ "$(jq -r '.compact // ""' "$record")" == "$compact" ]] \

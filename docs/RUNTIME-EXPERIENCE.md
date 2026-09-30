@@ -75,6 +75,29 @@ adapters/manage.sh install claude|codex|opencode|hermes
 adapters/manage.sh remove claude|codex|opencode|hermes
 ```
 
+### Claude status line enrollment and recovery
+
+- `agent-flow-kit enroll-auto-update` also runs `manage.sh install claude` when
+  `~/.claude` exists, and reports `claude_statusline=WIRED|UNCHANGED|CONFLICT|
+  FAILED:<rc>|SKIPPED:<reason>` in its summary line. Opt out with
+  `AFK_CLAUDE_STATUSLINE=off` for one run, or `"claude_statusline": "off"` in
+  `~/.config/agent-flow-kit/auto-update.json` (kept across re-enrollment).
+  Skips are named: `OPTED_OUT`, `NO_CLAUDE`, `MANAGER_UNAVAILABLE`.
+- `update` and the auto-update timer only refresh the installed scripts. The
+  wiring points at a path, so an enrolled adapter picks the new scripts up and
+  the owner's saved prior command is untouched. Updates never create a wiring.
+- `agent-flow-kit status` reports `extra.claude_statusline.state`:
+  `CLAUDE_STATUSLINE_COMPOSED`, `CLAUDE_STATUSLINE_NOT_INSTALLED`, or
+  `CLAUDE_STATUSLINE_OVERWRITTEN` (a record exists but `.statusLine.command` is
+  not AFK's wrapper). It reads files only.
+- If the owner's tools (for example ccstatusline's configurator) replace the
+  wrapper, run `adapters/manage.sh install claude --adopt-current`. It saves
+  the new `.statusLine` as the prior (the old prior is copied to
+  `~/.config/agent-flow-kit/backups/`), re-points the command at the wrapper,
+  and keeps every other `statusLine` and `settings.json` key. It refuses when
+  `.statusLine` is missing or has no command. AFK never edits the owner's
+  ccstatusline configuration and never writes settings `env` keys.
+
 Installation is repeatable and compositional. Claude's wrapper preserves the
 entire prior `statusLine` object, feeds its command the original stdin exactly
 once, and restores it on removal. On Linux, Claude also composes one synchronous
