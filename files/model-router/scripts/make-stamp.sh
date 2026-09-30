@@ -24,7 +24,10 @@
 #   --override-reason <why>
 #                    record a deliberate PRE-STAMP override. The FINAL fields
 #                    are what gets validated; the override record is AUDIT
-#                    PROVENANCE ONLY and grants no bypass of any rule.
+#                    PROVENANCE ONLY and grants no bypass of any rule. The
+#                    entitlement pool follows the FINAL profile, read from the
+#                    trusted catalog; no catalog, an unknown profile or pair,
+#                    or a profile with other than one entitlement is refused.
 #   --check          after writing, run agent-stamp-validate as an ADVISORY
 #                    early warning. It is not the final validation: dispatch.sh
 #                    re-validates immediately before every launch.
@@ -78,6 +81,18 @@ ROUTER_URL="${AGENT_ROUTER_URL:-$(yq_cfg '.launcher.router_endpoint')}"
 ROUTER_URL="${ROUTER_URL%/}"
 TOKEN_ENV="${AGENT_ROUTER_TOKEN_ENV:-$(yq_cfg '.launcher.caller_token_env')}"
 TOKEN_ENV="${TOKEN_ENV:-AGENT_ROUTER_TOKEN}"
+
+# Trusted catalog, in the same order as dispatch.sh: env, launcher.catalog_path,
+# the synced current.yaml. Prints the path, or nothing when none resolves.
+resolve_catalog() {
+  local catalog synced
+  catalog="${AGENT_STAMP_VALIDATE_CATALOG_PATH:-$(yq_cfg '.launcher.catalog_path')}"
+  [[ "$catalog" == null ]] && catalog=""
+  synced="${HOME:+$HOME/.config/agent-flow-kit/trusted-catalogs/current.yaml}"
+  [[ -z "$catalog" && -n "$synced" && -e "$synced" ]] && catalog="$synced"
+  [[ -n "$catalog" && -f "$catalog" ]] && printf '%s' "$catalog"
+  return 0
+}
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 PROFILE="$TMP/profile.json"
@@ -180,7 +195,7 @@ FINAL_HARNESS="$(jq -r '.harness // ""' "$PROFILE")"
 FINAL_PROFILE="$(jq -r '.model_profile // ""' "$PROFILE")"
 [[ -n "$FINAL_HARNESS" && -n "$FINAL_PROFILE" ]] \
   || die "route response carries no usable harness/model_profile — refusing to stamp"
-OVERRIDE='null'
+OVERRIDE='null' PIN='null'
 
 if [[ -n "$OV_HARNESS$OV_PROFILE" ]]; then
   [[ -n "$OV_ACTOR" && -n "$OV_REASON" ]] \
@@ -192,6 +207,54 @@ if [[ -n "$OV_HARNESS$OV_PROFILE" ]]; then
                 '{actor:$a, at:$at, original:{harness:$oh, model_profile:$op}, reason:$r}')"
   [[ -n "$OV_HARNESS" ]] && FINAL_HARNESS="$OV_HARNESS"
   [[ -n "$OV_PROFILE" ]] && FINAL_PROFILE="$OV_PROFILE"
+
+  # The pool follows the FINAL profile, read from the trusted catalog. Copying
+  # the overridden decision's pool would claim e.g. openai/strong is paid from
+  # anthropic-max, which the validator rightly refuses. Anything that needs a
+  # choice or a judgement is refused: that is a routing decision, not stamping.
+  command -v yq >/dev/null || die "an override needs yq to read the trusted catalog"
+  OV_CATALOG="$(resolve_catalog)"
+  [[ -n "$OV_CATALOG" ]] \
+    || die "override refused: no trusted catalog resolved (AGENT_STAMP_VALIDATE_CATALOG_PATH, launcher.catalog_path, or the synced current.yaml), so the entitlement pool for $FINAL_PROFILE cannot be established"
+  ov_field() { FP="$FINAL_PROFILE" FH="$FINAL_HARNESS" yq -o=json -I=0 "$1" "$OV_CATALOG" 2>/dev/null; }
+  [[ "$(ov_field '.profiles | tag')" == '"!!map"' ]] \
+    || die "override refused: trusted catalog $OV_CATALOG is unreadable or malformed"
+  [[ "$(ov_field '.profiles | has(strenv(FP))')" == true ]] \
+    || die "override refused: profile $FINAL_PROFILE is not in the trusted catalog"
+  [[ "$(ov_field '[.routing_pairs[]? | select(.harness == strenv(FH) and .model_profile == strenv(FP))] | length')" -ge 1 ]] \
+    || die "override refused: $FINAL_HARNESS / $FINAL_PROFILE is not a routing pair in the trusted catalog"
+  [[ "$(ov_field '.profiles[strenv(FP)].entitlements | tag')" == '"!!seq"' ]] \
+    || die "override refused: $FINAL_PROFILE has no entitlement list in the trusted catalog $OV_CATALOG (unreadable or malformed)"
+  ov_count="$(ov_field '.profiles[strenv(FP)].entitlements | length')" \
+    || die "override refused: trusted catalog $OV_CATALOG is unreadable or malformed"
+  [[ "$ov_count" == 1 ]] \
+    || die "override refused: $FINAL_PROFILE has ${ov_count:-0} entitlements in the trusted catalog; choosing a pool is a routing decision, not a stamping one"
+  OV_POOL="$(ov_field '.profiles[strenv(FP)].entitlements[0].pool')" \
+    || die "override refused: trusted catalog $OV_CATALOG is unreadable or malformed"
+  OV_COST="$(ov_field '.profiles[strenv(FP)].entitlements[0].cost_class')" \
+    || die "override refused: trusted catalog $OV_CATALOG is unreadable or malformed"
+  OV_METERED=false
+  case "$OV_COST" in
+    '"free"'|'"subscription"') ;;
+    '"metered"')
+      [[ -n "$REQUEST" ]] \
+        || die "override refused: $FINAL_PROFILE is metered and --response mode has no route request to carry allow_metered: true"
+      jq -e '.allow_metered == true' "$REQUEST" >/dev/null 2>&1 \
+        || die "override refused: $FINAL_PROFILE is metered and the route request did not carry allow_metered: true"
+      OV_METERED=true ;;
+    *) die "override refused: $FINAL_PROFILE has an unrecognised cost_class ($OV_COST) in the trusted catalog" ;;
+  esac
+  # A pool is a non-empty string. null is legitimate only for a free profile
+  # (local execution); a paid entitlement with no pool is a catalog defect.
+  if [[ "$OV_POOL" == null ]]; then
+    [[ "$OV_COST" == '"free"' ]] \
+      || die "override refused: $FINAL_PROFILE has a $OV_COST entitlement with no pool in the trusted catalog"
+  else
+    [[ "$OV_POOL" == \"*\" && "$OV_POOL" != '""' ]] \
+      || die "override refused: $FINAL_PROFILE has a malformed entitlement pool in the trusted catalog"
+  fi
+  PIN="$(jq -nc --argjson p "$OV_POOL" --argjson c "$OV_COST" --argjson m "$OV_METERED" \
+           '{entitlement_pool:$p, cost_class:$c, metered:$m}')"
   log "OVERRIDE recorded: ${OV_ACTOR} chose ${FINAL_HARNESS}/${FINAL_PROFILE} over the recommendation."
   log "  This is provenance only. It grants no bypass: the final fields are validated on their own merits."
 fi
@@ -210,14 +273,15 @@ jq \
   --argjson tags "$TAGS_JSON" \
   --argjson ctx "$CTX_JSON" \
   --argjson override "$OVERRIDE" \
+  --argjson pin "$PIN" \
   --arg created "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   '{
      harness: $harness,
      model_profile: $profile,
      effort: .effort,
-     cost_class: .cost_class,
-     entitlement_pool: .entitlement_pool,
-     metered: .metered,
+     cost_class: ($pin.cost_class // .cost_class),
+     entitlement_pool: (if $pin == null then .entitlement_pool else $pin.entitlement_pool end),
+     metered: (if $pin == null then .metered else $pin.metered end),
      placement_policy: .placement_policy,
      placement_required: .placement_required,
      catalog_version: .catalog_version,
@@ -266,12 +330,8 @@ log "  digest sha256:$(sha256_of "$OUT")"
 
 if (( CHECK )); then
   validator="${AGENT_STAMP_VALIDATE:-agent-stamp-validate}"
-  # Same order as dispatch.sh: env, launcher.catalog_path, the synced current.yaml.
-  catalog="${AGENT_STAMP_VALIDATE_CATALOG_PATH:-$(yq_cfg '.launcher.catalog_path')}"
-  [[ "$catalog" == null ]] && catalog=""
-  synced="${HOME:+$HOME/.config/agent-flow-kit/trusted-catalogs/current.yaml}"
-  [[ -z "$catalog" && -n "$synced" && -e "$synced" ]] && catalog="$synced"
-  if command -v "$validator" >/dev/null && [[ -n "$catalog" && -f "$catalog" ]]; then
+  catalog="$(resolve_catalog)"
+  if command -v "$validator" >/dev/null && [[ -n "$catalog" ]]; then
     rc=0
     "$validator" --catalog "$catalog" --stamp "$OUT" > "$TMP/verdict.json" 2>"$TMP/verdict.err" || rc=$?
     case "$rc" in
