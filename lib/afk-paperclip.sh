@@ -989,7 +989,11 @@ afk_pc_report_cycle() {
   # AC-10: the claim comment for an issue adopted during a pause.
   if [[ "$claim_pending" == true ]]; then
     afk_pc_claim_comment || true
-    [[ "$AFK_PC_ABORT" == true ]] && return 0
+    if [[ "$AFK_PC_ABORT" == true ]]; then
+      afk_pc_self_block "$api_url" "$id" "$key" "$run_id" "$agent_id" "$composed" ||
+        actions="$(jq -c --arg t "PAPERCLIP_SELF_BLOCK_FAILED: $identifier" '. + [$t]' <<<"$actions")"
+      return 0
+    fi
   fi
   # F7: a resume says so once; the flag stays until the comment lands.
   if [[ "$due" == resume ]]; then
@@ -1566,7 +1570,12 @@ afk_cmd_paperclip_poll() { # <json_mode>
           elif [[ -z "$prev" || "$prior_state_ip" == pending_claim ]]; then
             [[ -n "$prev" ]] || afk_pc_pin_new
             afk_pc_claim_comment || true
-            [[ "${AFK_PC_ABORT:-false}" == true ]] && break
+            if [[ "${AFK_PC_ABORT:-false}" == true ]]; then
+              action="$(jq -r --arg id "$id" '.issues[$id].action_text // empty' <<<"$ledger")"
+              afk_pc_self_block "$api_url" "$id" "$key" "$run_id" "$agent_id" "$action" ||
+                actions="$(jq -c --arg t "PAPERCLIP_SELF_BLOCK_FAILED: $identifier" '. + [$t]' <<<"$actions")"
+              break
+            fi
             claim_started_this_pass[$id]=1
             afk_pc_claim_artifacts || continue
             if (( used_slots_s >= max_active || host_used >= host_max )); then

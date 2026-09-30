@@ -22,7 +22,7 @@ afk_orca_run() {
         error) AFK_ORCA_CODE=ORCA_ERROR:runtime_unavailable; AFK_ORCA_OUT='{"ok":false,"error":{"code":"runtime_unavailable"}}'; return 1 ;;
         timeout) AFK_ORCA_CODE=ORCA_TIMEOUT; AFK_ORCA_OUT=''; return 1 ;;
       esac
-      AFK_ORCA_OUT='{"result":{"terminal":{"handle":"created-b"}}}' ;;
+      AFK_ORCA_OUT='{"result":{"terminal":{"handle":"created-b"}},"_meta":{"runtimeId":"rt-1"}}' ;;
     *' pm-start-reconcile-agents -- worktree ps '*)
       AFK_ORCA_OUT="$(jq -nc --argjson a "$PS_AGENTS" '{result:{worktrees:[{id:"wt-1",agents:$a}]},_meta:{runtimeId:"rt-1"}}')" ;;
     *) AFK_ORCA_CODE=ORCA_CLI_FAILED; AFK_ORCA_OUT=''; return 1 ;;
@@ -31,13 +31,21 @@ afk_orca_run() {
 afk_orca_liveness_reset() { :; }
 afk_orca_terminal_state() { AFK_ORCA_TERMINAL_STATE="$ROW_STATE"; AFK_ORCA_TERMINAL_REASON="$ROW_REASON"; }
 afk_orca_list_state() {
-  _AFK_ORCA_LV_RUNTIME=rt-1
+  _AFK_ORCA_LV_RUNTIME="${LIST_RUNTIME:-rt-1}"
   _AFK_ORCA_LV_TERMINALS="$LIST_TERMINALS"
   return 0
 }
 afk_orca_identity() {
   local handle="$1"; [[ "$handle" == --bound ]] && handle="$3"
   IDENTITY_CALLS+="$handle "
+  if [[ "${IDENTITY_MODE:-ok}" == fail || "${IDENTITY_MODE:-ok}" == stale ]]; then
+    AFK_ORCA_IDENTITY=''
+    if [[ "$IDENTITY_MODE" == stale ]]; then
+      AFK_ORCA_CODE=ORCA_ERROR:terminal_handle_stale
+      AFK_ORCA_OUT="$(jq -nc --arg rt "${SHOW_RUNTIME:-rt-1}" '{_meta:{runtimeId:$rt}}')"
+    fi
+    return 1
+  fi
   AFK_ORCA_IDENTITY="$(jq -nc --arg h "$handle" '{handle:$h,runtime_id:"rt-1",worktree_id:"wt-1",tab_id:("tab-"+$h),leaf_id:("leaf-"+$h),agent_type:"claude"}')"
 }
 afk_pc_create_issue() { printf x >>"$REPORT_FILE"; printf '201\n{"id":"need-human"}'; }
@@ -61,6 +69,8 @@ reset_case() {
   REPORT_FILE="$TMPROOT/$name/reports"; : >"$REPORT_FILE"
   CREATE_MODE=ok; PS_AGENTS='[]'; LIST_TERMINALS='[]'
   ROW_STATE=live; ROW_REASON=null
+  IDENTITY_MODE=ok
+  SHOW_RUNTIME=rt-1; LIST_RUNTIME=rt-1
 }
 prior_row() {
   local intent="$AFK_STATE_DIR/paperclip/pm-start-intents/proj.$A.json"
@@ -75,6 +85,47 @@ reset_case prior_stale; prior_row; ROW_STATE=stale; ROW_REASON=PM_TERMINAL_STALE
 afk_pcs_create_terminal || true
 check 'H1 stale prior row ends and B starts' "$(jq -r --arg a "$A" --arg b "$B" '.pm_started[$a].state + "/" + (.pm_started[$b].state // "missing")' <<<"$ledger")" ended/created
 check 'H1 stale prior row permits one create' "$CREATE_CALLS" 1
+reset_case prior_handle_only; prior_row
+ledger="$(jq -c --arg a "$A" '.pm_started[$a].identity = null | .pm_started[$a].runtime_id = "rt-1"' <<<"$ledger")"
+afk_state_file_write "$ledger_path" "$ledger"
+ROW_STATE=stale; ROW_REASON=PM_TERMINAL_STALE
+afk_pcs_create_terminal || true
+check 'N1 prior handle-only row is resolved on its handle' "$IDENTITY_CALLS" 'old-a created-b '
+check 'N1 prior handle-only stale row ends and next issue starts' \
+  "$(jq -r --arg a "$A" --arg b "$B" '.pm_started[$a].state + "/" + (.pm_started[$b].state // "missing")' <<<"$ledger")" ended/created
+check 'N1 prior handle-only row does not escalate' "$(wc -c <"$REPORT_FILE" | tr -d ' ')" 0
+reset_case prior_handle_stale_show; prior_row
+ledger="$(jq -c --arg a "$A" '.pm_started[$a].identity = null | .pm_started[$a].runtime_id = "rt-1"' <<<"$ledger")"
+afk_state_file_write "$ledger_path" "$ledger"
+IDENTITY_MODE=stale
+afk_pcs_create_terminal || true
+check 'N1 same-runtime stale show and absent handle end prior row' \
+  "$(jq -r --arg a "$A" --arg b "$B" '.pm_started[$a].state + "/" + (.pm_started[$b].state // "missing")' <<<"$ledger")" ended/created
+check 'N1 stale proof uses a complete list' "$IDENTITY_CALLS" 'old-a created-b '
+reset_case prior_handle_new_runtime; prior_row
+ledger="$(jq -c --arg a "$A" '.pm_started[$a].identity = null | .pm_started[$a].runtime_id = "rt-1"' <<<"$ledger")"
+afk_state_file_write "$ledger_path" "$ledger"
+IDENTITY_MODE=stale; SHOW_RUNTIME=rt-2; LIST_RUNTIME=rt-2
+afk_pcs_create_terminal || true
+check 'N1 changed runtime never authorizes a new start' "$CREATE_CALLS" 0
+check 'N1 changed runtime is visibly unknown' "$AFK_PCS_ACTION_OVERRIDE" \
+  'queued: no PM (start held: PM_RUNTIME_MISMATCH)'
+
+reset_case receipt_runtime; IDENTITY_MODE=fail; afk_pcs_create_terminal || true
+check 'N1 create receipt runtime persists when show fails' \
+  "$(jq -r --arg b "$B" '.pm_started[$b].runtime_id // empty' <<<"$ledger")" rt-1
+check 'N1 create receipt identity remains null on show failure' \
+  "$(jq -r --arg b "$B" '.pm_started[$b].identity | tostring' <<<"$ledger")" null
+
+reset_case same_issue_stale; id="$A"; prior_row; ROW_STATE=stale; ROW_REASON=PM_TERMINAL_STALE
+afk_pcs_existing_start || true
+afk_pcs_create_terminal || true
+check 'N2 same-issue stale row ends without a new create' "$CREATE_CALLS" 0
+check 'N2 same-issue ended row has held reason' "$AFK_PCS_ACTION_OVERRIDE" \
+  'queued: no PM (start held: PM_START_ENDED)'
+check 'N2 same-issue ended row keeps its row' "$(jq -r --arg a "$A" '.pm_started[$a].state' <<<"$ledger")" ended
+for _ in 1 2 3; do afk_pcs_existing_start || true; done
+check 'N2 ended row opens one NEEDS HUMAN path' "$(wc -c <"$REPORT_FILE" | tr -d ' ')" 1
 for verdict in live detached unknown; do
   reset_case "prior_$verdict"; prior_row; ROW_STATE="$verdict"
   case "$verdict" in live) ROW_REASON=PM_OWNER_LIVE ;; detached) ROW_REASON=PM_TERMINAL_DETACHED ;; unknown) ROW_REASON=PM_RUNTIME_MISMATCH ;; esac

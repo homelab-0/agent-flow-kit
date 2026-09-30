@@ -2152,6 +2152,33 @@ assert_eq "M3 unpaused adoption writes a fresh notice" \
 assert_eq "M3 unpaused adoption writes a fresh brief" \
   "$([[ "$(jq -r --arg id "$ISSUE1" '.issues[$id].claimed_brief_path' "$LEDGER")" != "$old_brief" ]] && echo yes)" yes
 
+# N3: a definite claim POST backoff still leaves the current issue blocked
+# before the pass stops, both after a report wake and on fresh adoption.
+head1 "Review N3: claim POST backoff retains the self-block"
+new_scenario claim_backoff_report
+write_config; seed 1 working proj "$PROJ1"; inbox 1; issue 1 blocked "\"$PROJ1\""
+lset 1 '{claim:"intent",claim_comment_pending:true,claim_attempted:false,reblock_due:"nudge"}'
+claim_backoff_id="$(iid 1)"
+route POST "/api/issues/$claim_backoff_id/comments" 429 '{}'
+run_afk --json
+assert_eq "N3 report: 429 claim sends in_progress and self-block PATCHes" \
+  "$(grep -c "^PATCH /api/issues/$claim_backoff_id$" "$LOG")" 2
+assert_eq "N3 report: the rejected claim POST was attempted once" \
+  "$(grep -c "^POST /api/issues/$claim_backoff_id/comments$" "$LOG")" 1
+assert_eq "N3 report: current issue is blocked once" \
+  "$(grep -c 'unblockDescriptor' "$BODYLOG")" 1
+
+new_scenario claim_backoff_adoption
+write_config; inbox 1; issue 1 in_progress "\"$PROJ1\""
+route POST "/api/issues/$claim_backoff_id/comments" 429 '{}'
+run_afk --json
+assert_eq "N3 adoption: 429 claim still self-blocks" \
+  "$(grep -c "^PATCH /api/issues/$claim_backoff_id$" "$LOG")" 1
+assert_eq "N3 adoption: the rejected claim POST was attempted once" \
+  "$(grep -c "^POST /api/issues/$claim_backoff_id/comments$" "$LOG")" 1
+assert_eq "N3 adoption: current issue is blocked once" \
+  "$(grep -c 'unblockDescriptor' "$BODYLOG")" 1
+
 if bash "$KIT_ROOT/tests/paperclip-claim-review-tests.sh"; then ok "review M1/M2 claim regressions"
 else bad "review M1/M2 claim regressions"; fi
 

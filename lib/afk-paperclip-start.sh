@@ -65,8 +65,9 @@ afk_pcs_start_pm() {
       return 0 ;;
     *) AFK_PCS_ACTION_OVERRIDE="queued: no PM (start held: PM_REGISTRY_UNKNOWN)"; return 0 ;;
   esac
-  # At most one start per issue, ever (an approval authorises one start). A
-  # started PM that has not registered yet still reads `none` here.
+  # One effected start per issue. Only a definite failed create (or an
+  # operator-set failed row) may retry; an ended row remains held. A PM that
+  # has not registered yet still reads `none` here.
   if jq -e --arg id "$id" '.pm_started[$id] != null' <<<"$ledger" >/dev/null 2>&1; then
     afk_pcs_existing_start && return 0
   fi
@@ -237,7 +238,7 @@ afk_pcs_report_start_unresolved() { # <issue-id> <code>; one NEEDS HUMAN after r
   [[ -n "$rhash" ]] || return 0
   r="$(afk_pc_create_issue "$api_url" "$key" "$company_id" \
     "NEEDS HUMAN: PM start unresolved for $slug" "$board_user_id" \
-    "The Orca terminal create for $row_id is unresolved ($code). Inspect the recorded intent, candidate and Orca runtime. Only after proving that no PM terminal was created, set this pm_started row to failed and remove its intent file; otherwise restore its handle and identity. A runtime-id change alone is not proof of staleness." \
+    "PM start for $row_id needs review ($code). Inspect the recorded intent, candidate, terminal and Orca runtime. Restore a live PM's handle and identity. Only after proving no PM is running and deliberately authorizing a retry, set this pm_started row to failed and remove its intent file. A runtime-id change alone is not proof of staleness." \
     "afk-pmstart-$rhash-$row_id")"
   if [[ "${r%%$'\n'*}" == 2?? ]]; then
     ledger="$(jq -c --arg id "$row_id" '.pm_start_reported[$id] = true' <<<"$ledger")"
@@ -255,6 +256,55 @@ afk_pcs_hold_unresolved() { # <issue-id> <code>
   afk_pcs_report_start_unresolved "$row_id" "$code"
 }
 
+afk_pcs_hold_ended() { # <issue-id>; one ended start never auto-retries
+  afk_pcs_hold_unresolved "$1" PM_START_ENDED
+  afk_pcs_hold_start PM_START_ENDED
+}
+
+# Classify a create receipt whose handle is known but identity is not. A
+# successful show gives the exact tuple for ORCA-2's liveness join. A stale
+# show is proof only when its runtime matches the create receipt and a
+# complete same-runtime list also lacks that handle.
+afk_pcs_handle_state() { # <issue-id> <row-json>; sets verdict and reason
+  local row_id="$1" row="$2" handle harness receipt_rt tuple_rt shown_rt
+  AFK_PCS_ROW_VERDICT=unknown; AFK_PCS_ROW_REASON=PM_IDENTITY_UNRECORDED
+  handle="$(jq -r '.terminal // empty' <<<"$row")"
+  harness="$(jq -r '.harness // empty' <<<"$row")"
+  receipt_rt="$(jq -r '.runtime_id // empty' <<<"$row")"
+  if afk_orca_identity --bound 5 "$handle" "$harness" &&
+     [[ "$(jq -r '.handle // empty' <<<"$AFK_ORCA_IDENTITY")" == "$handle" ]]; then
+    tuple_rt="$(jq -r '.runtime_id // empty' <<<"$AFK_ORCA_IDENTITY")"
+    if [[ -n "$receipt_rt" && "$tuple_rt" != "$receipt_rt" ]]; then
+      AFK_PCS_ROW_REASON=PM_RUNTIME_MISMATCH; return 0
+    fi
+    ledger="$(jq -c --arg id "$row_id" --argjson ident "$AFK_ORCA_IDENTITY" \
+      '.pm_started[$id].identity = $ident' <<<"$ledger")"
+    afk_state_file_write "$ledger_path" "$ledger" || {
+      AFK_PCS_ROW_REASON=PM_LEDGER_WRITE_FAILED; return 1;
+    }
+    afk_orca_liveness_reset
+    afk_orca_terminal_state "$AFK_ORCA_IDENTITY"
+    AFK_PCS_ROW_VERDICT="$AFK_ORCA_TERMINAL_STATE"
+    AFK_PCS_ROW_REASON="$AFK_ORCA_TERMINAL_REASON"
+    return 0
+  fi
+  shown_rt="$(jq -r '._meta.runtimeId // empty' <<<"$AFK_ORCA_OUT" 2>/dev/null)"
+  AFK_ORCA_OUT="" # a failed show may still carry terminal preview text
+  if [[ -n "$receipt_rt" && -n "$shown_rt" && "$shown_rt" != "$receipt_rt" ]]; then
+    AFK_PCS_ROW_REASON=PM_RUNTIME_MISMATCH; return 0
+  fi
+  if [[ -n "$receipt_rt" && "$AFK_ORCA_CODE" == ORCA_ERROR:terminal_handle_stale && "$shown_rt" == "$receipt_rt" ]]; then
+    afk_orca_liveness_reset
+    if afk_orca_list_state; then
+      if [[ "$_AFK_ORCA_LV_RUNTIME" != "$receipt_rt" ]]; then
+        AFK_PCS_ROW_REASON=PM_RUNTIME_MISMATCH
+      elif ! jq -e --arg h "$handle" 'any(.[]; .handle == $h)' <<<"$_AFK_ORCA_LV_TERMINALS" >/dev/null 2>&1; then
+        AFK_PCS_ROW_VERDICT=stale; AFK_PCS_ROW_REASON=PM_TERMINAL_STALE
+      fi
+    fi
+  fi
+}
+
 afk_pcs_registry_owns_handle() { # <handle>
   local file
   for file in "$AFK_STATE_DIR"/pm/scopes/*/ownership.json; do
@@ -266,12 +316,16 @@ afk_pcs_registry_owns_handle() { # <handle>
 
 # A receipt's exact handle is authoritative. A missing create receipt can
 # yield a candidate, but a worktree agent join alone cannot prove we created
-# that terminal. Only ORCA-2's positive stale proof licenses a new start.
+# that terminal. Only ORCA-2's positive stale proof lets a different issue
+# start in the same repo; the original issue stays held after its one start.
 afk_pcs_existing_start() {
   local row tuple intent_file intent_wt intent_repo ps_runtime agents handle candidate="" matches=0 code
   row="$(jq -c --arg id "$id" '.pm_started[$id] // empty' <<<"$ledger")"
   [[ -n "$row" ]] || return 1
-  case "$(jq -r '.state // empty' <<<"$row")" in ended | failed) return 1 ;; esac
+  case "$(jq -r '.state // empty' <<<"$row")" in
+    ended) afk_pcs_hold_ended "$id"; return 0 ;;
+    failed) return 1 ;;
+  esac
   tuple="$(jq -c '.identity // empty' <<<"$row")"
   if [[ -n "$tuple" && "$tuple" != null ]]; then
     afk_orca_liveness_reset
@@ -280,7 +334,8 @@ afk_pcs_existing_start() {
       afk_pcs_row_end "$id" ended "$AFK_ORCA_TERMINAL_REASON" || {
         afk_pcs_hold_start PM_LEDGER_WRITE_FAILED; return 0;
       }
-      return 1
+      afk_pcs_hold_ended "$id"
+      return 0
     fi
     code="$AFK_ORCA_TERMINAL_REASON"
     [[ "$code" == null ]] && code=PM_REGISTRATION_PENDING
@@ -289,15 +344,18 @@ afk_pcs_existing_start() {
   fi
   handle="$(jq -r '.terminal // empty' <<<"$row")"
   if [[ -n "$handle" ]]; then
-    if afk_orca_identity --bound 5 "$handle" "$harness" &&
-       [[ "$(jq -r '.handle // empty' <<<"$AFK_ORCA_IDENTITY")" == "$handle" ]]; then
-      ledger="$(jq -c --arg id "$id" --argjson ident "$AFK_ORCA_IDENTITY" \
-        '.pm_started[$id].identity = $ident' <<<"$ledger")"
-      afk_state_file_write "$ledger_path" "$ledger" || {
+    afk_pcs_handle_state "$id" "$row" || {
+      afk_pcs_hold_start PM_LEDGER_WRITE_FAILED; return 0;
+    }
+    if [[ "$AFK_PCS_ROW_VERDICT" == stale ]]; then
+      afk_pcs_row_end "$id" ended "$AFK_PCS_ROW_REASON" || {
         afk_pcs_hold_start PM_LEDGER_WRITE_FAILED; return 0;
       }
+      afk_pcs_hold_ended "$id"
+      return 0
     fi
-    afk_pcs_hold_start PM_IDENTITY_UNRECORDED
+    [[ "$AFK_PCS_ROW_REASON" == null ]] && AFK_PCS_ROW_REASON=PM_REGISTRATION_PENDING
+    afk_pcs_hold_start "$AFK_PCS_ROW_REASON"
     return 0
   fi
   # The pass may have died after create and before receiving its handle.
@@ -376,6 +434,18 @@ afk_pcs_prior_starts_clear() {
       fi
       reason="$AFK_ORCA_TERMINAL_REASON"
       [[ "$reason" == null ]] && reason=PM_REGISTRATION_PENDING
+    elif [[ -n "$(jq -r '.terminal // empty' <<<"$row")" ]]; then
+      afk_pcs_handle_state "$prior_id" "$row" || {
+        afk_pcs_hold_start PM_LEDGER_WRITE_FAILED; return 1;
+      }
+      if [[ "$AFK_PCS_ROW_VERDICT" == stale ]]; then
+        afk_pcs_row_end "$prior_id" ended "$AFK_PCS_ROW_REASON" || {
+          afk_pcs_hold_start PM_LEDGER_WRITE_FAILED; return 1;
+        }
+        continue
+      fi
+      reason="$AFK_PCS_ROW_REASON"
+      [[ "$reason" == null ]] && reason=PM_REGISTRATION_PENDING
     else
       intent_file="$(jq -r '.intent_file // empty' <<<"$row")"
       if [[ -z "$(jq -r '.terminal // empty' <<<"$row")" && ! -r "$intent_file" ]]; then
@@ -415,12 +485,13 @@ afk_pcs_create_terminal() {
     '{schema:"afk-pm-bootstrap-first-start-intent/2", slug:$proj, harness:$h,
       worktree:{id:$wi, path:$wp}, resume_instruction:$resume}')" || return 1
   intent_file="$AFK_STATE_DIR/paperclip/pm-start-intents/$slug.$id.json"
-  # A previous row for this issue can be retried only when its create was
-  # definitely rejected, its file was never written, or stale was proved.
+  # An issue retries only after a definite create non-effect or an operator
+  # setting its row to failed. Ended means the one start already happened.
   local own_state
   own_state="$(jq -r --arg id "$id" '.pm_started[$id].state // empty' <<<"$ledger")"
   case "$own_state" in
-    '' | ended | failed) : ;;
+    '' | failed) : ;;
+    ended) afk_pcs_hold_ended "$id"; return 1 ;;
     *) afk_pcs_hold_start PM_START_ALREADY_RECORDED; return 1 ;;
   esac
 
@@ -452,10 +523,11 @@ afk_pcs_create_terminal() {
 
   # The row carries the terminal's identity tuple (AD-28 R4), or null when
   # Orca can't show it yet; the handle alone still blocks a second start.
-  local identity=null
+  local identity=null create_runtime
+  create_runtime="$(jq -r '._meta.runtimeId // empty' <<<"$created" 2>/dev/null)"
   if afk_orca_identity "$terminal" "$harness"; then identity="$AFK_ORCA_IDENTITY"; fi
-  ledger="$(jq -c --arg id "$id" --arg t "$terminal" --argjson identity "$identity" \
-    '.pm_started[$id] |= (. + {terminal:$t, identity:$identity, state:"created"})' <<<"$ledger")"
+  ledger="$(jq -c --arg id "$id" --arg t "$terminal" --arg rt "$create_runtime" --argjson identity "$identity" \
+    '.pm_started[$id] |= (. + {terminal:$t, runtime_id:$rt, identity:$identity, state:"created"})' <<<"$ledger")"
   afk_state_file_write "$ledger_path" "$ledger" || {
     afk_pcs_hold_start PM_RECEIPT_WRITE_FAILED; return 1;
   }

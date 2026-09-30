@@ -702,7 +702,8 @@ PM is not implemented (Orca has no foreground-process check; see AD-7).
 The title is display text. Before `terminal create`, the poller saves the
 issue-specific intent file (`pm-start-intents/<slug>.<issue-id>.json`) and a
 `pm_started` ledger row naming it. After the create receipt, the row gains
-the handle and identity tuple. A rejected `ORCA_ERROR:*` create is marked
+the handle and create receipt's Orca runtime id, even when `terminal show`
+cannot supply the identity tuple yet. A rejected `ORCA_ERROR:*` create is marked
 retryable; the next pass can try again. A timeout, CLI failure or missing
 handle is uncertain: the poller holds the start with
 `queued: no PM (start unresolved: <code>)` and opens one NEEDS HUMAN issue
@@ -710,15 +711,23 @@ after three passes. A worktree agent join can record a candidate for the
 operator, but cannot turn an unreceipted create into a confirmed PM.
 
 A prior start blocks another PM in the repo while its terminal is live,
-detached or unknown. Only Orca's positive stale proof ends that row and
-permits a new start. In particular, a changed Orca runtime id is **unknown**:
-it never triggers an automatic restart. For an unresolved row or runtime
-change, stop the timer, inspect the row's `intent_file`, `terminal`,
+detached or unknown. Orca's positive same-runtime stale proof ends that row
+and permits a **different issue** in the repo to start a PM. Each issue has
+only one effected PM start: an ended row for that same issue stays held as
+`queued: no PM (start held: PM_START_ENDED)` and opens one NEEDS HUMAN issue
+after repeated passes. Only a definite create non-effect or an operator-set
+`failed` row permits that issue to retry. A changed Orca runtime id is
+**unknown** and never triggers an automatic restart. A prior row with a
+handle but no identity is checked on that handle; a complete same-runtime
+list plus `terminal_handle_stale` can prove it ended. For an unresolved row
+or runtime change, stop the timer, inspect the row's `intent_file`, `terminal`,
 `identity` and `candidate` in `paperclip/ledger.json`, and check Orca for
-the terminal. If the PM exists, restore its exact handle and identity. Only
-after independently proving that no create took effect, mark the row
-`state: "failed"` and remove its issue-specific intent file, then restart the
-timer. Keep the ledger backup until the next pass confirms the result.
+the terminal. If the PM exists, restore its exact handle and identity. For
+an uncertain create, prove that no create took effect before marking the row
+`state: "failed"`. For an ended row, confirm that no PM is running and make
+an explicit operator decision before setting `failed` to permit a retry.
+Remove the issue-specific intent file and restart the timer. Keep the ledger
+backup until the next pass confirms the result.
 
 ## `agent-flow-kit paperclip-timer --install|--remove|--status [--json]`
 
