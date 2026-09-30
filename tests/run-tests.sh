@@ -648,6 +648,40 @@ assert_absent   "codex cmd: no danger-full-access"          "$CCMD" "danger-full
 assert_contains "codex cmd: high maps to high" \
   "$(build_codex_command /p m high)" "model_reasoning_effort=high"
 
+# The persona (YAML front matter) is prepended to the prompt for codex, so the
+# prompt starts with `---`. A clap-like codex reads that as an unknown flag
+# unless the prompt follows the `--` end-of-options marker.
+assert_contains "codex cmd: prompt follows the end-of-options marker" \
+  "$CCMD" '-s workspace-write -- "$(cat -- /wt/STORY.md.prompt)"'
+CDX_DIR="$TMPROOT/codex-dashprompt"; mkdir -p "$CDX_DIR/bin"
+printf -- '---\nname: dev\n---\n\nExecute the story.\n' > "$CDX_DIR/prompt"
+cat > "$CDX_DIR/bin/codex" <<'FAKE'
+#!/usr/bin/env bash
+# clap-like: options take one value; a leading-dash positional is an error
+# unless it comes after `--`.
+[[ "$1" == exec ]] && shift
+while (($#)); do
+  case "$1" in
+    --) shift; break ;;
+    --model|-c|-s) shift 2 ;;
+    -*) echo "error: unexpected argument '$1' found" >&2; exit 2 ;;
+    *) break ;;
+  esac
+done
+printf '%s' "$1" > "$FAKE_CODEX_OUT"
+FAKE
+chmod +x "$CDX_DIR/bin/codex"
+CDX_RUN="$(build_codex_command "$CDX_DIR/prompt" gpt-5.6-sol xhigh)"
+CDX_RC="$(PATH="$CDX_DIR/bin:$PATH" FAKE_CODEX_OUT="$CDX_DIR/got" bash -c "$CDX_RUN" 2>&1 | tail -1)"
+assert_eq "codex cmd: a prompt starting with --- reaches codex as data" "$CDX_RC" "CODEX_EXIT=0"
+assert_eq "codex cmd: the full prompt text arrives intact" \
+  "$(cat "$CDX_DIR/got")" "$(cat "$CDX_DIR/prompt")"
+
+# opencode carries the same persona-prefixed prompt and takes the same marker.
+assert_contains "opencode cmd: prompt follows the end-of-options marker" \
+  "$(build_opencode_command /bin/opencode /h /bin u c d ca s /wt/S.prompt m v /r afk-dev)" \
+  '--format json -- "$(cat -- /wt/S.prompt)"'
+
 # --- context budget: the arithmetic, at the boundaries ---------------------
 head1 "   context budget — estimate and thresholds (pure)"
 
@@ -771,8 +805,8 @@ else bad "policy: every threshold and the method are declared in the policy docu
 
 # --- AC-7, frozen launch text plus the reviewed claude amendment -----------
 # The only master delta accepted is the claude launch amendment (Edit in the
-# tool set, stream-json --verbose output) on both claude classes; codex is
-# byte-identical. The amendment is applied to master's text rather than
+# tool set, stream-json --verbose output) on both claude classes, and the codex
+# `--` end-of-options marker (AFK-CDX-1). The amendment is applied to master's text rather than
 # stripped from this one, and it is idempotent, so the oracle holds whether or
 # not master already carries it. A control proves the comparison can fail.
 head1 "   frozen launch texts differ from master only by the claude launch amendment"
@@ -782,6 +816,7 @@ if git -C "$KIT_ROOT" show master:files/model-router/scripts/dispatch.sh > "$MAS
   amend_claude() {
     sed 's/--tools "Read,Glob,Grep,Write" /--tools "Read,Glob,Grep,Write,Edit" /; s/--output-format json </--output-format stream-json --verbose </' <<<"$1"
   }
+  amend_codex() { sed 's/-s workspace-write "\$(cat/-s workspace-write -- "$(cat/' <<<"$1"; }
   BI_ARGS=(/home/op /usr/bin:/bin op /wt/S.md.prompt claude-opus-5 high /wt/S.md.claude-result.json /wt/agents/dev.md)
   BI_GW=(/home/op /usr/bin:/bin op /wt/S.md.prompt qwen36-27b high /wt/S.md.claude-result.json /wt/agents/dev.md \
          https://gw.invalid op://v/i/credential /home/op/.op-agent-env workstation 65536)
@@ -795,6 +830,9 @@ if git -C "$KIT_ROOT" show master:files/model-router/scripts/dispatch.sh > "$MAS
     nm="${probe%% *}"
     what="is byte-identical to master"
     [[ "$nm" == build_claude* ]] && { m="$(amend_claude "$m")"; what="differs from master only by the claude launch amendment"; }
+    # The reviewed codex amendment: the prompt follows the `--` marker. Applied
+    # to master's text and idempotent, like the claude one above.
+    [[ "$nm" == build_codex* ]] && { m="$(amend_codex "$m")"; what="differs from master only by the end-of-options marker"; }
     bridge_count="$(grep -oF 'AFK_WORKER_TERMINAL="${ORCA_TERMINAL_HANDLE:-}"' <<<"$h" | wc -l | tr -d ' ')"
     if [[ -z "$m" ]]; then bad "byte-identity: $nm" "master produced nothing — the probe is broken"
     elif [[ "$bridge_count" != 1 ]]; then bad "byte-identity: $nm" "worker terminal bridge count=$bridge_count, expected 1"
