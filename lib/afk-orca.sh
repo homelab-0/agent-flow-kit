@@ -197,12 +197,16 @@ afk_orca_identity_from_show() {
        incarnation_id:($t.incarnationId|so), agent_type:$a, recorded_at:$at}' <<<"$1" 2>/dev/null
 }
 
-# afk_orca_identity <handle> <agent_type>: sets AFK_ORCA_IDENTITY to the tuple
-# for a terminal Orca shows right now. Call it directly, never in $(...).
+# afk_orca_identity [--bound <s>] <handle> <agent_type>: sets AFK_ORCA_IDENTITY
+# to the tuple for a terminal Orca shows right now. Call it directly, never in
+# $(...).
 afk_orca_identity() {
+  local -a bound=()
+  if [[ "${1:-}" == --bound ]]; then bound=(--bound "$2"); shift 2; fi
   AFK_ORCA_IDENTITY=""
-  afk_orca_run afk-identity -- terminal show --terminal "$1" --json || return 1
+  afk_orca_run ${bound[@]+"${bound[@]}"} afk-identity -- terminal show --terminal "$1" --json || return 1
   AFK_ORCA_IDENTITY="$(afk_orca_identity_from_show "$AFK_ORCA_OUT" "$2")" || AFK_ORCA_IDENTITY=""
+  AFK_ORCA_OUT="" # the show payload carries screen text (preview)
   [[ -n "$AFK_ORCA_IDENTITY" ]]
 }
 
@@ -279,6 +283,7 @@ afk_orca_terminal_state() {
     # complete list in the same runtime.
     afk_orca_run afk-liveness-show -- terminal show --terminal "$handle" --json
     shown_rt="$(jq -r '._meta.runtimeId // empty | strings' <<<"$AFK_ORCA_OUT" 2>/dev/null)"
+    AFK_ORCA_OUT=""
     if [[ "$AFK_ORCA_CODE" == "ORCA_ERROR:terminal_handle_stale" && "$shown_rt" == "$runtime" ]]; then
       AFK_ORCA_TERMINAL_STATE="stale"; AFK_ORCA_TERMINAL_REASON="PM_TERMINAL_STALE"
     else

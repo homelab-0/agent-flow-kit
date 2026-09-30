@@ -286,6 +286,25 @@ assert_contains "ambiguous: waiting-for-Josh text recorded" \
   "$(jq -r --arg id "$ISSUE1" '.issues[$id].action_text' "$LEDGER")" "Waiting for Josh: PM state unclear on test-host"
 
 # ============================================================================
+head1 "3b. unknown -> no create, and the queued text names the reason"
+# ============================================================================
+new_scenario unknown_state
+write_config '{"pm_start_enabled":true}'
+SKU="$(scope_key term-old-rt)"
+mkdir -p "$STATE/pm/scopes/$SKU"
+# Recorded under runtime rt-0; Orca now reports rt-1 (an Orca update).
+jq -nc --arg t term-old-rt --arg wp "$REPO_ABS" \
+  '{schema:"afk-pm-ownership/3", owned:true, terminal:$t, session:"s", harness:"claude", worktree:{path:$wp},
+    identity:{handle:$t, runtime_id:"rt-0", tab_id:"tab-x", leaf_id:"leaf-x", agent_type:"claude"}}' \
+  >"$STATE/pm/scopes/$SKU/ownership.json"
+issue_route in_progress "$BOARD"
+do_pass
+assert_eq "unknown: no terminal create" "$(wc -l <"$ORCA_CREATE_LOG" | tr -d ' ')" "0"
+assert_eq "unknown: the queued text names the lookup's reason" \
+  "$(jq -r --arg id "$ISSUE1" '.issues[$id].action_text' "$STATE/paperclip/ledger.json")" "queued: no PM (PM_RUNTIME_MISMATCH)"
+assert_eq "unknown: the owner is kept" "$([[ -f "$STATE/pm/scopes/$SKU/ownership.json" ]] && echo kept)" "kept"
+
+# ============================================================================
 head1 "4. Jarvis-created needs approval, then an exact Josh comment starts it"
 # ============================================================================
 new_scenario needs_approval

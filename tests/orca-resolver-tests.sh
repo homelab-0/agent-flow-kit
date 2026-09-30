@@ -258,6 +258,16 @@ lv_ps "$RA" "$(jq -c '.[0].agentType="codex"' <<<"$(lv_row tab-1:leaf-1 "done")"
 eq "(h) a row of another agent type is not the registered PM" "$(lv)" "detached PM_TERMINAL_DETACHED"
 lv_ps runtime-b "$(lv_row tab-1:leaf-1 "done")"
 eq "(h) agent rows from another runtime are never joined" "$(lv)" "unknown ORCA_UNAVAILABLE"
+jq -nc --arg rt "$RA" --argjson a "$(lv_row tab-1:leaf-1 "done")" \
+  '{ok:true,result:{worktrees:[{agents:$a}],totalCount:3,truncated:true},_meta:{runtimeId:$rt}}' >"$LV/ps"
+eq "(h) a truncated worktree ps is unknown" "$(lv)" "unknown ORCA_LIST_INCOMPLETE"
+echo '{"ok":false,"error":{"code":"runtime_unavailable"}}' >"$LV/ps"
+eq "(h) a failing worktree ps is unknown" "$(lv)" "unknown ORCA_UNAVAILABLE"
+# Live 1.4.217 shape: the list reports a re-attached tab as pty:N and
+# orphaned, while show and ps keep the UUID pane.
+lv_list "$RA" '[{"handle":"term_pm","connected":true,"orphaned":true,"tabId":"pty:3","leafId":"pty:3"}]'
+lv_ps "$RA" "$(lv_row tab-1:leaf-1 working)"
+eq "(h) a pty:N orphaned list entry with a UUID agent row is detached" "$(lv)" "detached PM_TERMINAL_DETACHED"
 lv_list "$RA" "$(lv_term false false)"
 eq "(h) connected:false is disconnected" "$(lv)" "disconnected PM_OWNER_DISCONNECTED"
 lv_list "$RA" '[]'; lv_stale_show "$RA"
@@ -284,6 +294,13 @@ eq "(h) the identity tuple comes from terminal show and the runtime id" \
     bash -c '. "$1"; afk_orca_identity term_pm claude && jq -c "del(.recorded_at)" <<<"$AFK_ORCA_IDENTITY"' _ "$LIB")" \
   '{"handle":"term_pm","runtime_id":"runtime-a","execution_host_id":"local","worktree_id":"wt-1","tab_id":"tab-1","leaf_id":"leaf-1","incarnation_id":"inc-1","agent_type":"claude"}'
 jq '.result.terminal.tabId=null' "$LV/show" >"$LV/show.tmp" && mv "$LV/show.tmp" "$LV/show"
+eq "(h) the show payload does not outlive the identity read" \
+  "$(env -i HOME="$H" PATH="$BASE_PATH" LV="$LV" ORCA_CLI_COMMAND="$TMP/lv-orca" \
+    bash -c '. "$1"; afk_orca_identity term_pm claude; printf "%s" "${#AFK_ORCA_OUT}"' _ "$LIB")" "0"
+eq "(h) the identity read honours --bound" \
+  "$(env -i HOME="$H" PATH="$BASE_PATH" LV="$LV" ORCA_CLI_COMMAND="$TMP/lv-orca" AFK_ORCA_TRACE=1 \
+    bash -c '. "$1"; afk_orca_identity --bound 2 term_pm claude 2>&1 >/dev/null | grep -o "afk-identity OK rc=0 bound=2"' _ "$LIB")" \
+  "afk-identity OK rc=0 bound=2"
 eq "(h) no tuple without a pane" \
   "$(env -i HOME="$H" PATH="$BASE_PATH" LV="$LV" ORCA_CLI_COMMAND="$TMP/lv-orca" \
     bash -c '. "$1"; afk_orca_identity term_pm claude; printf "%s|%s" "$?" "$AFK_ORCA_IDENTITY"' _ "$LIB")" "1|"

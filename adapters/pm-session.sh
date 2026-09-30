@@ -167,22 +167,33 @@ fi
 
 # The identity tuple (AD-28 R4) is read from Orca once per terminal and then
 # carried forward. When Orca can't show it, the row stays afk-pm-ownership/2,
-# which the registry reads as unknown, never stale.
-identity=""
+# which the registry reads as unknown, never stale. This runs inside the
+# status line, so the read is bounded to 2 s and a failed read is retried at
+# most once per AFK_PM_IDENTITY_RETRY_SECONDS (default 300), remembered in the
+# row's identity_attempt_epoch.
+identity=""; attempt_epoch=""
+retry="${AFK_PM_IDENTITY_RETRY_SECONDS:-300}"
+[[ "$retry" =~ ^[1-9][0-9]*$ ]] || retry=300
 if [[ "$same_owner" == true ]]; then
   identity="$(jq -c --arg t "$terminal" 'select(.schema=="afk-pm-ownership/3" and .identity.handle==$t) | .identity' <<<"$owner" 2>/dev/null || true)"
+  attempt_epoch="$(jq -r '.identity_attempt_epoch // empty | numbers' <<<"$owner" 2>/dev/null || true)"
+  [[ "$attempt_epoch" =~ ^[0-9]+$ ]] && (( epoch >= attempt_epoch && epoch - attempt_epoch < retry )) || attempt_epoch=""
 fi
-if [[ -z "$identity" ]] && afk_orca_identity "$terminal" "$harness"; then identity="$AFK_ORCA_IDENTITY"; fi
+if [[ -z "$identity" && -z "$attempt_epoch" ]]; then
+  if afk_orca_identity --bound 2 "$terminal" "$harness"; then identity="$AFK_ORCA_IDENTITY"; else attempt_epoch="$epoch"; fi
+fi
 owner_json="$(jq -nc --arg h "$harness" --arg s "$session" --arg t "$terminal" \
   --arg wi "$worktree_id" --arg wp "$declared_path" --arg run "$run_id" \
   --arg at "$now" --argjson epoch "$epoch" --argjson fresh "$freshness" \
   --argjson previous "$previous" --argjson transition "$transition" --argjson identity "${identity:-null}" \
+  --argjson attempt "${attempt_epoch:-null}" \
   '{schema:(if $identity==null then "afk-pm-ownership/2" else "afk-pm-ownership/3" end),
     owned:true,role:"PM",harness:$h,session:$s,terminal:$t,
     worktree:{id:$wi,path:$wp},run_id:(if $run=="" then null else $run end),
     observed_at:$at,observed_epoch:$epoch,freshness_seconds:$fresh,
     transition_id:$transition,previous:$previous}
-   + (if $identity==null then {} else {identity:$identity} end)')"
+   + (if $identity!=null then {identity:$identity}
+      elif $attempt!=null then {identity_attempt_epoch:$attempt} else {} end)')"
 atomic_write "$owner_file" "$owner_json" || exit 0
 [[ ! -f "$intent_file" ]] || rm -f -- "$intent_file"
 

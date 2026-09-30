@@ -71,7 +71,9 @@ afk_pmr_handoff_timeout_min() {
 AFK_PMR_OWNER_SCHEMAS='["afk-pm-ownership/2","afk-pm-ownership/3"]'
 
 afk_pmr_owner_state() { # <owner-json>: sets AFK_PMR_STATE and AFK_PMR_REASON
-  if jq -e '.schema=="afk-pm-ownership/3"' <<<"$1" >/dev/null 2>&1; then
+  # The join judges .identity.handle and reap acts on .terminal: a row where
+  # they differ proves nothing about the terminal it names.
+  if jq -e '.schema=="afk-pm-ownership/3" and .identity.handle==.terminal' <<<"$1" >/dev/null 2>&1; then
     afk_orca_terminal_state "$(jq -c '.identity // {}' <<<"$1")"
     AFK_PMR_STATE="$AFK_ORCA_TERMINAL_STATE"; AFK_PMR_REASON="$AFK_ORCA_TERMINAL_REASON"
   else
@@ -81,14 +83,18 @@ afk_pmr_owner_state() { # <owner-json>: sets AFK_PMR_STATE and AFK_PMR_REASON
 }
 
 # afk_pmr_caller_owns <lookup-json> <terminal>: the caller's own terminal is
-# the owner. A live owner qualifies; so does the single unknown owner, since
-# a PM running this command is evidently running, unless its terminal is
-# disconnected or belongs to another runtime (AD-28 R3).
+# the owner. A live owner qualifies. So does the single unknown owner, but only
+# when it is unknown because its tab lost its pane (a PM running this command
+# is evidently running), because its row predates identity tuples, or because
+# Orca can't be asked right now. A caller in a remote-runtime session never
+# qualifies (AD-28 R3).
 afk_pmr_caller_owns() {
+  [[ -z "${ORCA_ENVIRONMENT:-}" && -z "${ORCA_PAIRING_CODE:-}" ]] || return 1
   jq -e --arg t "$2" '
     (.state=="live" and .owner.terminal==$t) or
     (.state=="unknown" and (.owners|length)==1 and .owners[0].terminal==$t and
-     (.owners[0].reason|IN("PM_OWNER_DISCONNECTED","PM_RUNTIME_MISMATCH")|not))' <<<"$1" >/dev/null 2>&1
+     (.owners[0].reason|IN("PM_TERMINAL_DETACHED","PM_IDENTITY_UNRECORDED","ORCA_UNAVAILABLE","ORCA_LIST_INCOMPLETE")))' \
+    <<<"$1" >/dev/null 2>&1
 }
 
 # Slugs become directory names under notices/: the AD-23 slug regex only, and

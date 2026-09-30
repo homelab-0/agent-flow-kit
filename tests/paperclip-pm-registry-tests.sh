@@ -34,6 +34,7 @@ TERMFILE="$TMPROOT/terminals.json"; PSFILE="$TMPROOT/ps.json"
 cat > "$STUBS/orca-cli" <<'SH'
 #!/usr/bin/env bash
 [[ "${1:-}" == --version ]] && { echo 1.4.216; exit 0; }
+printf '%s\n' "$*" >>"${ORCA_STUB_LOG:-/dev/null}"
 rt="$(jq -r '._meta.runtimeId // "rt-1"' "$ORCA_STUB_TERMINALS" 2>/dev/null || echo rt-1)"
 case "$1 $2" in
   "terminal list") [[ "${ORCA_STUB_MODE:-ok}" == fail ]] && exit 1; cat "$ORCA_STUB_TERMINALS" ;;
@@ -41,6 +42,9 @@ case "$1 $2" in
   "worktree show") jq -nc --arg p "$PWD" '{ok:true,result:{worktree:{id:"w",path:$p}}}' ;;
   "terminal show")
     h=""; while (($#)); do [[ "$1" == --terminal ]] && h="$2"; shift; done
+    if [[ "${ORCA_STUB_SHOW:-}" == fail ]]; then
+      jq -nc --arg rt "$rt" '{ok:false,error:{code:"runtime_unavailable"},_meta:{runtimeId:$rt}}'; exit 1
+    fi
     if jq -e --arg h "$h" 'any((.result // .).terminals[]?; .handle==$h)' "$ORCA_STUB_TERMINALS" >/dev/null 2>&1; then
       jq -nc --arg h "$h" --arg rt "$rt" '{ok:true,result:{terminal:{handle:$h,tabId:("tab-"+$h),leafId:("leaf-"+$h),
         incarnationId:"inc",executionHostId:"local",worktreeId:"w",connected:true,orphaned:false}},_meta:{runtimeId:$rt}}'
@@ -118,6 +122,7 @@ run_afk() { # <args...> — env vars ORCA_TERMINAL_HANDLE/ORCA_STUB_MODE read fr
   out="$(env -i PATH="$STUBS:$PATH" HOME="$HOME_DIR" LANG=C \
     AFK_STATE_DIR="$STATE" AFK_HOST_CONFIG="$STUBS/host.json" ORCA_STUB_TERMINALS="$TERMFILE" ORCA_STUB_PS="$PSFILE" \
     ORCA_STUB_MODE="${ORCA_STUB_MODE:-ok}" ORCA_TERMINAL_HANDLE="${ORCA_TERMINAL_HANDLE:-}" \
+    ORCA_STUB_SHOW="${ORCA_STUB_SHOW:-}" ${ORCA_ENVIRONMENT:+ORCA_ENVIRONMENT="$ORCA_ENVIRONMENT"} \
     AFK_PAPERCLIP_CONFIG="$HOME_DIR/.config/agent-flow-kit/paperclip.json" \
     bash "$AFK" "$@" 2>&1)"
   RC=$?
@@ -127,7 +132,7 @@ run_afk() { # <args...> — env vars ORCA_TERMINAL_HANDLE/ORCA_STUB_MODE read fr
 lookup() { # <repo_path> -> prints JSON; also honors ORCA_STUB_MODE/ORCA_TERMINAL_HANDLE-independent
   env -i PATH="$STUBS:$PATH" HOME="$HOME_DIR" LANG=C \
     AFK_STATE_DIR="$STATE" AFK_HOST_CONFIG="$STUBS/host.json" ORCA_STUB_TERMINALS="$TERMFILE" \
-    ORCA_STUB_PS="$PSFILE" ORCA_STUB_MODE="${ORCA_STUB_MODE:-ok}" AFK_INSTALL_ROOT="$KIT_ROOT" \
+    ORCA_STUB_PS="$PSFILE" ORCA_STUB_MODE="${ORCA_STUB_MODE:-ok}" ORCA_STUB_SHOW="${ORCA_STUB_SHOW:-}" AFK_INSTALL_ROOT="$KIT_ROOT" \
     bash -c '
       source "'"$KIT_ROOT"'/lib/afk-common.sh"
       source "'"$KIT_ROOT"'/lib/afk-readiness.sh"
@@ -459,6 +464,86 @@ assert_eq "  ...its PM's next registration records the tuple" \
   "$(jq -r '"\(.schema) \(.identity.runtime_id) \(.identity.tab_id):\(.identity.leaf_id) \(.identity.agent_type)"' "$STATE/pm/scopes/$SK8/ownership.json")" \
   "afk-pm-ownership/3 rt-1 tab-termA:leaf-termA claude"
 assert_eq "  ...and it reads live from then on" "$(jq -r .state <<<"$(lookup "$REPO")")" "live"
+
+# ============================================================================
+head1 "9. review fixes: identity/terminal mismatch, take scope, observe cost"
+# ============================================================================
+reset_state
+write_paperclip_config proj1 "$REPO"
+SK9="$(write_owner termA 11111111-1111-1111-1111-111111111111 "$REPO")"
+jq -c '.identity.handle="termQ"' "$STATE/pm/scopes/$SK9/ownership.json" >"$TMPROOT/o.json"
+mv "$TMPROOT/o.json" "$STATE/pm/scopes/$SK9/ownership.json"
+set_terminals '{"terminals":[]}'
+out="$(lookup "$REPO")"
+assert_eq "a tuple whose handle isn't the row's terminal proves nothing" \
+  "$(jq -r '"\(.state) \(.reason) \(.stale|length)"' <<<"$out")" "unknown PM_IDENTITY_UNRECORDED 0"
+run_afk pm-registry-reap --scope "$SK9" --json
+assert_eq "  ...and is never reaped" "$(jq -r .result <<<"$OUT_TEXT")" "PM_OWNER_UNKNOWN"
+
+reset_state
+write_paperclip_config proj1 "$REPO"
+write_owner_v2 termA 11111111-1111-1111-1111-111111111111 "$REPO" >/dev/null
+write_notice proj1 1000 66666666-6666-6666-6666-666666666666 claimed
+set_terminals '{"terminals":[{"handle":"termA","connected":true,"orphaned":false}]}'
+ORCA_ENVIRONMENT=thin-client ORCA_TERMINAL_HANDLE=termA run_afk paperclip-take --slug proj1 --json
+assert_eq "a remote-runtime caller may not take for an unknown owner" "$(jq -r .result <<<"$OUT_TEXT")" "PAPERCLIP_NOT_OWNER"
+set_terminals '{"terminals":[]}'
+reset_state
+write_paperclip_config proj1 "$REPO"
+write_owner termA 11111111-1111-1111-1111-111111111111 "$REPO" >/dev/null
+write_notice proj1 1000 66666666-6666-6666-6666-666666666666 claimed
+ORCA_STUB_SHOW=fail ORCA_TERMINAL_HANDLE=termA run_afk paperclip-take --slug proj1 --json
+assert_eq "an owner absent without the stale proof may not take" "$(jq -r .result <<<"$OUT_TEXT")" "PAPERCLIP_NOT_OWNER"
+assert_eq "  ...its reason is PM_TERMINAL_UNPROVEN" \
+  "$(ORCA_STUB_SHOW=fail lookup "$REPO" | jq -r .reason)" "PM_TERMINAL_UNPROVEN"
+
+reset_state
+write_owner termA 11111111-1111-1111-1111-111111111111 "$REPO" >/dev/null
+write_owner termB 22222222-2222-2222-2222-222222222222 "$TMPROOT/repo-wt2" >/dev/null
+set_terminals '{"terminals":[{"handle":"termA","connected":true,"orphaned":false},{"handle":"termB","connected":true,"orphaned":true}]}'
+out="$(lookup "$REPO")"
+assert_eq "one live and one unknown owner -> live (the live owner wins)" \
+  "$(jq -r '"\(.state) \(.owner.terminal)"' <<<"$out")" "live termA"
+
+# pm-session observe runs in the status line: a failed identity read is
+# bounded and backed off, and a recorded tuple is carried with no Orca call.
+observe() { # <terminal> <session> <scope> [extra env...]
+  local t="$1" sess="$2" sk="$3"; shift 3
+  (cd -P "$REPO" && env -i PATH="$STUBS:$PATH" HOME="$HOME_DIR" LANG=C AFK_HOST_CONFIG="$STUBS/host.json" \
+    ORCA_STUB_TERMINALS="$TERMFILE" ORCA_STUB_PS="$PSFILE" ORCA_STUB_LOG="$TMPROOT/orca.log" \
+    AFK_PM_DIR="$STATE/pm/scopes/$sk" ORCA_TERMINAL_HANDLE="$t" AFK_PM_AUTOFINALIZE=0 "$@" \
+    bash "$KIT_ROOT/adapters/pm-session.sh" observe --harness claude --session "$sess")
+}
+shows() { grep -c '^terminal show' "$TMPROOT/orca.log" 2>/dev/null || true; }
+reset_state
+SK9="$(write_owner_v2 termA 11111111-1111-1111-1111-111111111111 "$(cd -P "$REPO" && pwd)")"
+set_terminals '{"terminals":[]}'
+: >"$TMPROOT/orca.log"
+trace="$(observe termA 11111111-1111-1111-1111-111111111111 "$SK9" AFK_ORCA_TRACE=1 2>&1)"
+assert_eq "an unreadable tuple costs one bounded show" "$(shows)|$(grep -o 'afk-identity [A-Z_:a-z]* rc=[0-9]* bound=2' <<<"$trace" | head -1 | awk '{print $NF}')" "1|bound=2"
+assert_eq "  ...the row stays /2 and remembers the attempt" \
+  "$(jq -r '"\(.schema) \(.identity_attempt_epoch|type)"' "$STATE/pm/scopes/$SK9/ownership.json")" "afk-pm-ownership/2 number"
+observe termA 11111111-1111-1111-1111-111111111111 "$SK9"
+assert_eq "  ...a second observe inside the window makes no Orca call" "$(shows)" "1"
+jq -c '.identity_attempt_epoch=1' "$STATE/pm/scopes/$SK9/ownership.json" >"$TMPROOT/o.json"
+mv "$TMPROOT/o.json" "$STATE/pm/scopes/$SK9/ownership.json"
+set_terminals '{"terminals":[{"handle":"termA","connected":true,"orphaned":false}]}'
+observe termA 11111111-1111-1111-1111-111111111111 "$SK9"
+assert_eq "  ...after the window it retries and records the tuple" \
+  "$(shows)|$(jq -r '"\(.schema) \(has("identity_attempt_epoch"))"' "$STATE/pm/scopes/$SK9/ownership.json")" "2|afk-pm-ownership/3 false"
+observe termA 11111111-1111-1111-1111-111111111111 "$SK9"
+assert_eq "a recorded tuple is carried forward with no Orca call" "$(shows)" "2"
+
+# A successor takes over with its own terminal's tuple, never the old one's.
+jq -nc --arg p "$(cd -P "$REPO" && pwd)" --slurpfile o "$STATE/pm/scopes/$SK9/ownership.json" \
+  '{schema:"afk-pm-handoff/3",transition_id:"pm-t9",state:"SUCCESSOR_LAUNCHED",continuation_sha256:"sha256:x",
+    old:($o[0]|{session,terminal,harness,worktree,run_id,identity}),
+    successor:{session:null,terminal:"termC",harness:"claude",worktree:{id:"w",path:$p},run_id:null,identity:null},
+    observed_at:"2026-09-30T00:00:00Z",updated_at:"2026-09-30T00:00:00Z"}' >"$STATE/pm/scopes/$SK9/handoff.json"
+set_terminals '{"terminals":[{"handle":"termA","connected":true,"orphaned":false},{"handle":"termC","connected":true,"orphaned":false}]}'
+observe termC 33333333-3333-3333-3333-333333333333 "$SK9"
+assert_eq "a successor records its own terminal's tuple" \
+  "$(jq -r '"\(.terminal) \(.identity.handle) \(.identity.tab_id)"' "$STATE/pm/scopes/$SK9/ownership.json")" "termC termC tab-termC"
 
 # ============================================================================
 assert_eq "the PATH decoy orca never ran" \

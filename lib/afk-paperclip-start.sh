@@ -51,6 +51,12 @@ afk_pcs_start_pm() {
       afk_pcs_report_pm_state_ambiguous
       return 0 ;;
     none) : ;;
+    unknown)
+      # An owner that isn't provably stale keeps the repo busy; say why.
+      local why; why="$(jq -r '.reason // empty' <<<"$lookup")"
+      [[ "$why" =~ ^[A-Z0-9_]{1,64}$ ]] || why="PM_OWNER_UNKNOWN"
+      AFK_PCS_ACTION_OVERRIDE="queued: no PM ($why)"
+      return 0 ;;
     *) return 0 ;;
   esac
   # At most one start per issue, ever (an approval authorises one start). A

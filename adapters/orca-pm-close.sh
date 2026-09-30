@@ -62,6 +62,10 @@ terminal_show_is_released() {
       ((has("result")|not) or .result==null) and
       ((has("terminal")|not) or .terminal==null)' <<<"$terminal_show_json" >/dev/null 2>&1
 }
+# The release proof holds only inside the runtime that issued the handle: after
+# an Orca restart every old handle is absent and answers terminal_handle_stale
+# while its process may still run (AD-28 R5).
+runtime_of() { jq -r '._meta.runtimeId // empty | strings' <<<"$1" 2>/dev/null; }
 terminal_list_is_well_formed() { # <terminal-list-json>
   jq -e '
     type=="object" and
@@ -87,19 +91,27 @@ binding="$(jq -nc --arg id "$transition" --arg terminal "$terminal" --arg wi "$o
   '{schema:"afk-pm-close-binding/1",transition_id:$id,terminal:$terminal,
     worktree:{id:$wi,path:$wp},intent_sha256:$intent_sha}')" || exit 1
 binding_preexisting=false
+proof_runtime=""
 if [[ -f "$binding_file" ]]; then
-  jq -e --argjson expected "$binding" '.==$expected' "$binding_file" >/dev/null 2>&1 || exit 1
+  # A binding written before runtime ids were recorded has none; it can still
+  # drive a live close below, but never the recovered-absence branch.
+  jq -e --argjson expected "$binding" 'del(.runtime_id)==$expected' "$binding_file" >/dev/null 2>&1 || exit 1
+  proof_runtime="$(jq -r '.runtime_id // empty | strings' "$binding_file" 2>/dev/null)"
   binding_preexisting=true
 else
   observe_terminal_show
   (( terminal_show_rc == 0 )) || exit 1
   terminal_is_exact "$terminal_show_json" || exit 1
+  proof_runtime="$(runtime_of "$terminal_show_json")"
+  [[ -n "$proof_runtime" ]] || exit 1
+  binding="$(jq -c --arg rt "$proof_runtime" '. + {runtime_id:$rt}' <<<"$binding")" || exit 1
   atomic_write_verified "$binding_file" "$binding" || exit 1
 fi
 
 afk_orca_run --bound 5 pm-close-list -- terminal list --worktree "id:$observed_id" --limit "$AFK_ORCA_LIST_LIMIT" --json || exit 1
 listed="$AFK_ORCA_OUT"
 terminal_list_is_well_formed "$listed" || exit 1
+list_runtime="$(runtime_of "$listed")"
 present=false
 if jq -e --arg t "$terminal" '.result.terminals[]? | select(.handle==$t)' <<<"$listed" >/dev/null 2>&1; then
   present=true
@@ -108,6 +120,7 @@ if [[ "$binding_preexisting" == true ]]; then
   observe_terminal_show
   if (( terminal_show_rc == 0 )); then
     terminal_is_exact "$terminal_show_json" || exit 1
+    [[ -n "$proof_runtime" ]] || proof_runtime="$(runtime_of "$terminal_show_json")"
   else
     # A prior verified binding plus independent list/show absence recovers the
     # crash-after-close window without addressing an unproven global handle.
@@ -115,6 +128,8 @@ if [[ "$binding_preexisting" == true ]]; then
     # command failure must never synthesize a close receipt.
     [[ "$present" == false ]] || exit 1
     terminal_show_is_released || exit 1
+    [[ -n "$proof_runtime" && "$list_runtime" == "$proof_runtime" &&
+      "$(runtime_of "$terminal_show_json")" == "$proof_runtime" ]] || exit 1
     jq -nc --arg id "$transition" --arg terminal "$terminal" --arg wi "$observed_id" --arg wp "$observed_path" \
       '{schema:"afk-pm-close-receipt/2",transition_id:$id,terminal:$terminal,closed:true,
         worktree:{id:$wi,path:$wp},observed_before:false,close_requested:true,
@@ -132,6 +147,8 @@ terminal_list_is_well_formed "$listed" || exit 1
 jq -e --arg t "$terminal" '[.result.terminals[]? | select(.handle==$t)]|length==0' <<<"$listed" >/dev/null 2>&1 || exit 1
 observe_terminal_show
 terminal_show_is_released || exit 1
+[[ -n "$proof_runtime" && "$(runtime_of "$listed")" == "$proof_runtime" &&
+  "$(runtime_of "$terminal_show_json")" == "$proof_runtime" ]] || exit 1
 jq -nc --arg id "$transition" --arg terminal "$terminal" --arg wi "$observed_id" --arg wp "$observed_path" --argjson before "$present" \
   '{schema:"afk-pm-close-receipt/2",transition_id:$id,terminal:$terminal,closed:true,
     worktree:{id:$wi,path:$wp},
