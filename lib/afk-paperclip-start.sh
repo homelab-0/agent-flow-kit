@@ -496,7 +496,13 @@ afk_pcs_create_terminal() {
     *) afk_pcs_hold_start PM_START_ALREADY_RECORDED; return 1 ;;
   esac
 
-  bootstrap="${AFK_PM_BOOTSTRAP_BIN:-$AFK_KIT_ROOT/adapters/orca-pm-bootstrap.sh}"
+  if [[ ${AFK_PM_BOOTSTRAP_BIN+x} ]]; then
+    bootstrap="$AFK_PM_BOOTSTRAP_BIN"
+  elif [[ -n "${AFK_SKILLS_HOME:-}" && -x "$AFK_SKILLS_HOME/afk-runtime/orca-pm-bootstrap.sh" ]]; then
+    bootstrap="$AFK_SKILLS_HOME/afk-runtime/orca-pm-bootstrap.sh"
+  else
+    bootstrap="$AFK_KIT_ROOT/adapters/orca-pm-bootstrap.sh"
+  fi
   [[ -x "$bootstrap" ]] || { afk_pcs_hold_start PM_BOOTSTRAP_UNAVAILABLE; return 1; }
   ledger="$(jq -c --arg id "$id" --arg file "$intent_file" --arg slug "$slug" --arg h "$harness" \
     --arg r "$repo_path" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
