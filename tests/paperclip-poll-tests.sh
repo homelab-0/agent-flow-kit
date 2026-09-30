@@ -42,6 +42,7 @@ cat >"$STUBS/curl" <<'SH'
 method="GET"
 n=$#
 args=("$@")
+post_body=""
 for ((i = 0; i < n; i++)); do
   [[ "${args[$i]}" == -X ]] && method="${args[$((i + 1))]}"
 done
@@ -62,24 +63,40 @@ for ((i = 0; i < n; i++)); do
     esac
   fi
   if [[ "${args[$i]}" == --data-binary && "${args[$((i + 1))]}" == @/dev/fd/* ]]; then
-    cat "${args[$((i + 1))]#@}" >>"$CURL_STUB_BODYLOG"
-    printf '\n---\n' >>"$CURL_STUB_BODYLOG"
+    post_body="$(cat "${args[$((i + 1))]#@}")"
+    printf '%s\n---\n' "$post_body" >>"$CURL_STUB_BODYLOG"
   fi
 done
 key="${method}_${path#/}"; key="${key//\//_}"
 f="$CURL_STUB_FIXTURES/$key"
+claim_store="$CURL_STUB_FIXTURES/.claim_${path//\//_}"
 # route_nth: a per-route call counter picks "<key>.<n>" for the n-th call.
 cnt="$(( $(cat "$CURL_STUB_FIXTURES/.n_$key" 2>/dev/null || printf 0) + 1 ))"
 printf '%s' "$cnt" >"$CURL_STUB_FIXTURES/.n_$key"
 [[ -f "$f.$cnt" ]] && f="$f.$cnt"
 [[ -f "$f" ]] || f="$CURL_STUB_FIXTURES/DEFAULT"
-if [[ ! -f "$f" ]]; then printf '000'; exit 0; fi
+if [[ ! -f "$f" ]]; then
+  if [[ "$method" == GET && "$path" == */comments && -f "$claim_store" ]]; then
+    cat "$claim_store"; printf 200; exit 0
+  fi
+  printf '000'; exit 0
+fi
 code="$(head -1 "$f")"
 [[ "$code" == NETFAIL ]] && exit 7
+if [[ "$method" == POST && "$path" == */comments && "$code" == 2?? &&
+      ! -f "$CURL_STUB_FIXTURES/.claim_readback_off" ]] &&
+   jq -e '.body | strings | contains("<!-- afk-claim:")' <<<"$post_body" >/dev/null 2>&1; then
+  [[ -f "$claim_store" ]] || printf '[]\n' >"$claim_store"
+  claim_body="$(jq -r '.body' <<<"$post_body")"
+  jq -c --arg b "$claim_body" --arg a "$CURL_STUB_AGENT" '. + [{body:$b,authorAgentId:$a}]' \
+    "$claim_store" >"$claim_store.tmp" && mv "$claim_store.tmp" "$claim_store"
+fi
 # An issue detail with no projectId key gets the scenario's default project
 # (write_config), so every fixture is in a mapped project unless it says
 # otherwise; `"projectId": null` in a fixture is served as written.
-if [[ "$method" == GET && "$path" =~ ^/api/issues/[0-9a-f-]{36}$ && -f "$CURL_STUB_FIXTURES/.default_project" ]] &&
+if [[ "$method" == GET && "$path" == */comments && "$code" == 200 && -f "$claim_store" ]]; then
+  jq -cs '.[0] + .[1]' <(tail -n +2 "$f") "$claim_store"
+elif [[ "$method" == GET && "$path" =~ ^/api/issues/[0-9a-f-]{36}$ && -f "$CURL_STUB_FIXTURES/.default_project" ]] &&
    ! grep -q '"projectId"' "$f" && tail -n +2 "$f" | jq -e 'type == "object"' >/dev/null 2>&1; then
   tail -n +2 "$f" | jq -c --arg p "$(cat "$CURL_STUB_FIXTURES/.default_project")" '. + {projectId: $p}'
 # A /me with no runtimeConfig key reports a lease-mode heartbeat (AD-26);
@@ -143,6 +160,7 @@ run_afk() { # [--json]
     AFK_OP_BIN="$STUBS/op" AFK_CURL_BIN="$STUBS/curl" ${OPTOK:+OP_SERVICE_ACCOUNT_TOKEN="$OPTOK"} \
     ${OPENV:+AFK_OP_ENV_FILE="$OPENV"} \
     CURL_STUB_LOG="$LOG" CURL_STUB_KEYLOG="$KEYLOG" CURL_STUB_BODYLOG="$BODYLOG" CURL_STUB_FIXTURES="$FIXDIR" \
+    CURL_STUB_AGENT="$AGENT1" \
     bash ${AFK_XTRACE:+-x} "$AFK" paperclip-poll "${extra[@]}" 2>"$SCEN/err")"
   RC=$?
   err="$(cat "$SCEN/err")"
@@ -1108,6 +1126,7 @@ assert_missing "adopted while paused: no claimed notice yet" "$STATE/paperclip/n
 
 rm -f "$HOME/.config/agent-flow-kit/paperclip/stop"
 route GET "/api/issues/$ISSUE1/active-run" 200 '{"id":"run-2"}'
+route POST "/api/issues/$ISSUE1/comments" 201 '{}'
 run_afk --json
 assert_eq "unpaused: exactly one claim comment" "$(grep -c 'claimed by AFK PM' "$BODYLOG")" "1"
 NOTICE_DIR="$STATE/paperclip/notices/proj"
@@ -2115,6 +2134,88 @@ assert_contains "no run: a 200 whose body isn't JSON is held" "$OUT_TEXT" "activ
 assert_contains "no run: a stopped issue's unreadable active run is held" "$OUT_TEXT" "active run unreadable, held: PROJ-3"
 assert_eq "  ...no self-wake, nothing written, none marked for repair" \
   "$(grep -c -e '^POST' -e '^PATCH' "$LOG") $(jq -r '[.issues[] | select(.reblock_due != null)] | length' "$(LEDGER_OF)")" "0 0"
+
+# ===========================================================================
+head1 "Review M3: a closed issue reassigned during a pause is a new adoption"
+new_scenario closed_reassigned_paused
+write_config
+mkdir -p "$STATE/paperclip" "$HOME/.config/agent-flow-kit/paperclip" "$STATE/paperclip/notices/proj"
+: >"$HOME/.config/agent-flow-kit/paperclip/stop"
+old_notice="$STATE/paperclip/notices/proj/1700000000.000000001.$ISSUE1.claimed.json"
+old_brief="$STATE/paperclip/notices/proj/brief.$ISSUE1.1700000000.000000001.md"
+printf '{}\n' >"$old_notice"; printf 'old\n' >"$old_brief"
+jq -nc --arg id "$ISSUE1" --arg a "$AGENT1" --arg p "$PROJ1" --arg n "$old_notice" --arg b "$old_brief" \
+  '{issues:{($id):{host_agent_id:$a,paperclip_project_id:$p,slug:"proj",identifier:"PROJ-1",state:"closed",
+    since:"2026-01-01T00:00:00Z",claim:"confirmed",claim_attempted:true,claimed_notice:"written",
+    claimed_notice_path:$n,claimed_brief:"written",claimed_brief_path:$b,
+    claimed_notice_epoch:1700000000,claim_artifact_counter:1}},last_successful_pass:null}' \
+  >"$STATE/paperclip/ledger.json"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+route GET "/api/issues/$ISSUE1" 200 \
+  "{\"status\":\"in_progress\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"updatedAt\":\"2026-02-01T00:00:00Z\"}"
+route GET "/api/issues/$ISSUE1/active-run" 200 '{"id":"run-1"}'
+route PATCH "/api/issues/$ISSUE1" 200 '{}'
+route POST "/api/issues/$ISSUE1/comments" 201 '{}'
+route GET "/api/issues/$ISSUE1/comments" 200 '[]'
+run_afk --json
+LEDGER="$STATE/paperclip/ledger.json"
+assert_eq "M3 paused re-adoption clears old claim state" \
+  "$(jq -r --arg id "$ISSUE1" '.issues[$id] | "\(.state) \(.claim // "none") \(.claimed_notice // "none")"' "$LEDGER")" \
+  'pending_claim none none'
+rm -f "$HOME/.config/agent-flow-kit/paperclip/stop"
+run_afk --json
+assert_eq "M3 unpaused adoption posts a fresh claim" "$(grep -c 'claimed by AFK PM' "$BODYLOG")" 1
+assert_eq "M3 unpaused adoption writes a fresh notice" \
+  "$([[ "$(jq -r --arg id "$ISSUE1" '.issues[$id].claimed_notice_path' "$LEDGER")" != "$old_notice" ]] && echo yes)" yes
+assert_eq "M3 unpaused adoption writes a fresh brief" \
+  "$([[ "$(jq -r --arg id "$ISSUE1" '.issues[$id].claimed_brief_path' "$LEDGER")" != "$old_brief" ]] && echo yes)" yes
+
+# N3: a definite claim POST backoff still leaves the current issue blocked
+# before the pass stops, both after a report wake and on fresh adoption.
+head1 "Review N3: claim POST backoff retains the self-block"
+new_scenario claim_backoff_report
+write_config; seed 1 working proj "$PROJ1"; inbox 1; issue 1 blocked "\"$PROJ1\""
+lset 1 '{claim:"intent",claim_comment_pending:true,claim_attempted:false,reblock_due:"nudge"}'
+claim_backoff_id="$(iid 1)"
+route POST "/api/issues/$claim_backoff_id/comments" 429 '{}'
+run_afk --json
+assert_eq "N3 report: 429 claim sends in_progress and self-block PATCHes" \
+  "$(grep -c "^PATCH /api/issues/$claim_backoff_id$" "$LOG")" 2
+assert_eq "N3 report: the rejected claim POST was attempted once" \
+  "$(grep -c "^POST /api/issues/$claim_backoff_id/comments$" "$LOG")" 1
+assert_eq "N3 report: current issue is blocked once" \
+  "$(grep -c 'unblockDescriptor' "$BODYLOG")" 1
+
+new_scenario claim_backoff_adoption
+write_config; inbox 1; issue 1 in_progress "\"$PROJ1\""
+route POST "/api/issues/$claim_backoff_id/comments" 429 '{}'
+run_afk --json
+assert_eq "N3 adoption: 429 claim still self-blocks" \
+  "$(grep -c "^PATCH /api/issues/$claim_backoff_id$" "$LOG")" 1
+assert_eq "N3 adoption: the rejected claim POST was attempted once" \
+  "$(grep -c "^POST /api/issues/$claim_backoff_id/comments$" "$LOG")" 1
+assert_eq "N3 adoption: current issue is blocked once" \
+  "$(grep -c 'unblockDescriptor' "$BODYLOG")" 1
+
+# A successful POST is still unconfirmed until the marker read-back works.
+# The adoption path must hold the issue without producing PM-facing artifacts.
+new_scenario claim_readback_unresolved
+write_config; inbox 1; issue 1 in_progress "\"$PROJ1\""
+touch "$FIXDIR/.claim_readback_off"
+route GET "/api/issues/$claim_backoff_id/comments" 200 '[]'
+run_afk --json
+assert_eq "review unresolved claim stays pending" \
+  "$(jq -r --arg id "$claim_backoff_id" '.issues[$id].state' "$STATE/paperclip/ledger.json")" pending_claim
+assert_eq "review unresolved claim writes no claimed notice" \
+  "$(find "$STATE/paperclip/notices" -name '*.claimed.json' 2>/dev/null | wc -l | tr -d ' ')" 0
+assert_eq "review unresolved claim writes no brief" \
+  "$(find "$STATE/paperclip/notices" -name 'brief.*' 2>/dev/null | wc -l | tr -d ' ')" 0
+assert_eq "review unresolved claim still self-blocks" \
+  "$(grep -c "^PATCH /api/issues/$claim_backoff_id$" "$LOG")" 1
+
+if bash "$KIT_ROOT/tests/paperclip-claim-review-tests.sh"; then ok "review M1/M2 claim regressions"
+else bad "review M1/M2 claim regressions"; fi
 
 # ===========================================================================
 printf '\n\033[1m%d passed, %d failed\033[0m\n' "$PASS" "$FAIL"
