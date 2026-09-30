@@ -54,7 +54,7 @@ eq "throttle suppresses duplicate rename work" "$(grep -c '^terminal rename ' "$
 env "${common[@]}" AFK_STATUS_CACHE="$TMP/missing.json" AFK_ORCA_TITLE_INTERVAL_SECONDS=0 "$ROOT/adapters/orca-title.sh" --harness codex
 eq "unavailable cache is truthful in title" "$(jq -r '.[]|select(.handle=="self")|.title' "$terminals")" 'AFK UNAVAILABLE[STATUS_UNAVAILABLE]'
 touch -d '@100' "$cache"
-env "${common[@]}" AFK_STATUS_NOW=200 AFK_ORCA_TITLE_INTERVAL_SECONDS=0 "$ROOT/adapters/orca-title.sh" --harness opencode
+env "${common[@]}" AFK_STATUS_NOW=300 AFK_ORCA_TITLE_INTERVAL_SECONDS=0 "$ROOT/adapters/orca-title.sh" --harness opencode
 if [[ "$(jq -r '.[]|select(.handle=="self")|.title' "$terminals")" == STALE* ]]; then ok; else no "stale cache was not visible in title"; fi
 
 # Control bytes are removed and the configured maximum is enforced.
