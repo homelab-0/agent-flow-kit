@@ -300,6 +300,31 @@ in_progress, post every entry in order, then either the final status (a
 `final` entry) or a self-block with the composed text — never leaving the
 issue in_progress.
 
+When optional PM startup is enabled, each inbox pass retries a held start that
+has no `pm_started` receipt (or has a definite `failed` receipt), after
+rechecking the registry, approval, daily cap and readiness gates. An `intent`
+without a receipt joins the recorded start; it never blindly creates another
+terminal, and an `ended` start remains held. A PM-start hold such as
+`queued: no PM (start held: ...)` stays as the self-block text until the PM
+registry confirms a live PM, so an unresolved start does not trigger a report
+wake on every timer pass. Ordinary queue text is
+cleared when the issue is promoted to `working`.
+
+The report sweep also retries held starts from the host's ledger after inbox
+processing as defense in depth alongside the regular blocked-issue retry. It
+checks only host-owned `working`, `queued`, and
+`waiting_human` rows and shares the pass's one-start guard. A report-cycle
+wakeup that overlaps an external wake during the brief, roughly ten-second
+live-run interval before the poller self-blocks can be coalesced as the
+poller's own run; that wake receives no acknowledgement comment and is
+re-blocked by the report cycle.
+
+The poller records the run id returned by its report-cycle wakeup. If that same
+run appears in a later inbox sweep, it is treated as the poller's own run and
+does not receive the Paperclip-wake acknowledgement comment. A different live
+run remains a Paperclip-initiated wake and follows the normal acknowledgement
+path.
+
 Every posted comment body carries a trailing marker line,
 `<!-- afk-entry:<entry id> -->`. A 201 deletes the spool file. On an
 ambiguous outcome (timeout, 5xx, or no status), the comments are read back

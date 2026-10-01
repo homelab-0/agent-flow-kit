@@ -48,7 +48,15 @@ afk_pcs_start_pm() {
   state="$(jq -r '.state' <<<"$lookup")"
 
   case "$state" in
-    live) return 0 ;;
+    live)
+      ledger="$(jq -c --arg id "$id" '
+        .issues[$id].pm_confirmed = true
+        | if .pm_started[$id].state == "created" then .pm_started[$id].state = "live" else . end' <<<"$ledger")"
+      afk_state_file_write "$ledger_path" "$ledger" || {
+        AFK_PCS_ACTION_OVERRIDE="queued: no PM (start held: PM_LEDGER_WRITE_FAILED)"
+        return 0
+      }
+      return 0 ;;
     handoff_in_progress)
       AFK_PCS_ACTION_OVERRIDE="queued: no PM (busy with handoff)"
       return 0 ;;
