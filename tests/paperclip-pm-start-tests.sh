@@ -171,6 +171,7 @@ COMPANY="cccccccc-cccc-cccc-cccc-cccccccccccc"
 BOARD="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 AGENT1="11111111-1111-1111-1111-111111111111"
 ISSUE1="e1111111-1111-1111-1111-111111111111"
+ISSUE2="e2222222-2222-2222-2222-222222222222"
 PROJ1="aaaaaaaa-0000-4000-8000-000000000001"
 
 # new_scenario <name> — fresh HOME, fixtures, git repo and Orca fixtures.
@@ -1072,6 +1073,73 @@ assert_eq "new hold becomes applied only after report PATCH" "$(jq -r --arg id "
 : >"$LOG"; : >"$BODYLOG"
 run_afk paperclip-poll --json
 assert_eq "applied hold stays quiet on the next pass" "$(grep -c '"status":"blocked"' "$BODYLOG")" 0
+
+head1 "17. stale current detail cannot retry a held PM start"
+new_scenario stale_held_start
+write_config '{"pm_start_enabled":true}'
+mkdir -p "$STATE/paperclip"
+jq -nc --arg id "$ISSUE1" --arg a "$AGENT1" --arg p "$PROJ1" \
+  '{issues:{($id):{identifier:"PROJ-1",host_agent_id:$a,paperclip_project_id:$p,slug:"proj",state:"queued",action_text:"queued: no PM (start refused: PM_BOOTSTRAP_UNAVAILABLE)",action_text_applied:"queued: no PM (start refused: PM_BOOTSTRAP_UNAVAILABLE)"}},pm_started:{}}' \
+  >"$STATE/paperclip/ledger.json"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+route GET /api/agents/me/inbox-lite 200 '[]'
+route GET "/api/issues/$ISSUE1" 200 \
+  "{\"status\":\"cancelled\",\"identifier\":\"PROJ-1\",\"projectId\":\"$PROJ1\",\"assigneeAgentId\":\"$AGENT1\"}"
+READINESS_CALL_LOG="$SCEN/stale-readiness.log"
+: >"$READINESS_CALL_LOG"
+AFK_PM_BOOTSTRAP_BIN="$KIT_ROOT/adapters/orca-pm-bootstrap.sh"
+AFK_KIT_ROOT="$KIT_ROOT"; AFK_SKILLS_HOME="$SCEN/skills"
+run_afk paperclip-poll --json
+assert_eq "stale closed detail creates no PM terminal" "$(wc -l <"$ORCA_CREATE_LOG" | tr -d ' ')" 0
+assert_eq "stale closed detail skips PM-start classification" "$(wc -l <"$READINESS_CALL_LOG" | tr -d ' ')" 0
+unset AFK_PM_BOOTSTRAP_BIN AFK_KIT_ROOT AFK_SKILLS_HOME READINESS_CALL_LOG
+
+head1 "18. eligible omitted hold stays queued and retries later"
+new_scenario omitted_eligible_hold
+write_config '{"pm_start_enabled":true}'
+mkdir -p "$STATE/paperclip"
+jq -nc --arg id "$ISSUE1" --arg a "$AGENT1" --arg p "$PROJ1" \
+  '{issues:{($id):{identifier:"PROJ-1",host_agent_id:$a,paperclip_project_id:$p,slug:"proj",state:"queued",action_text:"queued: no PM (start refused: PM_BOOTSTRAP_UNAVAILABLE)",action_text_applied:"queued: no PM (start refused: PM_BOOTSTRAP_UNAVAILABLE)"}},pm_started:{}}' \
+  >"$STATE/paperclip/ledger.json"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+route GET /api/agents/me/inbox-lite 200 '[]'
+route GET "/api/issues/$ISSUE1" 200 \
+  "{\"status\":\"todo\",\"identifier\":\"PROJ-1\",\"projectId\":\"$PROJ1\",\"assigneeAgentId\":\"$AGENT1\",\"createdByUserId\":\"$BOARD\"}"
+READINESS_CALL_LOG="$SCEN/omitted-readiness.log"
+unset AFK_PM_BOOTSTRAP_BIN AFK_KIT_ROOT AFK_SKILLS_HOME
+READINESS_OK=false; READINESS_REASON=PM_BOOTSTRAP_UNAVAILABLE
+run_afk paperclip-poll --json
+assert_eq "eligible omitted issue remains queued" "$(jq -r --arg id "$ISSUE1" '.issues[$id].state' "$STATE/paperclip/ledger.json")" queued
+assert_eq "eligible omitted issue retains its hold text" "$(jq -r --arg id "$ISSUE1" '.issues[$id].action_text' "$STATE/paperclip/ledger.json")" \
+  "queued: no PM (start refused: PM_BOOTSTRAP_UNAVAILABLE)"
+assert_eq "omitted first pass creates no terminal" "$(wc -l <"$ORCA_CREATE_LOG" | tr -d ' ')" 0
+AFK_PM_BOOTSTRAP_BIN="$KIT_ROOT/adapters/orca-pm-bootstrap.sh"
+AFK_KIT_ROOT="$KIT_ROOT"; AFK_SKILLS_HOME="$SCEN/skills"
+READINESS_OK=true; unset READINESS_REASON
+run_afk paperclip-poll --json
+assert_eq "eligible omitted issue retries on a later pass" "$(wc -l <"$ORCA_CREATE_LOG" | tr -d ' ')" 1
+unset AFK_PM_BOOTSTRAP_BIN AFK_KIT_ROOT AFK_SKILLS_HOME READINESS_CALL_LOG
+
+head1 "19. ordinary queue text cannot replace a PM-start hold"
+new_scenario queue_text_preserves_hold
+write_config '{"pm_start_enabled":true}'
+mkdir -p "$STATE/paperclip"
+jq -nc --arg id "$ISSUE1" --arg blocker "$ISSUE2" --arg a "$AGENT1" --arg p "$PROJ1" \
+  '{issues:{($id):{identifier:"PROJ-1",host_agent_id:$a,paperclip_project_id:$p,slug:"proj",state:"queued",action_text:"queued: no PM (start refused: PM_BOOTSTRAP_UNAVAILABLE)",action_text_applied:"queued: no PM (start refused: PM_BOOTSTRAP_UNAVAILABLE)"},($blocker):{identifier:"PROJ-2",host_agent_id:$a,paperclip_project_id:$p,slug:"proj",state:"working",action_text:"AFK host is working on this",action_text_applied:"AFK host is working on this"}},pm_started:{}}' \
+  >"$STATE/paperclip/ledger.json"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+route GET /api/agents/me/inbox-lite 200 "[{\"id\":\"$ISSUE2\"}]"
+route GET "/api/issues/$ISSUE1" 200 \
+  "{\"status\":\"todo\",\"identifier\":\"PROJ-1\",\"projectId\":\"$PROJ1\",\"assigneeAgentId\":\"$AGENT1\",\"createdByUserId\":\"$BOARD\"}"
+route GET "/api/issues/$ISSUE2" 500 '{}'
+READINESS_CALL_LOG="$SCEN/queue-readiness.log"
+unset AFK_PM_BOOTSTRAP_BIN AFK_KIT_ROOT AFK_SKILLS_HOME
+READINESS_OK=false; READINESS_REASON=PM_BOOTSTRAP_UNAVAILABLE
+run_afk paperclip-poll --json
+assert_eq "ordinary queue sweep preserves PM-start hold text" "$(jq -r --arg id "$ISSUE1" '.issues[$id].action_text' "$STATE/paperclip/ledger.json")" \
+  "queued: no PM (start refused: PM_BOOTSTRAP_UNAVAILABLE)"
+assert_eq "quiet hold pass emits no repeated wakeup" "$(grep -c "^POST /api/agents/$AGENT1/wakeup$" "$LOG")" 0
+unset READINESS_CALL_LOG READINESS_OK READINESS_REASON
 
 # ============================================================================
 assert_eq "the PATH decoy orca never ran" \

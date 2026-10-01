@@ -1181,7 +1181,7 @@ afk_pc_maybe_start_pm() {
 # overwrite the report loop's current issue or project context.
 afk_pc_retry_report_pm_start() { # <issue-id> <host-agent-id>
   local retry_id="$1" retry_agent="$2" issue_row issue_state issue_host issue_hold retry_cfg
-  local id identifier slug repo_path harness detail start_row
+  local id identifier slug repo_path harness detail start_row retry_status retry_assignee retry_owner retry_project retry_pin retry_recovery
   issue_row="$(jq -c --arg id "$retry_id" '.issues[$id] // {}' <<<"$ledger")"
   issue_state="$(jq -r '.state // empty' <<<"$issue_row")"
   issue_host="$(jq -r '.host_agent_id // empty' <<<"$issue_row")"
@@ -1189,21 +1189,35 @@ afk_pc_retry_report_pm_start() { # <issue-id> <host-agent-id>
   case "$issue_state" in working | queued | waiting_human) : ;; *) return 0 ;; esac
   [[ "$issue_host" == "$retry_agent" ]] || return 0
   [[ "$issue_hold" == *"no PM"* || "$issue_hold" == *"PM state"* ]] || return 0
-  [[ "$(jq -r '.pm_start_enabled // false' <<<"$AFK_PC_CFG")" == true ]] || return 0
   [[ -z "${pm_start_checked_this_pass[$retry_id]:-}" ]] || return 0
   start_row="$(jq -r --arg id "$retry_id" '.pm_started[$id].state // empty' <<<"$ledger")"
   [[ "$start_row" != created && "$start_row" != live && "$start_row" != ended ]] || return 0
-  retry_cfg="$(jq -c --arg s "$(jq -r '.slug // empty' <<<"$issue_row")" '.projects[] | select(.slug == $s)' <<<"$AFK_PC_CFG")"
-  [[ -n "$retry_cfg" ]] || return 0
 
   id="$retry_id"
   identifier="$(jq -r '.identifier // empty' <<<"$issue_row")"
-  slug="$(jq -r '.slug' <<<"$retry_cfg")"
-  repo_path="$(jq -r '.repo_path' <<<"$retry_cfg")"
-  harness="$(jq -r '.harness' <<<"$retry_cfg")"
+  held_start_authority[$id]=unknown
   local issue_resp; issue_resp="$(afk_pc_curl GET "$api_url/api/issues/$id" "$key" "")"
   [[ "${issue_resp%%$'\n'*}" == 2?? ]] || return 0
   detail="${issue_resp#*$'\n'}"
+  retry_status="$(jq -r '.status // empty' <<<"$detail")"
+  retry_assignee="$(jq -r '.assigneeAgentId // empty' <<<"$detail")"
+  retry_owner="$(jq -r '.unblockDescriptor.owner.agentId // empty' <<<"$detail")"
+  retry_project="$(jq -r '.projectId // empty | strings | ascii_downcase' <<<"$detail")"
+  retry_pin="$(jq -r '.paperclip_project_id // empty | ascii_downcase' <<<"$issue_row")"
+  retry_recovery="$(jq -r '.activeRecoveryAction | select(.status == "active" and .ownerType == "board") // empty' <<<"$detail")"
+  [[ "$retry_status" =~ ^(todo|in_progress|blocked)$ ]] || { held_start_authority[$id]=ineligible; return 0; }
+  [[ -z "$retry_assignee" || "$retry_assignee" == "$retry_agent" ]] || { held_start_authority[$id]=ineligible; return 0; }
+  [[ -z "$retry_owner" || "$retry_owner" == "$retry_agent" ]] || { held_start_authority[$id]=ineligible; return 0; }
+  [[ -z "$retry_recovery" ]] || { held_start_authority[$id]=ineligible; return 0; }
+  [[ -n "$retry_pin" && "$retry_project" == "$retry_pin" ]] || { held_start_authority[$id]=ineligible; return 0; }
+  retry_cfg="$(jq -c --arg s "$(jq -r '.slug // empty' <<<"$issue_row")" --arg p "$retry_pin" \
+    '.projects[] | select(.slug == $s and .paperclip_project_id == $p)' <<<"$AFK_PC_CFG")"
+  [[ -n "$retry_cfg" ]] || { held_start_authority[$id]=ineligible; return 0; }
+  held_start_authority[$id]=eligible
+  [[ "$(jq -r '.pm_start_enabled // false' <<<"$AFK_PC_CFG")" == true ]] || return 0
+  slug="$(jq -r '.slug' <<<"$retry_cfg")"
+  repo_path="$(jq -r '.repo_path' <<<"$retry_cfg")"
+  harness="$(jq -r '.harness' <<<"$retry_cfg")"
   local AFK_PCS_ACTION_OVERRIDE=""
   afk_pc_maybe_start_pm
   if [[ -n "$AFK_PCS_ACTION_OVERRIDE" ]]; then
@@ -1406,7 +1420,7 @@ afk_cmd_paperclip_poll() { # <json_mode>
       '.[1] as $l | [.[0][].id | strings] | to_entries | sort_by([($l.issues[.value].since // "~"), .key]) | .[].value')
     status_file_dir="$AFK_STATE_DIR/paperclip/status"
 
-    local -A pm_start_checked_this_pass=()
+    local -A pm_start_checked_this_pass=() held_start_authority=()
     if [[ "$pause_kind" == none ]]; then
       # Retry held queued starts before inbox reconciliation can close an
       # issue omitted from inbox-lite. This path does not create a report cycle.
@@ -1429,6 +1443,7 @@ afk_cmd_paperclip_poll() { # <json_mode>
     local cid
     for cid in "${closed_ids[@]:-}"; do
       [[ -n "$cid" ]] || continue
+      [[ "${held_start_authority[$cid]:-}" == eligible || "${held_start_authority[$cid]:-}" == unknown ]] && continue
       local cidentifier cstate crow
       cidentifier="$(jq -r --arg id "$cid" '.issues[$id].identifier // empty' <<<"$ledger")"
       cstate="$(jq -r --arg id "$cid" '.issues[$id].state // empty' <<<"$ledger")"
@@ -1934,8 +1949,17 @@ afk_cmd_paperclip_poll() { # <json_mode>
       used_slots_s="${used_slots[$r_slug]:-0}"; max_active="$(jq -r .max_active_issues <<<"$r_row")"
       working_id="${working_ids[$r_slug]:-}"
       r_text="$(afk_pc_queue_text)"
-      [[ "$r_text" == queued* ]] &&
+      if [[ "$r_text" == queued* ]]; then
+        local current_text pm_state pm_live
+        current_text="$(jq -r --arg id "$r_id" '.issues[$id].action_text // .issues[$id].action_text_applied // empty' <<<"$ledger")"
+        pm_state="$(jq -r --arg id "$r_id" '.pm_started[$id].state // empty' <<<"$ledger")"
+        pm_live="$(jq -r --arg id "$r_id" '.issues[$id].pm_confirmed // false' <<<"$ledger")"
+        if [[ "$current_text" == *"no PM"* || "$current_text" == *"PM state"* ]] &&
+           [[ "$pm_state" != live && "$pm_live" != true ]]; then
+          continue
+        fi
         ledger="$(jq -c --arg id "$r_id" --arg t "$r_text" '.issues[$id].action_text = $t' <<<"$ledger")"
+      fi
     done < <(jq -r --arg a "$agent_id" '.issues | to_entries[] | select(.value.host_agent_id == $a and .value.state == "queued") | [.key, (.value.slug // "")] | join("\u001f")' <<<"$ledger")
 
     # --- HA-4a AC-7 (F3): native approvals are read, never waited for -------
