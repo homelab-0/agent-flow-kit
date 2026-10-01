@@ -27,7 +27,7 @@ afk_orca_contract_check() {
   ' "$contract" >/dev/null 2>&1; then
     AFK_ORCA_VERIFY_CLASS=INVALID_CONTRACT
     AFK_ORCA_VERIFY_JSON='{"ok":false,"class":"INVALID_CONTRACT","items":[]}'
-    return 5
+    return 4
   fi
   if afk_orca_run --bound 15 orca-contract-registry -- agent-context --json; then
     :
@@ -40,13 +40,13 @@ afk_orca_contract_check() {
     fi
     AFK_ORCA_VERIFY_JSON="$(jq -cn --arg class "$AFK_ORCA_VERIFY_CLASS" --arg reason "$cli_code" \
       '{ok:false,class:$class,reason_code:$reason,items:[]}')"
-    return 4
+    return 5
   fi
   registry="$AFK_ORCA_OUT"
   if ! jq -e 'type=="object" and (.commands|type)=="array" and all(.commands[]; type=="object" and (.command|type)=="string" and (.flags|type)=="array" and all(.flags[]; type=="string"))' <<<"$registry" >/dev/null 2>&1; then
     AFK_ORCA_VERIFY_CLASS=INVALID_REGISTRY
     AFK_ORCA_VERIFY_JSON='{"ok":false,"class":"INVALID_REGISTRY","items":[]}'
-    return 5
+    return 4
   fi
   summary="$(jq -c --slurpfile c "$contract" '
     . as $r |
@@ -62,12 +62,12 @@ afk_orca_contract_check() {
     | {missing:([$required[]|select(.status=="missing")]|length), reappeared:([$defects[]|select(.status=="reappeared")]|length), items:$items}' <<<"$registry")" || {
       AFK_ORCA_VERIFY_CLASS=INVALID_CONTRACT
       AFK_ORCA_VERIFY_JSON='{"ok":false,"class":"INVALID_CONTRACT","items":[]}'
-      return 5
+      return 4
     }
   if ! jq -e 'has("items") and (.items|type)=="array"' <<<"$summary" >/dev/null 2>&1; then
     AFK_ORCA_VERIFY_CLASS=INVALID_REGISTRY
     AFK_ORCA_VERIFY_JSON='{"ok":false,"class":"INVALID_REGISTRY","items":[]}'
-    return 5
+    return 4
   fi
   class=OK
   if (( $(jq -r '.reappeared' <<<"$summary") > 0 )); then class=REAPPEARED_DEFECT

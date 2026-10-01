@@ -67,37 +67,42 @@ jq '.commands += [{"command":"capabilities","flags":["json"]}]' "$TMP/registry.j
 afk_orca_contract_check; eq 'reappeared defect has distinct exit' "$?" 3
 contains "$AFK_ORCA_VERIFY_JSON" '"id":"defect.capabilities-command"' 'reappeared defect is not named'
 
-# Contract shape failures are INVALID_CONTRACT and are rejected before any
-# registry call, including missing per-command fields and empty collections.
+# Contract and registry shape failures are source refusals (exit 4), including
+# missing per-command fields and empty collections. Live Orca failures use 5.
 cp "$ROOT/lifecycle/orca-contract.json" "$TMP/contract.json"
 jq '(.commands[0]) |= del(.flags)' "$TMP/contract.json" >"$TMP/changed" && mv "$TMP/changed" "$TMP/contract.json"
-afk_orca_contract_check; eq 'command missing flags is invalid contract' "$?" 5
+afk_orca_contract_check; eq 'command missing flags is invalid contract' "$?" 4
 eq 'malformed command class' "$AFK_ORCA_VERIFY_CLASS" INVALID_CONTRACT
 cp "$ROOT/lifecycle/orca-contract.json" "$TMP/contract.json"
 jq '.commands=[]' "$TMP/contract.json" >"$TMP/changed" && mv "$TMP/changed" "$TMP/contract.json"
-afk_orca_contract_check; eq 'empty commands is invalid contract' "$?" 5
+afk_orca_contract_check; eq 'empty commands is invalid contract' "$?" 4
 eq 'empty commands class' "$AFK_ORCA_VERIFY_CLASS" INVALID_CONTRACT
 cp "$ROOT/lifecycle/orca-contract.json" "$TMP/contract.json"
 jq '.known_defects=[]' "$TMP/contract.json" >"$TMP/changed" && mv "$TMP/changed" "$TMP/contract.json"
-afk_orca_contract_check; eq 'empty defects is invalid contract' "$?" 5
+afk_orca_contract_check; eq 'empty defects is invalid contract' "$?" 4
 eq 'empty defects class' "$AFK_ORCA_VERIFY_CLASS" INVALID_CONTRACT
 cp "$ROOT/lifecycle/orca-contract.json" "$TMP/contract.json"
 jq '(.known_defects[0].id)=""' "$TMP/contract.json" >"$TMP/changed" && mv "$TMP/changed" "$TMP/contract.json"
-afk_orca_contract_check; eq 'empty defect id is invalid contract' "$?" 5
+afk_orca_contract_check; eq 'empty defect id is invalid contract' "$?" 4
 eq 'empty defect id class' "$AFK_ORCA_VERIFY_CLASS" INVALID_CONTRACT
 cp "$ROOT/lifecycle/orca-contract.json" "$TMP/contract.json"
 jq '(.known_defects[0].id)="defect.capabilites-command"' "$TMP/contract.json" >"$TMP/changed" && mv "$TMP/changed" "$TMP/contract.json"
-afk_orca_contract_check; eq 'typo defect id is invalid contract' "$?" 5
+afk_orca_contract_check; eq 'typo defect id is invalid contract' "$?" 4
 eq 'typo defect id class' "$AFK_ORCA_VERIFY_CLASS" INVALID_CONTRACT
 cp "$ROOT/lifecycle/orca-contract.json" "$TMP/contract.json"
 jq '.known_defects[1].id=.known_defects[0].id' "$TMP/contract.json" >"$TMP/changed" && mv "$TMP/changed" "$TMP/contract.json"
-afk_orca_contract_check; eq 'duplicate defect id is invalid contract' "$?" 5
+afk_orca_contract_check; eq 'duplicate defect id is invalid contract' "$?" 4
 eq 'duplicate defect id class' "$AFK_ORCA_VERIFY_CLASS" INVALID_CONTRACT
 cp "$ROOT/lifecycle/orca-contract.json" "$TMP/contract.json"
+printf '{"commands":"invalid"}' >"$TMP/registry.json"
+afk_orca_contract_check; eq 'malformed registry is source refusal' "$?" 4
+eq 'malformed registry class' "$AFK_ORCA_VERIFY_CLASS" INVALID_REGISTRY
+cp "$ROOT/lifecycle/orca-contract.json" "$TMP/contract.json"
+cp "$ROOT/tests/fixtures/orca/agent-context-1.4.217.json" "$TMP/registry.json"
 
-# A bounded CLI timeout and an Orca error envelope are both unavailable, not
-# resolver failures; preserve the underlying reason in JSON.
-ORCA_FAIL_MODE=timeout afk_orca_contract_check; eq 'timeout exit is unavailable' "$?" 4
+# A bounded CLI timeout and an Orca error envelope are live dependency
+# failures (exit 5), not resolver failures; preserve the underlying reason.
+ORCA_FAIL_MODE=timeout afk_orca_contract_check; eq 'timeout exit is unavailable' "$?" 5
 eq 'timeout class' "$AFK_ORCA_VERIFY_CLASS" ORCA_CLI_UNAVAILABLE
 contains "$AFK_ORCA_VERIFY_JSON" '"reason_code":"ORCA_TIMEOUT"' 'timeout reason not retained'
 if [[ "$AFK_ORCA_VERIFY_JSON" == *'"class":"ORCA_CLI_NOT_RESOLVED"'* ]]; then
@@ -105,7 +110,7 @@ if [[ "$AFK_ORCA_VERIFY_JSON" == *'"class":"ORCA_CLI_NOT_RESOLVED"'* ]]; then
 else
   ok
 fi
-ORCA_FAIL_MODE=cli-error afk_orca_contract_check; eq 'CLI error exit is unavailable' "$?" 4
+ORCA_FAIL_MODE=cli-error afk_orca_contract_check; eq 'CLI error exit is unavailable' "$?" 5
 eq 'CLI error class' "$AFK_ORCA_VERIFY_CLASS" ORCA_CLI_UNAVAILABLE
 contains "$AFK_ORCA_VERIFY_JSON" '"reason_code":"ORCA_ERROR:fixture_failure"' 'CLI failure reason not retained'
 
@@ -145,6 +150,26 @@ def words(text):
     except ValueError:
         return []
 
+def strip_shell_comment(text):
+    quote, escaped = None, False
+    for index, char in enumerate(text):
+        if escaped:
+            escaped = False
+            continue
+        if char == '\\' and quote != "'":
+            escaped = True
+            continue
+        if quote:
+            if char == quote:
+                quote = None
+            continue
+        if char in ("'", '"'):
+            quote = char
+            continue
+        if char == '#' and (index == 0 or text[index - 1].isspace() or text[index - 1] in ';|&('):
+            return text[:index]
+    return text
+
 def command_flags(args):
     args = [x for x in args if x not in (';', '&&', '||', '|', ')', '}')]
     if not args or args[0].startswith('$'):
@@ -158,17 +183,17 @@ def command_flags(args):
     flags = {m.group(1) for x in rest if (m := re.match(r'^--([a-z][a-z0-9-]*)', x))}
     return command, flags
 
-def caller_function(lines, line_number):
+def function_scopes(lines):
+    scopes = {}
     current = None
     for number, line in enumerate(lines, 1):
         header = re.match(r'^\s*([A-Za-z_]\w*)\s*\(\)\s*\{', line)
         if header:
             current = header.group(1)
-        if number == line_number:
-            return current
+        scopes[number] = current
         if current and re.match(r'^\s*}\s*$', line):
             current = None
-    return None
+    return scopes
 
 forwarders = set()
 for path in files:
@@ -188,35 +213,38 @@ for defect in contract.get('known_defects', []):
 for path in files:
     physical = path.read_text(errors='ignore').splitlines()
     statements = list(logical_lines('\n'.join(physical)))
+    scopes = function_scopes(physical)
     arrays = {}
-    for _, statement in statements:
+    for line_number, statement in statements:
+        scope = scopes.get(line_number)
         match = re.search(r'\b([A-Za-z_]\w*)\s*(\+?=)\s*\((.*)\)', statement)
         if not match:
             continue
         name, op, value = match.groups()
+        key = (scope, name)
         parts = words(value)
         if any('$' in x and not re.fullmatch(r'\$[A-Za-z_]\w*', x) for x in parts):
-            arrays.pop(name, None)
+            arrays.pop(key, None)
             continue
         parts = [x for x in parts if x != ')']
         if op == '+=':
-            if name in arrays:
-                arrays[name].extend(parts)
+            if key in arrays:
+                arrays[key].extend(parts)
             else:
-                arrays.pop(name, None)
+                arrays.pop(key, None)
         else:
-            arrays[name] = parts
+            arrays[key] = parts
     for line_number, statement in statements:
         if re.match(r'^\s*[A-Za-z_]\w*\s*\(\)\s*\{', statement):
             continue
-        uncommented = statement.split('#', 1)[0]
+        uncommented = strip_shell_comment(statement)
         if re.match(r'^\s*(?:declare\s+-F|local\s+-F)\b', uncommented):
             continue
         pattern = r'(?<![A-Za-z0-9_])(' + '|'.join(map(re.escape, wrappers)) + r')(?![A-Za-z0-9_])'
         for match in re.finditer(pattern, uncommented):
             name = match.group(1)
             prefix = uncommented[:match.start()]
-            if name == 'afk_orca_run' and caller_function(physical, line_number) in forwarders:
+            if name == 'afk_orca_run' and scopes.get(line_number) in forwarders:
                 continue
             if re.search(r'\bfunction\s*$', prefix) or re.search(r'\b[A-Za-z_]\w*\s*\(\s*$', prefix):
                 continue
@@ -228,7 +256,7 @@ for path in files:
                 try:
                     divider = argv.index('--')
                 except ValueError:
-                    if caller_function(physical, line_number) in forwarders:
+                    if scopes.get(line_number) in forwarders:
                         continue
                     errors.append(f'{path}:{line_number}: unauditable afk_orca_run argv')
                     continue
@@ -241,15 +269,17 @@ for path in files:
             if argv:
                 array = re.fullmatch(r'\$\{([A-Za-z_]\w*)\[@\]\}', argv[0])
                 if array:
-                    if array.group(1) not in arrays:
+                    scope = scopes.get(line_number)
+                    key = (scope, array.group(1))
+                    if key not in arrays and (None, array.group(1)) not in arrays:
                         errors.append(f'{path}:{line_number}: unauditable argv array {array.group(1)}')
                         continue
-                    argv = arrays[array.group(1)] + argv[1:]
+                    argv = arrays.get(key, arrays.get((None, array.group(1)), [])) + argv[1:]
             command, flags = command_flags(argv)
             if not command:
                 errors.append(f'{path}:{line_number}: unauditable Orca argv for {name}')
                 continue
-            owner = caller_function(physical, line_number)
+            owner = scopes.get(line_number)
             defect = next((item for item in defect_calls
                            if owner == item[1] and command == item[2] and flags == item[3]
                            and (name not in forwarders or item[0] == 'defect.close-handle-durable')), None)
@@ -305,6 +335,38 @@ if coverage_check "$TMP/site.sh" "$TMP/contract-no-send-flag.json" >/dev/null 2>
 else
   ok
 fi
+mkdir -p "$TMP/scope"
+cat >"$TMP/scope/arrays.sh" <<'SITE'
+array_declaring_function() {
+  local -a args=(terminal list --json)
+}
+array_calling_function() {
+  bounded_orca "${args[@]}"
+}
+SITE
+if coverage_check "$TMP/scope" >/dev/null 2>&1; then
+  no 'array value leaked from another function scope'
+else
+  ok
+fi
+cat >"$TMP/site.sh" <<'SITE'
+printf '%s' "PM #1"; bounded_orca terminal list --json --uncontracted-flag
+SITE
+comment_hash_output="$(coverage_check "$TMP/site.sh" 2>&1)"
+if [[ "$comment_hash_output" == *'terminal list --uncontracted-flag'* ]]; then
+  ok
+else
+  no 'quoted hash hid a later uncontracted wrapper flag'
+fi
+cat >"$TMP/site.sh" <<'SITE'
+printf '%s' "${#items[@]}"; bounded_orca terminal list --json --uncontracted-flag
+SITE
+parameter_hash_output="$(coverage_check "$TMP/site.sh" 2>&1)"
+if [[ "$parameter_hash_output" == *'terminal list --uncontracted-flag'* ]]; then
+  ok
+else
+  no 'parameter expansion hash hid a later uncontracted wrapper flag'
+fi
 mkdir -p "$TMP/wrapper"
 cat >"$TMP/wrapper/monitor.sh" <<'SITE'
 afk_monitor_orca() {
@@ -345,6 +407,32 @@ CLI="$ROOT/bin/agent-flow-kit"
 ORCA_REGISTRY="$ROOT/tests/fixtures/orca/agent-context-1.4.217.json" "$CLI" orca-verify --contract --json >"$TMP/verb.json"
 eq 'verb pass exit' "$?" 0
 contains "$(cat "$TMP/verb.json")" '"items"' 'verb JSON lacks item statuses'
+ORCA_REGISTRY="$ROOT/tests/fixtures/orca/agent-context-1.4.217.json" "$CLI" schema >"$TMP/schema.json"
+eq 'schema exit' "$?" 0
+contains "$(cat "$TMP/schema.json")" 'orca-verify --contract' 'schema omits Orca verifier command'
+"$CLI" --help >"$TMP/help.txt"
+contains "$(cat "$TMP/help.txt")" '4 invalid contract or registry, 5 Orca unavailable' 'help exit meanings do not match shared semantics'
+cp "$ROOT/lifecycle/orca-contract.json" "$TMP/invalid-contract.json"
+jq '(.commands[0]) |= del(.flags)' "$TMP/invalid-contract.json" >"$TMP/changed" && mv "$TMP/changed" "$TMP/invalid-contract.json"
+AFK_ORCA_CONTRACT="$TMP/invalid-contract.json" ORCA_REGISTRY="$ROOT/tests/fixtures/orca/agent-context-1.4.217.json" \
+  "$CLI" orca-verify --contract --json >"$TMP/invalid-verb.json"
+eq 'public invalid contract uses source refusal exit 4' "$?" 4
+contains "$(cat "$TMP/invalid-verb.json")" '"class":"INVALID_CONTRACT"' 'public invalid contract result missing'
+ORCA_FAIL_MODE=timeout ORCA_REGISTRY="$ROOT/tests/fixtures/orca/agent-context-1.4.217.json" \
+  "$CLI" orca-verify --contract --json >"$TMP/unavailable-verb.json"
+eq 'public Orca timeout uses live unavailable exit 5' "$?" 5
+contains "$(cat "$TMP/unavailable-verb.json")" '"class":"ORCA_CLI_UNAVAILABLE"' 'public unavailable class missing'
+
+# Verify the early orca-verify branch checks the common tool requirements.
+mkdir -p "$TMP/no-jq-bin"
+for tool in git find sed grep awk wc tr sort readlink head tail cat cp mv dirname sha256sum shasum; do
+  tool_path="$(command -v "$tool")"
+  [[ -n "$tool_path" ]] && ln -sf "$tool_path" "$TMP/no-jq-bin/$tool"
+done
+PATH="$TMP/no-jq-bin" HOME="${HOME:-}" AFK_STATE_DIR="$TMP/no-jq-state" AFK_PM_DIR="$TMP/no-jq-pm" \
+  /bin/bash "$CLI" orca-verify --contract >"$TMP/no-jq.out" 2>&1
+eq 'missing jq refuses before the contract check' "$?" 1
+contains "$(cat "$TMP/no-jq.out")" 'missing required tools: jq' 'missing jq did not use the common tool warning'
 
 # The live check is informational when the configured Orca CLI is unavailable.
 if [[ -x "$HOME/.local/bin/orca-ide" ]]; then

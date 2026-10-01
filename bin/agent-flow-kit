@@ -258,7 +258,7 @@ agent-flow-kit — lifecycle entry point
   agent-flow-kit orca-verify --contract [--json]
       Check the checked-in Orca command and flag contract against one bounded
       agent-context registry read. Exit 0 pass, 2 missing item, 3 reappeared
-      known defect, 4 Orca unavailable, 5 invalid contract or registry.
+      known defect, 4 invalid contract or registry, 5 Orca unavailable.
 
   agent-flow-kit monitor [options]
       The durable worker-completion watch. Without an action verb it reports
@@ -574,6 +574,7 @@ afk_main() {
       afk_warn "orca-verify requires --contract and accepts only optional --json"
       return "$AFK_EXIT_USAGE"
     fi
+    afk_require_tools || return "$AFK_EXIT_USAGE"
     afk_orca_contract_check
     local verify_rc=$?
     if [[ "$contract_json" == true ]]; then
