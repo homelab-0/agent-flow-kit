@@ -265,7 +265,7 @@ assert_absent "  ...PAPERCLIP_LOCK_TIMEOUT is not reported" "$OUT_TEXT" "PAPERCL
 # is never touched: the write times out and the lock survives untouched.
 reset_state
 mkdir -p "$LOCKDIR"
-bash -c 'sleep 20; :' paperclip-report & LIVE_PID=$!
+bash -c 'exec -a paperclip-report sleep 600' paperclip-report >/dev/null 2>&1 & LIVE_PID=$!
 printf '%s 0\n' "$LIVE_PID" >"$LOCKDIR/owner"
 afk_stale_touch "$LOCKDIR"
 run_afk termA paperclip-report --issue "$ISSUE" --comment-file "$(body_file "blocked by live holder")" --json

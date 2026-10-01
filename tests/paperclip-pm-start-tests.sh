@@ -40,15 +40,37 @@ SH
 cat >"$STUBS/curl" <<'SH'
 #!/usr/bin/env bash
 method="GET"; n=$#; args=("$@")
+post_body=""
 for ((i = 0; i < n; i++)); do [[ "${args[$i]}" == -X ]] && method="${args[$((i + 1))]}"; done
 url="${args[$((n - 1))]}"
 tmp="${url#*://}"; path="/${tmp#*/}"
 printf '%s %s\n' "$method" "$path" >>"$CURL_STUB_LOG"
 for ((i = 0; i < n; i++)); do
   if [[ "${args[$i]}" == --data-binary && "${args[$((i + 1))]}" == @/dev/fd/* ]]; then
-    cat "${args[$((i + 1))]#@}" >>"$CURL_STUB_BODYLOG"; printf '\n---\n' >>"$CURL_STUB_BODYLOG"
+    post_body="$(cat "${args[$((i + 1))]#@}")"
+    printf '%s\n---\n' "$post_body" >>"$CURL_STUB_BODYLOG"
   fi
 done
+if [[ -n "${CURL_STUB_COMMENTS_FILE:-}" && "$path" == */comments ]]; then
+  if [[ "$method" == POST ]]; then
+    body="$(jq -r '.body // empty' <<<"$post_body")"
+    jq -c --arg b "$body" --arg a "$CURL_STUB_AGENT" '. + [{authorAgentId:$a, body:$b}]' \
+      "$CURL_STUB_COMMENTS_FILE" >"$CURL_STUB_COMMENTS_FILE.tmp"
+    mv "$CURL_STUB_COMMENTS_FILE.tmp" "$CURL_STUB_COMMENTS_FILE"
+    if [[ "${KILL_POINT:-}" == claim ]]; then
+      : >"$KILL_MARKER"; while [[ -e "$KILL_MARKER" ]]; do sleep 0.05; done
+    fi
+  elif [[ "$method" == GET ]]; then
+    comment_key="${method}_${path#/}"; comment_key="${comment_key//\//_}"
+    comment_fixture="$CURL_STUB_FIXTURES/$comment_key"
+    if [[ -f "$comment_fixture" && "$(head -1 "$comment_fixture")" == 200 ]]; then
+      jq -cs '.[0] + .[1]' <(tail -n +2 "$comment_fixture") "$CURL_STUB_COMMENTS_FILE"
+    else
+      cat "$CURL_STUB_COMMENTS_FILE"
+    fi
+    printf 200; exit 0
+  fi
+fi
 key="${method}_${path#/}"; key="${key//\//_}"
 f="$CURL_STUB_FIXTURES/$key"
 [[ -f "$f" ]] || f="$CURL_STUB_FIXTURES/DEFAULT"
@@ -75,16 +97,39 @@ case "$1 $2" in
     else jq -c '. + {_meta:{runtimeId:"rt-1"}}' "$ORCA_TERMLIST_FILE"; fi ;;
   # Every listed terminal runs claude on pane tab-<handle>:leaf-<handle>.
   "worktree ps")
-    jq -c '{result:{worktrees:[{agents:[.result.terminals[] | {paneKey:("tab-"+.handle+":leaf-"+.handle),
+    jq -c '{result:{worktrees:[{id:"wt-1",agents:[.result.terminals[] | {paneKey:(if .handle=="term-created-1" then "tab-c:leaf-c" else "tab-"+.handle+":leaf-"+.handle end),
       state:"working",agentType:"claude"}]}]},_meta:{runtimeId:"rt-1"}}' "$ORCA_TERMLIST_FILE" ;;
   "terminal show")
     [[ "${4:-}" == term-created-1 ]] || exit 1
-    printf '{"result":{"terminal":{"handle":"term-created-1","tabId":"tab-c","leafId":"leaf-c"}},"_meta":{"runtimeId":"rt-1"}}' ;;
+    printf '{"result":{"terminal":{"handle":"term-created-1","tabId":"tab-c","leafId":"leaf-c","worktreeId":"wt-1"}},"_meta":{"runtimeId":"rt-1"}}' ;;
   "terminal create")
     printf '%s\n' "$*" >>"$ORCA_CREATE_LOG"
-    printf '{"result":{"terminal":{"handle":"term-created-1"}}}' ;;
+    if [[ -n "${BOOTSTRAP_MARKER:-}" ]]; then
+      for ((i = 1; i < $#; i++)); do
+        if [[ "${!i}" == --command ]]; then
+          j=$((i + 1)); bootstrap_command="${!j}"
+          bootstrap_wt_path="$(jq -r '.result.worktree.path' "$ORCA_WT_FILE")"
+          (cd "$bootstrap_wt_path" && eval "$bootstrap_command")
+          break
+        fi
+      done
+    fi
+    printf '{"result":{"terminal":{"handle":"term-created-1"}}}'
+    if [[ "${KILL_POINT:-}" == create ]]; then
+      printf '{"result":{"terminals":[{"handle":"term-created-1","title":"renamed by statusline","connected":true,"orphaned":false}]}}' >"$ORCA_TERMLIST_FILE"
+      : >"$KILL_MARKER"; while [[ -e "$KILL_MARKER" ]]; do sleep 0.05; done
+    fi ;;
   *) exit 1 ;;
 esac
+SH
+cat >"$STUBS/tr" <<'SH'
+#!/usr/bin/env bash
+if [[ "${KILL_POINT:-}" == notice ]] &&
+   find "$KILL_NOTICE_PATH" -maxdepth 1 -name '*.claimed.json' -print -quit 2>/dev/null | grep -q . &&
+   ! find "$KILL_NOTICE_PATH" -maxdepth 1 -name 'brief.*.md' -print -quit 2>/dev/null | grep -q .; then
+  : >"$KILL_MARKER"; while [[ -e "$KILL_MARKER" ]]; do sleep 0.05; done
+fi
+exec /usr/bin/tr "$@"
 SH
 # The stub reaches the kit only through the resolver's host config.
 printf '{"orca_bin":"%s"}\n' "$STUBS/orca-cli" >"$STUBS/host.json"
@@ -130,6 +175,7 @@ PROJ1="aaaaaaaa-0000-4000-8000-000000000001"
 # new_scenario <name> — fresh HOME, fixtures, git repo and Orca fixtures.
 new_scenario() {
   SCEN="$TMPROOT/$1"; mkdir -p "$SCEN"
+  COMMENTS_FILE="$SCEN/comments.json"; printf '[]\n' >"$COMMENTS_FILE"
   HOME="$SCEN/home"; mkdir -p "$HOME"
   STATE="$HOME/.local/state/agent-flow-kit"
   FIXDIR="$SCEN/fixtures"; mkdir -p "$FIXDIR"
@@ -163,17 +209,25 @@ write_config() { # <extra-json-merge>
 
 RC=0 OUT_TEXT=""
 run_afk() { # <cmd> [args...]
-  local out err
+  local out err; local -a adapter_env=()
+  [[ ${AFK_PM_BOOTSTRAP_BIN+x} ]] && adapter_env+=("AFK_PM_BOOTSTRAP_BIN=$AFK_PM_BOOTSTRAP_BIN")
+  [[ ${AFK_SKILLS_HOME+x} ]] && adapter_env+=("AFK_SKILLS_HOME=$AFK_SKILLS_HOME")
+  [[ ${BOOTSTRAP_MARKER+x} ]] && adapter_env+=("BOOTSTRAP_MARKER=$BOOTSTRAP_MARKER")
+  [[ ${AFK_CLAUDE_BIN+x} ]] && adapter_env+=("AFK_CLAUDE_BIN=$AFK_CLAUDE_BIN")
+  [[ ${HARNESS_ARGV_LOG+x} ]] && adapter_env+=("HARNESS_ARGV_LOG=$HARNESS_ARGV_LOG")
+  [[ ${ORCA_TERMINAL_HANDLE+x} ]] && adapter_env+=("ORCA_TERMINAL_HANDLE=$ORCA_TERMINAL_HANDLE")
   out="$(env -i PATH="$STUBS:$PATH" HOME="${HOME:-$SCEN/home}" LANG=C \
+    AFK_KIT_ROOT="${AFK_KIT_ROOT:-$KIT_ROOT}" \
     AFK_STATE_DIR="$STATE" AFK_PAPERCLIP_CONFIG="$CONFIG" \
     AFK_OP_BIN="$STUBS/op" AFK_CURL_BIN="$STUBS/curl" AFK_HOST_CONFIG="$STUBS/host.json" OP_SERVICE_ACCOUNT_TOKEN=test-op-token \
     AFK_PCS_READINESS_BIN="$STUBS/readiness" READINESS_OK="${READINESS_OK:-true}" READINESS_REASON="${READINESS_REASON:-}" \
     CURL_STUB_LOG="$LOG" CURL_STUB_BODYLOG="$BODYLOG" CURL_STUB_FIXTURES="$FIXDIR" \
+    CURL_STUB_COMMENTS_FILE="${COMMENTS_FILE:-}" CURL_STUB_AGENT="$AGENT1" \
     ORCA_WT_FILE="$ORCA_WT_FILE" ORCA_TERMLIST_FILE="$ORCA_TERMLIST_FILE" ORCA_TERMLIST_WT_FILE="$ORCA_TERMLIST_WT_FILE" \
     ORCA_CREATE_LOG="$ORCA_CREATE_LOG" SYSTEMCTL_LOG="$SYSTEMCTL_LOG" ${SYSTEMCTL_SHOWENV:+SYSTEMCTL_SHOWENV="$SYSTEMCTL_SHOWENV"} \
     SYSTEMCTL_ENABLED="${SYSTEMCTL_ENABLED:-enabled}" SYSTEMCTL_ACTIVE="${SYSTEMCTL_ACTIVE:-active}" \
-    AFK_PCT_SYSTEMD_DIR="$SCEN/systemd-user" \
-    bash "$AFK" "$@" 2>"$SCEN/err")"
+    AFK_PCT_SYSTEMD_DIR="$SCEN/systemd-user" "${adapter_env[@]}" \
+    bash "${AFK_BIN_OVERRIDE:-$AFK}" "$@" 2>"$SCEN/err")"
   RC=$?
   err="$(cat "$SCEN/err")"
   OUT_TEXT="$out"$'\n'"$err"
@@ -198,6 +252,103 @@ do_pass() { # a full claim-side pass adopting ISSUE1 fresh
   run_afk paperclip-poll --json
 }
 
+kill_pass_at() { # claim | notice | create; only kills the pass PID started here
+  local point="$1" pass_pid seen=false i
+  KILL_MARKER="$SCEN/kill-ready"
+  KILL_NOTICE_PATH="$STATE/paperclip/notices/proj"
+  KILL_BRIEF_PATH="$KILL_NOTICE_PATH"
+  env -i PATH="$STUBS:$PATH" HOME="$HOME" LANG=C \
+    AFK_STATE_DIR="$STATE" AFK_PAPERCLIP_CONFIG="$CONFIG" AFK_HOST_CONFIG="$STUBS/host.json" \
+    AFK_OP_BIN="$STUBS/op" AFK_CURL_BIN="$STUBS/curl" OP_SERVICE_ACCOUNT_TOKEN=test-op-token \
+    AFK_PCS_READINESS_BIN="$STUBS/readiness" READINESS_OK=true \
+    CURL_STUB_LOG="$LOG" CURL_STUB_BODYLOG="$BODYLOG" CURL_STUB_FIXTURES="$FIXDIR" \
+    CURL_STUB_COMMENTS_FILE="$COMMENTS_FILE" CURL_STUB_AGENT="$AGENT1" \
+    ORCA_WT_FILE="$ORCA_WT_FILE" ORCA_TERMLIST_FILE="$ORCA_TERMLIST_FILE" \
+    ORCA_TERMLIST_WT_FILE="$ORCA_TERMLIST_WT_FILE" ORCA_CREATE_LOG="$ORCA_CREATE_LOG" \
+    KILL_POINT="$point" KILL_MARKER="$KILL_MARKER" KILL_NOTICE_PATH="$KILL_NOTICE_PATH" \
+    KILL_BRIEF_PATH="$KILL_BRIEF_PATH" bash "$AFK" paperclip-poll --json \
+    >"$SCEN/killed.out" 2>&1 &
+  pass_pid=$!
+  for ((i=0; i<200; i++)); do
+    if [[ -e "$KILL_MARKER" ]]; then seen=true; break; fi
+    kill -0 "$pass_pid" 2>/dev/null || break
+    sleep 0.05
+  done
+  assert_eq "$point: reached the kill point" "$seen" true
+  if [[ "$seen" == true ]]; then kill -9 "$pass_pid" 2>/dev/null; fi
+  wait "$pass_pid" 2>/dev/null || true
+  rm -f "$KILL_MARKER"
+  # A SIGKILL leaves the poll lock. Age only this test's dead pass lock so
+  # the next pass can use the normal stale-lock recovery path.
+  [[ -d "$STATE/paperclip/.lock" ]] && touch -d '-1000 seconds' "$STATE/paperclip/.lock"
+}
+
+# Bootstrap adapter resolution: installed flat layout, missing adapters, and
+# explicit override precedence. Orca executes the command only while marked.
+head1 "0. bootstrap adapter resolution"
+new_scenario installed_bootstrap
+write_config '{"pm_start_enabled":true}'
+issue_route in_progress "$BOARD"
+AFK_SKILLS_HOME="$SCEN/skills"; INSTALLED_RUNTIME="$AFK_SKILLS_HOME/afk-runtime"
+mkdir -p "$INSTALLED_RUNTIME"
+cp -R "$KIT_ROOT/bin" "$KIT_ROOT/lib" "$INSTALLED_RUNTIME/"
+cp "$KIT_ROOT/adapters/runtime-scope.sh" "$INSTALLED_RUNTIME/runtime-scope.sh"
+install -m 755 "$KIT_ROOT/adapters/orca-pm-bootstrap.sh" "$INSTALLED_RUNTIME/orca-pm-bootstrap.sh"
+AFK_KIT_ROOT="$INSTALLED_RUNTIME"
+AFK_BIN_OVERRIDE="$INSTALLED_RUNTIME/bin/agent-flow-kit"
+BOOTSTRAP_MARKER=installed-layout
+ORCA_TERMINAL_HANDLE=term-created-1
+AFK_CLAUDE_BIN="$STUBS/harness"; HARNESS_ARGV_LOG="$SCEN/installed-harness.argv"
+[[ ! -d "$INSTALLED_RUNTIME/adapters" ]] && ok "installed runtime has no adapters directory" || bad "installed runtime has no adapters directory"
+# Independently source the copied registry library: the flat sibling helper
+# must satisfy its scope-key primitive without a source-tree adapters path.
+installed_key="$(env -i PATH="$STUBS:$PATH" AFK_INSTALL_ROOT="$INSTALLED_RUNTIME" bash -c \
+  '. "$AFK_INSTALL_ROOT/lib/afk-pm-registry.sh" && afk_pmr_claim_key_for_terminal installed-check')"
+expected_key="terminal-$(printf 'terminal\0%s' installed-check | sha256sum | awk '{print $1}')"
+assert_eq "installed registry sources sibling runtime-scope.sh" "$installed_key" "$expected_key"
+unset AFK_PM_BOOTSTRAP_BIN
+do_pass
+assert_contains "installed entrypoint runs the real flat bootstrap" "$(cat "$HARNESS_ARGV_LOG" 2>/dev/null)" "paperclip-take --slug proj"
+assert_absent "installed flat adapter avoids unavailable hold" "$OUT_TEXT" PM_BOOTSTRAP_UNAVAILABLE
+INTENT_FILE="$STATE/paperclip/pm-start-intents/proj.$ISSUE1.json"
+# Invoke the same real installed adapter directly with the generated intent to
+# prove its sibling lib/ lookup and the intent's bootstrap path independently.
+(cd "$REPO" && env -i PATH="$STUBS:$PATH" HOME="$SCEN/home" LANG=C \
+  ORCA_TERMINAL_HANDLE=term-created-1 AFK_HOST_CONFIG="$STUBS/host.json" \
+  ORCA_WT_FILE="$ORCA_WT_FILE" AFK_CLAUDE_BIN="$STUBS/harness" \
+  HARNESS_ARGV_LOG="$SCEN/direct-installed-harness.argv" \
+  bash "$INSTALLED_RUNTIME/orca-pm-bootstrap.sh" --intent "$INTENT_FILE" >/dev/null 2>&1)
+assert_contains "real flat bootstrap loads sibling lib/ and accepts generated intent" \
+  "$(cat "$SCEN/direct-installed-harness.argv" 2>/dev/null)" "paperclip-take --slug proj"
+unset AFK_BIN_OVERRIDE AFK_PM_BOOTSTRAP_BIN AFK_SKILLS_HOME AFK_KIT_ROOT BOOTSTRAP_MARKER
+unset AFK_CLAUDE_BIN HARNESS_ARGV_LOG ORCA_TERMINAL_HANDLE
+
+new_scenario missing_bootstrap
+write_config '{"pm_start_enabled":true}'
+issue_route in_progress "$BOARD"
+AFK_SKILLS_HOME="$SCEN/no-skills"; mkdir -p "$AFK_SKILLS_HOME/afk-runtime"
+AFK_KIT_ROOT="$SCEN/no-kit-adapters"; mkdir -p "$AFK_KIT_ROOT"
+unset AFK_PM_BOOTSTRAP_BIN BOOTSTRAP_MARKER
+do_pass
+assert_contains "neither bootstrap path executable reports unavailable" \
+  "$(jq -r --arg id "$ISSUE1" '.issues[$id].action_text // empty' "$STATE/paperclip/ledger.json")" PM_BOOTSTRAP_UNAVAILABLE
+assert_eq "missing bootstrap does not create a terminal" "$(wc -l <"$ORCA_CREATE_LOG" | tr -d ' ')" 0
+
+new_scenario override_bootstrap
+write_config '{"pm_start_enabled":true}'
+issue_route in_progress "$BOARD"
+AFK_KIT_ROOT="$KIT_ROOT"; AFK_SKILLS_HOME="$SCEN/skills"; mkdir -p "$AFK_SKILLS_HOME/afk-runtime"
+BOOTSTRAP_MARKER="$SCEN/override-called"; AFK_PM_BOOTSTRAP_BIN="$SCEN/override.sh"
+printf '#!/bin/sh\nprintf override >"%s"\n' "$BOOTSTRAP_MARKER" >"$AFK_PM_BOOTSTRAP_BIN"
+chmod +x "$AFK_PM_BOOTSTRAP_BIN"
+mkdir -p "$AFK_SKILLS_HOME/afk-runtime"
+printf '#!/bin/sh\nprintf installed >"%s"\n' "$SCEN/installed-decoy-called" >"$AFK_SKILLS_HOME/afk-runtime/orca-pm-bootstrap.sh"
+chmod +x "$SCEN/skills/afk-runtime/orca-pm-bootstrap.sh"
+do_pass
+assert_eq "explicit bootstrap override wins" "$(cat "$BOOTSTRAP_MARKER" 2>/dev/null)" override
+assert_absent "installed adapter loses to explicit override" "$(cat "$SCEN/installed-decoy-called" 2>/dev/null)" installed
+unset AFK_PM_BOOTSTRAP_BIN AFK_SKILLS_HOME AFK_KIT_ROOT BOOTSTRAP_MARKER
+
 # ============================================================================
 head1 "1. none + Josh-created -> exactly one terminal create"
 # ============================================================================
@@ -207,13 +358,13 @@ issue_route in_progress "$BOARD"
 do_pass
 assert_eq "none+Josh: pass exit 0" "$RC" "0"
 assert_eq "none+Josh: exactly one terminal create" "$(wc -l <"$ORCA_CREATE_LOG" | tr -d ' ')" "1"
-INTENT_FILE="$STATE/paperclip/pm-start-intents/proj.json"
+INTENT_FILE="$STATE/paperclip/pm-start-intents/proj.$ISSUE1.json"
 assert_contains "none+Josh: fixed instruction text present" "$(cat "$INTENT_FILE")" "You are the BMAD PM for project proj"
 assert_contains "none+Josh: the started PM is told to take by --slug" "$(cat "$INTENT_FILE")" "paperclip-take --slug proj"
 assert_contains "none+Josh: the terminal title names the slug" "$(cat "$ORCA_CREATE_LOG")" "PM proj (paperclip)"
 assert_absent "none+Josh: no issue title in the create argv" "$(cat "$ORCA_CREATE_LOG")" "T\""
 assert_absent "none+Josh: no issue description in the create argv" "$(cat "$ORCA_CREATE_LOG")" "\"D\""
-INTENT_FILE="$STATE/paperclip/pm-start-intents/proj.json"
+INTENT_FILE="$STATE/paperclip/pm-start-intents/proj.$ISSUE1.json"
 assert_absent "none+Josh: no issue title in the bootstrap intent" "$(cat "$INTENT_FILE" 2>/dev/null)" "\"T\""
 assert_absent "none+Josh: no issue description in the bootstrap intent" "$(cat "$INTENT_FILE" 2>/dev/null)" "\"D\""
 LEDGER="$STATE/paperclip/ledger.json"
@@ -542,7 +693,7 @@ head1 "9b. The timer check reads the key with the user manager's environment"
 mgr_scenario() {
   new_scenario "$1"; write_config '{}'
   MGRBIN="$SCEN/mgrbin"; mkdir -p "$MGRBIN"
-  for b in bash jq stat id; do ln -s "$(command -v "$b")" "$MGRBIN/$b"; done
+  for b in bash jq stat id env timeout uname; do ln -s "$(command -v "$b")" "$MGRBIN/$b"; done
   SYSTEMCTL_SHOWENV="$SCEN/showenv"
 }
 envfile600() { printf 'OP_SERVICE_ACCOUNT_TOKEN=ops_FILE-TOKEN\n' >"$1"; chmod 600 "$1"; }
@@ -563,6 +714,37 @@ run_afk paperclip-timer --install --json
 assert_eq "a token in the manager's environment: install succeeds" "$RC" "0"
 assert_absent "a manager token never lands in the unit" "$(cat "$SCEN/systemd-user/"* 2>/dev/null)" "MGR-TOKEN"
 assert_absent "a manager token is never printed" "$OUT_TEXT" "MGR-TOKEN"
+assert_contains "the service pins the resolved absolute Orca path" "$(cat "$SCEN/systemd-user/afk-paperclip-poll.service")" "AFK_ORCA_BIN=$STUBS/orca-cli"
+printf '{"orca_bin":"/bin/false"}\n' >"$STUBS/host.json"
+run_afk paperclip-timer --install --json
+assert_contains "install refuses a failed Orca handshake" "$OUT_TEXT" "ORCA_CLI_NOT_RESOLVED"
+run_afk paperclip-timer --status --json
+assert_contains "status reports a failed Orca handshake" "$OUT_TEXT" "ORCA_CLI_NOT_RESOLVED"
+run_afk paperclip-project list --json
+assert_contains "project list reports a failed Orca handshake" "$OUT_TEXT" "ORCA_CLI_NOT_RESOLVED"
+printf '{"orca_bin":"%s"}\n' "$STUBS/orca-cli" >"$STUBS/host.json"
+
+# The caller can run this Orca stub because its PATH has the helper. The
+# manager's PATH below omits it, so only the child-side handshake catches it.
+cat >"$STUBS/orca-needs-helper" <<'SH'
+#!/usr/bin/env bash
+[[ "${1:-}" == --version ]] || exit 1
+command -v orca-version-helper >/dev/null 2>&1 || exit 1
+printf '1.4.216\n'
+SH
+printf '#!/usr/bin/env bash\nexit 0\n' >"$STUBS/orca-version-helper"
+chmod +x "$STUBS/orca-needs-helper" "$STUBS/orca-version-helper"
+mgr_scenario mgr_orca_path
+envfile600 "$HOME/.op-agent-env"
+printf 'PATH=%s\nAFK_OP_BIN=%s\n' "$MGRBIN" "$STUBS/op" >"$SYSTEMCTL_SHOWENV"
+printf '{"orca_bin":"%s"}\n' "$STUBS/orca-needs-helper" >"$STUBS/host.json"
+run_afk paperclip-timer --install --json
+assert_contains "M5 manager PATH cannot run Orca: install refuses" "$OUT_TEXT" ORCA_CLI_NOT_RESOLVED
+run_afk paperclip-timer --status --json
+assert_contains "M5 manager PATH cannot run Orca: status reports reason" "$OUT_TEXT" ORCA_CLI_NOT_RESOLVED
+run_afk paperclip-project list --json
+assert_contains "M5 manager PATH cannot run Orca: list reports reason" "$OUT_TEXT" ORCA_CLI_NOT_RESOLVED
+printf '{"orca_bin":"%s"}\n' "$STUBS/orca-cli" >"$STUBS/host.json"
 
 mgr_scenario mgr_env_file
 envfile600 "$SCEN/mgr.env"
@@ -640,6 +822,87 @@ do_pass
 kill "$OTHER_PID" 2>/dev/null; wait "$OTHER_PID" 2>/dev/null
 assert_absent "reused pid: not busy" "$OUT_TEXT" "PAPERCLIP_POLL_BUSY"
 assert_contains "reused pid: PAPERCLIP_LOCK_STALE reported" "$OUT_TEXT" "PAPERCLIP_LOCK_STALE"
+
+head1 "12. Killed passes resume without duplicate claims, notices or terminals"
+for point in claim notice create; do
+  new_scenario "kill_$point"
+  write_config '{"pm_start_enabled":true}'
+  COMMENTS_FILE="$SCEN/comments.json"; printf '[]\n' >"$COMMENTS_FILE"
+  route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+  route GET /api/agents/me/inbox-lite 200 "[{\"id\":\"$ISSUE1\"}]"
+  route GET "/api/issues/$ISSUE1/active-run" 200 '{"id":"run-1"}'
+  route POST "/api/issues/$ISSUE1/comments" 201 '{}'
+  route PATCH "/api/issues/$ISSUE1" 200 '{}'
+  issue_route in_progress "$BOARD"
+  kill_pass_at "$point"
+  case "$point" in
+    claim)
+      assert_eq "claim kill: intent was durable before POST" \
+        "$(jq -r --arg id "$ISSUE1" '.issues[$id].claim' "$STATE/paperclip/ledger.json")" intent ;;
+    notice)
+      assert_eq "notice kill: the claimed notice was journaled" \
+        "$(jq -r --arg id "$ISSUE1" '.issues[$id].claimed_notice' "$STATE/paperclip/ledger.json")" written ;;
+    create)
+      assert_eq "create kill: pm_started intent preceded terminal create" \
+        "$(jq -r --arg id "$ISSUE1" '.pm_started[$id].state' "$STATE/paperclip/ledger.json")" intent
+      assert_eq "create kill: the intent file path was journaled" \
+        "$(jq -r --arg id "$ISSUE1" '.pm_started[$id].intent_file' "$STATE/paperclip/ledger.json")" \
+        "$STATE/paperclip/pm-start-intents/proj.$ISSUE1.json" ;;
+  esac
+  run_afk paperclip-poll --json
+  assert_eq "$point replay: pass completes" "$RC" 0
+  assert_eq "$point replay: one claim comment" \
+    "$(jq '[.[] | select(.body | contains("claimed by AFK PM"))] | length' "$COMMENTS_FILE")" 1
+  assert_eq "$point replay: marker survives comment read-back" \
+    "$(jq --arg id "$ISSUE1" '[.[] | select(.body | contains("<!-- afk-claim:" + $id + " -->"))] | length' "$COMMENTS_FILE")" 1
+  assert_eq "$point replay: one claimed notice" \
+    "$(find "$STATE/paperclip/notices/proj" -name '*.claimed.json' | wc -l | tr -d ' ')" 1
+  assert_eq "$point replay: one brief" \
+    "$(find "$STATE/paperclip/notices/proj" -name 'brief.*.md' | wc -l | tr -d ' ')" 1
+  assert_eq "$point replay: both artifacts have receipts" \
+    "$(jq -r --arg id "$ISSUE1" '.issues[$id] | .claimed_notice + "/" + .claimed_brief' "$STATE/paperclip/ledger.json")" \
+    written/written
+  assert_eq "$point replay: one terminal create" "$(wc -l <"$ORCA_CREATE_LOG" | tr -d ' ')" 1
+  assert_eq "$point replay: one pm_started row" \
+    "$(jq '.pm_started | length' "$STATE/paperclip/ledger.json")" 1
+  if [[ "$point" == create ]]; then
+    assert_eq "create replay: the join records a candidate, not an unproved receipt" \
+      "$(jq -r --arg id "$ISSUE1" '.pm_started[$id] | .state + "/" + (.terminal|tostring) + "/" + .candidate.handle' "$STATE/paperclip/ledger.json")" \
+      intent/null/term-created-1
+    assert_contains "create replay: the unresolved start is visible" \
+      "$(jq -r --arg id "$ISSUE1" '.issues[$id].action_text' "$STATE/paperclip/ledger.json")" \
+      'queued: no PM (start unresolved:'
+  fi
+  assert_eq "$point replay: claim confirmed by read-back" \
+    "$(jq -r --arg id "$ISSUE1" '.issues[$id].claim' "$STATE/paperclip/ledger.json")" confirmed
+done
+COMMENTS_FILE=""
+
+head1 "13. Refused stale-owner reap cannot authorize a PM start"
+new_scenario refused_reap
+COUNT_FILE="$SCEN/lookups"; printf '0\n' >"$COUNT_FILE"
+REAP_START_FILE="$SCEN/unexpected-create"
+reap_result="$(COUNT_FILE="$COUNT_FILE" REAP_START_FILE="$REAP_START_FILE" KIT_ROOT="$KIT_ROOT" bash -c '
+  . "$KIT_ROOT/lib/afk-paperclip-start.sh"
+  AFK_PC_CFG="{\"pm_start_enabled\":true}"
+  detail="{\"createdByUserId\":\"board\"}"
+  board_user_id=board; repo_path=/test/repo; host_name=test-host
+  afk_pm_registry_lookup() {
+    local n; n="$(cat "$COUNT_FILE")"; n=$((n+1)); printf "%s\n" "$n" >"$COUNT_FILE"
+    if (( n == 1 )); then printf "{\"state\":\"none\",\"stale\":[{\"scope\":\"stale-owner\"}]}"
+    else printf "{\"state\":\"unknown\",\"reason\":\"PM_OWNER_LIVE\"}"; fi
+  }
+  afk_cmd_pm_registry_reap() { return 1; }
+  afk_pcs_create_terminal() { : >"$REAP_START_FILE"; }
+  afk_pcs_start_pm
+  printf "%s" "$AFK_PCS_ACTION_OVERRIDE"
+')"
+assert_eq "refused reap: post-reap lookup runs" "$(cat "$COUNT_FILE")" 2
+assert_eq "refused reap: no terminal starts" "$([[ -e "$REAP_START_FILE" ]] && echo yes || echo no)" no
+assert_contains "refused reap: live owner remains authoritative" "$reap_result" PM_OWNER_LIVE
+
+if bash "$KIT_ROOT/tests/paperclip-pm-review-tests.sh"; then ok "review H1/H2/M4 regressions"
+else bad "review H1/H2/M4 regressions"; fi
 
 # ============================================================================
 assert_eq "the PATH decoy orca never ran" \

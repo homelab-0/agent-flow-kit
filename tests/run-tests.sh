@@ -250,7 +250,8 @@ SC_LIFECYCLE=("$KIT_ROOT/bin/agent-flow-kit" "$KIT_ROOT/lib/afk-common.sh" "$KIT
               "$KIT_ROOT/tests/lockctl-helper.sh" "$KIT_ROOT/tests/paperclip-poll-tests.sh" \
               "$KIT_ROOT/tests/paperclip-pm-registry-tests.sh" "$KIT_ROOT/tests/paperclip-report-tests.sh" \
               "$KIT_ROOT/tests/paperclip-pm-start-tests.sh" "$KIT_ROOT/tests/paperclip-plan-tests.sh" \
-              "$KIT_ROOT/tests/paperclip-accept-tests.sh" "$KIT_ROOT/tests/paperclip-project-tests.sh")
+              "$KIT_ROOT/tests/paperclip-accept-tests.sh" "$KIT_ROOT/tests/paperclip-project-tests.sh" \
+              "$KIT_ROOT/tests/paperclip-claim-review-tests.sh" "$KIT_ROOT/tests/paperclip-pm-review-tests.sh")
 
 if (( ${#SC_CMD[@]} > 0 )); then
   ok "shellcheck runs here: ${SC_CMD[0]} ${SC_VERSION:-(version not reported)}"
