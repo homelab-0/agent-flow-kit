@@ -944,6 +944,81 @@ assert_contains "refused reap: live owner remains authoritative" "$reap_result" 
 if bash "$KIT_ROOT/tests/paperclip-pm-review-tests.sh"; then ok "review H1/H2/M4 regressions"
 else bad "review H1/H2/M4 regressions"; fi
 
+# FIX-6 cycle 2: an already-working issue with no inbox start hook retries
+# through the report sweep, which must use its ledger row and config project.
+head1 "14. report sweep retries a held PM start from the ledger"
+new_scenario report_sweep_retry
+write_config '{"pm_start_enabled":true}'
+mkdir -p "$STATE/paperclip"
+jq -nc --arg id "$ISSUE1" --arg a "$AGENT1" --arg p "$PROJ1" \
+  '{issues:{($id):{identifier:"PROJ-1",host_agent_id:$a,paperclip_project_id:$p,slug:"proj",state:"working",action_text:"queued: no PM (start held: PM_BOOTSTRAP_UNAVAILABLE)",action_text_applied:"queued: no PM (start held: PM_BOOTSTRAP_UNAVAILABLE)"}},pm_started:{}}' \
+  >"$STATE/paperclip/ledger.json"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+route GET /api/agents/me/inbox-lite 200 "[{\"id\":\"$ISSUE1\"}]"
+route GET "/api/issues/$ISSUE1" 200 \
+  "{\"status\":\"in_progress\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"updatedAt\":\"2026-01-01T00:00:00Z\",\"createdByUserId\":\"$BOARD\",\"projectId\":\"$PROJ1\"}"
+route GET "/api/issues/$ISSUE1/active-run" 404 '{}'
+AFK_PM_BOOTSTRAP_BIN="$KIT_ROOT/adapters/orca-pm-bootstrap.sh"
+AFK_KIT_ROOT="$KIT_ROOT"; AFK_SKILLS_HOME="$SCEN/skills"
+run_afk paperclip-poll --json
+[[ "$RC" == 0 ]] || printf 'report sweep diagnostic: %s\n' "$OUT_TEXT"
+assert_eq "sweep path starts once when the inbox has no start hook" "$(wc -l <"$ORCA_CREATE_LOG" | tr -d ' ')" 1
+assert_eq "sweep path records the issue start" "$(jq -r --arg id "$ISSUE1" '.pm_started[$id].state' "$STATE/paperclip/ledger.json")" created
+unset AFK_PM_BOOTSTRAP_BIN AFK_KIT_ROOT AFK_SKILLS_HOME
+
+# A live registry owner with no pm_started row is a confirmation for the
+# report cycle. It clears the stale hold once, and the marker is consumed.
+head1 "15. live registry confirmation clears held text once"
+new_scenario live_confirmation
+write_config '{"pm_start_enabled":true}'
+mkdir -p "$STATE/paperclip"
+SK="$(scope_key term-confirmed)"; mkdir -p "$STATE/pm/scopes/$SK"
+jq -nc --arg t term-confirmed --arg wp "$REPO" \
+  '{schema:"afk-pm-ownership/3",owned:true,terminal:$t,session:"s",harness:"claude",worktree:{path:$wp}}' \
+  >"$STATE/pm/scopes/$SK/ownership.json"
+printf '{"result":{"terminals":[{"handle":"term-confirmed","connected":true,"orphaned":false}]}}' >"$ORCA_TERMLIST_FILE"
+jq -nc --arg id "$ISSUE1" --arg a "$AGENT1" --arg p "$PROJ1" \
+  '{issues:{($id):{identifier:"PROJ-1",host_agent_id:$a,paperclip_project_id:$p,slug:"proj",state:"working",action_text:"queued: no PM (start held: PM_BOOTSTRAP_UNAVAILABLE)",action_text_applied:"queued: no PM (start held: PM_BOOTSTRAP_UNAVAILABLE)"}},pm_started:{}}' \
+  >"$STATE/paperclip/ledger.json"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+route GET "/api/issues/$ISSUE1" 200 "{\"status\":\"in_progress\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"updatedAt\":\"2026-01-01T00:00:00Z\",\"createdByUserId\":\"$BOARD\",\"projectId\":\"$PROJ1\"}"
+route GET "/api/issues/$ISSUE1/active-run" 404 '{}'
+route POST "/api/agents/$AGENT1/wakeup" 202 '{"id":"run-live"}'
+route PATCH "/api/issues/$ISSUE1" 200 '{}'
+run_afk paperclip-poll --json
+assert_eq "live confirmation consumed without pm_started receipt" "$(jq -r --arg id "$ISSUE1" '.issues[$id] | has("pm_confirmed")' "$STATE/paperclip/ledger.json")" false
+assert_eq "live confirmation produces one report self-block" "$(grep -c '"status":"blocked"' "$BODYLOG")" 1
+assert_absent "live confirmation clears the held action text" "$(jq -r --arg id "$ISSUE1" '.issues[$id].action_text' "$STATE/paperclip/ledger.json")" "no PM"
+: >"$LOG"; : >"$BODYLOG"; route GET "/api/issues/$ISSUE1" 200 "{\"status\":\"in_progress\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"updatedAt\":\"2026-01-01T00:00:00Z\",\"createdByUserId\":\"$BOARD\",\"projectId\":\"$PROJ1\"}"
+route GET "/api/issues/$ISSUE1/active-run" 404 '{}'
+run_afk paperclip-poll --json
+assert_eq "consumed confirmation does not repeat the report PATCH" "$(grep -c '"status":"blocked"' "$BODYLOG")" 0
+
+# A changed hold is pending declaration until the report cycle PATCHes it.
+head1 "16. changed hold text is applied once"
+new_scenario changed_hold
+write_config '{"pm_start_enabled":true}'
+mkdir -p "$STATE/paperclip"
+jq -nc --arg id "$ISSUE1" --arg a "$AGENT1" --arg p "$PROJ1" \
+  '{issues:{($id):{identifier:"PROJ-1",host_agent_id:$a,paperclip_project_id:$p,slug:"proj",state:"working",action_text:"queued: no PM (start held: PM_BOOTSTRAP_UNAVAILABLE)",action_text_applied:"queued: no PM (start held: PM_REGISTRY_UNAVAILABLE)"}},pm_started:{}}' \
+  >"$STATE/paperclip/ledger.json"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+route GET "/api/issues/$ISSUE1" 200 "{\"status\":\"in_progress\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"updatedAt\":\"2026-01-01T00:00:00Z\",\"createdByUserId\":\"$BOARD\",\"projectId\":\"$PROJ1\"}"
+route GET "/api/issues/$ISSUE1/active-run" 404 '{}'
+route POST "/api/agents/$AGENT1/wakeup" 202 '{"id":"run-change"}'
+route PATCH "/api/issues/$ISSUE1" 200 '{}'
+AFK_KIT_ROOT="$SCEN/no-kit"; AFK_SKILLS_HOME="$SCEN/no-skills"
+unset AFK_PM_BOOTSTRAP_BIN
+run_afk paperclip-poll --json
+assert_eq "new hold is reported with one PATCH" "$(grep -c '"status":"blocked"' "$BODYLOG")" 1
+assert_eq "new hold becomes applied only after report PATCH" "$(jq -r --arg id "$ISSUE1" '.issues[$id].action_text_applied' "$STATE/paperclip/ledger.json")" \
+  "queued: no PM (start held: PM_BOOTSTRAP_UNAVAILABLE)"
+: >"$LOG"; : >"$BODYLOG"
+run_afk paperclip-poll --json
+assert_eq "applied hold stays quiet on the next pass" "$(grep -c '"status":"blocked"' "$BODYLOG")" 0
+
 # ============================================================================
 assert_eq "the PATH decoy orca never ran" \
   "$([[ -e "$STUBS/.bare-orca-ran" ]] && echo ran || echo never)" "never"

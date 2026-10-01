@@ -912,7 +912,7 @@ afk_pc_report_cycle() {
   mapfile -t files < <(afk_pc_spool_files "$id")
   afk_pc_spool_unlock "$spool_lock"
   local prev; prev="$(jq -c --arg id "$id" '.issues[$id] // empty' <<<"$ledger")"
-  local state qid prev_applied composed pending_final claim_pending fixed pm_start_state
+  local state qid prev_applied action_text declared_text composed pending_final claim_pending fixed pm_start_state pm_confirmed
   state="$(jq -r '.state // empty' <<<"$prev")"
   # A refused (waiting_setup) or project-changed (stopped) issue has no PM:
   # its cycle is the fixed self-block text alone, and nothing is drained.
@@ -920,18 +920,27 @@ afk_pc_report_cycle() {
   [[ -n "$fixed" ]] && files=()
   qid="$(jq -r '.question_id // empty' <<<"$prev")"
   prev_applied="$(jq -r '.action_text_applied // .action_text // empty' <<<"$prev")"
+  action_text="$(jq -r '.action_text // empty' <<<"$prev")"
   pm_start_state="$(jq -r --arg id "$id" '.pm_started[$id].state // empty' <<<"$ledger")"
+  pm_confirmed="$(jq -r --arg id "$id" '.issues[$id].pm_confirmed // false' <<<"$ledger")"
+  declared_text="$prev_applied"
+  [[ "$action_text" == *"no PM"* || "$action_text" == *"PM state"* ]] && declared_text="$action_text"
   # A promoted issue must not keep ordinary queue text, but a PM-start hold
   # remains the truthful status until a start receipt exists.
-  local text_base="$prev_applied"
-  if [[ "$state" == working && "$prev_applied" == queued* ]]; then
-    if [[ "$pm_start_state" == live || "$pm_start_state" == registered ]]; then
+  local text_base="$declared_text"
+  if [[ "$state" == working && "$declared_text" == queued* ]]; then
+    if [[ "$pm_confirmed" == true || "$pm_start_state" == live ]]; then
       text_base=""
-    elif [[ "$prev_applied" == *"no PM"* || "$prev_applied" == *"PM state"* ]]; then
-      text_base="$prev_applied"
+    elif [[ "$declared_text" == *"no PM"* || "$declared_text" == *"PM state"* ]]; then
+      text_base="$declared_text"
     else
       text_base=""
     fi
+  elif [[ "$state" == working && ( "$action_text" == *"no PM"* || "$action_text" == *"PM state"* ) &&
+          "$action_text" != "$prev_applied" && "$pm_confirmed" != true ]]; then
+    # A newly observed start hold is a declared change: send it once, then
+    # action_text_applied records only the text the report cycle actually PATCHed.
+    text_base="$action_text"
   fi
   # A final whose comment went out but whose status PATCH failed is retried
   # from the ledger: its spool file is already gone.
@@ -953,7 +962,10 @@ afk_pc_report_cycle() {
     composed="$(afk_pc_action_text none "" "$status_file_dir/$id.json" "$text_base")"
   fi
 
-  { (( ${#files[@]} > 0 )) || [[ "$composed" != "$prev_applied" || -n "$pending_final" || "$claim_pending" == true || -n "$due" ]]; } || return 0
+  if ! { (( ${#files[@]} > 0 )) || [[ "$composed" != "$prev_applied" || -n "$pending_final" || "$claim_pending" == true || -n "$due" ]]; }; then
+    [[ "$pm_confirmed" == true ]] && ledger="$(jq -c --arg id "$id" 'del(.issues[$id].pm_confirmed)' <<<"$ledger")"
+    return 0
+  fi
 
   local wr wh wb run_id
   wr="$(afk_pc_curl POST "$api_url/api/agents/$agent_id/wakeup" "$key" "" \
@@ -1129,6 +1141,7 @@ afk_pc_report_cycle() {
   if afk_pc_self_block "$api_url" "$id" "$key" "$run_id" "$agent_id" "$final_composed"; then
     ledger="$(jq -c --arg id "$id" --arg t "$final_composed" --argjson keep "$([[ "$due" == resume ]] && echo true || echo false)" \
       '.issues[$id].action_text = $t | .issues[$id].action_text_applied = $t
+       | del(.issues[$id].pm_confirmed)
        | if $keep then . else del(.issues[$id].reblock_due) end' <<<"$ledger")"
     [[ "$due" == strand ]] && actions="$(jq -c --arg t "PAPERCLIP_STRAND_REPAIRED: $identifier" '. + [$t]' <<<"$actions")"
   else
@@ -1149,7 +1162,8 @@ afk_pc_is_josh_comment() { # <comment-json> <board_user_id>
 }
 
 # --- AFK-PC-2b: the PM-start classification hook -----------------------------
-# Called at both `claimed`-notice sites below. Reads the caller's api_url/key/
+# Called at both `claimed`-notice sites and from the report-sweep retry below.
+# Reads the caller's api_url/key/
 # company_id/board_user_id/host_name/agent_id/id/identifier/slug/
 # repo_path/harness/detail/ledger/actions locals directly, exactly like
 # afk_pc_strand. Sets AFK_PCS_ACTION_OVERRIDE (empty when the normal action
@@ -1161,6 +1175,42 @@ afk_pc_maybe_start_pm() {
   [[ -n "${pm_start_checked_this_pass[$id]:-}" ]] 2>/dev/null ||
     pm_start_checked_this_pass[$id]=1
   afk_pcs_start_pm
+}
+
+# Retry a reported PM hold using locals scoped to this helper so it cannot
+# overwrite the report loop's current issue or project context.
+afk_pc_retry_report_pm_start() { # <issue-id> <host-agent-id>
+  local retry_id="$1" retry_agent="$2" issue_row issue_state issue_host issue_hold retry_cfg
+  local id identifier slug repo_path harness detail start_row
+  issue_row="$(jq -c --arg id "$retry_id" '.issues[$id] // {}' <<<"$ledger")"
+  issue_state="$(jq -r '.state // empty' <<<"$issue_row")"
+  issue_host="$(jq -r '.host_agent_id // empty' <<<"$issue_row")"
+  issue_hold="$(jq -r '.action_text // .action_text_applied // empty' <<<"$issue_row")"
+  case "$issue_state" in working | queued | waiting_human) : ;; *) return 0 ;; esac
+  [[ "$issue_host" == "$retry_agent" ]] || return 0
+  [[ "$issue_hold" == *"no PM"* || "$issue_hold" == *"PM state"* ]] || return 0
+  [[ "$(jq -r '.pm_start_enabled // false' <<<"$AFK_PC_CFG")" == true ]] || return 0
+  [[ -z "${pm_start_checked_this_pass[$retry_id]:-}" ]] || return 0
+  start_row="$(jq -r --arg id "$retry_id" '.pm_started[$id].state // empty' <<<"$ledger")"
+  [[ "$start_row" != created && "$start_row" != live && "$start_row" != ended ]] || return 0
+  retry_cfg="$(jq -c --arg s "$(jq -r '.slug // empty' <<<"$issue_row")" '.projects[] | select(.slug == $s)' <<<"$AFK_PC_CFG")"
+  [[ -n "$retry_cfg" ]] || return 0
+
+  id="$retry_id"
+  identifier="$(jq -r '.identifier // empty' <<<"$issue_row")"
+  slug="$(jq -r '.slug' <<<"$retry_cfg")"
+  repo_path="$(jq -r '.repo_path' <<<"$retry_cfg")"
+  harness="$(jq -r '.harness' <<<"$retry_cfg")"
+  local issue_resp; issue_resp="$(afk_pc_curl GET "$api_url/api/issues/$id" "$key" "")"
+  [[ "${issue_resp%%$'\n'*}" == 2?? ]] || return 0
+  detail="${issue_resp#*$'\n'}"
+  pm_start_checked_this_pass[$id]=1
+  local AFK_PCS_ACTION_OVERRIDE=""
+  afk_pc_maybe_start_pm
+  if [[ -n "$AFK_PCS_ACTION_OVERRIDE" ]]; then
+    ledger="$(jq -c --arg id "$id" --arg t "$AFK_PCS_ACTION_OVERRIDE" \
+      '.issues[$id].action_text = $t' <<<"$ledger")"
+  fi
 }
 
 # --- shared by the pass's branches (HA-4a) -----------------------------------
@@ -1716,7 +1766,7 @@ afk_cmd_paperclip_poll() { # <json_mode>
             AFK_PCS_ACTION_OVERRIDE=""
             [[ "$adopting" == false && "$pause_kind" == none && "$prev_state" != stranded && "$prev_state" != closed ]] && afk_pc_maybe_start_pm
             [[ -n "$AFK_PCS_ACTION_OVERRIDE" ]] && ledger="$(jq -c --arg id "$id" --arg t "$AFK_PCS_ACTION_OVERRIDE" \
-              '.issues[$id].action_text = $t | .issues[$id].action_text_applied = $t' <<<"$ledger")"
+              '.issues[$id].action_text = $t' <<<"$ledger")"
 
             local newest_since="$since"
             [[ "$adopting" == false ]] && afk_pc_scan_comments
@@ -1910,36 +1960,9 @@ afk_cmd_paperclip_poll() { # <json_mode>
         [[ -z "${claim_started_this_pass[$rid]:-}" ]] || continue
         AFK_PC_ABORT=false
         local r_ident; r_ident="$(jq -r --arg id "$rid" '.issues[$id].identifier // empty' <<<"$ledger")"
-        local held_text start_row project_row start_detail
-        held_text="$(jq -r --arg id "$rid" '.issues[$id].action_text_applied // .issues[$id].action_text // empty' <<<"$ledger")"
-        start_row="$(jq -r --arg id "$rid" '.pm_started[$id].state // empty' <<<"$ledger")"
-        # A blocked issue may no longer appear in inbox-lite. Retry only a
-        # held PM start that has no effected start (or a definite failed
-        # receipt), and only when this pass did not already classify it in the
-        # inbox sweep. The start function rechecks every gate before creating.
-        if [[ "$(jq -r '.pm_start_enabled // false' <<<"$AFK_PC_CFG")" == true &&
-              ( "$held_text" == *"no PM"* || "$held_text" == *"PM state"* ) &&
-              "$start_row" != created && "$start_row" != live &&
-              "$start_row" != registered && "$start_row" != ended &&
-              -z "${pm_start_checked_this_pass[$rid]:-}" ]]; then
-          local retry_cfg
-          retry_cfg="$(jq -c --arg id "$rid" --arg a "$agent_id" \
-            '.issues[$id] as $i | .projects[] | select(.slug == $i.slug)' <<<"$AFK_PC_CFG")"
-          if [[ -n "$retry_cfg" ]]; then
-            id="$rid"; identifier="$r_ident"
-            slug="$(jq -r '.slug' <<<"$retry_cfg")"
-            repo_path="$(jq -r '.repo_path' <<<"$retry_cfg")"
-            harness="$(jq -r '.harness' <<<"$retry_cfg")"
-            start_detail="$(afk_pc_curl GET "$api_url/api/issues/$id" "$key" "")"
-            [[ "${start_detail%%$'\n'*}" == 2?? ]] && detail="${start_detail#*$'\n'}" || detail="{}"
-            AFK_PCS_ACTION_OVERRIDE=""
-            afk_pc_maybe_start_pm
-            if [[ -n "$AFK_PCS_ACTION_OVERRIDE" ]]; then
-              ledger="$(jq -c --arg id "$id" --arg t "$AFK_PCS_ACTION_OVERRIDE" \
-                '.issues[$id].action_text = $t | .issues[$id].action_text_applied = $t' <<<"$ledger")"
-            fi
-          fi
-        fi
+        # The report sweep is defense in depth for held starts that did not
+        # reach the inbox start hook, and shares its pass-level one-start guard.
+        afk_pc_retry_report_pm_start "$rid" "$agent_id"
         afk_pc_report_cycle "$api_url" "$key" "$agent_id" "$rid" "$r_ident" "$status_file_dir"
         [[ "$AFK_PC_ABORT" == true ]] && break
       done
