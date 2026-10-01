@@ -1407,6 +1407,21 @@ afk_cmd_paperclip_poll() { # <json_mode>
       '.[1] as $l | [.[0][].id | strings] | to_entries | sort_by([($l.issues[.value].since // "~"), .key]) | .[].value')
     status_file_dir="$AFK_STATE_DIR/paperclip/status"
 
+    local -A pm_start_checked_this_pass=()
+    if [[ "$pause_kind" == none ]]; then
+      # Retry held queued starts before inbox reconciliation can close an
+      # issue omitted from inbox-lite. This path does not create a report cycle.
+      local -a held_start_ids=()
+      mapfile -t held_start_ids < <(jq -r --arg a "$agent_id" \
+        '.issues | to_entries[] | select(.value.host_agent_id == $a and .value.state == "queued"
+          and ((.value.action_text // .value.action_text_applied // "") | test("no PM|PM state"))) | .key' <<<"$ledger")
+      local held_id
+      for held_id in "${held_start_ids[@]:-}"; do
+        [[ -n "$held_id" ]] || continue
+        afk_pc_retry_report_pm_start "$held_id" "$agent_id"
+      done
+    fi
+
     # AC-5d: ledger issues no longer present in the inbox.
     local closed_ids; mapfile -t closed_ids < <(jq -r --arg a "$agent_id" \
       --argjson present "$(printf '%s\n' "${ids[@]:-}" | jq -R -s -c 'split("\n") | map(select(length > 0))')" \
@@ -1436,7 +1451,7 @@ afk_cmd_paperclip_poll() { # <json_mode>
     # inbox never counts as a held working slot for the issues below.
     # HA-2 (AD-24): `working` and `waiting_human` hold a slot; nothing else does.
     # host_used is the host-wide count against host.max_active_issues.
-    local -A used_slots=() working_ids=() promotable=() claim_started_this_pass=() pm_start_checked_this_pass=()
+    local -A used_slots=() working_ids=() promotable=() claim_started_this_pass=()
     local newly_queued_ids=""
     local s_slug s_n s_w host_max host_used
     host_max="$(jq -r '.host.max_active_issues' <<<"$AFK_PC_CFG")"

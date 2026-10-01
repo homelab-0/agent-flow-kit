@@ -966,6 +966,27 @@ assert_eq "sweep path starts once when the inbox has no start hook" "$(wc -l <"$
 assert_eq "sweep path records the issue start" "$(jq -r --arg id "$ISSUE1" '.pm_started[$id].state' "$STATE/paperclip/ledger.json")" created
 unset AFK_PM_BOOTSTRAP_BIN AFK_KIT_ROOT AFK_SKILLS_HOME
 
+# A queued hold with applied text is quiet: it has no pending claim, spool,
+# final or reblock. It still retries when PM-start prerequisites recover.
+head1 "14b. quiet queued hold retries without a report cycle"
+new_scenario quiet_queued_hold
+write_config '{"pm_start_enabled":true}'
+mkdir -p "$STATE/paperclip"
+jq -nc --arg id "$ISSUE1" --arg a "$AGENT1" --arg p "$PROJ1" \
+  '{issues:{($id):{identifier:"PROJ-1",host_agent_id:$a,paperclip_project_id:$p,slug:"proj",state:"queued",action_text:"queued: no PM (start held: PM_BOOTSTRAP_UNAVAILABLE)",action_text_applied:"queued: no PM (start held: PM_BOOTSTRAP_UNAVAILABLE)",claim_comment_pending:false,claim_attempted:true,pending_final:null,reblock_due:null}},pm_started:{}}' \
+  >"$STATE/paperclip/ledger.json"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+route GET /api/agents/me/inbox-lite 200 '[]'
+route GET "/api/issues/$ISSUE1" 200 \
+  "{\"status\":\"todo\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"updatedAt\":\"2026-01-01T00:00:00Z\",\"createdByUserId\":\"$BOARD\",\"projectId\":\"$PROJ1\"}"
+AFK_PM_BOOTSTRAP_BIN="$KIT_ROOT/adapters/orca-pm-bootstrap.sh"
+AFK_KIT_ROOT="$KIT_ROOT"; AFK_SKILLS_HOME="$SCEN/skills"
+run_afk paperclip-poll --json
+assert_eq "quiet queued hold creates exactly one PM terminal" "$(wc -l <"$ORCA_CREATE_LOG" | tr -d ' ')" 1
+assert_eq "quiet queued hold creates no report wake" "$(grep -c "^POST /api/agents/$AGENT1/wakeup$" "$LOG")" 0
+assert_absent "quiet queued hold makes no issue PATCH" "$(cat "$LOG")" "PATCH /api/issues/$ISSUE1"
+unset AFK_PM_BOOTSTRAP_BIN AFK_KIT_ROOT AFK_SKILLS_HOME
+
 # A live registry owner with no pm_started row is a confirmation for the
 # report cycle. It clears the stale hold once, and the marker is consumed.
 head1 "15. live registry confirmation clears held text once"
