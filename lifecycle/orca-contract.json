@@ -1,0 +1,977 @@
+{
+  "schema": "afk-orca-contract/1",
+  "status": "seed, draft pending Josh; becomes lifecycle/orca-contract.json in ORCA-9a",
+  "source": {
+    "kit_revision": "9108ce9",
+    "built_from": "every Orca call site in lib/, adapters/ and files/model-router/scripts/dispatch.sh at that revision, plus orca-audit-2026-09-29 and the 1.4.217 snapshots in update-test-after/",
+    "author": "Winston, 2026-09-30"
+  },
+  "probe_set_version": 1,
+  "tested": {
+    "reviewed_versions": [
+      "1.4.216",
+      "1.4.217"
+    ],
+    "note": "reviewed means an architect read this version's surface (the audit, then OQ-2). Whether a host has verified a version is host state, never recorded here."
+  },
+  "verified_by_legend": {
+    "L1": "agent-context --json: the command and its flags exist",
+    "L2": "read-only live shape check (probe-spec.md)",
+    "L3": "behaviour check on the probe's own terminal (probe-spec.md)",
+    "L4": "opt-in agent canary",
+    "use": "verified by the first real use after a version change; the call site already fails safe",
+    "path_unverified": "the JSON path was never observed raw; confirm in the watched checks V1-V7 before relying on it"
+  },
+  "envelope": {
+    "id": "envelope",
+    "verified_by": "L2",
+    "success": {
+      "ok": "boolean true",
+      "result": "object",
+      "_meta.runtimeId": "non-empty string on every response"
+    },
+    "failure": {
+      "ok": "boolean false",
+      "error.code": "string matching ^[A-Za-z0-9_.:-]{1,80}$",
+      "exit_status": 1
+    },
+    "list_completeness": {
+      "result.truncated": "boolean",
+      "result.totalCount": "number"
+    },
+    "unknown_command": "prints top-level help, exit 1, --json not honoured; the wrapper must classify it ORCA_CLI_FAILED (item shape.unknown-command)",
+    "used_by": [
+      "lib/afk-orca.sh afk_orca_run"
+    ]
+  },
+  "cli": [
+    {
+      "id": "cli.version",
+      "invocation": "<bin> --version",
+      "asserts": "first line is a semantic version, exit 0",
+      "verified_by": "L1",
+      "used_by": [
+        "lib/afk-orca.sh afk_orca_bin"
+      ]
+    },
+    {
+      "id": "cli.sigterm",
+      "asserts": "the CLI exits on SIGTERM (rc 124 under timeout) within the bound",
+      "verified_by": "L3",
+      "severity": "review",
+      "evidence": "OQ-7, 1.4.216: rc 124 in 1.06 s"
+    }
+  ],
+  "commands": [
+    {
+      "id": "cmd.status",
+      "command": "status",
+      "flags": [
+        "json"
+      ],
+      "state": "in-use",
+      "fields": [
+        {
+          "path": "result.runtime.state",
+          "type": "string",
+          "expect": "ready",
+          "verified_by": "L2",
+          "item": "shape.status"
+        },
+        {
+          "path": "result.runtime.reachable",
+          "type": "boolean",
+          "verified_by": "L2",
+          "item": "shape.status"
+        },
+        {
+          "path": "result.runtime.appVersion",
+          "type": "string",
+          "verified_by": "L2",
+          "item": "shape.status"
+        },
+        {
+          "path": "result.runtime.runtimeId",
+          "type": "string",
+          "verified_by": "L2",
+          "item": "shape.status"
+        },
+        {
+          "path": "result.runtime.capabilities",
+          "type": "array of strings",
+          "verified_by": "L2",
+          "item": "shape.status"
+        },
+        {
+          "path": "result.app.pid",
+          "type": "number",
+          "verified_by": "L2",
+          "item": "shape.status",
+          "note": "new in ORCA-9 (epoch record)"
+        }
+      ],
+      "used_by": [
+        "lib/afk-readiness.sh afk_probe_orca (readiness-status)",
+        "ORCA-9 tick"
+      ],
+      "note": "readiness reads exit status only today; ORCA-5 adds the field reads"
+    },
+    {
+      "id": "cmd.agent-context",
+      "command": "agent-context",
+      "flags": [
+        "json"
+      ],
+      "state": "planned",
+      "fields": [
+        {
+          "path": "commands[].command",
+          "type": "string",
+          "verified_by": "L1"
+        },
+        {
+          "path": "commands[].flags",
+          "type": "array of strings",
+          "verified_by": "L1"
+        },
+        {
+          "path": "commands[].usage",
+          "type": "string",
+          "verified_by": "L1"
+        },
+        {
+          "path": "commands[].notes",
+          "type": "array of strings",
+          "verified_by": "L1"
+        }
+      ],
+      "used_by": [
+        "ORCA-9 L1"
+      ],
+      "note": "carries no response schema; it verifies commands and flags only"
+    },
+    {
+      "id": "cmd.skills-get",
+      "command": "skills get",
+      "flags": [
+        "full"
+      ],
+      "positional": [
+        "topic"
+      ],
+      "topics": [
+        "orca-cli",
+        "orchestration"
+      ],
+      "state": "planned",
+      "used_by": [
+        "ORCA-9 docs baseline"
+      ],
+      "verified_by": "L1"
+    },
+    {
+      "id": "cmd.terminal-list",
+      "command": "terminal list",
+      "flags": [
+        "json",
+        "worktree",
+        "limit"
+      ],
+      "selectors": [
+        "id:<worktreeId>"
+      ],
+      "state": "in-use",
+      "fields": [
+        {
+          "path": "result.terminals",
+          "type": "array",
+          "verified_by": "L2",
+          "item": "shape.terminal-list"
+        },
+        {
+          "path": "result.terminals[].handle",
+          "type": "non-empty string",
+          "verified_by": "L2",
+          "item": "shape.terminal-list"
+        },
+        {
+          "path": "result.terminals[].connected",
+          "type": "boolean",
+          "verified_by": "L2",
+          "item": "shape.terminal-list"
+        },
+        {
+          "path": "result.terminals[].orphaned",
+          "type": "boolean",
+          "verified_by": "L2",
+          "item": "shape.terminal-list"
+        },
+        {
+          "path": "result.terminals[].title",
+          "type": "non-empty string",
+          "verified_by": "L2",
+          "item": "shape.terminal-list",
+          "note": "required by terminal_list_is_well_formed in orca-pm-close.sh and the successor; the title-based dedupe leaves with ORCA-6, the type check may stay"
+        },
+        {
+          "path": "result.terminals[].tabId",
+          "type": "string",
+          "verified_by": "L2",
+          "item": "shape.terminal-list",
+          "note": "snapshot and pane-key join"
+        },
+        {
+          "path": "result.terminals[].leafId",
+          "type": "string",
+          "verified_by": "L2",
+          "item": "shape.terminal-list"
+        },
+        {
+          "path": "result.terminals[].incarnationId",
+          "type": "string",
+          "verified_by": "L2",
+          "item": "shape.terminal-list"
+        },
+        {
+          "path": "result.terminals[].worktreeId",
+          "type": "string",
+          "verified_by": "L2",
+          "item": "shape.terminal-list"
+        },
+        {
+          "path": "result.terminals[].agentIdentity",
+          "type": "string or absent",
+          "verified_by": "L2",
+          "item": "shape.terminal-list",
+          "note": "absent on plain shells in 1.4.217"
+        },
+        {
+          "path": "result.totalCount",
+          "type": "number",
+          "verified_by": "L2",
+          "item": "shape.terminal-list"
+        },
+        {
+          "path": "result.truncated",
+          "type": "boolean",
+          "verified_by": "L2",
+          "item": "shape.terminal-list"
+        }
+      ],
+      "used_by": [
+        "lib/afk-orca.sh afk_orca_list_state (afk-liveness-list)",
+        "lib/afk-paperclip-start.sh (pm-start-dedupe)",
+        "adapters/orca-pm-close.sh (pm-close-list)",
+        "adapters/orca-pm-successor.sh (pm-successor-list)",
+        "lib/afk-monitor.sh afk_monitor_terminals_load (monitor-list; no --limit today)",
+        "files/model-router/scripts/dispatch.sh continuation_terminal_close_bound (unwrapped until ORCA-4)"
+      ]
+    },
+    {
+      "id": "cmd.terminal-show",
+      "command": "terminal show",
+      "flags": [
+        "json",
+        "terminal"
+      ],
+      "state": "in-use",
+      "fields": [
+        {
+          "path": "result.terminal.handle",
+          "type": "non-empty string",
+          "verified_by": "L3",
+          "item": "beh.show-identity"
+        },
+        {
+          "path": "result.terminal.tabId",
+          "type": "non-empty string",
+          "verified_by": "L3",
+          "item": "beh.show-identity"
+        },
+        {
+          "path": "result.terminal.leafId",
+          "type": "non-empty string",
+          "verified_by": "L3",
+          "item": "beh.show-identity"
+        },
+        {
+          "path": "result.terminal.worktreeId",
+          "type": "string",
+          "verified_by": "L3",
+          "item": "beh.show-identity"
+        },
+        {
+          "path": "result.terminal.worktreePath",
+          "type": "string",
+          "verified_by": "L3",
+          "item": "beh.show-identity"
+        },
+        {
+          "path": "result.terminal.executionHostId",
+          "type": "string",
+          "verified_by": "L3",
+          "item": "beh.show-identity"
+        },
+        {
+          "path": "result.terminal.incarnationId",
+          "type": "string",
+          "verified_by": "L3",
+          "item": "beh.show-identity"
+        },
+        {
+          "path": "result.terminal.connected",
+          "type": "boolean",
+          "verified_by": "L3",
+          "item": "beh.show-identity"
+        },
+        {
+          "path": "result.terminal.title",
+          "type": "string",
+          "verified_by": "L3",
+          "item": "beh.rename"
+        },
+        {
+          "path": "_meta.runtimeId",
+          "type": "non-empty string",
+          "verified_by": "L2",
+          "item": "envelope"
+        }
+      ],
+      "errors": [
+        {
+          "code": "terminal_handle_stale",
+          "exit_status": 1,
+          "carries": "_meta.runtimeId",
+          "verified_by": "L2",
+          "item": "shape.stale-error"
+        }
+      ],
+      "used_by": [
+        "lib/afk-orca.sh afk_orca_identity, afk_orca_terminal_state (afk-identity, afk-liveness-show)",
+        "adapters/orca-pm-close.sh (pm-close-show)",
+        "adapters/orca-pm-successor.sh (pm-successor-show)",
+        "adapters/orca-title.sh show_exact (title-show)",
+        "files/model-router/scripts/dispatch.sh continuation_terminal_observation (unwrapped until ORCA-4)"
+      ],
+      "privacy": "the payload carries screen text (preview); callers drop it after projecting"
+    },
+    {
+      "id": "cmd.terminal-create",
+      "command": "terminal create",
+      "flags": [
+        "json",
+        "worktree",
+        "title",
+        "command"
+      ],
+      "selectors": [
+        "id:<worktreeId>"
+      ],
+      "state": "in-use",
+      "fields": [
+        {
+          "path": "result.terminal.handle",
+          "type": "string matching ^term_",
+          "verified_by": "L3",
+          "item": "beh.create"
+        }
+      ],
+      "used_by": [
+        "lib/afk-paperclip-start.sh afk_pcs_create_terminal (pm-start-create)",
+        "adapters/orca-pm-successor.sh (pm-successor-create)",
+        "files/model-router/scripts/dispatch.sh orca_launch_create_raw (unwrapped until ORCA-4)",
+        "ORCA-9 L3"
+      ]
+    },
+    {
+      "id": "cmd.terminal-close",
+      "command": "terminal close",
+      "flags": [
+        "json",
+        "terminal",
+        "tab"
+      ],
+      "forbidden_flags": [
+        "all"
+      ],
+      "state": "in-use",
+      "proof": "absent from a complete terminal list and terminal show answers terminal_handle_stale, both in the recorded runtime id; ptyKilled is not evidence (OQ-4)",
+      "verified_by": "L3",
+      "item": "beh.close-proof",
+      "used_by": [
+        "adapters/orca-pm-close.sh (pm-close-close)",
+        "adapters/orca-pm-successor.sh (pm-successor-close)",
+        "files/model-router/scripts/dispatch.sh continuation_terminal_close_bound (unwrapped until ORCA-4)",
+        "ORCA-9 L3"
+      ]
+    },
+    {
+      "id": "cmd.terminal-rename",
+      "command": "terminal rename",
+      "flags": [
+        "json",
+        "terminal",
+        "title"
+      ],
+      "state": "in-use",
+      "fields": [
+        {
+          "path": "result.rename.handle | result.terminal.handle",
+          "type": "string",
+          "verified_by": "L3",
+          "item": "beh.rename",
+          "note": "the title hook accepts either; record which one Orca returns"
+        },
+        {
+          "path": "result.rename.title | result.terminal.title",
+          "type": "string",
+          "verified_by": "L3",
+          "item": "beh.rename"
+        }
+      ],
+      "used_by": [
+        "adapters/orca-title.sh rename_exact (title-rename)",
+        "files/model-router/scripts/dispatch.sh (four bare `orca terminal rename` calls, unwrapped until ORCA-4)"
+      ]
+    },
+    {
+      "id": "cmd.terminal-read",
+      "command": "terminal read",
+      "flags": [
+        "json",
+        "terminal",
+        "limit"
+      ],
+      "planned_flags": [
+        "cursor"
+      ],
+      "state": "in-use",
+      "fields": [
+        {
+          "path": "result.terminal.tail",
+          "type": "array of strings",
+          "verified_by": "L3",
+          "item": "beh.read"
+        },
+        {
+          "path": "result.nextCursor | result.terminal.nextCursor",
+          "type": "number or string",
+          "verified_by": "path_unverified",
+          "item": "beh.read",
+          "note": "needed by ORCA-4's --cursor polling"
+        }
+      ],
+      "used_by": [
+        "files/model-router/scripts/dispatch.sh orca_launch_wait (unwrapped until ORCA-4)",
+        "ORCA-9 L3"
+      ]
+    },
+    {
+      "id": "cmd.terminal-send",
+      "command": "terminal send",
+      "flags": [
+        "json",
+        "terminal",
+        "text",
+        "enter",
+        "wait-submit"
+      ],
+      "state": "planned",
+      "fields": [
+        {
+          "path": "accepted",
+          "type": "boolean",
+          "verified_by": "path_unverified",
+          "item": "beh.send-shell"
+        },
+        {
+          "path": "stages",
+          "type": "array of strings; values seen: input_accepted, turn_started",
+          "verified_by": "path_unverified",
+          "item": "beh.send-shell"
+        },
+        {
+          "path": "observation",
+          "type": "string; values seen: supported, unsupported",
+          "verified_by": "path_unverified",
+          "item": "beh.send-shell"
+        }
+      ],
+      "semantics": [
+        {
+          "item": "beh.send-shell",
+          "asserts": "a shell returns input_accepted and never turn_started",
+          "verified_by": "L3"
+        },
+        {
+          "item": "agent.turn_started",
+          "asserts": "an idle agent returns input_accepted then turn_started",
+          "verified_by": "use | L4"
+        }
+      ],
+      "used_by": [
+        "ORCA-7 pm-nudge (planned)",
+        "ORCA-9 L3"
+      ],
+      "evidence": "OQ-4 live results 2026-09-30; the recorded receipt was a PM projection, so the raw paths are unverified (V4)"
+    },
+    {
+      "id": "cmd.terminal-wait",
+      "command": "terminal wait",
+      "flags": [
+        "json",
+        "terminal",
+        "for",
+        "timeout-ms"
+      ],
+      "state": "planned",
+      "used_by": [
+        "ORCA-9 L3 cli.sigterm only"
+      ],
+      "verified_by": "L1",
+      "note": "never used for completion: --for exit does not fire for --command terminals (files/model-router/SKILL.md)"
+    },
+    {
+      "id": "cmd.worktree-show",
+      "command": "worktree show",
+      "flags": [
+        "json",
+        "worktree"
+      ],
+      "selectors": [
+        "path:<absolute path>"
+      ],
+      "state": "in-use",
+      "fields": [
+        {
+          "path": "result.worktree.id",
+          "type": "non-empty string",
+          "verified_by": "L2",
+          "item": "shape.worktree-show",
+          "note": "call sites fall back through .result.id, .worktree.id, .id; record which one Orca returns and drop the rest in a later story"
+        },
+        {
+          "path": "result.worktree.path",
+          "type": "string",
+          "verified_by": "L2",
+          "item": "shape.worktree-show"
+        },
+        {
+          "path": "result.worktree.identity.key",
+          "type": "string",
+          "verified_by": "path_unverified",
+          "item": "shape.worktree-show",
+          "note": "new in ORCA-9 (probe scope); orca-model.md section 3 reports identity {key, executionHostId, instanceId}"
+        },
+        {
+          "path": "result.worktree.isMainWorktree",
+          "type": "boolean",
+          "verified_by": "path_unverified",
+          "item": "shape.worktree-show",
+          "note": "new in ORCA-9 (probe scope)"
+        }
+      ],
+      "errors": [
+        {
+          "code": "selector_not_found",
+          "exit_status": 1,
+          "verified_by": "L2",
+          "item": "shape.selector-error"
+        }
+      ],
+      "used_by": [
+        "lib/afk-paperclip-start.sh (pm-start-worktree)",
+        "adapters/orca-pm-bootstrap.sh (pm-bootstrap-worktree)",
+        "adapters/orca-pm-close.sh (pm-close-worktree)",
+        "adapters/orca-pm-successor.sh (pm-successor-worktree)",
+        "adapters/pm-session.sh observe_worktree (pm-session-worktree)"
+      ]
+    },
+    {
+      "id": "cmd.worktree-ps",
+      "command": "worktree ps",
+      "flags": [
+        "json",
+        "limit"
+      ],
+      "state": "in-use",
+      "fields": [
+        {
+          "path": "result.worktrees",
+          "type": "array",
+          "verified_by": "L2",
+          "item": "shape.worktree-ps"
+        },
+        {
+          "path": "result.worktrees[].agents[].paneKey",
+          "type": "string",
+          "verified_by": "L2",
+          "item": "shape.worktree-ps"
+        },
+        {
+          "path": "result.worktrees[].agents[].agentType",
+          "type": "string",
+          "verified_by": "L2",
+          "item": "shape.worktree-ps"
+        },
+        {
+          "path": "result.worktrees[].agents[].state",
+          "type": "string in {working, done, waiting}",
+          "verified_by": "L2",
+          "item": "shape.worktree-ps.states",
+          "note": "done = idle at the prompt; waiting = a permission prompt is open and can persist through an approved tool run; an absent row = no agent (OQ-4)"
+        },
+        {
+          "path": "_meta.runtimeId",
+          "type": "equal to the terminal list's",
+          "verified_by": "L2",
+          "item": "shape.worktree-ps"
+        }
+      ],
+      "used_by": [
+        "lib/afk-orca.sh afk_orca_agents_state (afk-liveness-agents)",
+        "ORCA-7 pm-nudge (planned, reads state)"
+      ],
+      "privacy": "the payload carries prompt and reply text; only {paneKey, agentType, state} may outlive the call"
+    },
+    {
+      "id": "cmd.worktree-list",
+      "command": "worktree list",
+      "flags": [
+        "json"
+      ],
+      "state": "in-use",
+      "fields": [
+        {
+          "path": "result.worktrees[].id",
+          "type": "string",
+          "verified_by": "L2",
+          "item": "shape.worktree-list"
+        },
+        {
+          "path": "result.worktrees[].path",
+          "type": "string",
+          "verified_by": "L2",
+          "item": "shape.worktree-list"
+        }
+      ],
+      "used_by": [
+        "files/model-router/scripts/dispatch.sh orca_worktree_selector (unwrapped until ORCA-4; no --limit today)"
+      ]
+    },
+    {
+      "id": "cmd.repo-list",
+      "command": "repo list",
+      "flags": [
+        "json"
+      ],
+      "state": "in-use",
+      "fields": [
+        {
+          "path": "result.repos[].id",
+          "type": "string",
+          "verified_by": "L2",
+          "item": "shape.repo-list-policy"
+        },
+        {
+          "path": "result.repos[].hookSettings.setupAgentStartupPolicy",
+          "type": "string; dispatch requires start-immediately",
+          "verified_by": "L2",
+          "item": "shape.repo-list-policy"
+        }
+      ],
+      "used_by": [
+        "files/model-router/scripts/dispatch.sh orca_setup_policy_gate (unwrapped until ORCA-4)"
+      ],
+      "privacy": "the raw object embeds a remote URL with an access token; it never leaves the projection pipe"
+    },
+    {
+      "id": "cmd.repo-add",
+      "command": "repo add",
+      "flags": [
+        "json",
+        "path"
+      ],
+      "state": "planned",
+      "used_by": [
+        "ORCA-9 orca-verify --setup (owner command, once per host)"
+      ],
+      "verified_by": "L1",
+      "note": "its effect on a fresh repository is watched check V1"
+    },
+    {
+      "id": "cmd.orchestration-run-use",
+      "command": "orchestration run-use",
+      "flags": [
+        "json",
+        "id",
+        "from"
+      ],
+      "state": "in-use",
+      "fields": [
+        {
+          "path": "result.run.id",
+          "type": "string",
+          "verified_by": "use"
+        },
+        {
+          "path": "result.coordinatorTerminalHandle | result.terminal.handle",
+          "type": "string",
+          "verified_by": "use"
+        }
+      ],
+      "used_by": [
+        "adapters/orca-pm-bootstrap.sh (pm-bootstrap-run-use)"
+      ],
+      "note": "not probed: a probe would need a durable Run"
+    },
+    {
+      "id": "cmd.orchestration-run-current",
+      "command": "orchestration run-current",
+      "flags": [
+        "json",
+        "from"
+      ],
+      "state": "in-use",
+      "fields": [
+        {
+          "path": "result.run.id",
+          "type": "string",
+          "verified_by": "use",
+          "note": "dispatch.sh also accepts .result.run.run_id and .result.runId"
+        }
+      ],
+      "used_by": [
+        "adapters/pm-session.sh (pm-session-run-current)",
+        "files/model-router/scripts/dispatch.sh current_pm_run (bounded_orca, unwrapped until ORCA-4)"
+      ]
+    },
+    {
+      "id": "cmd.orchestration-send",
+      "command": "orchestration send",
+      "flags": [
+        "run",
+        "subject",
+        "type",
+        "task-id",
+        "dispatch-id",
+        "phase",
+        "payload",
+        "from"
+      ],
+      "values": {
+        "type": [
+          "status"
+        ]
+      },
+      "state": "in-use",
+      "used_by": [
+        "files/model-router/scripts/dispatch.sh context_event_emit (bounded_orca, best effort; the event is durable on disk first)"
+      ],
+      "verified_by": "L1"
+    }
+  ],
+  "known_defects": [
+    {
+      "id": "defect.capabilities-command",
+      "call": "capabilities --json",
+      "where": "lib/afk-readiness.sh afk_probe_orca (readiness-capabilities)",
+      "fact": "Orca has no `capabilities` command (agent-context, 1.4.217); the capability list is status result.runtime.capabilities[]",
+      "fixed_by": "AFK-ORCA-5",
+      "l1_expectation": "absent"
+    },
+    {
+      "id": "defect.close-handle-durable",
+      "call": "terminal close --handle <h> --durable --json",
+      "where": "lib/afk-monitor.sh afk_monitor_terminal_release (monitor-close)",
+      "fact": "terminal close has no --handle and no --durable flag; the flags are terminal, tab, worktree, all",
+      "fixed_by": "AFK-ORCA-5",
+      "l1_expectation": "flags absent"
+    },
+    {
+      "id": "defect.terminal-status-field",
+      "call": "reads of .status on a terminal",
+      "where": "lib/afk-monitor.sh afk_monitor_terminals_load; dispatch.sh orca_launch_wait and continuation_terminal_live/dead; adapters/orca-pm-successor.sh terminal_live/dead (fallback arm)",
+      "fact": "a terminal has no status field in 1.4.216 or 1.4.217",
+      "fixed_by": "AFK-ORCA-4, AFK-ORCA-5"
+    },
+    {
+      "id": "defect.dispatch-unwrapped",
+      "call": "orca_json and bare `orca terminal rename`",
+      "where": "files/model-router/scripts/dispatch.sh (orca_json at line 816; bare renames at 3333, 3370, 3450, 3653; bounded_orca defaults to the word orca)",
+      "fact": "PATH-resolved and unbounded; AD-28 R1 and R2",
+      "fixed_by": "AFK-ORCA-4"
+    },
+    {
+      "id": "defect.dispatch-orphaned-as-dead",
+      "call": "continuation_terminal_dead treats orphaned:true as dead",
+      "where": "files/model-router/scripts/dispatch.sh around line 1897",
+      "fact": "orphaned means no pane in the layout, not dead (AD-28 R5)",
+      "fixed_by": "AFK-ORCA-4"
+    },
+    {
+      "id": "defect.invented-capability-names",
+      "call": "AFK_REQUIRED_ORCA_CAPABILITIES",
+      "where": "lib/afk-readiness.sh line 86",
+      "fact": "worktree-ownership, visible-worker-launch, argument-environment-transport, provider-runtime, session-process-isolation are not strings Orca advertises",
+      "fixed_by": "AFK-ORCA-5"
+    }
+  ],
+  "capabilities": {
+    "source": "status result.runtime.capabilities[] (97 strings in 1.4.216 and 1.4.217, identical)",
+    "required": [],
+    "required_note": "none is proven to map to a kit dependency yet; ORCA-5 confirms the minimal set",
+    "watched": [
+      "terminal.prompt-delivery.v1",
+      "terminal.create-idempotency.v2",
+      "session-tabs.close-intent.v1",
+      "session-tabs.authoritative-inventory.v1",
+      "agent-session.status-feed.v1",
+      "agent-session.turn-completion.v1",
+      "orchestration.contract.v1",
+      "runtime.status.compat.v1",
+      "updater.remote-control.v1"
+    ],
+    "watched_note": "candidates by name only; removal of one queues a review, it closes nothing"
+  },
+  "features": {
+    "orca.any-call": {
+      "requires": [
+        "cli.version",
+        "envelope"
+      ],
+      "on_fail": "ORCA_CLI_NOT_RESOLVED (as today)"
+    },
+    "readiness.host-execution": {
+      "requires": [
+        "shape.status"
+      ],
+      "on_fail": "blocking finding under HOST_EXECUTION_READY (as today)"
+    },
+    "registry.liveness": {
+      "requires": [
+        "shape.terminal-list",
+        "shape.worktree-ps",
+        "shape.stale-error"
+      ],
+      "on_fail": "every owner unknown; nothing starts"
+    },
+    "pm.reap": {
+      "requires": [
+        "shape.terminal-list",
+        "shape.worktree-ps",
+        "shape.stale-error",
+        "beh.close-proof"
+      ],
+      "on_fail": "refuse"
+    },
+    "pm.register": {
+      "requires": [
+        "shape.worktree-show",
+        "beh.show-identity"
+      ],
+      "on_fail": "register without a tuple (reads unknown later)"
+    },
+    "pm.first-start": {
+      "requires": [
+        "cmd.terminal-create",
+        "beh.create",
+        "beh.show-identity",
+        "shape.worktree-show",
+        "shape.terminal-list"
+      ],
+      "on_fail": "refuse before the intent is written"
+    },
+    "pm.handoff-successor": {
+      "requires": [
+        "cmd.terminal-create",
+        "beh.create",
+        "beh.show-identity",
+        "shape.worktree-show",
+        "shape.terminal-list"
+      ],
+      "on_fail": "refuse; NEEDS HUMAN"
+    },
+    "pm.handoff-close": {
+      "requires": [
+        "cmd.terminal-close",
+        "beh.close-proof"
+      ],
+      "on_fail": "refuse; the terminal stays; NEEDS HUMAN"
+    },
+    "pm.run-continuity": {
+      "requires": [
+        "cmd.orchestration-run-use",
+        "cmd.orchestration-run-current"
+      ],
+      "on_fail": "bootstrap stops before the harness (as today)"
+    },
+    "pm.nudge": {
+      "requires": [
+        "shape.worktree-ps.states",
+        "cmd.terminal-send",
+        "beh.send-shell"
+      ],
+      "requires_when_evaluated": [
+        "agent.turn_started"
+      ],
+      "on_fail": "send nothing"
+    },
+    "dispatch.launch": {
+      "requires": [
+        "cmd.terminal-create",
+        "beh.create",
+        "shape.worktree-list",
+        "shape.repo-list-policy"
+      ],
+      "on_fail": "refuse launch"
+    },
+    "dispatch.wait": {
+      "requires": [
+        "cmd.terminal-read",
+        "beh.read"
+      ],
+      "on_fail": "refuse launch"
+    },
+    "dispatch.continuation-close": {
+      "requires": [
+        "cmd.terminal-close",
+        "beh.close-proof"
+      ],
+      "on_fail": "refuse"
+    },
+    "dispatch.context-events": {
+      "requires": [
+        "cmd.orchestration-send"
+      ],
+      "on_fail": "the event stays on disk; no publication"
+    },
+    "monitor.listing": {
+      "requires": [
+        "shape.terminal-list"
+      ],
+      "on_fail": "every handle UNKNOWN; NEEDS_OWNER (as today)"
+    },
+    "monitor.release": {
+      "requires": [
+        "cmd.terminal-close",
+        "beh.close-proof"
+      ],
+      "on_fail": "refuse"
+    },
+    "title": {
+      "requires": [
+        "cmd.terminal-rename",
+        "beh.rename"
+      ],
+      "on_fail": "the hook exits 0 silently"
+    }
+  },
+  "never": [
+    "worktree create or worktree rm from a probe",
+    "terminal close --worktree <selector> --all",
+    "terminal create --focus, terminal switch",
+    "any orchestration mutation from a probe",
+    "persisting raw worktree ps, terminal show, terminal read or repo list output"
+  ]
+}
