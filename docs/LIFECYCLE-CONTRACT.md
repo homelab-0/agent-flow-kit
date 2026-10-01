@@ -31,6 +31,7 @@ away from the executable that implements it.
 | `adopt` | The adoption transaction: establishes durable ownership at the identities already installed, verifies offline, then commits the manifest. |
 | `update` | Deterministic convergence for an adopted host: plan, backup, journal, write, verify, commit — or refuse. |
 | `verify` | Verification of installed state against the applied-state manifest. Observes and proves; never repairs. Offline unless `--live` is requested. |
+| `orca-verify --contract` | Compares the checked-in Orca command and flag contract with one bounded Orca registry read. |
 | `monitor` | The durable worker-completion watch and the provenance-bound release of the resources a settled worker owned. One bounded pass per invocation; read-only without an action verb. |
 | `pm-continue` | Advances one durable PM handoff transition. It launches at most one successor, accepts only a matching acknowledgement, reconciles ownership, and closes only the proven old terminal. |
 | `pm-start` | Writes one exact-terminal PM registration intent for Claude, Codex, or OpenCode; the next supported native session event must claim it. |
@@ -46,6 +47,7 @@ adopt --inspect
 adopt
 update
 verify
+orca-verify --contract
 monitor
 pm-checkpoint
 pm-start
