@@ -1208,6 +1208,7 @@ afk_pc_retry_report_pm_start() { # <issue-id> <host-agent-id>
   [[ "$retry_status" =~ ^(todo|in_progress|blocked)$ ]] || { held_start_authority[$id]=ineligible; return 0; }
   [[ -z "$retry_assignee" || "$retry_assignee" == "$retry_agent" ]] || { held_start_authority[$id]=ineligible; return 0; }
   [[ -z "$retry_owner" || "$retry_owner" == "$retry_agent" ]] || { held_start_authority[$id]=ineligible; return 0; }
+  [[ "$retry_assignee" == "$retry_agent" || "$retry_owner" == "$retry_agent" ]] || { held_start_authority[$id]=ineligible; return 0; }
   [[ -z "$retry_recovery" ]] || { held_start_authority[$id]=ineligible; return 0; }
   [[ -n "$retry_pin" && "$retry_project" == "$retry_pin" ]] || { held_start_authority[$id]=ineligible; return 0; }
   retry_cfg="$(jq -c --arg s "$(jq -r '.slug // empty' <<<"$issue_row")" --arg p "$retry_pin" \

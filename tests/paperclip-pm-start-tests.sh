@@ -959,7 +959,7 @@ jq -nc --arg id "$ISSUE1" --arg a "$AGENT1" --arg p "$PROJ1" \
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 route GET /api/agents/me/inbox-lite 200 "[{\"id\":\"$ISSUE1\"}]"
 route GET "/api/issues/$ISSUE1" 200 \
-  "{\"status\":\"in_progress\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"updatedAt\":\"2026-01-01T00:00:00Z\",\"createdByUserId\":\"$BOARD\",\"projectId\":\"$PROJ1\"}"
+  "{\"status\":\"in_progress\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"updatedAt\":\"2026-01-01T00:00:00Z\",\"createdByUserId\":\"$BOARD\",\"projectId\":\"$PROJ1\",\"unblockDescriptor\":{\"owner\":{\"agentId\":\"$AGENT1\"}}}"
 route GET "/api/issues/$ISSUE1/active-run" 404 '{}'
 AFK_PM_BOOTSTRAP_BIN="$KIT_ROOT/adapters/orca-pm-bootstrap.sh"
 AFK_KIT_ROOT="$KIT_ROOT"; AFK_SKILLS_HOME="$SCEN/skills"
@@ -981,7 +981,7 @@ jq -nc --arg id "$ISSUE1" --arg a "$AGENT1" --arg p "$PROJ1" \
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 route GET /api/agents/me/inbox-lite 200 '[]'
 route GET "/api/issues/$ISSUE1" 200 \
-  "{\"status\":\"todo\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"updatedAt\":\"2026-01-01T00:00:00Z\",\"createdByUserId\":\"$BOARD\",\"projectId\":\"$PROJ1\"}"
+  "{\"status\":\"todo\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"updatedAt\":\"2026-01-01T00:00:00Z\",\"createdByUserId\":\"$BOARD\",\"projectId\":\"$PROJ1\",\"assigneeAgentId\":\"$AGENT1\"}"
 AFK_PM_BOOTSTRAP_BIN="$KIT_ROOT/adapters/orca-pm-bootstrap.sh"
 AFK_KIT_ROOT="$KIT_ROOT"; AFK_SKILLS_HOME="$SCEN/skills"
 run_afk paperclip-poll --json
@@ -1037,7 +1037,7 @@ jq -nc --arg id "$ISSUE1" --arg a "$AGENT1" --arg p "$PROJ1" \
   >"$STATE/paperclip/ledger.json"
 route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
 route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
-route GET "/api/issues/$ISSUE1" 200 "{\"status\":\"in_progress\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"updatedAt\":\"2026-01-01T00:00:00Z\",\"createdByUserId\":\"$BOARD\",\"projectId\":\"$PROJ1\"}"
+route GET "/api/issues/$ISSUE1" 200 "{\"status\":\"in_progress\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"updatedAt\":\"2026-01-01T00:00:00Z\",\"createdByUserId\":\"$BOARD\",\"projectId\":\"$PROJ1\",\"unblockDescriptor\":{\"owner\":{\"agentId\":\"$AGENT1\"}}}"
 route GET "/api/issues/$ISSUE1/active-run" 404 '{}'
 route POST "/api/agents/$AGENT1/wakeup" 202 '{"id":"run-live"}'
 route PATCH "/api/issues/$ISSUE1" 200 '{}'
@@ -1092,6 +1092,26 @@ AFK_KIT_ROOT="$KIT_ROOT"; AFK_SKILLS_HOME="$SCEN/skills"
 run_afk paperclip-poll --json
 assert_eq "stale closed detail creates no PM terminal" "$(wc -l <"$ORCA_CREATE_LOG" | tr -d ' ')" 0
 assert_eq "stale closed detail skips PM-start classification" "$(wc -l <"$READINESS_CALL_LOG" | tr -d ' ')" 0
+unset AFK_PM_BOOTSTRAP_BIN AFK_KIT_ROOT AFK_SKILLS_HOME READINESS_CALL_LOG
+
+head1 "17b. held retry requires authoritative current ownership"
+new_scenario unowned_held_start
+write_config '{"pm_start_enabled":true}'
+mkdir -p "$STATE/paperclip"
+jq -nc --arg id "$ISSUE1" --arg a "$AGENT1" --arg p "$PROJ1" \
+  '{issues:{($id):{identifier:"PROJ-1",host_agent_id:$a,paperclip_project_id:$p,slug:"proj",state:"queued",action_text:"queued: no PM (start refused: PM_BOOTSTRAP_UNAVAILABLE)",action_text_applied:"queued: no PM (start refused: PM_BOOTSTRAP_UNAVAILABLE)"}},pm_started:{}}' \
+  >"$STATE/paperclip/ledger.json"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+route GET "/api/agents/me/inbox-lite" 200 '[]'
+route GET "/api/issues/$ISSUE1" 200 \
+  "{\"status\":\"todo\",\"identifier\":\"PROJ-1\",\"projectId\":\"$PROJ1\",\"createdByUserId\":\"$BOARD\"}"
+READINESS_CALL_LOG="$SCEN/unowned-readiness.log"
+: >"$READINESS_CALL_LOG"
+AFK_PM_BOOTSTRAP_BIN="$KIT_ROOT/adapters/orca-pm-bootstrap.sh"
+AFK_KIT_ROOT="$KIT_ROOT"; AFK_SKILLS_HOME="$SCEN/skills"
+run_afk paperclip-poll --json
+assert_eq "unowned current detail skips PM-start classification" "$(wc -l <"$READINESS_CALL_LOG" | tr -d ' ')" 0
+assert_eq "unowned current detail creates no PM terminal" "$(wc -l <"$ORCA_CREATE_LOG" | tr -d ' ')" 0
 unset AFK_PM_BOOTSTRAP_BIN AFK_KIT_ROOT AFK_SKILLS_HOME READINESS_CALL_LOG
 
 head1 "18. eligible omitted hold stays queued and retries later"
