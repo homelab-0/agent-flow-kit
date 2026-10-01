@@ -154,6 +154,7 @@ SH
 # (AFK_PCS_READINESS_BIN). Never the real kit.
 cat >"$STUBS/readiness" <<'SH'
 #!/usr/bin/env bash
+[[ -n "${READINESS_CALL_LOG:-}" ]] && printf 'called\n' >>"$READINESS_CALL_LOG"
 if [[ "${READINESS_OK:-true}" == true ]]; then printf '{"readiness":{"INSTALLED_INTEGRITY":{"state":"READY"}}}'; exit 0; fi
 if [[ "${READINESS_OK}" == integrity ]]; then printf '{"readiness":{"INSTALLED_INTEGRITY":{"state":"NOT_READY","reason":"INTEGRITY_DRIFT"}}}'; exit 0; fi
 printf '{"route":{"reason":"%s"}}' "${READINESS_REASON:-NOT_READY}"; exit 3
@@ -215,6 +216,7 @@ run_afk() { # <cmd> [args...]
   [[ ${BOOTSTRAP_MARKER+x} ]] && adapter_env+=("BOOTSTRAP_MARKER=$BOOTSTRAP_MARKER")
   [[ ${AFK_CLAUDE_BIN+x} ]] && adapter_env+=("AFK_CLAUDE_BIN=$AFK_CLAUDE_BIN")
   [[ ${HARNESS_ARGV_LOG+x} ]] && adapter_env+=("HARNESS_ARGV_LOG=$HARNESS_ARGV_LOG")
+  [[ ${READINESS_CALL_LOG+x} ]] && adapter_env+=("READINESS_CALL_LOG=$READINESS_CALL_LOG")
   [[ ${ORCA_TERMINAL_HANDLE+x} ]] && adapter_env+=("ORCA_TERMINAL_HANDLE=$ORCA_TERMINAL_HANDLE")
   out="$(env -i PATH="$STUBS:$PATH" HOME="${HOME:-$SCEN/home}" LANG=C \
     AFK_KIT_ROOT="${AFK_KIT_ROOT:-$KIT_ROOT}" \
@@ -986,6 +988,37 @@ assert_eq "quiet queued hold creates exactly one PM terminal" "$(wc -l <"$ORCA_C
 assert_eq "quiet queued hold creates no report wake" "$(grep -c "^POST /api/agents/$AGENT1/wakeup$" "$LOG")" 0
 assert_absent "quiet queued hold makes no issue PATCH" "$(cat "$LOG")" "PATCH /api/issues/$ISSUE1"
 unset AFK_PM_BOOTSTRAP_BIN AFK_KIT_ROOT AFK_SKILLS_HOME
+
+# FIX-6 C3: the queued held-start sweep and inbox blocked path share one
+# per-pass classification guard. A failed first attempt remains retryable.
+head1 "14c. held queued start is checked once across both paths"
+new_scenario shared_start_guard
+write_config '{"pm_start_enabled":true}'
+mkdir -p "$STATE/paperclip"
+jq -nc --arg id "$ISSUE1" --arg a "$AGENT1" --arg p "$PROJ1" \
+  '{issues:{($id):{identifier:"PROJ-1",host_agent_id:$a,paperclip_project_id:$p,slug:"proj",state:"queued",action_text:"queued: no PM (start held: PM_BOOTSTRAP_UNAVAILABLE)",action_text_applied:"queued: no PM (start held: PM_BOOTSTRAP_UNAVAILABLE)"}},pm_started:{}}' \
+  >"$STATE/paperclip/ledger.json"
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+route GET "/api/issues/$ISSUE1" 200 \
+  "{\"status\":\"blocked\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"updatedAt\":\"2026-01-01T00:00:00Z\",\"createdByUserId\":\"$BOARD\",\"projectId\":\"$PROJ1\",\"assigneeAgentId\":\"$AGENT1\",\"unblockDescriptor\":{\"owner\":{\"agentId\":\"$AGENT1\"}}}"
+route GET "/api/issues/$ISSUE1/active-run" 404 '{}'
+route GET "/api/issues/$ISSUE1/comments" 200 '[]'
+READINESS_CALL_LOG="$SCEN/readiness.log"
+READINESS_OK=integrity
+unset AFK_PM_BOOTSTRAP_BIN AFK_SKILLS_HOME
+run_afk paperclip-poll --json
+assert_eq "same-pass held start is classified once" "$(wc -l <"$READINESS_CALL_LOG" | tr -d ' ')" 1
+assert_eq "same-pass held start creates no terminal" "$(wc -l <"$ORCA_CREATE_LOG" | tr -d ' ')" 0
+assert_contains "same-pass held start remains queued for retry" \
+  "$(jq -r --arg id "$ISSUE1" '.issues[$id].action_text' "$STATE/paperclip/ledger.json")" "queued: no PM"
+AFK_PM_BOOTSTRAP_BIN="$KIT_ROOT/adapters/orca-pm-bootstrap.sh"
+AFK_KIT_ROOT="$KIT_ROOT"; AFK_SKILLS_HOME="$SCEN/skills"
+READINESS_OK=true
+run_afk paperclip-poll --json
+assert_eq "later pass remains eligible for one retry" "$(wc -l <"$READINESS_CALL_LOG" | tr -d ' ')" 2
+assert_eq "later retry creates exactly one PM terminal" "$(wc -l <"$ORCA_CREATE_LOG" | tr -d ' ')" 1
+unset READINESS_CALL_LOG READINESS_OK AFK_PM_BOOTSTRAP_BIN AFK_KIT_ROOT AFK_SKILLS_HOME
 
 # A live registry owner with no pm_started row is a confirmation for the
 # report cycle. It clears the stale hold once, and the marker is consumed.

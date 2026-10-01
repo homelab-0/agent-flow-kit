@@ -1172,8 +1172,8 @@ afk_pc_is_josh_comment() { # <comment-json> <board_user_id>
 afk_pc_maybe_start_pm() {
   AFK_PCS_ACTION_OVERRIDE=""
   declare -F afk_pcs_start_pm >/dev/null 2>&1 || return 0
-  [[ -n "${pm_start_checked_this_pass[$id]:-}" ]] 2>/dev/null ||
-    pm_start_checked_this_pass[$id]=1
+  [[ -z "${pm_start_checked_this_pass[$id]:-}" ]] 2>/dev/null || return 0
+  pm_start_checked_this_pass[$id]=1
   afk_pcs_start_pm
 }
 
@@ -1204,7 +1204,6 @@ afk_pc_retry_report_pm_start() { # <issue-id> <host-agent-id>
   local issue_resp; issue_resp="$(afk_pc_curl GET "$api_url/api/issues/$id" "$key" "")"
   [[ "${issue_resp%%$'\n'*}" == 2?? ]] || return 0
   detail="${issue_resp#*$'\n'}"
-  pm_start_checked_this_pass[$id]=1
   local AFK_PCS_ACTION_OVERRIDE=""
   afk_pc_maybe_start_pm
   if [[ -n "$AFK_PCS_ACTION_OVERRIDE" ]]; then
