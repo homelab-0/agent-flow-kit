@@ -333,6 +333,46 @@ do_pass
 assert_contains "neither bootstrap path executable reports unavailable" \
   "$(jq -r --arg id "$ISSUE1" '.issues[$id].action_text // empty' "$STATE/paperclip/ledger.json")" PM_BOOTSTRAP_UNAVAILABLE
 assert_eq "missing bootstrap does not create a terminal" "$(wc -l <"$ORCA_CREATE_LOG" | tr -d ' ')" 0
+# A held start on a working issue must keep its reason stable across reports;
+# otherwise each inbox sweep restores queued text and the report cycle wakes
+# the agent again on every timer pass.
+route GET "/api/issues/$ISSUE1" 200 \
+  "{\"status\":\"blocked\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"updatedAt\":\"2026-01-01T00:00:00Z\",\"createdByUserId\":\"$BOARD\",\"projectId\":\"$PROJ1\",\"assigneeAgentId\":\"$AGENT1\",\"unblockDescriptor\":{\"owner\":{\"agentId\":\"$AGENT1\"}}}"
+route GET "/api/issues/$ISSUE1/active-run" 200 '{"id":"run-1"}'
+route GET "/api/issues/$ISSUE1/comments" 200 '[]'
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+route POST "/api/agents/$AGENT1/wakeup" 202 '{"id":"run-report"}'
+route PATCH "/api/issues/$ISSUE1" 200 '{}'
+: >"$LOG"
+for pass in 1 2 3; do run_afk paperclip-poll --json; done
+assert_eq "held bootstrap reason survives the report cycle" \
+  "$(jq -r --arg id "$ISSUE1" '.issues[$id].action_text_applied' "$STATE/paperclip/ledger.json")" \
+  "queued: no PM (start held: PM_BOOTSTRAP_UNAVAILABLE)"
+assert_eq "held bootstrap with no new work produces no report wake" \
+  "$(grep -c "^POST /api/agents/$AGENT1/wakeup$" "$LOG")" 0
+AFK_PM_BOOTSTRAP_BIN="$SCEN/recovered-bootstrap"
+printf '#!/bin/sh\nexit 0\n' >"$AFK_PM_BOOTSTRAP_BIN"; chmod +x "$AFK_PM_BOOTSTRAP_BIN"
+mkdir -p "$STATE/paperclip/spool/$ISSUE1"
+printf '%s' '{"id":"dddddddd-dddd-4ddd-8ddd-dddddddddddd","kind":"comment","body":"held-start regression"}' \
+  >"$STATE/paperclip/spool/$ISSUE1/00000001.json"
+: >"$LOG"
+run_afk paperclip-poll --json
+assert_eq "a held start retries when bootstrap becomes available" \
+  "$(wc -l <"$ORCA_CREATE_LOG" | tr -d ' ')" 1
+# If the self-wake's run appears on the next inbox sweep, it must not be
+# mistaken for a Paperclip-originated wake and acknowledged as such.
+route GET "/api/issues/$ISSUE1" 200 \
+  "{\"status\":\"in_progress\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"updatedAt\":\"2026-01-01T00:00:00Z\",\"createdByUserId\":\"$BOARD\",\"projectId\":\"$PROJ1\",\"unblockDescriptor\":{\"owner\":{\"agentId\":\"$AGENT1\"}}}"
+route GET "/api/issues/$ISSUE1/active-run" 200 '{"id":"run-report","contextSnapshot":{"wakeReason":"timer"}}'
+route GET "/api/issues/$ISSUE1/comments" 200 '[]'
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+: >"$LOG"; : >"$BODYLOG"
+run_afk paperclip-poll --json
+assert_absent "our own report run is not acknowledged as a Paperclip wake" \
+  "$(cat "$BODYLOG")" "AFK host acknowledged:"
+unset AFK_PM_BOOTSTRAP_BIN
 
 new_scenario override_bootstrap
 write_config '{"pm_start_enabled":true}'
