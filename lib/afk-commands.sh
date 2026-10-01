@@ -1499,7 +1499,7 @@ afk_cmd_schema() {
       supported_target_wiring_major: $wiring_major,
       supported_orchestration_state_major: $orch_major,
       supported_dispatch_schema_major: $dispatch_major,
-      commands: ["status", "adopt --inspect", "adopt", "update", "verify", "monitor",
+      commands: ["status", "adopt --inspect", "adopt", "update", "verify", "orca-verify --contract", "monitor",
                  "pm-checkpoint", "pm-start", "pm-continue", "schema"],
       component_states: ["CURRENT", "UPDATE_AVAILABLE", "LOCAL_ADAPTATION", "LOCAL_DRIFT",
                          "EXTERNAL_STATE", "UNKNOWN", "BROKEN", "INCOMPATIBLE",
