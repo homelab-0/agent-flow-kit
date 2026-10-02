@@ -1564,7 +1564,56 @@ for harness in claude codex opencode; do
       "$ROOT/adapters/pm-session.sh" observe --harness "$harness" --session "session-$harness"
   fi
   eq "$harness exact PM registration" "$(jq -r '.harness+":"+.worktree.id' "$reg/ownership.json")" "$harness:child-worktree-id"
+  eq "$harness manual registration leaves launch unverified" \
+    "$(jq -r '.control.execution_profile+":"+.control.control_owner+":"+.control.approval_channel+":"+.control.launch_provenance.status' "$reg/ownership.json")" \
+    'unverified:human:unverified:unverified'
+  registered_session="$(jq -r .session "$reg/ownership.json")"
+  eq "$harness registration binds exact session and worktree" \
+    "$(jq -r '.control.provenance.owner.session+":"+.control.provenance.owner.worktree.id' "$reg/ownership.json")" \
+    "$registered_session:child-worktree-id"
+  before_control="$(jq -c .control "$reg/ownership.json")"
+  env "${orca_env[@]}" AFK_PM_DIR="$reg" ORCA_TERMINAL_HANDLE="terminal-$harness" \
+    "$ROOT/adapters/pm-session.sh" observe --harness "$harness" --session "$registered_session"
+  eq "$harness repeat observation preserves control" "$(jq -c .control "$reg/ownership.json")" "$before_control"
 done
+pm_status="$(env HOME="$home" AFK_STATE_DIR="$state" AFK_PM_DIR="$reg" "$ROOT/bin/agent-flow-kit" status --json 2>/dev/null || true)"
+eq "status projects the same registered control" \
+  "$(jq -Sc '.extra.pm_control.control' <<<"$pm_status")" "$(jq -Sc .control "$reg/ownership.json")"
+cp "$reg/ownership.json" "$TMP/valid-pm-owner.json"
+jq 'del(.control) | .role="worker"' "$reg/ownership.json" >"$TMP/invalid-owner.json"
+mv "$TMP/invalid-owner.json" "$reg/ownership.json"
+if pm_status="$(env HOME="$home" AFK_STATE_DIR="$state" AFK_PM_DIR="$reg" "$ROOT/bin/agent-flow-kit" status --json 2>/dev/null)"; then
+  pm_status_rc=0
+else
+  pm_status_rc=$?
+fi
+eq "non-PM legacy row has invalid control state" \
+  "$(jq -r '.extra.pm_control.state+":"+.extra.pm_control.reason' <<<"$pm_status")" 'invalid:PM_CONTROL_INVALID'
+eq "non-PM legacy row requires owner action" "$pm_status_rc" 2
+cp "$TMP/valid-pm-owner.json" "$reg/ownership.json"
+jq '.control.revision=null' "$reg/ownership.json" >"$TMP/invalid-control.json"
+mv "$TMP/invalid-control.json" "$reg/ownership.json"
+if pm_status="$(env HOME="$home" AFK_STATE_DIR="$state" AFK_PM_DIR="$reg" "$ROOT/bin/agent-flow-kit" status --json 2>/dev/null)"; then
+  pm_status_rc=0
+else
+  pm_status_rc=$?
+fi
+eq "status names malformed supplied control" \
+  "$(jq -r '.extra.pm_control.state+":"+.extra.pm_control.reason' <<<"$pm_status")" 'invalid:PM_CONTROL_INVALID'
+eq "malformed control status exits with reported owner action" \
+  "$pm_status_rc:$(jq -r '.overall.exit_code' <<<"$pm_status")" '2:2'
+eq "malformed control status includes finding" \
+  "$(jq -r '[.findings[].reason]|index("PM_CONTROL_INVALID")!=null' <<<"$pm_status")" true
+bad_control_hash="$(sha256sum "$reg/ownership.json")"
+env "${orca_env[@]}" AFK_PM_DIR="$reg" ORCA_TERMINAL_HANDLE=terminal-opencode \
+  "$ROOT/adapters/pm-session.sh" observe --harness opencode --session session-opencode
+eq "observation does not repair null revision" "$(sha256sum "$reg/ownership.json")" "$bad_control_hash"
+jq '.control.revision=0|del(.control.provenance.owner.session)' "$reg/ownership.json" >"$TMP/invalid-control.json"
+mv "$TMP/invalid-control.json" "$reg/ownership.json"
+bad_control_hash="$(sha256sum "$reg/ownership.json")"
+env "${orca_env[@]}" AFK_PM_DIR="$reg" ORCA_TERMINAL_HANDLE=terminal-opencode \
+  "$ROOT/adapters/pm-session.sh" observe --harness opencode --session session-opencode
+eq "observation does not repair missing identity binding" "$(sha256sum "$reg/ownership.json")" "$bad_control_hash"
 worker_pm="$TMP/worker-pm"; mkdir -p "$worker_pm"
 env AFK_PM_DIR="$worker_pm" ORCA_TERMINAL_HANDLE=worker "$ROOT/adapters/pm-session.sh" observe --harness codex --session worker-session
 if [[ ! -e "$worker_pm/ownership.json" ]]; then ok; else no "ordinary worker self-registered as PM"; fi
@@ -1974,6 +2023,9 @@ eq "Codex leading-dash resume is positional data" "$(<"$TMP/option-harness-args"
 pmd="$TMP/pm"; mkdir -p "$pmd"; now_epoch="$(date +%s)"
 jq -nc '{schema:"afk-pm-continuation/1",decisions:[],envelope_actions:[],open_escalations:[],budget_state:{},in_flight_dispatches:[],updated_at:"2026-09-14T00:00:00Z",resume_instruction:"resume-afk-pm"}' >"$pmd/continuation.json"
 jq -nc --arg p "$ROOT" --argjson e "$now_epoch" '{schema:"afk-pm-ownership/2",owned:true,role:"PM",harness:"codex",session:"old-session",terminal:"old-terminal",worktree:{id:"child-worktree-id",path:$p},run_id:null,observed_at:"now",observed_epoch:$e,freshness_seconds:120,transition_id:null,previous:null}' >"$pmd/ownership.json"
+old_control="$(bash -c '. "$1"; afk_pmc_manual "$(jq -c . "$2")" "$(afk_pmc_common_dir "$3")"' _ "$ROOT/lib/afk-pm-control.sh" "$pmd/ownership.json" "$ROOT")"
+jq --argjson c "$old_control" '.control=($c|.revision=7)' "$pmd/ownership.json" >"$TMP/owner-control.json"
+mv "$TMP/owner-control.json" "$pmd/ownership.json"
 launcher="$TMP/launcher"; closer="$TMP/closer"
 # shellcheck disable=SC2016
 printf '%s\n' '#!/usr/bin/env bash' 'n=0; [[ ! -f "$AFK_LAUNCH_COUNT_FILE" ]] || n="$(<"$AFK_LAUNCH_COUNT_FILE")"; n=$((n+1)); printf "%s\n" "$n" >"$AFK_LAUNCH_COUNT_FILE"; terminal="new-terminal"; [[ "$n" == 1 ]] || terminal="next-terminal"' 'jq -nc --arg id "$2" --arg t "$terminal" --argjson i "$(jq -c . "$1")" '\''{schema:"afk-pm-launch-receipt/2",transition_id:$id,accepted:true,terminal:$t,harness:$i.harness,worktree:$i.worktree,run_id:$i.run_id,continuation_sha256:$i.continuation_sha256,command_sha256:"sha256:command",create_id:"sha256:create"}'\''' >"$launcher"
@@ -1991,6 +2043,9 @@ jq -nc --arg id "$transition" --arg p "$ROOT" '{schema:"afk-pm-successor-ack/2",
 run_continue "$TMP/spoof-ack.json" old-terminal old-session
 if [[ ! -e "$TMP/close-count" ]]; then ok; else no "old PM synchronously closed itself"; fi
 env "${orca_env[@]}" AFK_PM_DIR="$pmd" AFK_PM_AUTOFINALIZE=0 ORCA_TERMINAL_HANDLE=new-terminal "$ROOT/adapters/pm-session.sh" observe --harness codex --session new-session
+eq "successor preserves control intent and revision but resets launch proof" \
+  "$(jq -r '.control.control_owner+":"+(.control.revision|tostring)+":"+.control.execution_profile+":"+.control.launch_provenance.status+":"+.control.provenance.owner.session' "$pmd/ownership.json")" \
+  'human:7:unverified:unverified:new-session'
 rm -f -- "$transition_dir/successor-ack.json"
 env "${orca_env[@]}" AFK_PM_DIR="$pmd" AFK_PM_AUTOFINALIZE=0 ORCA_TERMINAL_HANDLE=new-terminal "$ROOT/adapters/pm-session.sh" observe --harness codex --session new-session
 if jq -e --arg id "$transition" '.transition_id==$id and .session=="new-session" and .acknowledged==true' "$transition_dir/successor-ack.json" >/dev/null; then
@@ -2030,7 +2085,7 @@ else no "OLD_CLOSED replay heals partial reconciliation idempotently"; fi
 
 # A completed transition leaves no fixed-path intent that can poison the next.
 jq -nc '{schema:"afk-pm-continuation/1",decisions:["second"],envelope_actions:[],open_escalations:[],budget_state:{},in_flight_dispatches:[],updated_at:"2026-09-14T01:00:00Z",resume_instruction:"resume-second-pm"}' >"$TMP/second-cont.json"
-set +e; AFK_PM_DIR="$pmd" "$ROOT/bin/agent-flow-kit" pm-checkpoint --continuation --write "$TMP/second-cont.json" --json >/dev/null; second_checkpoint_rc=$?; set -e
+set +e; HOME="$home" AFK_STATE_DIR="$state" AFK_PM_DIR="$pmd" "$ROOT/bin/agent-flow-kit" pm-checkpoint --continuation --write "$TMP/second-cont.json" --json >/dev/null; second_checkpoint_rc=$?; set -e
 eq "second continuation accepted" "$second_checkpoint_rc" 2
 run_continue "" new-terminal new-session
 eq "second rollover launches a new exact transition" "$(jq -r .state "$pmd/handoff.json")" SUCCESSOR_LAUNCHED

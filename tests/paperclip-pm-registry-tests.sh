@@ -162,10 +162,12 @@ write_notice() { # <slug> <epoch> <issue_id> <event>
 head1 "0. registry helper resolution in a flat installed runtime"
 INSTALLED_ROOT="$TMPROOT/flat-runtime"
 mkdir -p "$INSTALLED_ROOT/lib"
-cp "$KIT_ROOT/lib/afk-orca.sh" "$KIT_ROOT/lib/afk-pm-registry.sh" "$INSTALLED_ROOT/lib/"
+cp "$KIT_ROOT/lib/afk-orca.sh" "$KIT_ROOT/lib/afk-pm-control.sh" "$KIT_ROOT/lib/afk-pm-registry.sh" "$INSTALLED_ROOT/lib/"
 cp "$KIT_ROOT/adapters/runtime-scope.sh" "$INSTALLED_ROOT/runtime-scope.sh"
 installed_claim_key="$(env -i PATH="$STUBS:$PATH" AFK_INSTALL_ROOT="$INSTALLED_ROOT" \
-  bash -c '. "$AFK_INSTALL_ROOT/lib/afk-pm-registry.sh" && afk_pmr_claim_key_for_terminal installed-registry')"
+  bash -c 'set -e; . "$AFK_INSTALL_ROOT/lib/afk-pm-registry.sh"; afk_pmr_claim_key_for_terminal installed-registry' 2>"$TMPROOT/install-error")"
+installed_rc=$?
+assert_eq "installed registry sources without error" "$installed_rc:$(cat "$TMPROOT/install-error")" '0:'
 expected_claim_key="terminal-$(printf 'terminal\0%s' installed-registry | sha256sum | awk '{print $1}')"
 assert_eq "registry loads the sibling runtime-scope.sh with no adapters directory" \
   "$installed_claim_key" "$expected_claim_key"
@@ -557,6 +559,99 @@ set_terminals '{"terminals":[{"handle":"termA","connected":true,"orphaned":false
 observe termC 33333333-3333-3333-3333-333333333333 "$SK9"
 assert_eq "a successor records its own terminal's tuple" \
   "$(jq -r '"\(.terminal) \(.identity.handle) \(.identity.tab_id)"' "$STATE/pm/scopes/$SK9/ownership.json")" "termC termC tab-termC"
+
+# Control is read through the real registry, including legacy and invalid rows.
+reset_state
+SKC="$(write_owner termA session-a "$REPO")"
+set_terminals '{"terminals":[{"handle":"termA","connected":true,"orphaned":false}]}'
+assert_eq "legacy owner projects explicit unverified control" \
+  "$(lookup "$REPO" | jq -r '.state+":"+.owner.control.execution_profile+":"+.owner.control.control_owner+":"+.owner.control.approval_channel+":"+.owner.control.launch_provenance.status')" \
+  'live:unverified:unverified:unverified:unverified'
+assert_eq "legacy row remains non-reapable while live" "$(lookup "$REPO" | jq -r '.stale|length')" 0
+jq '.control={schema:"afk-pm-control/1",execution_profile:"autonomous",control_owner:"paperclip",approval_channel:"external_provider",revision:null,launch_provenance:{status:"unverified"},provenance:{status:"unverified"}}' \
+  "$STATE/pm/scopes/$SKC/ownership.json" >"$TMPROOT/owner-new.json"
+mv "$TMPROOT/owner-new.json" "$STATE/pm/scopes/$SKC/ownership.json"
+assert_eq "malformed supplied control is named and not selected" \
+  "$(lookup "$REPO" | jq -r '.state+":"+.reason+":"+(.owner|type)')" 'unknown:PM_CONTROL_INVALID:null'
+# Malformed control takes precedence over an earlier legacy unknown scope.
+legacy_before=""
+for candidate in legacy-unknown-{a..z}; do
+  candidate_key="$(scope_key "$candidate")"
+  if [[ "$candidate_key" < "$SKC" ]]; then legacy_before="$candidate"; break; fi
+done
+write_owner_v2 "$legacy_before" session-legacy "$REPO" >/dev/null
+assert_eq "invalid control reason outranks earlier legacy unknown" \
+  "$(lookup "$REPO" | jq -r '.state+":"+(.owners[0].reason)+":"+.reason')" \
+  'unknown:PM_IDENTITY_UNRECORDED:PM_CONTROL_INVALID'
+run_afk pm-registry-reap --scope "$SKC" --json
+assert_eq "invalid control cannot be reaped" "$(jq -r .result <<<"$OUT_TEXT")" PM_CONTROL_INVALID
+for mismatch in repo session; do
+  jq --arg kind "$mismatch" --arg repo "$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir)" '
+    .control={schema:"afk-pm-control/1",execution_profile:"unverified",control_owner:"human",
+      approval_channel:"unverified",revision:4,launch_provenance:{status:"unverified"},
+      provenance:{status:"human_registration",repo_common_dir:(if $kind=="repo" then "/wrong" else $repo end),
+        owner:{harness:.harness,session:(if $kind=="session" then "wrong" else .session end),
+          terminal:.terminal,worktree:.worktree,run_id:.run_id}}}' \
+    "$STATE/pm/scopes/$SKC/ownership.json" >"$TMPROOT/owner-new.json"
+  mv "$TMPROOT/owner-new.json" "$STATE/pm/scopes/$SKC/ownership.json"
+  assert_eq "$mismatch-bound provenance is refused" \
+    "$(lookup "$REPO" | jq -r '.state+":"+.reason')" 'unknown:PM_CONTROL_INVALID'
+done
+for invalid_identity in missing null; do
+  jq --arg kind "$invalid_identity" --arg repo "$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir)" '
+    .session=(if $kind=="null" then null else "session-a" end) |
+    .control={schema:"afk-pm-control/1",execution_profile:"unverified",control_owner:"human",
+      approval_channel:"unverified",revision:4,launch_provenance:{status:"unverified"},
+      provenance:{status:"human_registration",repo_common_dir:$repo,
+        owner:{harness:.harness,session:.session,terminal:.terminal,worktree:.worktree,run_id:.run_id}}} |
+    if $kind=="missing" then del(.session,.control.provenance.owner.session) else . end' \
+    "$STATE/pm/scopes/$SKC/ownership.json" >"$TMPROOT/owner-new.json"
+  mv "$TMPROOT/owner-new.json" "$STATE/pm/scopes/$SKC/ownership.json"
+  assert_eq "$invalid_identity owner session cannot normalize as valid control" \
+    "$(lookup "$REPO" | jq -r '.state+":"+.reason')" 'unknown:PM_CONTROL_INVALID'
+done
+jq --arg repo "$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir)" '
+  .session="session-a" |
+  .control={schema:"afk-pm-control/1",execution_profile:"unverified",control_owner:"human",
+    approval_channel:"unverified",revision:4,launch_provenance:{status:"unverified"},
+    provenance:{status:"attested",repo_common_dir:$repo,
+      owner:{harness:.harness,session:.session,terminal:.terminal,worktree:.worktree,run_id:.run_id}}}' \
+  "$STATE/pm/scopes/$SKC/ownership.json" >"$TMPROOT/owner-new.json"
+mv "$TMPROOT/owner-new.json" "$STATE/pm/scopes/$SKC/ownership.json"
+assert_eq "unverified launch cannot claim attested provenance" \
+  "$(lookup "$REPO" | jq -r '.state+":"+.reason')" 'unknown:PM_CONTROL_INVALID'
+jq '.control.provenance.status="successor_continuity" |
+  .control.provenance.prior_control_owner="paperclip"' \
+  "$STATE/pm/scopes/$SKC/ownership.json" >"$TMPROOT/owner-new.json"
+mv "$TMPROOT/owner-new.json" "$STATE/pm/scopes/$SKC/ownership.json"
+assert_eq "successor cannot claim human control from paperclip predecessor" \
+  "$(lookup "$REPO" | jq -r '.state+":"+.reason')" 'unknown:PM_CONTROL_INVALID'
+write_owner termB session-b "$REPO" >/dev/null
+set_terminals '{"terminals":[{"handle":"termA","connected":true,"orphaned":false},{"handle":"termB","connected":true,"orphaned":false}]}'
+assert_eq "invalid control plus a second live scope cannot select one owner" \
+  "$(lookup "$REPO" | jq -r '.state+":"+(.owner|type)')" 'ambiguous:null'
+assert_eq "combined live and invalid scopes name invalid control" \
+  "$(lookup "$REPO" | jq -r .reason)" PM_CONTROL_INVALID
+
+# Invalid control beside a handoff must block the successor and expose both scopes.
+write_handoff termB SUCCESSOR_LAUNCHED termC "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+out="$(lookup "$REPO")"
+assert_eq "invalid scope beside handoff remains ambiguous" "$(jq -r '.state+":"+.reason' <<<"$out")" 'ambiguous:PM_CONTROL_INVALID'
+assert_eq "ambiguous result identifies invalid scope and handoff" \
+  "$(jq -r --arg bad "$SKC" --arg h "$(scope_key termB)" '([.owners[].scope]|index($bad)!=null)|tostring' <<<"$out")" true
+assert_eq "ambiguous result retains handoff scope" "$(jq -r '.handoffs[0].scope' <<<"$out")" "$(scope_key termB)"
+write_paperclip_config proj1 "$REPO"
+write_notice proj1 1000 66666666-6666-6666-6666-666666666666 claimed
+ORCA_TERMINAL_HANDLE=termC run_afk paperclip-take --slug proj1 --json
+assert_eq "invalid scope blocks handoff successor take" "$(jq -r .result <<<"$OUT_TEXT")" PAPERCLIP_NOT_OWNER
+
+# Deleted worktrees are still reapable for legacy rows when Orca proves stale.
+reset_state
+SKC="$(write_owner termA session-a "$TMPROOT/repo-wt2")"
+git -C "$REPO" worktree remove --force "$TMPROOT/repo-wt2"
+set_terminals '{"terminals":[]}'
+run_afk pm-registry-reap --scope "$SKC" --json
+assert_eq "stale legacy owner with deleted worktree can be reaped" "$(jq -r .result <<<"$OUT_TEXT")" reaped
 
 # ============================================================================
 assert_eq "the PATH decoy orca never ran" \

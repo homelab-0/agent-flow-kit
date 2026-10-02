@@ -32,6 +32,7 @@ actual_path="$(pwd -P 2>/dev/null || true)"
 [[ -n "$actual_path" ]] || exit 0
 # shellcheck disable=SC1091
 if [[ -r "$HERE/lib/afk-orca.sh" ]]; then . "$HERE/lib/afk-orca.sh"; else . "$HERE/../lib/afk-orca.sh"; fi
+if [[ -r "$HERE/lib/afk-pm-control.sh" ]]; then . "$HERE/lib/afk-pm-control.sh"; else . "$HERE/../lib/afk-pm-control.sh"; fi
 afk_orca_bound_tool >/dev/null || exit 0
 
 # Sets observed_worktree. Runs in this shell so the resolver's verdict is
@@ -165,6 +166,19 @@ if [[ "$successor" == true ]]; then
   [[ "$observed_worktree_id" == "$worktree_id" ]] || exit 0
 fi
 
+# Existing control is immutable across ordinary observations. A malformed
+# supplied envelope is never repaired by publishing a freshly guessed one.
+common_dir="$(afk_pmc_common_dir "$actual_path")" || exit 0
+control="null"
+if [[ -n "$owner" ]]; then
+  normalized="$(afk_pmc_normalize "$owner" "$common_dir")" || exit 0
+  if [[ "$successor" == true ]]; then
+    old_control="$normalized"
+  elif jq -e 'has("control")' <<<"$owner" >/dev/null; then
+    control="$(jq -c .control <<<"$owner")"
+  fi
+fi
+
 # The identity tuple (AD-28 R4) is read from Orca once per terminal and then
 # carried forward. When Orca can't show it, the row stays afk-pm-ownership/2,
 # which the registry reads as unknown, never stale. This runs inside the
@@ -194,6 +208,15 @@ owner_json="$(jq -nc --arg h "$harness" --arg s "$session" --arg t "$terminal" \
     transition_id:$transition,previous:$previous}
    + (if $identity!=null then {identity:$identity}
       elif $attempt!=null then {identity_attempt_epoch:$attempt} else {} end)')"
+if [[ "$successor" == true ]]; then
+  control="$(afk_pmc_successor "$old_control" "$owner_json" "$common_dir")" || exit 0
+elif [[ -z "$owner" ]]; then
+  control="$(afk_pmc_manual "$owner_json" "$common_dir")" || exit 0
+fi
+if [[ "$control" != null ]]; then
+  owner_json="$(jq -c --argjson control "$control" '. + {control:$control}' <<<"$owner_json")" || exit 0
+  afk_pmc_normalize "$owner_json" "$common_dir" >/dev/null || exit 0
+fi
 atomic_write "$owner_file" "$owner_json" || exit 0
 [[ ! -f "$intent_file" ]] || rm -f -- "$intent_file"
 

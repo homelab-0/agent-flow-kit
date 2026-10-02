@@ -628,15 +628,20 @@ afk_pm_catalog_window() { # <model profile> -> token count
 # Provenance is RECORDED, never inferred: a document that declares none is
 # malformed, not a hand-written observation by default.
 afk_pm_owner_json() {
-  local now
+  local now owner common
   [[ -n "$AFK_PM_DIR" && -f "$AFK_PM_DIR/ownership.json" ]] || return 1
   now="$(date +%s)"
-  jq -ce --argjson now "$now" 'def s: type=="string" and length>0;
+  owner="$(jq -ce --argjson now "$now" 'def s: type=="string" and length>0;
     select((.schema|IN("afk-pm-ownership/2","afk-pm-ownership/3")) and .owned==true and .role=="PM" and
       (.harness|IN("claude","codex","opencode")) and (.session|s) and (.terminal|s) and
       (.worktree.id|s) and (.worktree.path|s) and (.observed_epoch|type)=="number" and
       (.freshness_seconds|type)=="number" and $now>=.observed_epoch and
-      ($now-.observed_epoch)<=.freshness_seconds)' "$AFK_PM_DIR/ownership.json" 2>/dev/null
+      ($now-.observed_epoch)<=.freshness_seconds)' "$AFK_PM_DIR/ownership.json" 2>/dev/null)" || return 1
+  if jq -e 'has("control")' <<<"$owner" >/dev/null; then
+    common="$(afk_pmc_common_dir "$(jq -r .worktree.path <<<"$owner")")" || return 1
+  else common=""; fi
+  afk_pmc_normalize "$owner" "$common" >/dev/null || return 1
+  printf '%s\n' "$owner"
 }
 
 afk_pm_observation() {
@@ -697,9 +702,19 @@ afk_pm_identity() { # <path> -> {path, sha256} or null
 afk_pm_apply() {
   local obs="" window="" src="NOT_EVALUATED" usage="null" ratio="null"
   local state="NOT_EVALUATED" reason="PM_USAGE_UNOBSERVABLE"
-  local ck cont ppm profile doc sha rec cont_id
+  local ck cont ppm profile doc sha rec cont_id raw_owner common control control_state control_reason
 
   AFK_PM_NEEDS_HUMAN="false"; AFK_PM_RESUME=""
+  control="null"; control_state="absent"; control_reason="null"
+  if [[ -n "${AFK_PM_DIR:-}" && -f "$AFK_PM_DIR/ownership.json" ]]; then
+    raw_owner="$(jq -c . "$AFK_PM_DIR/ownership.json" 2>/dev/null)" || raw_owner=""
+    common="$(afk_pmc_common_dir "$(jq -r '.worktree.path // empty' <<<"$raw_owner" 2>/dev/null)")" || common=""
+    if [[ -n "$raw_owner" ]] && control="$(afk_pmc_normalize "$raw_owner" "$common")"; then
+      control_state="valid"
+    else
+      control="null"; control_state="invalid"; control_reason='"PM_CONTROL_INVALID"'
+    fi
+  fi
   obs="$(afk_pm_observation)" || obs=""
 
   if [[ -n "$AFK_PM_STAMP_FILE" ]]; then
@@ -770,7 +785,16 @@ afk_pm_apply() {
       reason: (if $reason == "null" then null else $reason end),
       checkpoint_artifact: $checkpoint, continuation_artifact: $continuation,
       needs_human: ($needs_human == "true")}}')" || return 0
-  AFK_R_EXTRA="$(jq -nc --argjson base "$AFK_R_EXTRA" --argjson handoff "$(afk_pm_handoff_json)" '$base + {pm_handoff:$handoff}')" || return 0
+  AFK_R_EXTRA="$(jq -nc --argjson base "$AFK_R_EXTRA" --argjson handoff "$(afk_pm_handoff_json)" \
+    --arg state "$control_state" --argjson control "$control" --argjson reason "$control_reason" \
+    '$base + {pm_handoff:$handoff,pm_control:{state:$state,reason:$reason,control:$control}}')" || return 0
+  if [[ "$control_state" == invalid ]]; then
+    afk_add_finding "orchestration" "KIT_STATE" "EXTERNAL_STATE" "PM_CONTROL_INVALID" \
+      "owner_action" "NEW_WORK_READY" "FILE_STRUCTURE" \
+      "valid PM control metadata" "malformed or mismatched PM control metadata" \
+      "true" "false" "Inspect the exact ownership row; no control authority was inferred."
+    AFK_R_FORCED_EXIT="$AFK_EXIT_OWNER_ACTION"
+  fi
   [[ "$AFK_PM_NEEDS_HUMAN" == "true" ]] || return 0
 
   afk_add_finding "orchestration" "KIT_STATE" "EXTERNAL_STATE" "$reason" \
