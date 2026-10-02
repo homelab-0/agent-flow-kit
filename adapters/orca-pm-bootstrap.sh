@@ -9,6 +9,7 @@ intent="$2"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 if [[ -r "$here/lib/afk-orca.sh" ]]; then . "$here/lib/afk-orca.sh"; else . "$here/../lib/afk-orca.sh"; fi
+if [[ -r "$here/lib/afk-pm-control.sh" ]]; then . "$here/lib/afk-pm-control.sh"; else . "$here/../lib/afk-pm-control.sh"; fi
 
 # AFK-PC-2b: a first-ever PM start has no predecessor, so it carries a sibling
 # intent kind that skips the handoff receipt and run-continuity checks below.
@@ -70,14 +71,37 @@ observed_path="$(cd "$observed_path" 2>/dev/null && pwd -P || true)"
 tries="${AFK_PM_BOOTSTRAP_POLLS:-50}"; delay="${AFK_PM_BOOTSTRAP_POLL_SECONDS:-0.1}"
 while ((tries-- > 0)); do
   if jq -e --arg id "$tid" --arg t "$ORCA_TERMINAL_HANDLE" --arg h "$harness" --arg wi "$wi" --arg wp "$wp" \
-    --arg continuation_sha "$continuation_sha" \
+    --arg continuation_sha "$continuation_sha" --arg run "$(jq -r '.run_id // empty' "$intent")" \
     '(.schema|IN("afk-pm-handoff/2","afk-pm-handoff/3")) and .transition_id==$id and .state=="SUCCESSOR_LAUNCHED" and
      .continuation_sha256==$continuation_sha and .successor.terminal==$t and .successor.harness==$h and
-     .successor.worktree.id==$wi and .successor.worktree.path==$wp' \
-    "$pm_dir/handoff.json" >/dev/null 2>&1; then break; fi
+     .successor.worktree.id==$wi and .successor.worktree.path==$wp and
+     .successor.run_id==(if $run=="" then null else $run end)' \
+    "$pm_dir/handoff.json" >/dev/null 2>&1 &&
+    [[ -f "$pm_dir/transitions/$tid/launch-receipt.json" &&
+       -f "$pm_dir/transitions/$tid/launch-create.json" &&
+       -f "$pm_dir/transitions/$tid/launch-attempt.json" ]] &&
+    receipt="$(jq -c . "$pm_dir/transitions/$tid/launch-receipt.json" 2>/dev/null)" &&
+    create="$(jq -c . "$pm_dir/transitions/$tid/launch-create.json" 2>/dev/null)" &&
+    attempt="$(jq -c . "$pm_dir/transitions/$tid/launch-attempt.json" 2>/dev/null)" &&
+    afk_pmc_launch_evidence "$receipt" "$create" "$attempt" "$(jq -c . "$intent")" &&
+    jq -e --arg t "$ORCA_TERMINAL_HANDLE" '.terminal==$t' <<<"$receipt" >/dev/null 2>&1; then
+    break
+  fi
   sleep "$delay"
 done
 ((tries >= 0)) || exit 1
+if [[ -f "$pm_dir/ownership.json" ]] || jq -e 'has("expected_old")' "$pm_dir/handoff.json" >/dev/null 2>&1; then
+  owner="$(jq -c . "$pm_dir/ownership.json" 2>/dev/null)" || exit 1
+  common="$(afk_pmc_common_dir "$wp")" || exit 1
+  [[ "$(afk_pmc_handoff_state "$(jq -c . "$pm_dir/handoff.json")" "$owner" "$common")" != conflict ]] || exit 1
+fi
+if jq -e '.identity!=null' <<<"$receipt" >/dev/null 2>&1; then
+  afk_orca_identity "$ORCA_TERMINAL_HANDLE" "$harness" || exit 1
+  jq -e --argjson expected "$(jq -c .identity <<<"$receipt")" '
+    {handle,runtime_id,execution_host_id,worktree_id,tab_id,leaf_id,incarnation_id,agent_type}==
+    ($expected|{handle,runtime_id,execution_host_id,worktree_id,tab_id,leaf_id,incarnation_id,agent_type})' \
+    <<<"$AFK_ORCA_IDENTITY" >/dev/null 2>&1 || exit 1
+fi
 
 # Run continuity is a precondition when the old coordinator declared a Run.
 # A timeout, refusal, or receipt that does not prove this terminal's binding

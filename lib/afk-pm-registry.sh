@@ -110,8 +110,8 @@ afk_pmr_slug_ok() {
 # --- AC-1: lookup by git common-dir ------------------------------------------
 # afk_pm_registry_lookup <repo_path> -> prints one JSON object on stdout.
 afk_pm_registry_lookup() {
-  local repo_path="$1" target_common d scope_key owner_file owner_doc owner_common
-  local handoff_doc orca_state stale="[]" control
+  local repo_path="$1" target_common d scope_key owner_file owner_doc raw_owner_doc owner_common
+  local handoff_doc handoff_evidence orca_state stale="[]" control
   local -a candidates=() handoffs=() unknown=()
   target_common="$(git -C "$repo_path" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || target_common=""
   if [[ -z "$target_common" ]]; then
@@ -140,13 +140,41 @@ afk_pm_registry_lookup() {
         unknown+=("$(jq -c '. + {reason:"PM_CONTROL_INVALID",control:null}' <<<"$owner_doc")")
         continue
       fi
+      raw_owner_doc="$owner_doc"
       owner_doc="$(jq -c --arg sk "$scope_key" --argjson control "$control" '. + {scope:$sk,control:$control}' <<<"$owner_doc")"
 
       handoff_doc=""
       if [[ -f "$d/handoff.json" ]]; then
-        handoff_doc="$(jq -ce 'select(.schema|IN("afk-pm-handoff/2","afk-pm-handoff/3"))' "$d/handoff.json" 2>/dev/null)" || handoff_doc=""
+        handoff_doc="$(jq -ce 'select((.schema|IN("afk-pm-handoff/2","afk-pm-handoff/3")) and
+          (.state|IN("OBSERVED","CHECKPOINTED","SUCCESSOR_LAUNCHED","ACKED","OLD_CLOSED")))' "$d/handoff.json" 2>/dev/null)" || {
+          unknown+=("$(jq -c '. + {reason:"PM_HANDOFF_INVALID"}' <<<"$owner_doc")")
+          continue
+        }
+        handoff_evidence="$(afk_pmc_handoff_state "$handoff_doc" "$raw_owner_doc" "$target_common")"
+        if [[ "$handoff_evidence" == conflict ]]; then
+          unknown+=("$(jq -c '. + {reason:"PM_HANDOFF_CONTROL_CONFLICT"}' <<<"$owner_doc")")
+          continue
+        fi
+        if jq -e '.state|IN("SUCCESSOR_LAUNCHED","ACKED")' <<<"$handoff_doc" >/dev/null 2>&1 &&
+          jq -e 'has("expected_old")' <<<"$handoff_doc" >/dev/null 2>&1; then
+          local tid intent create attempt receipt
+          tid="$(jq -r .transition_id <<<"$handoff_doc")"
+          intent="$(jq -c . "$d/transitions/$tid/bootstrap-intent.json" 2>/dev/null)" &&
+          create="$(jq -c . "$d/transitions/$tid/launch-create.json" 2>/dev/null)" &&
+          attempt="$(jq -c . "$d/transitions/$tid/launch-attempt.json" 2>/dev/null)" &&
+          receipt="$(jq -c . "$d/transitions/$tid/launch-receipt.json" 2>/dev/null)" &&
+          afk_pmc_launch_evidence "$receipt" "$create" "$attempt" "$intent" &&
+          jq -e --argjson h "$handoff_doc" '.terminal==$h.successor.terminal and
+            .harness==$h.successor.harness and .worktree==$h.successor.worktree and
+            .run_id==$h.successor.run_id and (.identity//null)==($h.successor.identity//null)' \
+            <<<"$receipt" >/dev/null 2>&1 || {
+            unknown+=("$(jq -c '. + {reason:"PM_LAUNCH_EVIDENCE_CONFLICT"}' <<<"$owner_doc")")
+            continue
+          }
+        fi
+        handoff_doc="$(jq -c --arg evidence "$handoff_evidence" '. + {evidence:$evidence}' <<<"$handoff_doc")"
       fi
-      if [[ -n "$handoff_doc" ]] && jq -e '.state=="SUCCESSOR_LAUNCHED" or .state=="ACKED"' <<<"$handoff_doc" >/dev/null 2>&1; then
+      if [[ -n "$handoff_doc" ]] && jq -e '.state|IN("OBSERVED","CHECKPOINTED","SUCCESSOR_LAUNCHED","ACKED")' <<<"$handoff_doc" >/dev/null 2>&1; then
         handoffs+=("$(jq -c --arg sk "$scope_key" '. + {scope:$sk}' <<<"$handoff_doc")")
         continue
       fi
@@ -160,7 +188,7 @@ afk_pm_registry_lookup() {
     done
   fi
 
-  if (( ${#handoffs[@]} > 0 )) && printf '%s\n' "${unknown[@]}" | jq -es 'any(.[]; .reason=="PM_CONTROL_INVALID")' >/dev/null 2>&1; then
+  if (( ${#handoffs[@]} > 0 )) && { (( ${#candidates[@]} > 0 )) || (( ${#unknown[@]} > 0 )); }; then
     local invalid="[]" hs="[]" item
     for item in "${unknown[@]}"; do
       invalid="$(jq -c --argjson item "$item" '. + [{scope:$item.scope,terminal:$item.terminal,reason:$item.reason}]' <<<"$invalid")"
@@ -168,8 +196,16 @@ afk_pm_registry_lookup() {
     for item in "${handoffs[@]}"; do
       hs="$(jq -c --argjson item "$item" '. + [{scope:$item.scope,old:{terminal:$item.old.terminal},successor:{terminal:$item.successor.terminal}}]' <<<"$hs")"
     done
+    for item in "${candidates[@]}"; do
+      invalid="$(jq -c --argjson item "$item" '. + [{scope:$item.scope,terminal:$item.terminal}]' <<<"$invalid")"
+    done
     jq -nc --argjson owners "$invalid" --argjson handoffs "$hs" --argjson stale "$stale" --arg orca "$orca_state" \
-      '{state:"ambiguous",owner:null,owners:$owners,handoff:null,handoffs:$handoffs,reason:"PM_CONTROL_INVALID",orca:$orca,stale:$stale}'
+      '{state:"ambiguous",owner:null,owners:$owners,handoff:null,handoffs:$handoffs,
+        reason:(if any($owners[]; .reason=="PM_HANDOFF_CONTROL_CONFLICT") then "PM_HANDOFF_CONTROL_CONFLICT"
+          elif any($owners[]; .reason=="PM_CONTROL_INVALID") then "PM_CONTROL_INVALID"
+          elif any($owners[]; .reason=="PM_LAUNCH_EVIDENCE_CONFLICT") then "PM_LAUNCH_EVIDENCE_CONFLICT"
+          elif any($owners[]; .reason=="PM_HANDOFF_INVALID") then "PM_HANDOFF_INVALID"
+          else "PM_HANDOFF_AMBIGUOUS" end),orca:$orca,stale:$stale}'
     return 0
   fi
   if (( ${#handoffs[@]} > 1 )); then
@@ -211,13 +247,17 @@ afk_pm_registry_lookup() {
       done
       jq -nc --argjson owners "$darr" --argjson stale "$stale" --arg orca "$orca_state" \
         '{state:"unknown",owner:null,owners:$owners,handoff:null,
-          reason:(if any($owners[]; .reason=="PM_CONTROL_INVALID") then "PM_CONTROL_INVALID" else $owners[0].reason end),
+          reason:(if any($owners[]; .reason=="PM_HANDOFF_CONTROL_CONFLICT") then "PM_HANDOFF_CONTROL_CONFLICT"
+            elif any($owners[]; .reason=="PM_CONTROL_INVALID") then "PM_CONTROL_INVALID"
+            elif any($owners[]; .reason=="PM_LAUNCH_EVIDENCE_CONFLICT") then "PM_LAUNCH_EVIDENCE_CONFLICT"
+            elif any($owners[]; .reason=="PM_HANDOFF_INVALID") then "PM_HANDOFF_INVALID" else $owners[0].reason end),
           orca:$orca,stale:$stale}'
       return 0
     fi
     jq -nc --argjson stale "$stale" --arg orca "$orca_state" \
       '{state:"none",owner:null,owners:null,handoff:null,reason:null,orca:$orca,stale:$stale}'
-  elif (( n == 1 )) && ! printf '%s\n' "${unknown[@]}" | jq -es 'any(.[]; .reason=="PM_CONTROL_INVALID")' >/dev/null 2>&1; then
+  elif (( n == 1 )) && ! printf '%s\n' "${unknown[@]}" | jq -es '
+    any(.[]; .reason|IN("PM_CONTROL_INVALID","PM_HANDOFF_CONTROL_CONFLICT","PM_HANDOFF_INVALID","PM_LAUNCH_EVIDENCE_CONFLICT"))' >/dev/null 2>&1; then
     jq -nc --argjson o "${candidates[0]}" --argjson stale "$stale" --arg orca "$orca_state" \
       '{state:"live",owner:{scope:$o.scope,terminal:$o.terminal,harness:$o.harness,session:$o.session,worktree:$o.worktree,control:$o.control},
         owners:null,handoff:null,reason:null,orca:$orca,stale:$stale}'
@@ -233,7 +273,10 @@ afk_pm_registry_lookup() {
     done
     jq -nc --argjson owners "$arr" --argjson stale "$stale" --arg orca "$orca_state" \
       '{state:"ambiguous",owner:null,owners:$owners,handoff:null,
-        reason:(if any($owners[]; .reason=="PM_CONTROL_INVALID") then "PM_CONTROL_INVALID" else null end),orca:$orca,stale:$stale}'
+        reason:(if any($owners[]; .reason=="PM_HANDOFF_CONTROL_CONFLICT") then "PM_HANDOFF_CONTROL_CONFLICT"
+          elif any($owners[]; .reason=="PM_CONTROL_INVALID") then "PM_CONTROL_INVALID"
+          elif any($owners[]; .reason=="PM_LAUNCH_EVIDENCE_CONFLICT") then "PM_LAUNCH_EVIDENCE_CONFLICT"
+          elif any($owners[]; .reason=="PM_HANDOFF_INVALID") then "PM_HANDOFF_INVALID" else null end),orca:$orca,stale:$stale}'
   fi
 }
 
@@ -375,7 +418,8 @@ afk_cmd_paperclip_take() { # <json_mode> <slug>
       afk_pmr_caller_owns "$lookup" "$terminal" && claim_terminal="$terminal" ;;
     handoff_in_progress | handoff_stalled)
       local succ; succ="$(jq -r '.handoff.successor.terminal // empty' <<<"$lookup")"
-      if [[ -n "$succ" && "$terminal" == "$succ" ]]; then
+      if [[ -n "$succ" && "$terminal" == "$succ" ]] &&
+        jq -e '.handoff.state|IN("SUCCESSOR_LAUNCHED","ACKED")' <<<"$lookup" >/dev/null 2>&1; then
         claim_terminal="$terminal"
       else
         afk_pmr_emit_refusal "PAPERCLIP_HANDOFF_IN_PROGRESS" "$json_mode"

@@ -1554,7 +1554,7 @@ printf '[]\n' >"$orca_terminals"; printf '[]\n' >"$orca_bound"
 } >"$fake_orca"; chmod +x "$fake_orca"
 # The fake reaches the adapters only through the resolver's host config.
 printf '{"orca_bin":"%s"}\n' "$fake_orca" >"$TMP/orca-host.json"
-orca_env=(AFK_HOST_CONFIG="$TMP/orca-host.json" AFK_FAKE_ORCA_LOG="$TMP/orca-log" AFK_FAKE_WORKTREE_PATH="$ROOT" AFK_FAKE_TERMINALS="$orca_terminals" AFK_FAKE_BOUND="$orca_bound" AFK_FAKE_COMMAND="$TMP/orca-command")
+orca_env=(AFK_HOST_CONFIG="$TMP/orca-host.json" AFK_STATE_DIR="$state" AFK_FAKE_ORCA_LOG="$TMP/orca-log" AFK_FAKE_WORKTREE_PATH="$ROOT" AFK_FAKE_TERMINALS="$orca_terminals" AFK_FAKE_BOUND="$orca_bound" AFK_FAKE_COMMAND="$TMP/orca-command")
 
 # Exercise the installed public PM entrypoint, not only its adapter. The command
 # must write the exact registration intent and identify itself in the lifecycle
@@ -1579,11 +1579,11 @@ for harness in claude codex opencode; do
     "$ROOT/adapters/pm-session.sh" start --harness "$harness" || no "$harness pm-start intent"
   if [[ "$harness" == claude ]]; then
     jq -nc '{session_id:"session-claude",context_window:{context_window_size:200000,used_percentage:12}}' >"$TMP/pm-claude.json"
-    env AFK_PM_DIR="$reg" ORCA_TERMINAL_HANDLE="terminal-$harness" ORCA_WORKTREE_ID=wrong-parent \
+    env "${orca_env[@]}" AFK_PM_DIR="$reg" ORCA_TERMINAL_HANDLE="terminal-$harness" ORCA_WORKTREE_ID=wrong-parent \
       "$ROOT/adapters/pm-session.sh" observe --harness claude --input "$TMP/pm-claude.json"
     eq "Claude percent-derived PM occupancy" "$(jq -r '.usage_tokens|tostring' "$reg/usage.json")" 24000
   else
-    env AFK_PM_DIR="$reg" ORCA_TERMINAL_HANDLE="terminal-$harness" ORCA_WORKTREE_ID=wrong-parent \
+    env "${orca_env[@]}" AFK_PM_DIR="$reg" ORCA_TERMINAL_HANDLE="terminal-$harness" ORCA_WORKTREE_ID=wrong-parent \
       "$ROOT/adapters/pm-session.sh" observe --harness "$harness" --session "session-$harness"
   fi
   eq "$harness exact PM registration" "$(jq -r '.harness+":"+.worktree.id' "$reg/ownership.json")" "$harness:child-worktree-id"
@@ -2019,15 +2019,57 @@ printf '[]\n' >"$orca_bound"
 
 # Fixed OpenCode bootstrap binds the current Run, then passes resume as prompt
 # data in one argument.
+write_bootstrap_evidence() { # <pm-dir> <intent-file> <terminal>
+  local dir="$1" intent_file="$2" terminal="$3" tid common
+  tid="$(jq -r .transition_id "$intent_file")"
+  mkdir -p "$dir/transitions/$tid"
+  common="$(jq -nc --argjson i "$(jq -c . "$intent_file")" \
+    '{schema:"afk-pm-launch-create/1",transition_id:$i.transition_id,harness:$i.harness,
+      worktree:$i.worktree,run_id:$i.run_id,title:"test-successor",
+      continuation_sha256:$i.continuation_sha256,command_sha256:"sha256:command",create_id:"sha256:create"}')"
+  jq -c . <<<"$common" >"$dir/transitions/$tid/launch-create.json"
+  jq -c '.schema="afk-pm-launch-attempt/1"' <<<"$common" >"$dir/transitions/$tid/launch-attempt.json"
+  jq -c --arg terminal "$terminal" '.schema="afk-pm-launch-receipt/2" |
+    del(.title) + {accepted:true,terminal:$terminal,identity:null}' <<<"$common" >"$dir/transitions/$tid/launch-receipt.json"
+}
 bootstrap_pm="$TMP/bootstrap-pm"; mkdir -p "$bootstrap_pm"
 jq -nc --arg p "$ROOT" --arg pm "$bootstrap_pm" '{schema:"afk-pm-bootstrap-intent/1",transition_id:"pm-boot",harness:"opencode",resume_instruction:"resume ; never-eval",continuation_sha256:"sha256:x",worktree:{id:"child-worktree-id",path:$p},run_id:"run-1",pm_dir:$pm}' >"$bootstrap_pm/intent.json"
-jq -nc --arg p "$ROOT" '{schema:"afk-pm-handoff/2",transition_id:"pm-boot",state:"SUCCESSOR_LAUNCHED",continuation_sha256:"sha256:x",old:{session:"o",terminal:"old",harness:"opencode",worktree:{id:"child-worktree-id",path:$p}},successor:{terminal:"boot-terminal",harness:"opencode",worktree:{id:"child-worktree-id",path:$p}}}' >"$bootstrap_pm/handoff.json"
+jq -nc --arg p "$ROOT" '{schema:"afk-pm-handoff/2",transition_id:"pm-boot",state:"SUCCESSOR_LAUNCHED",continuation_sha256:"sha256:x",old:{session:"o",terminal:"old",harness:"opencode",worktree:{id:"child-worktree-id",path:$p},run_id:"run-1"},successor:{terminal:"boot-terminal",harness:"opencode",worktree:{id:"child-worktree-id",path:$p},run_id:"run-1"}}' >"$bootstrap_pm/handoff.json"
+write_bootstrap_evidence "$bootstrap_pm" "$bootstrap_pm/intent.json" boot-terminal
 # shellcheck disable=SC2016
 printf '#!/usr/bin/env bash\nprintf "%%s\n" "$#:$1:$2" >"$AFK_FAKE_HARNESS_ARGS"\n' >"$TMP/fake-opencode"; chmod +x "$TMP/fake-opencode"
+bootstrap_receipt="$bootstrap_pm/transitions/pm-boot/launch-receipt.json"
+cp "$bootstrap_receipt" "$TMP/bootstrap-receipt.saved"
+for mismatch in absent transition digest create worktree run runtime terminal; do
+  if [[ "$mismatch" == absent ]]; then rm -f "$bootstrap_receipt"
+  else
+    jq --arg kind "$mismatch" '
+      if $kind=="transition" then .transition_id="other"
+      elif $kind=="digest" then .command_sha256="sha256:other"
+      elif $kind=="create" then .create_id="sha256:other"
+      elif $kind=="worktree" then .worktree.id="other"
+      elif $kind=="run" then .run_id="other"
+      elif $kind=="runtime" then .identity={handle:.terminal,worktree_id:.worktree.id,runtime_id:"other"}
+      else .terminal="other" end' "$TMP/bootstrap-receipt.saved" >"$bootstrap_receipt"
+  fi
+  rm -f "$TMP/harness-args"
+  if env "${orca_env[@]}" AFK_PM_BOOTSTRAP_POLLS=1 AFK_PM_BOOTSTRAP_POLL_SECONDS=0.01 \
+    AFK_OPENCODE_BIN="$TMP/fake-opencode" AFK_FAKE_HARNESS_ARGS="$TMP/harness-args" ORCA_TERMINAL_HANDLE=boot-terminal \
+    "$ROOT/adapters/orca-pm-bootstrap.sh" --intent "$bootstrap_pm/intent.json" >/dev/null 2>&1; then
+    no "bootstrap refuses $mismatch launch evidence"
+  else ok "bootstrap refuses $mismatch launch evidence"; fi
+  [[ ! -e "$TMP/harness-args" ]] && ok || no "bootstrap $mismatch evidence ran harness"
+done
+cp "$TMP/bootstrap-receipt.saved" "$bootstrap_receipt"
 env "${orca_env[@]}" AFK_OPENCODE_BIN="$TMP/fake-opencode" AFK_FAKE_HARNESS_ARGS="$TMP/harness-args" ORCA_TERMINAL_HANDLE=boot-terminal \
   "$ROOT/adapters/orca-pm-bootstrap.sh" --intent "$bootstrap_pm/intent.json"
 eq "OpenCode resume is prompt data" "$(<"$TMP/harness-args")" '2:--prompt:resume ; never-eval'
 if [[ "$(<"$TMP/orca-log")" == *'orchestration run-use --id run-1 --from boot-terminal'* ]]; then ok; else no "successor did not bind current Run"; fi
+jq -nc --arg p "$ROOT" '{schema:"afk-pm-ownership/2",owned:true,role:"PM",harness:"opencode",session:"changed",terminal:"other",worktree:{id:"child-worktree-id",path:$p},run_id:"run-1"}' >"$bootstrap_pm/ownership.json"
+if env "${orca_env[@]}" AFK_PM_BOOTSTRAP_POLLS=1 AFK_OPENCODE_BIN="$TMP/fake-opencode" ORCA_TERMINAL_HANDLE=boot-terminal \
+  "$ROOT/adapters/orca-pm-bootstrap.sh" --intent "$bootstrap_pm/intent.json" >/dev/null 2>&1; then
+  no "legacy bootstrap accepts changed old owner"
+else ok "legacy bootstrap refuses changed old owner"; fi
 if env "${orca_env[@]}" AFK_FAKE_WORKTREE_ID=other-worktree AFK_OPENCODE_BIN="$TMP/fake-opencode" AFK_FAKE_HARNESS_ARGS="$TMP/harness-args" ORCA_TERMINAL_HANDLE=boot-terminal \
   "$ROOT/adapters/orca-pm-bootstrap.sh" --intent "$bootstrap_pm/intent.json" >/dev/null 2>&1; then
   no "bootstrap refuses copied worktree identity"
@@ -2037,6 +2079,7 @@ else ok "bootstrap refuses copied worktree identity"; fi
 option_pm="$TMP/option-pm"; mkdir -p "$option_pm"
 jq -nc --arg p "$ROOT" --arg pm "$option_pm" '{schema:"afk-pm-bootstrap-intent/1",transition_id:"pm-option",harness:"codex",resume_instruction:"--dangerous",continuation_sha256:"sha256:option",worktree:{id:"child-worktree-id",path:$p},run_id:null,pm_dir:$pm}' >"$option_pm/intent.json"
 jq -nc --arg p "$ROOT" '{schema:"afk-pm-handoff/2",transition_id:"pm-option",state:"SUCCESSOR_LAUNCHED",continuation_sha256:"sha256:option",old:{session:"o",terminal:"old",harness:"codex",worktree:{id:"child-worktree-id",path:$p}},successor:{terminal:"option-terminal",harness:"codex",worktree:{id:"child-worktree-id",path:$p}}}' >"$option_pm/handoff.json"
+write_bootstrap_evidence "$option_pm" "$option_pm/intent.json" option-terminal
 env "${orca_env[@]}" AFK_CODEX_BIN="$TMP/fake-opencode" AFK_FAKE_HARNESS_ARGS="$TMP/option-harness-args" ORCA_TERMINAL_HANDLE=option-terminal \
   "$ROOT/adapters/orca-pm-bootstrap.sh" --intent "$option_pm/intent.json"
 eq "Codex leading-dash resume is positional data" "$(<"$TMP/option-harness-args")" '2:--:--dangerous'
@@ -2051,7 +2094,7 @@ jq --argjson c "$old_control" '.control=($c|.revision=7)' "$pmd/ownership.json" 
 mv "$TMP/owner-control.json" "$pmd/ownership.json"
 launcher="$TMP/launcher"; closer="$TMP/closer"
 # shellcheck disable=SC2016
-printf '%s\n' '#!/usr/bin/env bash' 'n=0; [[ ! -f "$AFK_LAUNCH_COUNT_FILE" ]] || n="$(<"$AFK_LAUNCH_COUNT_FILE")"; n=$((n+1)); printf "%s\n" "$n" >"$AFK_LAUNCH_COUNT_FILE"; terminal="new-terminal"; [[ "$n" == 1 ]] || terminal="next-terminal"' 'jq -nc --arg id "$2" --arg t "$terminal" --argjson i "$(jq -c . "$1")" '\''{schema:"afk-pm-launch-receipt/2",transition_id:$id,accepted:true,terminal:$t,harness:$i.harness,worktree:$i.worktree,run_id:$i.run_id,continuation_sha256:$i.continuation_sha256,command_sha256:"sha256:command",create_id:"sha256:create"}'\''' >"$launcher"
+printf '%s\n' '#!/usr/bin/env bash' 'n=0; [[ ! -f "$AFK_LAUNCH_COUNT_FILE" ]] || n="$(<"$AFK_LAUNCH_COUNT_FILE")"; n=$((n+1)); printf "%s\n" "$n" >"$AFK_LAUNCH_COUNT_FILE"; terminal="new-terminal"; [[ "$n" == 1 ]] || terminal="next-terminal"' 'dir="$(dirname "$1")"; mkdir -p "$dir"' 'jq -nc --argjson i "$(jq -c . "$1")" '\''{schema:"afk-pm-launch-create/1",transition_id:$i.transition_id,harness:$i.harness,worktree:$i.worktree,run_id:$i.run_id,title:"fake",continuation_sha256:$i.continuation_sha256,command_sha256:"sha256:command",create_id:"sha256:create"}'\'' >"$dir/launch-create.json"' 'jq -c '\''.schema="afk-pm-launch-attempt/1"'\'' "$dir/launch-create.json" >"$dir/launch-attempt.json"' 'jq -nc --arg id "$2" --arg t "$terminal" --argjson i "$(jq -c . "$1")" '\''{schema:"afk-pm-launch-receipt/2",transition_id:$id,accepted:true,terminal:$t,harness:$i.harness,worktree:$i.worktree,run_id:$i.run_id,continuation_sha256:$i.continuation_sha256,command_sha256:"sha256:command",create_id:"sha256:create"}'\''' >"$launcher"
 # First invocation simulates an already-absent observation, which is not close
 # proof. Replay obtains a fresh durable close receipt.
 # shellcheck disable=SC2016
@@ -2060,17 +2103,78 @@ chmod +x "$launcher" "$closer"
 run_continue() { local ack="${1:-}" terminal="${2:-old-terminal}" caller="${3:-}"; local -a args=(--json); [[ -z "$ack" ]] || args+=(--ack "$ack"); set +e; HOME="$home" AFK_STATE_DIR="$state" AFK_PM_DIR="$pmd" AFK_LAUNCH_COUNT_FILE="$TMP/launch-count" AFK_CLOSE_COUNT_FILE="$TMP/close-count" AFK_PM_SUCCESSOR_LAUNCHER="$launcher" AFK_PM_TERMINAL_CLOSER="$closer" AFK_PM_CALLER_SESSION="$caller" ORCA_TERMINAL_HANDLE="$terminal" "$ROOT/bin/agent-flow-kit" pm-continue "${args[@]}" >/dev/null; set -e; }
 run_continue
 eq "handoff waits after one launch" "$(jq -r .state "$pmd/handoff.json")" SUCCESSOR_LAUNCHED
+eq "handoff persists expected owner control revision" \
+  "$(jq -r '.expected_old.owner.session+":"+(.expected_old.control.revision|tostring)' "$pmd/handoff.json")" 'old-session:7'
 run_continue; eq "successor launched once" "$(<"$TMP/launch-count")" 1
 transition="$(jq -r .transition_id "$pmd/handoff.json")"; transition_dir="$pmd/transitions/$transition"
+jq '.control.revision=8' "$pmd/ownership.json" >"$TMP/owner-conflict.json"; mv "$TMP/owner-conflict.json" "$pmd/ownership.json"
+run_continue
+eq "revision conflict does not relaunch" "$(<"$TMP/launch-count")" 1
+eq "revision conflict retains old owner" "$(jq -r .session "$pmd/ownership.json")" old-session
+conflict_status="$(HOME="$home" AFK_STATE_DIR="$state" AFK_PM_DIR="$pmd" "$ROOT/bin/agent-flow-kit" status --json 2>/dev/null || true)"
+eq "status suppresses conflicting handoff projection" \
+  "$(jq -r '.extra.pm_control.reason+":"+(.extra.pm_handoff|type)' <<<"$conflict_status")" 'PM_HANDOFF_CONTROL_CONFLICT:null'
+env "${orca_env[@]}" AFK_PM_DIR="$pmd" AFK_PM_AUTOFINALIZE=0 ORCA_TERMINAL_HANDLE=new-terminal \
+  "$ROOT/adapters/pm-session.sh" observe --harness codex --session new-session
+eq "publisher refuses stale control revision" "$(jq -r .session "$pmd/ownership.json")" old-session
+jq '.control.revision=7' "$pmd/ownership.json" >"$TMP/owner-restored.json"; mv "$TMP/owner-restored.json" "$pmd/ownership.json"
+cp "$transition_dir/launch-receipt.json" "$TMP/prepublish-receipt.json"
+jq '.create_id="sha256:wrong"' "$TMP/prepublish-receipt.json" >"$transition_dir/launch-receipt.json"
+env "${orca_env[@]}" AFK_PM_DIR="$pmd" AFK_PM_AUTOFINALIZE=0 ORCA_TERMINAL_HANDLE=new-terminal \
+  "$ROOT/adapters/pm-session.sh" observe --harness codex --session new-session
+eq "publisher checks evidence before ownership write" "$(jq -r .session "$pmd/ownership.json")" old-session
+cp "$TMP/prepublish-receipt.json" "$transition_dir/launch-receipt.json"
+jq '.identity={handle:"new-terminal",runtime_id:"other-runtime",execution_host_id:"local",worktree_id:.worktree.id,tab_id:"tab",leaf_id:"leaf",incarnation_id:"inc",agent_type:"codex"}' \
+  "$TMP/prepublish-receipt.json" >"$transition_dir/launch-receipt.json"
+jq --slurpfile r "$transition_dir/launch-receipt.json" '.successor.identity=$r[0].identity' "$pmd/handoff.json" >"$TMP/identity-handoff.json"
+mv "$TMP/identity-handoff.json" "$pmd/handoff.json"
+env "${orca_env[@]}" AFK_PM_DIR="$pmd" AFK_PM_AUTOFINALIZE=0 ORCA_TERMINAL_HANDLE=new-terminal \
+  "$ROOT/adapters/pm-session.sh" observe --harness codex --session new-session
+eq "publisher refuses changed successor runtime" "$(jq -r .session "$pmd/ownership.json")" old-session
+cp "$TMP/prepublish-receipt.json" "$transition_dir/launch-receipt.json"
+jq '.successor.identity=null' "$pmd/handoff.json" >"$TMP/identity-handoff.json"; mv "$TMP/identity-handoff.json" "$pmd/handoff.json"
+# A publisher cannot compare/write while the lifecycle lock is held.
+lock_ready="$TMP/lock-ready"; lock_release="$TMP/lock-release"
+bash -c 'source "$1/lib/afk-common.sh"; source "$1/lib/afk-mutate.sh"; AFK_STATE_DIR="$2"; AFK_LOCK_DIR="$2/lock"; afk_lock_acquire || exit 1; : >"$3"; while [[ ! -e "$4" ]]; do sleep 0.02; done; afk_lock_release' \
+  _ "$ROOT" "$state" "$lock_ready" "$lock_release" & lock_pid=$!
+for _ in {1..50}; do [[ -e "$lock_ready" ]] && break; sleep 0.02; done
+locked_owner_hash="$(sha256sum "$pmd/ownership.json")"
+env "${orca_env[@]}" AFK_PM_DIR="$pmd" AFK_PM_AUTOFINALIZE=0 AFK_PM_PUBLISH_LOCK_POLLS=1 AFK_PM_PUBLISH_LOCK_POLL_SECONDS=0.02 \
+  ORCA_TERMINAL_HANDLE=old-terminal "$ROOT/adapters/pm-session.sh" observe --harness codex --session old-session & publisher_pid=$!
+sleep 0.05
+eq "publisher leaves owner alone during lifecycle lock" "$(sha256sum "$pmd/ownership.json")" "$locked_owner_hash"
+: >"$lock_release"; wait "$lock_pid"; wait "$publisher_pid"
+for _ in {1..100}; do
+  [[ "$(sha256sum "$pmd/ownership.json")" != "$locked_owner_hash" ]] && break
+  sleep 0.02
+done
+if [[ "$(sha256sum "$pmd/ownership.json")" != "$locked_owner_hash" ]]; then
+  ok "publisher resumes the owner observation after lock release"
+else no "publisher lost the event after lifecycle lock release"; fi
+run_continue
+eq "old identity upgrade remains a valid handoff" "$(jq -r .state "$pmd/handoff.json")" SUCCESSOR_LAUNCHED
 jq -nc --arg id "$transition" --arg p "$ROOT" '{schema:"afk-pm-successor-ack/2",transition_id:$id,acknowledged:true,harness:"codex",session:"spoof",terminal:"new-terminal",worktree:{id:"child-worktree-id",path:$p},run_id:null}' >"$TMP/spoof-ack.json"
 run_continue "$TMP/spoof-ack.json" old-terminal old-session
 if [[ ! -e "$TMP/close-count" ]]; then ok; else no "old PM synchronously closed itself"; fi
-env "${orca_env[@]}" AFK_PM_DIR="$pmd" AFK_PM_AUTOFINALIZE=0 ORCA_TERMINAL_HANDLE=new-terminal "$ROOT/adapters/pm-session.sh" observe --harness codex --session new-session
+env "${orca_env[@]}" AFK_STATE_DIR="$state" AFK_PM_DIR="$pmd" AFK_PM_AUTOFINALIZE=0 ORCA_TERMINAL_HANDLE=new-terminal "$ROOT/adapters/pm-session.sh" observe --harness codex --session new-session
 eq "successor preserves control intent and revision but resets launch proof" \
   "$(jq -r '.control.control_owner+":"+(.control.revision|tostring)+":"+.control.execution_profile+":"+.control.launch_provenance.status+":"+.control.provenance.owner.session' "$pmd/ownership.json")" \
   'human:7:unverified:unverified:new-session'
+eq "successor records the exact prior control snapshot" \
+  "$(jq -Sc .control.provenance.prior_control "$pmd/ownership.json")" \
+  "$(jq -Sc .expected_old.control "$pmd/handoff.json")"
+jq '.expected_old.control.revision=8' "$pmd/handoff.json" >"$TMP/handoff-conflict.json"; mv "$TMP/handoff-conflict.json" "$pmd/handoff.json"
+run_continue "$transition_dir/successor-ack.json" new-terminal new-session
+eq "successor snapshot conflict cannot advance ACK" "$(jq -r .state "$pmd/handoff.json")" SUCCESSOR_LAUNCHED
+jq '.expected_old.control.revision=7' "$pmd/handoff.json" >"$TMP/handoff-restored.json"; mv "$TMP/handoff-restored.json" "$pmd/handoff.json"
+cp "$transition_dir/launch-receipt.json" "$TMP/accepted-receipt.saved"
+jq '.create_id="sha256:other"' "$transition_dir/launch-receipt.json" >"$TMP/receipt-conflict.json"
+mv "$TMP/receipt-conflict.json" "$transition_dir/launch-receipt.json"
+run_continue "$transition_dir/successor-ack.json" new-terminal new-session
+eq "modified accepted receipt cannot advance ACK" "$(jq -r .state "$pmd/handoff.json")" SUCCESSOR_LAUNCHED
+cp "$TMP/accepted-receipt.saved" "$transition_dir/launch-receipt.json"
 rm -f -- "$transition_dir/successor-ack.json"
-env "${orca_env[@]}" AFK_PM_DIR="$pmd" AFK_PM_AUTOFINALIZE=0 ORCA_TERMINAL_HANDLE=new-terminal "$ROOT/adapters/pm-session.sh" observe --harness codex --session new-session
+env "${orca_env[@]}" AFK_STATE_DIR="$state" AFK_PM_DIR="$pmd" AFK_PM_AUTOFINALIZE=0 ORCA_TERMINAL_HANDLE=new-terminal "$ROOT/adapters/pm-session.sh" observe --harness codex --session new-session
 if jq -e --arg id "$transition" '.transition_id==$id and .session=="new-session" and .acknowledged==true' "$transition_dir/successor-ack.json" >/dev/null; then
   ok "matching event repairs ACK after ownership-write crash"
 else no "matching event repairs ACK after ownership-write crash"; fi
@@ -2078,13 +2182,13 @@ finalizer="$TMP/finalizer"; finalizer_count="$TMP/finalizer-count"
 # shellcheck disable=SC2016
 printf '%s\n' '#!/usr/bin/env bash' 'n=0; [[ ! -f "$AFK_FINALIZER_COUNT" ]] || n="$(<"$AFK_FINALIZER_COUNT")"; n=$((n+1)); printf "%s\n" "$n" >"$AFK_FINALIZER_COUNT"; [[ "$n" -ge 4 ]] || exit 2' >"$finalizer"
 chmod +x "$finalizer"
-env "${orca_env[@]}" AFK_PM_DIR="$pmd" AFK_AGENT_FLOW_KIT_BIN="$finalizer" AFK_FINALIZER_COUNT="$finalizer_count" \
+env "${orca_env[@]}" AFK_STATE_DIR="$state" AFK_PM_DIR="$pmd" AFK_AGENT_FLOW_KIT_BIN="$finalizer" AFK_FINALIZER_COUNT="$finalizer_count" \
   AFK_PM_FINALIZE_ATTEMPTS=2 AFK_PM_FINALIZE_RETRY_SECONDS=0.01 ORCA_TERMINAL_HANDLE=new-terminal \
   "$ROOT/adapters/pm-session.sh" observe --harness codex --session new-session
 for _ in {1..50}; do [[ -f "$finalizer_count" && "$(<"$finalizer_count")" -ge 2 ]] && break; sleep 0.02; done
 eq "automatic finalizer persists after exhausting contention retries" "$(<"$finalizer_count")" 2
 if [[ -f "$transition_dir/finalize-pending.json" ]]; then ok; else no "exhausted finalizer lost durable retry intent"; fi
-env "${orca_env[@]}" AFK_PM_DIR="$pmd" AFK_AGENT_FLOW_KIT_BIN="$finalizer" AFK_FINALIZER_COUNT="$finalizer_count" \
+env "${orca_env[@]}" AFK_STATE_DIR="$state" AFK_PM_DIR="$pmd" AFK_AGENT_FLOW_KIT_BIN="$finalizer" AFK_FINALIZER_COUNT="$finalizer_count" \
   AFK_PM_FINALIZE_ATTEMPTS=2 AFK_PM_FINALIZE_RETRY_SECONDS=0.01 ORCA_TERMINAL_HANDLE=new-terminal \
   "$ROOT/adapters/pm-session.sh" observe --harness codex --session new-session
 for _ in {1..50}; do [[ -f "$finalizer_count" && "$(<"$finalizer_count")" -ge 4 && ! -e "$transition_dir/finalize-pending.json" ]] && break; sleep 0.02; done
@@ -2097,6 +2201,22 @@ eq "close replay finalizes" "$(jq -r .state "$pmd/handoff.json")" OLD_CLOSED
 eq "ownership transfers exactly" "$(jq -r '.session+":"+.previous.session' "$pmd/ownership.json")" new-session:old-session
 run_continue "$transition_dir/successor-ack.json" new-terminal new-session
 eq "reconciliation increments once" "$(jq -r .pm_continuations "$pmd/budget-state.json")" 1
+jq '.control.revision=8' "$pmd/ownership.json" >"$TMP/closed-owner-revision.json"
+mv "$TMP/closed-owner-revision.json" "$pmd/ownership.json"
+closed_status="$(HOME="$home" AFK_STATE_DIR="$state" AFK_PM_DIR="$pmd" "$ROOT/bin/agent-flow-kit" status --json 2>/dev/null || true)"
+eq "closed handoff allows later control revision" "$(jq -r '.extra.pm_control.state+":"+(.extra.pm_handoff.state//"null")' <<<"$closed_status")" valid:OLD_CLOSED
+env "${orca_env[@]}" AFK_PM_DIR="$pmd" AFK_PM_AUTOFINALIZE=0 ORCA_TERMINAL_HANDLE=new-terminal \
+  "$ROOT/adapters/pm-session.sh" observe --harness codex --session new-session
+eq "closed handoff permits current owner observation" "$(jq -r .control.revision "$pmd/ownership.json")" 8
+mv "$transition_dir/launch-receipt.json" "$TMP/closed-launch-receipt.json"
+jq '.observed_epoch=1' "$pmd/ownership.json" >"$TMP/closed-owner-observation.json"
+mv "$TMP/closed-owner-observation.json" "$pmd/ownership.json"
+env "${orca_env[@]}" AFK_PM_DIR="$pmd" AFK_PM_AUTOFINALIZE=0 ORCA_TERMINAL_HANDLE=new-terminal \
+  "$ROOT/adapters/pm-session.sh" observe --harness codex --session new-session
+if [[ "$(jq -r .observed_epoch "$pmd/ownership.json")" != 1 ]]; then
+  ok "closed handoff audit receipt does not block current owner observation"
+else no "closed handoff still blocks current owner observation"; fi
+mv "$TMP/closed-launch-receipt.json" "$transition_dir/launch-receipt.json"
 
 # OLD_CLOSED is itself durable recovery authority. If reconciliation crashed
 # after its transition receipt, replay rebuilds the global receipt and counter.
@@ -2112,11 +2232,30 @@ set +e; HOME="$home" AFK_STATE_DIR="$state" AFK_PM_DIR="$pmd" "$ROOT/bin/agent-f
 eq "second continuation accepted" "$second_checkpoint_rc" 2
 run_continue "" new-terminal new-session
 eq "second rollover launches a new exact transition" "$(jq -r .state "$pmd/handoff.json")" SUCCESSOR_LAUNCHED
-env "${orca_env[@]}" AFK_PM_DIR="$pmd" AFK_PM_AUTOFINALIZE=0 ORCA_TERMINAL_HANDLE=next-terminal "$ROOT/adapters/pm-session.sh" observe --harness codex --session next-session
+env "${orca_env[@]}" AFK_STATE_DIR="$state" AFK_PM_DIR="$pmd" AFK_PM_AUTOFINALIZE=0 ORCA_TERMINAL_HANDLE=next-terminal "$ROOT/adapters/pm-session.sh" observe --harness codex --session next-session
 run_continue "" next-terminal next-session
 eq "second rollover closes independently" "$(jq -r .state "$pmd/handoff.json")" OLD_CLOSED
 eq "two transition-scoped intent directories remain auditable" "$(find "$pmd/transitions" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" 2
 eq "two rollovers count exactly twice" "$(jq -r .pm_continuations "$pmd/budget-state.json")" 2
+
+# A shape-correct launcher answer cannot authorize a successor unless it is
+# the same receipt as the journaled create attempt.
+bad_pm="$TMP/bad-receipt-pm"; mkdir -p "$bad_pm"
+cp "$pmd/continuation.json" "$pmd/ownership.json" "$bad_pm/"
+bad_launcher="$TMP/bad-receipt-launcher"
+printf '%s\n' '#!/usr/bin/env bash' 'receipt="$("$AFK_REAL_LAUNCHER" "$@")" || exit 1' 'jq -c '\''.create_id="sha256:unrelated"'\'' <<<"$receipt"' >"$bad_launcher"
+chmod +x "$bad_launcher"
+set +e
+HOME="$home" AFK_STATE_DIR="$state" AFK_PM_DIR="$bad_pm" AFK_LAUNCH_COUNT_FILE="$TMP/bad-launch-count" \
+  AFK_REAL_LAUNCHER="$launcher" AFK_PM_SUCCESSOR_LAUNCHER="$bad_launcher" ORCA_TERMINAL_HANDLE=next-terminal \
+  "$ROOT/bin/agent-flow-kit" pm-continue --json >/dev/null 2>&1
+bad_receipt_rc=$?
+set -e
+eq "unrelated receipt remains held" "$(jq -r .state "$bad_pm/handoff.json"):$bad_receipt_rc" 'CHECKPOINTED:2'
+eq "unrelated receipt leaves old owner authoritative" "$(jq -r .session "$bad_pm/ownership.json")" next-session
+if [[ ! -e "$bad_pm/transitions/$(jq -r .transition_id "$bad_pm/handoff.json")/launch-receipt.json" ]]; then
+  ok "unrelated receipt is not persisted as accepted"
+else no "unrelated receipt was persisted"; fi
 
 # Corruption and a different active continuation both fail closed. Each gets
 # its own HOME/AFK_STATE_DIR (fresh temp dirs, not the ambient environment's):
