@@ -92,6 +92,29 @@ eq "lifecycle command creates one PM scope per worktree" \
 eq "each lifecycle PM scope receives its own checkpoint" \
   "$(find "$TMP/scoped-lifecycle-state/pm/scopes" -name checkpoint.json -type f | wc -l | tr -d ' ')" 2
 
+# Run the readiness-before-PM status consumer regression before the known
+# Hindsight root-ownership precondition later in this script.
+pm_precedence="$TMP/pm-precedence"; mkdir -p "$pm_precedence"
+jq -nc --arg p "$ROOT" '{schema:"afk-pm-ownership/3",owned:true,role:"PM",harness:"codex",session:"s",terminal:"t",worktree:{id:"w",path:$p},run_id:null,control:{schema:"afk-pm-control/1",execution_profile:"interactive",control_owner:"human",approval_channel:"terminal_human",revision:null,launch_provenance:{status:"attested"},provenance:{status:"attested"}}}' \
+  >"$pm_precedence/ownership.json"
+for readiness_exit in 3 5; do
+  preserved_exit="$(bash -c '
+    ROOT="$1"; AFK_PM_DIR="$2"; AFK_TEST_READINESS_EXIT="$3"
+    . "$ROOT/lib/afk-common.sh"; . "$ROOT/lib/afk-pm-control.sh"; . "$ROOT/lib/afk-commands.sh"
+    afk_evaluate_installation() { AFK_R_EXTRA="{}"; AFK_FINDINGS="[]"; AFK_LIVE_MODE=true; }
+    afk_readiness_exit_code() { printf "%s" "$AFK_TEST_READINESS_EXIT"; }
+    afk_pm_observation() { return 1; }
+    afk_pm_handoff_json() { printf "{}"; }
+    afk_emit_result() { return "$AFK_R_FORCED_EXIT"; }
+    if afk_cmd_status true false false false >/dev/null 2>&1; then rc=0; else rc=$?; fi
+    [[ "$AFK_FINDINGS" == *PM_CONTROL_INVALID* ]] && finding=true || finding=false
+    printf "%s|%s" "${rc:-0}" "$finding"
+  ' _ "$ROOT" "$pm_precedence" "$readiness_exit")"
+  IFS='|' read -r actual_exit invalid_control_findings <<<"$preserved_exit"
+  eq "invalid PM control preserves readiness exit $readiness_exit" "$actual_exit" "$readiness_exit"
+  eq "readiness exit $readiness_exit retains invalid-control finding" "$invalid_control_findings" true
+done
+
 cp "$TMP/status.json" "$TMP/cache.json"; touch -d '@100' "$TMP/cache.json"
 # The generated fixture expands this at runtime.
 # shellcheck disable=SC2016

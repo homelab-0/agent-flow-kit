@@ -793,7 +793,9 @@ afk_pm_apply() {
       "owner_action" "NEW_WORK_READY" "FILE_STRUCTURE" \
       "valid PM control metadata" "malformed or mismatched PM control metadata" \
       "true" "false" "Inspect the exact ownership row; no control authority was inferred."
-    AFK_R_FORCED_EXIT="$AFK_EXIT_OWNER_ACTION"
+    if [[ -z "$AFK_R_FORCED_EXIT" || "$AFK_R_FORCED_EXIT" == "$AFK_EXIT_OK" ]]; then
+      AFK_R_FORCED_EXIT="$AFK_EXIT_OWNER_ACTION"
+    fi
   fi
   [[ "$AFK_PM_NEEDS_HUMAN" == "true" ]] || return 0
 
