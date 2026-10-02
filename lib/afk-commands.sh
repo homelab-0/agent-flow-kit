@@ -785,11 +785,25 @@ afk_pm_apply() {
       reason: (if $reason == "null" then null else $reason end),
       checkpoint_artifact: $checkpoint, continuation_artifact: $continuation,
       needs_human: ($needs_human == "true")}}')" || return 0
-  AFK_R_EXTRA="$(jq -nc --argjson base "$AFK_R_EXTRA" --argjson handoff "$(afk_pm_handoff_json)" \
+  local projected_handoff handoff_evidence handoff_error=false
+  projected_handoff="$(afk_pm_handoff_json)" || { projected_handoff=null; handoff_error=true; }
+  handoff_evidence=absent
+  if [[ "$handoff_error" == true ]]; then
+    handoff_evidence=conflict
+    [[ "$control_state" == invalid ]] || { control_state=invalid; control_reason='"PM_HANDOFF_INVALID"'; }
+  elif [[ "$projected_handoff" != null ]]; then
+    handoff_evidence="$(afk_pm_handoff_evidence "$projected_handoff")"
+    if [[ "$handoff_evidence" == conflict ]]; then
+      projected_handoff=null
+      [[ "$control_state" == invalid ]] || { control_state=invalid; control_reason='"PM_HANDOFF_CONTROL_CONFLICT"'; }
+    fi
+  fi
+  AFK_R_EXTRA="$(jq -nc --argjson base "$AFK_R_EXTRA" --argjson handoff "$projected_handoff" \
     --arg state "$control_state" --argjson control "$control" --argjson reason "$control_reason" \
-    '$base + {pm_handoff:$handoff,pm_control:{state:$state,reason:$reason,control:$control}}')" || return 0
+    --arg evidence "$handoff_evidence" \
+    '$base + {pm_handoff:$handoff,pm_handoff_evidence:$evidence,pm_control:{state:$state,reason:$reason,control:$control}}')" || return 0
   if [[ "$control_state" == invalid ]]; then
-    afk_add_finding "orchestration" "KIT_STATE" "EXTERNAL_STATE" "PM_CONTROL_INVALID" \
+    afk_add_finding "orchestration" "KIT_STATE" "EXTERNAL_STATE" "$(jq -r . <<<"$control_reason")" \
       "owner_action" "NEW_WORK_READY" "FILE_STRUCTURE" \
       "valid PM control metadata" "malformed or mismatched PM control metadata" \
       "true" "false" "Inspect the exact ownership row; no control authority was inferred."
@@ -891,6 +905,13 @@ afk_pm_handoff_json() {
       (.old.worktree.id|s) and (.old.worktree.path|s))' "$f" 2>/dev/null
 }
 
+afk_pm_handoff_evidence() { # <handoff> -> verified|unverified|conflict
+  local owner common
+  owner="$(jq -c . "$AFK_PM_DIR/ownership.json" 2>/dev/null)" || { printf conflict; return 0; }
+  common="$(afk_pmc_common_dir "$(jq -r '.worktree.path // empty' <<<"$owner")")" || { printf conflict; return 0; }
+  afk_pmc_handoff_state "$1" "$owner" "$common"
+}
+
 afk_pm_handoff_write() { afk_state_file_write "$AFK_PM_DIR/handoff.json" "$1"; }
 
 # Advance the persisted PM handoff. Every effect is recorded before the next
@@ -899,6 +920,7 @@ afk_pm_handoff_write() { afk_state_file_write "$AFK_PM_DIR/handoff.json" "$1"; }
 afk_cmd_pm_continue_locked() { # <json-mode>
   local json_mode="$1" artifact="$AFK_PM_DIR/continuation.json" doc sha tid state handoff owner now
   local launcher receipt ack ack_file closer close_receipt intent_file close_intent current_path caller_session transition_dir
+  local old_control common evidence create attempt
   [[ -f "$artifact" ]] || { afk_warn "no coordinator continuation artifact exists"; return "$AFK_EXIT_USAGE"; }
   doc="$(afk_pm_artifact_valid "$(cat "$artifact" 2>/dev/null)" "$AFK_PM_CONT_SCHEMA" true)" || doc=""
   [[ -n "$doc" ]] || { afk_warn "the coordinator continuation artifact is invalid"; return "$AFK_EXIT_USAGE"; }
@@ -916,13 +938,33 @@ afk_cmd_pm_continue_locked() { # <json-mode>
     current_path="$(pwd -P 2>/dev/null || true)"
     [[ "${ORCA_TERMINAL_HANDLE:-}" == "$(jq -r .terminal <<<"$owner")" && "$current_path" == "$(jq -r .worktree.path <<<"$owner")" ]] \
       || { afk_warn "this terminal does not own the current PM session"; return "$AFK_EXIT_OWNER_ACTION"; }
-    handoff="$(jq -nc --arg id "$tid" --arg sha "$sha" --arg at "$now" --argjson old "$owner" \
+    common="$(afk_pmc_common_dir "$(jq -r .worktree.path <<<"$owner")")" || return "$AFK_EXIT_OWNER_ACTION"
+    old_control="$(afk_pmc_normalize "$owner" "$common")" || return "$AFK_EXIT_OWNER_ACTION"
+    handoff="$(jq -nc --arg id "$tid" --arg sha "$sha" --arg at "$now" --argjson old "$owner" --argjson control "$old_control" \
       '{schema:"afk-pm-handoff/3",transition_id:$id,state:"OBSERVED",continuation_sha256:$sha,
         old:($old|{session,terminal,harness,worktree,run_id,identity:(.identity // null)}),
+        expected_old:{schema:"afk-pm-expected-owner/1",owner:($old|{harness,session,terminal,worktree,run_id,identity:(.identity // null)}),control:$control},
         successor:null,observed_at:$at,updated_at:$at}')"
     afk_pm_handoff_write "$handoff" || return "$AFK_EXIT_USAGE"
   fi
+  evidence="$(afk_pm_handoff_evidence "$handoff")"
+  [[ "$evidence" != conflict ]] || { afk_warn "PM_HANDOFF_CONTROL_CONFLICT: owner or control revision changed"; return "$AFK_EXIT_OWNER_ACTION"; }
   state="$(jq -r .state <<<"$handoff")"
+  if [[ "$state" == SUCCESSOR_LAUNCHED || "$state" == ACKED || "$state" == OLD_CLOSED ]]; then
+    intent="$(jq -c . "$transition_dir/bootstrap-intent.json" 2>/dev/null)" || intent=""
+    create="$(jq -c . "$transition_dir/launch-create.json" 2>/dev/null)" || create=""
+    attempt="$(jq -c . "$transition_dir/launch-attempt.json" 2>/dev/null)" || attempt=""
+    receipt="$(jq -c . "$transition_dir/launch-receipt.json" 2>/dev/null)" || receipt=""
+    if [[ -z "$intent" || -z "$create" || -z "$attempt" || -z "$receipt" ]] ||
+       ! afk_pmc_launch_evidence "$receipt" "$create" "$attempt" "$intent" ||
+       ! jq -e --argjson r "$receipt" '
+         .successor.terminal==$r.terminal and .successor.harness==$r.harness and
+         .successor.worktree==$r.worktree and .successor.run_id==$r.run_id and
+         (.successor.identity // null)==($r.identity // null)' <<<"$handoff" >/dev/null 2>&1; then
+      afk_warn "PM_LAUNCH_EVIDENCE_CONFLICT: the accepted successor has no coherent create evidence"
+      return "$AFK_EXIT_OWNER_ACTION"
+    fi
+  fi
   if [[ "$state" == OBSERVED ]]; then
     handoff="$(jq -c --arg at "$now" '.state="CHECKPOINTED"|.checkpoint_sha256=.continuation_sha256|.updated_at=$at' <<<"$handoff")"; afk_pm_handoff_write "$handoff" || return "$AFK_EXIT_USAGE"; state=CHECKPOINTED
   fi
@@ -941,12 +983,20 @@ afk_cmd_pm_continue_locked() { # <json-mode>
     launcher="${AFK_PM_SUCCESSOR_LAUNCHER:-${AFK_SKILLS_HOME:+$AFK_SKILLS_HOME/afk-runtime/orca-pm-successor.sh}}"
     if [[ -x "$launcher" ]]; then
       receipt="$($launcher "$intent_file" "$tid" 2>/dev/null || true)"
-      if jq -e --arg id "$tid" --arg sha "$sha" --argjson old "$(jq -c .old <<<"$handoff")" '
+      create="$(jq -c . "$transition_dir/launch-create.json" 2>/dev/null)" || create=""
+      attempt="$(jq -c . "$transition_dir/launch-attempt.json" 2>/dev/null)" || attempt=""
+      if [[ -n "$create" && -n "$attempt" ]] &&
+         afk_pmc_launch_evidence "$receipt" "$create" "$attempt" "$intent" &&
+         jq -e --arg id "$tid" --arg sha "$sha" --argjson old "$(jq -c .old <<<"$handoff")" '
         .schema=="afk-pm-launch-receipt/2" and .transition_id==$id and .accepted==true and
         (.terminal|type)=="string" and (.terminal|length)>0 and .harness==$old.harness and
         .worktree.id==$old.worktree.id and .worktree.path==$old.worktree.path and .run_id==$old.run_id and
         .continuation_sha256==$sha and (.command_sha256|type)=="string" and (.command_sha256|startswith("sha256:")) and
         (.create_id|type)=="string" and (.create_id|startswith("sha256:"))' <<<"$receipt" >/dev/null 2>&1; then
+        if [[ -e "$transition_dir/launch-receipt.json" ]]; then
+          jq -e --argjson expected "$receipt" '.==$expected' "$transition_dir/launch-receipt.json" >/dev/null 2>&1 \
+            || { afk_warn "the PM launch receipt conflicts with the journaled create"; return "$AFK_EXIT_OWNER_ACTION"; }
+        fi
         afk_state_file_write "$transition_dir/launch-receipt.json" "$receipt" || return "$AFK_EXIT_USAGE"
         jq -e --argjson expected "$receipt" '.==$expected' "$transition_dir/launch-receipt.json" >/dev/null 2>&1 || return "$AFK_EXIT_USAGE"
         handoff="$(jq -c --arg at "$now" --argjson r "$receipt" '.state="SUCCESSOR_LAUNCHED"|
@@ -1037,6 +1087,12 @@ afk_cmd_pm_start() { # <json-mode> <harness>
   "$adapter" start --harness "$harness" || rc=$?
   afk_lock_release || return "$AFK_EXIT_OWNER_ACTION"
   ((rc == 0)) || { afk_warn "the current terminal/worktree could not be bound to a PM registration intent"; return "$AFK_EXIT_OWNER_ACTION"; }
+  # Codex has no continuous status-line event. Publish its native thread claim
+  # only after releasing the lifecycle lock so observe can take that lock in
+  # the documented lifecycle -> publisher order.
+  if [[ "$harness" == codex && -n "${CODEX_THREAD_ID:-}" ]]; then
+    "$adapter" observe --harness codex --session "$CODEX_THREAD_ID" || true
+  fi
   AFK_R_COMMAND="pm-start"; AFK_R_REQUIRE_SOURCE="false"; AFK_R_OPERATION='{"id":null,"mutating":true}'
   AFK_R_EXTRA="$(jq -nc --arg h "$harness" --arg p "$AFK_PM_DIR/registration-intent.json" '{pm_registration:{harness:$h,intent:$p,state:"WAITING_FOR_EXACT_SESSION_EVENT"}}')"
   afk_evaluate_installation "false" "false"; AFK_R_FORCED_EXIT="$AFK_EXIT_OK"

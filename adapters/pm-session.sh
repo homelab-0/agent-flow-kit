@@ -33,6 +33,8 @@ actual_path="$(pwd -P 2>/dev/null || true)"
 # shellcheck disable=SC1091
 if [[ -r "$HERE/lib/afk-orca.sh" ]]; then . "$HERE/lib/afk-orca.sh"; else . "$HERE/../lib/afk-orca.sh"; fi
 if [[ -r "$HERE/lib/afk-pm-control.sh" ]]; then . "$HERE/lib/afk-pm-control.sh"; else . "$HERE/../lib/afk-pm-control.sh"; fi
+if [[ -r "$HERE/lib/afk-common.sh" ]]; then . "$HERE/lib/afk-common.sh"; . "$HERE/lib/afk-mutate.sh";
+else . "$HERE/../lib/afk-common.sh"; . "$HERE/../lib/afk-mutate.sh"; fi
 afk_orca_bound_tool >/dev/null || exit 0
 
 # Sets observed_worktree. Runs in this shell so the resolver's verdict is
@@ -58,6 +60,37 @@ fi
 mkdir -p "$pm_dir" 2>/dev/null || exit 0
 chmod 700 "$pm_dir" 2>/dev/null || exit 0
 command -v flock >/dev/null 2>&1 || exit 0
+# Lock order is host lifecycle, then scope publisher. pm-start already holds
+# the lifecycle lock when it calls start; observe acquires it here. The
+# finalizer starts after the lifecycle lock releases. Use the kit's state root.
+state_base="${XDG_STATE_HOME:-${HOME:+$HOME/.local/state}}"
+AFK_STATE_DIR="${AFK_STATE_DIR:-${state_base:+$state_base/agent-flow-kit}}"
+AFK_LOCK_DIR="${AFK_LOCK_DIR:-$AFK_STATE_DIR/lock}"
+[[ -n "$AFK_STATE_DIR" ]] || exit 0
+if [[ "$mode" == observe ]]; then
+  # A successor can emit its one session event while pm-continue is finishing
+  # its journaled create. Wait briefly for that lock rather than dropping the
+  # only ACK opportunity. Unknown lock state still refuses immediately.
+  lock_tries="${AFK_PM_PUBLISH_LOCK_POLLS:-50}"
+  [[ "$lock_tries" =~ ^[1-9][0-9]*$ ]] || lock_tries=50
+  while :; do
+    lock_rc=0
+    afk_lock_acquire || lock_rc=$?
+    (( lock_rc != 0 )) || break
+    [[ "$lock_rc" == 1 ]] || exit 0
+    if ((lock_tries-- <= 0)); then
+      # The only successor event may arrive while terminal create still holds
+      # the lifecycle lock. Retry it once outside the short hook window.
+      if [[ "${AFK_PM_PUBLISH_RETRY_WORKER:-0}" != 1 ]]; then
+        (AFK_PM_PUBLISH_RETRY_WORKER=1 AFK_PM_PUBLISH_LOCK_POLLS=3000 \
+          "$0" observe --harness "$harness" --session "$session" >/dev/null 2>&1) &
+      fi
+      exit 0
+    fi
+    sleep "${AFK_PM_PUBLISH_LOCK_POLL_SECONDS:-0.1}"
+  done
+  trap 'afk_lock_release >/dev/null 2>&1 || true' EXIT
+fi
 exec 9>"$pm_dir/.publisher.lock" || exit 0
 flock -n 9 || exit 0
 
@@ -92,17 +125,17 @@ if [[ "$mode" == start ]]; then
     '{schema:"afk-pm-registration-intent/1",harness:$h,terminal:$t,worktree:{id:$wi,path:$wp},
       run_id:(if $run=="" then null else $run end),created_at:$at,created_epoch:$epoch,freshness_seconds:$fresh}')"
   atomic_write "$intent_file" "$intent_json"
-  # Codex does not provide a continuous status-line event.  When invoked from
-  # an existing Codex thread, its native thread id is the exact session claim.
-  if [[ "$harness" == codex && -n "${CODEX_THREAD_ID:-}" ]]; then
-    flock -u 9
-    exec "$0" observe --harness codex --session "$CODEX_THREAD_ID"
-  fi
   exit 0
 fi
 owner=""; handoff=""; previous="null"; transition="null"
 [[ ! -f "$owner_file" ]] || owner="$(jq -c . "$owner_file" 2>/dev/null || true)"
 [[ ! -f "$handoff_file" ]] || handoff="$(jq -c . "$handoff_file" 2>/dev/null || true)"
+[[ ! -f "$handoff_file" || -n "$handoff" ]] || exit 0
+if [[ -n "$handoff" ]]; then
+  [[ -n "$owner" ]] || exit 0
+  handoff_common="$(afk_pmc_common_dir "$(jq -r '.worktree.path // empty' <<<"$owner")")" || exit 0
+  [[ "$(afk_pmc_handoff_state "$handoff" "$owner" "$handoff_common")" != conflict ]] || exit 0
+fi
 intent=""; [[ ! -f "$intent_file" ]] || intent="$(jq -c . "$intent_file" 2>/dev/null || true)"
 
 # Select the expected binding from durable state, never from ambient
@@ -161,6 +194,18 @@ fi
 # durable handoff is authorization; Orca must independently report that this
 # event is running in the same exact worktree before ownership can move.
 if [[ "$successor" == true ]]; then
+  tid="$(jq -r .transition_id <<<"$handoff")"
+  transition_dir="$pm_dir/transitions/$tid"
+  launch_intent="$(jq -c . "$transition_dir/bootstrap-intent.json" 2>/dev/null)" || exit 0
+  launch_create="$(jq -c . "$transition_dir/launch-create.json" 2>/dev/null)" || exit 0
+  launch_attempt="$(jq -c . "$transition_dir/launch-attempt.json" 2>/dev/null)" || exit 0
+  launch_receipt="$(jq -c . "$transition_dir/launch-receipt.json" 2>/dev/null)" || exit 0
+  afk_pmc_launch_evidence "$launch_receipt" "$launch_create" "$launch_attempt" "$launch_intent" || exit 0
+  jq -e --arg t "$terminal" --argjson h "$handoff" '
+    .terminal==$t and .terminal==$h.successor.terminal and
+    .harness==$h.successor.harness and .worktree==$h.successor.worktree and
+    .run_id==$h.successor.run_id and (.identity // null)==($h.successor.identity // null)' \
+    <<<"$launch_receipt" >/dev/null 2>&1 || exit 0
   observe_worktree || exit 0
   observed_worktree_id="$observed_worktree"
   [[ "$observed_worktree_id" == "$worktree_id" ]] || exit 0
@@ -217,12 +262,9 @@ if [[ "$control" != null ]]; then
   owner_json="$(jq -c --argjson control "$control" '. + {control:$control}' <<<"$owner_json")" || exit 0
   afk_pmc_normalize "$owner_json" "$common_dir" >/dev/null || exit 0
 fi
-atomic_write "$owner_file" "$owner_json" || exit 0
-[[ ! -f "$intent_file" ]] || rm -f -- "$intent_file"
-
 reconcile_successor=false
 if [[ -n "$handoff" ]] && jq -e --argjson owner "$owner_json" '
-  (.schema|IN("afk-pm-handoff/2","afk-pm-handoff/3")) and (.state|IN("SUCCESSOR_LAUNCHED","ACKED","OLD_CLOSED")) and
+  (.schema|IN("afk-pm-handoff/2","afk-pm-handoff/3")) and (.state|IN("SUCCESSOR_LAUNCHED","ACKED")) and
   .transition_id==$owner.transition_id and .successor.terminal==$owner.terminal and
   .successor.harness==$owner.harness and .successor.worktree==$owner.worktree and
   .successor.run_id==$owner.run_id and
@@ -231,10 +273,32 @@ if [[ -n "$handoff" ]] && jq -e --argjson owner "$owner_json" '
 fi
 
 if [[ "$reconcile_successor" == true ]]; then
+  tid="$(jq -r '.transition_id' <<<"$handoff")"
+  transition_dir="$pm_dir/transitions/$tid"
+  launch_intent="$(jq -c . "$transition_dir/bootstrap-intent.json" 2>/dev/null)" || exit 0
+  launch_create="$(jq -c . "$transition_dir/launch-create.json" 2>/dev/null)" || exit 0
+  launch_attempt="$(jq -c . "$transition_dir/launch-attempt.json" 2>/dev/null)" || exit 0
+  launch_receipt="$(jq -c . "$transition_dir/launch-receipt.json" 2>/dev/null)" || exit 0
+  afk_pmc_launch_evidence "$launch_receipt" "$launch_create" "$launch_attempt" "$launch_intent" || exit 0
+  jq -e --argjson h "$handoff" --arg t "$terminal" '
+    .terminal==$t and .terminal==$h.successor.terminal and
+    .harness==$h.successor.harness and .worktree==$h.successor.worktree and
+    .run_id==$h.successor.run_id and (.identity//null)==($h.successor.identity//null)' \
+    <<<"$launch_receipt" >/dev/null 2>&1 || exit 0
+  if jq -e '.identity!=null' <<<"$launch_receipt" >/dev/null 2>&1; then
+    jq -e --argjson observed "${identity:-null}" '
+      (.identity|{handle,runtime_id,execution_host_id,worktree_id,tab_id,leaf_id,incarnation_id,agent_type})==
+      ($observed|{handle,runtime_id,execution_host_id,worktree_id,tab_id,leaf_id,incarnation_id,agent_type})' \
+      <<<"$launch_receipt" >/dev/null 2>&1 || exit 0
+  fi
   observe_worktree || exit 0
   observed_worktree_id="$observed_worktree"
   [[ "$observed_worktree_id" == "$worktree_id" ]] || exit 0
-  tid="$(jq -r '.transition_id' <<<"$handoff")"
+fi
+atomic_write "$owner_file" "$owner_json" || exit 0
+[[ ! -f "$intent_file" ]] || rm -f -- "$intent_file"
+
+if [[ "$reconcile_successor" == true ]]; then
   transition_dir="$pm_dir/transitions/$tid"; mkdir -p "$transition_dir" || exit 0
   chmod 700 "$transition_dir" || exit 0
   ack="$(jq -nc --arg id "$tid" --arg h "$harness" --arg s "$session" --arg t "$terminal" \
@@ -258,6 +322,7 @@ if [[ "$reconcile_successor" == true ]]; then
       else
         atomic_write "$pending_file" "$pending" || exit 0
       fi
+      afk_lock_release || exit 0
       (
         exec 9>&-
         attempts="${AFK_PM_FINALIZE_ATTEMPTS:-20}"; delay="${AFK_PM_FINALIZE_RETRY_SECONDS:-0.1}"
