@@ -75,6 +75,94 @@ afk_pmc_successor() { # <old normalized control> <new owner JSON> <common-dir>
        launch_provenance:{status:"unverified"},
        provenance:{status:"successor_continuity",repo_common_dir:$common,
          owner:($owner|{harness,session,terminal,worktree,run_id}),
-         prior_control_owner:$old.control_owner}}
+         prior_control_owner:$old.control_owner,prior_control:$old}}
     end'
+}
+
+# A new handoff carries the exact old owner and normalized control observed
+# under the lifecycle lock. Older handoffs are readable, but unverified.
+afk_pmc_handoff_state() { # <handoff JSON> <current owner JSON> <common-dir> -> verified|unverified|conflict
+  local normalized
+  if ! jq -e '(.state|IN("OBSERVED","CHECKPOINTED","SUCCESSOR_LAUNCHED","ACKED","OLD_CLOSED")) and
+    (if .schema=="afk-pm-handoff/3" then has("expected_old") else .schema=="afk-pm-handoff/2" and (has("expected_old")|not) end)' \
+    <<<"$1" >/dev/null 2>&1; then
+    printf conflict; return 0
+  fi
+  if ! jq -e 'has("expected_old")' <<<"$1" >/dev/null 2>&1; then
+    jq -r --argjson owner "$2" '
+      . as $h |
+      ($owner.session==$h.old.session and $owner.terminal==$h.old.terminal and
+       $owner.harness==$h.old.harness and $owner.worktree==$h.old.worktree and
+       $owner.run_id==$h.old.run_id and
+       (if $h.old.identity==null then true else $owner.identity==$h.old.identity end)) as $old |
+      ($owner.transition_id==$h.transition_id and
+       $owner.previous.session==$h.old.session and
+       $owner.previous.terminal==$h.old.terminal and
+       (if $h.state=="SUCCESSOR_LAUNCHED" and $h.successor.session==null then true
+        else $owner.session==$h.successor.session end) and
+       $owner.terminal==$h.successor.terminal and
+       $owner.harness==$h.successor.harness and
+       $owner.worktree==$h.successor.worktree and
+       $owner.run_id==$h.successor.run_id) as $new |
+      if ($h.state|IN("OBSERVED","CHECKPOINTED")) then $old
+      elif $h.state=="SUCCESSOR_LAUNCHED" then $old or $new
+      else $new end |
+      if . then "unverified" else "conflict" end' <<<"$1" 2>/dev/null || printf conflict
+    return 0
+  fi
+  normalized="$(afk_pmc_normalize "$2" "$3")" || { printf conflict; return 0; }
+  jq -r --argjson owner "$2" --argjson control "$normalized" '
+    def tuple(x): x|{harness,session,terminal,worktree,run_id,identity:(.identity // null)};
+    def identity(x): x|{handle,runtime_id,execution_host_id,worktree_id,tab_id,leaf_id,incarnation_id,agent_type};
+    . as $h | .expected_old as $e |
+    ($e.schema=="afk-pm-expected-owner/1" and
+     $e.owner==tuple($h.old) and
+     (if ($h.state|IN("OBSERVED","CHECKPOINTED")) then
+        ($owner|{harness,session,terminal,worktree,run_id})==($e.owner|{harness,session,terminal,worktree,run_id}) and
+        (if $e.owner.identity==null then true else identity($owner.identity)==identity($e.owner.identity) end) and
+        $control==$e.control
+      elif $h.state=="SUCCESSOR_LAUNCHED" and
+        ($owner|{harness,session,terminal,worktree,run_id})==($e.owner|{harness,session,terminal,worktree,run_id}) and
+        (if $e.owner.identity==null then true else identity($owner.identity)==identity($e.owner.identity) end) then
+        $control==$e.control
+      else
+        $owner.transition_id==$h.transition_id and
+        tuple($owner.previous)==$e.owner and
+        ($owner|{harness,terminal,worktree,run_id})==($h.successor|{harness,terminal,worktree,run_id}) and
+        (if $h.successor.session==null then true else $owner.session==$h.successor.session end) and
+        (if $h.successor.identity==null then true else identity($owner.identity)==identity($h.successor.identity) end) and
+        (if $h.state=="OLD_CLOSED" then true else
+          $control.revision==$e.control.revision and
+          $control.execution_profile=="unverified" and
+          $control.launch_provenance=={status:"unverified"} and
+          (if $e.control.revision==null then $control.provenance.status=="unverified"
+           else $control.provenance.status=="successor_continuity" and
+             $control.provenance.prior_control_owner==$e.control.control_owner and
+             $control.provenance.prior_control==$e.control end) end)
+      end)) |
+    if . then (if $e.control.revision==null then "unverified" else "verified" end)
+    else "conflict" end' <<<"$1" 2>/dev/null || printf conflict
+}
+
+# The launch receipt is meaningful only alongside the exact journaled create
+# attempt and bootstrap intent. It cannot be accepted by field shape alone.
+afk_pmc_launch_evidence() { # <receipt> <create> <attempt> <intent>
+  jq -e -n --argjson r "$1" --argjson c "$2" --argjson a "$3" --argjson i "$4" '
+    def s: type=="string" and length>0;
+    $i.schema=="afk-pm-bootstrap-intent/1" and
+    $c.schema=="afk-pm-launch-create/1" and
+    $a==($c|.schema="afk-pm-launch-attempt/1") and
+    $r.schema=="afk-pm-launch-receipt/2" and $r.accepted==true and
+    ($r.terminal|s) and ($r.command_sha256|s) and ($r.create_id|s) and
+    ($r.transition_id==$c.transition_id and $r.harness==$c.harness and
+     $r.worktree==$c.worktree and $r.run_id==$c.run_id and
+     $r.continuation_sha256==$c.continuation_sha256 and
+     $r.command_sha256==$c.command_sha256 and $r.create_id==$c.create_id) and
+    ($i.transition_id==$c.transition_id and $i.harness==$c.harness and
+     $i.worktree==$c.worktree and $i.run_id==$c.run_id and
+     $i.continuation_sha256==$c.continuation_sha256) and
+    ($r.identity==null or
+      ($r.identity.handle==$r.terminal and
+       $r.identity.worktree_id==$r.worktree.id and
+       ($r.identity.runtime_id|s)))' >/dev/null 2>&1
 }
