@@ -244,7 +244,7 @@ SC_LIFECYCLE=("$KIT_ROOT/bin/agent-flow-kit" "$KIT_ROOT/lib/afk-common.sh" "$KIT
               "$KIT_ROOT/lib/afk-commands.sh" \
               "$KIT_ROOT/lib/afk-plan.sh" "$KIT_ROOT/lib/afk-mutate.sh" \
               "$KIT_ROOT/lib/afk-auto-update.sh" "$KIT_ROOT/lib/afk-catalog-sync.sh" "$KIT_ROOT/lib/afk-paperclip.sh" \
-              "$KIT_ROOT/lib/afk-pm-registry.sh" \
+              "$KIT_ROOT/lib/afk-pm-control.sh" "$KIT_ROOT/lib/afk-pm-registry.sh" \
               "$KIT_ROOT/lib/afk-paperclip-report.sh" "$KIT_ROOT/lib/afk-paperclip-plan.sh" \
               "$KIT_ROOT/lib/afk-paperclip-start.sh" "$KIT_ROOT/lib/afk-paperclip-project.sh" "$KIT_ROOT/lib/afk-accept.sh" \
               "$KIT_ROOT/tests/lockctl-helper.sh" "$KIT_ROOT/tests/paperclip-poll-tests.sh" \
