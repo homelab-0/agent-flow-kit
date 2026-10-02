@@ -16,6 +16,16 @@ contains() { grep -Fq -- "$2" <<<"$1"; }
 
 TMP="$(mktemp -d /tmp/afk-worker-continuity.XXXXXXXX)"
 trap 'rm -rf -- "$TMP"' EXIT
+# Never inherit a dispatcher or host Orca executable in this fixture. Any
+# unmocked CLI call is a test failure, even when the caller supplies overrides.
+cat >"$TMP/unexpected-orca" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$AFK_UNEXPECTED_ORCA_CALLS"
+exit 99
+EOF
+chmod +x "$TMP/unexpected-orca"
+export AFK_UNEXPECTED_ORCA_CALLS="$TMP/unexpected-orca-calls"
+export ORCA_CLI_COMMAND="$TMP/unexpected-orca" AFK_ORCA_BIN="$TMP/unexpected-orca"
 
 for mode in advisory required blind off; do
   check "memory mode accepts $mode" memory_mode_is_valid "$mode"
@@ -241,6 +251,8 @@ create_count="$TMP/continuation-create-count"; printf '0\n' >"$create_count"
 next_handle=confirmed-terminal; hide_terminal_list=false; terminal_list_json=""
 terminal_show_conflict=false; terminal_show_timeout_when_absent=false
 terminal_create_crash_after_effect=false
+terminal_complete_after_create=false
+terminal_worktree_path="$TMP"; terminal_read_exit=7; terminal_read_marker=EXIT
 terminal_revive_on_second_show=false; terminal_show_count="$TMP/continuation-show-count"; printf '0\n' >"$terminal_show_count"
 orca_json() {
   local op="$1 $2" handle="" title="" selector="" n
@@ -265,11 +277,14 @@ orca_json() {
         else jq -ec --arg h "$handle" '[.[]|select(.handle==$h)]|{result:{terminal:.[0]}}' "$terminal_state"; fi
       elif [[ "$terminal_show_timeout_when_absent" == true ]]; then return 124
       else jq -nc --arg h "$handle" '{ok:false,error:{code:"terminal_handle_stale",message:("released terminal handle: "+$h)}}'; return 1; fi ;;
+    "terminal read") jq -nc --arg line "$terminal_read_marker=$terminal_read_exit" '{result:{terminal:{tail:[$line],status:"exited"}}}' ;;
     "terminal create")
       while (($#)); do case "$1" in --worktree) selector="${2#id:}"; shift 2;; --title) title="$2"; shift 2;; *) shift;; esac; done
       n="$(<"$create_count")"; printf '%s\n' "$((n + 1))" >"$create_count"
-      jq --arg h "$next_handle" --arg title "$title" --arg wi "$selector" --arg wp "$TMP" \
-        '.+[{handle:$h,title:$title,connected:true,orphaned:false,worktreeId:$wi,worktreePath:$wp}]' \
+      jq --arg h "$next_handle" --arg title "$title" --arg wi "$selector" --arg wp "$terminal_worktree_path" \
+        --argjson completed "$terminal_complete_after_create" \
+        --arg status "${terminal_create_status:-completed}" \
+        '.+[{handle:$h,title:$title,connected:(($completed|not)),status:(if $completed then $status else "running" end),orphaned:false,worktreeId:$wi,worktreePath:$wp}]' \
         "$terminal_state" >"$terminal_state.tmp"; mv "$terminal_state.tmp" "$terminal_state"
       [[ "$terminal_create_crash_after_effect" != true ]] || return 97
       jq -nc --arg h "$next_handle" '{result:{terminal:{handle:$h}}}' ;;
@@ -286,6 +301,90 @@ else ok "ambiguous failed create replay refuses an empty scoped list"; fi
 if [[ "$(<"$create_count")" == 0 ]]; then
   ok "ambiguous failed create replay cannot duplicate a possibly-created terminal"
 else no "ambiguous failed create replay cannot duplicate a possibly-created terminal"; fi
+
+# The terminal create response is exact launch evidence even when the worker
+# finishes before the immediate show. The supervisor must still persist it.
+fast_story="$TMP/fast-completion-story.md"; printf '%s\n' '# fast completion story' >"$fast_story"
+next_handle=fast-completed-terminal; terminal_complete_after_create=true
+before_fast_creates="$(<"$create_count")"
+if continuation_launch_create "$fast_story" 2 1 sha256:fast WORKER_SIGNAL null selector fast-title command EXIT 1 "$TMP" >/dev/null 2>&1; then
+  ok "exact created terminal is confirmed after immediate completion"
+else no "exact created terminal is confirmed after immediate completion"; fi
+terminal_complete_after_create=false
+if jq -e '.entries|length==1 and .[0].launch_confirmed==true and .[0].terminal=="fast-completed-terminal"' \
+  "$fast_story.continuations.json" >/dev/null 2>&1; then
+  ok "immediately completed worker has durable launch ledger evidence"
+else no "immediately completed worker has durable launch ledger evidence"; fi
+if ! continuation_launch_create "$fast_story" 2 1 sha256:fast WORKER_SIGNAL null selector fast-title command EXIT 1 "$TMP" >/dev/null 2>&1 \
+  && [[ "$(<"$create_count")" == "$((before_fast_creates + 1))" ]]; then
+  ok "completed launch replay is refused without a duplicate terminal"
+else no "completed launch replay is refused without a duplicate terminal"; fi
+printf '[]\n' >"$terminal_state"; next_handle=confirmed-terminal
+
+# A disconnected transport with a still-running process was already accepted
+# by the replacement's dead predicate. The new post-create confirmation must
+# not accept it as the fast-completion case.
+conflict_story="$TMP/conflict-story.md"; printf '%s\n' '# conflict' >"$conflict_story"
+next_handle=conflict-terminal; terminal_complete_after_create=true
+terminal_create_status=running
+if continuation_launch_create "$conflict_story" 2 1 sha256:conflict WORKER_SIGNAL null selector title command EXIT 1 "$TMP" >/dev/null 2>&1; then
+  no "disconnected running terminal is not a confirmed completed launch"
+else ok "disconnected running terminal is not a confirmed completed launch"; fi
+if [[ ! -e "$conflict_story.continuations.json" ]]; then
+  ok "conflicting post-create state leaves no launch ledger"
+else no "conflicting post-create state leaves no launch ledger"; fi
+unset terminal_create_status
+terminal_complete_after_create=false
+printf '[]\n' >"$terminal_state"; next_handle=confirmed-terminal
+
+# Run production main(), including its real continuation caller, wait, gate
+# runner and result writer. Only host preflights and Orca effects are mocked.
+supervisor_wt="$TMP/supervisor-worktree"; mkdir -p "$supervisor_wt"
+supervisor_catalog="$TMP/supervisor-catalog.yaml"
+printf 'profiles:\n  openai/test:\n    physical:\n      - model_id: openai/test-model\n    hosting: vendor\n    min_context: 100000\nmodels:\n  openai/test-model: {}\n' >"$supervisor_catalog"
+run_supervisor_case() { # <name> <worker-exit> <gate> <expected-gate-status>
+  local name="$1" worker_exit="$2" gate="$3" gate_status="$4" story="$supervisor_wt/$1.md" rc=0
+  printf '%s\n' '---' 'memory_mode: off' 'max_cycles: 2' 'gates:' "  - '$gate'" '---' '# fixture' >"$story"
+  jq -nc '{harness:"codex",model_profile:"openai/test",effort:"medium",placement_required:false,
+    entitlement_pool:"openai-plus",cost_class:"subscription",catalog_version:"test",expires_at:"future"}' >"$story.stamp.json"
+  jq -nc '{status:"continuation_required",budget:{continuation_artifact:{sha256:"prior"}}}' >"$story.result.c1.json"
+  jq -nc --arg id "$name" '{schema:"afk-continuation/1",story_id:$id,completed:[],current_state:"paused",
+    remaining_acceptance:[],next_steps:[],updated_at:"test",in_flight:[],unretired_findings:[]}' >"$story.continuation.json"
+  printf '[]\n' >"$terminal_state"; next_handle="$name-terminal"
+  terminal_worktree_path="$supervisor_wt"; terminal_complete_after_create=true
+  terminal_read_marker=CODEX_EXIT; terminal_read_exit="$worker_exit"
+  (
+    cd "$supervisor_wt"
+    cfg() { printf '%s' "${3:-}"; }
+    resolve_catalog_path() { printf '%s' "$supervisor_catalog"; }
+    validate_stamp() { printf '{}\n' >"$3"; }
+    orca_worktree_selector() { printf 'selector'; }
+    orca_setup_policy_gate() { :; }
+    prepare_worker_memory() { :; }
+    scan_worktree_for_secrets() { :; }
+    secret_scan_candidates() { :; }
+    afk_protected_paths() { :; }
+    orca() { :; }
+    export AFK_STATE_DIR="$TMP/supervisor-state"
+    main "$story" --cycle 2
+  ) >"$TMP/$name.dispatch.log" 2>&1 || rc=$?
+  terminal_worktree_path="$TMP"; terminal_complete_after_create=false
+  terminal_read_marker=EXIT; terminal_read_exit=7
+  if [[ "$rc" != 0 ]] && jq -e --arg h "$name-terminal" --arg g "$gate" --arg s "$gate_status" --argjson x "$worker_exit" \
+    '.cycle==2 and .status=="gates_failed" and .launch.orca_terminal==$h and
+     .launch.harness_exit==$x and .gates[$g]==$s and
+     (.gate_logs|length)==1 and .gate_logs[0].status==$s' \
+    "$story.result.c2.json" >/dev/null 2>&1 && [[ -f "$story.result.json" ]] \
+    && [[ -f "$(jq -r .gates_log_dir "$story.result.c2.json")/1.log" ]]; then
+    ok "production supervisor publishes cycle result and $gate_status gate after worker exit $worker_exit"
+  else
+    no "production supervisor publishes cycle result and $gate_status gate after worker exit $worker_exit"
+    tail -20 "$TMP/$name.dispatch.log" >&2
+  fi
+}
+run_supervisor_case gate_failure 0 false fail
+run_supervisor_case worker_failure 7 true pass
+printf '[]\n' >"$terminal_state"; next_handle=confirmed-terminal
 
 launch_story="$TMP/launch-story.md"; printf '%s\n' '# launch story' >"$launch_story"
 continuation_launch_create "$launch_story" 2 1 sha256:test WORKER_SIGNAL null selector title command EXIT 1 "$TMP"
@@ -522,8 +621,9 @@ EOF
 chmod +x "$TMP/fake-orca"
 export AFK_CONTEXT_EVENT_TRANSPORT=orca
 jq '.updated_at="2099-01-01T00:01:00Z"' "$TMP/story.md.checkpoint.json" >"$TMP/checkpoint-next"; mv "$TMP/checkpoint-next" "$TMP/story.md.checkpoint.json"
-AFK_ORCA_BIN="$TMP/fake-orca" AFK_FAKE_ORCA_ARGS="$TMP/orca-send-args" context_event_emit --state CHECKPOINT_DUE --phase report >/dev/null
-send_args="$(<"$TMP/orca-send-args")"
+ORCA_CLI_COMMAND="$TMP/fake-orca" AFK_ORCA_BIN="$TMP/fake-orca" AFK_FAKE_ORCA_ARGS="$TMP/orca-send-args" \
+  context_event_emit --state CHECKPOINT_DUE --phase report >/dev/null
+send_args=''; [[ ! -f "$TMP/orca-send-args" ]] || send_args="$(<"$TMP/orca-send-args")"
 contains "$send_args" "orchestration send --run run-1" && contains "$send_args" "--from worker-terminal" \
   && ! contains "$send_args" "--to" && ok "pressure publishes from worker terminal to owning Run mailbox" \
   || no "pressure publishes from worker terminal to owning Run mailbox"
@@ -534,8 +634,12 @@ EOF
 chmod +x "$TMP/stalled-orca"
 jq '.updated_at="2099-01-01T00:02:00Z"' "$TMP/story.md.checkpoint.json" >"$TMP/checkpoint-next"; mv "$TMP/checkpoint-next" "$TMP/story.md.checkpoint.json"
 SECONDS=0
-stalled_event="$(AFK_ORCA_BIN="$TMP/stalled-orca" AFK_CONTEXT_ORCA_TIMEOUT_SECONDS=1 context_event_emit --state CHECKPOINT_DUE --phase final)"
+stalled_event="$(ORCA_CLI_COMMAND="$TMP/stalled-orca" AFK_ORCA_BIN="$TMP/stalled-orca" \
+  AFK_CONTEXT_ORCA_TIMEOUT_SECONDS=1 context_event_emit --state CHECKPOINT_DUE --phase final)"
 if [[ -f "$stalled_event" && $SECONDS -lt 4 ]]; then ok "stalled Orca transport is bounded after durable event write"; else no "stalled Orca transport is bounded after durable event write"; fi
+if [[ ! -e "$AFK_UNEXPECTED_ORCA_CALLS" ]]; then
+  ok "no inherited or unmocked Orca CLI is used"
+else no "no inherited or unmocked Orca CLI is used"; fi
 
 printf '1..%d\n' "$((pass + fail))"
 printf '# pass=%d fail=%d\n' "$pass" "$fail"

@@ -2087,7 +2087,15 @@ continuation_launch_create_unlocked() { # story cycle from sha trigger decision 
     orca_launch_create_raw "$7" "$launch_title" "$9" || return 74
     terminal="$TERMINAL_HANDLE"
     terminal_json="$(continuation_terminal_observation "$terminal" "$launch_title" "$7" "${12}")" || return 1
-    continuation_terminal_live "$terminal_json" || return 1
+    # The exact handle returned by create is launch evidence even if the
+    # worker completed before this show. A disconnected terminal still needs
+    # an explicit completed status; disconnection alone is not completion.
+    # The caller still runs normal wait/result collection, so confirmation
+    # never asserts that the worker succeeded.
+    continuation_terminal_live "$terminal_json" ||
+      jq -e '(.status|type)=="string" and
+        (.status|ascii_downcase|IN("exited","closed","dead","failed","terminated","stopped","complete","completed")) and
+        ((has("connected")|not) or .connected==false)' <<<"$terminal_json" >/dev/null 2>&1 || return 1
     if [[ "$replacement_authorized" == true ]]; then
       expected_receipt="$(jq -nc --argjson c "$cycle" --arg selector "$7" --arg wp "${12}" --arg title "$launch_title" \
         --arg artifact "$4" --arg command_sha "$command_sha" --arg create_id "$create_id" --arg terminal "$terminal" \
