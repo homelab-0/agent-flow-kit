@@ -243,6 +243,21 @@ not part of the runtime contract and does not replace this boundary.
 
 ## Qualification matrix
 
+### PM control metadata (first slice)
+
+`ownership.json` may contain `control` with schema `afk-pm-control/1`.
+It records `execution_profile`, `control_owner`, `approval_channel`, a
+nonnegative safe-integer `revision`, `launch_provenance`, and `provenance`
+bound to the canonical git common-dir and exact harness/session/terminal/
+worktree/run tuple. Missing control on legacy `/2` and `/3` rows reads as
+unverified in every control dimension. Supplied malformed or mismatched
+control reports `PM_CONTROL_INVALID`; it is never repaired by observation or
+used to authorize a PM owner. `pm-start` records human registration, while
+the already-running harness keeps an unverified execution profile and launch
+provenance. A successor retains the revision and human control intent, and
+resets predecessor launch proof. This metadata is local operational evidence;
+no transfer, autonomous launch, or concurrency guarantee is enabled here.
+
 The offline adapter fixtures run from `tests/runtime-experience-tests.sh`.
 Live rows are intentionally evidence slots rather than claims; qualify only
 harnesses installed on the host and record the resulting operation/transition

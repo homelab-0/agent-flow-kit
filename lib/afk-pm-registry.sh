@@ -19,6 +19,8 @@ AFK_PM_REGISTRY_SOURCED=1
 # shellcheck source=lib/afk-orca.sh
 # shellcheck disable=SC1091
 declare -F afk_orca_run >/dev/null 2>&1 || . "$(dirname -- "${BASH_SOURCE[0]}")/afk-orca.sh"
+# shellcheck source=lib/afk-pm-control.sh
+declare -F afk_pmc_normalize >/dev/null 2>&1 || . "$(dirname -- "${BASH_SOURCE[0]}")/afk-pm-control.sh"
 
 # afk_scope_sha256 (the scope-key hash primitive) is defined by
 # adapters/runtime-scope.sh, which this file reuses rather than
@@ -109,7 +111,7 @@ afk_pmr_slug_ok() {
 # afk_pm_registry_lookup <repo_path> -> prints one JSON object on stdout.
 afk_pm_registry_lookup() {
   local repo_path="$1" target_common d scope_key owner_file owner_doc owner_common
-  local handoff_doc orca_state stale="[]"
+  local handoff_doc orca_state stale="[]" control
   local -a candidates=() handoffs=() unknown=()
   target_common="$(git -C "$repo_path" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || target_common=""
   if [[ -z "$target_common" ]]; then
@@ -133,7 +135,12 @@ afk_pm_registry_lookup() {
       owner_common="$(git -C "$(jq -r .worktree.path <<<"$owner_doc")" \
         rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || continue
       [[ -n "$owner_common" && "$owner_common" == "$target_common" ]] || continue
-      owner_doc="$(jq -c --arg sk "$scope_key" '. + {scope:$sk}' <<<"$owner_doc")"
+      if ! control="$(afk_pmc_normalize "$owner_doc" "$target_common")"; then
+        owner_doc="$(jq -c --arg sk "$scope_key" '. + {scope:$sk}' <<<"$owner_doc")"
+        unknown+=("$(jq -c '. + {reason:"PM_CONTROL_INVALID",control:null}' <<<"$owner_doc")")
+        continue
+      fi
+      owner_doc="$(jq -c --arg sk "$scope_key" --argjson control "$control" '. + {scope:$sk,control:$control}' <<<"$owner_doc")"
 
       handoff_doc=""
       if [[ -f "$d/handoff.json" ]]; then
@@ -153,6 +160,18 @@ afk_pm_registry_lookup() {
     done
   fi
 
+  if (( ${#handoffs[@]} > 0 )) && printf '%s\n' "${unknown[@]}" | jq -es 'any(.[]; .reason=="PM_CONTROL_INVALID")' >/dev/null 2>&1; then
+    local invalid="[]" hs="[]" item
+    for item in "${unknown[@]}"; do
+      invalid="$(jq -c --argjson item "$item" '. + [{scope:$item.scope,terminal:$item.terminal,reason:$item.reason}]' <<<"$invalid")"
+    done
+    for item in "${handoffs[@]}"; do
+      hs="$(jq -c --argjson item "$item" '. + [{scope:$item.scope,old:{terminal:$item.old.terminal},successor:{terminal:$item.successor.terminal}}]' <<<"$hs")"
+    done
+    jq -nc --argjson owners "$invalid" --argjson handoffs "$hs" --argjson stale "$stale" --arg orca "$orca_state" \
+      '{state:"ambiguous",owner:null,owners:$owners,handoff:null,handoffs:$handoffs,reason:"PM_CONTROL_INVALID",orca:$orca,stale:$stale}'
+    return 0
+  fi
   if (( ${#handoffs[@]} > 1 )); then
     local harr="[]" h
     for h in "${handoffs[@]}"; do
@@ -188,26 +207,33 @@ afk_pm_registry_lookup() {
       local darr="[]" o
       for o in "${unknown[@]}"; do
         darr="$(jq -c --argjson o "$o" \
-          '. + [{scope:$o.scope,terminal:$o.terminal,harness:$o.harness,session:$o.session,worktree:$o.worktree,reason:$o.reason}]' <<<"$darr")"
+          '. + [{scope:$o.scope,terminal:$o.terminal,harness:$o.harness,session:$o.session,worktree:$o.worktree,control:$o.control,reason:$o.reason}]' <<<"$darr")"
       done
       jq -nc --argjson owners "$darr" --argjson stale "$stale" --arg orca "$orca_state" \
-        '{state:"unknown",owner:null,owners:$owners,handoff:null,reason:$owners[0].reason,orca:$orca,stale:$stale}'
+        '{state:"unknown",owner:null,owners:$owners,handoff:null,
+          reason:(if any($owners[]; .reason=="PM_CONTROL_INVALID") then "PM_CONTROL_INVALID" else $owners[0].reason end),
+          orca:$orca,stale:$stale}'
       return 0
     fi
     jq -nc --argjson stale "$stale" --arg orca "$orca_state" \
       '{state:"none",owner:null,owners:null,handoff:null,reason:null,orca:$orca,stale:$stale}'
-  elif (( n == 1 )); then
+  elif (( n == 1 )) && ! printf '%s\n' "${unknown[@]}" | jq -es 'any(.[]; .reason=="PM_CONTROL_INVALID")' >/dev/null 2>&1; then
     jq -nc --argjson o "${candidates[0]}" --argjson stale "$stale" --arg orca "$orca_state" \
-      '{state:"live",owner:{scope:$o.scope,terminal:$o.terminal,harness:$o.harness,session:$o.session,worktree:$o.worktree},
+      '{state:"live",owner:{scope:$o.scope,terminal:$o.terminal,harness:$o.harness,session:$o.session,worktree:$o.worktree,control:$o.control},
         owners:null,handoff:null,reason:null,orca:$orca,stale:$stale}'
   else
     local arr="[]" c
     for c in "${candidates[@]}"; do
       arr="$(jq -c --argjson c "$c" \
-        '. + [{scope:$c.scope,terminal:$c.terminal,harness:$c.harness,session:$c.session,worktree:$c.worktree}]' <<<"$arr")"
+        '. + [{scope:$c.scope,terminal:$c.terminal,harness:$c.harness,session:$c.session,worktree:$c.worktree,control:$c.control}]' <<<"$arr")"
+    done
+    for c in "${unknown[@]}"; do
+      arr="$(jq -c --argjson c "$c" \
+        '. + [{scope:$c.scope,terminal:$c.terminal,harness:$c.harness,session:$c.session,worktree:$c.worktree,control:$c.control,reason:$c.reason}]' <<<"$arr")"
     done
     jq -nc --argjson owners "$arr" --argjson stale "$stale" --arg orca "$orca_state" \
-      '{state:"ambiguous",owner:null,owners:$owners,handoff:null,reason:null,orca:$orca,stale:$stale}'
+      '{state:"ambiguous",owner:null,owners:$owners,handoff:null,
+        reason:(if any($owners[]; .reason=="PM_CONTROL_INVALID") then "PM_CONTROL_INVALID" else null end),orca:$orca,stale:$stale}'
   fi
 }
 
@@ -231,6 +257,14 @@ afk_cmd_pm_registry_reap() { # <json_mode> <scope_key>
   owner_doc="$(jq -ce --argjson sc "$AFK_PMR_OWNER_SCHEMAS" 'select((.schema|IN($sc[])) and .owned==true and
     (.terminal|type)=="string" and (.terminal|length)>0)' "$owner_file" 2>/dev/null)" \
     || { afk_pmr_emit_refusal "PM_SCOPE_EMPTY" "$json_mode"; return 4; }
+  local common
+  common=""
+  if jq -e 'has("control")' <<<"$owner_doc" >/dev/null; then
+    common="$(afk_pmc_common_dir "$(jq -r .worktree.path <<<"$owner_doc")")" || common=""
+  fi
+  afk_pmc_normalize "$owner_doc" "$common" >/dev/null || {
+    afk_pmr_emit_refusal "PM_CONTROL_INVALID" "$json_mode"; return 5;
+  }
   # Re-prove stale with a fresh join immediately before the reap.
   afk_orca_liveness_reset
   afk_pmr_owner_state "$owner_doc"

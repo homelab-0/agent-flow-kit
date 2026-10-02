@@ -727,7 +727,7 @@ prepare_trusted_driver() {
   local source_root snapshot_file library
   local recorded_bin_path recorded_lib_path recorded_bin_identity recorded_lib_identity
   local -a libraries=(afk-common afk-source afk-inventory afk-readiness
-    afk-monitor afk-commands afk-plan afk-mutate)
+    afk-monitor afk-pm-control afk-commands afk-plan afk-mutate)
   source_root="$(cd -P -- "$TRUSTED_DRIVER_SOURCE" 2>/dev/null && pwd -P)" || return 1
   [[ "$source_root" == /* && -x "$source_root/bin/agent-flow-kit" &&
      ! -L "$source_root/bin/agent-flow-kit" && -d "$source_root/lib" &&
