@@ -101,7 +101,8 @@ afk_pcr_require_owner() {
       afk_pmr_caller_owns "$lookup" "$terminal" && claim_terminal="$terminal" ;;
     handoff_in_progress | handoff_stalled)
       local succ; succ="$(jq -r '.handoff.successor.terminal // empty' <<<"$lookup")"
-      [[ -n "$succ" && "$terminal" == "$succ" ]] && claim_terminal="$terminal" ;;
+      [[ -n "$succ" && "$terminal" == "$succ" ]] &&
+        jq -e '.handoff.state|IN("SUCCESSOR_LAUNCHED","ACKED")' <<<"$lookup" >/dev/null 2>&1 && claim_terminal="$terminal" ;;
   esac
   [[ -n "$claim_terminal" ]] || { AFK_PCR_REFUSAL="PAPERCLIP_NOT_OWNER"; return 1; }
   return 0

@@ -107,10 +107,11 @@ write_owner_v2() { # <terminal> <session> <worktree_path>: a row from before ide
 }
 
 write_handoff() { # <old-terminal> <state> <successor-terminal> <updated_at>
-  local sk; sk="$(scope_key "$1")"
-  jq -nc --arg t "$1" --arg st "$2" --arg succ "$3" --arg at "$4" \
+  local sk old_session; sk="$(scope_key "$1")"
+  old_session="$(jq -r '.session // "s"' "$STATE/pm/scopes/$sk/ownership.json" 2>/dev/null || printf s)"
+  jq -nc --arg t "$1" --arg st "$2" --arg succ "$3" --arg at "$4" --arg session "$old_session" \
     '{schema:"afk-pm-handoff/2",transition_id:"pm-t",state:$st,continuation_sha256:"sha256:x",
-      old:{session:"s",terminal:$t,harness:"claude",worktree:{id:"w",path:"'"$REPO"'"},run_id:null},
+      old:{session:$session,terminal:$t,harness:"claude",worktree:{id:"w",path:"'"$REPO"'"},run_id:null},
       successor:{session:null,terminal:$succ,harness:"claude",worktree:{id:"w",path:"'"$REPO"'"},run_id:null},
       observed_at:$at,updated_at:$at}' >"$STATE/pm/scopes/$sk/handoff.json"
 }
@@ -209,6 +210,16 @@ write_owner termA 11111111-1111-1111-1111-111111111111 "$REPO" >/dev/null
 write_handoff termA SUCCESSOR_LAUNCHED termC "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 out="$(lookup "$REPO")"
 assert_eq "fresh SUCCESSOR_LAUNCHED -> handoff_in_progress" "$(jq -r .state <<<"$out")" "handoff_in_progress"
+legacy_successor_owner="$(jq -c --slurpfile h "$STATE/pm/scopes/$(scope_key termA)/handoff.json" '
+  .session="successor-session" | .terminal="termC" | .transition_id=$h[0].transition_id |
+  .previous=$h[0].old' "$STATE/pm/scopes/$(scope_key termA)/ownership.json")"
+assert_eq "legacy successor can publish its first session before ACK" \
+  "$(bash -c '. "$1"; afk_pmc_handoff_state "$2" "$3" ""' _ "$KIT_ROOT/lib/afk-pm-control.sh" "$(cat "$STATE/pm/scopes/$(scope_key termA)/handoff.json")" "$legacy_successor_owner")" unverified
+for prelaunch in OBSERVED CHECKPOINTED; do
+  write_handoff termA "$prelaunch" termC "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  assert_eq "$prelaunch holds registry" "$(lookup "$REPO" | jq -r .state)" handoff_in_progress
+done
+write_handoff termA SUCCESSOR_LAUNCHED termC "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 write_handoff termA SUCCESSOR_LAUNCHED termC "2020-01-01T00:00:00Z"
 out="$(lookup "$REPO")"
@@ -316,9 +327,26 @@ set_terminals '{"terminals":[{"handle":"termA","connected":true,"orphaned":false
 ORCA_TERMINAL_HANDLE=termA run_afk paperclip-take --slug proj1 --json
 assert_eq "the old owner is refused during a handoff" "$(jq -r .result <<<"$OUT_TEXT")" "PAPERCLIP_HANDOFF_IN_PROGRESS"
 
+for prelaunch in OBSERVED CHECKPOINTED; do
+  write_handoff termA "$prelaunch" termC "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  ORCA_TERMINAL_HANDLE=termA run_afk paperclip-take --slug proj1 --json
+  assert_eq "$prelaunch old owner cannot take" "$(jq -r .result <<<"$OUT_TEXT")" PAPERCLIP_HANDOFF_IN_PROGRESS
+  ORCA_TERMINAL_HANDLE=termC run_afk paperclip-take --slug proj1 --json
+  assert_eq "$prelaunch successor cannot take" "$(jq -r .result <<<"$OUT_TEXT")" PAPERCLIP_HANDOFF_IN_PROGRESS
+done
+write_handoff termA SUCCESSOR_LAUNCHED termC "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
 ORCA_TERMINAL_HANDLE=termC run_afk paperclip-take --slug proj1 --json
 assert_eq "the named successor may take during a handoff" "$RC" "0"
 assert_eq "  ...it claims the notice" "$(jq -r '.[0].id' <<<"$OUT_TEXT")" "66666666-6666-6666-6666-666666666666"
+printf '{bad\n' >"$STATE/pm/scopes/$(scope_key termA)/handoff.json"
+assert_eq "malformed handoff holds owner" "$(lookup "$REPO" | jq -r '.state+":"+.reason')" unknown:PM_HANDOFF_INVALID
+ORCA_TERMINAL_HANDLE=termA run_afk paperclip-take --slug proj1 --json
+assert_eq "malformed handoff refuses take" "$(jq -r .result <<<"$OUT_TEXT")" PAPERCLIP_NOT_OWNER
+write_owner termB session-b "$TMPROOT/repo-wt2" >/dev/null
+set_terminals '{"terminals":[{"handle":"termA","connected":true,"orphaned":false},{"handle":"termB","connected":true,"orphaned":false}]}'
+assert_eq "malformed handoff beside live scope stays ambiguous with reason" \
+  "$(lookup "$REPO" | jq -r '.state+":"+.reason')" ambiguous:PM_HANDOFF_INVALID
 
 # ============================================================================
 head1 "5. lookup with a disconnected (not orphaned) owner"
@@ -551,10 +579,24 @@ assert_eq "a recorded tuple is carried forward with no Orca call" "$(shows)" "2"
 
 # A successor takes over with its own terminal's tuple, never the old one's.
 jq -nc --arg p "$(cd -P "$REPO" && pwd)" --slurpfile o "$STATE/pm/scopes/$SK9/ownership.json" \
-  '{schema:"afk-pm-handoff/3",transition_id:"pm-t9",state:"SUCCESSOR_LAUNCHED",continuation_sha256:"sha256:x",
+  '{schema:"afk-pm-handoff/2",transition_id:"pm-t9",state:"SUCCESSOR_LAUNCHED",continuation_sha256:"sha256:x",
     old:($o[0]|{session,terminal,harness,worktree,run_id,identity}),
     successor:{session:null,terminal:"termC",harness:"claude",worktree:{id:"w",path:$p},run_id:null,identity:null},
     observed_at:"2026-09-30T00:00:00Z",updated_at:"2026-09-30T00:00:00Z"}' >"$STATE/pm/scopes/$SK9/handoff.json"
+mkdir -p "$STATE/pm/scopes/$SK9/transitions/pm-t9"
+jq -nc --arg p "$REPO" --arg pm "$STATE/pm/scopes/$SK9" '
+  {schema:"afk-pm-bootstrap-intent/1",transition_id:"pm-t9",harness:"claude",resume_instruction:"resume",
+   continuation_sha256:"sha256:x",worktree:{id:"w",path:$p},run_id:null,pm_dir:$pm}' \
+  >"$STATE/pm/scopes/$SK9/transitions/pm-t9/bootstrap-intent.json"
+jq -nc --arg p "$REPO" '
+  {schema:"afk-pm-launch-create/1",transition_id:"pm-t9",harness:"claude",worktree:{id:"w",path:$p},
+   run_id:null,title:"fake",continuation_sha256:"sha256:x",command_sha256:"sha256:command",create_id:"sha256:create"}' \
+  >"$STATE/pm/scopes/$SK9/transitions/pm-t9/launch-create.json"
+jq '.schema="afk-pm-launch-attempt/1"' "$STATE/pm/scopes/$SK9/transitions/pm-t9/launch-create.json" \
+  >"$STATE/pm/scopes/$SK9/transitions/pm-t9/launch-attempt.json"
+jq '.schema="afk-pm-launch-receipt/2"|del(.title)+{accepted:true,terminal:"termC",identity:null}' \
+  "$STATE/pm/scopes/$SK9/transitions/pm-t9/launch-create.json" \
+  >"$STATE/pm/scopes/$SK9/transitions/pm-t9/launch-receipt.json"
 set_terminals '{"terminals":[{"handle":"termA","connected":true,"orphaned":false},{"handle":"termC","connected":true,"orphaned":false}]}'
 observe termC 33333333-3333-3333-3333-333333333333 "$SK9"
 assert_eq "a successor records its own terminal's tuple" \
@@ -568,6 +610,20 @@ assert_eq "legacy owner projects explicit unverified control" \
   "$(lookup "$REPO" | jq -r '.state+":"+.owner.control.execution_profile+":"+.owner.control.control_owner+":"+.owner.control.approval_channel+":"+.owner.control.launch_provenance.status')" \
   'live:unverified:unverified:unverified:unverified'
 assert_eq "legacy row remains non-reapable while live" "$(lookup "$REPO" | jq -r '.stale|length')" 0
+write_handoff termA SUCCESSOR_LAUNCHED termC "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+legacy_control="$(bash -c '. "$1"; afk_pmc_normalize "$(jq -c . "$2")" "$3"' _ \
+  "$KIT_ROOT/lib/afk-pm-control.sh" "$STATE/pm/scopes/$SKC/ownership.json" \
+  "$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir)")"
+jq --argjson control "$legacy_control" --slurpfile owner "$STATE/pm/scopes/$SKC/ownership.json" '
+  .schema="afk-pm-handoff/3" | .state="CHECKPOINTED" |
+  .old=($owner[0]|{harness,session,terminal,worktree,run_id,identity}) |
+  .expected_old={schema:"afk-pm-expected-owner/1",owner:.old,control:$control}' \
+  "$STATE/pm/scopes/$SKC/handoff.json" >"$TMPROOT/legacy-new-handoff.json"
+mv "$TMPROOT/legacy-new-handoff.json" "$STATE/pm/scopes/$SKC/handoff.json"
+assert_eq "new handoff from legacy owner remains readable as unverified" \
+  "$(lookup "$REPO" | jq -r '.state+":"+.handoff.evidence+":"+.handoff.expected_old.control.execution_profile')" \
+  'handoff_in_progress:unverified:unverified'
+rm -f "$STATE/pm/scopes/$SKC/handoff.json"
 jq '.control={schema:"afk-pm-control/1",execution_profile:"autonomous",control_owner:"paperclip",approval_channel:"external_provider",revision:null,launch_provenance:{status:"unverified"},provenance:{status:"unverified"}}' \
   "$STATE/pm/scopes/$SKC/ownership.json" >"$TMPROOT/owner-new.json"
 mv "$TMPROOT/owner-new.json" "$STATE/pm/scopes/$SKC/ownership.json"
@@ -644,6 +700,61 @@ write_paperclip_config proj1 "$REPO"
 write_notice proj1 1000 66666666-6666-6666-6666-666666666666 claimed
 ORCA_TERMINAL_HANDLE=termC run_afk paperclip-take --slug proj1 --json
 assert_eq "invalid scope blocks handoff successor take" "$(jq -r .result <<<"$OUT_TEXT")" PAPERCLIP_NOT_OWNER
+
+# A new handoff publishes only with the exact old owner/control revision.
+reset_state
+SKC="$(write_owner termA session-a "$REPO")"
+repo_common="$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir)"
+jq --arg repo "$repo_common" '
+  .control={schema:"afk-pm-control/1",execution_profile:"unverified",control_owner:"human",
+    approval_channel:"unverified",revision:7,launch_provenance:{status:"unverified"},
+    provenance:{status:"human_registration",repo_common_dir:$repo,
+      owner:{harness:.harness,session:.session,terminal:.terminal,worktree:.worktree,run_id:.run_id}}}' \
+  "$STATE/pm/scopes/$SKC/ownership.json" >"$TMPROOT/new-owner.json"
+mv "$TMPROOT/new-owner.json" "$STATE/pm/scopes/$SKC/ownership.json"
+write_handoff termA SUCCESSOR_LAUNCHED termC "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+jq --slurpfile owner "$STATE/pm/scopes/$SKC/ownership.json" '
+  .schema="afk-pm-handoff/3" |
+  .old=($owner[0]|{harness,session,terminal,worktree,run_id,identity}) |
+  .expected_old={schema:"afk-pm-expected-owner/1",owner:.old,control:$owner[0].control}' \
+  "$STATE/pm/scopes/$SKC/handoff.json" >"$TMPROOT/new-handoff.json"
+mv "$TMPROOT/new-handoff.json" "$STATE/pm/scopes/$SKC/handoff.json"
+mkdir -p "$STATE/pm/scopes/$SKC/transitions/pm-t"
+evidence_dir="$STATE/pm/scopes/$SKC/transitions/pm-t"
+jq -nc --arg p "$REPO" '{schema:"afk-pm-bootstrap-intent/1",transition_id:"pm-t",harness:"claude",worktree:{id:"w",path:$p},run_id:null,continuation_sha256:"sha256:x"}' >"$evidence_dir/bootstrap-intent.json"
+jq -nc --arg p "$REPO" '{schema:"afk-pm-launch-create/1",transition_id:"pm-t",harness:"claude",worktree:{id:"w",path:$p},run_id:null,continuation_sha256:"sha256:x",command_sha256:"sha256:c",create_id:"sha256:id"}' >"$evidence_dir/launch-create.json"
+jq '.schema="afk-pm-launch-attempt/1"' "$evidence_dir/launch-create.json" >"$evidence_dir/launch-attempt.json"
+jq '.schema="afk-pm-launch-receipt/2" | . + {accepted:true,terminal:"termC",identity:null}' "$evidence_dir/launch-create.json" >"$evidence_dir/launch-receipt.json"
+set_terminals '{"terminals":[{"handle":"termA","connected":true,"orphaned":false}]}'
+assert_eq "matching handoff projects verified control evidence" \
+  "$(lookup "$REPO" | jq -r '.state+":"+.handoff.evidence+":"+(.handoff.expected_old.control.revision|tostring)')" \
+  'handoff_in_progress:verified:7'
+cp "$STATE/pm/scopes/$SKC/handoff.json" "$TMPROOT/intact-handoff.json"
+jq 'del(.expected_old)' "$TMPROOT/intact-handoff.json" >"$STATE/pm/scopes/$SKC/handoff.json"
+assert_eq "new handoff cannot lose its expected owner" "$(lookup "$REPO" | jq -r '.state+":"+.reason')" unknown:PM_HANDOFF_CONTROL_CONFLICT
+jq '.state="FUTURE"' "$TMPROOT/intact-handoff.json" >"$STATE/pm/scopes/$SKC/handoff.json"
+assert_eq "unsupported handoff state is invalid" "$(lookup "$REPO" | jq -r '.state+":"+.reason')" unknown:PM_HANDOFF_INVALID
+cp "$TMPROOT/intact-handoff.json" "$STATE/pm/scopes/$SKC/handoff.json"
+mv "$evidence_dir/launch-receipt.json" "$TMPROOT/receipt-absent.json"
+assert_eq "missing receipt cannot authorize successor" "$(lookup "$REPO" | jq -r '.state+":"+.reason')" unknown:PM_LAUNCH_EVIDENCE_CONFLICT
+mv "$TMPROOT/receipt-absent.json" "$evidence_dir/launch-receipt.json"
+jq '.create_id="sha256:wrong"' "$evidence_dir/launch-receipt.json" >"$TMPROOT/receipt-invalid.json"
+mv "$TMPROOT/receipt-invalid.json" "$evidence_dir/launch-receipt.json"
+assert_eq "changed receipt cannot authorize successor" "$(lookup "$REPO" | jq -r '.state+":"+.reason')" unknown:PM_LAUNCH_EVIDENCE_CONFLICT
+ORCA_TERMINAL_HANDLE=termC run_afk paperclip-take --slug proj1 --json
+assert_eq "changed receipt refuses take" "$(jq -r .result <<<"$OUT_TEXT")" PAPERCLIP_NOT_OWNER
+jq '.create_id="sha256:id"' "$evidence_dir/launch-receipt.json" >"$TMPROOT/receipt-valid.json"
+mv "$TMPROOT/receipt-valid.json" "$evidence_dir/launch-receipt.json"
+jq '.control.revision=8' "$STATE/pm/scopes/$SKC/ownership.json" >"$TMPROOT/new-owner.json"
+mv "$TMPROOT/new-owner.json" "$STATE/pm/scopes/$SKC/ownership.json"
+assert_eq "changed revision holds handoff and names conflict" \
+  "$(lookup "$REPO" | jq -r '.state+":"+.reason+":"+(.handoff|type)')" \
+  'unknown:PM_HANDOFF_CONTROL_CONFLICT:null'
+write_owner termB session-b "$TMPROOT/repo-wt2" >/dev/null
+set_terminals '{"terminals":[{"handle":"termA","connected":true,"orphaned":false},{"handle":"termB","connected":true,"orphaned":false}]}'
+assert_eq "conflicting scope cannot select a second owner" \
+  "$(lookup "$REPO" | jq -r '.state+":"+.reason+":"+(.owner|type)')" \
+  'ambiguous:PM_HANDOFF_CONTROL_CONFLICT:null'
 
 # Deleted worktrees are still reapable for legacy rows when Orca proves stale.
 reset_state
