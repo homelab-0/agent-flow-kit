@@ -881,6 +881,28 @@ afk_pc_entry_outcome() {
 # in order, then either the final status or a self-block. Reads/writes the
 # caller's `ledger`/`actions` locals directly and sets AFK_PC_ABORT when the
 # whole agent must stop for this pass (credential rejection or a rate limit).
+# Keep only fixed, recognized fields from a final-status validation error.
+# The response body is untrusted: arbitrary error text never reaches the
+# ledger or operator output, even when it is valid JSON.
+afk_pc_final_hold() { # <status> <body> <final_status> <run_id>
+  local LC_ALL=C http_status="$1" body="$2" final_status="$3" run_id="$4"
+  # Parse only complete JSON within a fixed byte limit. Truncating first
+  # discards valid allowlisted fields that appear late in the response.
+  (( ${#body} <= 65536 )) || body=""
+  jq -nc --arg http "$http_status" --arg body "$body" --arg status "$final_status" --arg run "$run_id" '
+    (try ($body | fromjson) catch {} | if type == "object" then . else {} end) as $error
+    | ($error.code // (if ($error.error | type) == "object" then $error.error.code else null end)) as $code
+    | ($error.missing_field // $error.missingField //
+       (if ($error.details | type) == "object" then ($error.details.missing_field // $error.details.missingField) else null end)) as $field
+    | ($error.requestId // $error.request_id // null) as $request
+    | {status:$status, http_status:($http | tonumber), reason:"validation_rejected"}
+    + (if $code == "invalid_issue_disposition" then {code:$code} else {} end)
+    + (if $field == "review_path" then {missing_field:$field} else {} end)
+    + (if ($request | type) == "string" and ($request | test("^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$"))
+       then {request_id:$request} else {} end)
+    + (if ($run | test("^[A-Za-z0-9_-]{1,64}$")) then {run_id:$run} else {} end)'
+}
+
 afk_pc_report_cycle() {
   local api_url="$1" key="$2" agent_id="$3" id="$4" identifier="$5" status_file_dir="$6"
   AFK_PC_ABORT=false
@@ -912,7 +934,7 @@ afk_pc_report_cycle() {
   mapfile -t files < <(afk_pc_spool_files "$id")
   afk_pc_spool_unlock "$spool_lock"
   local prev; prev="$(jq -c --arg id "$id" '.issues[$id] // empty' <<<"$ledger")"
-  local state qid prev_applied action_text declared_text composed pending_final claim_pending fixed pm_start_state pm_confirmed
+  local state qid prev_applied action_text declared_text composed pending_final claim_pending fixed pm_start_state pm_confirmed held_final
   state="$(jq -r '.state // empty' <<<"$prev")"
   # A refused (waiting_setup) or project-changed (stopped) issue has no PM:
   # its cycle is the fixed self-block text alone, and nothing is drained.
@@ -945,6 +967,8 @@ afk_pc_report_cycle() {
   # A final whose comment went out but whose status PATCH failed is retried
   # from the ledger: its spool file is already gone.
   pending_final="$(jq -r '.pending_final // empty' <<<"$prev")"
+  held_final=false
+  [[ -n "$pending_final" && "$(jq -r '.final_delivery_hold.status // empty' <<<"$prev")" == "$pending_final" ]] && held_final=true
   claim_pending="$(jq -r '.claim_comment_pending // false' <<<"$prev")"
   # An attempted claim is reconciled by the read-only issue sweep. It never
   # causes a self-wake merely to retry or re-check a possibly posted comment.
@@ -962,7 +986,7 @@ afk_pc_report_cycle() {
     composed="$(afk_pc_action_text none "" "$status_file_dir/$id.json" "$text_base")"
   fi
 
-  if ! { (( ${#files[@]} > 0 )) || [[ "$composed" != "$prev_applied" || -n "$pending_final" || "$claim_pending" == true || -n "$due" ]]; }; then
+  if ! { (( ${#files[@]} > 0 )) || [[ "$composed" != "$prev_applied" || ( -n "$pending_final" && "$held_final" != true ) || "$claim_pending" == true || -n "$due" ]]; }; then
     [[ "$pm_confirmed" == true ]] && ledger="$(jq -c --arg id "$id" 'del(.issues[$id].pm_confirmed)' <<<"$ledger")"
     return 0
   fi
@@ -1007,7 +1031,7 @@ afk_pc_report_cycle() {
 
   # Invariant: from here on, every exit except a 404/410 (issue gone) goes
   # through the final status or the self-block below.
-  local final_sent=false final_status="" stop=false cred=false
+  local final_sent=false final_status="" stop=false cred=false storage_failed=false
   [[ -n "$pending_final" ]] && { final_sent=true; final_status="$pending_final"; }
 
   # AC-10: the claim comment for an issue adopted during a pause.
@@ -1106,20 +1130,44 @@ afk_pc_report_cycle() {
     [[ "$stop" == true ]] && break
   done
 
-  if [[ "$final_sent" == true && "$cred" == false ]]; then
+  if [[ "$final_sent" == true && "$cred" == false && "$held_final" != true ]]; then
     local fr fh
     fr="$(afk_pc_curl PATCH "$api_url/api/issues/$id" "$key" "$run_id" "$(jq -nc --arg s "$final_status" '{status:$s}')")"
     fh="${fr%%$'\n'*}"
     if [[ "$fh" == 2?? ]]; then
-      ledger="$(jq -c --arg id "$id" '.issues[$id].state = "closed" | del(.issues[$id].pending_final, .issues[$id].reblock_due)' <<<"$ledger")"
+      ledger="$(jq -c --arg id "$id" '.issues[$id].state = "closed" | del(.issues[$id].pending_final, .issues[$id].final_delivery_hold, .issues[$id].reblock_due)' <<<"$ledger")"
       afk_pc_spool_dead_all "$id"
       [[ "$due" == strand ]] && actions="$(jq -c --arg t "PAPERCLIP_STRAND_REPAIRED: $identifier" '. + [$t]' <<<"$actions")"
       actions="$(jq -c --arg t "final ($final_status): $identifier" '. + [$t]' <<<"$actions")"
       return 0
     fi
-    # the final PATCH failed: pending_final stays in the ledger for the next
-    # pass, and this one falls through to the self-block invariant.
-    actions="$(jq -c --arg t "final status not applied, retrying next pass: $identifier" '. + [$t]' <<<"$actions")"
+    # A 400/422 is a permanent validation rejection for this exact intent.
+    # Persist the hold before re-blocking; a crash cannot re-enable retries.
+    if [[ "$fh" == 400 || "$fh" == 422 ]]; then
+      local hold diagnostic
+      hold="$(afk_pc_final_hold "$fh" "${fr#*$'\n'}" "$final_status" "$run_id")"
+      ledger="$(jq -c --arg id "$id" --argjson hold "$hold" '.issues[$id].final_delivery_hold = $hold' <<<"$ledger")"
+      if ! afk_state_file_write "$ledger_path" "$ledger"; then
+        AFK_PC_STORAGE_ERROR=true
+        AFK_PC_ABORT=true
+        actions="$(jq -c --arg t "PAPERCLIP_STORAGE_ERROR: final delivery hold was not saved for $identifier" '. + [$t]' <<<"$actions")"
+        # The self-block below is remote and still owed (the invariant).
+        storage_failed=true
+      else
+        diagnostic="PAPERCLIP_FINAL_DELIVERY_HELD ($fh"
+        [[ "$(jq -r '.code // empty' <<<"$hold")" == invalid_issue_disposition ]] && diagnostic+=" invalid_issue_disposition"
+        [[ "$(jq -r '.missing_field // empty' <<<"$hold")" == review_path ]] && diagnostic+=" missing review_path"
+        diagnostic+="): $identifier"
+        actions="$(jq -c --arg t "$diagnostic" '. + [$t]' <<<"$actions")"
+      fi
+    elif [[ "$fh" == 401 || "$fh" == 403 ]]; then
+      cred=true
+      actions="$(jq -c --arg t "PAPERCLIP_CREDENTIAL_REJECTED: $identifier" '. + [$t]' <<<"$actions")"
+    else
+      # Transport, rate-limit and conflict retain their retry behavior and
+      # never acquire a validation hold.
+      actions="$(jq -c --arg t "final status not applied, retrying next pass: $identifier" '. + [$t]' <<<"$actions")"
+    fi
   fi
 
   # Recompute against the post-loop state: a question entry sent above may
@@ -1147,6 +1195,7 @@ afk_pc_report_cycle() {
   else
     actions="$(jq -c --arg t "PAPERCLIP_SELF_BLOCK_FAILED: $identifier" '. + [$t]' <<<"$actions")"
   fi
+  [[ "$storage_failed" == true ]] && return 1
   [[ "$cred" == true ]] && { AFK_PC_ABORT=true; return; }
   actions="$(jq -c --arg t "report cycle: $identifier" '. + [$t]' <<<"$actions")"
 }
@@ -1378,7 +1427,7 @@ afk_cmd_paperclip_poll() { # <json_mode>
   # One host, one key (AD-23): read once, used for every project this host
   # serves. `while` runs once; an early `break` is a pass that did not
   # complete.
-  local any_agent_ok=false result="" actions="[]" key=""
+  local any_agent_ok=false result="" actions="[]" key="" AFK_PC_STORAGE_ERROR=false
   local stop_text="Stopped: project changed after claim; reassign to restart"
   while :; do
     key="$(afk_pc_read_key "$key_ref")" || { result="$(afk_pc_key_code $?)"; break; }
@@ -2002,30 +2051,39 @@ afk_cmd_paperclip_poll() { # <json_mode>
         # The report sweep is defense in depth for held starts that did not
         # reach the inbox start hook, and shares its pass-level one-start guard.
         afk_pc_retry_report_pm_start "$rid" "$agent_id"
-        afk_pc_report_cycle "$api_url" "$key" "$agent_id" "$rid" "$r_ident" "$status_file_dir"
+        afk_pc_report_cycle "$api_url" "$key" "$agent_id" "$rid" "$r_ident" "$status_file_dir" || true
         [[ "$AFK_PC_ABORT" == true ]] && break
       done
     fi
     break
   done
   key=""
-  local agents_json
-  agents_json="$(jq -nc --arg a "$agent_id" --arg r "$result" --argjson acts "$actions" '[{agent_id:$a, result:$r, actions:$acts}]')"
+  [[ "$AFK_PC_STORAGE_ERROR" == true ]] && result="PAPERCLIP_STORAGE_ERROR"
 
   # AC-3: exit non-zero when nothing completed, and leave the ledger
   # untouched. The host's reason (vault-unavailable, key mismatch,
   # unreachable, ...) is still reported below rather than swapped for
   # afk_pc_emit_refusal.
   local ledger_counts="{}" overall="completed"
-  if [[ "$any_agent_ok" == false ]]; then
+  if [[ "$AFK_PC_STORAGE_ERROR" == true ]]; then
+    overall="PAPERCLIP_STORAGE_ERROR"
+  elif [[ "$any_agent_ok" == false ]]; then
     overall="PAPERCLIP_UNREACHABLE"
     [[ "$result" == PAPERCLIP_ADOPTION_MODE_MISMATCH ]] && overall="$result"
   else
     ledger="$(jq -c --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '.last_successful_pass = $t' <<<"$ledger")"
-    afk_state_file_write "$ledger_path" "$ledger"
-    ledger_counts="$(jq -c '[.issues[].state] | reduce .[] as $s ({}; .[$s] = (.[$s] // 0) + 1)' <<<"$ledger")"
-    [[ "$pause_kind" != none ]] && overall="PAPERCLIP_PAUSED"
+    if ! afk_state_file_write "$ledger_path" "$ledger"; then
+      overall="PAPERCLIP_STORAGE_ERROR"
+      result="PAPERCLIP_STORAGE_ERROR"
+      actions="$(jq -c '. + ["PAPERCLIP_STORAGE_ERROR: poll ledger was not saved"]' <<<"$actions")"
+    else
+      ledger_counts="$(jq -c '[.issues[].state] | reduce .[] as $s ({}; .[$s] = (.[$s] // 0) + 1)' <<<"$ledger")"
+    fi
+    [[ "$pause_kind" != none && "$overall" == completed ]] && overall="PAPERCLIP_PAUSED"
   fi
+
+  local agents_json
+  agents_json="$(jq -nc --arg a "$agent_id" --arg r "$result" --argjson acts "$actions" '[{agent_id:$a, result:$r, actions:$acts}]')"
 
   if [[ "$json_mode" == true ]]; then
     jq -nc --arg r "$overall" --argjson agents "$agents_json" --argjson lc "$ledger_counts" \
@@ -2036,7 +2094,7 @@ afk_cmd_paperclip_poll() { # <json_mode>
     )
     printf 'paperclip-poll: %s\n' "$overall"
   fi
-  [[ "$any_agent_ok" == true ]] || return 1
+  [[ "$any_agent_ok" == true && "$overall" != PAPERCLIP_STORAGE_ERROR ]] || return 1
   return 0
 }
 
