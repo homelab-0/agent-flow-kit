@@ -83,6 +83,10 @@ if [[ ! -f "$f" ]]; then
 fi
 code="$(head -1 "$f")"
 [[ "$code" == NETFAIL ]] && exit 7
+# Inject a failure at the durable hold write, after the final PATCH returns.
+if [[ -f "$CURL_STUB_FIXTURES/.fail_hold_write" && "$method" == PATCH && "$code" == 422 ]]; then
+  mkdir -p "$AFK_STATE_DIR/paperclip/ledger.json.afk-tmp"
+fi
 if [[ "$method" == POST && "$path" == */comments && "$code" == 2?? &&
       ! -f "$CURL_STUB_FIXTURES/.claim_readback_off" ]] &&
    jq -e '.body | strings | contains("<!-- afk-claim:")' <<<"$post_body" >/dev/null 2>&1; then
@@ -934,6 +938,182 @@ run_afk --json
 assert_eq "final: ledger closed" "$(jq -r --arg id "$ISSUE1" '.issues[$id].state' "$STATE/paperclip/ledger.json")" "closed"
 assert_missing "final: the final entry itself is gone" "$STATE/paperclip/spool/$ISSUE1/002.json"
 assert_eq "final: the later entry moved to dead/" "$(find "$STATE/paperclip/spool/$ISSUE1/dead" -name '003.json' 2>/dev/null | wc -l | tr -d ' ')" "1"
+
+# A rejected final status is distinct from its already delivered comment.
+# The hold survives a new process on every run_afk invocation and a changed
+# progress text does not turn the held final into another PATCH.
+hold_fixture_start=$SECONDS
+new_scenario cycle_final_held
+write_config
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+seed_working "$ISSUE1" PROJ-1 working
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+route POST "/api/agents/$AGENT1/wakeup" 202 '{"id":"run-held"}'
+route PATCH "/api/issues/$ISSUE1" 200 '{}'
+route_nth PATCH "/api/issues/$ISSUE1" 2 422 \
+  '{"code":"invalid_issue_disposition","details":{"missing_field":"review_path"},"requestId":"123e4567-e89b-12d3-a456-426614174000"}'
+route POST "/api/issues/$ISSUE1/comments" 201 '{}'
+write_spool "$ISSUE1" 001 "{\"id\":\"$E1\",\"kind\":\"final\",\"status\":\"in_review\",\"body\":\"review ready\"}"
+run_afk --json
+assert_eq "held final: comment delivered once, issue open" \
+  "$(grep -c "^POST /api/issues/$ISSUE1/comments$" "$LOG") $(jq -r --arg id "$ISSUE1" '.issues[$id].state' "$STATE/paperclip/ledger.json")" "1 working"
+assert_missing "held final: delivered comment left the spool" "$STATE/paperclip/spool/$ISSUE1/001.json"
+assert_eq "held final: intent and diagnostic survive" \
+  "$(jq -r --arg id "$ISSUE1" '.issues[$id] | [.pending_final, .final_delivery_hold.status, .final_delivery_hold.http_status, .final_delivery_hold.code, .final_delivery_hold.missing_field, .final_delivery_hold.request_id, .final_delivery_hold.run_id] | join(" ")' "$STATE/paperclip/ledger.json")" \
+  "in_review in_review 422 invalid_issue_disposition review_path 123e4567-e89b-12d3-a456-426614174000 run-held"
+assert_contains "held final: one actionable local diagnostic" "$OUT_TEXT" "PAPERCLIP_FINAL_DELIVERY_HELD (422 invalid_issue_disposition missing review_path): PROJ-1"
+for pass in 1 2 3; do run_afk --json; done
+assert_eq "held final: three quiet passes and restarts do not write" \
+  "$(grep -c "^POST /api/agents/$AGENT1/wakeup$" "$LOG") $(grep -c "^PATCH /api/issues/$ISSUE1$" "$LOG") $(grep -c "^POST /api/issues/$ISSUE1/comments$" "$LOG")" "1 3 1"
+assert_absent "held final: later pass has no repeated notice" "$OUT_TEXT" "PAPERCLIP_FINAL_DELIVERY_HELD"
+mkdir -p "$STATE/paperclip/status"
+printf '{"schema":"afk-paperclip-status/1","text":"new progress","version":2}\n' >"$STATE/paperclip/status/$ISSUE1.json"
+run_afk --json
+assert_eq "held final: changed progress never resends final PATCH" \
+  "$(grep -c '"status":"in_review"' "$BODYLOG")" "1"
+
+# Legacy pending_final remains retryable, and a transient final rejection
+# keeps the existing retry path rather than installing a hold.
+for failure in 500 429 NETFAIL; do
+  new_scenario "cycle_final_transient_${failure}"
+  write_config
+  route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+  seed_working "$ISSUE1" PROJ-1 working '{"pending_final":"done"}'
+  route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+  route POST "/api/agents/$AGENT1/wakeup" 202 '{"id":"run-retry"}'
+  route PATCH "/api/issues/$ISSUE1" 200 '{}'
+  route_nth PATCH "/api/issues/$ISSUE1" 2 "$failure" '{}'
+  run_afk --json
+  assert_eq "transient final $failure: no hold, intent retained" \
+    "$(jq -r --arg id "$ISSUE1" '.issues[$id] | [.pending_final, (.final_delivery_hold // null)] | map(tostring) | join(" ")' "$STATE/paperclip/ledger.json")" "done null"
+  if [[ "$failure" == 500 ]]; then
+    run_afk --json
+    assert_eq "transient final $failure: legacy retry succeeds and closes" \
+      "$(jq -r --arg id "$ISSUE1" '.issues[$id] | [.state, (.pending_final // null)] | map(tostring) | join(" ")' "$STATE/paperclip/ledger.json")" "closed null"
+  fi
+done
+
+new_scenario cycle_final_malformed
+write_config
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+seed_working "$ISSUE1" PROJ-1 working '{"pending_final":"in_review"}'
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+route POST "/api/agents/$AGENT1/wakeup" 202 '{"id":"run-bad"}'
+route PATCH "/api/issues/$ISSUE1" 200 '{}'
+route_nth PATCH "/api/issues/$ISSUE1" 2 400 'SECRET-LIKE-ARBITRARY-TEXT'
+run_afk --json
+assert_eq "malformed final: status alone holds legacy intent" \
+  "$(jq -r --arg id "$ISSUE1" '.issues[$id] | [.pending_final, .final_delivery_hold.http_status, .final_delivery_hold.reason] | join(" ")' "$STATE/paperclip/ledger.json")" \
+  "in_review 400 validation_rejected"
+assert_absent "malformed final: raw response absent from ledger" "$(cat "$STATE/paperclip/ledger.json")" "SECRET-LIKE-ARBITRARY-TEXT"
+assert_absent "malformed final: raw response absent from operator output" "$OUT_TEXT" "SECRET-LIKE-ARBITRARY-TEXT"
+
+new_scenario cycle_final_empty_body
+write_config
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+seed_working "$ISSUE1" PROJ-1 working '{"pending_final":"in_review"}'
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+route POST "/api/agents/$AGENT1/wakeup" 202 '{"id":"run-empty"}'
+route PATCH "/api/issues/$ISSUE1" 200 '{}'
+route_nth PATCH "/api/issues/$ISSUE1" 2 422
+run_afk --json
+assert_eq "empty final response: status alone holds legacy intent" \
+  "$(jq -r --arg id "$ISSUE1" '.issues[$id] | [.pending_final, .final_delivery_hold.http_status, .final_delivery_hold.reason] | join(" ")' "$STATE/paperclip/ledger.json")" \
+  "in_review 422 validation_rejected"
+
+new_scenario cycle_final_untrusted_json
+write_config
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+seed_working "$ISSUE1" PROJ-1 working '{"pending_final":"in_review"}'
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+route POST "/api/agents/$AGENT1/wakeup" 202 '{"id":"run-json"}'
+route PATCH "/api/issues/$ISSUE1" 200 '{}'
+untrusted_error="$(jq -nc --arg secret 'SECRET-LIKE-ARBITRARY-TEXT' --arg credential 'sk_test_FAKE_CREDENTIAL_12345678901234567890' --arg long "$(printf 'x%.0s' {1..9000})" \
+  '{code:"unrecognized", details:{missing_field:$secret}, requestId:$credential, message:($secret + "\\n" + $long)}')"
+route_nth PATCH "/api/issues/$ISSUE1" 2 422 "$untrusted_error"
+run_afk --json
+assert_eq "untrusted JSON: only allowlisted metadata retained" \
+  "$(jq -r --arg id "$ISSUE1" '.issues[$id].final_delivery_hold | keys | join(" ")' "$STATE/paperclip/ledger.json")" \
+  "http_status reason run_id status"
+assert_absent "untrusted JSON: arbitrary values absent from ledger" "$(cat "$STATE/paperclip/ledger.json")" "SECRET-LIKE-ARBITRARY-TEXT"
+assert_absent "untrusted JSON: arbitrary values absent from output" "$OUT_TEXT" "SECRET-LIKE-ARBITRARY-TEXT"
+assert_eq "credential-shaped request ID: hold omits unqualified correlation" \
+  "$(jq -r --arg id "$ISSUE1" '.issues[$id].final_delivery_hold | has("request_id")' "$STATE/paperclip/ledger.json")" "false"
+assert_absent "credential-shaped request ID: absent from ledger" \
+  "$(cat "$STATE/paperclip/ledger.json")" "sk_test_FAKE_CREDENTIAL_12345678901234567890"
+assert_absent "credential-shaped request ID: absent from output" "$OUT_TEXT" "sk_test_FAKE_CREDENTIAL_12345678901234567890"
+
+new_scenario cycle_final_oversized_valid_json
+write_config
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+seed_working "$ISSUE1" PROJ-1 working '{"pending_final":"in_review"}'
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+route POST "/api/agents/$AGENT1/wakeup" 202 '{"id":"run-large"}'
+route PATCH "/api/issues/$ISSUE1" 200 '{}'
+large_error="$(jq -nc --arg padding "$(printf 'x%.0s' {1..9000})" \
+  '{padding:$padding, code:"invalid_issue_disposition", details:{missing_field:"review_path"}, requestId:"123e4567-e89b-12d3-a456-426614174000"}')"
+route_nth PATCH "/api/issues/$ISSUE1" 2 422 "$large_error"
+run_afk --json
+assert_eq "oversized valid JSON: allowlisted fields survive" \
+  "$(jq -r --arg id "$ISSUE1" '.issues[$id].final_delivery_hold | [.code, .missing_field, .request_id] | join(" ")' "$STATE/paperclip/ledger.json")" \
+  "invalid_issue_disposition review_path 123e4567-e89b-12d3-a456-426614174000"
+assert_absent "oversized valid JSON: padding not retained" "$(cat "$STATE/paperclip/ledger.json")$OUT_TEXT" "$(printf 'x%.0s' {1..100})"
+
+new_scenario cycle_final_hold_write_failure
+write_config
+route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+seed_working "$ISSUE1" PROJ-1 working '{"pending_final":"in_review"}'
+route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+route POST "/api/agents/$AGENT1/wakeup" 202 '{"id":"run-fail"}'
+route PATCH "/api/issues/$ISSUE1" 200 '{}'
+route_nth PATCH "/api/issues/$ISSUE1" 2 422 '{"code":"invalid_issue_disposition"}'
+touch "$FIXDIR/.fail_hold_write"
+run_afk --json
+assert_eq "failed hold write: CLI fails" "$RC" "1"
+assert_contains "failed hold write: explicit storage error" "$OUT_TEXT" "PAPERCLIP_STORAGE_ERROR"
+assert_absent "failed hold write: no persisted-hold claim" "$OUT_TEXT" "PAPERCLIP_FINAL_DELIVERY_HELD"
+assert_eq "failed hold write: pending intent remains without durable hold" \
+  "$(jq -r --arg id "$ISSUE1" '[.issues[$id].pending_final, (.issues[$id].final_delivery_hold // null), .last_successful_pass] | map(tostring) | join(" ")' "$STATE/paperclip/ledger.json")" \
+  "in_review null null"
+assert_eq "failed hold write: self-block still attempted" "$(grep -c "^PATCH /api/issues/$ISSUE1$" "$LOG")" "3"
+assert_eq "failed hold write: cleanup PATCH is blocked" \
+  "$(awk 'BEGIN{RS="\n---\n"} {last=$0} END{print last}' "$BODYLOG" | jq -r '.status')" "blocked"
+assert_eq "failed hold write: no final status re-send" "$(grep -c '"status":"in_review"' "$BODYLOG")" "1"
+
+for rejected_status in 401 403 409; do
+  new_scenario "cycle_final_${rejected_status}"
+  write_config
+  route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+  seed_working "$ISSUE1" PROJ-1 working '{"pending_final":"done"}'
+  route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+  route POST "/api/agents/$AGENT1/wakeup" 202 '{"id":"run-other"}'
+  route PATCH "/api/issues/$ISSUE1" 200 '{}'
+  route_nth PATCH "/api/issues/$ISSUE1" 2 "$rejected_status" '{}'
+  run_afk --json
+  assert_eq "final $rejected_status: intent retained without validation hold" \
+    "$(jq -r --arg id "$ISSUE1" '.issues[$id] | [.pending_final, (.final_delivery_hold // null)] | map(tostring) | join(" ")' "$STATE/paperclip/ledger.json")" "done null"
+  if [[ "$rejected_status" == 401 || "$rejected_status" == 403 ]]; then
+    assert_contains "final $rejected_status: credential stop reported" "$OUT_TEXT" "PAPERCLIP_CREDENTIAL_REJECTED"
+  fi
+done
+for rejected_status in 401 403; do
+  new_scenario "cycle_final_${rejected_status}_two_issues"
+  write_config
+  route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+  seed_working "$ISSUE1" PROJ-1 working '{"pending_final":"done"}'
+  jq --arg first "$ISSUE1" --arg second "$ISSUE2" '.issues[$second] = (.issues[$first] | .identifier = "PROJ-2" | .pending_final = "done")' \
+    "$STATE/paperclip/ledger.json" >"$STATE/paperclip/ledger.json.tmp" && mv "$STATE/paperclip/ledger.json.tmp" "$STATE/paperclip/ledger.json"
+  route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"},{\"id\":\"$ISSUE2\"}]"
+  route POST "/api/agents/$AGENT1/wakeup" 202 '{"id":"run-auth"}'
+  route PATCH "/api/issues/$ISSUE1" 200 '{}'
+  route_nth PATCH "/api/issues/$ISSUE1" 2 "$rejected_status" '{}'
+  run_afk --json
+  assert_contains "final $rejected_status: first issue reports credential rejection" "$OUT_TEXT" "PAPERCLIP_CREDENTIAL_REJECTED: PROJ-1"
+  assert_eq "final $rejected_status: second issue receives no wake, PATCH or comment" \
+    "$(grep -Ec "^(PATCH|POST) /api/issues/$ISSUE2(/comments)?$" "$LOG" || true)" "0"
+  assert_eq "final $rejected_status: only first issue wakes" "$(grep -c "^POST /api/agents/$AGENT1/wakeup$" "$LOG")" "1"
+done
+printf '  held-final fixture runtime: %ss\n' "$((SECONDS - hold_fixture_start))"
 
 new_scenario cycle_question
 write_config

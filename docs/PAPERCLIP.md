@@ -338,7 +338,23 @@ for that issue until the next pass. An entry with an unknown `kind`, a
 `final` status other than `in_review`/`done`, or a `question` without a
 short `question_id` goes to `dead/` unposted. If a `final` comment lands but
 its status PATCH fails, the status is kept in the ledger as `pending_final`
-and retried on the next pass without re-posting the comment.
+without re-posting the comment. A transport failure, `429`, or `5xx` retains
+the existing retry path. A final-status `400` or `422` instead records a
+durable `final_delivery_hold` on that exact `pending_final` intent. Quiet
+passes and restarts do not wake Paperclip or retry the held PATCH. The issue
+is not marked closed; the delivered comment and rejected status remain
+distinct. The ledger hold retains the HTTP status, recognized error code and
+missing field, plus a UUID-form request ID and validated run ID when available. It never
+stores raw response text or headers. The first rejection emits a local
+`PAPERCLIP_FINAL_DELIVERY_HELD` action with bounded diagnostic fields.
+If saving the hold fails, the poll command exits with `PAPERCLIP_STORAGE_ERROR`
+and does not claim that the hold was saved. The issue is still self-blocked
+before the pass stops, so it is not left in_progress. The last persisted `pending_final`
+may be retried after restart if storage becomes writable; suppression across
+restarts applies only after a successful hold write.
+There is no automatic release on restart, time, progress updates or PM
+rollover. An operator must arrange a real next-action owner and resolve the
+underlying review path or validation issue before any separate recovery work.
 
 A `422`/`400` moves that one entry to `spool/<issue-id>/dead/` with a
 `.reason` file and continues with the rest. A `404`/`410` drops the whole
