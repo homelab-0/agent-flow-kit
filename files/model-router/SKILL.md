@@ -130,6 +130,19 @@ pool choice (the profile has zero or several entitlements), or whose profile or
 harness/profile pair the catalog does not list, is refused; a metered profile is
 refused unless the route request itself carried `allow_metered: true`.
 
+`placement_required` follows the overridden profile too: the trusted catalog's
+`hosting` class decides it (`vendor` is false, `local` is true), so a local
+recommendation overridden to a vendor profile is not stamped as needing
+placement, and the reverse is. `placement_policy` is the router's, kept
+verbatim; it is never widened or replaced by a default. An override is refused
+when the route response's `placement_policy` is not a non-empty string (for
+any final profile, vendor included), when the final profile's hosting is
+missing or anything other than `vendor` or
+`local`, or when it is local and the catalog does not define the policy or the
+policy admits none of the profile's physical placements. Such an override needs
+a new route decision, not a different stamp. The stamp still carries no physical
+placement; dispatch resolves that per attempt.
+
 An override may bypass ROUTER SCORING ONLY. It never bypasses `forbidden_for`,
 entitlement and billing restrictions, metered-spend authorization, or capability
 and placement constraints. The override record is audit provenance; the final
@@ -191,7 +204,8 @@ silently ignoring it, because a stale local route block that looks authoritative
 is worse than none.
 
 Placement is not stamped by you either. `placement_policy` and
-`placement_required` come from the router inside the stamp; the physical
+`placement_required` come from the router inside the stamp (an override
+re-derives only `placement_required`, as above); the physical
 placement is resolved late, per attempt, by dispatch.
 
 **Story sizing is checked before the launch, and it can refuse.** dispatch reads

@@ -28,6 +28,11 @@
 #                    entitlement pool follows the FINAL profile, read from the
 #                    trusted catalog; no catalog, an unknown profile or pair,
 #                    or a profile with other than one entitlement is refused.
+#                    placement_required follows the FINAL profile's catalog
+#                    hosting (vendor false, local true); placement_policy is
+#                    kept verbatim; a response policy that is not a non-empty
+#                    string, an unknown hosting class, or a local profile with
+#                    no placement that policy admits, is refused.
 #   --check          after writing, run agent-stamp-validate as an ADVISORY
 #                    early warning. It is not the final validation: dispatch.sh
 #                    re-validates immediately before every launch.
@@ -216,7 +221,7 @@ if [[ -n "$OV_HARNESS$OV_PROFILE" ]]; then
   OV_CATALOG="$(resolve_catalog)"
   [[ -n "$OV_CATALOG" ]] \
     || die "override refused: no trusted catalog resolved (AGENT_STAMP_VALIDATE_CATALOG_PATH, launcher.catalog_path, or the synced current.yaml), so the entitlement pool for $FINAL_PROFILE cannot be established"
-  ov_field() { FP="$FINAL_PROFILE" FH="$FINAL_HARNESS" yq -o=json -I=0 "$1" "$OV_CATALOG" 2>/dev/null; }
+  ov_field() { FP="$FINAL_PROFILE" FH="$FINAL_HARNESS" PP="${OV_POLICY:-}" yq -o=json -I=0 "$1" "$OV_CATALOG" 2>/dev/null; }
   [[ "$(ov_field '.profiles | tag')" == '"!!map"' ]] \
     || die "override refused: trusted catalog $OV_CATALOG is unreadable or malformed"
   [[ "$(ov_field '.profiles | has(strenv(FP))')" == true ]] \
@@ -253,8 +258,41 @@ if [[ -n "$OV_HARNESS$OV_PROFILE" ]]; then
     [[ "$OV_POOL" == \"*\" && "$OV_POOL" != '""' ]] \
       || die "override refused: $FINAL_PROFILE has a malformed entitlement pool in the trusted catalog"
   fi
+  # placement_required follows the FINAL profile's hosting class in the trusted
+  # catalog: vendor-hosted is never placed, local is always placed. Copying the
+  # overridden decision's flag would stamp e.g. a codex vendor profile as
+  # needing /v1/place. The router's placement_policy is kept VERBATIM — never
+  # widened, never defaulted — so a local final profile must have a physical
+  # placement that policy admits; otherwise there is nothing to place it on and
+  # choosing another policy would be a routing decision.
+  OV_POLICY="$(jq -r '.placement_policy | strings' "$PROFILE")"
+  [[ -n "$OV_POLICY" ]] \
+    || die "override refused: the route response's placement_policy is not a non-empty string"
+  OV_HOSTING="$(ov_field '.profiles[strenv(FP)].hosting')" \
+    || die "override refused: trusted catalog $OV_CATALOG is unreadable or malformed"
+  case "$OV_HOSTING" in
+    '"vendor"') OV_PLACEMENT=false ;;
+    '"local"')
+      OV_PLACEMENT=true
+      [[ "$(ov_field '.policies.placement_policy | tag')" == '"!!map"' \
+         && "$(ov_field '.policies.placement_policy | has(strenv(PP))')" == true \
+         && "$(ov_field '.policies.placement_policy[strenv(PP)].prefer_order | tag')" == '"!!seq"' ]] \
+        || die "override refused: placement policy $OV_POLICY is not defined in the trusted catalog $OV_CATALOG, so local placement for $FINAL_PROFILE cannot be established"
+      [[ "$(ov_field '.profiles[strenv(FP)].physical | tag')" == '"!!seq"' ]] \
+        || die "override refused: $FINAL_PROFILE has no physical placement list in the trusted catalog $OV_CATALOG (unreadable or malformed)"
+      ov_order="$(ov_field '.policies.placement_policy[strenv(PP)].prefer_order')" \
+        || die "override refused: trusted catalog $OV_CATALOG is unreadable or malformed"
+      ov_phys="$(ov_field '[.profiles[strenv(FP)].physical[].placement]')" \
+        || die "override refused: $FINAL_PROFILE has a malformed physical placement list in the trusted catalog"
+      jq -en --argjson o "$ov_order" --argjson p "$ov_phys" \
+           '[$p[] | strings | select(length > 0)] as $q | any($q[]; . as $x | any($o[]; . == $x))' >/dev/null 2>&1 \
+        || die "override refused: placement policy $OV_POLICY admits none of $FINAL_PROFILE's placements in the trusted catalog; the policy is kept verbatim, never widened"
+      ;;
+    *) die "override refused: $FINAL_PROFILE has no recognised hosting class (${OV_HOSTING:-unreadable}) in the trusted catalog, so placement_required cannot be established" ;;
+  esac
   PIN="$(jq -nc --argjson p "$OV_POOL" --argjson c "$OV_COST" --argjson m "$OV_METERED" \
-           '{entitlement_pool:$p, cost_class:$c, metered:$m}')"
+                --argjson r "$OV_PLACEMENT" \
+           '{entitlement_pool:$p, cost_class:$c, metered:$m, placement_required:$r}')"
   log "OVERRIDE recorded: ${OV_ACTOR} chose ${FINAL_HARNESS}/${FINAL_PROFILE} over the recommendation."
   log "  This is provenance only. It grants no bypass: the final fields are validated on their own merits."
 fi
@@ -283,7 +321,7 @@ jq \
      entitlement_pool: (if $pin == null then .entitlement_pool else $pin.entitlement_pool end),
      metered: (if $pin == null then .metered else $pin.metered end),
      placement_policy: .placement_policy,
-     placement_required: .placement_required,
+     placement_required: (if $pin == null then .placement_required else $pin.placement_required end),
      catalog_version: .catalog_version,
      expires_at: .expires_at,
      task: ({ story_id: $story, tags: $tags }
