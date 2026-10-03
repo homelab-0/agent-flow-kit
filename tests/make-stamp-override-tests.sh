@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# make-stamp-override-tests.sh — the isolated gate for the entitlement pool an
-# override stamps. Hermetic: --response mode, a fixture route response and a
+# make-stamp-override-tests.sh — the isolated gate for the entitlement pool and
+# placement requirement an override stamps. Hermetic: --response mode, a fixture route response and a
 # fixture catalog modelled on 1.9.1; no network, no router, no host state.
 #
 # Usage: tests/make-stamp-override-tests.sh
@@ -117,14 +117,94 @@ if routed "$WORK/req-yes.json" "$WORK/m1.json"; then
   assert_eq "metered with allow_metered true: pool, metered" "$(jq -r '[.entitlement_pool,.cost_class,.metered]|join("/")' "$WORK/m1.json")" openai-plus/metered/true
 else bad "metered with allow_metered true mints" "$(tail -2 "$WORK/err")"; fi
 
+echo "placement_required follows the final profile's catalog hosting; policy kept verbatim"
+# The incident's source: a local, placement-required decision.
+cat > "$WORK/resp-local.json" <<'JSON'
+{"harness":"claude","model_profile":"local-code-standard","effort":"medium","cost_class":"free",
+ "entitlement_pool":null,"placement_policy":"prefer-warm-local","placement_required":true,
+ "metered":false,"catalog_version":"sha256:deadbeef","expires_at":"2099-06-01T12:34:56Z"}
+JSON
+with_policy() { jq --arg p "$2" '.placement_policy=$p' "$1"; }
+place() { jq -r '[.placement_required, .placement_policy] | map(tostring) | join("/")' "$1"; }
+funding() { jq -r '[.entitlement_pool, .cost_class, .metered] | map(tostring) | join("/")' "$1"; }
+
+if ov "$WORK/p-lv.json" "$CATALOG" codex openai/strong "$WORK/resp-local.json"; then
+  assert_eq "incident local -> vendor: placement false, policy kept" "$(place "$WORK/p-lv.json")" false/prefer-warm-local
+  assert_eq "incident local -> vendor: funding from the catalog"     "$(funding "$WORK/p-lv.json")" openai-plus/subscription/false
+  assert_eq "incident local -> vendor: original recorded"            "$(jq -c .override.original "$WORK/p-lv.json")" '{"harness":"claude","model_profile":"local-code-standard"}'
+else bad "incident local -> vendor mints" "$(tail -2 "$WORK/err")"; fi
+
+if ov "$WORK/p-vl.json" "$CATALOG" claude local-code-standard; then
+  assert_eq "reverse vendor -> local: placement true, policy kept" "$(place "$WORK/p-vl.json")" true/prefer-warm-local
+  assert_eq "reverse vendor -> local: funding free, no pool"       "$(funding "$WORK/p-vl.json")" null/free/false
+else bad "reverse vendor -> local mints" "$(tail -2 "$WORK/err")"; fi
+
+assert_eq "same class vendor -> vendor: placement false" "$(place "$WORK/a.json")" false/prefer-warm-local
+yq '.profiles["local-code-edge"] = .profiles["local-code-standard"]
+    | .profiles["local-code-edge"].physical = [{"model_id":"qwen36-27b","placement":"cachyos-7900xtx"}]
+    | .routing_pairs += [{"harness":"claude","model_profile":"local-code-edge","bands":["standard"],"priority":3}]' \
+  "$CATALOG" > "$WORK/two-local.yaml"
+if ov "$WORK/p-ll.json" "$WORK/two-local.yaml" claude local-code-edge "$WORK/resp-local.json"; then
+  assert_eq "same class local -> local: placement true" "$(place "$WORK/p-ll.json")" true/prefer-warm-local
+else bad "same class local -> local mints" "$(tail -2 "$WORK/err")"; fi
+
+AGENT_STAMP_VALIDATE_CATALOG_PATH="" bash "$MAKE_STAMP" --response "$WORK/resp-local.json" --story-id T-1 --out "$WORK/p-n.json" 2>/dev/null
+assert_eq "no override from local: decision fields byte-for-byte" "$(jq -c "$proj" "$WORK/p-n.json")" "$(jq -c "$proj" "$WORK/resp-local.json")"
+
+with_policy "$WORK/resp-local.json" cluster-only > "$WORK/resp-local-cluster.json"
+if ov "$WORK/p-rv.json" "$CATALOG" codex openai/strong "$WORK/resp-local-cluster.json"; then
+  assert_eq "restricted cluster-only, local -> vendor: kept, not widened" "$(place "$WORK/p-rv.json")" false/cluster-only
+else bad "restricted local -> vendor mints" "$(tail -2 "$WORK/err")"; fi
+with_policy "$WORK/resp.json" edge-only > "$WORK/resp-edge.json"
+if ov "$WORK/p-rl.json" "$CATALOG" claude local-code-standard "$WORK/resp-edge.json"; then
+  assert_eq "restricted edge-only, vendor -> local: kept" "$(place "$WORK/p-rl.json")" true/edge-only
+else bad "restricted vendor -> local mints" "$(tail -2 "$WORK/err")"; fi
+yq '.profiles["local-code-standard"].physical = [{"model_id":"qwen36-27b","placement":"kserve-a5000"}]' "$CATALOG" > "$WORK/cluster-phys.yaml"
+refused "restricted edge-only admits no placement of the local profile" "$WORK/cluster-phys.yaml" claude local-code-standard "admits none" "$WORK/resp-edge.json"
+
+bad_ent no-hosting 'del(.profiles["openai/strong"].hosting)'
+refused "final hosting missing" "$WORK/no-hosting.yaml" codex openai/strong "no recognised hosting class" "$WORK/resp-local.json"
+bad_ent odd-hosting '.profiles["openai/strong"].hosting = "hybrid"'
+refused "final hosting unsupported" "$WORK/odd-hosting.yaml" codex openai/strong "no recognised hosting class" "$WORK/resp-local.json"
+bad_ent map-hosting '.profiles["openai/strong"].hosting = {"kind":"vendor"}'
+refused "final hosting malformed" "$WORK/map-hosting.yaml" codex openai/strong "no recognised hosting class" "$WORK/resp-local.json"
+bad_ent no-hosting-local 'del(.profiles["local-code-standard"].hosting)'
+refused "final local hosting missing (no guessed default)" "$WORK/no-hosting-local.yaml" claude local-code-standard "no recognised hosting class"
+bad_ent no-physical 'del(.profiles["local-code-standard"].physical)'
+refused "local profile without a physical list" "$WORK/no-physical.yaml" claude local-code-standard "no physical placement list"
+bad_ent no-policies 'del(.policies)'
+refused "local placement policy not in the catalog" "$WORK/no-policies.yaml" claude local-code-standard "not defined in the trusted catalog"
+bad_ent map-order '.policies.placement_policy["prefer-warm-local"].prefer_order = {"a":"cachyos-7900xtx"}'
+refused "local placement policy prefer_order not a list" "$WORK/map-order.yaml" claude local-code-standard "not defined in the trusted catalog"
+with_policy "$WORK/resp.json" nowhere > "$WORK/resp-nowhere.json"
+refused "unknown router placement policy for a local profile" "$CATALOG" claude local-code-standard "not defined in the trusted catalog" "$WORK/resp-nowhere.json"
+jq '.placement_policy=7' "$WORK/resp-local.json" > "$WORK/resp-numpolicy.json"
+refused "non-string placement policy" "$CATALOG" codex openai/strong "placement_policy is not a non-empty string" "$WORK/resp-numpolicy.json"
+
 echo "installed validator accepts the override stamp"
 if command -v agent-stamp-validate >/dev/null; then
+  # failed_checks <verdict>: the failing checks as name/reason_code, or the raw verdict if it is not JSON.
+  failed_checks() { jq -r '[.checks[]? | select(.passed == false) | "\(.name)/\(.reason_code)"] | join(",")' "$1" 2>/dev/null || head -c 300 "$1"; }
   digest="sha256:$( (sha256sum "$CATALOG" 2>/dev/null || shasum -a 256 "$CATALOG") | cut -d' ' -f1)"
   jq --arg d "$digest" '.catalog_version=$d' "$WORK/resp.json" > "$WORK/resp-v.json"
   if ov "$WORK/v.json" "$CATALOG" codex openai/strong "$WORK/resp-v.json"; then
     if agent-stamp-validate --catalog "$CATALOG" --stamp "$WORK/v.json" >"$WORK/verdict.json" 2>&1; then ok "validator accepts claude/strong -> codex openai/strong"
-    else bad "validator accepts the override stamp" "$(head -c 300 "$WORK/verdict.json")"; fi
+    else bad "validator accepts the override stamp" "failed: $(failed_checks "$WORK/verdict.json")"; fi
   else bad "override stamp for the validator mints" "$(tail -2 "$WORK/err")"; fi
+  # The incident, unedited: a placement-required local decision overridden to a vendor profile.
+  jq --arg d "$digest" '.catalog_version=$d' "$WORK/resp-local.json" > "$WORK/resp-local-v.json"
+  if ov "$WORK/v-lv.json" "$CATALOG" codex openai/strong "$WORK/resp-local-v.json"; then
+    if agent-stamp-validate --catalog "$CATALOG" --stamp "$WORK/v-lv.json" >"$WORK/verdict.json" 2>&1; then ok "validator accepts incident local -> codex openai/strong"
+    else bad "validator accepts the incident override stamp" "failed: $(failed_checks "$WORK/verdict.json")"; fi
+  else bad "incident override stamp for the validator mints" "$(tail -2 "$WORK/err")"; fi
+  # The reverse stamp requires placement, and PlacementEvidence only exists once dispatch
+  # has called /v1/place for an attempt. Offline, the validator must refuse on that one
+  # check alone: every other rule (pair, funding, override policy, catalog drift) passes.
+  if ov "$WORK/v-vl.json" "$CATALOG" claude local-code-standard "$WORK/resp-v.json"; then
+    agent-stamp-validate --catalog "$CATALOG" --stamp "$WORK/v-vl.json" >"$WORK/verdict.json" 2>&1
+    assert_eq "validator: reverse claude/strong -> local-code-standard fails only on missing placement evidence" \
+      "$(failed_checks "$WORK/verdict.json")" placement/placement_evidence_missing
+  else bad "reverse override stamp for the validator mints" "$(tail -2 "$WORK/err")"; fi
 else
   SKIP=$((SKIP + 1)); printf '  \033[33mSKIP\033[0m agent-stamp-validate not on PATH; validator acceptance not exercised\n'
 fi
