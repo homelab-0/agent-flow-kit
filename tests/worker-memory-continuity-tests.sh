@@ -219,6 +219,8 @@ check "continuation event records exactly-once launch receipt" jq -e '.action=="
 # Terminal creation is the confirmation boundary: a failed create cannot spend
 # a continuation or strand the cycle, while the retry records the exact handle.
 failed_story="$TMP/failed-launch-story.md"; printf '%s\n' '# failed launch story' >"$failed_story"
+# shellcheck disable=SC2317 # test mock: shadows the orca_json helper the
+# sourced library calls internally; never invoked by literal name here.
 orca_json() {
   if [[ "$1 $2" == "terminal list" ]]; then jq -nc '{result:{terminals:[]}}'; return; fi
   return 1
@@ -242,6 +244,8 @@ next_handle=confirmed-terminal; hide_terminal_list=false; terminal_list_json=""
 terminal_show_conflict=false; terminal_show_timeout_when_absent=false
 terminal_create_crash_after_effect=false
 terminal_revive_on_second_show=false; terminal_show_count="$TMP/continuation-show-count"; printf '0\n' >"$terminal_show_count"
+# shellcheck disable=SC2317 # test mock: shadows the orca_json helper the
+# sourced library calls internally; never invoked by literal name here.
 orca_json() {
   local op="$1 $2" handle="" title="" selector="" n
   shift 2

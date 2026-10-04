@@ -1817,8 +1817,8 @@ assert_eq "a deleted pinned project: stopped on the third consecutive 404" "$(lg
 head1 "19. Capacity per project and per host, FIFO promotion (HA-2, AD-24)"
 # ============================================================================
 REPO3="$TMPROOT/repos/repo3"; mkrepo "$REPO3"
-three_projects() { # <max-a> -- proj (cap $1), proj2 and proj3 (cap 1 each)
-  write_config "[$(proj_json "$(pid_n 1)" proj "$REPO1" "${1:-1}"), $(proj_json "$(pid_n 2)" proj2 "$REPO2"), $(proj_json "$(pid_n 3)" proj3 "$REPO3")]"
+three_projects() { # proj, proj2 and proj3, all cap 1: no caller ever overrides proj's cap
+  write_config "[$(proj_json "$(pid_n 1)" proj "$REPO1" 1), $(proj_json "$(pid_n 2)" proj2 "$REPO2"), $(proj_json "$(pid_n 3)" proj3 "$REPO3")]"
 }
 
 cfg_ok() { # <name> <jq-edit> -- the config loads and a pass completes
