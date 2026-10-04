@@ -255,6 +255,37 @@ do_pass() { # a full claim-side pass adopting ISSUE1 fresh
   run_afk paperclip-poll --json
 }
 
+scope_key() { # <terminal> -> scope_key (afk_pmc_normalize compatible)
+  printf 'terminal-%s' "$(printf 'terminal\0%s' "$1" | sha256sum | awk '{print $1}')"
+}
+
+# write_owner — creates an afk-pm-ownership/3 row with all normalize-required
+# fields (role:"PM", worktree.id; run_id may be null or absent).  Modeled on
+# tests/paperclip-pm-registry-tests.sh:write_owner.
+# Usage: write_owner <terminal> <session> <worktree_path> [runtime_id]
+write_owner() { # <terminal> <session> <worktree_path> [runtime_id]
+  local sk; sk="$(scope_key "$1")"
+  mkdir -p "$STATE/pm/scopes/$sk"
+  jq -nc --arg t "$1" --arg s "$2" --arg wp "$3" --arg rt "${4:-rt-1}" \
+    '{schema:"afk-pm-ownership/3",owned:true,role:"PM",harness:"claude",session:$s,terminal:$t,
+      worktree:{id:"w",path:$wp},run_id:null,
+      identity:{handle:$t,runtime_id:$rt,tab_id:("tab-"+$t),leaf_id:("leaf-"+$t),agent_type:"claude"}}' \
+    >"$STATE/pm/scopes/$sk/ownership.json"
+  printf '%s' "$sk"
+}
+
+# write_owner_no_role — derives a valid row and removes only role so that
+# afk_pmc_normalize rejects it with PM_CONTROL_INVALID.  This is the negative
+# fixture that keeps the strict contract pinned.
+write_owner_no_role() { # <terminal> <session> <worktree_path> [runtime_id]
+  local sk owner_file
+  sk="$(write_owner "$@")"
+  owner_file="$STATE/pm/scopes/$sk/ownership.json"
+  jq -c 'del(.role)' "$owner_file" >"$owner_file.tmp"
+  mv "$owner_file.tmp" "$owner_file"
+  printf '%s' "$sk"
+}
+
 kill_pass_at() { # claim | notice | create; only kills the pass PID started here
   local point="$1" pass_pid seen=false i
   KILL_MARKER="$SCEN/kill-ready"
@@ -440,34 +471,29 @@ head1 "2. live -> no create"
 # ============================================================================
 new_scenario live_state
 write_config '{"pm_start_enabled":true}'
-scope_key() { printf 'terminal-%s' "$(printf 'terminal\0%s' "$1" | sha256sum | awk '{print $1}')"; }
-SK="$(scope_key term-live-1)"
-mkdir -p "$STATE/pm/scopes/$SK"
 REPO_ABS="$(cd "$REPO" && pwd -P)"
-jq -nc --arg t term-live-1 --arg s sess-1 --arg wp "$REPO_ABS" \
-  '{schema:"afk-pm-ownership/3", owned:true, terminal:$t, session:$s, harness:"claude", worktree:{path:$wp},
-    identity:{handle:$t, runtime_id:"rt-1", tab_id:("tab-"+$t), leaf_id:("leaf-"+$t), agent_type:"claude"}}' \
-  >"$STATE/pm/scopes/$SK/ownership.json"
+SK="$(write_owner term-live-1 sess-1 "$REPO_ABS" "rt-1")"
 printf '{"result":{"terminals":[{"handle":"term-live-1","connected":true,"orphaned":false}]}}' >"$ORCA_TERMLIST_FILE"
 issue_route in_progress "$BOARD"
 do_pass
 assert_eq "live: no terminal create" "$(wc -l <"$ORCA_CREATE_LOG" | tr -d ' ')" "0"
+# The poll path has no writer for ownership.json; prove its observed lookup
+# reached live rather than unknown/ambiguous via the resulting ledger state.
+assert_eq "live: lookup reaches live action" \
+  "$(jq -r --arg id "$ISSUE1" '.issues[$id].action_text' "$STATE/paperclip/ledger.json")" \
+  "AFK host is working on this"
+assert_absent "live: lookup did not take unknown/ambiguous hold" \
+  "$(jq -r --arg id "$ISSUE1" '.issues[$id].action_text' "$STATE/paperclip/ledger.json")" "PM state"
+assert_absent "live: lookup did not take no-PM hold" \
+  "$(jq -r --arg id "$ISSUE1" '.issues[$id].action_text' "$STATE/paperclip/ledger.json")" "no PM"
 
 # ============================================================================
 head1 "3. ambiguous -> waiting text + one out-of-band issue"
 # ============================================================================
 new_scenario ambiguous_state
 write_config '{"pm_start_enabled":true}'
-SK1="$(scope_key term-amb-1)"; SK2="$(scope_key term-amb-2)"
-mkdir -p "$STATE/pm/scopes/$SK1" "$STATE/pm/scopes/$SK2"
-jq -nc --arg t term-amb-1 --arg s s1 --arg wp "$REPO_ABS" \
-  '{schema:"afk-pm-ownership/3", owned:true, terminal:$t, session:$s, harness:"claude", worktree:{path:$wp},
-    identity:{handle:$t, runtime_id:"rt-1", tab_id:("tab-"+$t), leaf_id:("leaf-"+$t), agent_type:"claude"}}' \
-  >"$STATE/pm/scopes/$SK1/ownership.json"
-jq -nc --arg t term-amb-2 --arg s s2 --arg wp "$REPO_ABS" \
-  '{schema:"afk-pm-ownership/3", owned:true, terminal:$t, session:$s, harness:"claude", worktree:{path:$wp},
-    identity:{handle:$t, runtime_id:"rt-1", tab_id:("tab-"+$t), leaf_id:("leaf-"+$t), agent_type:"claude"}}' \
-  >"$STATE/pm/scopes/$SK2/ownership.json"
+SK1="$(write_owner term-amb-1 s1 "$REPO_ABS" "rt-1")"
+SK2="$(write_owner term-amb-2 s2 "$REPO_ABS" "rt-1")"
 printf '{"result":{"terminals":[{"handle":"term-amb-1","connected":true,"orphaned":false},{"handle":"term-amb-2","connected":true,"orphaned":false}]}}' \
   >"$ORCA_TERMLIST_FILE"
 route POST "/api/companies/$COMPANY/issues" 201 '{"id":"newissue-1"}'
@@ -484,13 +510,8 @@ head1 "3b. unknown -> no create, and the queued text names the reason"
 # ============================================================================
 new_scenario unknown_state
 write_config '{"pm_start_enabled":true}'
-SKU="$(scope_key term-old-rt)"
-mkdir -p "$STATE/pm/scopes/$SKU"
 # Recorded under runtime rt-0; Orca now reports rt-1 (an Orca update).
-jq -nc --arg t term-old-rt --arg wp "$REPO_ABS" \
-  '{schema:"afk-pm-ownership/3", owned:true, terminal:$t, session:"s", harness:"claude", worktree:{path:$wp},
-    identity:{handle:$t, runtime_id:"rt-0", tab_id:"tab-x", leaf_id:"leaf-x", agent_type:"claude"}}' \
-  >"$STATE/pm/scopes/$SKU/ownership.json"
+SKU="$(write_owner term-old-rt s "$REPO_ABS" "rt-0")"
 issue_route in_progress "$BOARD"
 do_pass
 assert_eq "unknown: no terminal create" "$(wc -l <"$ORCA_CREATE_LOG" | tr -d ' ')" "0"
@@ -1027,10 +1048,7 @@ head1 "15. live registry confirmation clears held text once"
 new_scenario live_confirmation
 write_config '{"pm_start_enabled":true}'
 mkdir -p "$STATE/paperclip"
-SK="$(scope_key term-confirmed)"; mkdir -p "$STATE/pm/scopes/$SK"
-jq -nc --arg t term-confirmed --arg wp "$REPO" \
-  '{schema:"afk-pm-ownership/3",owned:true,terminal:$t,session:"s",harness:"claude",worktree:{path:$wp}}' \
-  >"$STATE/pm/scopes/$SK/ownership.json"
+SK="$(write_owner term-confirmed s "$REPO")"
 printf '{"result":{"terminals":[{"handle":"term-confirmed","connected":true,"orphaned":false}]}}' >"$ORCA_TERMLIST_FILE"
 jq -nc --arg id "$ISSUE1" --arg a "$AGENT1" --arg p "$PROJ1" \
   '{issues:{($id):{identifier:"PROJ-1",host_agent_id:$a,paperclip_project_id:$p,slug:"proj",state:"working",action_text:"queued: no PM (start held: PM_BOOTSTRAP_UNAVAILABLE)",action_text_applied:"queued: no PM (start held: PM_BOOTSTRAP_UNAVAILABLE)"}},pm_started:{}}' \
@@ -1045,6 +1063,11 @@ run_afk paperclip-poll --json
 assert_eq "live confirmation consumed without pm_started receipt" "$(jq -r --arg id "$ISSUE1" '.issues[$id] | has("pm_confirmed")' "$STATE/paperclip/ledger.json")" false
 assert_eq "live confirmation produces one report self-block" "$(grep -c '"status":"blocked"' "$BODYLOG")" 1
 assert_absent "live confirmation clears the held action text" "$(jq -r --arg id "$ISSUE1" '.issues[$id].action_text' "$STATE/paperclip/ledger.json")" "no PM"
+# The report only clears the hold and reports the issue as working after a live
+# registry confirmation; a role-less owner leaves the unknown-state hold.
+assert_eq "live confirmation: observed live report action" \
+  "$(jq -r --arg id "$ISSUE1" '.issues[$id].action_text' "$STATE/paperclip/ledger.json")" \
+  "AFK host is working on this"
 : >"$LOG"; : >"$BODYLOG"; route GET "/api/issues/$ISSUE1" 200 "{\"status\":\"in_progress\",\"identifier\":\"PROJ-1\",\"title\":\"T\",\"description\":\"D\",\"updatedAt\":\"2026-01-01T00:00:00Z\",\"createdByUserId\":\"$BOARD\",\"projectId\":\"$PROJ1\"}"
 route GET "/api/issues/$ISSUE1/active-run" 404 '{}'
 run_afk paperclip-poll --json
@@ -1160,6 +1183,23 @@ assert_eq "ordinary queue sweep preserves PM-start hold text" "$(jq -r --arg id 
   "queued: no PM (start refused: PM_BOOTSTRAP_UNAVAILABLE)"
 assert_eq "quiet hold pass emits no repeated wakeup" "$(grep -c "^POST /api/agents/$AGENT1/wakeup$" "$LOG")" 0
 unset READINESS_CALL_LOG READINESS_OK READINESS_REASON
+
+# Negative test: missing role must be rejected with PM_CONTROL_INVALID — not
+# treated as a valid live PM.
+head1 "20. invalid ownership row -> PM_CONTROL_INVALID"
+new_scenario invalid_ownership
+write_config '{"pm_start_enabled":true}'
+REPO_ABS="$(cd "$REPO" && pwd -P)"
+SK="$(write_owner_no_role term-broken sess-broken "$REPO_ABS" "rt-1")"
+printf '{"result":{"terminals":[{"handle":"term-broken","connected":true,"orphaned":false}]}}' >"$ORCA_TERMLIST_FILE"
+issue_route in_progress "$BOARD"
+do_pass
+assert_eq "invalid ownership: no terminal create" "$(wc -l <"$ORCA_CREATE_LOG" | tr -d ' ')" "0"
+assert_eq "invalid ownership: queued diagnostic names PM_CONTROL_INVALID" \
+  "$(jq -r --arg id "$ISSUE1" '.issues[$id].action_text' "$STATE/paperclip/ledger.json")" \
+  "queued: PM state unknown (PM_CONTROL_INVALID)"
+assert_eq "invalid ownership: owner is kept" \
+  "$([[ -f "$STATE/pm/scopes/$SK/ownership.json" ]] && echo kept)" "kept"
 
 # ============================================================================
 assert_eq "the PATH decoy orca never ran" \
