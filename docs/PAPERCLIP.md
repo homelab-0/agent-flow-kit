@@ -688,6 +688,108 @@ markers makes it a Paperclip story; if they disagree, the answer is
   is no `HEAD`, or a `git diff` or `git ls-files` fails), the cycle fails the
   same way with `AFK_PROTECTED_PATH_UNCHECKABLE`; it never reads as clean.
 
+## Attempt evidence (`agent-flow-kit paperclip-evidence`)
+
+Every canonical dispatch of a Paperclip story leaves write-once evidence of
+what was accepted, launched and produced. It only collects evidence: it
+changes no gate, result, report, final or poll behaviour, and it doesn't
+decide readiness. The one launch change is that a Paperclip launch the
+evidence cannot record does not start (see **Failure**). Stories with no
+Paperclip marker get no records and launch exactly as before.
+
+- **Tuple.** On `ok`, `route-accept --verify --json` also prints
+  `tuple: {issue, story_id, decision_digest, plan_digest, plan_story_sha256,
+  stamp_sha256}`. `plan_digest` is the approved plan digest. `plan_story_sha256`
+  is `sha256:` + the sha256 of the plan's story object as `jq -cS` prints it,
+  trailing LF included. `stamp_sha256` is `sha256:` + the sha256 of the stamp
+  file's bytes. The tuple comes from one more plan read, and that read must
+  pass the same checks. dispatch.sh keeps it in memory from the launch
+  decision.
+- **Records.** Under `$AFK_STATE_DIR/paperclip/attempts/<issue>/<story_id>/`,
+  outside every worktree, schema `afk-paperclip-attempt/1`:
+  - `<N>.accept.json` is written by a successful `route-accept --kind
+    pm-auto`, before `<story>.acceptance.json`. `N` is the next integer and
+    carries the tuple captured at that moment. The command's JSON then names
+    `attempt`.
+  - `<N>.c<k>.launch.json` is written by dispatch after the launch-contract
+    guard and every harness preflight, before any terminal exists. It holds `dispatch_id`, the tuple,
+    `accept_tuple_match` (the tuple equals the one `N` was accepted under),
+    and the `launch` snapshot. It links to the newest `N`. Cycles under one
+    `N` only move forward: a cycle below the newest launched one is refused
+    (`CYCLE_OUT_OF_ORDER`).
+  - `<N>.c<k>.outcome.json` is written by dispatch after the gates. It holds
+    the result `status`, `gates_ok`, `result_sha256` (the sha256 of the exact
+    `<story>.result.json` bytes), the result itself, and the `launch`,
+    `gate_pre` and `gate_post` snapshots. `gates_ok` is true only for a
+    non-empty gate map whose gates all passed; gates skipped by a control
+    (an empty map) record `gates_ok: false`.
+
+  Each record is written in full to a temp file and then hard-linked into
+  place, so the first writer wins, a duplicate is refused, and a partial
+  record never appears under a record name. A refusal writes nothing. The
+  `launch` and `outcome` refusals (a missing, foreign or duplicate launch, an
+  out-of-order cycle, a changed tuple, malformed input, a symlinked attempt
+  directory) exit 4. Invalid arguments (`EVIDENCE_ARGS_INVALID`, including an
+  unsafe issue or story id given to `latest`), `SNAPSHOT_FAILED`, write
+  failures (`EVIDENCE_WRITE_FAILED`) and `route-accept`'s
+  `ATTEMPT_RECORD_FAILED` exit 1. Ordering is always the
+  integer pair `(N, k)`, never a timestamp or a name sort.
+- **Outcome authority.** dispatch builds the thin result in memory, writes
+  those bytes to `<story>.result.json` and the retained copy, and pipes the
+  same bytes to `paperclip-evidence outcome`. The verb never opens a worktree
+  file, so a planted `result.json` carries no weight. It re-runs the
+  verification. If that verification is refused, or its tuple differs from
+  the launch tuple, the outcome is recorded as `APPROVAL_CHANGED`. A
+  re-approval is never treated as the original approval.
+- **Snapshot** `afk-snapshot/1 {base_commit, tree}` is the tree that a commit
+  of the worktree would record. It is built with `GIT_INDEX_FILE` pointing at
+  a throwaway index read fresh from HEAD (never a copy of the real index, so
+  assume-unchanged and skip-worktree bits cannot hide an edit): HEAD, plus
+  every tracked change, plus files staged only in the real index, plus every
+  untracked file that is not ignored. HEAD, refs, the real index and worktree
+  files are never written. It writes objects to the object store, and
+  configured clean filters (for example LFS) run as they do for `git add`.
+  Nothing is excluded by name. **Prerequisite:** private
+  artifacts (specs, stories, stamps, results and every other dispatcher
+  sidecar) live in the repository's ignored `.pm-brief/` directory, the one
+  private scope every build and review session shares. Anything outside it,
+  including an untracked file named like a sidecar, is product content, so a
+  spec left elsewhere makes two sessions' snapshots differ (a false "not
+  ready", never a false "ready"). A tracked file is always product content.
+  **Limits:** ignored files (`.env`, build outputs) are outside the snapshot,
+  as they are outside any commit. In a sparse checkout, unpopulated files
+  count as deleted (a false "not same", never a false "same"). When a
+  snapshot can't be taken, it is recorded as `null`, never as a tree.
+- **Failure.** A Paperclip launch whose record is not written is refused
+  before its harness starts: `LAUNCH_EVIDENCE_UNRECORDED: <reason>` in
+  `<story>.blocked`, exit 4. The reason is the verb's (`LAUNCH_DUPLICATE`,
+  `CYCLE_OUT_OF_ORDER`, `TUPLE_CHANGED`, ...), or `TUPLE_MISSING` when the
+  verifier answered `ok` without a tuple. So a replay of a cycle that
+  already launched cannot run behind an older recorded success: it needs a
+  fresh `route-accept` (a new attempt) or the next cycle number. A harness
+  preflight refusal (missing binary, settings, memory, gateway or OpenCode
+  checks) comes before the record, so the same cycle can be retried once the
+  host is fixed. A cycle whose launch was recorded but whose terminal never
+  ran (Orca create failure, killed dispatcher, NEEDS-HUMAN, effort failure)
+  stays `ATTEMPT_UNFINISHED`, and its retry needs a fresh pm-auto
+  `route-accept`. After the launch, a record that could not be written is
+  logged and does not change the cycle; that cycle's evidence is then
+  incomplete, never successful.
+- **`paperclip-evidence latest --issue <id> --story-id <HOM-n.Sk> [--json]`**
+  is read-only. It reports the newest attempt and its newest cycle exactly as
+  they are, with `state` one of `STORY_EVIDENCE_MISSING` (no accepted
+  attempt; a routing refusal before acceptance creates none),
+  `ATTEMPT_NOT_LAUNCHED`, `ATTEMPT_UNFINISHED` (launched, no outcome),
+  `RECORD_INVALID` or `OUTCOME_RECORDED` (with `outcome`, `status`,
+  `gates_ok`, `tuple`, `accept_tuple_match` and the snapshots). An older
+  success is never chosen over a newer, incomplete attempt. This is not a
+  readiness verdict. `paperclip-evidence snapshot [--dir <path>]` prints a
+  snapshot. `launch` and `outcome` are dispatch.sh's calls.
+- **Trust.** The PM, the dispatcher and the kit are one principal, the same
+  uid. These records defend against stale, partial, mistaken and
+  worker-planted state, not against a deliberate same-uid forger who calls
+  the verb with fabricated input. Nothing is signed.
+
 ## The self-block model
 
 While AFK works on an issue locally (outside Paperclip, in the real repo),
