@@ -37,7 +37,7 @@ AFK_LIB_DIR="${AFK_LIB_DIR:-$AFK_INSTALL_ROOT/lib}"
 # A missing or unreadable library is an internal failure with a stable message
 # and the usage exit code — never a partially loaded lifecycle that answers
 # questions with whichever functions happened to load.
-for _afk_lib in afk-common afk-orca afk-orca-verify afk-source afk-inventory afk-readiness afk-monitor afk-pm-control afk-commands afk-plan afk-mutate afk-usage afk-auto-update afk-catalog-sync afk-paperclip afk-pm-registry afk-paperclip-report afk-paperclip-plan afk-paperclip-start afk-paperclip-project afk-accept; do
+for _afk_lib in afk-common afk-orca afk-orca-verify afk-source afk-inventory afk-readiness afk-monitor afk-pm-control afk-commands afk-plan afk-mutate afk-usage afk-auto-update afk-catalog-sync afk-paperclip afk-pm-registry afk-paperclip-report afk-paperclip-plan afk-paperclip-start afk-paperclip-project afk-accept afk-paperclip-evidence; do
   if [[ ! -r "$AFK_LIB_DIR/$_afk_lib.sh" ]]; then
     printf 'agent-flow-kit: internal error: required library %s.sh is missing or unreadable under %s\n' \
       "$_afk_lib" "$AFK_LIB_DIR" >&2
@@ -104,6 +104,9 @@ unset _afk_lib
 # shellcheck source=lib/afk-accept.sh
 # shellcheck disable=SC1090,SC1091
 . "$AFK_LIB_DIR/afk-accept.sh"
+# shellcheck source=lib/afk-paperclip-evidence.sh
+# shellcheck disable=SC1090,SC1091
+. "$AFK_LIB_DIR/afk-paperclip-evidence.sh"
 
 if ! declare -F afk_cmd_status >/dev/null 2>&1 \
    || ! declare -F afk_render_human >/dev/null 2>&1 \
@@ -127,7 +130,8 @@ if ! declare -F afk_cmd_status >/dev/null 2>&1 \
    || ! declare -F afk_cmd_paperclip_project >/dev/null 2>&1 \
    || ! declare -F afk_cmd_paperclip_config >/dev/null 2>&1 \
    || ! declare -F afk_cmd_paperclip_merge_policy >/dev/null 2>&1 \
-   || ! declare -F afk_cmd_route_accept >/dev/null 2>&1; then
+   || ! declare -F afk_cmd_route_accept >/dev/null 2>&1 \
+   || ! declare -F afk_cmd_paperclip_evidence >/dev/null 2>&1; then
   printf 'agent-flow-kit: internal error: the lifecycle libraries under %s did not load completely\n' \
     "$AFK_LIB_DIR" >&2
   exit 1
@@ -369,7 +373,16 @@ agent-flow-kit — lifecycle entry point
       accepted it. pm-auto only for a natural, free, non-excluded Paperclip
       story in Josh's approved plan with unchanged gates; a Paperclip story
       accepts pm-auto only (human/override: ACCEPTANCE_KIND_NOT_ALLOWED). --verify is the
-      check dispatch.sh runs on every cycle of a Paperclip story.
+      check dispatch.sh runs on every cycle of a Paperclip story. On ok, both
+      also report the acceptance tuple or the attempt a pm-auto write
+      allocated.
+
+  agent-flow-kit paperclip-evidence snapshot [--dir <path>] [--json]
+  agent-flow-kit paperclip-evidence launch|outcome ... (dispatch.sh only)
+  agent-flow-kit paperclip-evidence latest --issue <id> --story-id <HOM-n.Sk> [--json]
+      Write-once attempt, launch and outcome evidence for Paperclip stories,
+      and the content snapshot it carries. latest reports the newest record
+      by (attempt, cycle) as it is; it is not a readiness verdict.
 
   agent-flow-kit paperclip-project add --project-id <uuid> --slug <s> --repo <abs-path>
       [--harness claude|codex|opencode] [--max-active <n>] [--merge human|pm]
@@ -595,6 +608,14 @@ afk_main() {
       afk_usage
       return "$AFK_EXIT_OK" ;;
   esac
+
+  # paperclip-evidence has verbs with their own closed option vocabulary.
+  if [[ "$cmd" == paperclip-evidence ]]; then
+    afk_require_tools || return "$AFK_EXIT_USAGE"
+    afk_require_declared_paths || return "$AFK_EXIT_USAGE"
+    afk_cmd_paperclip_evidence "$@"
+    return $?
+  fi
 
   while (( $# > 0 )); do
     case "$1" in
