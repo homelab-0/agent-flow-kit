@@ -151,7 +151,9 @@ owned_runtime_path() {
   [[ "$owner" == "$("$ID_EXEC" -u)" ]]
 }
 
-# shellcheck disable=SC2329 # invoked indirectly by the EXIT trap below
+# shellcheck disable=SC2329,SC2317 # invoked indirectly by the EXIT trap below;
+# ShellCheck 0.9.0 reports a trap-only body as unreachable (SC2317); newer
+# releases report the function as never invoked (SC2329). No version is pinned.
 cleanup_integrity_dir() {
   [[ "$integrity_dir" == /tmp/afk-hindsight-integrity.* && -d "$integrity_dir" ]] \
     || return 0
