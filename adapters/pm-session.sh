@@ -32,7 +32,9 @@ actual_path="$(pwd -P 2>/dev/null || true)"
 [[ -n "$actual_path" ]] || exit 0
 # shellcheck disable=SC1091
 if [[ -r "$HERE/lib/afk-orca.sh" ]]; then . "$HERE/lib/afk-orca.sh"; else . "$HERE/../lib/afk-orca.sh"; fi
+# shellcheck disable=SC1091
 if [[ -r "$HERE/lib/afk-pm-control.sh" ]]; then . "$HERE/lib/afk-pm-control.sh"; else . "$HERE/../lib/afk-pm-control.sh"; fi
+# shellcheck disable=SC1091
 if [[ -r "$HERE/lib/afk-common.sh" ]]; then . "$HERE/lib/afk-common.sh"; . "$HERE/lib/afk-mutate.sh";
 else . "$HERE/../lib/afk-common.sh"; . "$HERE/../lib/afk-mutate.sh"; fi
 afk_orca_bound_tool >/dev/null || exit 0
@@ -47,7 +49,7 @@ observe_worktree() {
   shown="$AFK_ORCA_OUT"
   shown_id="$(jq -r '.result.worktree.id // .result.id // .worktree.id // .id // empty' <<<"$shown" 2>/dev/null)"
   shown_path="$(jq -r '.result.worktree.path // .result.path // .worktree.path // .path // empty' <<<"$shown" 2>/dev/null)"
-  shown_path="$(cd "$shown_path" 2>/dev/null && pwd -P || true)"
+  shown_path="$(cd "$shown_path" 2>/dev/null && pwd -P)" || shown_path=""
   [[ -n "$shown_id" && "$shown_path" == "$actual_path" ]] || return 1
   observed_worktree="$shown_id"
 }

@@ -282,7 +282,9 @@ acquire_lock() {
   return 2
 }
 
-# shellcheck disable=SC2329 # invoked indirectly by the exit trap below
+# shellcheck disable=SC2329,SC2317 # invoked indirectly by the exit trap below;
+# ShellCheck 0.9.0 reports a trap-only body as unreachable (SC2317); newer
+# releases report the function as never invoked (SC2329). No version is pinned.
 release_lock() {
   local owner moved
   [[ "$LOCK_HELD" == true ]] || return 0
@@ -443,7 +445,9 @@ run_tracked_capture() {
   ACTIVE_OUTPUT_FILE=""
   return "$rc"
 }
-# shellcheck disable=SC2329 # invoked indirectly by the EXIT trap below
+# shellcheck disable=SC2329,SC2317 # invoked indirectly by the EXIT trap below;
+# ShellCheck 0.9.0 reports a trap-only body as unreachable (SC2317); newer
+# releases report the function as never invoked (SC2329). No version is pinned.
 release_on_exit() {
   trap '' "${RELEASE_TRAPPED_SIGNALS[@]}"
   terminate_active_child
@@ -454,7 +458,9 @@ release_on_exit() {
   trusted_driver_dir_remove
   release_lock
 }
-# shellcheck disable=SC2329 # invoked indirectly by the signal traps below
+# shellcheck disable=SC2329,SC2317 # invoked indirectly by the signal traps below;
+# ShellCheck 0.9.0 reports a trap-only body as unreachable (SC2317); newer
+# releases report the function as never invoked (SC2329). No version is pinned.
 terminate_on_signal() {
   trap '' "${RELEASE_TRAPPED_SIGNALS[@]}"
   terminate_active_child

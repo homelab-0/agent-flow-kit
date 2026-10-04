@@ -9,6 +9,7 @@ intent="$2"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 if [[ -r "$here/lib/afk-orca.sh" ]]; then . "$here/lib/afk-orca.sh"; else . "$here/../lib/afk-orca.sh"; fi
+# shellcheck disable=SC1091
 if [[ -r "$here/lib/afk-pm-control.sh" ]]; then . "$here/lib/afk-pm-control.sh"; else . "$here/../lib/afk-pm-control.sh"; fi
 
 # AFK-PC-2b: a first-ever PM start has no predecessor, so it carries a sibling
@@ -34,7 +35,7 @@ if [[ "$(jq -r '.schema // empty' "$intent" 2>/dev/null)" == "afk-pm-bootstrap-f
   fs_shown="$AFK_ORCA_OUT"
   fs_observed_id="$(jq -r '.result.worktree.id // .result.id // .worktree.id // .id // empty' <<<"$fs_shown" 2>/dev/null)"
   fs_observed_path="$(jq -r '.result.worktree.path // .result.path // .worktree.path // .path // empty' <<<"$fs_shown" 2>/dev/null)"
-  fs_observed_path="$(cd "$fs_observed_path" 2>/dev/null && pwd -P || true)"
+  fs_observed_path="$(cd "$fs_observed_path" 2>/dev/null && pwd -P)" || fs_observed_path=""
   [[ -n "$fs_observed_id" && "$fs_observed_id" == "$fs_wi" && "$fs_observed_path" == "$fs_wp" ]] || exit 1
   case "$fs_harness" in
     claude) fs_harness_bin="${AFK_CLAUDE_BIN:-claude}" ;;
@@ -63,7 +64,7 @@ afk_orca_run pm-bootstrap-worktree -- worktree show --worktree "path:$actual_pat
 shown="$AFK_ORCA_OUT"
 observed_id="$(jq -r '.result.worktree.id // .result.id // .worktree.id // .id // empty' <<<"$shown" 2>/dev/null)"
 observed_path="$(jq -r '.result.worktree.path // .result.path // .worktree.path // .path // empty' <<<"$shown" 2>/dev/null)"
-observed_path="$(cd "$observed_path" 2>/dev/null && pwd -P || true)"
+observed_path="$(cd "$observed_path" 2>/dev/null && pwd -P)" || observed_path=""
 [[ -n "$observed_id" && "$observed_id" == "$wi" && "$observed_path" == "$wp" ]] || exit 1
 
 # Orca may start the command before the launcher persists its receipt.  Wait a

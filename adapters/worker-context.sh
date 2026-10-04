@@ -220,7 +220,7 @@ while (( $# )); do
 done
 case "$harness" in claude|codex|opencode) : ;; *) exit 0 ;; esac
 case "$mode" in
-  observe) [[ "$harness" == claude && -n "$input" ]] && observe_claude "$input" || true ;;
+  observe) { [[ "$harness" == claude && -n "$input" ]] && observe_claude "$input"; } || true ;;
   compact)
     compact_event=""; payload=""
     if [[ -n "$input" && -r "$input" ]]; then

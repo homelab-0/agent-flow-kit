@@ -80,7 +80,8 @@ ROUTER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG_FILE="${AGENT_FLOW_CONFIG:-${SUBSCRIPTIONS_FILE:-$ROUTER_DIR/subscriptions.yaml}}"
 INVENTORY_BIN="${AGENT_FLOW_HARNESS_INVENTORY:-$ROUTER_DIR/scripts/harness-inventory.sh}"
 AVAILABLE_BINDINGS_CONTRACT="${AFK_ROUTE_AVAILABLE_BINDINGS_CONTRACT:-0}"
-yq_cfg() { [[ -f "$CONFIG_FILE" ]] && command -v yq >/dev/null && yq -r "$1 // \"\"" "$CONFIG_FILE" 2>/dev/null || true; }
+# Grouped only for SC2015; same parse as before: empty output on any failure is intended.
+yq_cfg() { { [[ -f "$CONFIG_FILE" ]] && command -v yq >/dev/null && yq -r "$1 // \"\"" "$CONFIG_FILE" 2>/dev/null; } || true; }
 
 ROUTER_URL="${AGENT_ROUTER_URL:-$(yq_cfg '.launcher.router_endpoint')}"
 ROUTER_URL="${ROUTER_URL%/}"

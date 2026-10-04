@@ -147,8 +147,8 @@ jq -e 'type=="object" and ((has("ok")|not) or .ok==true) and
   ((has("error")|not) or .error==null)' <<<"$shown" >/dev/null 2>&1 || exit 1
 observed_id="$(jq -r '.result.worktree.id // .result.id // .worktree.id // .id // empty' <<<"$shown" 2>/dev/null)"
 observed_path="$(jq -r '.result.worktree.path // .result.path // .worktree.path // .path // empty' <<<"$shown" 2>/dev/null)"
-observed_path="$(cd "$observed_path" 2>/dev/null && pwd -P || true)"
-expected_path="$(cd "$worktree_path" 2>/dev/null && pwd -P || true)"
+observed_path="$({ cd "$observed_path" 2>/dev/null && pwd -P; } || true)"
+expected_path="$({ cd "$worktree_path" 2>/dev/null && pwd -P; } || true)"
 [[ -n "$observed_id" && "$observed_id" == "$worktree_id" && -n "$expected_path" && "$observed_path" == "$expected_path" ]] || exit 1
 
 bootstrap="${AFK_PM_BOOTSTRAP_BIN:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/orca-pm-bootstrap.sh}"
