@@ -576,6 +576,8 @@ printf '#!/bin/bash -p\nprintf "%%s\\n" "$0" >>"$AFK_TEST_POISON_MARKER"\nexit 9
 chmod +x "$POISON_BIN/bash"
 BASH_ENV_POISON="$TMP/bash-env-poison"
 printf 'printf "bash-env\\n" >>"$AFK_TEST_POISON_MARKER"\n' >"$BASH_ENV_POISON"
+# shellcheck disable=SC2317 # poison mocks: exported (export -f) to the child,
+# which the assertions below prove never calls them; never called here either.
 (
   realpath() { printf 'function-realpath\n' >>"$AFK_TEST_POISON_MARKER"; return 99; }
   stat() { printf 'function-stat\n' >>"$AFK_TEST_POISON_MARKER"; return 99; }

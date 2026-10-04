@@ -280,6 +280,8 @@ for poison_tool in dirname realpath stat jq cat; do
   chmod +x "$DARWIN_START_POISON_BIN/$poison_tool"
 done
 set +e
+# shellcheck disable=SC2317 # poison mocks: exported (export -f) to the child,
+# which the assertions below prove never calls them; never called here either.
 (
   dirname() { printf 'function-dirname\n' >>"$AFK_TEST_POISON_MARKER"; return 99; }
   realpath() { printf 'function-realpath\n' >>"$AFK_TEST_POISON_MARKER"; return 99; }
