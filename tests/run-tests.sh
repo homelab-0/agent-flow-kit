@@ -247,6 +247,7 @@ SC_LIFECYCLE=("$KIT_ROOT/bin/agent-flow-kit" "$KIT_ROOT/lib/afk-common.sh" "$KIT
               "$KIT_ROOT/lib/afk-pm-control.sh" "$KIT_ROOT/lib/afk-pm-registry.sh" \
               "$KIT_ROOT/lib/afk-paperclip-report.sh" "$KIT_ROOT/lib/afk-paperclip-plan.sh" \
               "$KIT_ROOT/lib/afk-paperclip-start.sh" "$KIT_ROOT/lib/afk-paperclip-project.sh" "$KIT_ROOT/lib/afk-accept.sh" \
+              "$KIT_ROOT/lib/afk-paperclip-evidence.sh" "$KIT_ROOT/tests/paperclip-evidence-tests.sh" \
               "$KIT_ROOT/tests/lockctl-helper.sh" "$KIT_ROOT/tests/paperclip-poll-tests.sh" \
               "$KIT_ROOT/tests/paperclip-pm-registry-tests.sh" "$KIT_ROOT/tests/paperclip-report-tests.sh" \
               "$KIT_ROOT/tests/paperclip-pm-start-tests.sh" "$KIT_ROOT/tests/paperclip-plan-tests.sh" \
@@ -3859,6 +3860,14 @@ head1 "30. make-stamp override pool gate — tests/make-stamp-override-tests.sh"
 # An override takes its entitlement pool from the trusted catalog: fixture
 # catalog, --response mode, no network.
 run_gate "make-stamp override pool gate" "$KIT_ROOT/tests/make-stamp-override-tests.sh"
+
+# ===========================================================================
+head1 "31. Paperclip evidence gate — tests/paperclip-evidence-tests.sh"
+# ===========================================================================
+# paperclip-evidence (lib/afk-paperclip-evidence.sh) and route-accept's attempt
+# allocation and tuple, through the CLI: snapshots, write-once attempt, launch
+# and outcome records, latest. No network; the suite reports its own time.
+run_gate "paperclip evidence gate" "$KIT_ROOT/tests/paperclip-evidence-tests.sh"
 
 # ===========================================================================
 # AC-2: total wall time, with a BUDGET warning (never a failure) over 720s.
