@@ -262,5 +262,18 @@ if [[ "$OUT" == *"acceptance digest, plan approval and story gates verified"* &&
   ok "main(): accepted -> the check passes, then control reaches the launch-contract guard"
 else bad "main(): accepted -> the check passes, then control reaches the launch-contract guard" "$RC $OUT"; fi
 
+head1 "7. Evidence hooks: the --verify tuple and the pm-auto attempt"
+# Covered in depth by tests/paperclip-evidence-tests.sh; here only the
+# route-accept contract dispatch.sh reads.
+S="$(new_story ev1)"; accept --story "$S" --kind pm-auto --actor pm
+N="$(jq -r '.attempt // empty' <<<"$OUT")"
+assert_eq "pm-auto reports the attempt it allocated in AFK state, outside the worktree" \
+  "$(res) $RC $([[ "$N" =~ ^[0-9]+$ && -f "$STATE/paperclip/attempts/$ISSUE/HOM-12.S1/$N.accept.json" ]] && echo R)" "ok 0 R"
+accept --story "$S" --verify
+assert_eq "--verify ok carries the acceptance tuple" "$(jq -c '.tuple | keys' <<<"$OUT")" \
+  '["decision_digest","issue","plan_digest","plan_story_sha256","stamp_sha256","story_id"]'
+assert_eq "...bound to this story, its decision digest and the approved plan digest" \
+  "$(jq -r --arg p "$PLAND" --arg i "$ISSUE" '[.tuple.decision_digest == .decision_digest, .tuple.plan_digest == $p, .tuple.issue == $i, .tuple.story_id == "HOM-12.S1"] | all' <<<"$OUT")" "true"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

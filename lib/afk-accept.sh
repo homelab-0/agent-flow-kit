@@ -2,7 +2,8 @@
 # afk-accept.sh — `route-accept`: the acceptance record for a stamped route,
 # and the Paperclip dispatch preconditions `--verify` answers for dispatch.sh
 # (AFK-PC-4, AD-9/AD-16, F1/F17/F23). See docs/PAPERCLIP.md. Needs
-# lib/afk-paperclip.sh and lib/afk-paperclip-plan.sh. SOURCED, never executed.
+# lib/afk-paperclip.sh, lib/afk-paperclip-plan.sh and
+# lib/afk-paperclip-evidence.sh. SOURCED, never executed.
 
 if [[ -n "${AFK_ACCEPT_SOURCED:-}" ]]; then
   return 0
@@ -51,9 +52,10 @@ afk_accept_load() {
   # Exactly one JSON object whose task.tags (when present) is an array of
   # strings: the hard-exclusion check below matches tags one by one, and a
   # tags value of any other shape would slip past it as "no tag matched".
+  AFK_ACC_STAMP_SHA="$(afk_sha256_file "$stamp")"
   AFK_ACC_STAMP_JSON="$(jq -c 'select(type == "object")' "$stamp" 2>/dev/null)"
   AFK_ACC_DIGEST="$(afk_accept_decision_digest "$stamp")"
-  [[ -n "$AFK_ACC_STAMP_JSON" && -n "$AFK_ACC_DIGEST" && "$AFK_ACC_STAMP_JSON" != *$'\n'* ]] &&
+  [[ -n "$AFK_ACC_STAMP_JSON" && -n "$AFK_ACC_DIGEST" && "$AFK_ACC_STAMP_JSON" != *$'\n'* && -n "$AFK_ACC_STAMP_SHA" ]] &&
     jq -e '(.task.tags // []) | type == "array" and all(type == "string")' <<<"$AFK_ACC_STAMP_JSON" >/dev/null 2>&1 ||
     { AFK_ACC_REASON=STAMP_INVALID; return 1; }
   AFK_ACC_SID="$(jq -r '.task.story_id // "" | strings' <<<"$AFK_ACC_STAMP_JSON")"
@@ -67,20 +69,35 @@ afk_accept_load() {
   return 0
 }
 
-# afk_accept_plan_check -- prints ok, PLAN_NOT_APPROVED, STORY_NOT_IN_PLAN or
-# STORY_CONTRACT_MUTATED. The plan story is read only from the record whose
-# digest the approval just confirmed, so a re-plan between the two reads
-# cannot slip a different plan's gates in.
-afk_accept_plan_check() {
-  local appr d story
-  appr="$(afk_cmd_paperclip_approval true "$AFK_ACC_ISSUE" 2>/dev/null)" || { printf PLAN_NOT_APPROVED; return 0; }
+# afk_accept_plan_read -- sets AFK_ACC_PLAN_REASON to ok, PLAN_NOT_APPROVED,
+# STORY_NOT_IN_PLAN or STORY_CONTRACT_MUTATED, and on ok AFK_ACC_TUPLE: the
+# acceptance tuple {issue, story_id, decision_digest, plan_digest,
+# plan_story_sha256, stamp_sha256} of exactly this read. The plan story is
+# read only from the record whose digest the approval just confirmed, so a
+# re-plan between the two reads cannot slip a different plan's gates in.
+# Never call it in a subshell when the tuple is wanted.
+afk_accept_plan_read() {
+  local appr d story ssha
+  AFK_ACC_PLAN_REASON=PLAN_NOT_APPROVED AFK_ACC_TUPLE=""
+  appr="$(afk_cmd_paperclip_approval true "$AFK_ACC_ISSUE" 2>/dev/null)" || return 0
   d="$(jq -r 'select(.approved == true) | .digest // empty' <<<"$appr" 2>/dev/null)"
-  [[ "$d" =~ ^[0-9a-f]{64}$ ]] || { printf PLAN_NOT_APPROVED; return 0; }
+  [[ "$d" =~ ^[0-9a-f]{64}$ ]] || return 0
   story="$(jq -c --arg d "$d" --arg s "$AFK_ACC_SID" 'select(.digest == $d) | [.stories[]? | select(.id == $s)] | first // empty' \
     "$AFK_STATE_DIR/paperclip/plans/$AFK_ACC_ISSUE.json" 2>/dev/null)"
-  [[ -n "$story" ]] || { printf STORY_NOT_IN_PLAN; return 0; }
-  jq -e --argjson g "$AFK_ACC_GATES" '.gates == $g' <<<"$story" >/dev/null 2>&1 || { printf STORY_CONTRACT_MUTATED; return 0; }
-  printf ok
+  [[ -n "$story" ]] || { AFK_ACC_PLAN_REASON=STORY_NOT_IN_PLAN; return 0; }
+  jq -e --argjson g "$AFK_ACC_GATES" '.gates == $g' <<<"$story" >/dev/null 2>&1 || { AFK_ACC_PLAN_REASON=STORY_CONTRACT_MUTATED; return 0; }
+  ssha="$(jq -cS . <<<"$story" | afk_sha256_stdin)" || ssha=""
+  AFK_ACC_TUPLE="$(jq -nc --arg i "$AFK_ACC_ISSUE" --arg s "$AFK_ACC_SID" --arg dd "$AFK_ACC_DIGEST" --arg pd "$d" \
+    --arg ps "$ssha" --arg st "$AFK_ACC_STAMP_SHA" \
+    '{issue:$i, story_id:$s, decision_digest:$dd, plan_digest:$pd, plan_story_sha256:$ps, stamp_sha256:$st}')" || AFK_ACC_TUPLE=""
+  [[ -n "$ssha" && -n "$AFK_ACC_TUPLE" ]] || { AFK_ACC_PLAN_REASON=ACCEPTANCE_UNCHECKABLE; return 0; }
+  AFK_ACC_PLAN_REASON=ok
+}
+
+# afk_accept_plan_check -- prints the afk_accept_plan_read reason.
+afk_accept_plan_check() {
+  afk_accept_plan_read
+  printf '%s' "$AFK_ACC_PLAN_REASON"
 }
 
 # afk_accept_lane_reason -- the free-lane conditions on the CURRENT stamp:
@@ -143,11 +160,17 @@ afk_accept_pm_auto_reason() {
 
 # afk_cmd_route_accept <json_mode> <story> <kind> <actor> <reason> <verify>
 afk_cmd_route_accept() {
-  local json_mode="$1" story="$2" kind="$3" actor="$4" reason="$5" verify="$6" r policy="" rec tmp
+  local json_mode="$1" story="$2" kind="$3" actor="$4" reason="$5" verify="$6" r policy="" rec tmp attempt=""
   afk_accept_load "$story" || { afk_accept_emit "$json_mode" "$AFK_ACC_REASON"; return 4; }
   local x; x="$(jq -nc --arg s "$AFK_ACC_SID" --arg d "$AFK_ACC_DIGEST" '{story_id:$s, decision_digest:$d}')"
   if [[ "$verify" == true ]]; then
     r="$(afk_accept_verify "$story")"
+    # On ok, the tuple of one more plan read, which must itself pass: dispatch
+    # keeps it from the launch decision and binds its evidence to it.
+    if [[ "$r" == ok ]]; then
+      afk_accept_plan_read; r="$AFK_ACC_PLAN_REASON"
+      [[ "$r" == ok ]] && x="$(jq -c --argjson t "$AFK_ACC_TUPLE" '. + {tuple:$t}' <<<"$x")"
+    fi
     afk_accept_emit "$json_mode" "$r" "$x"
     [[ "$r" == ok ]] && return 0
     return 4
@@ -158,6 +181,7 @@ afk_cmd_route_accept() {
   fi
   if [[ "$kind" == pm-auto ]]; then
     r="$(afk_accept_pm_auto_reason)"
+    [[ "$r" == ok ]] && { afk_accept_plan_read; r="$AFK_ACC_PLAN_REASON"; }
     [[ "$r" == ok ]] || { afk_accept_emit "$json_mode" "$r" "$x"; return 4; }
     policy=paperclip-free-lane
   fi
@@ -165,9 +189,17 @@ afk_cmd_route_accept() {
     --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     '{schema:"afk-acceptance/1", story_id:$x.story_id, decision_digest:$x.decision_digest, kind:$k, actor:$a,
       policy:(if $p == "" then null else $p end), reason:(if $r == "" then null else $r end), created_at:$at}')"
+  # A successful pm-auto acceptance is the first kit-owned write of an
+  # attempt: the next integer N, created write-once in AFK state with the
+  # tuple captured now. It comes first, so a failed acceptance write leaves an
+  # attempt that was never launched, never a launch with no attempt.
+  if [[ "$kind" == pm-auto ]]; then
+    attempt="$(afk_pce_record_accept "$story" "$rec")" || { afk_accept_emit "$json_mode" ATTEMPT_RECORD_FAILED "$x"; return 1; }
+  fi
   tmp="$story.acceptance.json.tmp.$$"
   if ! printf '%s\n' "$rec" >"$tmp" 2>/dev/null || ! mv -f -- "$tmp" "$story.acceptance.json" 2>/dev/null; then
     rm -f -- "$tmp"; afk_accept_emit "$json_mode" ACCEPTANCE_WRITE_FAILED; return 1
   fi
-  afk_accept_emit "$json_mode" ok "$(jq -c '{story_id, decision_digest, kind, policy}' <<<"$rec")"
+  afk_accept_emit "$json_mode" ok "$(jq -c --arg n "$attempt" '{story_id, decision_digest, kind, policy}
+    + (if $n == "" then {} else {attempt:($n | tonumber)} end)' <<<"$rec")"
 }
