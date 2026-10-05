@@ -186,6 +186,127 @@ afk_pce_current_tuple() {
   printf '%s' "$AFK_ACC_TUPLE"
 }
 
+# ---- Review verdicts (docs/PAPERCLIP.md, "Review verdicts") ----------------
+
+AFK_PCE_VERDICT_MAX=65536
+# afk-review-verdict/1, exactly these members: no member is optional, none is
+# coerced, and an unknown member makes the verdict invalid.
+AFK_PCE_VERDICT_SHAPE='type == "object"
+  and keys == ["findings","reviewer_story_id","reviews_story_id","schema","verdict"]
+  and .schema == "afk-review-verdict/1"
+  and (.reviewer_story_id | type == "string") and (.reviews_story_id | type == "string")
+  and (.verdict == "APPROVE" or .verdict == "CHANGES_REQUESTED")
+  and (.findings | type == "array")
+  and all(.findings[]; type == "object" and keys == ["severity","status","summary"]
+        and (.severity == "blocker" or .severity == "major" or .severity == "minor" or .severity == "info")
+        and (.status == "open" or .status == "resolved")
+        and (.summary | type == "string"))'
+
+# afk_pce_review_role <tuple> -- the review role of the tuple's own story. The
+# story is the stored record's entry whose projection hashes to the tuple's
+# plan_story_sha256, so its role and target are the approved bytes even when
+# other parts of the record were edited. Prints the target builder id and
+# returns 0 for a reviewer bound to its plan (the record carries plan_digest,
+# is /2 and re-renders to that digest); returns 2 for a story whose role is
+# reviewer but whose plan binding fails; returns 1 for any other story.
+afk_pce_review_role() {
+  local t="$1" issue pd rec story target plan
+  issue="$(jq -r '.issue // empty' <<<"$t" 2>/dev/null)"; pd="$(jq -r '.plan_digest // empty' <<<"$t" 2>/dev/null)"
+  afk_pc_uuid_ok "$issue" && [[ "$pd" =~ ^[0-9a-f]{64}$ ]] || return 1
+  rec="$AFK_STATE_DIR/paperclip/plans/$issue.json"
+  [[ -f "$rec" && ! -L "$rec" ]] || return 1
+  story="$(jq -c --arg s "$(jq -r .story_id <<<"$t")" '[.stories[]? | select(.id == $s)] | first // empty' "$rec" 2>/dev/null)"
+  [[ -n "$story" && "$(jq -cS . <<<"$story" | afk_sha256_stdin)" == "$(jq -r .plan_story_sha256 <<<"$t")" ]] || return 1
+  jq -e '.role == "reviewer"' <<<"$story" >/dev/null 2>&1 || return 1
+  target="$(jq -r '.reviews | strings' <<<"$story" 2>/dev/null)"
+  printf '%s' "$target"
+  plan="$(jq -ce --arg d "$pd" 'select(type == "object" and .digest == $d and .plan_schema == "afk-paperclip-plan/2")
+    | {schema:.plan_schema, repo, base, stories}' "$rec" 2>/dev/null)" &&
+    [[ -n "$target" && "$(afk_pcp_digest "$plan" 2>/dev/null)" == "$pd" ]] || return 2
+}
+
+# afk_pce_verdict_judge <tuple-or-empty> <verdict-text-json> -- the one verdict
+# check, used by `review-verdict --check` and by the outcome verb's review
+# record. The text arrives as a JSON string, encoded by the same `head -c
+# 65537 | jq -Rs .` in both callers; empty means nothing is at the verdict
+# path. Sets AFK_PCE_VERDICT (the valid verdict object, else null) and
+# AFK_PCE_REASONS (a JSON array, empty on a pass). Returns 0 on a pass.
+afk_pce_verdict_judge() {
+  local tuple="$1" vjs="$2" text v="" target issue appr
+  AFK_PCE_VERDICT=null AFK_PCE_REASONS='[]'
+  [[ -n "$vjs" ]] || { AFK_PCE_REASONS='["VERDICT_MISSING"]'; return 1; }
+  # The bytes: at most the limit, no NUL, valid UTF-8 (an invalid byte becomes
+  # U+FFFD in the encoding, so a literal U+FFFD is refused as well).
+  if jq -e --argjson m "$AFK_PCE_VERDICT_MAX" \
+       'type == "string" and utf8bytelength <= $m and (explode | all(. != 0 and . != 65533))' <<<"$vjs" >/dev/null 2>&1; then
+    text="$(jq -j . <<<"$vjs"; printf x)"; text="${text%x}"
+    # Exactly one JSON value, an object, and no duplicate member: the parsed
+    # object must stream exactly as the text does.
+    v="$(jq -cs 'select(length == 1 and (.[0] | type) == "object") | .[0]' <<<"$text" 2>/dev/null)" || v=""
+    [[ -n "$v" && "$(jq -cn --stream '[inputs]' <<<"$text" 2>/dev/null)" == "$(jq -c '[tostream]' <<<"$v" 2>/dev/null)" ]] || v=""
+  fi
+  if [[ -z "$v" ]] || ! jq -e "$AFK_PCE_VERDICT_SHAPE" <<<"$v" >/dev/null 2>&1; then
+    AFK_PCE_REASONS='["VERDICT_INVALID"]'; return 1
+  fi
+  AFK_PCE_VERDICT="$v"
+  # Bound only to the current approval of the tuple's plan digest, and to a
+  # /2 reviewer story of that plan.
+  issue="$(jq -r '.issue // empty' <<<"${tuple:-null}" 2>/dev/null)"
+  if [[ -z "$tuple" ]] || ! afk_pce_tuple_ok "$tuple"; then AFK_PCE_REASONS='["VERDICT_PLAN_UNBOUND"]'; return 1; fi
+  appr="$(afk_cmd_paperclip_approval true "$issue" 2>/dev/null)" || appr=""
+  if ! jq -e --arg d "$(jq -r .plan_digest <<<"$tuple")" '.approved == true and .digest == $d' <<<"${appr:-null}" >/dev/null 2>&1 ||
+     ! target="$(afk_pce_review_role "$tuple")"; then
+    AFK_PCE_REASONS='["VERDICT_PLAN_UNBOUND"]'; return 1
+  fi
+  AFK_PCE_REASONS="$(jq -c --arg r "$(jq -r .story_id <<<"$tuple")" --arg t "$target" '[
+    (if .reviewer_story_id != $r or .reviews_story_id != $t then "VERDICT_IDS_MISMATCH" else empty end),
+    (if .verdict != "APPROVE" then "VERDICT_NOT_APPROVE" else empty end),
+    (if any(.findings[]; (.severity == "blocker" or .severity == "major") and .status == "open")
+       then "VERDICT_OPEN_MAJOR" else empty end)]' <<<"$v")" || AFK_PCE_REASONS='["VERDICT_INVALID"]'
+  [[ "$AFK_PCE_REASONS" == '[]' ]]
+}
+
+afk_pce_verdict_emit() { # <json_mode> <reasons-json> [<extra-json>]
+  local x="${3:-}"; [[ -n "$x" ]] || x='{}'
+  if [[ "$1" == true ]]; then
+    jq -nc --argjson r "$2" --argjson x "$x" '{result:($r[0] // "ok"), reasons:$r} + $x'
+  elif [[ "$2" == '[]' ]]; then
+    printf 'review verdict: ok\n'
+  else
+    jq -r '"agent-flow-kit review-verdict: " + join(" ")' <<<"$2"
+  fi
+}
+
+# afk_cmd_review_verdict <json_mode> -- `review-verdict --check`, the gate a /2
+# reviewer story runs. AFK_GATE_STORY, set by dispatch.sh for each gate, only
+# locates the story: the tuple, the approval and the plan roles all come from
+# kit state, so a wrong locator fails closed. Exit 0 only on a pass, else 4.
+afk_cmd_review_verdict() {
+  local jm="$1" story="${AFK_GATE_STORY:-}" vf tuple why="" vjs=""
+  if [[ "$story" != /* || ! -f "$story" || -L "$story" ]]; then
+    afk_pce_verdict_emit "$jm" '["GATE_STORY_INVALID"]'; return 4
+  fi
+  # Read exactly as dispatch.sh's paperclip_capture_verdict reads: nothing at
+  # the path is missing; a symlink or non-regular file is present but has no
+  # bytes (invalid); a regular file is encoded up to one byte past the limit.
+  vf="$story.verdict.json"
+  if [[ -L "$vf" || ( -e "$vf" && ! -f "$vf" ) ]]; then
+    vjs='""'
+  elif [[ -f "$vf" ]]; then
+    vjs="$(head -c $((AFK_PCE_VERDICT_MAX + 1)) -- "$vf" | jq -Rs . 2>/dev/null)" || vjs=""
+    [[ -n "$vjs" ]] || vjs='""'
+  fi
+  if ! tuple="$(afk_pce_current_tuple "$story")"; then why="$tuple"; tuple=""; fi
+  if afk_pce_verdict_judge "$tuple" "$vjs"; then
+    afk_pce_verdict_emit "$jm" '[]' "$(jq -nc --arg s "$(jq -r .story_id <<<"$tuple")" '{reviewer_story_id:$s}')"
+    return 0
+  fi
+  [[ "$AFK_PCE_REASONS" == '["VERDICT_PLAN_UNBOUND"]' ]] || why=""
+  afk_pce_verdict_emit "$jm" "$AFK_PCE_REASONS" \
+    "$(jq -nc --arg w "$why" 'if $w == "" then {} else {tuple_reason:$w} end')"
+  return 4
+}
+
 # afk_pce_read_record <path> <kind> -- one JSON object of this kind, or fail.
 afk_pce_read_record() {
   [[ -f "$1" && ! -L "$1" ]] || return 1

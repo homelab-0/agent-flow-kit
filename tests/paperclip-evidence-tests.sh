@@ -490,5 +490,111 @@ assert_eq "a non-Paperclip continuation in the same gap still recovers its confi
 [[ "$OUT" == *"recovered confirmed"* ]] || printf '        %s\n' "$(tail -n 5 <<<"$OUT")"
 unset MAIN_DISPATCH_ID MAIN_PM
 
+head1 "7. Review verdicts: the /2 binding, the gate, the launch refusals, the review record"
+# A second issue with a /2 plan: HOM-13.S1 is the builder, S2..S8 review it.
+# Its digest is rendered by the kit's own renderer, as paperclip-plan does.
+ISSUE2="e2222222-2222-2222-2222-222222222222"; RG='agent-flow-kit review-verdict --check'
+PLAN2="$(jq -nc --arg g "$RG" '{schema:"afk-paperclip-plan/2", repo:"/r/repo", base:"main", stories:(
+  [{id:"HOM-13.S1",title:"B",size:"S",lane:"l",files:[],gates:["bash tests/a.sh","bash tests/b.sh"],role:"builder"}]
+  + [range(2; 9) | {id:"HOM-13.S\(.)",title:"R",size:"S",lane:"l",files:[],gates:["bash tests/a.sh",$g],role:"reviewer",reviews:"HOM-13.S1"}])}')"
+PLAND2="$( (. "$KIT_ROOT/lib/afk-paperclip-plan.sh"; afk_pcp_render "$PLAN2") | sha)"
+jq -n --argjson p "$PLAN2" --arg d "$PLAND2" '{schema:"afk-paperclip-plan-record/1", state:"posted", digest:$d,
+  plan_schema:$p.schema, repo:$p.repo, base:$p.base, stories:$p.stories}' >"$STATE/paperclip/plans/$ISSUE2.json"
+approve2() { jq -nc --arg d "${1:-$PLAND2}" --arg c "$COMMIT" \
+  '{schema:"afk-paperclip-approval/1",kind:"plan",digest:$d,paperclip_commit:$c}' >"$STATE/paperclip/approvals/$ISSUE2.json"; }
+approve2
+adir2() { printf '%s' "$STATE/paperclip/attempts/$ISSUE2/$1"; }
+latest2() { ev latest --issue "$ISSUE2" --story-id "$1" --json; }
+FM2="home: paperclip:HOM-13
+paperclip_issue: $ISSUE2"
+rv_story() { # <dir> <name> <story_id> [<stamp-jq-edit>] [<extra frontmatter lines>] -> a reviewer story path
+  local s="$1/$2.md"
+  printf -- '---\n%s\n%sgates:\n  - "bash tests/a.sh"\n  - "%s"\n---\n# review\n' "$FM2" "${5:-}" "$RG" >"$s"
+  jq -n --arg sid "$3" '{harness:"claude", model_profile:"local-code-standard", effort:"medium", cost_class:"free",
+          metered:false, catalog_version:"sha256:abc", placement_required:false,
+          task:{story_id:$sid, tags:["tests"]}, override:null}' | jq "${4:-.}" >"$s.stamp.json"
+  printf '%s' "$s"
+}
+verdict() { # <reviewer_story_id> <reviews_story_id> <verdict> [<findings-json>]
+  jq -nc --arg r "$1" --arg t "$2" --arg v "$3" --argjson f "${4:-[]}" \
+    '{schema:"afk-review-verdict/1", reviewer_story_id:$r, reviews_story_id:$t, verdict:$v, findings:$f}'
+}
+vc() { OUT="$(AFK_GATE_STORY="$1" bash "$AFK" review-verdict --check --json 2>"$TMPROOT/err" </dev/null)"; RC=$?; }
+vc_is() { # <name> <story> <expected "result rc">
+  vc "$2"; assert_eq "$1" "$(res) $RC" "$3"
+}
+
+RV="$(rv_story "$SD" rv2 HOM-13.S2)"; accept --story "$RV" --kind pm-auto --actor pm
+assert_eq "a /2 reviewer story is accepted (attempt 1)" "$(res) $(jf .attempt)" "ok 1"
+OUT="$(env -u AFK_GATE_STORY bash "$AFK" review-verdict --check --json 2>/dev/null </dev/null)"; RC=$?
+assert_eq "--check with no locator -> GATE_STORY_INVALID, exit 4" "$(res) $RC" "GATE_STORY_INVALID 4"
+vc_is "a relative locator -> GATE_STORY_INVALID" "rv2.md" "GATE_STORY_INVALID 4"
+ln -s "$RV" "$SD/rv2-link.md"
+vc_is "a symlinked story -> GATE_STORY_INVALID" "$SD/rv2-link.md" "GATE_STORY_INVALID 4"
+vc_is "no verdict file -> VERDICT_MISSING" "$RV" "VERDICT_MISSING 4"
+verdict HOM-13.S2 HOM-13.S1 APPROVE >"$RV.verdict.json"
+vc_is "a bound APPROVE with no findings passes, exit 0" "$RV" "ok 0"
+verdict HOM-13.S2 HOM-13.S1 APPROVE '[{"severity":"major","status":"resolved","summary":"x"},{"severity":"minor","status":"open","summary":"y"}]' >"$RV.verdict.json"
+vc_is "a resolved major and an open minor still pass" "$RV" "ok 0"
+OUT="$(AFK_GATE_STORY="$RV" bash "$AFK" review-verdict --check 2>/dev/null </dev/null)"; RC=$?
+assert_eq "text mode on a pass" "$OUT $RC" "review verdict: ok 0"
+for bad in 'not json' "$(verdict HOM-13.S2 HOM-13.S1 APPROVE | jq -c '. + {extra:1}')" \
+           "$(verdict HOM-13.S2 HOM-13.S1 APPROVE | jq -c 'del(.findings)')" \
+           "$(verdict HOM-13.S2 HOM-13.S1 approve)" "$(verdict HOM-13.S2 HOM-13.S1 APPROVE | jq -c '.schema = "x"')" \
+           "$(verdict HOM-13.S2 HOM-13.S1 APPROVE '[{"severity":"major","status":"open"}]')" \
+           "$(verdict HOM-13.S2 HOM-13.S1 APPROVE)$(verdict HOM-13.S2 HOM-13.S1 APPROVE)" '[]' \
+           "$(verdict HOM-13.S2 HOM-13.S1 APPROVE) 1" \
+           "$(verdict HOM-13.S2 HOM-13.S1 APPROVE | sed 's/^{/{"verdict":"CHANGES_REQUESTED",/')"; do
+  printf '%s\n' "$bad" >"$RV.verdict.json"; vc "$RV"
+  assert_eq "malformed, partial, trailing-value or duplicate-member verdict -> VERDICT_INVALID: ${bad:0:48}" "$(res) $RC" "VERDICT_INVALID 4"
+done
+for byte in '\000' '\377'; do
+  verdict HOM-13.S2 HOM-13.S1 APPROVE '[{"severity":"info","status":"open","summary":"aXb"}]' | tr X "$byte" >"$RV.verdict.json"
+  vc_is "a verdict with the raw byte $byte (NUL or invalid UTF-8) -> VERDICT_INVALID" "$RV" "VERDICT_INVALID 4"
+done
+OUT="$(AFK_GATE_STORY="$RV" bash "$AFK" review-verdict 2>/dev/null </dev/null)"; RC=$?
+assert_eq "review-verdict without --check is a usage error" "$RC" "1"
+verdict HOM-13.S2 HOM-13.S1 APPROVE "$(jq -nc --arg s "$(head -c 70000 /dev/zero | tr '\0' a)" '[{severity:"info",status:"open",summary:$s}]')" >"$RV.verdict.json"
+vc_is "a verdict over 64 KiB -> VERDICT_INVALID" "$RV" "VERDICT_INVALID 4"
+rm -f "$RV.verdict.json"; verdict HOM-13.S2 HOM-13.S1 APPROVE >"$TMPROOT/v-target.json"; ln -s "$TMPROOT/v-target.json" "$RV.verdict.json"
+vc_is "a symlinked verdict -> VERDICT_INVALID" "$RV" "VERDICT_INVALID 4"
+rm -f "$RV.verdict.json"; mkdir "$RV.verdict.json"
+vc_is "a directory at the verdict path -> VERDICT_INVALID" "$RV" "VERDICT_INVALID 4"
+rmdir "$RV.verdict.json"
+verdict HOM-13.S3 HOM-13.S1 APPROVE >"$RV.verdict.json"
+vc_is "another reviewer's id -> VERDICT_IDS_MISMATCH" "$RV" "VERDICT_IDS_MISMATCH 4"
+verdict HOM-13.S2 HOM-13.S9 APPROVE >"$RV.verdict.json"
+vc_is "a target other than the plan's -> VERDICT_IDS_MISMATCH" "$RV" "VERDICT_IDS_MISMATCH 4"
+verdict HOM-13.S2 HOM-13.S1 CHANGES_REQUESTED >"$RV.verdict.json"
+vc_is "CHANGES_REQUESTED -> VERDICT_NOT_APPROVE" "$RV" "VERDICT_NOT_APPROVE 4"
+for sev in major blocker; do
+  verdict HOM-13.S2 HOM-13.S1 APPROVE "[{\"severity\":\"$sev\",\"status\":\"open\",\"summary\":\"x\"}]" >"$RV.verdict.json"
+  vc_is "an APPROVE with an open $sev -> VERDICT_OPEN_MAJOR" "$RV" "VERDICT_OPEN_MAJOR 4"
+done
+verdict HOM-13.S2 HOM-13.S1 CHANGES_REQUESTED '[{"severity":"blocker","status":"open","summary":"x"}]' >"$RV.verdict.json"
+vc "$RV"
+assert_eq "every content reason is reported" "$(jf '.reasons | join(",")')" "VERDICT_NOT_APPROVE,VERDICT_OPEN_MAJOR"
+OUT="$(AFK_GATE_STORY="$RV" bash "$AFK" review-verdict --check 2>/dev/null </dev/null)"; RC=$?
+assert_eq "text mode names the reasons" "$OUT $RC" "agent-flow-kit review-verdict: VERDICT_NOT_APPROVE VERDICT_OPEN_MAJOR 4"
+verdict HOM-13.S2 HOM-13.S1 APPROVE >"$RV.verdict.json"
+rm -f "$STATE/paperclip/approvals/$ISSUE2.json"; vc "$RV"
+assert_eq "approval withdrawn -> VERDICT_PLAN_UNBOUND, naming the tuple refusal" "$(res) $RC $(jf .tuple_reason)" "VERDICT_PLAN_UNBOUND 4 PLAN_NOT_APPROVED"
+approve2 "$(printf '%064d' 0)"
+vc_is "an approval of another digest -> VERDICT_PLAN_UNBOUND" "$RV" "VERDICT_PLAN_UNBOUND 4"
+approve2
+B1="$(new_story "$SD" b1 HOM-13.S1 '.' "$FM2")"; accept --story "$B1" --kind pm-auto --actor pm
+verdict HOM-13.S1 HOM-13.S1 APPROVE >"$B1.verdict.json"
+vc_is "a builder story's verdict -> VERDICT_PLAN_UNBOUND" "$B1" "VERDICT_PLAN_UNBOUND 4"
+V1="$(new_story "$SD" v1 HOM-12.S1)"; accept --story "$V1" --kind pm-auto --actor pm
+verdict HOM-12.S1 HOM-12.S1 APPROVE >"$V1.verdict.json"
+vc_is "a /1 story's verdict -> VERDICT_PLAN_UNBOUND (no review role)" "$V1" "VERDICT_PLAN_UNBOUND 4"
+# Another story's title edited in the stored record, digest kept: the
+# reviewer's own tuple still verifies, but the record no longer renders to it.
+cp "$STATE/paperclip/plans/$ISSUE2.json" "$TMPROOT/p2.orig"
+jq '.stories[2].title = "edited"' "$TMPROOT/p2.orig" >"$STATE/paperclip/plans/$ISSUE2.json"
+vc_is "a stored plan edited under the same digest -> VERDICT_PLAN_UNBOUND" "$RV" "VERDICT_PLAN_UNBOUND 4"
+cp "$TMPROOT/p2.orig" "$STATE/paperclip/plans/$ISSUE2.json"
+vc_is "...restored, the same verdict passes again" "$RV" "ok 0"
+
 printf '\n%d passed, %d failed (%ds)\n' "$PASS" "$FAIL" "$SECONDS"
 (( FAIL == 0 ))
