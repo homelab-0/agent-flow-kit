@@ -384,6 +384,12 @@ agent-flow-kit — lifecycle entry point
       and the content snapshot it carries. latest reports the newest record
       by (attempt, cycle) as it is; it is not a readiness verdict.
 
+  agent-flow-kit review-verdict --check [--json]
+      The gate a schema-2 reviewer story runs. dispatch.sh sets
+      AFK_GATE_STORY to the story; the sibling <story>.verdict.json must be
+      an APPROVE of the reviewed builder, bound to the current approved plan,
+      with no open blocker or major finding. Exit 0 only when it is.
+
   agent-flow-kit paperclip-project add --project-id <uuid> --slug <s> --repo <abs-path>
       [--harness claude|codex|opencode] [--max-active <n>] [--merge human|pm]
       [--accept-mismatch] [--json]
@@ -614,6 +620,26 @@ afk_main() {
     afk_require_tools || return "$AFK_EXIT_USAGE"
     afk_require_declared_paths || return "$AFK_EXIT_USAGE"
     afk_cmd_paperclip_evidence "$@"
+    return $?
+  fi
+
+  # review-verdict --check is a gate: its one input is AFK_GATE_STORY.
+  if [[ "$cmd" == review-verdict ]]; then
+    local rv_json=false rv_check=false rv_a
+    for rv_a in "$@"; do
+      case "$rv_a" in
+        --check) rv_check=true ;;
+        --json) rv_json=true ;;
+        *) rv_check=bad; break ;;
+      esac
+    done
+    if [[ "$rv_check" != true ]]; then
+      afk_warn "review-verdict requires --check and accepts only optional --json"
+      return "$AFK_EXIT_USAGE"
+    fi
+    afk_require_tools || return "$AFK_EXIT_USAGE"
+    afk_require_declared_paths || return "$AFK_EXIT_USAGE"
+    afk_cmd_review_verdict "$rv_json"
     return $?
   fi
 
