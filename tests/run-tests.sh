@@ -813,13 +813,39 @@ else bad "policy: every threshold and the method are declared in the policy docu
 # stripped from this one, and it is idempotent, so the oracle holds whether or
 # not master already carries it. A control proves the comparison can fail.
 head1 "   frozen launch texts differ from master only by the claude launch amendment"
+# amend_codex is the sed-free form of `sed 's/<old>/<new>/' <<<"$1"`: the first
+# match on each line is replaced, and every line, including the one the
+# here-string terminates, ends in a newline. It is defined outside the master
+# check so the equivalence assertions below always run.
+amend_codex() {
+  local line old="-s workspace-write \"\$(cat" new="-s workspace-write -- \"\$(cat"
+  while IFS= read -r line; do printf '%s\n' "${line/"$old"/"$new"}"; done <<<"$1"
+}
+# The sed it replaced stays the oracle. Each case goes through a file, the way
+# the here-string fed it, and the trailing `x` keeps the newlines that $(...)
+# would otherwise strip, so the comparison is byte-exact.
+AMEND_OLD="-s workspace-write \"\$(cat"
+AMEND_CASES=("" "no match here" "codex exec $AMEND_OLD /wt/p)\""
+  "$AMEND_OLD a $AMEND_OLD b" $'one '"$AMEND_OLD"$' x\ntwo\n'"$AMEND_OLD $AMEND_OLD"
+  "-s workspace-write -- \"\$(cat /wt/p)\"" "  'q' \\\\ \\$AMEND_OLD\\n  "
+  "$AMEND_OLD"$'\n' $'\n\n' $'tab\t'"$AMEND_OLD"$'\r'
+  "-s workspace-write \"\$(ca" "-S workspace-write \"\$(cat")
+AMEND_DIFF=""
+for AMEND_IN in "${AMEND_CASES[@]}"; do
+  printf '%s\n' "$AMEND_IN" > "$TMPROOT/amend-codex.in"
+  AMEND_WANT="$(sed 's/-s workspace-write "\$(cat/-s workspace-write -- "$(cat/' "$TMPROOT/amend-codex.in"; printf x)"
+  AMEND_GOT="$(amend_codex "$AMEND_IN"; printf x)"
+  [[ "$AMEND_GOT" == "$AMEND_WANT" ]] || AMEND_DIFF+="$(printf '%q' "$AMEND_IN") "
+done
+assert_eq "amend_codex: byte-identical to its sed oracle on ${#AMEND_CASES[@]} cases" "$AMEND_DIFF" ""
+assert_eq "amend_codex CONTROL: the marker IS inserted" \
+  "$(amend_codex "$AMEND_OLD")" "-s workspace-write -- \"\$(cat"
 MASTER_DISPATCH="$TMPROOT/master-dispatch.sh"
 if git -C "$KIT_ROOT" show master:files/model-router/scripts/dispatch.sh > "$MASTER_DISPATCH" 2>/dev/null; then
   emit_from() { bash -c 'set -uo pipefail; . "$1"; shift; "$@"' _emit "$@"; }
   amend_claude() {
     sed 's/--tools "Read,Glob,Grep,Write" /--tools "Read,Glob,Grep,Write,Edit" /; s/--output-format json </--output-format stream-json --verbose </' <<<"$1"
   }
-  amend_codex() { sed 's/-s workspace-write "\$(cat/-s workspace-write -- "$(cat/' <<<"$1"; }
   BI_ARGS=(/home/op /usr/bin:/bin op /wt/S.md.prompt claude-opus-5 high /wt/S.md.claude-result.json /wt/agents/dev.md)
   BI_GW=(/home/op /usr/bin:/bin op /wt/S.md.prompt qwen36-27b high /wt/S.md.claude-result.json /wt/agents/dev.md \
          https://gw.invalid op://v/i/credential /home/op/.op-agent-env cachyos-7900xtx 65536)
@@ -3868,6 +3894,14 @@ head1 "31. Paperclip evidence gate — tests/paperclip-evidence-tests.sh"
 # allocation and tuple, through the CLI: snapshots, write-once attempt, launch
 # and outcome records, latest. No network; the suite reports its own time.
 run_gate "paperclip evidence gate" "$KIT_ROOT/tests/paperclip-evidence-tests.sh"
+
+# ===========================================================================
+head1 "32. Paperclip plan gate — tests/paperclip-plan-tests.sh"
+# ===========================================================================
+# paperclip-plan and paperclip-approval (lib/afk-paperclip-plan.sh): plan
+# schemas 1 and 2, the canonical body and digest. Stub orca, temp git repo,
+# no network.
+run_gate "paperclip plan gate" "$KIT_ROOT/tests/paperclip-plan-tests.sh"
 
 # ===========================================================================
 # AC-2: total wall time, with a BUDGET warning (never a failure) over 720s.
