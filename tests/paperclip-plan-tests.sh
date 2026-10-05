@@ -81,7 +81,7 @@ run_afk() { # <handle> <args...>
   local handle="$1"; shift
   OUT_TEXT="$(env -i PATH="${FAULT_PATH:+$FAULT_PATH:}$STUBS:$PATH" HOME="$HOME_DIR" LANG=C \
     AFK_STATE_DIR="$STATE" AFK_HOST_CONFIG="$STUBS/host.json" \
-    AFK_PAPERCLIP_CONFIG="$CONFIG" ORCA_TERMINAL_HANDLE="$handle" \
+    AFK_PAPERCLIP_CONFIG="$CONFIG" ORCA_TERMINAL_HANDLE="$handle" AFK_GATE_STORY="${AFK_GATE_STORY:-}" \
     bash "$AFK" "$@" 2>&1)"
   RC=$?
 }
@@ -222,6 +222,84 @@ assert_eq "  ...the question is published" "$(spool_count)" "1"
 assert_eq "  ...a pending_publish record that carries the seq is left" "$(jq -c '[.state, .posted_seq]' "$PLAN" 2>/dev/null)" '["pending_publish",1]'
 run_afk termA paperclip-plan --issue "$ISSUE" --plan-file "$(plan_file main "$S_OK")" --json
 assert_eq "no fault -> the record ends posted with its seq" "$(jq -c '[.state, .posted_seq]' "$PLAN" 2>/dev/null)" '["posted",2]'
+
+head1 "7. Schema 2: roles, review targets, and the unchanged /1 body"
+# A fixture allowlist on its own base: the review gate is never added to a
+# live allowlist by a test.
+RG='agent-flow-kit review-verdict --check'
+printf 'bash tests/a.sh\nbash tests/b.sh --fast\n%s\n' "$RG" >"$REPO/.afk/gates-allowlist"
+g add .afk; g commit -qm review-gate; g branch review; g reset -q --hard HEAD~1
+reset_state
+# Builder and reviewer differ in role, the reviewer's target and its review gate.
+st() { jq -nc --arg id "$1" --arg r "$2" --arg t "${3:-}" --arg g "$RG" \
+  '{id:$id,title:"X",size:"S",lane:"l",role:$r,files:[],gates:(["bash tests/a.sh"] + (if $r == "reviewer" then [$g] else [] end))}
+   + (if $t == "" then {} else {reviews:$t} end)'; }
+p2() { # [<jq-filter>] -- a /2 plan on the review base: S1 builder, S2 reviews S1
+  plan_file review "$(jq -sc . < <(st HOM-12.S1 builder; st HOM-12.S2 reviewer HOM-12.S1))" ".schema = \"afk-paperclip-plan/2\" | ${1:-.}"
+}
+p2_refused() { # <name> <jq-filter> <reason>
+  run_afk termA paperclip-plan --issue "$ISSUE" --plan-file "$(p2 "$2")" --json
+  assert_eq "$1" "$(jq -r .result <<<"$OUT_TEXT") $RC" "$3 4"
+}
+p2_refused "/2: a story with no role" 'del(.stories[0].role)' PLAN_ROLE_INVALID
+p2_refused "/2: an unknown role" '.stories[0].role = "author"' PLAN_ROLE_INVALID
+p2_refused "/2: a builder that names a review target" '.stories[0].reviews = "HOM-12.S2"' PLAN_ROLE_INVALID
+p2_refused "/2: a builder that runs the review gate" ".stories[0].gates += [\"$RG\"]" PLAN_ROLE_INVALID
+p2_refused "/2: a reviewer of an unknown story" '.stories[1].reviews = "HOM-12.S9"' PLAN_REVIEW_TARGET_INVALID
+p2_refused "/2: a reviewer with no target string" '.stories[1].reviews = 7' PLAN_REVIEW_TARGET_INVALID
+p2_refused "/2: a reviewer with an empty target" '.stories[1].reviews = ""' PLAN_REVIEW_TARGET_INVALID
+p2_refused "/2: a reviewer with a null target" '.stories[1].reviews = null' PLAN_REVIEW_TARGET_INVALID
+p2_refused "/2: a reviewer reviewing itself" '.stories[1].reviews = "HOM-12.S2"' PLAN_REVIEW_TARGET_INVALID
+p2_refused "/2: a reviewer of a reviewer (no recursion)" \
+  '.stories += [.stories[1] | .id = "HOM-12.S3" | .reviews = "HOM-12.S2"]' PLAN_REVIEW_TARGET_INVALID
+p2_refused "/2: a builder nobody reviews" '.stories += [.stories[0] | .id = "HOM-12.S3"]' PLAN_BUILDER_UNREVIEWED
+p2_refused "/2: a reviewer without the exact review gate" '.stories[1].gates = ["bash tests/a.sh"]' PLAN_REVIEW_GATE_MISSING
+p2_refused "/2: a near-miss review gate" '.stories[1].gates = ["bash tests/a.sh", "agent-flow-kit review-verdict --check "]' PLAN_REVIEW_GATE_MISSING
+assert_eq "  ...nothing published by any /2 refusal" "$(spool_count)" "0"
+run_afk termA paperclip-plan --issue "$ISSUE" --plan-file "$(p2)" --json
+assert_eq "a valid /2 plan publishes" "$(jq -r .result <<<"$OUT_TEXT") $RC" "ok 0"
+D2="$(jq -r .digest <<<"$OUT_TEXT")"
+BODY2="$(jq -r .body "$STATE/paperclip/spool/$ISSUE/00000001.json")"
+assert_contains "/2 body: the schema line right after Base" "$BODY2" $'- Base: `review`\n- Plan schema: 2\n\n## HOM-12.S1'
+assert_contains "/2 body: the builder's role right after Lane" "$BODY2" $'- Lane: l\n- Role: builder\n- Files:'
+assert_contains "/2 body: the reviewer's role and target right after Lane" "$BODY2" $'- Lane: l\n- Role: reviewer\n- Reviews: HOM-12.S1\n- Files:'
+assert_eq "/2 digest = sha256 of the body before the footer" \
+  "$(printf '%s' "${BODY2%%$'\n'plan "${D2:0:8}"$'\n'*}" | sha256sum | awk '{print $1}')" "$D2"
+assert_eq "/2 record: plan_schema, roles and the reviewer's target kept" \
+  "$(jq -c '[.plan_schema, [.stories[] | [.role, .reviews]]]' "$PLAN")" '["afk-paperclip-plan/2",[["builder",null],["reviewer","HOM-12.S1"]]]'
+# The record paperclip-plan wrote, read by the evidence side: approved, the
+# reviewer accepted, its review gate passes and its launch answers as reviewer.
+write_config "$ATT"; approve_rec "$D2"
+printf '.pm-brief/\n' >>"$REPO/.git/info/exclude"; mkdir -p "$REPO/.pm-brief"; RS="$REPO/.pm-brief/rv.md"
+printf -- '---\nhome: paperclip:HOM-12\npaperclip_issue: %s\ngates:\n  - "bash tests/a.sh"\n  - "%s"\n---\n# review\n' "$ISSUE" "$RG" >"$RS"
+jq -n '{harness:"claude", model_profile:"local-code-standard", effort:"medium", cost_class:"free", metered:false,
+  catalog_version:"sha256:abc", placement_required:false, task:{story_id:"HOM-12.S2", tags:["tests"]}, override:null}' >"$RS.stamp.json"
+run_afk termA route-accept --story "$RS" --kind pm-auto --actor pm --json
+assert_eq "/2 end to end: the reviewer story of the published plan is accepted" "$(jq -r .result <<<"$OUT_TEXT")" "ok"
+jq -nc '{schema:"afk-review-verdict/1", reviewer_story_id:"HOM-12.S2", reviews_story_id:"HOM-12.S1", verdict:"APPROVE", findings:[]}' >"$RS.verdict.json"
+AFK_GATE_STORY="$RS" run_afk termA review-verdict --check --json
+assert_eq "  ...its review gate passes against the written record" "$(jq -r .result <<<"$OUT_TEXT") $RC" "ok 0"
+rm -f "$RS.verdict.json"
+run_afk termA paperclip-plan --issue "$ISSUE" --plan-file "$(p2 '.stories += [.stories[1] | .id = "HOM-12.S3"]')" --json
+assert_eq "/2: two reviewers of one builder publish" "$(jq -r .result <<<"$OUT_TEXT") $RC" "ok 0"
+run_afk termA paperclip-plan --issue "$ISSUE" --plan-file "$(p2)" --json
+S1SHA="$(jq -cS '.stories[] | select(.id == "HOM-12.S1")' "$PLAN" | sha256sum)"
+run_afk termA paperclip-plan --issue "$ISSUE" --plan-file \
+  "$(p2 '.stories = [(.stories[1] | .id = "HOM-12.S1" | .reviews = "HOM-12.S2"), (.stories[0] | .id = "HOM-12.S2")]')" --json
+assert_eq "swapping only the roles changes the digest" "$([[ "$(jq -r .digest <<<"$OUT_TEXT")" != "$D2" ]] && echo new)" "new"
+assert_eq "  ...and S1's projected story, so its plan_story_sha256" \
+  "$([[ "$(jq -cS '.stories[] | select(.id == "HOM-12.S1")' "$PLAN" | sha256sum)" != "$S1SHA" ]] && echo changed)" "changed"
+reset_state
+GOLD="$(printf '# AFK plan\n\n- Repo: `repo` (`%s`)\n- Base: `main`\n\n## HOM-12.S1: Add the thing\n\n- Size: S\n- Lane: local\n- Files:\n  - `lib/a.sh`\n  - `tests/a.sh`\n- Gates:\n\n```\nbash tests/a.sh\nbash tests/b.sh --fast\n```' "$REPO")"
+GOLD_D="$(printf '%s\n' "$GOLD" | sha256sum | awk '{print $1}')"
+run_afk termA paperclip-plan --issue "$ISSUE" --plan-file "$(plan_file main "$S_OK")" --json
+BODY1="$(jq -r .body "$STATE/paperclip/spool/$ISSUE/00000001.json")"
+assert_eq "/1 golden: the body is byte-identical to the fixed text" "${BODY1%%$'\n'plan *}" "$GOLD"$'\n'
+assert_eq "/1 golden: the digest is the golden body's sha256" "$(jq -r .digest <<<"$OUT_TEXT")" "$GOLD_D"
+run_afk termA paperclip-plan --issue "$ISSUE" --plan-file \
+  "$(plan_file main "$S_OK" '.stories[0] += {role:"reviewer", reviews:"HOM-12.S9"}')" --json
+assert_eq "/1 ignores role fields: same digest, no role or plan_schema stored" \
+  "$(jq -r .digest <<<"$OUT_TEXT") $(jq -c '[.plan_schema, (.stories[0] | has("role"), has("reviews"))]' "$PLAN")" "$GOLD_D [null,false,false]"
 
 assert_eq "the PATH decoy orca never ran" \
   "$([[ -e "$STUBS/.bare-orca-ran" ]] && echo ran || echo never)" "never"

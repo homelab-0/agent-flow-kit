@@ -549,7 +549,8 @@ record is Josh's own comment `approve <digest8>` on the open plan question.
 - **`paperclip-plan --issue <id> --plan-file <path> [--json]`** (owner only,
   same check and body-file rules as `paperclip-report`). The file is JSON
   `{schema:"afk-paperclip-plan/1", repo, base, stories:[{id, title, size,
-  lane, files:[…], gates:[…]}]}`. `repo` must equal the configured
+  lane, files:[…], gates:[…]}]}` (or schema `afk-paperclip-plan/2` with
+  story roles, see **Review verdicts**). `repo` must equal the configured
   `repo_path` for the issue's project; each `id` matches
   `^HOM-[0-9]+\.S[0-9]+$` with the issue's own identifier as its prefix; ids
   are unique; there is at least one story; no field may contain a control
@@ -797,6 +798,76 @@ Paperclip marker get no records and launch exactly as before.
   uid. These records defend against stale, partial, mistaken and
   worker-planted state, not against a deliberate same-uid forger who calls
   the verb with fabricated input. Nothing is signed.
+
+## Review verdicts (plan schema 2, `agent-flow-kit review-verdict --check`)
+
+A schema-2 plan names who builds and who reviews, and a reviewer story's
+gate checks a structured verdict against the approved plan. This is evidence
+collection only. Nothing here decides readiness or publishes a final, and no
+final, report or poll behaviour changes. `/1` plans validate, render, digest,
+approve and dispatch exactly as before.
+
+- **Plan `afk-paperclip-plan/2`.** Every story has `role: builder|reviewer`,
+  and a reviewer has `reviews: <builder id>`. `paperclip-plan` refuses
+  `PLAN_ROLE_INVALID` (a missing or unknown role, or a builder that names a
+  target or runs the review gate, which it could never pass),
+  `PLAN_REVIEW_TARGET_INVALID` (an unknown target, itself, or a
+  target that is not a builder, so a reviewer of a reviewer and any
+  recursion are refused), `PLAN_BUILDER_UNREVIEWED` (a builder no reviewer
+  names) and `PLAN_REVIEW_GATE_MISSING` (a reviewer whose gates do not
+  include exactly `agent-flow-kit review-verdict --check`). The body adds
+  `- Plan schema: 2` after `- Base:`, and per story `- Role: …` and, for a
+  reviewer, `- Reviews: …` after `- Lane:`, so all three are in the digest.
+  The stored record keeps `role` and `reviews` in each `/2` story, which
+  puts them in `plan_story_sha256`, and adds `plan_schema`. A `/1` plan
+  drops any role field, and its body has none of these lines.
+- **Gate adoption.** The review gate is an ordinary allowlisted gate: a
+  `/2` plan can only be published on a base whose `.afk/gates-allowlist`
+  lists it. Adding that line to a live allowlist is the owner's action; the
+  kit's tests use fixture allowlists only. Until it is adopted no `/2` plan
+  can be approved, so this whole section is inert.
+- **Verdict file** `<story>.verdict.json`, beside the reviewer story, in the
+  ignored `.pm-brief/` scope. Schema `afk-review-verdict/1`, exactly these
+  members, none optional, nothing coerced:
+
+  ```json
+  {"schema":"afk-review-verdict/1",
+   "reviewer_story_id":"HOM-12.S2", "reviews_story_id":"HOM-12.S1",
+   "verdict":"APPROVE",
+   "findings":[{"severity":"major","status":"resolved","summary":"…"}]}
+  ```
+
+  `verdict` is `APPROVE` or `CHANGES_REQUESTED`; `severity` is `blocker`,
+  `major`, `minor` or `info`; `status` is `open` or `resolved`; `findings`
+  may be empty. The file is at most 64 KiB of UTF-8 with no NUL byte and no
+  U+FFFD (the replacement an invalid byte becomes when encoded), holding
+  exactly one JSON value, an object with no duplicate member.
+- **`review-verdict --check [--json]`** (the flags in either order) reads
+  only `AFK_GATE_STORY`. It passes (exit 0, `{result:"ok", reasons:[],
+  reviewer_story_id}`; text mode prints `review verdict: ok`) only when all
+  of these hold, else exit 4 with `result` the first reason and `reasons` the
+  list (text mode prints `agent-flow-kit review-verdict: <reasons>`, also on
+  stdout): the locator is an absolute path to a regular, non-symlink file
+  (`GATE_STORY_INVALID`); something is at the verdict path
+  (`VERDICT_MISSING`) and it is a regular, non-symlink file of the shape
+  above (`VERDICT_INVALID`); the story's `route-accept --verify` tuple
+  holds, `paperclip-approval` is approved for exactly its `plan_digest`, the
+  stored plan record carries that digest, is `/2` and re-renders to it, and
+  the record's entry for this story hashes to `plan_story_sha256` and is a
+  reviewer (`VERDICT_PLAN_UNBOUND`, with `tuple_reason` when the tuple was
+  refused); `reviewer_story_id` is this story and `reviews_story_id` is its
+  plan target (`VERDICT_IDS_MISMATCH`); the verdict is `APPROVE`
+  (`VERDICT_NOT_APPROVE`); and no `blocker` or `major` finding is `open`
+  (`VERDICT_OPEN_MAJOR`). The last three are all reported together. The gate
+  runs whichever `agent-flow-kit` is first on the gate's `PATH`, which must
+  include this verb; an older install fails it as an unknown command.
+- **Trust and limits.** The same one-principal model as the attempt
+  evidence: this defends against stale, planted and mistaken verdicts, not a
+  same-uid forger, a file swapped between the type check and the read, or a
+  worker that force-stages its ignored verdict after launch. A passing check
+  is not readiness: it does not look at the reviewed builder's evidence (the
+  builder may have no outcome at all), nothing yet compares the reviewer's
+  snapshot with the builder's, and no final depends on it.
 
 ## The self-block model
 

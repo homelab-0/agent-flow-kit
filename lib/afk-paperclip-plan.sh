@@ -20,26 +20,46 @@ afk_pcp_emit() { # <json_mode> <result> [<extra-json>] -- a refusal
 
 afk_pcp_sha256() { local d; d="$(afk_sha256_stdin)" || return 1; printf '%s' "${d#sha256:}"; }
 
+# The one review gate a /2 reviewer runs, byte-exact (docs/PAPERCLIP.md,
+# "Review verdicts").
+AFK_PCP_REVIEW_GATE='agent-flow-kit review-verdict --check'
+
 # afk_pcp_render <plan-json> -- the canonical body (AC-3). Every line ends in
 # LF; the digest is sha256 of exactly these bytes. The footer is not here.
+# Only a /2 plan renders the schema line and each story's role and review
+# target, so they are digest-bound; a /1 body is unchanged.
 afk_pcp_render() {
-  jq -r '
+  jq -r '(.schema == "afk-paperclip-plan/2") as $v2 |
     "# AFK plan", "",
     "- Repo: `\(.repo | split("/") | last)` (`\(.repo)`)",
     "- Base: `\(.base)`",
+    (if $v2 then "- Plan schema: 2" else empty end),
     (.stories[] | "", "## \(.id): \(.title)", "",
-      "- Size: \(.size)", "- Lane: \(.lane)", "- Files:",
+      "- Size: \(.size)", "- Lane: \(.lane)",
+      (if $v2 then "- Role: \(.role)", (if .role == "reviewer" then "- Reviews: \(.reviews)" else empty end) else empty end),
+      "- Files:",
       (if (.files | length) == 0 then "  - (none)" else (.files[] | "  - `\(.)`") end),
       "- Gates:", "", "```", .gates[], "```")' <<<"$1"
 }
 
+# afk_pcp_digest <plan-json> -- the hex digest of the canonical body.
+afk_pcp_digest() {
+  local body
+  body="$(afk_pcp_render "$1")"$'\n' || return 1
+  printf '%s' "$body" | afk_pcp_sha256
+}
+
 # afk_pcp_validate <plan-json> <repo_path> <identifier> -- prints "ok" or a
 # reason. Control characters are refused in every field, so no value can add
-# lines (a fake footer, a fence break) to the body Josh reads.
+# lines (a fake footer, a fence break) to the body Josh reads. A /2 plan also
+# needs every story to be a builder or a reviewer; a reviewer reviews one
+# other story that is a builder (never itself and never a reviewer, which
+# rules out recursion), every builder is reviewed, and every reviewer runs the
+# review gate, which a builder never runs (it could never pass there).
 afk_pcp_validate() {
-  jq -r --arg repo "$2" --arg ident "$3" '
+  jq -r --arg repo "$2" --arg ident "$3" --arg rg "$AFK_PCP_REVIEW_GATE" '
     def s: type == "string" and length > 0 and (test("[[:cntrl:]]") | not);
-    if type != "object" or .schema != "afk-paperclip-plan/1" then "PLAN_INVALID"
+    if type != "object" or (.schema != "afk-paperclip-plan/1" and .schema != "afk-paperclip-plan/2") then "PLAN_INVALID"
     elif .repo != $repo then "PLAN_REPO_MISMATCH"
     elif ((.base | s) and (.base | test("^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$"))) | not then "PLAN_BASE_UNKNOWN"
     elif (.stories | type) != "array" or (.stories | length) == 0 then "PLAN_INVALID"
@@ -49,7 +69,21 @@ afk_pcp_validate() {
             and (.files | type) == "array" and all(.files[]; s)
             and (.gates | type) == "array" and all(.gates[]; s)] | all) | not then "PLAN_INVALID"
     elif ([.stories[].id] | length) != ([.stories[].id] | unique | length) then "PLAN_INVALID"
-    else "ok" end' <<<"$1" 2>/dev/null || printf 'PLAN_INVALID'
+    elif .schema != "afk-paperclip-plan/2" then "ok"
+    elif any(.stories[]; (.role != "builder" and .role != "reviewer")
+               or (.role == "builder" and (has("reviews") or (.gates | map(. == $rg) | any))))
+      then "PLAN_ROLE_INVALID"
+    else (.stories | map({key: .id, value: .role}) | from_entries) as $role
+      | [.stories[] | select(.role == "reviewer") | .reviews] as $targets
+      | if any(.stories[] | select(.role == "reviewer");
+               (.reviews | s | not) or .reviews == .id or $role[.reviews | tostring] != "builder")
+          then "PLAN_REVIEW_TARGET_INVALID"
+        elif any(.stories[] | select(.role == "builder"); .id as $i | $targets | map(. == $i) | any | not)
+          then "PLAN_BUILDER_UNREVIEWED"
+        elif any(.stories[] | select(.role == "reviewer"); .gates | map(. == $rg) | any | not)
+          then "PLAN_REVIEW_GATE_MISSING"
+        else "ok" end
+    end' <<<"$1" 2>/dev/null || printf 'PLAN_INVALID'
 }
 
 # afk_pcp_check_gates <json_mode> <plan-json> <repo> <base-commit> -- AC-2.
@@ -100,10 +134,15 @@ afk_cmd_paperclip_plan() {
   afk_pcp_check_gates "$json_mode" "$plan" "$repo" "$base_commit" || return 4
 
   # Only the fields the body shows are kept: nothing unrendered rides along.
-  plan="$(jq -c '{schema, repo, base, stories: [.stories[] | {id, title, size, lane, files, gates}]}' <<<"$plan")"
+  # A /2 story keeps its role (and a reviewer its target), so the story's
+  # plan_story_sha256 binds them.
+  plan="$(jq -c '(.schema == "afk-paperclip-plan/2") as $v2 | {schema, repo, base, stories: [.stories[]
+    | {id, title, size, lane, files, gates}
+      + (if $v2 then {role} + (if .role == "reviewer" then {reviews} else {} end) else {} end)]}' <<<"$plan")"
   local body digest digest8 qid body_sha
   body="$(afk_pcp_render "$plan")"$'\n'
-  digest="$(printf '%s' "$body" | afk_pcp_sha256)"
+  # The one digest path the evidence verifier also uses (afk_pce_review_role).
+  digest="$(afk_pcp_digest "$plan")"
   [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || { afk_pcp_emit "$json_mode" PAPERCLIP_REGISTRY_WRITE_FAILED; return 1; }
   digest8="${digest:0:8}"; qid="plan-$digest8"
   body_sha="$(printf '%s' "$raw" | afk_pcp_sha256)"
@@ -127,7 +166,8 @@ afk_cmd_paperclip_plan() {
   rec="$(jq -nc --argjson p "$plan" --arg d "$digest" --arg q "$qid" --arg bs "$body_sha" \
     --arg bc "$base_commit" --arg at "$rec_at" \
     '{schema:"afk-paperclip-plan-record/1", state:"pending_publish", digest:$d, digest8:$d[0:8], question_id:$q,
-      body_sha256:$bs, repo:$p.repo, base:$p.base, base_commit:$bc, stories:$p.stories, posted_seq:null, created_at:$at}')"
+      body_sha256:$bs, repo:$p.repo, base:$p.base, base_commit:$bc, stories:$p.stories, posted_seq:null, created_at:$at}
+     + (if $p.schema == "afk-paperclip-plan/2" then {plan_schema:$p.schema} else {} end)')"
   if ! afk_state_file_write "$plans/$id.json" "$rec"; then
     afk_pcr_unlock "$lock"; afk_pcp_emit "$json_mode" PAPERCLIP_REGISTRY_WRITE_FAILED; return 1
   fi
