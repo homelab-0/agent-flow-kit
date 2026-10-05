@@ -37,7 +37,7 @@ jq -nc --arg c "$COMMIT" --arg r "$TMPROOT" \
     projects:[{paperclip_project_id:"aaaaaaaa-0000-4000-8000-000000000001",slug:"proj1",repo_path:$r,harness:"claude"}],
     interim_comment_approval:{attested_on:"2026-09-27",paperclip_commit:$c}}' >"$CONFIG"
 jq -nc --arg d "$PLAND" '{schema:"afk-paperclip-plan-record/1", digest:$d,
-  stories:[range(1; 11) | {id:"HOM-12.S\(.)", gates:["bash tests/a.sh","bash tests/b.sh"]}]}' >"$STATE/paperclip/plans/$ISSUE.json"
+  stories:[range(1; 12) | {id:"HOM-12.S\(.)", gates:["bash tests/a.sh","bash tests/b.sh"]}]}' >"$STATE/paperclip/plans/$ISSUE.json"
 approve() { jq -nc --arg d "$PLAND" --arg c "$COMMIT" \
   '{schema:"afk-paperclip-approval/1",kind:"plan",digest:$d,paperclip_commit:$c}' >"$STATE/paperclip/approvals/$ISSUE.json"; }
 export HOME="$HOME_DIR" AFK_STATE_DIR="$STATE" AFK_PAPERCLIP_CONFIG="$CONFIG"
@@ -272,6 +272,223 @@ latest HOM-12.S8
 assert_eq "a malformed newest record -> RECORD_INVALID, never skipped" "$(jf .state) $(jf .record)" "RECORD_INVALID accept"
 latest HOM-12.S9
 assert_eq "no attempt at all -> STORY_EVIDENCE_MISSING" "$(res) $RC $(jf .state)" "ok 0 STORY_EVIDENCE_MISSING"
+
+head1 "4. dispatch.sh producer boundary (real functions, sourced)"
+P="$TMPROOT/prod"; git init -q "$P"; printf 'base\n' >"$P/p.txt"; git -C "$P" add -A; git -C "$P" commit -qm base
+printf '.pm-brief/\n' >>"$P/.git/info/exclude"; PB="$P/.pm-brief"; mkdir -p "$PB"
+cat >"$TMPROOT/producer.sh" <<'EOF'
+# main()'s evidence order with the real dispatch.sh functions: preconditions,
+# launch record, gates with snapshots, the thin result from memory.
+. "$1"; CONFIG_FILE=/nonexistent; S="$2"; DID="$3"; shift 3
+PAPERCLIP_STORY=false PAPERCLIP_TUPLE_JSON="" PAPERCLIP_ATTEMPT="" PAPERCLIP_GATE_PRE=null PAPERCLIP_GATE_POST=null
+if paperclip_story_marked "$S" "$S.stamp.json"; then paperclip_preconditions "$S" || exit 4; PAPERCLIP_STORY=true; fi
+paperclip_record_launch "$S" 1 "$DID" || exit 4
+run_gates_with_evidence "" "$@"
+G="$(for k in "${!GATE_RESULTS[@]}"; do jq -n --arg k "$k" --arg v "${GATE_RESULTS[$k]}" '{($k):$v}'; done | jq -s 'add // {}')"
+R="$(jq -n --arg s "$S" --arg d "$DID" --arg ok "$GATES_OK" --argjson g "$G" \
+  '{story:$s, cycle:1, status:(if $ok == "true" then "done" else "gates_failed" end), launch:{dispatch_id:$d}, gates:$g}')"
+publish_thin_result "$S" 1 "$R"
+echo "ATTEMPT=$PAPERCLIP_ATTEMPT"
+EOF
+produce() { # <afk-bin> <story> <dispatch-id> <gate...>
+  local bin="$1"; shift
+  OUT="$(cd "$P" && AGENT_FLOW_KIT_BIN="$bin" bash "$TMPROOT/producer.sh" "$DISPATCH" "$@" 2>"$TMPROOT/err" </dev/null)"; RC=$?
+}
+S6="$(new_story "$PB" prod HOM-12.S6)"; accept --story "$S6" --kind pm-auto --actor pm
+printf '{"status":"done","planted":true}\n' >"$S6.result.json"
+produce "$AFK" "$S6" dispatch:prod 'printf x >>p.txt' true
+O6="$(adir HOM-12.S6)/1.c1.outcome.json"
+assert_eq "a canonical Paperclip cycle records launch and outcome" "$RC $OUT $(jq -r .outcome "$O6" 2>/dev/null)" "0 ATTEMPT=1 RECORDED"
+assert_eq "the outcome hashes the bytes written to <story>.result.json, not the planted file" \
+  "$(jq -r '[.result_sha256, (.result.planted | tostring), .status] | join(" ")' "$O6")" "sha256:$(sha <"$S6.result.json") null done"
+assert_eq "the retained per-cycle copy is the same bytes" "$(sha <"$S6.result.c1.json")" "$(sha <"$S6.result.json")"
+assert_eq "snapshots: launch == gate_pre (private scope ignored), a gate that edited the tree moved gate_post" \
+  "$(jq -r '[.snapshots.launch.tree == .snapshots.gate_pre.tree, .snapshots.gate_pre.tree != .snapshots.gate_post.tree, (.snapshots | all(. != null))] | map(tostring) | join(" ")' "$O6")" \
+  "true true true"
+latest HOM-12.S6
+assert_eq "latest reads the canonical outcome" "$(jf .state) $(jf .status)" "OUTCOME_RECORDED done"
+printf '#!/bin/sh\ntouch "%s/spy-called"\nexit 1\n' "$TMPROOT" >"$TMPROOT/afk-spy"; chmod +x "$TMPROOT/afk-spy"
+NP="$(new_story "$PB" plain AFK-X '.' 'persona: dev')"
+produce "$TMPROOT/afk-spy" "$NP" dispatch:plain true
+assert_eq "a non-Paperclip cycle: result written as before, the kit never called, no evidence" \
+  "$RC $OUT $(jq -r .status "$NP.result.json") $([[ -e "$TMPROOT/spy-called" ]] && echo C) $(cmp -s "$NP.result.json" "$NP.result.c1.json" && echo same)" \
+  "0 ATTEMPT= done  same"
+cat >"$TMPROOT/afk-old" <<EOF
+#!/bin/sh
+case "\$1" in route-accept) echo '{"result":"ok"}' ;; *) touch "$TMPROOT/old-evidence-called"; exit 1 ;; esac
+EOF
+chmod +x "$TMPROOT/afk-old"
+S6B="$(new_story "$PB" prod2 HOM-12.S6)"
+produce "$TMPROOT/afk-old" "$S6B" dispatch:old true
+assert_eq "a Paperclip verifier answering ok without a tuple: refused before launch, nothing produced" \
+  "$RC $([[ -e "$S6B.result.json" ]] && echo R) $(head -c 41 "$S6B.blocked") $([[ -e "$TMPROOT/old-evidence-called" ]] && echo C)" \
+  "4  LAUNCH_EVIDENCE_UNRECORDED: TUPLE_MISSING "
+S6C="$(new_story "$PB" prod3 HOM-12.S6)"
+produce "$AFK" "$S6C" dispatch:noacc true
+assert_eq "no acceptance: refused before launch, no phantom attempt or launch" \
+  "$RC $(count_accepts HOM-12.S6) $(find "$(adir HOM-12.S6)" -name '*.launch.json' | wc -l | tr -d ' ')" "4 1 1"
+# The real kit for everything but `outcome`, which refuses after the launch
+# was recorded: the cycle's result must be produced exactly as without it.
+cat >"$TMPROOT/afk-norec" <<EOF
+#!/bin/sh
+if [ "\$1" = paperclip-evidence ] && [ "\$2" = outcome ]; then cat >/dev/null; echo '{"result":"EVIDENCE_WRITE_FAILED"}'; exit 1; fi
+exec bash "$AFK" "\$@"
+EOF
+chmod +x "$TMPROOT/afk-norec"
+S9="$(new_story "$PB" norec HOM-12.S9)"; accept --story "$S9" --kind pm-auto --actor pm
+produce "$TMPROOT/afk-norec" "$S9" dispatch:norec true
+assert_eq "an outcome refused after the launch: exit 0, status done, the produced bytes published and retained" \
+  "$RC $OUT $(jq -r '[.status, .launch.dispatch_id] | join(" ")' "$S9.result.json" 2>/dev/null) $(cmp -s "$S9.result.json" "$S9.result.c1.json" && echo same)" \
+  "0 ATTEMPT=1 done dispatch:norec same"
+NREC="$(grep -c 'outcome NOT recorded (EVIDENCE_WRITE_FAILED)' "$TMPROOT/err")"
+latest HOM-12.S9
+assert_eq "...the refusal is logged, no outcome record exists, and latest reads ATTEMPT_UNFINISHED" \
+  "$NREC $(find "$(adir HOM-12.S9)" -name '*.outcome.json' | wc -l | tr -d ' ') $(jf .state) $(jf .cycle)" \
+  "1 0 ATTEMPT_UNFINISHED 1"
+
+head1 "5. dispatch.sh main() end to end, stubbed Orca and validator"
+# W is an Orca worktree whose private scope (.pm-brief/) is ignored; the gate
+# tests/b.sh edits a tracked file. The Orca stub "runs" the harness by
+# answering the exit marker; each terminal create is logged as a harness run.
+W="$TMPROOT/wt"; SB="$TMPROOT/stubs"; CALLS="$TMPROOT/calls.log"; TS="$TMPROOT/terminal.json"
+git init -q "$W"; mkdir -p "$W/tests" "$W/_bmad/bmm/agents" "$SB" "$HOME_DIR/.claude"
+printf 'base\n' >"$W/p.txt"; printf 'exit 0\n' >"$W/tests/a.sh"; printf 'printf "g\\n" >>p.txt\n' >"$W/tests/b.sh"
+printf 'You are the dev persona.\n' >"$W/_bmad/bmm/agents/dev.md"
+git -C "$W" add -A; git -C "$W" commit -qm base
+printf '.pm-brief/\n' >>"$W/.git/info/exclude"; WB="$W/.pm-brief"; mkdir -p "$WB"
+cat >"$SB/orca" <<STUB
+#!/bin/sh
+echo "orca \$*" >>"$CALLS"
+case "\$1 \$2" in
+  "worktree list") printf '{"result":{"worktrees":[{"path":"%s","id":"r1::wt1"}]}}' "$W" ;;
+  "repo list") echo '{"result":{"repos":[{"id":"r1","hookSettings":{"setupAgentStartupPolicy":"start-immediately"}}]}}' ;;
+  "terminal create") echo harness >>"$CALLS"; t=""
+    while [ \$# -gt 0 ]; do [ "\$1" = --title ] && t="\$2"; shift; done
+    jq -nc --arg t "\$t" --arg w "$W" '{handle:"term_stub",title:\$t,connected:true,orphaned:false,worktreeId:"r1::wt1",worktreePath:\$w}' >"$TS"
+    echo '{"ok":true,"result":{"terminal":{"handle":"term_stub"}}}' ;;
+  "terminal read") echo '{"ok":true,"result":{"terminal":{"handle":"term_stub","status":"running","tail":["ok","CLAUDE_EXIT=0"]}}}' ;;
+  "terminal show") [ -s "$TS" ] || exit 1; jq -c '{ok:true,result:{terminal:.}}' "$TS" ;;
+  "terminal list") if [ -s "$TS" ]; then jq -c '{ok:true,result:{terminals:[.]}}' "$TS"; else echo '{"ok":true,"result":{"terminals":[]}}'; fi ;;
+  "terminal close") rm -f "$TS"; echo '{"ok":true}' ;;
+  *) echo '{"ok":true,"result":{}}' ;;
+esac
+STUB
+printf '#!/bin/sh\necho "{}"\n' >"$SB/validator"
+printf '#!/bin/sh\nexit 0\n' >"$SB/claude"
+chmod +x "$SB/orca" "$SB/validator" "$SB/claude"
+printf 'profiles:\n  local-code-standard:\n    physical: [{model_id: qwen-test}]\n  "claude/strong":\n    hosting: vendor\n    physical: [{model_id: "claude/opus"}]\n' >"$TMPROOT/catalog.yaml"
+MAIN_N=0
+run_main() { # <story> [cycle] -- each run its own dispatch id (MAIN_DISPATCH_ID pins one); no ambient run identity
+  MAIN_N=$((MAIN_N + 1))
+  OUT="$(cd "$W" && env -u AFK_RUN_ID -u ORCA_RUN_ID -u AFK_CONTEXT_EVENT_DIR -u AGENT_ROUTER_TOKEN \
+    AFK_DISPATCH_ID="${MAIN_DISPATCH_ID:-dispatch:main-$MAIN_N}" AFK_DELEGATING_PM="${MAIN_PM:-}" AGENT_DIR="$W/_bmad/bmm/agents" PATH="$SB:$PATH" AGENT_FLOW_CONFIG="${MAIN_CONFIG:-/nonexistent}" AGENT_STAMP_VALIDATE=validator \
+    AGENT_STAMP_VALIDATE_CATALOG_PATH="$TMPROOT/catalog.yaml" AGENT_FLOW_KIT_BIN="$AFK" \
+    AGENT_FLOW_APPROVED_HOME="$HOME_DIR" AGENT_FLOW_APPROVED_PATH="" AGENT_FLOW_LAUNCH_TIMEOUT=20 CLAUDE_CONFIG_DIR="" \
+    bash "$DISPATCH" "$1" "${2:-1}" 2>&1 </dev/null)"; RC=$?
+}
+harness_runs() { grep -cx harness "$CALLS" 2>/dev/null || true; }
+S5="$(new_story "$WB" main HOM-12.S5)"; accept --story "$S5" --kind pm-auto --actor pm
+run_main "$S5"
+if [[ "$OUT" == *"NO VALIDATED LAUNCH CONTRACT"* && "$OUT" != *"launch recorded"* ]]; then
+  ok "main(): verified, then refused by the launch-contract guard before any launch record"
+else bad "main(): verified, then refused by the launch-contract guard before any launch record" "$RC $OUT"; fi
+latest HOM-12.S5
+assert_eq "...and the accepted attempt reads ATTEMPT_NOT_LAUNCHED" "$(jf .state) $(jf .attempt)" "ATTEMPT_NOT_LAUNCHED 1"
+# A launchable native pair. cost_class stays free because pm-auto accepts only
+# the free lane; the stubbed validator is not asked about funding here.
+S10="$(new_story "$WB" full HOM-12.S10 '.model_profile = "claude/strong" | .entitlement_pool = "anthropic-max"' "home: paperclip:HOM-12
+paperclip_issue: $ISSUE
+persona: dev
+memory_mode: off")"
+accept --story "$S10" --kind pm-auto --actor pm
+D10="$(adir HOM-12.S10)"
+run_main "$S10"
+assert_eq "main(): a Paperclip cycle launches, gates and publishes done" \
+  "$RC $(jq -r .status "$S10.result.json" 2>/dev/null) $(harness_runs)" "0 done 1"
+[[ "$RC" == 0 ]] || printf '        %s\n' "$(tail -n 5 <<<"$OUT")"
+assert_eq "...launch and outcome recorded under attempt 1, cycle 1, the result's dispatch id" \
+  "$(jq -r --slurpfile r "$S10.result.json" '[.outcome, .status, .gates_ok, .gate_count, .dispatch_id == $r[0].launch.dispatch_id] | map(tostring) | join(" ")' "$D10/1.c1.outcome.json" 2>/dev/null)" \
+  "RECORDED done true 2 true"
+assert_eq "...the outcome hashes the bytes main() published, and the retained copy is the same" \
+  "$(jq -r .result_sha256 "$D10/1.c1.outcome.json" 2>/dev/null) $(sha <"$S10.result.c1.json")" "sha256:$(sha <"$S10.result.json") $(sha <"$S10.result.json")"
+assert_eq "...snapshots: launch == gate_pre, the gate's edit moved gate_post, none null" \
+  "$(jq -r '[.snapshots.launch.tree == .snapshots.gate_pre.tree, .snapshots.gate_pre.tree != .snapshots.gate_post.tree, (.snapshots | all(. != null))] | map(tostring) | join(" ")' "$D10/1.c1.outcome.json" 2>/dev/null)" \
+  "true true true"
+R10="$(sha <"$S10.result.json")"
+run_main "$S10"
+assert_eq "replaying the done cycle without a new acceptance: refused before the harness, LAUNCH_DUPLICATE" \
+  "$RC $(harness_runs) $(head -c 44 "$S10.blocked" 2>/dev/null)" "4 1 LAUNCH_EVIDENCE_UNRECORDED: LAUNCH_DUPLICATE"
+latest HOM-12.S10
+assert_eq "...nothing ran and nothing changed: the result and latest are still cycle 1's" \
+  "$(sha <"$S10.result.json") $(jf '[.state, .attempt, .cycle] | map(tostring) | join(" ")')" "$R10 OUTCOME_RECORDED 1 1"
+accept --story "$S10" --kind pm-auto --actor pm
+run_main "$S10"; MRC=$RC
+latest HOM-12.S10
+assert_eq "a fresh acceptance opens attempt 2; the replayed cycle runs and is the latest evidence" \
+  "$MRC $(harness_runs) $(jf '[.state, .attempt, .cycle, .status] | map(tostring) | join(" ")')" "0 2 OUTCOME_RECORDED 2 1 done"
+# A harness preflight refusal (here the configured harness binary is missing)
+# comes before the launch record, so the same cycle runs once the host is fixed.
+printf 'launcher:\n  harness_binaries:\n    claude: afk-no-such-claude-binary\n' >"$TMPROOT/nobin.yaml"
+accept --story "$S10" --kind pm-auto --actor pm
+MAIN_CONFIG="$TMPROOT/nobin.yaml" run_main "$S10"; MRC=$RC
+MREASON=""; [[ "$OUT" == *"harness binary 'afk-no-such-claude-binary' not found"* ]] && MREASON=missing-binary
+latest HOM-12.S10
+assert_eq "a preflight refusal (the missing binary): nothing ran, no launch record, latest reads ATTEMPT_NOT_LAUNCHED" \
+  "$([[ "$MRC" != 0 ]] && echo refused) $MREASON $(harness_runs) $([[ -e "$D10/3.c1.launch.json" ]] && echo L) $(jf '[.state, .attempt] | map(tostring) | join(" ")')" \
+  "refused missing-binary 2  ATTEMPT_NOT_LAUNCHED 3"
+run_main "$S10"; MRC=$RC
+latest HOM-12.S10
+assert_eq "...and the same cycle, retried with the binary present, launches and records its outcome" \
+  "$MRC $(harness_runs) $(jf '[.state, .attempt, .cycle, .status] | map(tostring) | join(" ")')" "0 3 OUTCOME_RECORDED 3 1 done"
+
+head1 "6. A continuation cycle left between terminal receipt and ledger entry"
+# Cycle 1 handed over, so cycle 2 is a continuation. The ledger path is a
+# directory while cycle 2 launches: the terminal is created and its receipt
+# written, then the ledger append fails, as a dispatcher stopped at that point
+# would leave it. The retry repeats the same dispatch id and PM, so its
+# command, and therefore its launch identity, is the earlier one's.
+cont_story() { # <name> <story_id> <frontmatter> -> story path, cycle 1 handed over
+  local s
+  s="$(new_story "$WB" "$1" "$2" '.model_profile = "claude/strong" | .entitlement_pool = "anthropic-max"' "$3")"
+  jq -n '{status:"continuation_required"}' >"$s.result.c1.json"
+  jq -n '{schema:"afk-continuation/1", completed:["c1"], current_state:"s", remaining_acceptance:["a"],
+    next_steps:["n"], updated_at:"2026-10-04T00:00:00Z", in_flight:[], unretired_findings:[]}' >"$s.continuation.json"
+  printf '%s' "$s"
+}
+gap_run() { # <story> -- cycle 2 with its ledger append made to fail
+  mkdir -p "$1.continuations.json"; run_main "$1" 2; rm -rf -- "$1.continuations.json"; }
+MAIN_DISPATCH_ID=dispatch:cont MAIN_PM=pm:cont
+S11="$(cont_story cont HOM-12.S11 "home: paperclip:HOM-12
+paperclip_issue: $ISSUE
+persona: dev
+memory_mode: off")"
+D11="$(adir HOM-12.S11)"; accept --story "$S11" --kind pm-auto --actor pm
+H0="$(harness_runs)"; gap_run "$S11"; GRC=$RC
+assert_eq "the gap: launch recorded under attempt 1, terminal created and receipted, no ledger entry" \
+  "$([[ "$GRC" != 0 ]] && echo stopped) $(( $(harness_runs) - H0 )) $([[ -e "$D11/1.c2.launch.json" ]] && echo L) $(jq -r .terminal "$S11.continuation-launch-receipt.c2.json" 2>/dev/null)" \
+  "stopped 1 L term_stub"
+[[ "$GRC" != 0 ]] || printf '        %s\n' "$(tail -n 5 <<<"$OUT")"
+accept --story "$S11" --kind pm-auto --actor pm
+H1="$(harness_runs)"; run_main "$S11" 2; MRC=$RC MOUT=$OUT
+latest HOM-12.S11
+assert_eq "re-accepted, the cycle is refused before its launch record: the earlier terminal is not recovered under attempt 2" \
+  "$MRC $(( $(harness_runs) - H1 )) $(head -n 1 "$S11.blocked" 2>/dev/null | cut -d' ' -f1-2) $([[ -e "$D11/2.c2.launch.json" ]] && echo L) $([[ -e "$S11.result.c2.json" ]] && echo R) $([[ -e "$S11.continuations.json" ]] && echo ledger)" \
+  "4 0 LAUNCH_EVIDENCE_UNRECORDED: CONTINUATION_LAUNCH_UNCONFIRMED   "
+[[ "$MRC" == 4 ]] || printf '        %s\n' "$(tail -n 5 <<<"$MOUT")"
+assert_eq "...attempt 2 reads ATTEMPT_NOT_LAUNCHED and attempt 1 keeps its unfinished cycle-2 launch" \
+  "$(jf '[.state, .attempt] | map(tostring) | join(" ")') $(jq -r .dispatch_id "$D11/1.c2.launch.json" 2>/dev/null)" "ATTEMPT_NOT_LAUNCHED 2 dispatch:cont"
+# Advisory with no helper: memory_mode off/blind puts a per-run temp
+# HINDSIGHT_CONFIG path into the command, so a retry is a different launch
+# identity and is never recovered, Paperclip or not.
+SN="$(cont_story contplain AFK-CONT "persona: dev
+memory_mode: advisory")"
+H2="$(harness_runs)"; AGENT_FLOW_HINDSIGHT_HELPER=/nonexistent gap_run "$SN"; GRC=$RC
+AGENT_FLOW_HINDSIGHT_HELPER=/nonexistent run_main "$SN" 2
+assert_eq "a non-Paperclip continuation in the same gap still recovers its confirmed terminal and ledgers it" \
+  "$([[ "$GRC" != 0 ]] && echo stopped) $(( $(harness_runs) - H2 )) $([[ "$OUT" == *"recovered confirmed Orca terminal term_stub"* ]] && echo recovered) $(jq -r '[.entries[] | select(.cycle == 2) | .terminal] | join(",")' "$SN.continuations.json" 2>/dev/null)" \
+  "stopped 1 recovered term_stub"
+[[ "$OUT" == *"recovered confirmed"* ]] || printf '        %s\n' "$(tail -n 5 <<<"$OUT")"
+unset MAIN_DISPATCH_ID MAIN_PM
 
 printf '\n%d passed, %d failed (%ds)\n' "$PASS" "$FAIL" "$SECONDS"
 (( FAIL == 0 ))

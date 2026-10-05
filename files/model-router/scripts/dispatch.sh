@@ -2585,11 +2585,16 @@ paperclip_story_marked() { # <story> <stamp>
 # and EX_STAMP_INVALID. An answer that cannot be read is never a pass.
 paperclip_preconditions() { # <story>
   local bin out rc=0 reason
+  PAPERCLIP_TUPLE_JSON=""
   bin="$(cfg '.launcher.agent_flow_kit' AGENT_FLOW_KIT_BIN 'agent-flow-kit')"
   out="$("$bin" route-accept --story "$1" --verify --json 2>/dev/null)" || rc=$?
   reason="$(jq -r '.result // empty | strings' <<<"$out" 2>/dev/null || true)"
   if (( rc == 0 )) && [[ "$reason" == ok ]]; then
     log "paperclip: acceptance digest, plan approval and story gates verified"
+    # The acceptance tuple of this launch decision, kept in memory for the
+    # cycle's evidence. A verifier that answers ok without one is refused at
+    # the launch record (TUPLE_MISSING), before any harness starts.
+    PAPERCLIP_TUPLE_JSON="$(jq -ce '.tuple | select(type == "object")' <<<"$out" 2>/dev/null || true)"
     return 0
   fi
   [[ "$reason" =~ ^[A-Z][A-Z_]*$ ]] || reason=ACCEPTANCE_UNCHECKABLE
@@ -2598,6 +2603,122 @@ paperclip_preconditions() { # <story>
     "$reason" "$1" > "$1.blocked"
   log "$reason — Paperclip precondition refused the launch; see $1.blocked"
   return "$EX_STAMP_INVALID"
+}
+
+# ---- Paperclip evidence (docs/PAPERCLIP.md, "Attempt evidence") -----------
+# Only a Paperclip story whose acceptance verified this cycle collects
+# evidence. A Paperclip launch that cannot be recorded is refused before its
+# harness starts, so no run happens that the records do not show. After the
+# launch, a failure is logged and leaves the evidence incomplete, which a
+# reader treats as not ready; it never changes the gates or the result. The
+# records live in AFK state, outside the worktree, and are written by
+# `agent-flow-kit paperclip-evidence`.
+paperclip_evidence() { # <verb> [args...]  (stdin passes through)
+  local bin
+  bin="$(cfg '.launcher.agent_flow_kit' AGENT_FLOW_KIT_BIN 'agent-flow-kit')"
+  "$bin" paperclip-evidence "$@" 2>/dev/null
+}
+
+# paperclip_snapshot — afk-snapshot/1 of the dispatcher's worktree, or the
+# literal null when it cannot be taken (recorded as such, never as a tree).
+paperclip_snapshot() {
+  local s
+  if s="$(paperclip_evidence snapshot --dir "$(realpath "$PWD")" </dev/null)" &&
+     jq -e 'type == "object" and .schema == "afk-snapshot/1"' <<<"$s" >/dev/null 2>&1; then
+    jq -c . <<<"$s"
+  else
+    printf 'null'
+  fi
+}
+
+# paperclip_record_launch <story> <cycle> <dispatch_id> — before the process
+# starts, for a Paperclip story (PAPERCLIP_STORY=true). Sets PAPERCLIP_ATTEMPT
+# to the attempt the launch was linked to. A launch that was not recorded (no
+# tuple from the verifier, a duplicate or out-of-order cycle, a changed tuple,
+# a write failure) is a refusal: the named reason, a .blocked marker, and
+# EX_STAMP_INVALID. Any other story returns 0 untouched.
+paperclip_record_launch() {
+  local out="" snap reason
+  PAPERCLIP_ATTEMPT=""
+  [[ "${PAPERCLIP_STORY:-false}" == true ]] || return 0
+  if [[ -n "${PAPERCLIP_TUPLE_JSON:-}" ]]; then
+    snap="$(paperclip_snapshot)"
+    out="$(jq -nc --argjson t "$PAPERCLIP_TUPLE_JSON" --argjson s "$snap" '{tuple:$t, snapshot:$s}' |
+      paperclip_evidence launch --story "$1" --cycle "$2" --dispatch-id "$3" --json || true)"
+    PAPERCLIP_ATTEMPT="$(jq -r 'select(.result == "ok") | .attempt | numbers' <<<"$out" 2>/dev/null || true)"
+  fi
+  if [[ -n "$PAPERCLIP_ATTEMPT" ]]; then
+    log "paperclip evidence: launch recorded (attempt $PAPERCLIP_ATTEMPT, cycle $2)"
+    return 0
+  fi
+  reason="$(jq -r '.result // empty | strings' <<<"$out" 2>/dev/null || true)"
+  [[ "$reason" =~ ^[A-Z][A-Z_]*$ ]] || reason=EVIDENCE_UNANSWERED
+  [[ -n "${PAPERCLIP_TUPLE_JSON:-}" ]] || reason=TUPLE_MISSING
+  rm -f "$1.blocked"
+  printf 'LAUNCH_EVIDENCE_UNRECORDED: %s %s cycle %s\nNothing was launched. A replayed cycle needs a fresh route-accept (a new attempt) or the next cycle number.\n' \
+    "$reason" "$1" "$2" > "$1.blocked"
+  log "LAUNCH_EVIDENCE_UNRECORDED ($reason) — a Paperclip launch the evidence cannot show is refused; see $1.blocked"
+  return "$EX_STAMP_INVALID"
+}
+
+# paperclip_continuation_unconfirmed <story> <cycle> — before the launch record
+# of a Paperclip continuation cycle. Launch sidecars for the cycle with no
+# ledger entry (the caller has already refused a ledgered cycle) mean an
+# earlier dispatch recorded its launch and then stopped between the terminal
+# create and the ledger append. continuation_launch_create would recover that
+# earlier terminal and this dispatch would publish its result under a new
+# attempt and dispatch id, so the cycle is refused with nothing recorded or
+# launched, and the earlier attempt stays unfinished. Any other story, or a
+# cycle without sidecars, returns 0 untouched.
+paperclip_continuation_unconfirmed() {
+  local f found="" terminal=""
+  [[ "${PAPERCLIP_STORY:-false}" == true ]] || return 0
+  for f in "$(continuation_launch_intent_path "$1" "$2")" "$(continuation_launch_attempt_path "$1" "$2")" \
+           "$(continuation_launch_receipt_path "$1" "$2")" "$(continuation_replacement_binding_path "$1" "$2")" \
+           "$(continuation_replacement_receipt_path "$1" "$2")" "$(continuation_replacement_attempt_path "$1" "$2")" \
+           "$(continuation_replacement_consumed_path "$1" "$2")"; do
+    [[ -e "$f" || -L "$f" ]] && found+="${found:+ }$(basename -- "$f")"
+  done
+  [[ -n "$found" ]] || return 0
+  terminal="$(jq -r '.terminal // empty | strings' "$(continuation_launch_receipt_path "$1" "$2")" 2>/dev/null || true)"
+  [[ "$terminal" =~ ^[A-Za-z0-9_.:-]+$ ]] || terminal=unknown
+  rm -f "$1.blocked"
+  printf 'LAUNCH_EVIDENCE_UNRECORDED: CONTINUATION_LAUNCH_UNCONFIRMED %s cycle %s\nNothing was launched or recorded. An earlier dispatch of this cycle created launch state (%s) but never confirmed it in the continuation ledger; its terminal (%s) may still be running under the earlier attempt. A fresh route-accept does not clear this: inspect that terminal and decide how the cycle continues.\n' \
+    "$1" "$2" "$found" "$terminal" > "$1.blocked"
+  log "LAUNCH_EVIDENCE_UNRECORDED (CONTINUATION_LAUNCH_UNCONFIRMED) — cycle $2 has unconfirmed launch state from an earlier dispatch; see $1.blocked"
+  return "$EX_STAMP_INVALID"
+}
+
+# run_gates_with_evidence <gates_log_dir> <gate...> — dispatch_run_gates with
+# the gate_pre / gate_post snapshots taken immediately around it, so a gate
+# that changed the tree is visible in the outcome.
+run_gates_with_evidence() {
+  PAPERCLIP_GATE_PRE=null PAPERCLIP_GATE_POST=null
+  [[ -n "${PAPERCLIP_ATTEMPT:-}" ]] && PAPERCLIP_GATE_PRE="$(paperclip_snapshot)"
+  dispatch_run_gates "$@"
+  [[ -n "${PAPERCLIP_ATTEMPT:-}" ]] && PAPERCLIP_GATE_POST="$(paperclip_snapshot)"
+  return 0
+}
+
+# publish_thin_result <story> <cycle> <result-json> — the canonical producer
+# boundary: the exact bytes written to <story>.result.json and its retained
+# per-cycle copy are the bytes handed to the outcome record. The worktree file
+# is never read back.
+publish_thin_result() {
+  local story="$1" cycle="$2" result="$3" out
+  printf '%s\n' "$result" > "${story}.result.json"
+  cp -- "${story}.result.json" "$(retained_result_path "$story" "$cycle")"
+  [[ -n "${PAPERCLIP_ATTEMPT:-}" ]] || return 0
+  out="$(printf '%s\n' "$result" | jq -Rsc --argjson t "$PAPERCLIP_TUPLE_JSON" \
+      --argjson pre "${PAPERCLIP_GATE_PRE:-null}" --argjson post "${PAPERCLIP_GATE_POST:-null}" \
+      '{tuple:$t, snapshots:{gate_pre:$pre, gate_post:$post}, result_text:.}' |
+    paperclip_evidence outcome --story "$story" --attempt "$PAPERCLIP_ATTEMPT" --cycle "$cycle" \
+      --dispatch-id "$(jq -r '.launch.dispatch_id' <<<"$result")" --json || true)"
+  if [[ "$(jq -r '.result // empty' <<<"$out" 2>/dev/null || true)" == ok ]]; then
+    log "paperclip evidence: outcome recorded ($(jq -r .outcome <<<"$out"))"
+  else
+    log "paperclip evidence: outcome NOT recorded ($(jq -r '.result // "no answer"' <<<"$out" 2>/dev/null || echo 'no answer')) — this cycle stays unfinished"
+  fi
 }
 
 # dispatch_run_gates — runs each gate, keeping its combined stdout+stderr next
@@ -3149,8 +3270,10 @@ EOF
 
   VERDICT_FILE="$(mktemp)"; TMPFILES+=("$VERDICT_FILE" "$VERDICT_FILE.err")
   validate_stamp "$STAMP_FILE" "$EVIDENCE_FILE" "$VERDICT_FILE"
+  PAPERCLIP_STORY=false PAPERCLIP_TUPLE_JSON="" PAPERCLIP_ATTEMPT="" PAPERCLIP_GATE_PRE=null PAPERCLIP_GATE_POST=null
   if paperclip_story_marked "$STORY" "$STAMP_FILE"; then
     paperclip_preconditions "$STORY" || exit "$EX_STAMP_INVALID"
+    PAPERCLIP_STORY=true
   fi
 
   # ---- launch-contract capability guard -----------------------------------
@@ -3299,10 +3422,23 @@ EOF
       die "no frozen launch contract for harness '$HARNESS'. Only claude, codex and opencode have one; adding another requires its own live validation and contract." ;;
   esac
 
+  # Paperclip evidence: the launch record, after every harness preflight above
+  # (a preflight refusal leaves no record, so the same cycle can be retried)
+  # and before the terminal exists. A Paperclip launch it cannot record does
+  # not start. A continuation cycle an earlier dispatch left unconfirmed is
+  # refused first, so its terminal is never recovered under a new attempt.
+  if [[ -n "$CONTINUATION_OF_CYCLE" ]]; then
+    paperclip_continuation_unconfirmed "$STORY" "$CYCLE" || exit "$EX_STAMP_INVALID"
+  fi
+  paperclip_record_launch "$STORY" "$CYCLE" "$WORKER_DISPATCH_ID" || exit "$EX_STAMP_INVALID"
+
   # Create first, then durably record the returned terminal handle as launch
   # confirmation before waiting for the worker. A failed create therefore
-  # leaves no continuation consumption behind and the same cycle is retryable;
-  # an in-flight or completed worker has explicit ledger evidence immediately.
+  # leaves no continuation consumption behind and the same cycle is retryable,
+  # except for a Paperclip story, whose launch record now exists: its retry
+  # needs a fresh route-accept (and, for a continuation cycle that left launch
+  # state, is refused above). An in-flight or completed worker has explicit
+  # ledger evidence immediately.
   if [[ -n "$CONTINUATION_OF_CYCLE" ]]; then
     local launch_rc=0
     continuation_launch_create "$STORY" "$CYCLE" "$CONTINUATION_OF_CYCLE" \
@@ -3317,6 +3453,9 @@ EOF
         "an entry in the continuation ledger"
       die "continuation cycle $CYCLE was already confirmed by another dispatcher; no duplicate terminal was launched" "$EX_NEEDS_HUMAN"
     elif (( launch_rc != 0 )); then
+      if [[ -n "$PAPERCLIP_ATTEMPT" ]]; then
+        die "the continuation launch could not be confirmed in $(continuation_ledger_path "$STORY"); its launch was recorded (attempt $PAPERCLIP_ATTEMPT). A retry of this Paperclip cycle needs a fresh route-accept, and is refused while launch state this dispatch left for the cycle remains." "$EX_NEEDS_HUMAN"
+      fi
       die "the continuation launch could not be confirmed in $(continuation_ledger_path "$STORY"); the cycle remains retryable." "$EX_NEEDS_HUMAN"
     fi
     log "continuation ledger: cycle $CYCLE confirmed in terminal $TERMINAL_HANDLE as consumption $(( $(continuations_consumed "$LEDGER_ENTRIES") + 1 )) of $BUDGET_CONTINUATION_CAP"
@@ -3534,7 +3673,7 @@ EOF
     # ---- deterministic gates: never trust the worker's word -----------------
     # A zero harness exit means the turn completed, not that the task succeeded.
     (( ${#GATES[@]} > 0 )) && gates_log_dir="$(gates_log_dir_for "$WORKER_DISPATCH_ID" "$CYCLE")"
-    dispatch_run_gates "$gates_log_dir" "${GATES[@]:-}"
+    run_gates_with_evidence "$gates_log_dir" "${GATES[@]:-}"
   fi
 
   # A run that finished is not a run that needs continuing. An end-of-run ratio
@@ -3582,7 +3721,8 @@ EOF
                               ttl_seconds:.result.ttl_seconds}' "$EVIDENCE_FILE")"
   fi
 
-  jq -n \
+  local result_json
+  result_json="$(jq -n \
     --arg story "$STORY" --arg cycle "$CYCLE" \
     --argjson route "$(route_result_json "$HARNESS" "$MODEL_PROFILE" "$NATIVE_MODEL" \
                          "$MODEL_RESOLUTION" "$EFFORT" "$PERSONA")" \
@@ -3635,14 +3775,15 @@ EOF
       gates:$gates,
       gates_log_dir:(if $gates_log_dir == "" then null else $gates_log_dir end),
       gate_logs:$gate_logs}
-      + (if $attempt.failure_reason then {failure_reason:$attempt.failure_reason, paths:$attempt.paths} else {} end)' \
-    > "${STORY}.result.json"
+      + (if $attempt.failure_reason then {failure_reason:$attempt.failure_reason, paths:$attempt.paths} else {} end)')"
 
-  # The per-cycle copy. `${STORY}.result.json` is what a reader opens by name
-  # and is overwritten every cycle; the cap and the continuation chain are
-  # counted from these retained copies, which is the only way either can be
-  # derived from evidence rather than from a counter something could edit.
-  cp -- "${STORY}.result.json" "$(retained_result_path "$STORY" "$CYCLE")"
+  # Built in memory first, then written. `${STORY}.result.json` is what a
+  # reader opens by name and is overwritten every cycle; the per-cycle copy is
+  # what the cap and the continuation chain are counted from, which is the only
+  # way either can be derived from evidence rather than from a counter
+  # something could edit. A Paperclip cycle's outcome record gets these same
+  # bytes from the producer, never from the file.
+  publish_thin_result "$STORY" "$CYCLE" "$result_json"
 
   local attempt_badge
   case "$RESULT_STATUS" in
