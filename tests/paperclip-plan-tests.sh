@@ -280,6 +280,11 @@ jq -nc '{schema:"afk-review-verdict/1", reviewer_story_id:"HOM-12.S2", reviews_s
 AFK_GATE_STORY="$RS" run_afk termA review-verdict --check --json
 assert_eq "  ...its review gate passes against the written record" "$(jq -r .result <<<"$OUT_TEXT") $RC" "ok 0"
 rm -f "$RS.verdict.json"
+run_afk termA route-accept --story "$RS" --verify --json; TUPJ="$(jq -c .tuple <<<"$OUT_TEXT")"
+run_afk termA paperclip-evidence snapshot --dir "$REPO"; SNAPJ="$OUT_TEXT"
+run_afk termA paperclip-evidence launch --story "$RS" --cycle 1 --dispatch-id dispatch:e2e --json \
+  <<<"$(jq -nc --argjson t "$TUPJ" --argjson s "$SNAPJ" '{tuple:$t, snapshot:$s}')"
+assert_eq "  ...and its launch is recorded as a reviewer" "$(jq -c '[.result, .role]' <<<"$OUT_TEXT")" '["ok","reviewer"]'
 run_afk termA paperclip-plan --issue "$ISSUE" --plan-file "$(p2 '.stories += [.stories[1] | .id = "HOM-12.S3"]')" --json
 assert_eq "/2: two reviewers of one builder publish" "$(jq -r .result <<<"$OUT_TEXT") $RC" "ok 0"
 run_afk termA paperclip-plan --issue "$ISSUE" --plan-file "$(p2)" --json

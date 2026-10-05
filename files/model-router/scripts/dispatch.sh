@@ -2584,8 +2584,8 @@ paperclip_story_marked() { # <story> <stamp>
 # but a clean "ok" is a policy refusal: the named reason, a .blocked marker,
 # and EX_STAMP_INVALID. An answer that cannot be read is never a pass.
 paperclip_preconditions() { # <story>
-  local bin out rc=0 reason
-  PAPERCLIP_TUPLE_JSON=""
+  local bin out rc=0 reason gs_dir
+  PAPERCLIP_TUPLE_JSON="" PAPERCLIP_GATE_STORY=""
   bin="$(cfg '.launcher.agent_flow_kit' AGENT_FLOW_KIT_BIN 'agent-flow-kit')"
   out="$("$bin" route-accept --story "$1" --verify --json 2>/dev/null)" || rc=$?
   reason="$(jq -r '.result // empty | strings' <<<"$out" 2>/dev/null || true)"
@@ -2595,6 +2595,13 @@ paperclip_preconditions() { # <story>
     # cycle's evidence. A verifier that answers ok without one is refused at
     # the launch record (TUPLE_MISSING), before any harness starts.
     PAPERCLIP_TUPLE_JSON="$(jq -ce '.tuple | select(type == "object")' <<<"$out" 2>/dev/null || true)"
+    # The absolute path of the story just verified: each gate's
+    # AFK_GATE_STORY locator. The leaf is kept as named, never resolved, so a
+    # symlinked story stays a symlink to the verb that refuses it. CDPATH is
+    # cleared so cd prints nothing; a failed cd leaves no locator at all.
+    if gs_dir="$(CDPATH='' cd -- "$(dirname -- "$1")" && pwd -P)" && [[ "$gs_dir" == /* ]]; then
+      PAPERCLIP_GATE_STORY="${gs_dir%/}/$(basename -- "$1")"
+    fi
     return 0
   fi
   [[ "$reason" =~ ^[A-Z][A-Z_]*$ ]] || reason=ACCEPTANCE_UNCHECKABLE
@@ -2639,7 +2646,7 @@ paperclip_snapshot() {
 # EX_STAMP_INVALID. Any other story returns 0 untouched.
 paperclip_record_launch() {
   local out="" snap reason
-  PAPERCLIP_ATTEMPT=""
+  PAPERCLIP_ATTEMPT="" PAPERCLIP_ROLE=""
   [[ "${PAPERCLIP_STORY:-false}" == true ]] || return 0
   if [[ -n "${PAPERCLIP_TUPLE_JSON:-}" ]]; then
     snap="$(paperclip_snapshot)"
@@ -2648,13 +2655,22 @@ paperclip_record_launch() {
     PAPERCLIP_ATTEMPT="$(jq -r 'select(.result == "ok") | .attempt | numbers' <<<"$out" 2>/dev/null || true)"
   fi
   if [[ -n "$PAPERCLIP_ATTEMPT" ]]; then
-    log "paperclip evidence: launch recorded (attempt $PAPERCLIP_ATTEMPT, cycle $2)"
+    PAPERCLIP_ROLE="$(jq -r '.role // "" | strings' <<<"$out" 2>/dev/null || true)"
+    log "paperclip evidence: launch recorded (attempt $PAPERCLIP_ATTEMPT, cycle $2${PAPERCLIP_ROLE:+, $PAPERCLIP_ROLE})"
     return 0
   fi
   reason="$(jq -r '.result // empty | strings' <<<"$out" 2>/dev/null || true)"
   [[ "$reason" =~ ^[A-Z][A-Z_]*$ ]] || reason=EVIDENCE_UNANSWERED
   [[ -n "${PAPERCLIP_TUPLE_JSON:-}" ]] || reason=TUPLE_MISSING
   rm -f "$1.blocked"
+  # A reviewer's verdict refusal (docs/PAPERCLIP.md, "Review verdicts"):
+  # nothing was recorded, so the same cycle runs once the PM clears it.
+  if [[ "$reason" == VERDICT_PREEXISTS || "$reason" == VERDICT_PATH_NOT_IGNORED || "$reason" == VERDICT_PLAN_UNBOUND ]]; then
+    printf '%s: %s.verdict.json cycle %s\nNothing was launched or recorded, and no cycle was consumed. A reviewer verdict must be written by the worker of this cycle, at an ignored path, for a reviewer bound to its approved plan; the PM removes a stale one deliberately.\n' \
+      "$reason" "$1" "$2" > "$1.blocked"
+    log "$reason — a Paperclip reviewer launch was refused before its record; see $1.blocked"
+    return "$EX_STAMP_INVALID"
+  fi
   printf 'LAUNCH_EVIDENCE_UNRECORDED: %s %s cycle %s\nNothing was launched. A replayed cycle needs a fresh route-accept (a new attempt) or the next cycle number.\n' \
     "$reason" "$1" "$2" > "$1.blocked"
   log "LAUNCH_EVIDENCE_UNRECORDED ($reason) — a Paperclip launch the evidence cannot show is refused; see $1.blocked"
@@ -2697,7 +2713,38 @@ run_gates_with_evidence() {
   [[ -n "${PAPERCLIP_ATTEMPT:-}" ]] && PAPERCLIP_GATE_PRE="$(paperclip_snapshot)"
   dispatch_run_gates "$@"
   [[ -n "${PAPERCLIP_ATTEMPT:-}" ]] && PAPERCLIP_GATE_POST="$(paperclip_snapshot)"
+  paperclip_capture_verdict
   return 0
+}
+
+# paperclip_capture_verdict — a reviewer's verdict bytes, read once, right
+# after the gate_post step (whether or not its snapshot succeeded), exactly as
+# `review-verdict --check` reads them: nothing at <story>.verdict.json is null
+# (missing); a symlink or non-regular file is the empty text (invalid); a
+# regular file is encoded up to one byte over the 64 KiB limit, so the
+# validator still sees an oversized one. A later edit never reaches the
+# evidence.
+paperclip_capture_verdict() {
+  local vf
+  PAPERCLIP_VERDICT_TEXT=null
+  [[ -n "${PAPERCLIP_ATTEMPT:-}" && "${PAPERCLIP_ROLE:-}" == reviewer && -n "${PAPERCLIP_GATE_STORY:-}" ]] || return 0
+  vf="$PAPERCLIP_GATE_STORY.verdict.json"
+  if [[ -L "$vf" || ( -e "$vf" && ! -f "$vf" ) ]]; then
+    PAPERCLIP_VERDICT_TEXT='""'
+  elif [[ -f "$vf" ]]; then
+    PAPERCLIP_VERDICT_TEXT="$(head -c 65537 -- "$vf" | jq -Rs . 2>/dev/null || true)"
+    [[ -n "$PAPERCLIP_VERDICT_TEXT" ]] || PAPERCLIP_VERDICT_TEXT='""'
+  fi
+}
+
+# paperclip_verdict_attach — the outcome input passes through unchanged,
+# except that a reviewer's gains the captured verdict_text.
+paperclip_verdict_attach() {
+  if [[ "${PAPERCLIP_ROLE:-}" == reviewer ]]; then
+    jq -c --argjson v "${PAPERCLIP_VERDICT_TEXT:-null}" '. + {verdict_text:$v}'
+  else
+    cat
+  fi
 }
 
 # publish_thin_result <story> <cycle> <result-json> — the canonical producer
@@ -2711,7 +2758,7 @@ publish_thin_result() {
   [[ -n "${PAPERCLIP_ATTEMPT:-}" ]] || return 0
   out="$(printf '%s\n' "$result" | jq -Rsc --argjson t "$PAPERCLIP_TUPLE_JSON" \
       --argjson pre "${PAPERCLIP_GATE_PRE:-null}" --argjson post "${PAPERCLIP_GATE_POST:-null}" \
-      '{tuple:$t, snapshots:{gate_pre:$pre, gate_post:$post}, result_text:.}' |
+      '{tuple:$t, snapshots:{gate_pre:$pre, gate_post:$post}, result_text:.}' | paperclip_verdict_attach |
     paperclip_evidence outcome --story "$story" --attempt "$PAPERCLIP_ATTEMPT" --cycle "$cycle" \
       --dispatch-id "$(jq -r '.launch.dispatch_id' <<<"$result")" --json || true)"
   if [[ "$(jq -r '.result // empty' <<<"$out" 2>/dev/null || true)" == ok ]]; then
@@ -2771,8 +2818,17 @@ dispatch_run_gates() { # <gates_log_dir> <gate...>
     fi
     chmod 700 -- "$gates_log_dir"
   fi
-  local -a gate_env_unset=(-u AGENT_ROUTER_TOKEN -u AGENT_ROUTER_URL -u AGENT_ROUTER_TOKEN_ENV)
-  [[ -n "${CALLER_TOKEN_ENV:-}" ]] && gate_env_unset+=(-u "$CALLER_TOKEN_ENV")
+  local -a gate_env=(-u AGENT_ROUTER_TOKEN -u AGENT_ROUTER_URL -u AGENT_ROUTER_TOKEN_ENV)
+  [[ -n "${CALLER_TOKEN_ENV:-}" ]] && gate_env+=(-u "$CALLER_TOKEN_ENV")
+  # AFK_GATE_STORY locates the story for `agent-flow-kit review-verdict
+  # --check`; it is not a security boundary. A Paperclip gate always gets the
+  # verified story's absolute path, overwriting any inherited value; every
+  # other gate has the variable removed.
+  if [[ "${PAPERCLIP_STORY:-false}" == true && -n "${PAPERCLIP_TUPLE_JSON:-}" && "${PAPERCLIP_GATE_STORY:-}" == /* ]]; then
+    gate_env+=("AFK_GATE_STORY=$PAPERCLIP_GATE_STORY")
+  else
+    gate_env+=(-u AFK_GATE_STORY)
+  fi
   for g in "$@"; do
     [[ -z "$g" ]] && continue
     gate_n=$((gate_n + 1))
@@ -2794,7 +2850,7 @@ dispatch_run_gates() { # <gates_log_dir> <gate...>
     chmod 600 -- "$gate_log_path"
     fi
     local gate_status
-    if env "${gate_env_unset[@]}" bash -c "$g" >"$gate_log_path" 2>&1; then
+    if env "${gate_env[@]}" bash -c "$g" >"$gate_log_path" 2>&1; then
       GATE_RESULTS["$g"]="pass"; gate_status="pass"
     else
       GATE_RESULTS["$g"]="fail"; GATES_OK=false; gate_status="fail"
@@ -3271,6 +3327,7 @@ EOF
   VERDICT_FILE="$(mktemp)"; TMPFILES+=("$VERDICT_FILE" "$VERDICT_FILE.err")
   validate_stamp "$STAMP_FILE" "$EVIDENCE_FILE" "$VERDICT_FILE"
   PAPERCLIP_STORY=false PAPERCLIP_TUPLE_JSON="" PAPERCLIP_ATTEMPT="" PAPERCLIP_GATE_PRE=null PAPERCLIP_GATE_POST=null
+  PAPERCLIP_GATE_STORY="" PAPERCLIP_ROLE="" PAPERCLIP_VERDICT_TEXT=null
   if paperclip_story_marked "$STORY" "$STAMP_FILE"; then
     paperclip_preconditions "$STORY" || exit "$EX_STAMP_INVALID"
     PAPERCLIP_STORY=true
