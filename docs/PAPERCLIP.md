@@ -861,6 +861,54 @@ approve and dispatch exactly as before.
   (`VERDICT_OPEN_MAJOR`). The last three are all reported together. The gate
   runs whichever `agent-flow-kit` is first on the gate's `PATH`, which must
   include this verb; an older install fails it as an unknown command.
+- **Locator.** dispatch.sh sets `AFK_GATE_STORY` in each gate's environment
+  to the absolute path of the story it verified, overwriting any inherited
+  value, for a story that carries a Paperclip tuple; every other gate has
+  the variable removed. It only locates the story: a wrong or planted value
+  fails closed, and it is not a security boundary.
+- **Launch refusals.** A story is a reviewer when the stored record's entry
+  for it, the one hashing to its tuple's `plan_story_sha256`, has role
+  `reviewer`, so an edit elsewhere in the record never makes it launch as a
+  builder. For a reviewer, after the tuple is re-verified and before the
+  launch record, `paperclip-evidence launch` refuses `VERDICT_PREEXISTS`
+  when anything (a file, a symlink, even a dangling one, or a directory) is
+  at the verdict path, `VERDICT_PATH_NOT_IGNORED` when `git check-ignore`
+  does not report that path ignored (a tracked verdict would move the
+  snapshot it reviews), and `VERDICT_PLAN_UNBOUND` when its plan binding (as
+  for `--check`) fails, since its gate could never pass. dispatch.sh writes
+  `<reason>: <story>.verdict.json cycle <k>` to `<story>.blocked` and exits
+  4. Nothing is recorded or launched, so no cycle is consumed. A
+  continuation cycle refuses the earlier cycle's verdict the same way, on
+  purpose: nothing retires a verdict automatically, and only a deliberate
+  removal clears it. The launch answer adds `role:"reviewer"` for a
+  reviewer.
+- **Capture and the review record.** Right after the `gate_post` step
+  (whether or not its snapshot succeeded), dispatch.sh reads a reviewer's
+  verdict once, exactly as `--check` does: nothing at the path is `null`; a
+  symlink or other non-regular file is the empty text, so it is
+  `VERDICT_INVALID` as at the gate; a regular file is read up to one byte
+  past 64 KiB. It passes that as `verdict_text` beside `result_text`; the
+  verb never opens the worktree file, so a later edit changes nothing
+  recorded. A `verdict_text` that is neither a string nor `null` (or absent)
+  is `EVIDENCE_INPUT_INVALID`, with nothing written. For a reviewer,
+  `outcome` first writes `<N>.c<k>.review.json` once, schema
+  `afk-paperclip-attempt/1`, `kind:"review"`: `{issue, story_id, attempt,
+  cycle, dispatch_id, tuple, verdict_sha256, verdict, check_ok, reasons,
+  created_at}`, judged by the same validator as `--check` against the
+  launch tuple. `verdict_sha256` hashes the captured text, which is the
+  file's bytes whenever the verdict is valid; it and `verdict` are `null`
+  when nothing was captured, and `verdict` is `null` when the text is
+  invalid. A reviewer whose plan binding failed after launch (an approval
+  withdrawn, a record edited) still gets its review record, with
+  `VERDICT_PLAN_UNBOUND`. Only a re-plan that removed or changed its own
+  approved story writes none, and that outcome is `APPROVAL_CHANGED`. The
+  outcome record follows, unchanged. A stop between the two leaves no
+  outcome, so the cycle stays `ATTEMPT_UNFINISHED`; a retry is refused
+  `REVIEW_DUPLICATE` and never writes an outcome past it. That cycle is not
+  completed later: the PM moves on with the next cycle or a fresh
+  acceptance. A builder's `verdict_text` is ignored, and its outcome and
+  `latest` output are exactly as before; `latest` does not read review
+  records yet.
 - **Trust and limits.** The same one-principal model as the attempt
   evidence: this defends against stale, planted and mistaken verdicts, not a
   same-uid forger, a file swapped between the type check and the read, or a
