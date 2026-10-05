@@ -329,6 +329,24 @@ afk_pce_launch() {
   now="$(afk_pce_current_tuple "$story")" || { afk_pce_emit "$jm" TUPLE_CHANGED "$(jq -nc --arg r "$now" '{reason:$r}')"; return 4; }
   jq -e --argjson a "$tuple" --argjson b "$now" '$a == $b' <<<null >/dev/null 2>&1 ||
     { afk_pce_emit "$jm" TUPLE_CHANGED '{"reason":"TUPLE_DIFFERS"}'; return 4; }
+  # A /2 reviewer's verdict must come from this cycle's worker and sit at an
+  # ignored path (outside the snapshot, or writing it would move the tree the
+  # review describes). A reviewer whose plan binding fails could never pass
+  # its review gate, so it is refused too. All three refusals come before any
+  # record, so they consume no cycle; only a deliberate removal clears a
+  # verdict left from before, including one from an earlier cycle.
+  local role="" vrc=0 vdir vabs
+  afk_pce_review_role "$tuple" >/dev/null || vrc=$?
+  if (( vrc != 1 )); then
+    role=reviewer
+    if [[ -e "$story.verdict.json" || -L "$story.verdict.json" ]]; then
+      afk_pce_emit "$jm" VERDICT_PREEXISTS; return 4
+    fi
+    vdir="$(CDPATH='' cd -- "$(dirname -- "$story")" 2>/dev/null && pwd -P)" && vabs="$vdir/$(basename -- "$story").verdict.json" &&
+      git -C "$vdir" check-ignore -q -- "$vabs" 2>/dev/null ||
+      { afk_pce_emit "$jm" VERDICT_PATH_NOT_IGNORED; return 4; }
+    (( vrc == 0 )) || { afk_pce_emit "$jm" VERDICT_PLAN_UNBOUND; return 4; }
+  fi
   issue="$(jq -r .issue <<<"$tuple")"; sid="$(jq -r .story_id <<<"$tuple")"
   dir="$(afk_pce_dir "$issue" "$sid")" || { afk_pce_emit "$jm" ATTEMPT_MISSING; return 4; }
   n="$(afk_pce_max "$dir" '^([0-9]+)\.accept\.json$')"
@@ -349,7 +367,7 @@ afk_pce_launch() {
     '{schema:"afk-paperclip-attempt/1", kind:"launch", issue:$i, story_id:$s, attempt:$n, cycle:$k,
       dispatch_id:$d, tuple:$t, accept_tuple_match:($acc.tuple == $t), snapshot:$sn, created_at:$at}')"
   afk_pce_create_once "$dir/$n.c$cycle.launch.json" "$rec"; rc=$?
-  x="$(jq -nc --argjson n "$n" --argjson k "$cycle" '{attempt:$n, cycle:$k}')"
+  x="$(jq -nc --argjson n "$n" --argjson k "$cycle" --arg r "$role" '{attempt:$n, cycle:$k} + (if $r == "" then {} else {role:$r} end)')"
   case "$rc" in
     0) afk_pce_emit "$jm" ok "$x" ;;
     3) afk_pce_emit "$jm" LAUNCH_DUPLICATE "$x"; return 4 ;;
@@ -362,9 +380,14 @@ afk_pce_launch() {
 # exact bytes dispatch.sh wrote to <story>.result.json, passed by the
 # producer. No worktree result file is ever opened. The launch tuple is
 # re-verified: a changed or refused tuple records APPROVAL_CHANGED, never a
-# usable outcome. Writes <N>.c<k>.outcome.json once.
+# usable outcome. Writes <N>.c<k>.outcome.json once. For a /2 reviewer story
+# it first writes <N>.c<k>.review.json once, judged from the producer's
+# verdict_text (a string, or null or absent when nothing was at the verdict
+# path; any other type is EVIDENCE_INPUT_INVALID); any other story ignores
+# verdict_text.
 afk_pce_outcome() {
   local jm="$1" story="$2" n="$3" k="$4" did="$5" in tuple snaps text result dir launch now reason="" outcome rec x rc rsha
+  local vjs="" vrc vsha="" check_ok review
   [[ "$n" =~ $AFK_PCE_NUM_RE && "$k" =~ $AFK_PCE_NUM_RE && "$did" =~ $AFK_PCE_DISPATCH_RE && -f "$story" ]] ||
     { afk_pce_emit "$jm" EVIDENCE_ARGS_INVALID; return 1; }
   in="$(head -c 1048576 | jq -ce 'select(type == "object")' 2>/dev/null)" || in=""
@@ -406,8 +429,38 @@ afk_pce_outcome() {
       gates_ok:(($r.gates | type) == "object" and ($r.gates | length) > 0 and ([$r.gates[]] | all(. == "pass"))),
       snapshots:{launch:$l.snapshot, gate_pre:$s.gate_pre, gate_post:$s.gate_post},
       result_sha256:$rs, result:$r, created_at:$at}')" || { afk_pce_emit "$jm" EVIDENCE_WRITE_FAILED; return 1; }
-  afk_pce_create_once "$dir/$n.c$k.outcome.json" "$rec"; rc=$?
   x="$(jq -nc --argjson n "$n" --argjson k "$k" --arg o "$outcome" '{attempt:$n, cycle:$k, outcome:$o}')"
+  # The review record comes first: a stop between the two writes leaves no
+  # outcome, so the cycle reads ATTEMPT_UNFINISHED, never a review-less pass.
+  # A story whose approved role is reviewer gets one even when its plan
+  # binding has since failed: the judge then records VERDICT_PLAN_UNBOUND.
+  vrc=0; afk_pce_review_role "$tuple" >/dev/null || vrc=$?
+  if (( vrc != 1 )); then
+    case "$(jq -r '.verdict_text | type' <<<"$in" 2>/dev/null)" in
+      string)
+        vjs="$(jq -c '.verdict_text' <<<"$in" 2>/dev/null)"
+        # Hashed from the pipe, never a shell variable, so no byte is dropped.
+        afk_sha256_stdin_v vsha < <(jq -j '.verdict_text' <<<"$in" 2>/dev/null) && [[ -n "$vsha" ]] ||
+          { afk_pce_emit "$jm" EVIDENCE_WRITE_FAILED "$x"; return 1; } ;;
+      null) ;;
+      *) afk_pce_emit "$jm" EVIDENCE_INPUT_INVALID "$x"; return 4 ;;
+    esac
+    check_ok=false
+    afk_pce_verdict_judge "$tuple" "$vjs" && check_ok=true
+    review="$(jq -nc --argjson l "$launch" --arg vs "$vsha" --argjson v "$AFK_PCE_VERDICT" --argjson ok "$check_ok" \
+      --argjson why "$AFK_PCE_REASONS" --arg at "$(afk_pce_now)" \
+      '{schema:"afk-paperclip-attempt/1", kind:"review", issue:$l.issue, story_id:$l.story_id,
+        attempt:$l.attempt, cycle:$l.cycle, dispatch_id:$l.dispatch_id, tuple:$l.tuple,
+        verdict_sha256:(if $vs == "" then null else $vs end), verdict:$v, check_ok:$ok, reasons:$why, created_at:$at}')" ||
+      { afk_pce_emit "$jm" EVIDENCE_WRITE_FAILED "$x"; return 1; }
+    afk_pce_create_once "$dir/$n.c$k.review.json" "$review"; rc=$?
+    case "$rc" in
+      0) ;;
+      3) afk_pce_emit "$jm" REVIEW_DUPLICATE "$x"; return 4 ;;
+      *) afk_pce_emit "$jm" EVIDENCE_WRITE_FAILED "$x"; return 1 ;;
+    esac
+  fi
+  afk_pce_create_once "$dir/$n.c$k.outcome.json" "$rec"; rc=$?
   case "$rc" in
     0) afk_pce_emit "$jm" ok "$x" ;;
     3) afk_pce_emit "$jm" OUTCOME_DUPLICATE "$x"; return 4 ;;
@@ -460,8 +513,9 @@ afk_pce_usage() {
   cat <<'USAGE'
 agent-flow-kit paperclip-evidence snapshot [--dir <path>] [--json]
 agent-flow-kit paperclip-evidence launch --story <s> --cycle <k> --dispatch-id <id> [--json]   (stdin: {tuple, snapshot})
+    (the answer adds role:"reviewer" for a schema-2 reviewer story)
 agent-flow-kit paperclip-evidence outcome --story <s> --attempt <n> --cycle <k> --dispatch-id <id> [--json]
-    (stdin: {tuple, snapshots:{gate_pre, gate_post}, result_text})
+    (stdin: {tuple, snapshots:{gate_pre, gate_post}, result_text[, verdict_text]})
 agent-flow-kit paperclip-evidence latest --issue <uuid> --story-id <HOM-n.Sk> [--json]
 USAGE
 }

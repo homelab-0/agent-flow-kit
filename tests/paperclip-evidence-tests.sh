@@ -596,5 +596,183 @@ vc_is "a stored plan edited under the same digest -> VERDICT_PLAN_UNBOUND" "$RV"
 cp "$TMPROOT/p2.orig" "$STATE/paperclip/plans/$ISSUE2.json"
 vc_is "...restored, the same verdict passes again" "$RV" "ok 0"
 
+# Launch refusals, through the verb dispatch.sh calls. $PB is ignored in $P.
+RL="$(rv_story "$PB" rl HOM-13.S3)"; accept --story "$RL" --kind pm-auto --actor pm
+TUPR="$(bash "$AFK" route-accept --story "$RL" --verify --json 2>/dev/null </dev/null | jq -c .tuple)"
+LINR="$(jq -nc --argjson t "$TUPR" --argjson s "$SNAP" '{tuple:$t, snapshot:$s}')"
+DR="$(adir2 HOM-13.S3)"; nlaunch() { find "$1" -name '*.launch.json' 2>/dev/null | wc -l | tr -d ' '; }
+for plant in file dangling dir; do
+  case "$plant" in
+    file) printf '{}\n' >"$RL.verdict.json" ;;
+    dangling) ln -s "$TMPROOT/nowhere" "$RL.verdict.json" ;;
+    dir) mkdir "$RL.verdict.json" ;;
+  esac
+  ev_in "$LINR" launch --story "$RL" --cycle 1 --dispatch-id dispatch:rl --json
+  assert_eq "a preexisting verdict ($plant) -> VERDICT_PREEXISTS, no launch record" "$(res) $RC $(nlaunch "$DR")" "VERDICT_PREEXISTS 4 0"
+  rm -rf -- "$RL.verdict.json"
+done
+RN="$(rv_story "$P" rn HOM-13.S4)"; accept --story "$RN" --kind pm-auto --actor pm
+ev_in "$(jq -nc --argjson t "$(bash "$AFK" route-accept --story "$RN" --verify --json 2>/dev/null </dev/null | jq -c .tuple)" --argjson s "$SNAP" '{tuple:$t, snapshot:$s}')" \
+  launch --story "$RN" --cycle 1 --dispatch-id dispatch:rn --json
+assert_eq "a verdict path that is not ignored -> VERDICT_PATH_NOT_IGNORED, no launch record" \
+  "$(res) $RC $(nlaunch "$(adir2 HOM-13.S4)")" "VERDICT_PATH_NOT_IGNORED 4 0"
+# Another story edited under the same digest: the reviewer's own tuple still
+# verifies, and its approved story still says reviewer, so it is not launched
+# as a builder.
+jq '.stories[0].title = "edited"' "$TMPROOT/p2.orig" >"$STATE/paperclip/plans/$ISSUE2.json"
+ev_in "$LINR" launch --story "$RL" --cycle 1 --dispatch-id dispatch:rl --json
+assert_eq "a reviewer whose plan record no longer renders -> VERDICT_PLAN_UNBOUND, no launch record" "$(res) $RC $(nlaunch "$DR")" "VERDICT_PLAN_UNBOUND 4 0"
+cp "$TMPROOT/p2.orig" "$STATE/paperclip/plans/$ISSUE2.json"
+ev_in "$LINR" launch --story "$RL" --cycle 1 --dispatch-id dispatch:rl --json
+assert_eq "cleared, the same cycle launches under the same attempt, as a reviewer" "$(res) $(jf .attempt) $(jf .cycle) $(jf .role)" "ok 1 1 reviewer"
+BL="$(new_story "$PB" bl HOM-13.S1 '.' "$FM2")"; accept --story "$BL" --kind pm-auto --actor pm
+TUPB="$(bash "$AFK" route-accept --story "$BL" --verify --json 2>/dev/null </dev/null | jq -c .tuple)"
+verdict HOM-13.S1 HOM-13.S1 APPROVE >"$BL.verdict.json"
+ev_in "$(jq -nc --argjson t "$TUPB" --argjson s "$SNAP" '{tuple:$t, snapshot:$s}')" launch --story "$BL" --cycle 1 --dispatch-id dispatch:bl --json
+assert_eq "a builder launches with a verdict file present, and no role" "$(res) $(jf .role)" "ok null"
+NB="$(jf .attempt)"
+
+# The review record, from the producer's verdict_text only.
+oinv() { oin "$1" "$2" | jq -c --argjson v "$3" '. + {verdict_text:$v}'; }
+rres() { jq -n --arg d "$1" --argjson k "$2" '{story:"rl.md", cycle:$k, status:"done", launch:{dispatch_id:$d},
+  gates:{"bash tests/a.sh":"pass","agent-flow-kit review-verdict --check":"pass"}}'; }
+VOK="$(verdict HOM-13.S3 HOM-13.S1 APPROVE)"
+ev_in "$(oinv "$(rres dispatch:rl 1)" "$TUPR" "$(jq -Rs . <<<"$VOK")")" outcome --story "$RL" --attempt 1 --cycle 1 --dispatch-id dispatch:rl --json
+assert_eq "a reviewer outcome is recorded" "$(res) $RC $(jf .outcome)" "ok 0 RECORDED"
+assert_eq "review record: kind, linkage, tuple, verdict bytes hashed, check_ok, no reasons" \
+  "$(jq -c --argjson t "$TUPR" '[.schema, .kind, .attempt, .cycle, .dispatch_id, (.tuple == $t), .verdict_sha256, .verdict.verdict, .check_ok, .reasons]' "$DR/1.c1.review.json" 2>/dev/null)" \
+  "[\"afk-paperclip-attempt/1\",\"review\",1,1,\"dispatch:rl\",true,\"sha256:$(printf '%s\n' "$VOK" | sha)\",\"APPROVE\",true,[]]"
+assert_eq "...and the outcome record keeps B's members exactly" "$(jq -c 'keys' "$DR/1.c1.outcome.json")" \
+  '["approval_reason","attempt","created_at","cycle","dispatch_id","gate_count","gates_ok","issue","kind","outcome","result","result_sha256","schema","snapshots","status","story_id","tuple","tuple_at_outcome"]'
+ev_in "$LINR" launch --story "$RL" --cycle 2 --dispatch-id dispatch:rl2 --json
+ev_in "$(oinv "$(rres dispatch:rl2 2)" "$TUPR" null)" outcome --story "$RL" --attempt 1 --cycle 2 --dispatch-id dispatch:rl2 --json
+assert_eq "no captured verdict -> review record VERDICT_MISSING, verdict and sha null" \
+  "$(res) $(jq -c '[.check_ok, .reasons, .verdict, .verdict_sha256]' "$DR/1.c2.review.json" 2>/dev/null)" 'ok [false,["VERDICT_MISSING"],null,null]'
+ev_in "$LINR" launch --story "$RL" --cycle 3 --dispatch-id dispatch:rl3 --json
+ev_in "$(oinv "$(rres dispatch:rl3 3)" "$TUPR" "$(jq -Rs . <<<"$(verdict HOM-13.S3 HOM-13.S1 CHANGES_REQUESTED)")")" outcome --story "$RL" --attempt 1 --cycle 3 --dispatch-id dispatch:rl3 --json
+assert_eq "captured CHANGES_REQUESTED -> check_ok false, the same validator's reason" \
+  "$(jq -c '[.check_ok, .reasons, .verdict.verdict]' "$DR/1.c3.review.json" 2>/dev/null)" '[false,["VERDICT_NOT_APPROVE"],"CHANGES_REQUESTED"]'
+# A stop between the two writes: the review record exists, the outcome does
+# not (here its name is taken by a dangling link, so its write fails).
+ev_in "$LINR" launch --story "$RL" --cycle 4 --dispatch-id dispatch:rl4 --json
+ln -s "$TMPROOT/nowhere" "$DR/1.c4.outcome.json"
+ev_in "$(oinv "$(rres dispatch:rl4 4)" "$TUPR" "$(jq -Rs . <<<"$VOK")")" outcome --story "$RL" --attempt 1 --cycle 4 --dispatch-id dispatch:rl4 --json
+assert_eq "the outcome write fails after the review record was written" "$(res) $RC" "OUTCOME_DUPLICATE 4"
+rm -f "$DR/1.c4.outcome.json"
+latest2 HOM-13.S3
+assert_eq "...review written, outcome not: latest reads ATTEMPT_UNFINISHED" \
+  "$([[ -f "$DR/1.c4.review.json" ]] && echo review) $(jf .state) $(jf .cycle)" "review ATTEMPT_UNFINISHED 4"
+ev_in "$(oinv "$(rres dispatch:rl4 4)" "$TUPR" "$(jq -Rs . <<<"$VOK")")" outcome --story "$RL" --attempt 1 --cycle 4 --dispatch-id dispatch:rl4 --json
+assert_eq "...a retry is REVIEW_DUPLICATE and never writes an outcome past it" \
+  "$(res) $RC $([[ -e "$DR/1.c4.outcome.json" ]] && echo O)" "REVIEW_DUPLICATE 4 "
+printf '{}\n' >"$RL.verdict.json"
+ev_in "$LINR" launch --story "$RL" --cycle 5 --dispatch-id dispatch:rl5 --json
+assert_eq "a continuation cycle meets an earlier cycle's verdict -> VERDICT_PREEXISTS, nothing written" \
+  "$(res) $RC $([[ -e "$DR/1.c5.launch.json" ]] && echo L)" "VERDICT_PREEXISTS 4 "
+rm -f "$RL.verdict.json"; ev_in "$LINR" launch --story "$RL" --cycle 5 --dispatch-id dispatch:rl5 --json
+ev_in "$(oinv "$(rres dispatch:rl5 5)" "$TUPR" 1)" outcome --story "$RL" --attempt 1 --cycle 5 --dispatch-id dispatch:rl5 --json
+assert_eq "a verdict_text neither string nor null -> EVIDENCE_INPUT_INVALID, no review or outcome" \
+  "$(res) $RC $(find "$DR" -name '1.c5.*' ! -name '*.launch.json' | wc -l | tr -d ' ')" "EVIDENCE_INPUT_INVALID 4 0"
+jq '.stories[0].title = "edited"' "$TMPROOT/p2.orig" >"$STATE/paperclip/plans/$ISSUE2.json"
+ev_in "$(oinv "$(rres dispatch:rl5 5)" "$TUPR" "$(jq -Rs . <<<"$VOK")")" outcome --story "$RL" --attempt 1 --cycle 5 --dispatch-id dispatch:rl5 --json
+cp "$TMPROOT/p2.orig" "$STATE/paperclip/plans/$ISSUE2.json"
+assert_eq "a plan record edited after launch: the reviewer still writes a review record, VERDICT_PLAN_UNBOUND" \
+  "$(jf .outcome) $(jq -c '[.check_ok, .reasons]' "$DR/1.c5.review.json" 2>/dev/null)" 'RECORDED [false,["VERDICT_PLAN_UNBOUND"]]'
+ev_in "$LINR" launch --story "$RL" --cycle 6 --dispatch-id dispatch:rl6 --json
+rm -f "$STATE/paperclip/approvals/$ISSUE2.json"
+ev_in "$(oinv "$(rres dispatch:rl6 6)" "$TUPR" "$(jq -Rs . <<<"$VOK")")" outcome --story "$RL" --attempt 1 --cycle 6 --dispatch-id dispatch:rl6 --json
+approve2
+assert_eq "approval withdrawn, record unchanged: APPROVAL_CHANGED beside a VERDICT_PLAN_UNBOUND review record" \
+  "$(jf .outcome) $(jq -c '[.check_ok, .reasons]' "$DR/1.c6.review.json" 2>/dev/null)" 'APPROVAL_CHANGED [false,["VERDICT_PLAN_UNBOUND"]]'
+RB="$(jq -n '{story:"bl.md", cycle:1, status:"done", launch:{dispatch_id:"dispatch:bl"}, gates:{"bash tests/a.sh":"pass","bash tests/b.sh":"pass"}}')"
+ev_in "$(oinv "$RB" "$TUPB" "$(jq -Rs . <<<"$VOK")")" outcome --story "$BL" --attempt "$NB" --cycle 1 --dispatch-id dispatch:bl --json
+assert_eq "a builder ignores verdict_text: outcome recorded, no review record" \
+  "$(res) $(find "$(adir2 HOM-13.S1)" -name '*.review.json' | wc -l | tr -d ' ')" "ok 0"
+assert_eq "...its outcome keeps B's members exactly" "$(jq -c 'keys' "$(adir2 HOM-13.S1)/$NB.c1.outcome.json" 2>/dev/null)" "$(jq -c 'keys' "$DR/1.c1.outcome.json")"
+latest2 HOM-13.S1; LB="$(jq -c 'keys' <<<"$OUT")"; latest HOM-12.S6
+assert_eq "...and latest reports B's members, as for a /1 story" "$LB" "$(jq -c 'keys' <<<"$OUT")"
+
+# The producer with the real dispatch.sh functions: the reviewer's first gate
+# writes the verdict and records the locator it was given; a planted locator
+# in the dispatcher's environment never reaches a gate.
+RP="$(rv_story "$PB" rp HOM-13.S5)"; accept --story "$RP" --kind pm-auto --actor pm
+VP="$(verdict HOM-13.S5 HOM-13.S1 APPROVE)"; printf '%s\n' "$VP" >"$TMPROOT/vp.json"
+G1="$(printf 'printf "%%s\\n" "${AFK_GATE_STORY-unset}" >>%q; cp %q "$AFK_GATE_STORY.verdict.json"' "$TMPROOT/gs.prod" "$TMPROOT/vp.json")"
+G2="$(printf 'bash %q review-verdict --check' "$AFK")"
+AFK_GATE_STORY=/planted/story.md produce "$AFK" "$RP" dispatch:rp "$G1" "$G2"
+DP="$(adir2 HOM-13.S5)"
+assert_eq "producer: the reviewer cycle passes both gates and records launch, review and outcome" \
+  "$RC $OUT $(jq -r .status "$RP.result.json" 2>/dev/null) $([[ -f "$DP/1.c1.review.json" ]] && echo review) $(jq -r .outcome "$DP/1.c1.outcome.json" 2>/dev/null)" \
+  "0 ATTEMPT=1 done review RECORDED"
+assert_eq "...each gate's AFK_GATE_STORY is the verified story's absolute path, not the planted one" \
+  "$(cat "$TMPROOT/gs.prod" 2>/dev/null)" "$(cd "$PB" && pwd -P)/rp.md"
+assert_eq "...the review record holds the producer-captured bytes and passes" \
+  "$(jq -r '[.verdict_sha256, .check_ok] | map(tostring) | join(" ")' "$DP/1.c1.review.json" 2>/dev/null)" "sha256:$(sha <"$TMPROOT/vp.json") true"
+RVSUM="$(sha <"$DP/1.c1.review.json")"
+verdict HOM-13.S5 HOM-13.S1 CHANGES_REQUESTED >"$RP.verdict.json"
+assert_eq "...a later edit of the worktree verdict changes nothing captured" \
+  "$(sha <"$DP/1.c1.review.json") $(jq -r .verdict.verdict "$DP/1.c1.review.json")" "$RVSUM APPROVE"
+# A symlinked verdict, named by a relative story path under an exported CDPATH
+# that has its own .pm-brief: the locator is still this worktree's story, and
+# the producer records what the gate saw, VERDICT_INVALID.
+RY="$(rv_story "$PB" ry HOM-13.S7)"; accept --story "$RY" --kind pm-auto --actor pm
+G4="$(printf 'printf "%%s\\n" "$AFK_GATE_STORY" >%q; ln -s %q "$AFK_GATE_STORY.verdict.json"' "$TMPROOT/gs.cd" "$TMPROOT/vp.json")"
+CDPATH="$W" produce "$AFK" .pm-brief/ry.md dispatch:ry "$G4" "$G2"
+assert_eq "producer: a symlinked verdict fails the gate and is recorded VERDICT_INVALID; CDPATH never moves the locator" \
+  "$RC $(jq -r .status "$RY.result.json" 2>/dev/null) $(jq -c '[.check_ok, .reasons]' "$(adir2 HOM-13.S7)/1.c1.review.json" 2>/dev/null) $(cat "$TMPROOT/gs.cd" 2>/dev/null)" \
+  "0 gates_failed [false,[\"VERDICT_INVALID\"]] $(cd "$PB" && pwd -P)/ry.md"
+NP2="$(new_story "$PB" plain2 AFK-Y '.' 'persona: dev')"
+G3="$(printf 'printf "%%s\\n" "${AFK_GATE_STORY-unset}" >%q' "$TMPROOT/gs.plain")"
+AFK_GATE_STORY=/planted/story.md produce "$AFK" "$NP2" dispatch:plain2 "$G3"
+assert_eq "producer: a non-Paperclip gate never sees an inherited AFK_GATE_STORY" "$RC $(cat "$TMPROOT/gs.plain" 2>/dev/null)" "0 unset"
+
+# dispatch.sh main(): the same, end to end. tests/a.sh records each gate's
+# locator; agent-flow-kit on the gate PATH is the real kit.
+cat >"$W/tests/a.sh" <<EOF
+printf '%s\n' "\${AFK_GATE_STORY-unset}" >>"$TMPROOT/gs.main"
+EOF
+printf '#!/bin/sh\nexec bash "%s" "$@"\n' "$AFK" >"$SB/agent-flow-kit"; chmod +x "$SB/agent-flow-kit"
+export AFK_GATE_STORY=/planted/main.md
+NATIVE='.model_profile = "claude/strong" | .entitlement_pool = "anthropic-max"'
+S12="$(new_story "$WB" mainb HOM-12.S3 "$NATIVE" "home: paperclip:HOM-12
+paperclip_issue: $ISSUE
+persona: dev
+memory_mode: off")"
+accept --story "$S12" --kind pm-auto --actor pm
+: >"$TMPROOT/gs.main"; run_main "$S12"
+assert_eq "main(): a Paperclip gate gets the verified story's absolute path over the planted one" \
+  "$RC $(cat "$TMPROOT/gs.main")" "0 $(cd "$WB" && pwd -P)/mainb.md"
+SP="$(new_story "$WB" mainplain AFK-MAINPLAIN "$NATIVE" "persona: dev
+memory_mode: off")"
+: >"$TMPROOT/gs.main"; run_main "$SP"
+assert_eq "main(): a non-Paperclip gate has the inherited AFK_GATE_STORY removed" "$RC $(cat "$TMPROOT/gs.main")" "0 unset"
+RM="$(rv_story "$WB" rvmain HOM-13.S6 "$NATIVE" $'persona: dev\nmemory_mode: off\n')"
+accept --story "$RM" --kind pm-auto --actor pm
+printf '{}\n' >"$RM.verdict.json"; H3="$(harness_runs)"
+run_main "$RM"; MRC=$RC
+latest2 HOM-13.S6
+assert_eq "main(): a stale reviewer verdict -> VERDICT_PREEXISTS before the harness, no launch, no cycle consumed" \
+  "$MRC $(( $(harness_runs) - H3 )) $(head -c 18 "$RM.blocked" 2>/dev/null) $(nlaunch "$(adir2 HOM-13.S6)") $(jf .state) $(jf .attempt)" \
+  "4 0 VERDICT_PREEXISTS: 0 ATTEMPT_NOT_LAUNCHED 1"
+[[ "$MRC" == 4 ]] || printf '        %s\n' "$(tail -n 5 <<<"$OUT")"
+rm -f "$RM.verdict.json"; : >"$TMPROOT/gs.main"
+run_main "$RM"; MRC=$RC
+latest2 HOM-13.S6
+assert_eq "...cleared, the same cycle 1 of attempt 1 launches; with no verdict the review gate fails" \
+  "$MRC $(( $(harness_runs) - H3 )) $(jq -r .status "$RM.result.json" 2>/dev/null) $(jf '[.state, .attempt, .cycle, .gates_ok] | map(tostring) | join(" ")')" \
+  "1 1 gates_failed OUTCOME_RECORDED 1 1 false"
+assert_eq "...the review record says VERDICT_MISSING, and the gate saw the reviewer's own path" \
+  "$(jq -c '[.check_ok, .reasons]' "$(adir2 HOM-13.S6)/1.c1.review.json" 2>/dev/null) $(cat "$TMPROOT/gs.main")" \
+  "[false,[\"VERDICT_MISSING\"]] $(cd "$WB" && pwd -P)/rvmain.md"
+RNM="$(rv_story "$W" rvtracked HOM-13.S8 "$NATIVE" $'persona: dev\nmemory_mode: off\n')"
+accept --story "$RNM" --kind pm-auto --actor pm; H4="$(harness_runs)"
+run_main "$RNM"; MRC=$RC
+assert_eq "main(): a reviewer verdict path that is not ignored -> VERDICT_PATH_NOT_IGNORED before the harness, no launch" \
+  "$MRC $(( $(harness_runs) - H4 )) $(head -c 25 "$RNM.blocked" 2>/dev/null) $(nlaunch "$(adir2 HOM-13.S8)")" \
+  "4 0 VERDICT_PATH_NOT_IGNORED: 0"
+[[ "$MRC" == 4 ]] || printf '        %s\n' "$(tail -n 5 <<<"$OUT")"
+rm -f "$RNM" "$RNM".*
+unset AFK_GATE_STORY
+
 printf '\n%d passed, %d failed (%ds)\n' "$PASS" "$FAIL" "$SECONDS"
 (( FAIL == 0 ))
