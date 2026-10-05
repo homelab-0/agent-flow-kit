@@ -772,7 +772,15 @@ Paperclip marker get no records and launch exactly as before.
   host is fixed. A cycle whose launch was recorded but whose terminal never
   ran (Orca create failure, killed dispatcher, NEEDS-HUMAN, effort failure)
   stays `ATTEMPT_UNFINISHED`, and its retry needs a fresh pm-auto
-  `route-accept`. After the launch, a record that could not be written is
+  `route-accept`. A continuation cycle is the exception: if the earlier
+  dispatch left launch state for the cycle (an intent, attempt or terminal
+  receipt) without a continuation ledger entry, its terminal may still be
+  running, and recovering it would put that run under the new attempt. The
+  retry is refused before its launch record with
+  `LAUNCH_EVIDENCE_UNRECORDED: CONTINUATION_LAUNCH_UNCONFIRMED`, exit 4, naming
+  the files and the terminal. A fresh `route-accept` does not clear it; a
+  human inspects the terminal first. Non-Paperclip continuations still recover
+  the confirmed terminal. After the launch, a record that could not be written is
   logged and does not change the cycle; that cycle's evidence is then
   incomplete, never successful.
 - **`paperclip-evidence latest --issue <id> --story-id <HOM-n.Sk> [--json]`**

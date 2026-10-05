@@ -37,7 +37,7 @@ jq -nc --arg c "$COMMIT" --arg r "$TMPROOT" \
     projects:[{paperclip_project_id:"aaaaaaaa-0000-4000-8000-000000000001",slug:"proj1",repo_path:$r,harness:"claude"}],
     interim_comment_approval:{attested_on:"2026-09-27",paperclip_commit:$c}}' >"$CONFIG"
 jq -nc --arg d "$PLAND" '{schema:"afk-paperclip-plan-record/1", digest:$d,
-  stories:[range(1; 11) | {id:"HOM-12.S\(.)", gates:["bash tests/a.sh","bash tests/b.sh"]}]}' >"$STATE/paperclip/plans/$ISSUE.json"
+  stories:[range(1; 12) | {id:"HOM-12.S\(.)", gates:["bash tests/a.sh","bash tests/b.sh"]}]}' >"$STATE/paperclip/plans/$ISSUE.json"
 approve() { jq -nc --arg d "$PLAND" --arg c "$COMMIT" \
   '{schema:"afk-paperclip-approval/1",kind:"plan",digest:$d,paperclip_commit:$c}' >"$STATE/paperclip/approvals/$ISSUE.json"; }
 export HOME="$HOME_DIR" AFK_STATE_DIR="$STATE" AFK_PAPERCLIP_CONFIG="$CONFIG"
@@ -362,8 +362,9 @@ echo "orca \$*" >>"$CALLS"
 case "\$1 \$2" in
   "worktree list") printf '{"result":{"worktrees":[{"path":"%s","id":"r1::wt1"}]}}' "$W" ;;
   "repo list") echo '{"result":{"repos":[{"id":"r1","hookSettings":{"setupAgentStartupPolicy":"start-immediately"}}]}}' ;;
-  "terminal create") echo harness >>"$CALLS"
-    printf '{"handle":"term_stub","connected":true,"orphaned":false,"worktreeId":"r1::wt1","worktreePath":"%s"}' "$W" >"$TS"
+  "terminal create") echo harness >>"$CALLS"; t=""
+    while [ \$# -gt 0 ]; do [ "\$1" = --title ] && t="\$2"; shift; done
+    jq -nc --arg t "\$t" --arg w "$W" '{handle:"term_stub",title:\$t,connected:true,orphaned:false,worktreeId:"r1::wt1",worktreePath:\$w}' >"$TS"
     echo '{"ok":true,"result":{"terminal":{"handle":"term_stub"}}}' ;;
   "terminal read") echo '{"ok":true,"result":{"terminal":{"handle":"term_stub","status":"running","tail":["ok","CLAUDE_EXIT=0"]}}}' ;;
   "terminal show") [ -s "$TS" ] || exit 1; jq -c '{ok:true,result:{terminal:.}}' "$TS" ;;
@@ -377,10 +378,10 @@ printf '#!/bin/sh\nexit 0\n' >"$SB/claude"
 chmod +x "$SB/orca" "$SB/validator" "$SB/claude"
 printf 'profiles:\n  local-code-standard:\n    physical: [{model_id: qwen-test}]\n  "claude/strong":\n    hosting: vendor\n    physical: [{model_id: "claude/opus"}]\n' >"$TMPROOT/catalog.yaml"
 MAIN_N=0
-run_main() { # <story> [cycle] -- each run its own dispatch id; no ambient run identity
+run_main() { # <story> [cycle] -- each run its own dispatch id (MAIN_DISPATCH_ID pins one); no ambient run identity
   MAIN_N=$((MAIN_N + 1))
   OUT="$(cd "$W" && env -u AFK_RUN_ID -u ORCA_RUN_ID -u AFK_CONTEXT_EVENT_DIR -u AGENT_ROUTER_TOKEN \
-    AFK_DISPATCH_ID="dispatch:main-$MAIN_N" AGENT_DIR="$W/_bmad/bmm/agents" PATH="$SB:$PATH" AGENT_FLOW_CONFIG="${MAIN_CONFIG:-/nonexistent}" AGENT_STAMP_VALIDATE=validator \
+    AFK_DISPATCH_ID="${MAIN_DISPATCH_ID:-dispatch:main-$MAIN_N}" AFK_DELEGATING_PM="${MAIN_PM:-}" AGENT_DIR="$W/_bmad/bmm/agents" PATH="$SB:$PATH" AGENT_FLOW_CONFIG="${MAIN_CONFIG:-/nonexistent}" AGENT_STAMP_VALIDATE=validator \
     AGENT_STAMP_VALIDATE_CATALOG_PATH="$TMPROOT/catalog.yaml" AGENT_FLOW_KIT_BIN="$AFK" \
     AGENT_FLOW_APPROVED_HOME="$HOME_DIR" AGENT_FLOW_APPROVED_PATH="" AGENT_FLOW_LAUNCH_TIMEOUT=20 CLAUDE_CONFIG_DIR="" \
     bash "$DISPATCH" "$1" "${2:-1}" 2>&1 </dev/null)"; RC=$?
@@ -439,6 +440,55 @@ run_main "$S10"; MRC=$RC
 latest HOM-12.S10
 assert_eq "...and the same cycle, retried with the binary present, launches and records its outcome" \
   "$MRC $(harness_runs) $(jf '[.state, .attempt, .cycle, .status] | map(tostring) | join(" ")')" "0 3 OUTCOME_RECORDED 3 1 done"
+
+head1 "6. A continuation cycle left between terminal receipt and ledger entry"
+# Cycle 1 handed over, so cycle 2 is a continuation. The ledger path is a
+# directory while cycle 2 launches: the terminal is created and its receipt
+# written, then the ledger append fails, as a dispatcher stopped at that point
+# would leave it. The retry repeats the same dispatch id and PM, so its
+# command, and therefore its launch identity, is the earlier one's.
+cont_story() { # <name> <story_id> <frontmatter> -> story path, cycle 1 handed over
+  local s
+  s="$(new_story "$WB" "$1" "$2" '.model_profile = "claude/strong" | .entitlement_pool = "anthropic-max"' "$3")"
+  jq -n '{status:"continuation_required"}' >"$s.result.c1.json"
+  jq -n '{schema:"afk-continuation/1", completed:["c1"], current_state:"s", remaining_acceptance:["a"],
+    next_steps:["n"], updated_at:"2026-10-04T00:00:00Z", in_flight:[], unretired_findings:[]}' >"$s.continuation.json"
+  printf '%s' "$s"
+}
+gap_run() { # <story> -- cycle 2 with its ledger append made to fail
+  mkdir -p "$1.continuations.json"; run_main "$1" 2; rm -rf -- "$1.continuations.json"; }
+MAIN_DISPATCH_ID=dispatch:cont MAIN_PM=pm:cont
+S11="$(cont_story cont HOM-12.S11 "home: paperclip:HOM-12
+paperclip_issue: $ISSUE
+persona: dev
+memory_mode: off")"
+D11="$(adir HOM-12.S11)"; accept --story "$S11" --kind pm-auto --actor pm
+H0="$(harness_runs)"; gap_run "$S11"; GRC=$RC
+assert_eq "the gap: launch recorded under attempt 1, terminal created and receipted, no ledger entry" \
+  "$([[ "$GRC" != 0 ]] && echo stopped) $(( $(harness_runs) - H0 )) $([[ -e "$D11/1.c2.launch.json" ]] && echo L) $(jq -r .terminal "$S11.continuation-launch-receipt.c2.json" 2>/dev/null)" \
+  "stopped 1 L term_stub"
+[[ "$GRC" != 0 ]] || printf '        %s\n' "$(tail -n 5 <<<"$OUT")"
+accept --story "$S11" --kind pm-auto --actor pm
+H1="$(harness_runs)"; run_main "$S11" 2; MRC=$RC MOUT=$OUT
+latest HOM-12.S11
+assert_eq "re-accepted, the cycle is refused before its launch record: the earlier terminal is not recovered under attempt 2" \
+  "$MRC $(( $(harness_runs) - H1 )) $(head -n 1 "$S11.blocked" 2>/dev/null | cut -d' ' -f1-2) $([[ -e "$D11/2.c2.launch.json" ]] && echo L) $([[ -e "$S11.result.c2.json" ]] && echo R) $([[ -e "$S11.continuations.json" ]] && echo ledger)" \
+  "4 0 LAUNCH_EVIDENCE_UNRECORDED: CONTINUATION_LAUNCH_UNCONFIRMED   "
+[[ "$MRC" == 4 ]] || printf '        %s\n' "$(tail -n 5 <<<"$MOUT")"
+assert_eq "...attempt 2 reads ATTEMPT_NOT_LAUNCHED and attempt 1 keeps its unfinished cycle-2 launch" \
+  "$(jf '[.state, .attempt] | map(tostring) | join(" ")') $(jq -r .dispatch_id "$D11/1.c2.launch.json" 2>/dev/null)" "ATTEMPT_NOT_LAUNCHED 2 dispatch:cont"
+# Advisory with no helper: memory_mode off/blind puts a per-run temp
+# HINDSIGHT_CONFIG path into the command, so a retry is a different launch
+# identity and is never recovered, Paperclip or not.
+SN="$(cont_story contplain AFK-CONT "persona: dev
+memory_mode: advisory")"
+H2="$(harness_runs)"; AGENT_FLOW_HINDSIGHT_HELPER=/nonexistent gap_run "$SN"; GRC=$RC
+AGENT_FLOW_HINDSIGHT_HELPER=/nonexistent run_main "$SN" 2
+assert_eq "a non-Paperclip continuation in the same gap still recovers its confirmed terminal and ledgers it" \
+  "$([[ "$GRC" != 0 ]] && echo stopped) $(( $(harness_runs) - H2 )) $([[ "$OUT" == *"recovered confirmed Orca terminal term_stub"* ]] && echo recovered) $(jq -r '[.entries[] | select(.cycle == 2) | .terminal] | join(",")' "$SN.continuations.json" 2>/dev/null)" \
+  "stopped 1 recovered term_stub"
+[[ "$OUT" == *"recovered confirmed"* ]] || printf '        %s\n' "$(tail -n 5 <<<"$OUT")"
+unset MAIN_DISPATCH_ID MAIN_PM
 
 printf '\n%d passed, %d failed (%ds)\n' "$PASS" "$FAIL" "$SECONDS"
 (( FAIL == 0 ))

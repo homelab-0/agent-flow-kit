@@ -2661,6 +2661,34 @@ paperclip_record_launch() {
   return "$EX_STAMP_INVALID"
 }
 
+# paperclip_continuation_unconfirmed <story> <cycle> — before the launch record
+# of a Paperclip continuation cycle. Launch sidecars for the cycle with no
+# ledger entry (the caller has already refused a ledgered cycle) mean an
+# earlier dispatch recorded its launch and then stopped between the terminal
+# create and the ledger append. continuation_launch_create would recover that
+# earlier terminal and this dispatch would publish its result under a new
+# attempt and dispatch id, so the cycle is refused with nothing recorded or
+# launched, and the earlier attempt stays unfinished. Any other story, or a
+# cycle without sidecars, returns 0 untouched.
+paperclip_continuation_unconfirmed() {
+  local f found="" terminal=""
+  [[ "${PAPERCLIP_STORY:-false}" == true ]] || return 0
+  for f in "$(continuation_launch_intent_path "$1" "$2")" "$(continuation_launch_attempt_path "$1" "$2")" \
+           "$(continuation_launch_receipt_path "$1" "$2")" "$(continuation_replacement_binding_path "$1" "$2")" \
+           "$(continuation_replacement_receipt_path "$1" "$2")" "$(continuation_replacement_attempt_path "$1" "$2")" \
+           "$(continuation_replacement_consumed_path "$1" "$2")"; do
+    [[ -e "$f" || -L "$f" ]] && found+="${found:+ }$(basename -- "$f")"
+  done
+  [[ -n "$found" ]] || return 0
+  terminal="$(jq -r '.terminal // empty | strings' "$(continuation_launch_receipt_path "$1" "$2")" 2>/dev/null || true)"
+  [[ "$terminal" =~ ^[A-Za-z0-9_.:-]+$ ]] || terminal=unknown
+  rm -f "$1.blocked"
+  printf 'LAUNCH_EVIDENCE_UNRECORDED: CONTINUATION_LAUNCH_UNCONFIRMED %s cycle %s\nNothing was launched or recorded. An earlier dispatch of this cycle created launch state (%s) but never confirmed it in the continuation ledger; its terminal (%s) may still be running under the earlier attempt. A fresh route-accept does not clear this: inspect that terminal and decide how the cycle continues.\n' \
+    "$1" "$2" "$found" "$terminal" > "$1.blocked"
+  log "LAUNCH_EVIDENCE_UNRECORDED (CONTINUATION_LAUNCH_UNCONFIRMED) — cycle $2 has unconfirmed launch state from an earlier dispatch; see $1.blocked"
+  return "$EX_STAMP_INVALID"
+}
+
 # run_gates_with_evidence <gates_log_dir> <gate...> — dispatch_run_gates with
 # the gate_pre / gate_post snapshots taken immediately around it, so a gate
 # that changed the tree is visible in the outcome.
@@ -3397,14 +3425,19 @@ EOF
   # Paperclip evidence: the launch record, after every harness preflight above
   # (a preflight refusal leaves no record, so the same cycle can be retried)
   # and before the terminal exists. A Paperclip launch it cannot record does
-  # not start.
+  # not start. A continuation cycle an earlier dispatch left unconfirmed is
+  # refused first, so its terminal is never recovered under a new attempt.
+  if [[ -n "$CONTINUATION_OF_CYCLE" ]]; then
+    paperclip_continuation_unconfirmed "$STORY" "$CYCLE" || exit "$EX_STAMP_INVALID"
+  fi
   paperclip_record_launch "$STORY" "$CYCLE" "$WORKER_DISPATCH_ID" || exit "$EX_STAMP_INVALID"
 
   # Create first, then durably record the returned terminal handle as launch
   # confirmation before waiting for the worker. A failed create therefore
   # leaves no continuation consumption behind and the same cycle is retryable,
   # except for a Paperclip story, whose launch record now exists: its retry
-  # needs a fresh route-accept. An in-flight or completed worker has explicit
+  # needs a fresh route-accept (and, for a continuation cycle that left launch
+  # state, is refused above). An in-flight or completed worker has explicit
   # ledger evidence immediately.
   if [[ -n "$CONTINUATION_OF_CYCLE" ]]; then
     local launch_rc=0
@@ -3421,7 +3454,7 @@ EOF
       die "continuation cycle $CYCLE was already confirmed by another dispatcher; no duplicate terminal was launched" "$EX_NEEDS_HUMAN"
     elif (( launch_rc != 0 )); then
       if [[ -n "$PAPERCLIP_ATTEMPT" ]]; then
-        die "the continuation launch could not be confirmed in $(continuation_ledger_path "$STORY"); its launch was recorded (attempt $PAPERCLIP_ATTEMPT), so a retry of this Paperclip cycle needs a fresh route-accept." "$EX_NEEDS_HUMAN"
+        die "the continuation launch could not be confirmed in $(continuation_ledger_path "$STORY"); its launch was recorded (attempt $PAPERCLIP_ATTEMPT). A retry of this Paperclip cycle needs a fresh route-accept, and is refused while launch state this dispatch left for the cycle remains." "$EX_NEEDS_HUMAN"
       fi
       die "the continuation launch could not be confirmed in $(continuation_ledger_path "$STORY"); the cycle remains retryable." "$EX_NEEDS_HUMAN"
     fi
