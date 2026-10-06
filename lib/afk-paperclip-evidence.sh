@@ -732,7 +732,11 @@ afk_cmd_paperclip_readiness() {
   fi
   # An explicit empty --commit is a usage error, never "no commit".
   [[ "$cset" == false || "$commit" =~ ^[0-9a-f]{7,64}$ ]] || { afk_warn "paperclip-readiness --commit takes a hex commit id"; return 1; }
-  r="$(afk_pce_readiness "$issue" "$dir" "$commit")" && [[ -n "$r" ]] ||
+  # Ambient repository redirection would point every git call at another
+  # repository, both sides of the WORKTREE_FOREIGN check included, so the
+  # reader runs without it; --dir and the owner's path alone locate Git.
+  r="$(unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
+         GIT_ALTERNATE_OBJECT_DIRECTORIES; afk_pce_readiness "$issue" "$dir" "$commit")" && [[ -n "$r" ]] ||
     { afk_warn "paperclip-readiness: the evidence could not be evaluated"; return 1; }
   if [[ "$jm" == true ]]; then
     printf '%s\n' "$r"

@@ -979,7 +979,10 @@ its `role`, `reviews`, the selected `attempt`, `cycle` and `dispatch_id`,
   none). `--dir` must share the common Git directory of the issue's project
   repository (`WORKTREE_FOREIGN`; `OWNER_REPO_UNKNOWN` when the ledger or
   config cannot name it). A supplied `--commit` must name a commit that records
-  the same tree (`COMMIT_TREE_MISMATCH`). The snapshot follows the attempt-evidence rules,
+  the same tree (`COMMIT_TREE_MISMATCH`). Ambient `GIT_DIR`, `GIT_WORK_TREE`,
+  `GIT_INDEX_FILE`, `GIT_COMMON_DIR`, `GIT_OBJECT_DIRECTORY` and
+  `GIT_ALTERNATE_OBJECT_DIRECTORIES` are ignored, so only `--dir` and the
+  project path locate Git. The snapshot follows the attempt-evidence rules,
   so its prerequisite applies: private files stay in the ignored
   `.pm-brief/` scope. Any other file that is not ignored, including one
   named like a sidecar, is product and moves the tree. Nothing is excluded

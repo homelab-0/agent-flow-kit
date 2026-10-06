@@ -271,6 +271,11 @@ is "a supplied commit of another tree" "COMMIT_TREE_MISMATCH" --commit "$C0"
 is "an unknown commit" "COMMIT_TREE_MISMATCH" --commit deadbeef
 is "a tree id is not a commit" "COMMIT_TREE_MISMATCH" --commit "$T"
 DIR="$F" is "a clone outside the owner's repository" "WORKTREE_FOREIGN"
+GIT_DIR="$F/.git" DIR="$F" is "...also under an ambient GIT_DIR naming the clone" "WORKTREE_FOREIGN"
+GIT_DIR="$R/.git" GIT_WORK_TREE="$R" DIR="$F" is "...and when GIT_DIR/GIT_WORK_TREE name the owner" "WORKTREE_FOREIGN"
+GIT_DIR="$F/.git" GIT_WORK_TREE="$F" GIT_INDEX_FILE="$TMPROOT/no-index" GIT_COMMON_DIR="$F/.git" rd
+assert_eq "the owner's worktree under ambient redirection to the clone -> ready" \
+  "$RC $(jf .evidence_set_sha256) $([[ -e "$TMPROOT/no-index" ]] && echo INDEX)" "0 $WANT "
 mkdir -p "$TMPROOT/plain"; DIR="$TMPROOT/plain" is "no repository" \
   "TREE_UNAVAILABLE,WORKTREE_FOREIGN"
 
