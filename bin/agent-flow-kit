@@ -384,6 +384,12 @@ agent-flow-kit — lifecycle entry point
       and the content snapshot it carries. latest reports the newest record
       by (attempt, cycle) as it is; it is not a readiness verdict.
 
+  agent-flow-kit paperclip-readiness --issue <id> --dir <worktree> [--commit <sha>] [--json]
+      Read-only: ready only when the approved schema-2 plan's newest build
+      and independent review evidence all pass on the worktree's current
+      tree. Exit 0 ready, 3 not ready with every reason. Nothing calls it
+      automatically and it publishes nothing.
+
   agent-flow-kit review-verdict --check [--json]
       The gate a schema-2 reviewer story runs. dispatch.sh sets
       AFK_GATE_STORY to the story; the sibling <story>.verdict.json must be
@@ -620,6 +626,14 @@ afk_main() {
     afk_require_tools || return "$AFK_EXIT_USAGE"
     afk_require_declared_paths || return "$AFK_EXIT_USAGE"
     afk_cmd_paperclip_evidence "$@"
+    return $?
+  fi
+
+  # paperclip-readiness is read-only, with its own closed option vocabulary.
+  if [[ "$cmd" == paperclip-readiness ]]; then
+    afk_require_tools || return "$AFK_EXIT_USAGE"
+    afk_require_declared_paths || return "$AFK_EXIT_USAGE"
+    afk_cmd_paperclip_readiness "$@"
     return $?
   fi
 
