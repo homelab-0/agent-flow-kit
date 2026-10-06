@@ -252,7 +252,8 @@ SC_LIFECYCLE=("$KIT_ROOT/bin/agent-flow-kit" "$KIT_ROOT/lib/afk-common.sh" "$KIT
               "$KIT_ROOT/tests/paperclip-pm-registry-tests.sh" "$KIT_ROOT/tests/paperclip-report-tests.sh" \
               "$KIT_ROOT/tests/paperclip-pm-start-tests.sh" "$KIT_ROOT/tests/paperclip-plan-tests.sh" \
               "$KIT_ROOT/tests/paperclip-accept-tests.sh" "$KIT_ROOT/tests/paperclip-project-tests.sh" \
-              "$KIT_ROOT/tests/paperclip-claim-review-tests.sh" "$KIT_ROOT/tests/paperclip-pm-review-tests.sh")
+              "$KIT_ROOT/tests/paperclip-claim-review-tests.sh" "$KIT_ROOT/tests/paperclip-pm-review-tests.sh" \
+              "$KIT_ROOT/tests/paperclip-readiness-tests.sh")
 
 if (( ${#SC_CMD[@]} > 0 )); then
   ok "shellcheck runs here: ${SC_CMD[0]} ${SC_VERSION:-(version not reported)}"
@@ -3902,6 +3903,13 @@ head1 "32. Paperclip plan gate — tests/paperclip-plan-tests.sh"
 # schemas 1 and 2, the canonical body and digest. Stub orca, temp git repo,
 # no network.
 run_gate "paperclip plan gate" "$KIT_ROOT/tests/paperclip-plan-tests.sh"
+
+# ===========================================================================
+head1 "33. Paperclip readiness gate — tests/paperclip-readiness-tests.sh"
+# ===========================================================================
+# paperclip-readiness (lib/afk-paperclip-evidence.sh), read-only, through the
+# CLI on evidence from the real producers. Temp repos and state, no network.
+run_gate "paperclip readiness gate" "$KIT_ROOT/tests/paperclip-readiness-tests.sh"
 
 # ===========================================================================
 # AC-2: total wall time, with a BUDGET warning (never a failure) over 720s.
