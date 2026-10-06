@@ -914,8 +914,92 @@ approve and dispatch exactly as before.
   same-uid forger, a file swapped between the type check and the read, or a
   worker that force-stages its ignored verdict after launch. A passing check
   is not readiness: it does not look at the reviewed builder's evidence (the
-  builder may have no outcome at all), nothing yet compares the reviewer's
-  snapshot with the builder's, and no final depends on it.
+  builder may have no outcome at all), only `paperclip-readiness` (below)
+  compares the reviewer's snapshot with the builder's, and no final depends
+  on it.
+
+## Completion readiness (`agent-flow-kit paperclip-readiness`)
+
+`paperclip-readiness --issue <id> --dir <worktree> [--commit <sha>] [--json]`
+answers whether the current approved work has complete, independent evidence
+on the worktree's current tree. It only reads. Nothing calls it
+automatically: no report, poll, dispatch or Finish step uses it, it writes no
+final or spool entry, and it makes no network call or model launch. Finished
+work still goes to Josh for review; nothing here marks an issue done.
+
+It exits 0 only when ready, 3 when not ready, and 1 on a usage error (an
+unknown option, a missing `--issue` or `--dir`, a non-hex `--commit`) or an
+internal failure. The answer is `{ready, reasons, issue, plan_digest, tree,
+stories, evidence_set_sha256}`; text mode prints `ready tree=…
+evidence_set_sha256=…` or `not ready: <reasons>`. Each story entry names
+its `role`, `reviews`, the selected `attempt`, `cycle` and `dispatch_id`,
+`state`, `result_sha256`, `verdict_sha256`, `tested_tree` and its own
+`reasons`. Every applicable reason is collected; a story's reason carries
+`:<story_id>`.
+
+- **Host state.** The ledger entry must say exactly `working`, and the stop
+  flag must be absent (`LEDGER_NOT_ACTIVE` otherwise, including a missing,
+  symlinked or unparseable ledger). A legacy `pending_final`,
+  `final_delivery_hold` or spool `.final` is `LEGACY_FINAL_PRESENT`. It is
+  reported, never adopted, rewritten, discarded or re-armed.
+- **Plan.** `paperclip-approval` must be approved (`PLAN_NOT_APPROVED`).
+  The stored record must be one regular JSON object (`PLAN_RECORD_INVALID`)
+  of schema `/2` (`PLAN_HAS_NO_REVIEW_ROLES`: a `/1` plan still approves and
+  dispatches, but it is never ready). It must carry the approved digest and
+  re-render to it with `- Plan schema: 2` in the body
+  (`PLAN_DIGEST_MISMATCH`), and pass the `/2` role validation (its
+  `PLAN_*` reason). Roles and targets come only from that plan.
+- **Newest evidence.** Per story, the highest attempt number and its highest
+  launched cycle, with no fallback to an older success:
+  `STORY_EVIDENCE_MISSING`, `ATTEMPT_NOT_LAUNCHED`, `ATTEMPT_UNFINISHED`, or
+  `RECORD_INVALID` (malformed, symlinked or non-regular records, a dangling
+  newer record, a symlinked directory, or records that disagree on attempt,
+  cycle, dispatch or launch snapshot). Then: `OUTCOME_NOT_RECORDED` (for
+  example `APPROVAL_CHANGED`), `STORY_NOT_DONE`, `TUPLE_MISMATCH` (the
+  acceptance, launch, outcome and `tuple_at_outcome` tuples are not all
+  equal, or `accept_tuple_match` is not true), `PLAN_BINDING_CHANGED` (the
+  tuple does not name the approved digest and this story's current
+  `plan_story_sha256`), `GATE_SET_MISMATCH` (the result's gate keys are not
+  exactly the plan story's gates), `GATES_NOT_PASSED`, `SNAPSHOT_MISSING`,
+  and `BUILDER_GATES_MUTATED` (`gate_pre` and `gate_post` differ). No
+  stamp expiry or network check is made for recorded work.
+- **Reviews.** A reviewer also needs its sibling review record for the
+  same attempt, cycle, dispatch and tuple: `REVIEW_MISSING` (a missing
+  review is never read as a builder), `REVIEW_INVALID`, `REVIEW_FOREIGN`,
+  `REVIEW_VERDICT_MISSING`, `REVIEW_IDS_MISMATCH`, `REVIEW_NOT_APPROVED`,
+  `REVIEW_OPEN_MAJOR`, `REVIEW_CHECK_NOT_OK` (`check_ok` is not true) and
+  `REVIEW_GATE_NOT_PASSED` (`agent-flow-kit review-verdict --check` did not
+  pass). Its launch, `gate_pre` and `gate_post` trees must be equal
+  (`REVIEW_TREE_MUTATED`) and equal its builder's tested tree
+  (`REVIEW_TREE_MISMATCH`). Its dispatch must differ from its builder's
+  (`REVIEW_NOT_INDEPENDENT`), and no two stories may share one
+  (`DISPATCH_ID_REUSED`).
+- **Current tree.** Every builder's `gate_post` tree must equal the
+  snapshot of `--dir` (`TREE_CHANGED`; `TREE_UNAVAILABLE` when there is
+  none). `--dir` must share the common Git directory of the issue's project
+  repository (`WORKTREE_FOREIGN`; `OWNER_REPO_UNKNOWN` when the ledger or
+  config cannot name it). A supplied `--commit` must name a commit that records
+  the same tree (`COMMIT_TREE_MISMATCH`). Ambient `GIT_DIR`, `GIT_WORK_TREE`,
+  `GIT_INDEX_FILE`, `GIT_COMMON_DIR`, `GIT_OBJECT_DIRECTORY` and
+  `GIT_ALTERNATE_OBJECT_DIRECTORIES` are ignored, so only `--dir` and the
+  project path locate Git. The snapshot follows the attempt-evidence rules,
+  so its prerequisite applies: private files stay in the ignored
+  `.pm-brief/` scope. Any other file that is not ignored, including one
+  named like a sidecar, is product and moves the tree. Nothing is excluded
+  by name.
+- **Evidence set.** When ready, `evidence_set_sha256` is `sha256:` + the
+  sha256 of `jq -cS` of `{schema:"afk-paperclip-evidence-set/1", issue,
+  plan_digest, tree, records}` plus LF. `records` holds one `{story_id,
+  attempt, cycle, kind, sha256}` per selected accept (`cycle` null),
+  launch, outcome and, for reviewers, review record, sorted by story id,
+  attempt, cycle and kind. Each `sha256` covers the whole record as `jq
+  -cS` prints it. No query time, path or mtime is included, so the same
+  evidence gives the same hash. A non-ready answer has a `null` hash.
+- **Trust and limits.** The same one-principal model as the evidence:
+  this defends against stale, partial, planted and mistaken state, not a
+  same-uid forger. Building the snapshot writes objects to the object
+  store and a scratch index, as `paperclip-evidence snapshot` does; no
+  other file changes.
 
 ## The self-block model
 

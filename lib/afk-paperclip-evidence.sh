@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # afk-paperclip-evidence.sh — `paperclip-evidence`: the content snapshot and
 # the write-once attempt, launch and outcome records of a canonical Paperclip
-# dispatch (AFK-PC evidence foundation). Collection only: nothing here decides
-# readiness, publishes a final, or talks to Paperclip. See docs/PAPERCLIP.md.
+# dispatch (AFK-PC evidence foundation), and `paperclip-readiness`, their
+# read-only reader. Nothing here publishes a final or talks to Paperclip, and
+# nothing calls the reader automatically. See docs/PAPERCLIP.md.
 # Needs lib/afk-accept.sh. SOURCED, never executed.
 
 if [[ -n "${AFK_PCE_SOURCED:-}" ]]; then
@@ -507,6 +508,243 @@ afk_pce_latest() {
           outcome:$o.outcome, approval_reason:$o.approval_reason, status:$o.status,
           gates_ok:$o.gates_ok, gate_count:$o.gate_count, tuple:$o.tuple,
           snapshots:$o.snapshots, result_sha256:$o.result_sha256}' <<<"$x")"
+}
+
+# ---- Completion readiness (docs/PAPERCLIP.md, "Completion readiness") -----
+
+# afk_pce_ready_read <path> <kind> -- exactly one JSON object of this kind in
+# a regular, non-symlink file, or fail.
+afk_pce_ready_read() {
+  [[ -f "$1" && ! -L "$1" ]] || return 1
+  jq -cse --arg k "$2" 'select(length == 1) | .[0]
+    | select(type == "object" and .schema == "afk-paperclip-attempt/1" and .kind == $k)' "$1" 2>/dev/null
+}
+
+# afk_pce_ready_max <dir> <name-regex-with-one-group> -- the largest number,
+# as afk_pce_max, except that a dangling link counts: a broken newest record
+# is reported, never passed over for an older one.
+afk_pce_ready_max() {
+  local f n m="" re="$2"
+  for f in "$1"/*; do
+    [[ -e "$f" || -L "$f" ]] || continue
+    f="${f##*/}"
+    [[ "$f" =~ $re ]] || continue
+    n="${BASH_REMATCH[1]}"
+    [[ "$n" =~ $AFK_PCE_NUM_RE ]] && (( n > ${m:-0} )) && m="$n"
+  done
+  printf '%s' "$m"
+}
+
+afk_pce_common_dir() { # <path> -- the physical common Git directory
+  local c
+  c="$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" && [[ -d "$c" ]] &&
+    (CDPATH='' cd -- "$c" 2>/dev/null && pwd -P)
+}
+
+# One story's reasons, from its newest records only. Inputs: $st (the approved
+# story), $role/$target (from it), $pss (its plan_story_sha256), $pd, $i, $sid,
+# $n/$k (the selected attempt and cycle), $acc/$l/$o/$rv (the records, null
+# when absent; $rv a string when invalid) and $state.
+AFK_PCE_READY_JQ="def vshape: $AFK_PCE_VERDICT_SHAPE;"'
+def tree: if type == "object" and .schema == "afk-snapshot/1"
+    and (.tree | type == "string" and test("^[0-9a-f]{40}([0-9a-f]{24})?$")) then .tree else null end;
+(($o | objects | .snapshots | objects) // {}) as $s
+| ($s.launch | tree) as $tl | ($s.gate_pre | tree) as $tp | ($s.gate_post | tree) as $tq
+| (($l | objects | .tuple | objects) // {}) as $lt
+| (($o | objects | .result | objects | .gates | objects) // null) as $g
+| (if $state != "OUTCOME_RECORDED" then [$state] else [
+    (if $acc.attempt != $n or $acc.issue != $i or $acc.story_id != $sid
+        or $l.attempt != $n or $l.cycle != $k or $l.issue != $i or $l.story_id != $sid
+        or $o.attempt != $n or $o.cycle != $k or $o.issue != $i or $o.story_id != $sid
+        or ($l.dispatch_id | type) != "string" or $o.dispatch_id != $l.dispatch_id or $s.launch != $l.snapshot
+      then "RECORD_INVALID" else empty end),
+    (if $o.outcome != "RECORDED" then "OUTCOME_NOT_RECORDED" else empty end),
+    (if $o.status != "done" then "STORY_NOT_DONE" else empty end),
+    (if $l.accept_tuple_match != true or $acc.tuple != $l.tuple or $o.tuple != $l.tuple
+        or $o.tuple_at_outcome != $l.tuple then "TUPLE_MISMATCH" else empty end),
+    (if $lt.issue != $i or $lt.story_id != $sid or $lt.plan_digest != $pd or $lt.plan_story_sha256 != $pss
+      then "PLAN_BINDING_CHANGED" else empty end),
+    (if $g == null or ($g | keys) != ($st.gates | unique) then "GATE_SET_MISMATCH"
+     elif $o.gates_ok != true or ([$g[]] | all(. == "pass") | not) then "GATES_NOT_PASSED" else empty end),
+    (if $tl == null or $tp == null or $tq == null then "SNAPSHOT_MISSING"
+     elif $role == "builder" and $tp != $tq then "BUILDER_GATES_MUTATED"
+     elif $role == "reviewer" and ($tl != $tp or $tp != $tq) then "REVIEW_TREE_MUTATED" else empty end),
+    (if $role != "reviewer" then empty
+     elif $rv == null then "REVIEW_MISSING"
+     elif ($rv | type) != "object" then "REVIEW_INVALID"
+     elif $rv.issue != $i or $rv.story_id != $sid or $rv.attempt != $n or $rv.cycle != $k
+          or $rv.dispatch_id != $l.dispatch_id or $rv.tuple != $l.tuple then "REVIEW_FOREIGN"
+     elif $rv.verdict == null and $rv.verdict_sha256 == null then "REVIEW_VERDICT_MISSING"
+     elif ($rv.verdict | vshape | not) or ($rv.verdict_sha256 | type) != "string" then "REVIEW_INVALID"
+     else ((if $rv.verdict.reviewer_story_id != $sid or $rv.verdict.reviews_story_id != $target
+              then "REVIEW_IDS_MISMATCH" else empty end),
+           (if $rv.verdict.verdict != "APPROVE" then "REVIEW_NOT_APPROVED" else empty end),
+           (if any($rv.verdict.findings[]; (.severity == "blocker" or .severity == "major") and .status == "open")
+              then "REVIEW_OPEN_MAJOR" else empty end)) end),
+    (if $role == "reviewer" and ($rv | type) == "object" and $rv.check_ok != true then "REVIEW_CHECK_NOT_OK" else empty end),
+    (if $role == "reviewer" and ((($g | objects | .[$rg]) // null) != "pass") then "REVIEW_GATE_NOT_PASSED" else empty end)
+  ] end) as $why
+| {story_id:$sid, role:$role, reviews:(if $role == "reviewer" then $target else null end), state:$state,
+   attempt:$n, cycle:$k, dispatch_id:$l.dispatch_id, result_sha256:$o.result_sha256,
+   verdict_sha256:(if ($rv | type) == "object" then $rv.verdict_sha256 else null end),
+   launch_tree:$tl, tested_tree:$tq, reasons:$why, records:$recs}'
+
+# afk_pce_ready_story <issue> <approved-digest> <approved-story-json> -- the
+# story's newest attempt and its newest cycle, never an older success, as
+# {story_id, role, ..., reasons, records}. records describe the selected
+# accept/launch/outcome (and a reviewer's review) records by sha256 of their
+# compact sorted-key JSON.
+afk_pce_ready_story() {
+  local issue="$1" pd="$2" st="$3" sid role target dir n="" k="" state="" acc=null launch=null out=null rev=null
+  local pss recs='[]' kind obj h
+  sid="$(jq -r .id <<<"$st")"; role="$(jq -r .role <<<"$st")"; target="$(jq -r '.reviews // ""' <<<"$st")"
+  pss="$(jq -cS . <<<"$st" | afk_sha256_stdin)" || return 1
+  if ! dir="$(afk_pce_dir "$issue" "$sid")"; then state=RECORD_INVALID
+  elif n="$(afk_pce_ready_max "$dir" '^([0-9]+)\.accept\.json$')"; [[ -z "$n" ]]; then state=STORY_EVIDENCE_MISSING
+  elif ! acc="$(afk_pce_ready_read "$dir/$n.accept.json" accept)"; then acc=null; state=RECORD_INVALID
+  elif k="$(afk_pce_ready_max "$dir" "^$n\\.c([0-9]+)\\.launch\\.json\$")"; [[ -z "$k" ]]; then state=ATTEMPT_NOT_LAUNCHED
+  elif ! launch="$(afk_pce_ready_read "$dir/$n.c$k.launch.json" launch)"; then launch=null; state=RECORD_INVALID
+  elif [[ ! -e "$dir/$n.c$k.outcome.json" && ! -L "$dir/$n.c$k.outcome.json" ]]; then state=ATTEMPT_UNFINISHED
+  elif ! out="$(afk_pce_ready_read "$dir/$n.c$k.outcome.json" outcome)"; then out=null; state=RECORD_INVALID
+  else
+    state=OUTCOME_RECORDED
+    if [[ "$role" == reviewer && ( -e "$dir/$n.c$k.review.json" || -L "$dir/$n.c$k.review.json" ) ]]; then
+      rev="$(afk_pce_ready_read "$dir/$n.c$k.review.json" review)" || rev='"invalid"'
+    fi
+    for kind in accept launch outcome review; do
+      case "$kind" in accept) obj="$acc" ;; launch) obj="$launch" ;; outcome) obj="$out" ;; *) obj="$rev" ;; esac
+      jq -e 'type == "object"' <<<"$obj" >/dev/null 2>&1 || continue
+      h="$(jq -cS . <<<"$obj" | afk_sha256_stdin)" || return 1
+      recs="$(jq -c --arg s "$sid" --argjson n "$n" --argjson k "$k" --arg kd "$kind" --arg h "$h" \
+        '. + [{story_id:$s, attempt:$n, cycle:(if $kd == "accept" then null else $k end), kind:$kd, sha256:$h}]' <<<"$recs")"
+    done
+  fi
+  jq -nc --arg i "$issue" --arg pd "$pd" --arg pss "$pss" --arg sid "$sid" --arg role "$role" --arg target "$target" \
+    --arg state "$state" --arg rg "$AFK_PCP_REVIEW_GATE" --argjson n "${n:-null}" --argjson k "${k:-null}" \
+    --argjson st "$st" --argjson acc "$acc" --argjson l "$launch" --argjson o "$out" --argjson rv "$rev" \
+    --argjson recs "$recs" "$AFK_PCE_READY_JQ"
+}
+
+# afk_pce_readiness <issue> <dir> <commit-or-empty> -- prints the readiness
+# answer. Reads only: the ledger, the stop flag, the spool marker, the
+# approval, the plan record and attempt records, and a snapshot of <dir>
+# (whose scratch index is the only thing written, outside every repository
+# file). Every applicable reason is collected; any reason means not ready.
+afk_pce_readiness() {
+  local issue="$1" dir="$2" commit="$3" why="" lpath="$AFK_STATE_DIR/paperclip/ledger.json" lg="" appr pd=""
+  local pf="$AFK_STATE_DIR/paperclip/plans/$issue.json" rec="" plan="" body tree ctree own_c="" dir_c one st stories='[]'
+  local spool r es h
+  # The issue is active only while the ledger says exactly `working` and the
+  # host is not stopped. A legacy final in any form is reported, never touched.
+  if [[ -f "$lpath" && ! -L "$lpath" ]]; then
+    lg="$(jq -cse --arg id "$issue" 'select(length == 1) | .[0] | .issues[$id] | objects' "$lpath" 2>/dev/null)" || lg=""
+  fi
+  if [[ -z "$lg" || "$(jq -r '.state' <<<"$lg")" != working || -e "${HOME:-}/.config/agent-flow-kit/paperclip/stop" ||
+        -L "${HOME:-}/.config/agent-flow-kit/paperclip/stop" ]]; then
+    why+=$'LEDGER_NOT_ACTIVE\n'
+  fi
+  spool="$(afk_pc_spool_dir "$issue")"
+  if { [[ -n "$lg" ]] && jq -e '.pending_final != null or .final_delivery_hold != null' <<<"$lg" >/dev/null 2>&1; } ||
+     [[ -e "$spool/.final" || -L "$spool/.final" ]]; then
+    why+=$'LEGACY_FINAL_PRESENT\n'
+  fi
+  # The approval of record, then the stored plan: /2, re-rendered to exactly
+  # the approved digest with its schema line in the body, and valid roles.
+  appr="$(afk_cmd_paperclip_approval true "$issue" 2>/dev/null)" || :
+  pd="$(jq -r 'select(.approved == true) | .digest | strings' <<<"${appr:-null}" 2>/dev/null)" || pd=""
+  [[ "$pd" =~ ^[0-9a-f]{64}$ ]] || { pd=""; why+=$'PLAN_NOT_APPROVED\n'; }
+  if [[ -f "$pf" && ! -L "$pf" ]]; then rec="$(jq -cse 'select(length == 1) | .[0] | objects' "$pf" 2>/dev/null)" || rec=""; fi
+  if [[ -z "$rec" ]]; then why+=$'PLAN_RECORD_INVALID\n'
+  elif [[ "$(jq -r '.plan_schema // ""' <<<"$rec")" != afk-paperclip-plan/2 ]]; then why+=$'PLAN_HAS_NO_REVIEW_ROLES\n'
+  elif [[ -n "$pd" ]]; then
+    plan="$(jq -c '{schema:.plan_schema, repo, base, stories}' <<<"$rec")"
+    body="$(afk_pcp_render "$plan" 2>/dev/null)" || body=""
+    if [[ "$(jq -r '.digest // ""' <<<"$rec")" != "$pd" || "$(afk_pcp_digest "$plan" 2>/dev/null)" != "$pd" ]] ||
+       ! grep -qx -e '- Plan schema: 2' <<<"$body"; then
+      why+=$'PLAN_DIGEST_MISMATCH\n'; plan=""
+    else
+      one="$(afk_pcp_validate "$plan" "$(jq -r '.repo' <<<"$plan")" "$(jq -r '.stories[0].id | strings | split(".S")[0]' <<<"$plan" 2>/dev/null)")"
+      [[ "$one" == ok ]] || { why+="$one"$'\n'; plan=""; }
+    fi
+  fi
+  # The current product tree of the requested worktree, which must belong to
+  # the issue's own repository; a supplied commit must record the same tree.
+  tree="$(afk_pce_snapshot "$dir" 2>/dev/null | jq -r '.tree // empty' 2>/dev/null)" || tree=""
+  [[ -n "$tree" ]] || why+=$'TREE_UNAVAILABLE\n'
+  if afk_pcr_owner_repo "$issue" 2>/dev/null; then own_c="$(afk_pce_common_dir "$AFK_PCR_REPO_PATH")"; fi
+  dir_c="$(afk_pce_common_dir "$dir")"
+  if [[ -z "$own_c" ]]; then why+=$'OWNER_REPO_UNKNOWN\n'
+  elif [[ "$own_c" != "$dir_c" ]]; then why+=$'WORKTREE_FOREIGN\n'; fi
+  if [[ -n "$commit" ]]; then
+    # Peel to a commit first: a bare tree id (or a tag of one) is not a commit.
+    ctree="$(git -C "$dir" rev-parse -q --verify "$commit^{commit}^{tree}" 2>/dev/null)" || ctree=""
+    [[ -n "$tree" && "$ctree" == "$tree" ]] || why+=$'COMMIT_TREE_MISMATCH\n'
+  fi
+  if [[ -n "$plan" ]]; then
+    while IFS= read -r st; do
+      one="$(afk_pce_ready_story "$issue" "$pd" "$st")" && [[ -n "$one" ]] || return 1
+      stories="$(jq -c --argjson s "$one" '. + [$s]' <<<"$stories")"
+    done < <(jq -c '.stories | sort_by(.id) | .[]' <<<"$plan")
+  fi
+  # Across stories: every builder tested the current tree; each reviewer is a
+  # different dispatch that saw exactly its builder's tested tree.
+  r="$(jq -nc --arg i "$issue" --arg pd "$pd" --arg t "$tree" --argjson st "$stories" \
+    --argjson why "$(jq -Rsc 'split("\n") | map(select(length > 0))' <<<"$why")" '
+    (reduce $st[] as $x ({}; .[$x.story_id] = $x)) as $by
+    | [ $why[],
+        ($st[] | . as $x | (.reasons[] | "\(.):\($x.story_id)"),
+          (if .state != "OUTCOME_RECORDED" or .tested_tree == null then empty
+           elif .role == "builder" then (if $t != "" and .tested_tree != $t then "TREE_CHANGED:\(.story_id)" else empty end)
+           else ($by[.reviews] // {}) as $b
+             | ((if $b.dispatch_id != null and .dispatch_id == $b.dispatch_id then "REVIEW_NOT_INDEPENDENT:\(.story_id)" else empty end),
+                (if $b.tested_tree != null and .launch_tree != $b.tested_tree then "REVIEW_TREE_MISMATCH:\(.story_id)" else empty end))
+           end)),
+        ([$st[].dispatch_id | strings] | group_by(.) | map(select(length > 1) | .[0]) | .[] | "DISPATCH_ID_REUSED:\(.)") ]
+    | (reduce .[] as $r ([]; if any(.[]; . == $r) then . else . + [$r] end)) as $reasons
+    | (($reasons | length) == 0 and ($st | length) > 0) as $ok
+    | {ready:$ok, reasons:$reasons, issue:$i, plan_digest:(if $pd == "" then null else $pd end),
+       tree:(if $t == "" then null else $t end), stories:[$st[] | del(.records, .launch_tree)],
+       evidence_set:(if $ok then {schema:"afk-paperclip-evidence-set/1", issue:$i, plan_digest:$pd, tree:$t,
+         records:([$st[].records[]] | sort_by([.story_id, .attempt, .cycle, .kind]))} else null end)}')" || return 1
+  es="$(jq -cS '.evidence_set' <<<"$r")" || return 1
+  h=""
+  if [[ "$es" != null ]]; then h="$(printf '%s\n' "$es" | afk_sha256_stdin)" && [[ -n "$h" ]] || return 1; fi
+  jq -c --arg h "$h" 'del(.evidence_set) + {evidence_set_sha256:(if $h == "" then null else $h end)}' <<<"$r"
+}
+
+# afk_cmd_paperclip_readiness [options] -- `paperclip-readiness --issue <uuid>
+# --dir <worktree> [--commit <sha>] [--json]`, its own closed vocabulary.
+# Exit 0 ready, 3 not ready, 1 usage or internal failure.
+afk_cmd_paperclip_readiness() {
+  local jm=false issue="" dir="" commit="" cset=false r
+  while (( $# > 0 )); do
+    case "$1" in
+      --json) jm=true; shift; continue ;;
+      --issue|--dir|--commit)
+        if (( $# < 2 )); then afk_warn "$1 requires its declared value"; return 1; fi ;;
+      *) afk_warn "'paperclip-readiness' does not accept the argument '$(afk_safe_diagnostic "$1")'"; return 1 ;;
+    esac
+    case "$1" in --issue) issue="$2" ;; --dir) dir="$2" ;; *) commit="$2"; cset=true ;; esac
+    shift 2
+  done
+  if ! afk_pc_uuid_ok "$issue" || [[ -z "$dir" ]]; then
+    afk_warn "paperclip-readiness needs --issue <uuid> and --dir <worktree>"; return 1
+  fi
+  # An explicit empty --commit is a usage error, never "no commit".
+  [[ "$cset" == false || "$commit" =~ ^[0-9a-f]{7,64}$ ]] || { afk_warn "paperclip-readiness --commit takes a hex commit id"; return 1; }
+  # Ambient repository redirection would point every git call at another
+  # repository, both sides of the WORKTREE_FOREIGN check included, so the
+  # reader runs without it; --dir and the owner's path alone locate Git.
+  r="$(unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
+         GIT_ALTERNATE_OBJECT_DIRECTORIES; afk_pce_readiness "$issue" "$dir" "$commit")" && [[ -n "$r" ]] ||
+    { afk_warn "paperclip-readiness: the evidence could not be evaluated"; return 1; }
+  if [[ "$jm" == true ]]; then
+    printf '%s\n' "$r"
+  else
+    jq -r 'if .ready then "ready tree=\(.tree) evidence_set_sha256=\(.evidence_set_sha256)"
+           else "not ready: " + (.reasons | join(" ")) end' <<<"$r"
+  fi
+  [[ "$(jq -r .ready <<<"$r")" == true ]] || return "$AFK_EXIT_NOT_READY"
 }
 
 afk_pce_usage() {
