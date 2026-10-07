@@ -2280,6 +2280,79 @@ jq '.state="ACKED"' "$pmd/handoff.json" >"$pmd/h"; mv "$pmd/h" "$pmd/handoff.jso
 different_home="$TMP/different-pm-home"; different_state="$TMP/different-pm-state"; mkdir -p "$different_home" "$different_state"
 set +e; HOME="$different_home" AFK_STATE_DIR="$different_state" AFK_PM_DIR="$pmd" "$ROOT/bin/agent-flow-kit" pm-checkpoint --continuation --write "$TMP/different-cont.json" --json >/dev/null 2>&1; different_rc=$?; set -e
 eq "different active continuation refuses" "$different_rc" 2; eq "active continuation unchanged" "$(sha256sum "$pmd/continuation.json")" "$active_before"
+
+# --- AFK-LOCK-1: the PM observer and the host lifecycle lock ---
+# A test-only mkdir on PATH logs every call and, when AFK_LK_MATCH names the
+# lock, runs the real mkdir and then parks until AFK_LK_GO appears, so a
+# signal lands inside the observer's lock take at a point the test chooses.
+set +e
+lk="$TMP/afk-lock-1"; mkdir -p "$lk/bin" "$lk/pm" "$lk/state" "$lk/worker-pm" "$lk/worker-state/lock"
+{
+  printf '#!/usr/bin/env bash\n'
+  printf 'real=%q\n' "$(command -v mkdir)"
+  cat <<'SHIM'
+[[ -z "${AFK_LK_LOG:-}" ]] || printf '%s\n' "$*" >>"$AFK_LK_LOG"
+if [[ -n "${AFK_LK_MATCH:-}" && "${*: -1}" == "$AFK_LK_MATCH" && ! -e "$AFK_LK_WIN" ]]; then
+  rc=0; "$real" "$@" || rc=$?
+  : >"$AFK_LK_WIN"
+  i=0; while [[ ! -e "$AFK_LK_GO" ]]; do i=$((i + 1)); ((i < 3000)) || break; sleep 0.01; done
+  exit "$rc"
+fi
+exec "$real" "$@"
+SHIM
+} >"$lk/bin/mkdir"
+chmod +x "$lk/bin/mkdir"
+lk_lock="$lk/state/lock"
+lk_lock_calls() { awk -v p="$2" '$NF==p' "$1" 2>/dev/null | wc -l | tr -d ' '; }
+lk_observe() { (cd "$ROOT" && env -u ORCA_RUN_ID "${orca_env[@]}" AFK_STATE_DIR="$lk/state" AFK_PM_DIR="$lk/pm" ORCA_TERMINAL_HANDLE=lock-terminal "$@"); }
+
+lk_observe "$ROOT/adapters/pm-session.sh" start --harness codex
+lk_observe "$ROOT/adapters/pm-session.sh" observe --harness codex --session lock-session
+eq "lock fixture: an owning PM scope is registered" "$(jq -r .session "$lk/pm/ownership.json" 2>/dev/null)" lock-session
+
+# A scope with PM state still takes the host lock; publisher checks pin order.
+lk_observe env PATH="$lk/bin:$PATH" AFK_LK_LOG="$lk/owner.log" \
+  "$ROOT/adapters/pm-session.sh" observe --harness codex --session lock-session
+if [[ "$(lk_lock_calls "$lk/owner.log" "$lk_lock")" -ge 1 ]]; then ok; else no "an owning PM observer no longer takes the host lock"; fi
+if [[ ! -e "$lk_lock" ]]; then ok; else no "an owning PM observer left the host lock behind"; fi
+
+# An owning observer signalled inside its take, after the real mkdir: the take
+# finishes, the signal is honoured, and the EXIT release gives the lock back.
+lk_owner_before="$(sha256sum "$lk/pm/ownership.json")"
+( cd "$ROOT" && exec env -u ORCA_RUN_ID "${orca_env[@]}" AFK_STATE_DIR="$lk/state" AFK_PM_DIR="$lk/pm" PATH="$lk/bin:$PATH" \
+    AFK_LK_MATCH="$lk_lock" AFK_LK_WIN="$lk/win" AFK_LK_GO="$lk/go" ORCA_TERMINAL_HANDLE=lock-terminal \
+    "$ROOT/adapters/pm-session.sh" observe --harness codex --session lock-session ) >/dev/null 2>&1 &
+lk_pid=$!
+for _ in {1..1000}; do [[ -e "$lk/win" ]] && break; kill -0 "$lk_pid" 2>/dev/null || break; sleep 0.01; done
+if [[ -e "$lk/win" ]]; then ok; else no "PM observer could be parked inside its lock take"; fi
+kill -TERM "$lk_pid" 2>/dev/null
+: >"$lk/go"
+wait "$lk_pid"; lk_rc=$?
+eq "a PM observer signalled inside its take exits on that signal" "$lk_rc" 143
+if [[ ! -e "$lk_lock" ]]; then ok; else no "an interrupted PM observer left the host lock behind"; fi
+eq "an interrupted PM observer leaves no staged owner record" \
+  "$(find "$lk/state" -maxdepth 1 -name '.afk-take.*' | wc -l | tr -d ' ')" 0
+eq "an interrupted PM observer publishes nothing" "$(sha256sum "$lk/pm/ownership.json")" "$lk_owner_before"
+
+# A worker scope (no ownership, handoff or intent) never touches the host lock,
+# even one that cannot be judged: no mkdir of it, no wait on it, no change.
+lk_wbefore="$(find "$lk/worker-state" | LC_ALL=C sort)"
+# bash's `time` reports milliseconds on every supported bash (3.2 included).
+# It times a group: a timed, redirected subshell reports from the child (its 2>&3).
+TIMEFORMAT='%3R'
+{ time { (cd "$ROOT" && env "${orca_env[@]}" AFK_STATE_DIR="$lk/worker-state" AFK_PM_DIR="$lk/worker-pm" PATH="$lk/bin:$PATH" \
+  AFK_LK_LOG="$lk/worker.log" ORCA_TERMINAL_HANDLE=lock-worker \
+  "$ROOT/adapters/pm-session.sh" observe --harness codex --session lock-worker-session) 2>&3 3>&-; }; } 3>&2 2>"$lk/worker.time"
+lk_wrc=$?; unset TIMEFORMAT
+lk_time="$(cat "$lk/worker.time" 2>/dev/null)"; lk_elapsed=999999
+if [[ "$lk_time" =~ ^[0-9]+[.,][0-9]{3}$ ]]; then lk_elapsed=$((10#${lk_time//[.,]/})); fi
+eq "a no-state observer exits cleanly" "$lk_wrc" 0
+if (( lk_elapsed < 1000 )); then ok; else no "a no-state observer waited ${lk_elapsed}ms on the host lock"; fi
+eq "a no-state observer never tries to take the host lock" \
+  "$(lk_lock_calls "$lk/worker.log" "$lk/worker-state/lock")" 0
+eq "a no-state observer leaves an unjudgeable lock exactly as it was" \
+  "$(find "$lk/worker-state" | LC_ALL=C sort)" "$lk_wbefore"
+set -e
 # --- AFK-VIS-1A: Claude status line layout (design checklist 1-10, 12) ---
 set +e
 vis="$TMP/vis"; mkdir -p "$vis/rt" "$vis/pm" "$vis/state/adapters" "$vis/wd"; vnow="$(date +%s)"

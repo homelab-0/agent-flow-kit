@@ -1744,7 +1744,8 @@ unexpected_results() { # <n> — results outside the set a contender may report
 # rather than by listing, so a name with a newline in it cannot hide.
 lock_residue() {
   local base="$HOMEDIR/$STATE_DIR_REL" pat acc=""
-  for pat in "$base"/lock.stale.* "$base"/lock.released.* "$base"/.afk-reclaim.*; do
+  for pat in "$base"/lock.stale.* "$base"/lock.released.* "$base"/.afk-reclaim.* \
+             "$base"/.afk-take.*; do
     [[ -e "$pat" ]] || continue
     acc="$acc $(basename -- "$pat")"
   done
@@ -1897,7 +1898,7 @@ assert_eq "F6 the installation the clean-path race left behind verifies" \
 # record that could not be parsed yields -- and "could not be parsed" used to
 # be refused at once with OPERATION_LOCK_OWNER_UNVERIFIABLE and "remove the
 # lock by hand", for a lock that had just been legitimately handed over. A
-# record is installed by renaming one complete temporary file onto its name, so
+# record is installed whole (linked now; older versions renamed), so
 # a partial record is never observable and this state can only mean the record
 # was not there.
 #
