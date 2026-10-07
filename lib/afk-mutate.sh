@@ -313,9 +313,10 @@ afk_lock_judge_record() {
   local now_host now_boot now_start rc
   # The record is read ONCE and judged on the bytes that read returned, because
   # every verdict below has to describe one instant. A record is installed by
-  # renaming one complete temporary file onto the name, so a torn or
-  # half-written record is never observable: the bytes are a whole record or
-  # there are none. No bytes therefore means the record was not there — a
+  # linking one complete file onto the name (an older version renamed one,
+  # which is just as whole), so a torn or half-written record is never
+  # observable: the bytes are a whole record or there are none. No bytes
+  # therefore means the record was not there — a
   # release or a reclamation, the same moment as a lock still being published
   # — and bytes that do not parse mean a record that really is damaged.
   #
@@ -404,21 +405,97 @@ afk_lock_evaluate() {
   return 0
 }
 
+# --- taking the lock ----------------------------------------------------------
+#
+# The owner record is staged COMPLETE and private in the state directory before
+# the lock exists, then published with link(2), which refuses an existing name:
+# a record at the lock path is always whole and is never replaced. The
+# no-record moment is the one step between `mkdir` and `ln`.
+#
+# Publication is decided by OBSERVATION, never by an exit status: the record at
+# the lock path must be the very file this take staged, or name its
+# incarnation, so a child killed after it linked still counts and one killed
+# before it did not. A directory that vanished before the link is never
+# recreated (`ln` fails where `mkdir -p` would have resurrected it). A take
+# that did not publish cleans up only with `rmdir`: an empty directory at the
+# lock path (normally its own), never a record or a populated one; a `mkdir`
+# whose outcome is uncertain (the child died) leaves the directory alone. The
+# stage is operator evidence only: no reader in the kit consults it.
+#
+# A trapped signal that arrives during a take is HELD until the take has
+# published or failed, then honoured (afk_terminate_on_signal): the process
+# exits 128 + n and the EXIT release gives back whatever the take proved it
+# holds, so an interrupted acquisition leaves no recordless lock — except an
+# uncatchable death or a `mkdir` child killed along with the shell.
+
+AFK_LOCK_TAKING="false"
+AFK_LOCK_PENDING_EXIT=""
+
 afk_lock_take() {
-  local inc record
-  inc="$(afk_lock_incarnation_new)" || return 1
-  record="$(afk_lock_owner_record "$inc")" || return 1
-  mkdir -- "$AFK_LOCK_DIR" 2>/dev/null || return 1
-  chmod 700 -- "$AFK_LOCK_DIR" 2>/dev/null || true
-  if ! afk_state_file_write "$AFK_LOCK_DIR/owner.json" "$record"; then
-    # Nothing but this process has ever seen this directory: the mkdir above
-    # is what created it, and no incarnation was ever published inside it.
-    rm -rf -- "$AFK_LOCK_DIR" 2>/dev/null
-    return 1
+  local inc="" record="" stage="" own rc=1
+  AFK_LOCK_TAKING="true"
+  if inc="$(afk_lock_incarnation_new)" && record="$(afk_lock_owner_record "$inc")"; then
+    stage="$AFK_STATE_DIR/.afk-take.$inc.json"
+    own="$AFK_LOCK_DIR/owner.json"
+    if afk_state_file_write "$stage" "$record" &&
+       mkdir -m 700 -- "$AFK_LOCK_DIR" 2>/dev/null; then
+      ln -- "$stage" "$own" 2>/dev/null || true
+      if [[ -f "$own" && ! -L "$own" && "$own" -ef "$stage" ]] ||
+         [[ "$(afk_lock_incarnation_at "$own" 2>/dev/null)" == "$inc" ]]; then
+        AFK_LOCK_HELD="true"
+        AFK_LOCK_INCARNATION="$inc"
+        rc=0
+      else
+        rmdir -- "$AFK_LOCK_DIR" 2>/dev/null || true
+      fi
+    fi
+    rm -f -- "$stage" 2>/dev/null || true
   fi
-  AFK_LOCK_HELD="true"
-  AFK_LOCK_INCARNATION="$inc"
+  afk_lock_take_settle
+  return "$rc"
+}
+
+# Close the take's deferral window and honour the first signal it held. The
+# window is closed BEFORE the pending status is read, so a signal landing in
+# between is handled at once rather than recorded and forgotten.
+afk_lock_take_settle() {
+  local pending
+  AFK_LOCK_TAKING="false"
+  pending="$AFK_LOCK_PENDING_EXIT"
+  AFK_LOCK_PENDING_EXIT=""
+  [[ -z "$pending" ]] || afk_terminate_on_signal "$pending"
   return 0
+}
+
+# --- termination on a signal --------------------------------------------------
+#
+# The signal set and its handler are shared by every entrypoint that takes the
+# lock (bin/agent-flow-kit and adapters/pm-session.sh); the rationale for the
+# set and for terminating rather than returning lives with the CLI's EXIT trap.
+# The handler RETURNS in exactly one case: a take is in progress. The take
+# writes nothing in an installation — only its private stage, its own `mkdir`
+# and its own `link` — and honours the held signal before it returns to any
+# caller, so no transaction ever resumes after a signal.
+
+AFK_TRAPPED_SIGNALS=(INT TERM HUP USR1 USR2 ALRM PIPE)
+
+afk_terminate_on_signal() { # <exit status: 128 + signal number>
+  if [[ "$AFK_LOCK_TAKING" == "true" ]]; then
+    [[ -n "$AFK_LOCK_PENDING_EXIT" ]] || AFK_LOCK_PENDING_EXIT="$1"
+    return 0
+  fi
+  trap '' "${AFK_TRAPPED_SIGNALS[@]}"
+  exit "$1"
+}
+
+afk_signal_traps_install() {
+  trap 'afk_terminate_on_signal 130' INT
+  trap 'afk_terminate_on_signal 143' TERM
+  trap 'afk_terminate_on_signal 129' HUP
+  trap 'afk_terminate_on_signal 138' USR1
+  trap 'afk_terminate_on_signal 140' USR2
+  trap 'afk_terminate_on_signal 142' ALRM
+  trap 'afk_terminate_on_signal 141' PIPE
 }
 
 # Claim the right to reclaim one exact incarnation, by hard-linking a complete
@@ -556,7 +633,7 @@ afk_lock_reclaim() {
 # --- the publication window -------------------------------------------------
 #
 # Taking the lock is two steps that cannot be one: `mkdir` is the atomic
-# test-and-set, and the owner record appears inside the directory a moment
+# test-and-set, and the owner record is linked into the directory a moment
 # later. Between them the lock exists and carries no record, and a contender
 # that observes exactly then judges it UNKNOWN — the record it needs has not
 # been written yet.
@@ -571,15 +648,19 @@ afk_lock_reclaim() {
 #
 # So a lock that carries no record is WAITED ON rather than judged — briefly,
 # boundedly, and only while acquiring, never while a read-only path is merely
-# observing. The state resolves itself in one file write.
+# observing. The state resolves itself in one link.
 #
 # The same reading decides every neighbouring place a record can be seen to
 # exist and then be found gone: a record that disappears between the existence
 # test and the read, and an arbitration marker the winning reclaimer's rename
 # carried out of the lock directory. Neither is a diagnosis — a record is
-# installed by a single rename, so an unreadable one that is no longer there
+# installed whole (linked/renamed), so an unreadable one that is no longer there
 # was never damaged, it was released — and neither is refused. Both are
 # reported as a lock carrying no record and observed again.
+#
+# A lock this version takes carries a record before a trapped signal can stop
+# its taker (afk_lock_take); one that never gets one is an uncatchable death,
+# a killed `mkdir` child whose outcome is unproven, or an older version.
 #
 # The budget is spent across a whole acquisition rather than per attempt, so
 # the ceiling holds however often the lock changes hands underneath us. A lock
