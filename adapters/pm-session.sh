@@ -70,6 +70,19 @@ AFK_STATE_DIR="${AFK_STATE_DIR:-${state_base:+$state_base/agent-flow-kit}}"
 AFK_LOCK_DIR="${AFK_LOCK_DIR:-$AFK_STATE_DIR/lock}"
 [[ -n "$AFK_STATE_DIR" ]] || exit 0
 if [[ "$mode" == observe ]]; then
+  # A scope with no owner, handoff or registration intent has nothing this
+  # event could publish, so it never touches the host lock. An event that races
+  # ahead of pm-start's intent write predates the authorization; the next event
+  # claims it.
+  [[ -e "$pm_dir/ownership.json" || -e "$pm_dir/handoff.json" ||
+     -e "$pm_dir/registration-intent.json" ]] || exit 0
+  # The release and the CLI's signal set are in place BEFORE the lock is
+  # taken: a signal during the take is honoured once the take has published
+  # or failed, and one after it waits for the running child, so the lock never
+  # comes back under a live write and lacks a record only after an uncatchable
+  # death or a group signal that also kills the take's mkdir.
+  trap 'afk_lock_release >/dev/null 2>&1 || true' EXIT
+  afk_signal_traps_install
   # A successor can emit its one session event while pm-continue is finishing
   # its journaled create. Wait briefly for that lock rather than dropping the
   # only ACK opportunity. Unknown lock state still refuses immediately.
@@ -91,7 +104,6 @@ if [[ "$mode" == observe ]]; then
     fi
     sleep "${AFK_PM_PUBLISH_LOCK_POLL_SECONDS:-0.1}"
   done
-  trap 'afk_lock_release >/dev/null 2>&1 || true' EXIT
 fi
 exec 9>"$pm_dir/.publisher.lock" || exit 0
 flock -n 9 || exit 0

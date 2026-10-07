@@ -1105,9 +1105,12 @@ afk_main() {
 }
 
 # The operation lock is released even if the shell is interrupted, so an
-# interrupted command does not leave an installation looking busy once its
-# owner record has been published (a signal inside the publication window can
-# still leave a recordless lock — a registered exception). The journal is
+# interrupted command does not leave an installation looking busy. A signal
+# that lands while the lock is being TAKEN is held until the take has
+# published its owner record or failed (afk_lock_take), and honoured then, so
+# an interrupted acquisition leaves no recordless lock either; only a death no
+# handler sees (SIGKILL, an OOM kill, power loss) or a signal that also kills
+# the take's `mkdir`, whose outcome it cannot prove, can. The journal is
 # deliberately NOT cleaned up here: an interrupted transaction must stay
 # visible to the next invocation, which is what makes recovery possible.
 #
@@ -1123,7 +1126,11 @@ afk_main() {
 # So the signal handlers terminate instead of returning. Exiting runs the EXIT
 # trap, which is what releases the lock — at the one moment this process can no
 # longer write. The status is the conventional 128 + signal number, because a
-# run killed by a signal produced no result and must not be read as one.
+# run killed by a signal produced no result and must not be read as one. The one
+# deliberate exception is a take in progress: the handler returns there, and
+# the take honours the signal before it returns to anything — it writes nothing
+# in an installation, so no transaction resumes. The set and the handler live
+# in lib/afk-mutate.sh because the PM session adapter takes the same lock.
 #
 # Which signals need a handler is not a matter of taste. A terminating signal
 # this script does NOT trap is worse than one it does: bash runs the EXIT trap
@@ -1134,8 +1141,8 @@ afk_main() {
 # arrived at from the other side. Trapping defers the handler until the running
 # command finishes, which is precisely the ordering the invariant needs.
 #
-# The set below is every signal that terminates this shell by default and can
-# be delivered to it alone. HUP is the one that is naturally reachable —
+# The set (AFK_TRAPPED_SIGNALS) is every signal that terminates this shell by
+# default and can be delivered to it alone. HUP is the one naturally reachable —
 # `kill -HUP <pid>`, `pkill -HUP`, a supervisor signalling the main pid — and a
 # whole-process-group hangup is not the dangerous shape, because there the
 # writer dies with the shell. USR1, USR2 and ALRM are not reachable through any
@@ -1167,27 +1174,14 @@ afk_main() {
 # is removed on the same boundary and for the same reason: it is the only path
 # outside the state directory this executable ever creates, and a run that dies
 # mid-probe must not leave it behind.
-AFK_TRAPPED_SIGNALS=(INT TERM HUP USR1 USR2 ALRM PIPE)
-
 afk_release_on_exit() {
   trap '' "${AFK_TRAPPED_SIGNALS[@]}"
   afk_lock_release
   afk_validator_fixture_dir_remove
 }
 
-afk_terminate_on_signal() { # <exit status: 128 + signal number>
-  trap '' "${AFK_TRAPPED_SIGNALS[@]}"
-  exit "$1"
-}
-
 trap 'afk_release_on_exit' EXIT
-trap 'afk_terminate_on_signal 130' INT
-trap 'afk_terminate_on_signal 143' TERM
-trap 'afk_terminate_on_signal 129' HUP
-trap 'afk_terminate_on_signal 138' USR1
-trap 'afk_terminate_on_signal 140' USR2
-trap 'afk_terminate_on_signal 142' ALRM
-trap 'afk_terminate_on_signal 141' PIPE
+afk_signal_traps_install
 
 afk_main "$@"
 exit $?

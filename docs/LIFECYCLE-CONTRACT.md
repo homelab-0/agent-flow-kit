@@ -162,11 +162,18 @@ or wrongly typed path is `STATE_MANIFEST_PATH_UNSAFE` /
 `OPERATION_JOURNAL_PATH_UNSAFE`.
 
 Kit state is not user content. Every mutating command creates the declared
-state directory at `0700` and writes the manifest, the journal and the lock
-owner record at `0600`, through one temporary name and one rename — the journal
-in particular is read back as recovery authority, so it is not left at whatever
-umask the invoking shell happened to carry. Read-only commands never create or
-change any of it.
+state directory at `0700` and writes the manifest and the journal at `0600`,
+through one temporary name and one rename — the journal in particular is read
+back as recovery authority, so it is not left at whatever umask the invoking
+shell happened to carry. The lock owner record is also `0600` and also never
+partial, but it is published differently: it is staged complete and private in
+the state directory before the lock directory exists, and then **linked** onto
+`owner.json`, which refuses an existing name, so no owner record is ever
+replaced. Taking the lock therefore requires hard links in the state directory,
+as reclamation already did; where they are unavailable, acquisition fails
+closed. Its only cleanup is `rmdir`, which removes an empty directory at the
+lock path (normally its own) and never a record or a populated directory.
+Read-only commands never create or change any of it.
 
 `journal_state` is `NONE`, `COMMITTED`, `OPEN`, `UNREADABLE` or `UNSAFE`.
 Anything other than `NONE` or `COMMITTED` makes the installation `INTERRUPTED`
@@ -193,7 +200,9 @@ with `OPERATION_LOCK_OWNER_UNVERIFIABLE` and names the lock directory the owner
 must remove.
 
 Taking a lock is two steps that cannot be one: the directory appears atomically,
-and the owner record appears inside it an instant later. A lock that exists and
+and the owner record is linked into it an instant later, in a single step. A
+taker whose directory disappears before that link — removed by its owner, say —
+fails cleanly and never recreates it. A lock that exists and
 carries **no owner record at all** is therefore not one of the conditions above
 — it is a lock in the middle of being taken. An acquisition waits for the record
 to appear, boundedly, and judges again; the wait belongs to the acquisition as a
@@ -208,7 +217,8 @@ other unjudgeable record is a diagnosis rather than a moment and is refused at
 once, without waiting. Read-only paths never
 wait: `status` reports the lock as `HELD` and moves on.
 
-A record is installed by renaming one complete temporary file onto its name, so
+A record is installed by linking one complete file onto its name (an older
+version renamed one, which is just as whole), so
 a partial, empty or half-written record is never observable: a read of it
 returns a whole record or nothing at all. A record that cannot be read
 **because it is no longer there** — released or reclaimed between the moment it
@@ -271,6 +281,16 @@ document, because it reached no result. `SIGQUIT` is deliberately not in that
 set: it is ignored outright, so it interrupts no transaction and can free no
 lock.
 
+A signal that arrives while the lock is being **taken** is held until the take
+has published its owner record or failed, and then terminates exactly as above.
+If the take succeeded, the `EXIT` release gives the lock back, so an
+interrupted acquisition leaves no lock behind. Whether the take published is
+decided by looking at the lock, not by a child's exit status, so a signal that
+also reaches the take's own children still leaves no lock, with one exception
+below. The PM session adapter installs the same signal set and its `EXIT`
+release before it takes the lock. A PM session event in a scope that holds no
+PM ownership, handoff or registration intent does not take the lock at all.
+
 The same `EXIT` boundary removes the validator fixture directory an explicit
 live evaluation may have created. That directory, under the system temporary
 directory, is the only path outside the declared state directory this
@@ -280,11 +300,16 @@ A process that dies without running its cleanup at all — `SIGKILL`, an OOM
 kill, a power loss — leaves its lock exactly where it was, and that lock is what
 reclamation is for. Reclamation clears it whenever the record it left behind can
 be judged, so a killed run does not leave an installation busy. It cannot clear
-one case: a death inside the publication window, after the lock directory
-appears and before the owner record appears inside it. That lock carries no
-record to judge, so it is refused as unjudgeable rather than reclaimed, and the
-installation stays busy until the operator confirms nothing is running and
-removes the named lock directory by hand.
+one case: a death this process cannot handle — `SIGKILL`, an OOM kill, a power
+loss, or a signal that kills the `mkdir` itself, whose outcome its taker then
+cannot prove — between the lock directory appearing and the owner record being
+linked into it. That lock carries no record to judge, so it is refused as
+unjudgeable rather than reclaimed, and the installation stays busy until the
+operator confirms nothing is running and removes the named lock directory by
+hand. A `.afk-take.<incarnation>.json` file left in the state directory may
+name the taker that died; it is evidence for the operator only, and the kit
+never reads it or acts on it. A taker running an older version of the kit
+keeps that version's wider window until it is updated.
 
 ### `source_eligibility`
 

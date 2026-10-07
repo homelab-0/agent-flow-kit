@@ -161,6 +161,8 @@ case "$verb" in
   # the lock really writes -- only the timing between the two steps is the
   # caller's. The process stays alive afterwards, so the owner it names is
   # provably LIVE for as long as the caller needs it to be.
+  # It publishes by rename, as an older version does; contenders see a whole
+  # record either way, and section 14 exercises link publication.
   publish-slowly) # <window-open-file> <publish-file> <let-go-file>
     inc="$(afk_lock_incarnation_new)" || { printf 'rc=1\n'; exit 0; }
     record="$(afk_lock_owner_record "$inc")" || { printf 'rc=1\n'; exit 0; }
@@ -175,6 +177,36 @@ case "$verb" in
     printf 'rc=%s\n' "$rc"
     printf 'published_inc=%s\n' "$(lock_inc)"
     spin_until "$3" || true
+    afk_lock_release || true
+    printf 'released=%s\n' "$AFK_LOCK_RELEASED"
+    ;;
+
+  # One take with the CLI's library signal set and an EXIT release installed
+  # first; the caller decides when — and whether — a signal lands by
+  # interposing `mkdir` or `ln` on PATH. A tree whose library has no shared
+  # installer falls back to emulating only INT/TERM/HUP (terminate at once,
+  # release at EXIT), so the same fixture runs unchanged against a baseline
+  # for exactly those signals. After the take, <done-file> is created; when
+  # the take holds the lock and <let-go-file> is not "-", the lock is held
+  # until that file appears.
+  take-interposed) # <done-file|-> <let-go-file|->
+    trap 'afk_lock_release >/dev/null 2>&1 || true' EXIT
+    if declare -F afk_signal_traps_install >/dev/null; then
+      afk_signal_traps_install
+    else
+      trap 'trap "" INT TERM HUP; exit 130' INT
+      trap 'trap "" INT TERM HUP; exit 143' TERM
+      trap 'trap "" INT TERM HUP; exit 129' HUP
+    fi
+    afk_lock_take || rc=$?
+    printf 'rc=%s\n' "$rc"
+    printf 'held=%s\n' "$AFK_LOCK_HELD"
+    printf 'inc=%s\n' "$AFK_LOCK_INCARNATION"
+    printf 'lock_inc=%s\n' "$(lock_inc)"
+    [[ "$1" == "-" ]] || : > "$1"
+    if [[ "$2" != "-" && "$AFK_LOCK_HELD" == "true" ]]; then
+      spin_until "$2" || true
+    fi
     afk_lock_release || true
     printf 'released=%s\n' "$AFK_LOCK_RELEASED"
     ;;
