@@ -875,6 +875,161 @@ afk_pc_entry_outcome() {
   esac
 }
 
+# --- AFK-PC-DELIVERY-L1: a stored final_intent (storage + guards only) ------
+# U3's typed envelope, at the spool head, kind:"final_intent": the envelope's
+# own `.id` (a UUID, writer-generated) IS the identity. L1 translates it into
+# ledger `final_intent.entry_id`; the `/2` marker's `entry_id` (L3) carries
+# that same value under a different name. There is no separate spool
+# `entry_id` field. afk_pc_final_intent_payload keeps only the fields L1
+# persists; `issue`/`identifier` are kept so a held ledger row is
+# self-describing without re-reading the dead spool entry.
+afk_pc_final_intent_payload() {
+  jq -c '{issue, identifier, plan_digest, evidence_set_sha256, tree, commit,
+          dir, common_dir, status, reviewer_user_id, body, published_at}' <<<"$1"
+}
+
+# afk_pc_final_intent_valid <entry-json> <issue_id> -- strict U3 field
+# validation: required types, the issue identity and the digest/hash shapes
+# (reusing the kit's existing uuid/sha256 conventions). Never true for a
+# shape a legacy poller could mistake for something it knows.
+afk_pc_final_intent_valid() {
+  jq -e --arg id "$2" --arg uuid_re "$AFK_PC_UUID_RE" '
+    type == "object"
+    and (.schema == "afk-paperclip-final/2")
+    and (.id // empty | type == "string" and test($uuid_re))
+    and (.issue // empty | type == "string") and .issue == $id
+    and (.identifier // empty | type == "string" and length > 0)
+    and (.plan_digest // empty | type == "string" and test("^[0-9a-f]{64}$"))
+    and (.evidence_set_sha256 // empty | type == "string" and test("^sha256:[0-9a-f]{64}$"))
+    and (.tree // empty | type == "string" and test("^[0-9a-f]{40}([0-9a-f]{24})?$"))
+    and (.commit // empty | type == "string" and test("^[0-9a-f]{40}([0-9a-f]{24})?$"))
+    and (.dir // empty | type == "string" and test("^/"))
+    and (.common_dir // empty | type == "string" and test("^/"))
+    and (.status == "in_review")
+    and (.reviewer_user_id // empty | type == "string" and length > 0)
+    and (.body // empty | type == "string")
+    and (.published_at // empty | type == "string" and length > 0)' <<<"$1" >/dev/null 2>&1
+}
+
+# afk_pc_final_intent_present <issue_id> -- U5's shared earliest guard: true
+# when this issue already has a persisted intent, or a raw final_intent is at
+# the spool head. Read-only: no lock, no mkdir, no spool or ledger mutation.
+# Callers that must suppress a write ahead of persistence use this, never
+# the mutating recognize below.
+afk_pc_final_intent_present() {
+  local iid="$1" dir head_file=""
+  jq -e --arg id "$iid" '.issues[$id].final_intent // empty | length > 0' \
+    <<<"$ledger" >/dev/null 2>&1 && return 0
+  dir="$(afk_pc_spool_dir "$iid")"
+  [[ -d "$dir" ]] || return 1
+  head_file="$(afk_pc_spool_files "$iid" | head -n1)"
+  [[ -n "$head_file" ]] || return 1
+  [[ "$(jq -r '.kind // empty' "$dir/$head_file" 2>/dev/null)" == final_intent ]]
+}
+
+# afk_pc_final_intent_recognize <issue_id> -- U3/U5: write-ahead persistence
+# and the shared read-only guard, in one place. Reads/writes the caller's
+# `ledger`/`actions`/`identifier` locals directly, like afk_pc_strand. Returns
+# 0 when a final_intent (persisted, or recognized this call) means every
+# remote write this pass must be suppressed for this issue; 1 when there is
+# none, so the caller's ordinary cycle proceeds. Never produces an intent:
+# only a raw final_intent spool head, written by a future producer (L3), is
+# ever recognized here.
+afk_pc_final_intent_recognize() {
+  local iid="$1" dir lockdir existing head_file="" head_kind="" entry entry_id payload
+  existing="$(jq -c --arg id "$iid" '.issues[$id].final_intent // empty' <<<"$ledger")"
+  dir="$(afk_pc_spool_dir "$iid")"
+  # A missing spool directory means no raw head is possible: decide from the
+  # ledger alone, and never create one just to look (EDGE-C1-09).
+  if [[ ! -d "$dir" ]]; then
+    [[ -n "$existing" ]]
+    return $?
+  fi
+  # LOCK: a lock-free precheck. Peek the head kind without the lock, so a
+  # legacy issue with no raw final_intent head never pays a lock here at
+  # all -- it keeps exactly its baseline lock count (the report cycle's own
+  # lock below, nothing more). Only a raw final_intent head needs the lock,
+  # to decide persist/replay/conflict under contention (NEW-C2-02).
+  local -a sf=()
+  mapfile -t sf < <(afk_pc_spool_files "$iid")
+  head_file="${sf[0]:-}"
+  if [[ -n "$head_file" ]]; then
+    head_kind="$(jq -r '.kind // empty' "$dir/$head_file" 2>/dev/null)"
+  fi
+  if [[ "$head_kind" != final_intent ]]; then
+    [[ -n "$existing" ]]
+    return $?
+  fi
+  lockdir="$dir/.seq.lock"
+  if ! afk_pc_spool_lock "$lockdir"; then
+    # A raw final_intent head under contention: hold unconditionally, never
+    # a reason to let the caller's normal cycle through (neither rejected
+    # exception is adopted here).
+    actions="$(jq -c --arg t "final intent lock unavailable, held: $identifier" '. + [$t]' <<<"$actions")"
+    return 0
+  fi
+  local -a sf2=()
+  mapfile -t sf2 < <(afk_pc_spool_files "$iid")
+  head_file="${sf2[0]:-}"
+  if [[ -n "$head_file" ]]; then
+    entry="$(jq -c '.' "$dir/$head_file" 2>/dev/null)"
+    head_kind="$(jq -r '.kind // empty' <<<"$entry" 2>/dev/null)"
+  fi
+  if [[ -z "$head_file" || "$head_kind" != final_intent ]]; then
+    # Raced: the head moved on between the unlocked peek and the lock.
+    afk_pc_spool_unlock "$lockdir"
+    [[ -n "$existing" ]]
+    return $?
+  fi
+  if ! afk_pc_final_intent_valid "$entry" "$iid"; then
+    # Invalid typed entry: a visible local disposition, never a usable intent
+    # and never a fallback to an ordinary final send.
+    afk_pc_spool_dead "$iid" "$head_file" "PAPERCLIP_FINAL_INTENT_INVALID"
+    afk_pc_spool_unlock "$lockdir"
+    actions="$(jq -c --arg t "final intent invalid, refused: $identifier" '. + [$t]' <<<"$actions")"
+    return 0
+  fi
+  entry_id="$(jq -r '.id' <<<"$entry")"
+  payload="$(afk_pc_final_intent_payload "$entry")"
+  if [[ -n "$existing" ]]; then
+    if [[ "$(jq -r '.entry_id' <<<"$existing")" == "$entry_id" &&
+          "$(jq -cS '.payload' <<<"$existing")" == "$(jq -cS '.' <<<"$payload")" ]]; then
+      # Same entry replayed after a crash between persistence and removal:
+      # the duplicate is removed only now that identity is proven, and
+      # attempts/progress are untouched.
+      rm -f -- "$dir/$head_file"
+      afk_pc_spool_unlock "$lockdir"
+      return 0
+    fi
+    # A different entry_id, or the same id with a different payload: the
+    # established ledger intent and the conflicting spool input are both
+    # preserved; a visible local refusal, zero remote writes.
+    afk_pc_spool_unlock "$lockdir"
+    actions="$(jq -c --arg t "final intent conflict, existing intent kept: $identifier" '. + [$t]' <<<"$actions")"
+    return 0
+  fi
+  # Write-ahead: the ledger row is durable before the spool entry is ever
+  # removed, so a crash here leaves the entry recoverable and the next pass
+  # retries the same persistence rather than losing or duplicating it.
+  local prior_ledger="$ledger"
+  ledger="$(jq -c --arg id "$iid" --arg eid "$entry_id" --argjson p "$payload" \
+    '.issues[$id].final_intent = {entry_id:$eid, attempts:0, payload:$p}' <<<"$ledger")"
+  if ! afk_state_file_write "$ledger_path" "$ledger"; then
+    # Restore the in-memory ledger: a later write in this same pass (another
+    # issue's `sending`) must never persist this issue's failed intent, and
+    # the only recoverable copy is the spool head, which must stay.
+    ledger="$prior_ledger"
+    afk_pc_spool_unlock "$lockdir"
+    AFK_PC_STORAGE_ERROR=true
+    actions="$(jq -c --arg t "PAPERCLIP_STORAGE_ERROR: final intent was not persisted for $identifier" '. + [$t]' <<<"$actions")"
+    return 0
+  fi
+  rm -f -- "$dir/$head_file"
+  afk_pc_spool_unlock "$lockdir"
+  actions="$(jq -c --arg t "final intent persisted: $identifier" '. + [$t]' <<<"$actions")"
+  return 0
+}
+
 # afk_pc_report_cycle <api_url> <key> <agent_id> <issue_id> <identifier>
 #                      <status_file_dir>
 # One report cycle (AC-1..AC-5, AC-10): wakeup, in_progress, drain the spool
@@ -907,6 +1062,11 @@ afk_pc_report_cycle() {
   local api_url="$1" key="$2" agent_id="$3" id="$4" identifier="$5" status_file_dir="$6"
   AFK_PC_ABORT=false
 
+  # U5: a final_intent (persisted, or recognized this pass) suppresses the
+  # whole cycle -- no wakeup, no in_progress PATCH, no spool drain, no
+  # self-block. L2 owns its disposition; L1 only guards.
+  afk_pc_final_intent_recognize "$id" && return 0
+
   # A failed read-back of a leftover `sending` means nothing is known: post
   # nothing for this issue this pass rather than risk a duplicate.
   if ! afk_pc_resolve_sending "$api_url" "$key" "$id" "$agent_id"; then
@@ -933,6 +1093,14 @@ afk_pc_report_cycle() {
   local -a files=()
   mapfile -t files < <(afk_pc_spool_files "$id")
   afk_pc_spool_unlock "$spool_lock"
+  # HEAD (NEW-C2-01): a final_intent may have arrived at the head between
+  # recognize's own check above and this snapshot. Once it is the raw head,
+  # the zero-write boundary applies here too -- stop before any wakeup.
+  if [[ -n "${files[0]:-}" ]] &&
+     [[ "$(jq -r '.kind // empty' "$spool_dir_for_lock/${files[0]}" 2>/dev/null)" == final_intent ]]; then
+    actions="$(jq -c --arg t "final intent arrived, held: $identifier" '. + [$t]' <<<"$actions")"
+    return 0
+  fi
   local prev; prev="$(jq -c --arg id "$id" '.issues[$id] // empty' <<<"$ledger")"
   local state qid prev_applied action_text declared_text composed pending_final claim_pending fixed pm_start_state pm_confirmed held_final
   state="$(jq -r '.state // empty' <<<"$prev")"
@@ -1051,7 +1219,7 @@ afk_pc_report_cycle() {
     fi
   fi
 
-  local f entry eid kind body marker outcome mrc q fs
+  local f entry eid kind body marker outcome mrc q fs intent_became_head=false
   for f in "${files[@]:-}"; do
     [[ "$final_sent" == true ]] && break
     [[ -n "$f" ]] || continue
@@ -1059,6 +1227,14 @@ afk_pc_report_cycle() {
     eid="$(jq -r '.id // empty' <<<"$entry" 2>/dev/null)"
     if ! afk_pc_uuid_ok "$eid"; then afk_pc_spool_dead "$id" "$f" "PAPERCLIP_ID_INVALID"; continue; fi
     kind="$(jq -r '.kind // empty' <<<"$entry")"
+    # D/HEAD: a final_intent behind an undrained entry is the normal
+    # producer ordering (the writer appends to the tail). It is never
+    # dead-lettered; the drain stops here so it becomes the head and is
+    # recognized next pass. Entries already posted above are legitimate
+    # legacy writes, but once the intent is the head, the zero-write
+    # boundary applies to the rest of this cycle too: no final PATCH and no
+    # self-block follow (NEW-C2-01).
+    [[ "$kind" == final_intent ]] && { intent_became_head=true; break; }
     body="$(jq -r '.body // empty' <<<"$entry")"
     q="$(jq -r '.question_id // empty' <<<"$entry")"
     fs="$(jq -r '.status // empty' <<<"$entry")"
@@ -1129,6 +1305,14 @@ afk_pc_report_cycle() {
     esac
     [[ "$stop" == true ]] && break
   done
+
+  # HEAD (NEW-C2-01): once the intent is the head, nothing after the drain
+  # is owed -- no final PATCH, no self-block. The issue stays in_progress
+  # with AFK's run until L2 delivers; this inert layer has no producer.
+  if [[ "$intent_became_head" == true ]]; then
+    actions="$(jq -c --arg t "final intent reached head, held: $identifier" '. + [$t]' <<<"$actions")"
+    return 0
+  fi
 
   if [[ "$final_sent" == true && "$cred" == false && "$held_final" != true ]]; then
     local fr fh
@@ -1231,6 +1415,10 @@ afk_pc_maybe_start_pm() {
 afk_pc_retry_report_pm_start() { # <issue-id> <host-agent-id>
   local retry_id="$1" retry_agent="$2" issue_row issue_state issue_host issue_hold retry_cfg
   local id identifier slug repo_path harness detail start_row retry_status retry_assignee retry_owner retry_project retry_pin retry_recovery
+  # U5: a final_intent, raw or persisted, must never let this retry run --
+  # it can POST ask_once or launch a PM terminal. Read-only; no lock or
+  # mutation here.
+  afk_pc_final_intent_present "$retry_id" && return 0
   issue_row="$(jq -c --arg id "$retry_id" '.issues[$id] // {}' <<<"$ledger")"
   issue_state="$(jq -r '.state // empty' <<<"$issue_row")"
   issue_host="$(jq -r '.host_agent_id // empty' <<<"$issue_row")"
@@ -1584,6 +1772,13 @@ afk_cmd_paperclip_poll() { # <json_mode>
       owner_agent="$(jq -r '.unblockDescriptor.owner.agentId // empty' <<<"$detail")"
       owner_user="$(jq -r '.unblockDescriptor.owner.userId // empty' <<<"$detail")"
       prev="$(jq -c --arg id "$id" '.issues[$id] // empty' <<<"$ledger")"
+      # U5: guard every write path this early -- the claim-comment retry
+      # below, the self-wake/self-block/strand/nudge branches in the case
+      # below, and the report cycle after this loop, so none of them ever
+      # runs ahead of a final_intent's zero-write boundary. Read-only: no
+      # lock, mkdir or mutation here. Persistence happens only inside
+      # afk_pc_report_cycle.
+      afk_pc_final_intent_present "$id" && continue
       if [[ -n "$prev" ]] && jq -e '.claim_comment_pending == true and .claim_attempted == true' \
           <<<"$prev" >/dev/null 2>&1; then
         afk_pc_claim_comment || true

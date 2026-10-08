@@ -345,9 +345,19 @@ reset; fin "$M2$M2"; legacy "two /2 markers in one file"
 reset; fin "$(printf '%s%4100s' "$M2" '')"; legacy "a /2 marker over 4 KiB"
 reset; fin ""; printf '%s' "$M2" >"$TMPROOT/m2"; rm -f "$MK"; ln -s "$TMPROOT/m2" "$MK"; legacy "a symlinked /2 marker"
 reset; mkdir -p "$MK"; legacy "a directory at the marker"
-assert_eq "no producer: only the reader names the /2 marker schema" \
+# L1 (AFK-PC-DELIVERY-L1/U3) adds exactly one more occurrence: the read-side
+# validator comparison in lib/afk-paperclip.sh, which only ever checks an
+# untrusted spool input -- it never writes a /2 marker. No producer exists;
+# the proxy is narrowed to name it precisely rather than widened to permit it
+# anywhere.
+assert_eq "no producer: only the reader and the lib validator name the /2 marker schema" \
   "$(grep -rl 'afk-paperclip-final/2' "$KIT_ROOT/bin" "$KIT_ROOT/lib" "$KIT_ROOT/files" | sed "s|^$KIT_ROOT/||" | LC_ALL=C sort | paste -sd' ' -)" \
-  "lib/afk-paperclip-evidence.sh"
+  "lib/afk-paperclip-evidence.sh lib/afk-paperclip.sh"
+assert_eq "  ...and lib/afk-paperclip.sh names it on exactly one line" \
+  "$(grep -c 'afk-paperclip-final/2' "$KIT_ROOT/lib/afk-paperclip.sh")" "1"
+assert_eq "  ...that line is exactly the validator's schema comparison" \
+  "$(grep 'afk-paperclip-final/2' "$KIT_ROOT/lib/afk-paperclip.sh" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')" \
+  'and (.schema == "afk-paperclip-final/2")'
 
 head1 "10. Answered questions through the public paths"
 # A second host world. paperclip-plan publishes a real /2 plan, fixture poll
