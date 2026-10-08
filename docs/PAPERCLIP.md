@@ -1045,6 +1045,95 @@ its `role`, `reviews`, the selected `attempt`, `cycle` and `dispatch_id`,
   store and a scratch index, as `paperclip-evidence snapshot` does; no
   other file changes.
 
+## A stored final intent (AFK-PC-DELIVERY-L1, inert)
+
+Nothing in the kit produces a final intent yet, and delivery is not
+available. This section documents the storage and the write guard that a
+future producer (L3) and sender (L2) will build on; it is inert until both
+exist.
+
+- **Shape.** A spool entry `kind:"final_intent"`, `schema:
+  "afk-paperclip-final/2"`, carries the existing spool envelope's own `id` (a
+  UUID, writer-generated) as its identity, plus `issue`, `identifier`,
+  `plan_digest` (64 hex), `evidence_set_sha256` (`sha256:` + 64 hex), `tree`
+  and `commit` (git hashes), `dir` and `common_dir` (absolute paths),
+  `status:"in_review"`, `reviewer_user_id`, `body` and `published_at`. There
+  is no separate spool `entry_id` field: this layer translates the envelope's
+  own `id` into `ledger.issues[<id>].final_intent.entry_id`, and the `/2`
+  marker's `entry_id` (a future producer, L3) carries that same value under a
+  different name. Every field, including `schema` and a UUID-shaped `id`, is
+  validated by type, shape and the issue's own identity before anything is
+  persisted; a missing or mistyped field, a wrong `schema`, or a status other
+  than `in_review`, is invalid.
+- **Write-ahead persistence.** When a valid `final_intent` reaches the head
+  of an issue's spool, the kit writes it to `ledger.issues[<id>].final_intent
+  = {entry_id, attempts:0, payload:{...}}` first, confirms the write, and
+  only then removes the spool entry. If that write fails, the in-memory
+  ledger is rolled back to what it was before the attempt: neither a later
+  write in the same pass nor a later pass can persist or lose the failed
+  intent, and the spool entry (the only recoverable copy) is left in place
+  for the next pass to retry once the failure clears. A replay of the same
+  entry after a restart (the ledger already holds it, and the spool head
+  still matches by entry_id and payload) removes the now-redundant duplicate
+  without resetting `attempts` or any other progress. Persistence happens
+  only inside the report cycle; the earlier per-issue guard below never
+  writes anything itself.
+- **Invalid or conflicting input.** An invalid typed entry never becomes a
+  usable intent and never falls back to an ordinary final send: it is
+  dead-lettered with a visible local reason
+  (`PAPERCLIP_FINAL_INTENT_INVALID`), and the original evidence it referred
+  to stays exactly as it was. A spool head naming a different `entry_id`, or
+  the same `entry_id` with a different payload, than an already-persisted
+  ledger intent is refused the same way: the established ledger intent and
+  the conflicting spool input are both preserved untouched, with a visible
+  local refusal and zero remote writes.
+- **The zero-write guard (U5).** While an issue has a `final_intent` — a
+  persisted ledger row, or a raw spool head not yet recognized — every
+  out-of-cycle path (a Paperclip-initiated wake and its acknowledgment, the
+  paused self-block, a strand or board-recovery re-block, the report cycle's
+  own wakeup/in_progress/self-block/spool drain, a reopened-issue nudge, and
+  the PM-start retry) is suppressed before it can write anything: no
+  `/wakeup`, no `in_progress` or `blocked` PATCH, no comment, no PM-start
+  attempt. Reads are still permitted: the earliest guard `continue`s right
+  after the issue-detail GET, so comment scanning for an intent-holding issue
+  is deferred to the delivery layer (below), but the pass-wide approvals
+  sweep still reads `/approvals` for a `waiting_human` intent-holding issue
+  and still records its `approvals_seen` observation. That guard, at the
+  earliest point in the per-issue pass and before the PM-start retry, is a
+  read-only presence check — no lock, no spool directory creation, and no
+  mutation. Recognizing and persisting a fresh intent happens only once,
+  inside the report cycle, and it is the one *ledger* write this layer ever
+  makes. Locally, the same pass may also remove the now-redundant spool
+  entry (replay) or move an invalid one to `dead/` — neither is a remote
+  write, but neither is "nothing" either.
+- **A non-head intent is never dead-lettered, and once it is the head
+  nothing further is owed.** A `final_intent` behind an undrained entry is
+  the normal producer ordering (the writer appends to the tail). The report
+  cycle's drain stops the moment it reaches one: entries ahead of it are
+  posted and removed as usual (legitimate legacy writes), but there is no
+  trailing self-block PATCH after the drain stops, and the issue stays
+  `in_progress` with AFK's run until the delivery layer (L2) exists to act
+  on it. The same rule covers an intent that arrives as the new raw head
+  between the per-issue guard and the report cycle's own spool snapshot: it
+  is recognized before any wakeup is sent.
+- **The lock-free precheck.** Recognizing a `final_intent` never takes the
+  spool lock on a legacy issue that has none: the head's kind is read first,
+  without the lock, and the lock is taken only when that unlocked read finds
+  a raw `final_intent`. A legacy issue therefore keeps exactly its prior lock
+  count every pass. A contended lock on a raw `final_intent` head always
+  holds that issue for the pass — neither rejected exception (a delayed
+  legacy read-back, or an owed self-block) is adopted.
+- **What this layer never does.** It never produces a `final_intent` in
+  shipped code (only a future producer does), never recomputes readiness for
+  one, and never retries or delivers one. It also does not yet: scan an
+  intent-holding issue's comments for a reply (deferred, not lost — `since`
+  does not advance, and this is a delivery-layer entry requirement), or
+  change what the pre-existing closed-issue sweep does to a raw head (it
+  still dead-letters it as `PAPERCLIP_ISSUE_CLOSED`, because that disposition
+  belongs to the delivery layer, not this one). Legacy `pending_final`,
+  `final_delivery_hold` and spool `.final` markers are unaffected: this layer
+  only ever recognizes the new `final_intent` kind, never those.
+
 ## The self-block model
 
 While AFK works on an issue locally (outside Paperclip, in the real repo),
