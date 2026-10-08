@@ -904,6 +904,8 @@ assert_eq "3 entries: posted in order (first marker before the last)" \
   "$(awk -v a="afk-entry:$E1" -v b="afk-entry:$E3" 'index($0,a){print NR": "a} index($0,b){print NR": "b}' "$BODYLOG" | head -1 | grep -c "$E1")" "1"
 assert_eq "3 entries: re-blocked (in_progress + final self-block)" "$(grep -c "^PATCH /api/issues/$ISSUE1$" "$LOG")" "2"
 assert_eq "3 entries: spool emptied" "$(find "$STATE/paperclip/spool/$ISSUE1" -maxdepth 1 -name '*.json' 2>/dev/null | wc -l | tr -d ' ')" "0"
+assert_eq "3 entries: AC5, no final_intent is ever produced on a legacy pass" \
+  "$(jq -r --arg id "$ISSUE1" '.issues[$id].final_intent // "none"' "$STATE/paperclip/ledger.json")" "none"
 
 new_scenario cycle_lock_held_skips
 write_config
@@ -2499,6 +2501,318 @@ assert_eq "  ...the held final, the pending one and the .final bytes are exactly
   "$(jq -c --arg a "$(iid 1)" --arg b "$(iid 2)" '[.issues[$a].pending_final, .issues[$a].final_delivery_hold, .issues[$b].pending_final, .issues[$b].final_delivery_hold]' "$(LEDGER_OF)") $(sha256sum <"$STATE/paperclip/spool/$(iid 1)/.final")" \
   "[\"in_review\",{\"status\":\"in_review\",\"http_status\":422},\"done\",null] $(printf 'in_review' | sha256sum)"
 assert_eq "  ...the only new record: the qualifying reply" "$(reply_of "$(iid 1)")" "q7 4 c0000000-0000-0000-0000-000000000001 2026-03-02T00:00:00.000Z"
+
+# ============================================================================
+head1 "22. A stored final_intent (storage + guards, AFK-PC-DELIVERY-L1)"
+# ============================================================================
+# A synthetic fixture only: nothing in shipped code ever writes kind
+# "final_intent" to the spool (L3 is the future producer). These digest/tree
+# shapes reuse the kit's existing readiness conventions; they are never
+# dereferenced here (no git, no network).
+FI_PD="$(printf 'd%.0s' {1..64})"
+FI_ES="sha256:$(printf 'e%.0s' {1..64})"
+FI_TREE="$(printf '1%.0s' {1..40})"
+FI_COMMIT="$(printf '2%.0s' {1..40})"
+FI_E1="f1111111-1111-1111-1111-111111111111"
+FI_E2="f2222222-2222-2222-2222-222222222222"
+# final_intent_entry <id> <issue_id> <identifier> -- a raw U3 spool head. The
+# envelope's own `.id` (a UUID) IS the identity; U3 defines no separate
+# spool `entry_id` field.
+final_intent_entry() {
+  jq -nc --arg eid "$1" --arg iss "$2" --arg ident "$3" --arg pd "$FI_PD" --arg es "$FI_ES" \
+    --arg tree "$FI_TREE" --arg commit "$FI_COMMIT" \
+    '{id:$eid, kind:"final_intent", schema:"afk-paperclip-final/2",
+      issue:$iss, identifier:$ident, plan_digest:$pd, evidence_set_sha256:$es,
+      tree:$tree, commit:$commit, dir:"/tmp/afk-pc-test-dir", common_dir:"/tmp/afk-pc-test-dir/.git",
+      status:"in_review", reviewer_user_id:"reviewer-1", body:"ready for review",
+      published_at:"2026-10-08T00:00:00Z"}'
+}
+# fi_payload <entry_id> <issue_id> <identifier> -- the subset L1 persists.
+fi_payload() {
+  jq -c '{issue, identifier, plan_digest, evidence_set_sha256, tree, commit, dir, common_dir,
+           status, reviewer_user_id, body, published_at}' <<<"$(final_intent_entry "$1" "$2" "$3")"
+}
+
+new_scenario fi_persist
+write_config
+seed 1 working proj "$(pid_n 1)"
+inbox 1; issue 1 in_progress "\"$(pid_n 1)\""
+write_spool "$(iid 1)" 001 "$(final_intent_entry "$FI_E1" "$(iid 1)" PROJ-1)"
+run_afk --json
+assert_eq "valid intent: spool entry removed" \
+  "$(find "$STATE/paperclip/spool/$(iid 1)" -maxdepth 1 -name '*.json' 2>/dev/null | wc -l | tr -d ' ')" "0"
+assert_eq "valid intent: persisted with entry_id and attempts:0" \
+  "$(jq -c --arg id "$(iid 1)" '.issues[$id].final_intent | {entry_id, attempts}' "$(LEDGER_OF)")" \
+  "{\"entry_id\":\"$FI_E1\",\"attempts\":0}"
+assert_eq "valid intent: the persisted payload matches the U3 fields" \
+  "$(jq -cS --arg id "$(iid 1)" '.issues[$id].final_intent.payload' "$(LEDGER_OF)")" \
+  "$(jq -cS . <<<"$(fi_payload "$FI_E1" "$(iid 1)" PROJ-1)")"
+assert_eq "valid intent: zero HTTP writes (ordering proof is fi_write_fail)" \
+  "$(grep -cE '^(POST|PATCH) ' "$LOG")" "0"
+
+new_scenario fi_replay
+write_config
+seed 2 working proj "$(pid_n 1)"
+lset 2 "{\"final_intent\":{\"entry_id\":\"$FI_E1\",\"attempts\":2,\"payload\":$(fi_payload "$FI_E1" "$(iid 2)" PROJ-2)}}"
+inbox 2; issue 2 in_progress "\"$(pid_n 1)\""
+write_spool "$(iid 2)" 001 "$(final_intent_entry "$FI_E1" "$(iid 2)" PROJ-2)"
+run_afk --json
+assert_eq "replay after restart: the duplicate spool entry is removed" \
+  "$(find "$STATE/paperclip/spool/$(iid 2)" -maxdepth 1 -name '*.json' 2>/dev/null | wc -l | tr -d ' ')" "0"
+assert_eq "  ...only after proving identity: attempts/progress untouched" \
+  "$(jq -r --arg id "$(iid 2)" '.issues[$id].final_intent.attempts' "$(LEDGER_OF)")" "2"
+assert_eq "  ...zero HTTP writes" "$(grep -cE '^(POST|PATCH) ' "$LOG")" "0"
+
+new_scenario fi_invalid
+write_config
+seed 3 working proj "$(pid_n 1)"
+inbox 3; issue 3 in_progress "\"$(pid_n 1)\""
+write_spool "$(iid 3)" 001 "$(final_intent_entry "$FI_E2" "$(iid 3)" PROJ-3 | jq -c 'del(.plan_digest)')"
+run_afk --json
+assert_eq "invalid typed entry: moved to dead/ with a visible reason" \
+  "$(cat "$STATE/paperclip/spool/$(iid 3)/dead/001.json.reason" 2>/dev/null)" "PAPERCLIP_FINAL_INTENT_INVALID"
+assert_eq "  ...never a usable intent" "$(jq -r --arg id "$(iid 3)" '.issues[$id].final_intent // "none"' "$(LEDGER_OF)")" "none"
+assert_eq "  ...and no final/send fallback: zero HTTP writes" "$(grep -cE '^(POST|PATCH) ' "$LOG")" "0"
+
+new_scenario fi_conflict
+write_config
+seed 4 working proj "$(pid_n 1)"
+seed 40 working proj "$(pid_n 1)"
+lset 4 "{\"final_intent\":{\"entry_id\":\"$FI_E1\",\"attempts\":0,\"payload\":$(fi_payload "$FI_E1" "$(iid 4)" PROJ-4)}}"
+lset 40 "{\"final_intent\":{\"entry_id\":\"$FI_E1\",\"attempts\":0,\"payload\":$(fi_payload "$FI_E1" "$(iid 40)" PROJ-40)}}"
+inbox 4 40; issue 4 in_progress "\"$(pid_n 1)\""; issue 40 in_progress "\"$(pid_n 1)\""
+write_spool "$(iid 4)" 001 "$(final_intent_entry "$FI_E2" "$(iid 4)" PROJ-4)"
+write_spool "$(iid 40)" 001 "$(final_intent_entry "$FI_E1" "$(iid 40)" PROJ-40 | jq -c '.body = "changed body"')"
+run_afk --json
+assert_eq "conflicting input (different id): the raw head is preserved, not removed or dead-lettered" \
+  "$(find "$STATE/paperclip/spool/$(iid 4)" -maxdepth 1 -name '001.json' 2>/dev/null | wc -l | tr -d ' ')" "1"
+assert_eq "  ...the established ledger intent is kept exactly as it was" \
+  "$(jq -r --arg id "$(iid 4)" '.issues[$id].final_intent.entry_id' "$(LEDGER_OF)")" "$FI_E1"
+assert_contains "  ...a visible local refusal" "$OUT_TEXT" "final intent conflict"
+assert_eq "same id, changed payload: the raw head is preserved too" \
+  "$(find "$STATE/paperclip/spool/$(iid 40)" -maxdepth 1 -name '001.json' 2>/dev/null | wc -l | tr -d ' ')" "1"
+assert_eq "  ...the established ledger intent (and attempts) is kept exactly as it was" \
+  "$(jq -c --arg id "$(iid 40)" '.issues[$id].final_intent | {entry_id, attempts}' "$(LEDGER_OF)")" \
+  "{\"entry_id\":\"$FI_E1\",\"attempts\":0}"
+assert_eq "  ...zero HTTP writes across both" "$(grep -cE '^(POST|PATCH) ' "$LOG")" "0"
+
+# U5: every out-of-cycle path -- a Paperclip-initiated wake, a board-recovery
+# block, a reopened (todo) issue, and a raw-head strand/todo issue -- while a
+# final_intent (persisted or raw) already exists. The board-recovery fixture
+# (tests:2016-2019) is the one that discriminates the main-loop guard from
+# the report-cycle guard: a self-owned plain-blocked issue never writes
+# either way, but a missing guard here would post a recovery notice.
+new_scenario fi_u5_paths
+three_projects
+seed 5 working proj "$(pid_n 1)"
+seed 6 working proj2 "$(pid_n 2)"
+seed 7 working proj3 "$(pid_n 3)"
+seed 8 working proj "$(pid_n 1)"
+seed 9 working proj "$(pid_n 1)"
+lset 5 "{\"final_intent\":{\"entry_id\":\"$FI_E1\",\"attempts\":0,\"payload\":$(fi_payload "$FI_E1" "$(iid 5)" PROJ-5)}}"
+lset 6 "{\"final_intent\":{\"entry_id\":\"$FI_E1\",\"attempts\":0,\"payload\":$(fi_payload "$FI_E1" "$(iid 6)" PROJ-6)}}"
+lset 7 "{\"final_intent\":{\"entry_id\":\"$FI_E1\",\"attempts\":0,\"payload\":$(fi_payload "$FI_E1" "$(iid 7)" PROJ-7)}}"
+inbox 5 6 7 8 9
+issue 5 in_progress "\"$(pid_n 1)\""
+issue 6 blocked "\"$(pid_n 2)\""
+route GET "/api/issues/$(iid 6)" 200 "{\"status\":\"blocked\",\"identifier\":\"PROJ-6\",\"projectId\":\"$(pid_n 2)\",\"unblockDescriptor\":{\"owner\":{\"agentId\":\"$AGENT1\"}},\"activeRecoveryAction\":{\"status\":\"active\",\"ownerType\":\"board\"}}"
+route POST "/api/companies/$COMPANY/issues" 201 '{"id":"f0000000-0000-0000-0000-000000000002"}'
+issue 7 todo "\"$(pid_n 3)\""
+issue 8 in_progress "\"$(pid_n 1)\""
+route GET "/api/issues/$(iid 8)/active-run" 200 'null' # no live run: would strand without the guard
+issue 9 todo "\"$(pid_n 1)\""
+write_spool "$(iid 8)" 001 "$(final_intent_entry "$FI_E1" "$(iid 8)" PROJ-8)"
+write_spool "$(iid 9)" 001 "$(final_intent_entry "$FI_E1" "$(iid 9)" PROJ-9)"
+run_afk --json
+assert_eq "U5: a wake, a board-recovery block, a todo reopen and raw strand/todo heads all do zero writes while an intent exists" \
+  "$(grep -cE '^(POST|PATCH) ' "$LOG")" "0"
+assert_eq "  ...reads remain allowed (every issue detail was still fetched)" \
+  "$(grep -c '^GET /api/issues/' "$LOG")" "5"
+assert_eq "  ...no board-recovery notice was posted" \
+  "$(grep -c "^POST /api/companies/$COMPANY/issues\$" "$LOG")" "0"
+assert_eq "  ...raw strand head: persisted locally, no reblock_due pollution" \
+  "$(jq -c --arg id "$(iid 8)" '.issues[$id] | {fi: (.final_intent.entry_id // "none"), rb: (.reblock_due // "none")}' "$(LEDGER_OF)")" \
+  "{\"fi\":\"$FI_E1\",\"rb\":\"none\"}"
+assert_eq "  ...raw todo head: persisted locally, state unchanged" \
+  "$(jq -c --arg id "$(iid 9)" '.issues[$id] | {fi: (.final_intent.entry_id // "none"), st: .state}' "$(LEDGER_OF)")" \
+  "{\"fi\":\"$FI_E1\",\"st\":\"working\"}"
+
+# Group B (EDGE-C1-01/BL-10): a failed ledger write must not lose the intent,
+# and a later write in the same pass or a later pass must not persist/delete
+# it either, until the failure clears.
+new_scenario fi_write_fail
+write_config
+seed 10 working proj "$(pid_n 1)"
+inbox 10; issue 10 in_progress "\"$(pid_n 1)\""
+write_spool "$(iid 10)" 001 "$(final_intent_entry "$FI_E1" "$(iid 10)" PROJ-10)"
+mkdir -p "$STATE/paperclip/ledger.json.afk-tmp"
+run_afk --json
+assert_eq "write failure: the head file still exists" \
+  "$(find "$STATE/paperclip/spool/$(iid 10)" -maxdepth 1 -name '001.json' 2>/dev/null | wc -l | tr -d ' ')" "1"
+assert_eq "  ...the ledger has no final_intent for this issue" \
+  "$(jq -r --arg id "$(iid 10)" '.issues[$id].final_intent // "none"' "$(LEDGER_OF)")" "none"
+assert_contains "  ...a visible storage error" "$OUT_TEXT" "PAPERCLIP_STORAGE_ERROR"
+assert_eq "  ...zero HTTP writes" "$(grep -cE '^(POST|PATCH) ' "$LOG")" "0"
+rmdir "$STATE/paperclip/ledger.json.afk-tmp"
+run_afk --json
+assert_eq "after the failure clears: persisted exactly once" \
+  "$(jq -c --arg id "$(iid 10)" '.issues[$id].final_intent | {entry_id, attempts}' "$(LEDGER_OF)")" \
+  "{\"entry_id\":\"$FI_E1\",\"attempts\":0}"
+assert_eq "  ...and the head is removed" \
+  "$(find "$STATE/paperclip/spool/$(iid 10)" -maxdepth 1 -name '*.json' 2>/dev/null | wc -l | tr -d ' ')" "0"
+assert_eq "  ...still zero HTTP writes" "$(grep -cE '^(POST|PATCH) ' "$LOG")" "0"
+
+# Group D (BL-01/EDGE-C1-02): an intent behind an undrained entry is never
+# dead-lettered; the drain stops at it and it is recognized at the head.
+new_scenario fi_not_head
+write_config
+seed 11 working proj "$(pid_n 1)"
+inbox 11; issue 11 in_progress "\"$(pid_n 1)\""
+write_spool "$(iid 11)" 001 "{\"id\":\"$E1\",\"kind\":\"comment\",\"body\":\"ahead\"}"
+write_spool "$(iid 11)" 002 "$(final_intent_entry "$FI_E1" "$(iid 11)" PROJ-11)"
+run_afk --json
+# This fixture is also a legacy Paperclip-initiated wake (an existing working
+# row, in_progress, a run that is not the agent's own self-wake): the main
+# loop's wake acknowledgment and re-block are legitimate baseline writes
+# that happen before the intent is the head. Pass 1's exact ordered non-GET
+# trace (corrected gate addendum): wake ack comment, main-loop self-block,
+# self-wake, in_progress, the ahead entry's comment -- and nothing after it
+# (NEW-C2-01: no trailing PATCH once the intent becomes the head).
+assert_eq "not-head intent, pass1: exact ordered write trace" \
+  "$(grep -vE '^GET ' "$LOG")" \
+  "$(printf 'POST /api/issues/%s/comments\nPATCH /api/issues/%s\nPOST /api/agents/%s/wakeup\nPATCH /api/issues/%s\nPOST /api/issues/%s/comments' \
+      "$(iid 11)" "$(iid 11)" "$AGENT1" "$(iid 11)" "$(iid 11)")"
+assert_eq "  ...the drained entry's own marker appears exactly once" \
+  "$(grep -c "afk-entry:$E1" "$BODYLOG")" "1"
+# ADJ-C3-02: the same five writes, by body, in order (one compact JSON per write).
+assert_eq "  ...exact ordered bodies: ack, blocked, wake payload, in_progress, entry marker" \
+  "$(grep -v '^---$' "$BODYLOG" | jq -r --arg id "$(iid 11)" --arg a "$AGENT1" --arg m "<!-- afk-entry:$E1 -->" \
+      '(.body // "") as $b
+       | if ($b | startswith("AFK host acknowledged:")) then "ack"
+         elif .status == "blocked" and .unblockDescriptor.owner.agentId == $a then "blocked"
+         elif . == {source:"timer", payload:{issueId:$id}} then "wake"
+         elif . == {status:"in_progress"} then "in_progress"
+         elif ($b | startswith("ahead") and contains($m)) then "entry"
+         else "other" end' | paste -sd' ' -)" \
+  "ack blocked wake in_progress entry"
+assert_eq "  ...the intent is never dead-lettered" \
+  "$(find "$STATE/paperclip/spool/$(iid 11)/dead" -name '002.json' 2>/dev/null | wc -l | tr -d ' ')" "0"
+assert_eq "  ...and stays live, now the head" \
+  "$(find "$STATE/paperclip/spool/$(iid 11)" -maxdepth 1 -name '002.json' 2>/dev/null | wc -l | tr -d ' ')" "1"
+run_afk --json
+assert_eq "next pass: now the head, persisted" \
+  "$(jq -r --arg id "$(iid 11)" '.issues[$id].final_intent.entry_id' "$(LEDGER_OF)")" "$FI_E1"
+assert_eq "  ...the already-delivered entry marker is never re-sent" \
+  "$(grep -c "afk-entry:$E1" "$BODYLOG")" "1"
+assert_eq "  ...pass 2 adds zero non-GET writes" \
+  "$(grep -vcE '^GET ' "$LOG")" "5"
+
+# Group A (BL-07/BL-08/EDGE-C1-06) and G3: schema, non-UUID id, wrong issue
+# and a non-in_review status are each a visible local invalid disposition.
+new_scenario fi_invalid_variants
+write_config
+seed 12 working proj "$(pid_n 1)"
+seed 13 working proj "$(pid_n 1)"
+seed 14 working proj "$(pid_n 1)"
+seed 15 working proj "$(pid_n 1)"
+inbox 12 13 14 15
+issue 12 in_progress "\"$(pid_n 1)\""
+issue 13 in_progress "\"$(pid_n 1)\""
+issue 14 in_progress "\"$(pid_n 1)\""
+issue 15 in_progress "\"$(pid_n 1)\""
+write_spool "$(iid 12)" 001 "$(final_intent_entry "$FI_E1" "$(iid 12)" PROJ-12 | jq -c '.schema = "afk-paperclip-final/1"')"
+write_spool "$(iid 13)" 001 "$(final_intent_entry "$FI_E1" "$(iid 13)" PROJ-13 | jq -c '.id = "not-a-uuid"')"
+write_spool "$(iid 14)" 001 "$(final_intent_entry "$FI_E1" "$(iid 15)" PROJ-14)"
+write_spool "$(iid 15)" 001 "$(final_intent_entry "$FI_E1" "$(iid 15)" PROJ-15 | jq -c '.status = "done"')"
+run_afk --json
+assert_eq "wrong schema: dead-lettered" \
+  "$(cat "$STATE/paperclip/spool/$(iid 12)/dead/001.json.reason" 2>/dev/null)" "PAPERCLIP_FINAL_INTENT_INVALID"
+assert_eq "non-UUID id: dead-lettered" \
+  "$(cat "$STATE/paperclip/spool/$(iid 13)/dead/001.json.reason" 2>/dev/null)" "PAPERCLIP_FINAL_INTENT_INVALID"
+assert_eq "wrong issue field: dead-lettered" \
+  "$(cat "$STATE/paperclip/spool/$(iid 14)/dead/001.json.reason" 2>/dev/null)" "PAPERCLIP_FINAL_INTENT_INVALID"
+assert_eq "status != in_review: dead-lettered" \
+  "$(cat "$STATE/paperclip/spool/$(iid 15)/dead/001.json.reason" 2>/dev/null)" "PAPERCLIP_FINAL_INTENT_INVALID"
+assert_eq "  ...none became a usable intent, zero HTTP writes across all four" \
+  "$(grep -cE '^(POST|PATCH) ' "$LOG")" "0"
+
+# Group C (BL-02/EDGE-C1-03/O3): a contended raw head is preserved, not lost,
+# and is recognized once the lock clears.
+new_scenario fi_lock_contended_raw
+write_config
+seed 16 working proj "$(pid_n 1)"
+inbox 16; issue 16 in_progress "\"$(pid_n 1)\""
+write_spool "$(iid 16)" 001 "$(final_intent_entry "$FI_E1" "$(iid 16)" PROJ-16)"
+mkdir -p "$STATE/paperclip/spool/$(iid 16)/.seq.lock"
+run_afk --json
+assert_eq "contended raw head: preserved, not removed" \
+  "$(find "$STATE/paperclip/spool/$(iid 16)" -maxdepth 1 -name '001.json' 2>/dev/null | wc -l | tr -d ' ')" "1"
+assert_eq "  ...no ledger intent recorded yet" \
+  "$(jq -r --arg id "$(iid 16)" '.issues[$id].final_intent // "none"' "$(LEDGER_OF)")" "none"
+assert_eq "  ...zero HTTP writes" "$(grep -cE '^(POST|PATCH) ' "$LOG")" "0"
+rmdir "$STATE/paperclip/spool/$(iid 16)/.seq.lock"
+run_afk --json
+assert_eq "once the lock clears: persisted" \
+  "$(jq -r --arg id "$(iid 16)" '.issues[$id].final_intent.entry_id' "$(LEDGER_OF)")" "$FI_E1"
+
+# EDGE-C1-04: a raw head while paused stays frozen -- nothing deleted, moved
+# or persisted; a persisted intent is equally frozen (no attempts drift).
+new_scenario fi_pause_raw
+write_config
+mkdir -p "$HOME/.config/agent-flow-kit/paperclip"; : >"$HOME/.config/agent-flow-kit/paperclip/stop"
+seed 17 working proj "$(pid_n 1)"
+seed 18 working proj "$(pid_n 1)"
+lset 18 "{\"final_intent\":{\"entry_id\":\"$FI_E1\",\"attempts\":0,\"payload\":$(fi_payload "$FI_E1" "$(iid 18)" PROJ-18)}}"
+inbox 17 18; issue 17 in_progress "\"$(pid_n 1)\""; issue 18 in_progress "\"$(pid_n 1)\""
+write_spool "$(iid 17)" 001 "$(final_intent_entry "$FI_E1" "$(iid 17)" PROJ-17)"
+run_afk --json
+assert_eq "paused with a raw head: frozen in place" \
+  "$(find "$STATE/paperclip/spool/$(iid 17)" -maxdepth 1 -name '001.json' 2>/dev/null | wc -l | tr -d ' ')" "1"
+assert_eq "  ...no ledger intent" \
+  "$(jq -r --arg id "$(iid 17)" '.issues[$id].final_intent // "none"' "$(LEDGER_OF)")" "none"
+assert_eq "  ...paused with a persisted intent: unchanged too" \
+  "$(jq -c --arg id "$(iid 18)" '.issues[$id].final_intent | {entry_id, attempts}' "$(LEDGER_OF)")" \
+  "{\"entry_id\":\"$FI_E1\",\"attempts\":0}"
+assert_eq "  ...zero HTTP writes" "$(grep -cE '^(POST|PATCH) ' "$LOG")" "0"
+
+# ADJ-C3-01: a persisted intent with an ordinary entry still queued. Not
+# paused, and the pending entry rules out the cycle's quiet early return, so
+# only the report cycle's ledger guard stands before its wakeup.
+new_scenario fi_persisted_report
+write_config
+seed 19 working proj "$(pid_n 1)"
+lset 19 "{\"final_intent\":{\"entry_id\":\"$FI_E1\",\"attempts\":1,\"payload\":$(fi_payload "$FI_E1" "$(iid 19)" PROJ-19)}}"
+inbox 19; issue 19 in_progress "\"$(pid_n 1)\""
+write_spool "$(iid 19)" 001 "{\"id\":\"$E1\",\"kind\":\"comment\",\"body\":\"queued\"}"
+fi_before="$(jq -cS --arg id "$(iid 19)" '.issues[$id].final_intent' "$(LEDGER_OF)")"
+run_afk --json
+assert_eq "persisted intent + queued comment: zero POST/PATCH" "$(grep -cE '^(POST|PATCH) ' "$LOG")" "0"
+assert_eq "  ...an empty body log" "$(cat "$BODYLOG")" ""
+assert_eq "  ...the queued comment stays in the spool" \
+  "$(find "$STATE/paperclip/spool/$(iid 19)" -maxdepth 1 -name '001.json' 2>/dev/null | wc -l | tr -d ' ')" "1"
+assert_eq "  ...the ledger intent is unchanged (canonical)" \
+  "$(jq -cS --arg id "$(iid 19)" '.issues[$id].final_intent' "$(LEDGER_OF)")" "$fi_before"
+
+# GAPS-C3-01: a leftover `sending` whose marker read-back confirms the ordinary
+# head removes that head, so the cycle's locked snapshot now sees the intent.
+# The main loop's wake ack/self-block before it are legitimate (fi_not_head).
+new_scenario fi_readback_arrival
+write_config
+seed 20 working proj "$(pid_n 1)"
+lset 20 "{\"sending\":{\"entry_id\":\"$E1\",\"issue_id\":\"$(iid 20)\",\"at\":\"2026-01-01T00:00:00Z\"}}"
+inbox 20; issue 20 in_progress "\"$(pid_n 1)\""
+route GET "/api/issues/$(iid 20)/comments" 200 "[{\"authorAgentId\":\"$AGENT1\",\"body\":\"sent\\n\\n<!-- afk-entry:$E1 -->\"}]"
+write_spool "$(iid 20)" 001 "{\"id\":\"$E1\",\"kind\":\"comment\",\"body\":\"sent\"}"
+write_spool "$(iid 20)" 002 "$(final_intent_entry "$FI_E1" "$(iid 20)" PROJ-20)"
+run_afk --json
+assert_eq "confirmed read-back: the ordinary head is removed and sending cleared" \
+  "$(find "$STATE/paperclip/spool/$(iid 20)" -maxdepth 1 -name '001.json' 2>/dev/null | wc -l | tr -d ' ') $(jq -r --arg id "$(iid 20)" '.issues[$id].sending // "none"' "$(LEDGER_OF)")" \
+  "0 none"
+assert_eq "  ...the intent, now the head, is held in place" \
+  "$(find "$STATE/paperclip/spool/$(iid 20)" -maxdepth 1 -name '002.json' 2>/dev/null | wc -l | tr -d ' ')" "1"
+assert_eq "  ...no agent wakeup after the transition" "$(grep -c "^POST /api/agents/$AGENT1/wakeup$" "$LOG")" "0"
+assert_eq "  ...no in_progress body, and the confirmed entry is never re-posted" \
+  "$(grep -c '"status":"in_progress"' "$BODYLOG") $(grep -c "afk-entry:$E1" "$BODYLOG")" "0 0"
 
 # ===========================================================================
 printf '\n\033[1m%d passed, %d failed\033[0m\n' "$PASS" "$FAIL"
