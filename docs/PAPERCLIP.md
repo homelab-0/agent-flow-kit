@@ -617,7 +617,10 @@ record is Josh's own comment `approve <digest8>` on the open plan question.
   `approval_withdraw_failed` notice carrying `reason`
   (`PAPERCLIP_LOCK_TIMEOUT` or `APPROVAL_WRITE_FAILED`) and a local action
   line instead, and the approval stays. Any other Josh comment is a
-  plain `human_commented` notice and never approves.
+  plain `human_commented` notice and never approves. On a non-plan question
+  it may also record the local `question_reply` that
+  `paperclip-readiness` reads (see **Question replies**). An approval
+  changes no ledger state: the issue stays `waiting_human`.
 - **`paperclip-approval --issue <id> [--json]`** is read-only:
   `{approved, digest, digest8, reason}`. `approved` is true (exit 0, reason
   `APPROVED`) only when `approvals/<id>.json` exists and its digest equals
@@ -937,11 +940,36 @@ its `role`, `reviews`, the selected `attempt`, `cycle` and `dispatch_id`,
 `reasons`. Every applicable reason is collected; a story's reason carries
 `:<story_id>`.
 
-- **Host state.** The ledger entry must say exactly `working`, and the stop
-  flag must be absent (`LEDGER_NOT_ACTIVE` otherwise, including a missing,
-  symlinked or unparseable ledger). A legacy `pending_final`,
-  `final_delivery_hold` or spool `.final` is `LEGACY_FINAL_PRESENT`. It is
-  reported, never adopted, rewritten, discarded or re-armed.
+- **Host state.** The ledger entry must say `working` or `waiting_human`,
+  and the stop flag must be absent (`LEDGER_NOT_ACTIVE` otherwise, including
+  a missing, symlinked or unparseable ledger, any other state, a
+  `waiting_human` row with no `question_id`, and a `question_id` that is not
+  the poller's form or has no integer `question_seq`). A legacy
+  `pending_final`, `final_delivery_hold` or spool `.final` is
+  `LEGACY_FINAL_PRESENT`. It is reported, never adopted, rewritten,
+  discarded or re-armed.
+- **Questions.** The state alone never shows that Josh answered: an approved
+  plan leaves the issue `waiting_human`, and a resume or a FIFO promotion
+  can restore `working` with its question still open. So, in any state, the
+  row's latest question (`question_id`, `question_seq`) must be closed, or
+  the answer is `QUESTION_OPEN`. A plan question (`plan-…`) closes only when
+  its id is `plan-` plus the approved digest's first 8 characters and the
+  approved plan record names that `question_id` at a `posted_seq` equal to
+  `question_seq`. Any other question closes only by a `question_reply` bound
+  to exactly its `question_id` and `question_seq` (see **Question replies**
+  below). A reply to an older question, or a newer question, leaves it open.
+  The other refusals stand regardless: a stop flag, another state or a
+  missing approval is refused whatever reply is recorded.
+- **Final markers.** A spool `.final` is legacy unless it is a strict
+  `afk-paperclip-final/2` marker: a regular, non-symlink file of at most 4
+  KiB of UTF-8 (no NUL, no U+FFFD), holding exactly one JSON object with no
+  duplicate member and exactly the members `schema`
+  (`"afk-paperclip-final/2"`), `entry_id` (a UUID), `issue` (this issue)
+  and `evidence_set_sha256` (`sha256:` + 64 hex). A missing, extra or
+  wrongly typed member makes it legacy. A /2 marker is only not legacy: it
+  proves nothing, and every other check still applies. Nothing in the kit
+  writes, delivers or recovers one yet, and a legacy marker's bytes are
+  never changed.
 - **Plan.** `paperclip-approval` must be approved (`PLAN_NOT_APPROVED`).
   The stored record must be one regular JSON object (`PLAN_RECORD_INVALID`)
   of schema `/2` (`PLAN_HAS_NO_REVIEW_ROLES`: a `/1` plan still approves and
@@ -995,6 +1023,22 @@ its `role`, `reviews`, the selected `attempt`, `cycle` and `dispatch_id`,
   attempt, cycle and kind. Each `sha256` covers the whole record as `jq
   -cS` prints it. No query time, path or mtime is included, so the same
   evidence gives the same hash. A non-ready answer has a `null` hash.
+- **Question replies.** Only the poller's comment scanner writes
+  `question_reply`, and only locally: `{question_id, question_seq,
+  comment_id, created_at}` on the ledger row. It records the first comment
+  that passes the Josh test, was not taken by the plan hook, answers a
+  latest question that is not a plan question, and was created strictly
+  after that question's `question_sent_at`. A comment whose trimmed body is
+  exactly `approve <digest8>` or `reject <digest8>` (8 lowercase hex
+  characters) is never a reply, even on a non-plan question where the plan
+  hook ignores it: that question stays `QUESTION_OPEN`, and the approval is
+  neither granted nor withdrawn. Both times must be
+  `YYYY-MM-DDTHH:MM:SS[.fraction]Z` and are compared as instants; equal
+  instants are not later, and a missing or unusable time records nothing.
+  A newer question is never re-bound to an old reply. The comment still gets
+  its `human_commented` notice and reply file as before, and nothing is sent
+  to Paperclip. A recorded reply means Josh answered; it is not acceptance of
+  the work.
 - **Trust and limits.** The same one-principal model as the evidence:
   this defends against stale, partial, planted and mistaken state, not a
   same-uid forger. Building the snapshot writes objects to the object

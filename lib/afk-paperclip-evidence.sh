@@ -535,6 +535,59 @@ afk_pce_ready_max() {
   printf '%s' "$m"
 }
 
+# A well-formed question identity: none, or the id the poller sends with an
+# integer seq. A ledger row the reader treats as active also says `working`
+# or `waiting_human`, and a waiting_human row names its question. Anything
+# else is LEDGER_NOT_ACTIVE.
+AFK_PCE_QUESTION_SHAPE='.question_id == null
+  or ((.question_id | type == "string" and test("^[A-Za-z0-9._:-]{1,64}$"))
+      and (.question_seq | type == "number" and . >= 0 and . == floor))'
+AFK_PCE_ROW_ACTIVE="(.state == \"working\" or (.state == \"waiting_human\" and .question_id != null))
+  and ($AFK_PCE_QUESTION_SHAPE)"
+
+# afk_pce_question_closed <ledger-row> <approved-digest-or-empty> <plan-record-or-empty>
+# -- 0 when the row names no question, or its latest question is closed: a
+# plan question (`plan-…`) only by the approval of record (its id is plan-
+# plus the approved digest's first 8 characters, and the approved plan record
+# names that question at the same posted seq); any other question only by a
+# question_reply bound to its exact id and seq. Anything unreadable is open.
+afk_pce_question_closed() {
+  jq -e --arg pd "$2" --argjson p "${3:-null}" '
+    (.question_id // null) as $q | (.question_seq // null) as $s
+    | if $q == null then true
+      elif ($q | type) != "string" or ($s | type) != "number" then false
+      elif ($q | startswith("plan-")) then
+        $pd != "" and $q == ("plan-" + $pd[0:8]) and ($p | type) == "object" and $p.digest == $pd
+          and $p.question_id == $q and ($p.posted_seq | type) == "number" and $p.posted_seq == $s
+      else (.question_reply | type) == "object" and .question_reply.question_id == $q
+          and (.question_reply.question_seq | type) == "number" and .question_reply.question_seq == $s
+      end' <<<"$1" >/dev/null 2>&1
+}
+
+AFK_PCE_FINAL_MAX=4096
+# afk_pce_final_v2 <issue> <marker-path> -- 0 only for a strict
+# afk-paperclip-final/2 marker of this issue: a regular, non-symlink file of
+# at most 4 KiB of UTF-8 with no NUL or U+FFFD, holding exactly one JSON
+# object with no duplicate member and exactly the members schema, entry_id (a
+# UUID), issue (this issue) and evidence_set_sha256 (`sha256:` + 64 hex). Any
+# other marker is legacy. Reads only; nothing here writes or delivers a final,
+# and a /2 marker is no evidence of readiness by itself.
+afk_pce_final_v2() {
+  local issue="$1" f="$2" js text v
+  [[ -f "$f" && ! -L "$f" ]] || return 1
+  js="$(head -c $((AFK_PCE_FINAL_MAX + 1)) -- "$f" | jq -Rs . 2>/dev/null)" && [[ -n "$js" ]] || return 1
+  jq -e --argjson m "$AFK_PCE_FINAL_MAX" \
+    'type == "string" and utf8bytelength <= $m and (explode | all(. != 0 and . != 65533))' <<<"$js" >/dev/null 2>&1 || return 1
+  text="$(jq -j . <<<"$js"; printf x)"; text="${text%x}"
+  v="$(jq -cs 'select(length == 1 and (.[0] | type) == "object") | .[0]' <<<"$text" 2>/dev/null)" || v=""
+  [[ -n "$v" && "$(jq -cn --stream '[inputs]' <<<"$text" 2>/dev/null)" == "$(jq -c '[tostream]' <<<"$v" 2>/dev/null)" ]] || return 1
+  jq -e --arg i "$issue" 'keys == ["entry_id","evidence_set_sha256","issue","schema"]
+    and .schema == "afk-paperclip-final/2" and (.entry_id | type == "string")
+    and (.issue | type == "string") and .issue == $i
+    and (.evidence_set_sha256 | type == "string" and test("^sha256:[0-9a-f]{64}$"))' <<<"$v" >/dev/null 2>&1 &&
+    afk_pc_uuid_ok "$(jq -r .entry_id <<<"$v")"
+}
+
 afk_pce_common_dir() { # <path> -- the physical common Git directory
   local c
   c="$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" && [[ -d "$c" ]] &&
@@ -634,18 +687,21 @@ afk_pce_readiness() {
   local issue="$1" dir="$2" commit="$3" why="" lpath="$AFK_STATE_DIR/paperclip/ledger.json" lg="" appr pd=""
   local pf="$AFK_STATE_DIR/paperclip/plans/$issue.json" rec="" plan="" body tree ctree own_c="" dir_c one st stories='[]'
   local spool r es h
-  # The issue is active only while the ledger says exactly `working` and the
-  # host is not stopped. A legacy final in any form is reported, never touched.
+  # The issue is active only while its ledger row is well formed and says
+  # `working` or `waiting_human` (AFK_PCE_ROW_ACTIVE), and the host is not
+  # stopped. The state alone never shows that a question was answered: that
+  # is the QUESTION_OPEN check below, whatever the state. A legacy final in
+  # any form is reported, never touched; only a strict /2 marker is not one.
   if [[ -f "$lpath" && ! -L "$lpath" ]]; then
     lg="$(jq -cse --arg id "$issue" 'select(length == 1) | .[0] | .issues[$id] | objects' "$lpath" 2>/dev/null)" || lg=""
   fi
-  if [[ -z "$lg" || "$(jq -r '.state' <<<"$lg")" != working || -e "${HOME:-}/.config/agent-flow-kit/paperclip/stop" ||
-        -L "${HOME:-}/.config/agent-flow-kit/paperclip/stop" ]]; then
+  if [[ -z "$lg" || -e "${HOME:-}/.config/agent-flow-kit/paperclip/stop" || -L "${HOME:-}/.config/agent-flow-kit/paperclip/stop" ]] ||
+     ! jq -e "$AFK_PCE_ROW_ACTIVE" <<<"$lg" >/dev/null 2>&1; then
     why+=$'LEDGER_NOT_ACTIVE\n'
   fi
   spool="$(afk_pc_spool_dir "$issue")"
   if { [[ -n "$lg" ]] && jq -e '.pending_final != null or .final_delivery_hold != null' <<<"$lg" >/dev/null 2>&1; } ||
-     [[ -e "$spool/.final" || -L "$spool/.final" ]]; then
+     { [[ -e "$spool/.final" || -L "$spool/.final" ]] && ! afk_pce_final_v2 "$issue" "$spool/.final"; }; then
     why+=$'LEGACY_FINAL_PRESENT\n'
   fi
   # The approval of record, then the stored plan: /2, re-rendered to exactly
@@ -666,6 +722,13 @@ afk_pce_readiness() {
       one="$(afk_pcp_validate "$plan" "$(jq -r '.repo' <<<"$plan")" "$(jq -r '.stories[0].id | strings | split(".S")[0]' <<<"$plan" 2>/dev/null)")"
       [[ "$one" == ok ]] || { why+="$one"$'\n'; plan=""; }
     fi
+  fi
+  # The latest question the poller sent must be closed, in any state: a
+  # resume or a promotion back to `working` keeps an unanswered question. A
+  # malformed question identity is already LEDGER_NOT_ACTIVE.
+  if [[ -n "$lg" ]] && jq -e "$AFK_PCE_QUESTION_SHAPE" <<<"$lg" >/dev/null 2>&1 &&
+     ! afk_pce_question_closed "$lg" "$pd" "${rec:-null}"; then
+    why+=$'QUESTION_OPEN\n'
   fi
   # The current product tree of the requested worktree, which must belong to
   # the issue's own repository; a supplied commit must record the same tree.
