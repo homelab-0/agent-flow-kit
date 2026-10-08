@@ -2398,5 +2398,108 @@ if bash "$KIT_ROOT/tests/paperclip-claim-review-tests.sh"; then ok "review M1/M2
 else bad "review M1/M2 claim regressions"; fi
 
 # ===========================================================================
+head1 "21. Question replies: local, bound to the latest question (AFK-PC-DELIVERY-L0)"
+# ===========================================================================
+# The comment scanner keeps the first qualifying Josh reply as question_reply;
+# readiness's own question check (afk_pce_question_closed) reads the row.
+row1() { jq -c --arg id "${1:-$ISSUE1}" '.issues[$id]' "$STATE/paperclip/ledger.json"; }
+reply_of() { jq -r --arg id "${1:-$ISSUE1}" '.issues[$id].question_reply // "none" | if type == "object" then "\(.question_id) \(.question_seq) \(.comment_id) \(.created_at)" else . end' "$STATE/paperclip/ledger.json"; }
+qcheck() { # <ledger-row> -- closed|open, by the reader's check with no plan approved
+  if bash -c '. "$1/lib/afk-paperclip-evidence.sh"; afk_pce_question_closed "$2" "" null' _ "$KIT_ROOT" "$1"; then echo closed; else echo open; fi
+}
+reply_scenario() { # <name> <comments-json> [<ledger-extra-json>]
+  local x="${3:-}"; [[ -n "$x" ]] || x='{}'
+  new_scenario "$1"; write_config
+  seed_working "$ISSUE1" HOM-12 waiting_human "$(jq -nc --argjson x "$x" \
+    '{question_id:"q7", question_seq:4, question_sent_at:"2026-03-01T00:00:00.000Z", action_text_applied:"waiting on q7"} + $x')"
+  route GET /api/agents/me 200 "{\"id\":\"$AGENT1\"}"
+  route GET "/api/agents/me/inbox-lite" 200 "[{\"id\":\"$ISSUE1\"}]"
+  route GET "/api/issues/$ISSUE1" 200 "{\"status\":\"blocked\",\"identifier\":\"HOM-12\",\"unblockDescriptor\":{\"owner\":{\"agentId\":\"$AGENT1\"}}}"
+  route GET "/api/issues/$ISSUE1/comments" 200 "$2"
+  route GET "/api/issues/$ISSUE1/approvals" 200 '[]'
+  route POST "/api/agents/$AGENT1/wakeup" 202 '{"id":"run-q"}'
+  route PATCH "/api/issues/$ISSUE1" 200 '{}'
+  run_afk --json
+  NOTICE_DIR="$STATE/paperclip/notices/proj"
+}
+QRY="[$(jc 1 early 2026-02-15T00:00:00.000Z), $(jc 2 yes 2026-03-02T00:00:00.000Z), $(jc 3 also 2026-03-03T00:00:00.000Z)]"
+reply_scenario reply_first "$QRY"
+assert_eq "an older comment is not a reply; the first later Josh comment is, bound to q7 seq 4" \
+  "$(reply_of)" "q7 4 c0000000-0000-0000-0000-000000000002 2026-03-02T00:00:00.000Z"
+assert_eq "  ...every comment is still a plain human comment, still waiting_human, nothing posted" \
+  "$(find "$NOTICE_DIR" -name 'reply.*.md' 2>/dev/null | wc -l | tr -d ' ') $(jq -r --arg id "$ISSUE1" '.issues[$id].state' "$STATE/paperclip/ledger.json") $(grep -c '^POST /api/issues' "$LOG")" \
+  "3 waiting_human 0"
+assert_eq "  ...and the reader counts the question closed" "$(qcheck "$(row1)")" "closed"
+write_spool "$ISSUE1" 00000005 "{\"id\":\"$E1\",\"kind\":\"question\",\"question_id\":\"q8\",\"body\":\"next\"}"
+route POST "/api/issues/$ISSUE1/comments" 201 '{"createdAt":"2026-03-05T00:00:00.000Z"}'
+run_afk --json
+assert_eq "a newer question: the old reply stays bound to q7 seq 4, never moved" \
+  "$(jq -r --arg id "$ISSUE1" '.issues[$id] | "\(.question_id) \(.question_seq)"' "$STATE/paperclip/ledger.json") $(reply_of)" \
+  "q8 5 q7 4 c0000000-0000-0000-0000-000000000002 2026-03-02T00:00:00.000Z"
+assert_eq "  ...so the newer question is open" "$(qcheck "$(row1)")" "open"
+
+reply_scenario reply_decision "[$(jc 1 "approve $PD8"), $(jc 2 "  reject $PD8"$'\n' 2026-03-03T00:00:00.000Z), $(jc 3 "approve $PD8 please" 2026-03-04T00:00:00.000Z)]"
+assert_eq "a trimmed approve|reject <digest8> on a non-plan question is no reply; the next plain comment is" \
+  "$(reply_of)" "q7 4 c0000000-0000-0000-0000-000000000003 2026-03-04T00:00:00.000Z"
+assert_eq "  ...each still reaches the PM as a reply file, and none decides anything" \
+  "$(find "$NOTICE_DIR" -name 'reply.*.md' 2>/dev/null | wc -l | tr -d ' ') $(find "$STATE/paperclip" -path '*approvals*' -type f | wc -l | tr -d ' ') $(notices approval_rejected) $(notices approval_granted)" \
+  "3 0 0 0"
+reply_scenario reply_unusable "[$(jc 1 x yesterday), $(jc 2 x 2026-03-02T00:00:00.000Z "\"$AGENT2\"")]"
+assert_eq "an unusable createdAt or an agent's comment is no reply" "$(reply_of) $(qcheck "$(row1)")" "none open"
+reply_scenario reply_unsent "[$(jc 1 yes)]" '{"question_sent_at":null}'
+assert_eq "an unknown question_sent_at records no reply (fail closed)" "$(reply_of)" "none"
+reply_scenario reply_fraction "[$(jc 1 yes 2026-03-01T00:00:00Z)]" '{"question_sent_at":"2026-03-01T00:00:00.500Z"}'
+assert_eq "instants are compared as times, not strings: 00:00:00Z is before 00:00:00.500Z" "$(reply_of)" "none"
+reply_scenario reply_equal "[$(jc 1 yes 2026-03-01T00:00:00.5Z), $(jc 2 yes 2026-03-01T00:00:00.500000000Z)]" '{"question_sent_at":"2026-03-01T00:00:00.500Z"}'
+assert_eq "the same instant, however written, is not later" "$(reply_of)" "none"
+reply_scenario reply_fraction_later "[$(jc 1 yes 2026-03-01T00:00:00.600Z)]" '{"question_sent_at":"2026-03-01T00:00:00.500Z"}'
+assert_eq "a later fraction of the same second is later" "$(reply_of)" "q7 4 c0000000-0000-0000-0000-000000000001 2026-03-01T00:00:00.600Z"
+reply_scenario reply_plan_question "[$(jc 1 "looks good")]" "{\"question_id\":\"plan-$PD8\",\"action_text_applied\":\"waiting on plan-$PD8\"}"
+assert_eq "a plan question is answered only by its approval: a plain comment is no reply" "$(reply_of)" "none"
+
+# AC-3: a stranded issue with an unanswered question resumed into a full
+# project is queued, then promoted to working by the FIFO sweep. The question
+# survives the promotion, so the reader still counts it open.
+new_scenario resume_queue_promote
+three_projects
+seed 9 working proj "$(pid_n 1)"
+seed 1 stranded proj "$(pid_n 1)" 2026-01-01T00:00:01Z
+lset 1 '{resume_state:"waiting_human", question_id:"q-7", question_seq:4, question_sent_at:"2026-03-01T00:00:00.000Z", action_text_applied:"waiting on q-7"}'
+inbox 9 1; issue 9 blocked "\"$(pid_n 1)\""; issue 1 todo "\"$(pid_n 1)\""
+run_afk --json
+assert_eq "resume into a full project: queued, question kept" "$(lget "$(iid 1)") $(lget "$(iid 1)" .question_id)" "queued q-7"
+issue 9 'done' "\"$(pid_n 1)\""; issue 1 blocked "\"$(pid_n 1)\""
+run_afk --json
+assert_eq "FIFO promotion: working, the same question and seq, no reply" \
+  "$(lget "$(iid 1)") $(lget "$(iid 1)" .question_id) $(lget "$(iid 1)" .question_seq) $(reply_of "$(iid 1)")" "working q-7 4 none"
+assert_eq "  ...so working with that question is still open to the reader" "$(qcheck "$(row1 "$(iid 1)")")" "open"
+
+# AC-6, self-contained: over three passes no legacy final is delivered,
+# rewritten or recovered, readiness refuses each pass, and only the reply is
+# new. (The one-off baseline-kit comparison is qualification, not this suite.)
+new_scenario legacy_finals; three_projects
+seed 1 waiting_human proj "$(pid_n 1)"; seed 2 working proj2 "$(pid_n 2)"
+lset 1 '{question_id:"q7", question_seq:4, question_sent_at:"2026-03-01T00:00:00.000Z", action_text:"waiting on q7", action_text_applied:"waiting on q7",
+  pending_final:"in_review", final_delivery_hold:{status:"in_review", http_status:422}}'
+lset 2 '{pending_final:"done"}'
+mkdir -p "$STATE/paperclip/spool/$(iid 1)"; printf 'in_review' >"$STATE/paperclip/spool/$(iid 1)/.final"
+inbox 1 2; issue 1 blocked "\"$(pid_n 1)\""; issue 2 blocked "\"$(pid_n 2)\""
+route GET "/api/issues/$(iid 1)/comments" 200 "[$(jc 1 "any news?" 2026-03-02T00:00:00.000Z)]"
+route PATCH "/api/issues/$(iid 2)" 500 '{}'
+for _ in 1 2 3; do
+  run_afk --json
+  env -i PATH="$PATH" HOME="$HOME" LANG=C AFK_STATE_DIR="$STATE" AFK_PAPERCLIP_CONFIG="$CONFIG" \
+    bash "$AFK" paperclip-readiness --issue "$(iid 1)" --dir "$REPO1" --json </dev/null 2>/dev/null |
+    jq -r '.reasons | index("LEGACY_FINAL_PRESENT") != null' >>"$SCEN/readiness"
+done
+assert_eq "legacy finals, 3 passes: no final status PATCH, no comment POST" \
+  "$(grep -cE '"status": *"(in_review|done)"' "$BODYLOG") $(grep -c '^POST /api/issues/' "$LOG")" "0 0"
+assert_eq "  ...readiness reported LEGACY_FINAL_PRESENT on every pass" "$(paste -sd' ' - <"$SCEN/readiness")" "true true true"
+assert_eq "  ...the held final, the pending one and the .final bytes are exactly as seeded" \
+  "$(jq -c --arg a "$(iid 1)" --arg b "$(iid 2)" '[.issues[$a].pending_final, .issues[$a].final_delivery_hold, .issues[$b].pending_final, .issues[$b].final_delivery_hold]' "$(LEDGER_OF)") $(sha256sum <"$STATE/paperclip/spool/$(iid 1)/.final")" \
+  "[\"in_review\",{\"status\":\"in_review\",\"http_status\":422},\"done\",null] $(printf 'in_review' | sha256sum)"
+assert_eq "  ...the only new record: the qualifying reply" "$(reply_of "$(iid 1)")" "q7 4 c0000000-0000-0000-0000-000000000001 2026-03-02T00:00:00.000Z"
+
+# ===========================================================================
 printf '\n\033[1m%d passed, %d failed\033[0m\n' "$PASS" "$FAIL"
 (( FAIL == 0 )) || exit 1

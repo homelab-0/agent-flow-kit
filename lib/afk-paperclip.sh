@@ -1280,8 +1280,47 @@ afk_pc_retry_report_pm_start() { # <issue-id> <host-agent-id>
 # Each reads and writes the pass's locals directly, like afk_pc_strand, so
 # each must be a direct call, never `$(...)`.
 
+# afk_pc_ts_after <a> <b> -- 0 only when both are UTC instants written
+# `YYYY-MM-DDTHH:MM:SS[.fraction]Z` and <a> is strictly later than <b>. A
+# missing or unparseable time is never later (fail closed).
+afk_pc_ts_after() {
+  jq -en --arg a "$1" --arg b "$2" '
+    def t: if test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$")
+      then [((.[0:19] + "Z") | fromdateiso8601), ((.[20:] | rtrimstr("Z")) + "000000000" | .[0:9] | tonumber)]
+      else null end;
+    ($a | try t catch null) as $x | ($b | try t catch null) as $y
+    | $x != null and $y != null and $x > $y' >/dev/null 2>&1
+}
+
+# afk_pc_record_reply <comment-id> <created-at> <body> -- a Josh comment the
+# plan hook did not take answers the issue's latest question when that
+# question is not a plan question and the comment was created strictly after
+# it was sent. A decision-shaped body (trimmed, exactly `approve|reject
+# <digest8>`) never answers one, whether or not the hook took it. The first
+# such comment is kept as question_reply, bound to the question's id and seq;
+# a newer question leaves it stale and is answered only by a reply of its
+# own. Local metadata only: nothing is sent, no state or approval changes,
+# and it means a reply arrived, not that the work was accepted.
+afk_pc_record_reply() {
+  local LC_ALL=C row next b="$3"
+  b="${b#"${b%%[![:space:]]*}"}"; b="${b%"${b##*[![:space:]]}"}"
+  [[ "$b" =~ ^(approve|reject)\ [0-9a-f]{8}$ ]] && return 0
+  row="$(jq -c --arg id "$id" '.issues[$id] | objects' <<<"$ledger" 2>/dev/null)"
+  [[ -n "$row" ]] || return 0
+  jq -e '(.question_id | type == "string" and length > 0 and (startswith("plan-") | not))
+    and (.question_seq | type == "number")
+    and ((.question_reply | type) != "object" or .question_reply.question_id != .question_id
+         or .question_reply.question_seq != .question_seq)' <<<"$row" >/dev/null 2>&1 || return 0
+  afk_pc_ts_after "$2" "$(jq -r '.question_sent_at // empty | strings' <<<"$row")" || return 0
+  next="$(jq -c --arg id "$id" --arg c "$1" --arg ca "$2" \
+    '.issues[$id] |= (.question_reply = {question_id, question_seq, comment_id:$c, created_at:$ca})' <<<"$ledger" 2>/dev/null)" &&
+    [[ -n "$next" ]] && ledger="$next"
+  return 0
+}
+
 # afk_pc_scan_comments -- Josh's comments newer than `since` on an issue this
-# host holds: a plan decision (PC-3b), or a human_commented notice and reply.
+# host holds: a plan decision (PC-3b), or a human_commented notice and reply,
+# which may also record the latest question's question_reply.
 # Used by the blocked branch and the todo nudge (P6d); moves newest_since.
 afk_pc_scan_comments() {
   local comments_resp comments_body c ccreated rc cid2
@@ -1307,6 +1346,7 @@ afk_pc_scan_comments() {
         [[ -z "$newest_since" || "$ccreated" > "$newest_since" ]] && newest_since="$ccreated"
         continue
       fi
+      afk_pc_record_reply "$cid2" "$ccreated" "$(jq -r '.body | strings' <<<"$c" 2>/dev/null)"
       afk_pc_notice "$slug" "$id" "$identifier" "$agent_id" "$repo_path" "$harness" human_commented \
         "$(jq -nc --arg cid "$cid2" --arg ca "$ccreated" --arg q "${qid:-}" \
           'if $q == "" then {comment_id:$cid, created_at:$ca, open_question_id:null} else {comment_id:$cid, created_at:$ca, open_question_id:$q} end')"
