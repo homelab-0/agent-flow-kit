@@ -69,12 +69,16 @@ PLAN="$(jq -nc --arg g "$RG" '{schema:"afk-paperclip-plan/2", repo:"/r/repo", ba
 put_plan "$PLAN"; PD0="$PD"
 
 sp() { printf '%s' "$PB/HOM-20.$1.md"; }
-for s in S1 S2 S3 S4; do
-  g2='bash tests/b.sh'; [[ "$s" == S2 || "$s" == S4 ]] && g2="$RG"
-  printf -- '---\nhome: paperclip:HOM-20\npaperclip_issue: %s\ngates:\n  - "bash tests/a.sh"\n  - "%s"\n---\n# s\n' "$ISSUE" "$g2" >"$(sp "$s")"
-  jq -n --arg sid "HOM-20.$s" '{harness:"claude", model_profile:"local-code-standard", effort:"medium", cost_class:"free",
-    metered:false, catalog_version:"sha256:abc", placement_required:false, task:{story_id:$sid, tags:["tests"]}, override:null}' >"$(sp "$s").stamp.json"
-done
+mkstories() { # the four stories and their stamps under $PB
+  local s g2
+  for s in S1 S2 S3 S4; do
+    g2='bash tests/b.sh'; [[ "$s" == S2 || "$s" == S4 ]] && g2="$RG"
+    printf -- '---\nhome: paperclip:HOM-20\npaperclip_issue: %s\ngates:\n  - "bash tests/a.sh"\n  - "%s"\n---\n# s\n' "$ISSUE" "$g2" >"$(sp "$s")"
+    jq -n --arg sid "HOM-20.$s" '{harness:"claude", model_profile:"local-code-standard", effort:"medium", cost_class:"free",
+      metered:false, catalog_version:"sha256:abc", placement_required:false, task:{story_id:$sid, tags:["tests"]}, override:null}' >"$(sp "$s").stamp.json"
+  done
+}
+mkstories
 RC=0 OUT=""
 tuple() { bash "$AFK" route-accept --story "$(sp "$1")" --verify --json </dev/null 2>/dev/null | jq -c .tuple; }
 accept() { bash "$AFK" route-accept --json --story "$(sp "$1")" --kind pm-auto --actor pm </dev/null 2>/dev/null | jq -r '.attempt // .result'; }
@@ -283,9 +287,37 @@ head1 "9. Ledger and legacy finals: reported, never touched"
 lput() { printf '%s\n' "$1" >"$STATE/paperclip/ledger.json"; }
 reset; rm -f "$STATE/paperclip/ledger.json"; is "missing ledger (and so no owner)" "LEDGER_NOT_ACTIVE,OWNER_REPO_UNKNOWN"
 reset; printf '{"issues":' >"$STATE/paperclip/ledger.json"; is "unparseable ledger" "LEDGER_NOT_ACTIVE,OWNER_REPO_UNKNOWN"
-for st in waiting_human queued closed stopped nonsense; do
-  reset; lput "$(jq -c --arg id "$ISSUE" --arg s "$st" '.issues[$id].state = $s' <<<"$LEDGER")"; is "ledger state $st" "LEDGER_NOT_ACTIVE"
+for st in waiting_human queued closed stopped stranded nonsense; do
+  reset; lput "$(jq -c --arg id "$ISSUE" --arg s "$st" '.issues[$id].state = $s' <<<"$LEDGER")"; is "ledger state $st (no question)" "LEDGER_NOT_ACTIVE"
 done
+reset; lput "$(jq -c --arg id "$ISSUE" '.issues[$id] += {state:"waiting_human", question_id:"", question_seq:1}' <<<"$LEDGER")"
+is "waiting_human with an empty question id" "LEDGER_NOT_ACTIVE"
+reset; lput "$(jq -c --arg id "$ISSUE" '.issues[$id] += {question_id:"q-7", question_seq:"4"}' <<<"$LEDGER")"
+is "a malformed question seq" "LEDGER_NOT_ACTIVE"
+# Not the poller's question form, even with a reply bound to exactly it.
+Q65="$(printf 'q%.0s' {1..65})"
+for qs in '"q 7" 4' "\"$Q65\" 4" '"q-7" 4.5' '"q-7" -1'; do
+  q="${qs% *}" s="${qs##* }"
+  reset; lput "$(jq -c --arg id "$ISSUE" --argjson q "$q" --argjson s "$s" \
+    '.issues[$id] += {question_id:$q, question_seq:$s, question_reply:{question_id:$q, question_seq:$s}}' <<<"$LEDGER")"
+  is "a malformed question identity with a matching reply: ${q:0:12} $s" "LEDGER_NOT_ACTIVE"
+done
+# The row a resume into a full project and a FIFO promotion leave behind
+# (paperclip-poll-tests.sh section 21): working, the question unanswered.
+QROW='{question_id:"q-7", question_seq:4, question_sent_at:"2026-03-01T00:00:00.000Z"}'
+reset; lput "$(jq -c --arg id "$ISSUE" ".issues[\$id] += $QROW" <<<"$LEDGER")"; is "working with an unanswered question" "QUESTION_OPEN"
+for rp in '{question_id:"q-7", question_seq:3}' '{question_id:"q-6", question_seq:4}' '"q-7"'; do
+  reset; lput "$(jq -c --arg id "$ISSUE" ".issues[\$id] += $QROW + {question_reply:$rp}" <<<"$LEDGER")"
+  is "a reply bound to another question or seq, or malformed: $rp" "QUESTION_OPEN"
+done
+reset; lput "$(jq -c --arg id "$ISSUE" ".issues[\$id] += $QROW + {question_reply:{question_id:\"q-7\", question_seq:4}}" <<<"$LEDGER")"
+rd; assert_eq "a reply bound to the latest question id and seq -> ready, the same evidence" "$RC $(jf .evidence_set_sha256)" "0 $WANT"
+lput "$(jq -c --arg id "$ISSUE" ".issues[\$id] += $QROW + {state:\"waiting_human\", question_reply:{question_id:\"q-7\", question_seq:4}}" <<<"$LEDGER")"
+rd; assert_eq "...in waiting_human too" "$RC $(jf .evidence_set_sha256)" "0 $WANT"
+mkdir -p "$HOME_DIR/.config/agent-flow-kit/paperclip"; : >"$HOME_DIR/.config/agent-flow-kit/paperclip/stop"
+is "...but never past the stop flag" "LEDGER_NOT_ACTIVE"
+reset; lput "$(jq -c --arg id "$ISSUE" ".issues[\$id] += $QROW + {question_id:\"plan-${PD0:0:8}\"}" <<<"$LEDGER")"
+is "a plan question the stored record does not name stays open" "QUESTION_OPEN"
 reset; lput "$(jq -c '.issues = {}' <<<"$LEDGER")"; is "issue not in the ledger" "LEDGER_NOT_ACTIVE,OWNER_REPO_UNKNOWN"
 reset; mv "$STATE/paperclip/ledger.json" "$TMPROOT/l.json"; ln -s "$TMPROOT/l.json" "$STATE/paperclip/ledger.json"; is "symlinked ledger" "LEDGER_NOT_ACTIVE"
 reset; mkdir -p "$HOME_DIR/.config/agent-flow-kit/paperclip"; : >"$HOME_DIR/.config/agent-flow-kit/paperclip/stop"; is "stop flag" "LEDGER_NOT_ACTIVE"
@@ -295,6 +327,171 @@ legacy() { # <name> -- two reads leave every byte as it was
 reset; lput "$(jq -c --arg id "$ISSUE" '.issues[$id].pending_final = "done"' <<<"$LEDGER")"; legacy "pending_final"
 reset; lput "$(jq -c --arg id "$ISSUE" '.issues[$id].final_delivery_hold = {status:"in_review"}' <<<"$LEDGER")"; legacy "final_delivery_hold"
 reset; mkdir -p "$STATE/paperclip/spool/$ISSUE"; printf 'in_review' >"$STATE/paperclip/spool/$ISSUE/.final"; legacy "spool .final"
+
+# Only a strict afk-paperclip-final/2 marker is not legacy; it proves nothing.
+MK="$STATE/paperclip/spool/$ISSUE/.final"
+fin() { mkdir -p "$STATE/paperclip/spool/$ISSUE"; printf '%s' "$1" >"$MK"; }
+M2="$(jq -nc --arg i "$ISSUE" --arg z "$Z" '{schema:"afk-paperclip-final/2", entry_id:"e0000000-0000-4000-8000-000000000001", issue:$i, evidence_set_sha256:$z}')"
+reset; fin "$M2"; b="$(sumall)"; rd; rd
+assert_eq "a strict /2 marker with valid evidence -> ready, and its bytes stay as they were" "$RC $(jf .evidence_set_sha256) $(sumall)" "0 $WANT $b"
+rm -f "$STATE/paperclip/approvals/$ISSUE.json"; is "...every other check still applies" "PLAN_NOT_APPROVED"
+reset; fin "$M2"; lput "$(jq -c --arg id "$ISSUE" '.issues[$id].pending_final = "done"' <<<"$LEDGER")"; legacy "a /2 marker beside a pending_final"
+for e in '. + {extra:1}' 'del(.entry_id)' '.schema = "afk-paperclip-final/3"' '.issue = "f4444444-4444-4444-8444-444444444444"' \
+         '.evidence_set_sha256 |= ascii_upcase' '.evidence_set_sha256 |= ltrimstr("sha256:")' '.entry_id = "e1"' '.issue = 1' '[.]'; do
+  reset; fin "$(jq -c "$e" <<<"$M2")"; legacy "a marker that is not strict /2: $e"
+done
+reset; fin "${M2%\}},\"issue\":\"$ISSUE\"}"; legacy "a /2 marker with a duplicate member"
+reset; fin "$M2$M2"; legacy "two /2 markers in one file"
+reset; fin "$(printf '%s%4100s' "$M2" '')"; legacy "a /2 marker over 4 KiB"
+reset; fin ""; printf '%s' "$M2" >"$TMPROOT/m2"; rm -f "$MK"; ln -s "$TMPROOT/m2" "$MK"; legacy "a symlinked /2 marker"
+reset; mkdir -p "$MK"; legacy "a directory at the marker"
+assert_eq "no producer: only the reader names the /2 marker schema" \
+  "$(grep -rl 'afk-paperclip-final/2' "$KIT_ROOT/bin" "$KIT_ROOT/lib" "$KIT_ROOT/files" | sed "s|^$KIT_ROOT/||" | LC_ALL=C sort | paste -sd' ' -)" \
+  "lib/afk-paperclip-evidence.sh"
+
+head1 "10. Answered questions through the public paths"
+# A second host world. paperclip-plan publishes a real /2 plan, fixture poll
+# passes send its question and read Josh's comments, and the kit's producers
+# record the evidence. Nothing seeds waiting_human, a question or an approval.
+X="$TMPROOT/w10"; mkdir -p "$X/fix"
+AGENT="11111111-1111-1111-1111-111111111111" PROJ="aaaaaaaa-0000-4000-8000-000000000001" BOARD="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+R="$X/repo"; git init -q -b main "$R"; mkdir -p "$R/.afk"
+printf 'bash tests/a.sh\nbash tests/b.sh\n%s\n' "$RG" >"$R/.afk/gates-allowlist"; printf '.pm-brief/\n' >>"$R/.git/info/exclude"
+git -C "$R" add -A; git -C "$R" commit -qm c0
+PB="$R/.pm-brief"; mkdir -p "$PB"; mkstories
+STATE="$X/state"; AD="$STATE/paperclip/attempts/$ISSUE"; CONFIG="$X/paperclip.json"; L10="$STATE/paperclip/ledger.json"
+export AFK_STATE_DIR="$STATE" AFK_PAPERCLIP_CONFIG="$CONFIG"
+jq --arg r "$R" '.projects[0].repo_path = $r' "$TMPROOT/paperclip.json" >"$CONFIG"
+mkdir -p "$STATE/paperclip"
+jq -nc --arg id "$ISSUE" --arg a "$AGENT" --arg p "$PROJ" '{issues:{($id):{host_agent_id:$a, paperclip_project_id:$p, slug:"proj1",
+  identifier:"HOM-20", state:"working", since:"2026-01-01T00:00:00Z", action_text:"AFK host is working on this",
+  action_text_applied:"AFK host is working on this"}}, stranded_reported:[], drain_tampered_reported:false, last_successful_pass:null}' >"$L10"
+SK="terminal-$(printf 'terminal\0%s' termA | sha256sum | awk '{print $1}')"; mkdir -p "$STATE/pm/scopes/$SK"
+jq -nc --arg wp "$R" '{schema:"afk-pm-ownership/2",owned:true,role:"PM",harness:"claude",session:"s",terminal:"termA",
+  worktree:{id:"w",path:$wp},run_id:null,observed_at:"2026-09-27T00:00:00Z",observed_epoch:1,
+  freshness_seconds:120,transition_id:null,previous:null}' >"$STATE/pm/scopes/$SK/ownership.json"
+cat >"$X/orca-cli" <<'SH'
+#!/usr/bin/env bash
+[[ "${1:-}" == --version ]] && { echo 1.4.216; exit 0; }
+[[ "$1 $2" == "terminal list" ]] && { printf '{"terminals":[{"handle":"termA","connected":true,"orphaned":false}]}'; exit 0; }
+exit 1
+SH
+printf '{"orca_bin":"%s"}\n' "$X/orca-cli" >"$X/host.json"
+cat >"$X/op" <<'SH'
+#!/usr/bin/env bash
+[[ "$1" == read && -n "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]] && { printf 'KEY-TEST\n'; exit 0; }
+exit 2
+SH
+# curl: a fixture per method and path (first line the status), else no answer.
+cat >"$X/curl" <<'SH'
+#!/usr/bin/env bash
+args=("$@"); n=$#; method=GET
+for ((i = 0; i < n; i++)); do [[ "${args[$i]}" == -X ]] && method="${args[$((i + 1))]}"; done
+url="${args[$((n - 1))]}"; tmp="${url#*://}"; path="/${tmp#*/}"
+printf '%s %s\n' "$method" "$path" >>"$CURL_LOG"
+key="${method}_${path#/}"; f="$CURL_FIX/${key//\//_}"
+[[ -f "$f" ]] || { printf '000'; exit 0; }
+tail -n +2 "$f"; printf '%s' "$(head -1 "$f")"
+SH
+chmod +x "$X/orca-cli" "$X/op" "$X/curl"
+fx() { local k="${1}_${2#/}"; { printf '%s\n' "$3"; [[ -n "${4:-}" ]] && printf '%s\n' "$4"; } >"$X/fix/${k//\//_}"; }
+pm() { OUT="$(env -i PATH="$PATH" HOME="$HOME_DIR" LANG=C AFK_STATE_DIR="$STATE" AFK_HOST_CONFIG="$X/host.json" \
+  AFK_PAPERCLIP_CONFIG="$CONFIG" ORCA_TERMINAL_HANDLE=termA bash "$AFK" "$@" --json 2>/dev/null </dev/null)"; RC=$?; }
+poll() { env -i PATH="$PATH" HOME="$HOME_DIR" LANG=C AFK_STATE_DIR="$STATE" AFK_PAPERCLIP_CONFIG="$CONFIG" \
+  AFK_OP_BIN="$X/op" AFK_CURL_BIN="$X/curl" OP_SERVICE_ACCOUNT_TOKEN=t CURL_LOG="$X/curl.log" CURL_FIX="$X/fix" \
+  bash "$AFK" paperclip-poll --json >>"$X/poll.out" 2>&1 </dev/null; }
+jcm() { jq -nc --arg id "c1000000-0000-4000-8000-00000000000$1" --arg b "$2" --arg c "$3" --arg u "$BOARD" \
+  '{id:$id, body:$b, authorUserId:$u, authorAgentId:null, createdAt:$c}'; }
+comments() { local IFS=,; fx GET "/api/issues/$ISSUE/comments" 200 "[$*]"; }
+sent() { fx POST "/api/issues/$ISSUE/comments" 201 "{\"createdAt\":\"$1\"}"; }
+row() { jq -r --arg id "$ISSUE" ".issues[\$id] | $1" "$L10"; }
+approved() { bash "$AFK" paperclip-approval --issue "$ISSUE" --json 2>/dev/null </dev/null | jq -r .approved; }
+keep() { rm -rf "${X:?}/$1"; cp -a "$STATE" "$X/$1"; }
+back() { rm -rf "$STATE"; cp -a "$X/$1" "$STATE"; rm -f "$HOME_DIR/.config/agent-flow-kit/paperclip/stop"; }
+fx GET /api/agents/me 200 "{\"id\":\"$AGENT\",\"runtimeConfig\":{\"heartbeat\":{\"enabled\":true,\"intervalSec\":0,\"wakeOnDemand\":true}}}"
+fx GET /api/agents/me/inbox-lite 200 "[{\"id\":\"$ISSUE\"}]"
+fx GET "/api/issues/$ISSUE" 200 "{\"status\":\"blocked\",\"identifier\":\"HOM-20\",\"projectId\":\"$PROJ\",\"updatedAt\":\"2026-01-01T00:00:00Z\",\"unblockDescriptor\":{\"owner\":{\"agentId\":\"$AGENT\"}}}"
+fx GET "/api/projects/$PROJ" 200 "{\"id\":\"$PROJ\",\"name\":\"P\",\"archivedAt\":null,\"codebase\":{\"repoUrl\":null}}"
+fx GET "/api/issues/$ISSUE/approvals" 200 '[]'
+fx GET /api/health 200 "{\"commit\":\"$COMMIT\"}"
+fx POST "/api/agents/$AGENT/wakeup" 202 '{"id":"run-1"}'
+fx PATCH "/api/issues/$ISSUE" 200 '{}'
+
+jq -c --arg r "$R" '.repo = $r' <<<"$PLAN" >"$X/plan.json"
+pm paperclip-plan --issue "$ISSUE" --plan-file "$X/plan.json"
+PDR="$(jq -r .digest <<<"$OUT" 2>/dev/null)"; D8="${PDR:0:8}"
+assert_eq "paperclip-plan publishes the /2 plan question" "$RC $(jq -r '"\(.question_id) \(.seq)"' <<<"$OUT" 2>/dev/null)" "0 plan-$D8 1"
+comments; sent 2026-03-01T00:00:00.000Z; poll
+assert_eq "a poll pass sends it: waiting_human, its seq and Paperclip's createdAt" \
+  "$(row '"\(.state) \(.question_id) \(.question_seq) \(.question_sent_at)"')" "waiting_human plan-$D8 1 2026-03-01T00:00:00.000Z"
+A1="$(jcm 1 "approve $D8" 2026-03-02T00:00:00.000Z)"; comments "$A1"; poll
+assert_eq "the next pass reads Josh's approve comment: the approval of record, still waiting_human" \
+  "$(approved) $(row .state)" "true waiting_human"
+T="$(bash "$AFK" paperclip-evidence snapshot --dir "$R" 2>/dev/null | jq -r .tree)"
+for s in S1 S3; do accept "$s" >/dev/null; launch "$s" 1 "e$s" >/dev/null; outcome "$s" 1 1 "e$s" "$T" "$T" "$BG" >/dev/null; done
+for p in S2:S1 S4:S3; do
+  s="${p%%:*}"; accept "$s" >/dev/null; launch "$s" 1 "e$s" >/dev/null
+  outcome "$s" 1 1 "e$s" "$T" "$T" "$RGJ" "$(vt "$s" "${p#*:}" APPROVE)" >/dev/null
+done
+rd; R10="$(jf .evidence_set_sha256)"
+assert_eq "recorded builder and reviewer evidence is ready in waiting_human" \
+  "$RC $(jf .ready) $(jf '.reasons | length') $(jf .plan_digest) $(row .state)" "0 true 0 $PDR waiting_human"
+keep approved
+lput "$(jq -c --arg id "$ISSUE" '.issues[$id].state = "working"' "$L10")"; rd
+assert_eq "...and in working with the same approved plan question" "$RC $(jf .evidence_set_sha256)" "0 $R10"
+lput "$(jq -c --arg id "$ISSUE" '.issues[$id].question_seq = 9' "$L10")"; is "a plan question at another seq stays open" "QUESTION_OPEN"
+back approved; comments "$A1" "$(jcm 2 "reject $D8" 2026-03-03T00:00:00.000Z)"; poll
+is "Josh's reject withdraws the approval and reopens the plan question" "PLAN_NOT_APPROVED,QUESTION_OPEN"
+
+back approved; printf 'Which name?\n' >"$X/q1.md"; pm paperclip-report --issue "$ISSUE" --question q1 --comment-file "$X/q1.md"
+comments "$A1"; sent 2026-03-05T00:00:00.000Z; poll
+assert_eq "a later non-plan question is sent" "$(row '"\(.state) \(.question_id) \(.question_seq)"')" "waiting_human q1 2"
+is "...and is open" "QUESTION_OPEN"
+C3="$(jcm 3 "earlier thought" 2026-03-04T00:00:00.000Z)"; comments "$A1" "$C3"; poll
+is "a reply older than the question leaves it open" "QUESTION_OPEN"
+# A decision-shaped comment on a non-plan question: the plan hook ignores it,
+# and it is no reply either. The approval of record is untouched.
+AP="$(sha <"$STATE/paperclip/approvals/$ISSUE.json")"
+D5="$(jcm 5 "approve $D8" 2026-03-05T00:00:01.000Z)" D6="$(jcm 6 "  reject $D8"$'\n' 2026-03-05T00:00:02.000Z)"
+comments "$A1" "$C3" "$D5" "$D6"; poll
+is "approve or reject <digest8> on a non-plan question is no reply: still open" "QUESTION_OPEN"
+assert_eq "...nothing recorded, and the approval stays exactly as it was" \
+  "$(row '.question_reply // "none"') $(sha <"$STATE/paperclip/approvals/$ISSUE.json") $(approved)" "none $AP true"
+comments "$A1" "$C3" "$D5" "$D6" "$(jcm 4 "call it foo" 2026-03-06T00:00:00.000Z)"; poll; rd
+assert_eq "a qualifying newer Josh reply closes it: ready on the same evidence" \
+  "$RC $(jf .evidence_set_sha256) $(row '.question_reply | "\(.question_id) \(.question_seq) \(.comment_id)"')" \
+  "0 $R10 q1 2 c1000000-0000-4000-8000-000000000004"
+keep replied
+mkdir -p "$HOME_DIR/.config/agent-flow-kit/paperclip"; : >"$HOME_DIR/.config/agent-flow-kit/paperclip/stop"
+is "despite the reply: the stop flag" "LEDGER_NOT_ACTIVE"
+for st in queued stranded closed; do
+  back replied; lput "$(jq -c --arg id "$ISSUE" --arg s "$st" '.issues[$id].state = $s' "$L10")"; is "despite the reply: state $st" "LEDGER_NOT_ACTIVE"
+done
+back replied; rm -f "$STATE/paperclip/approvals/$ISSUE.json"; is "despite the reply: no approval" "PLAN_NOT_APPROVED"
+# AC-4 through the plan flow: re-publishing asks again, Josh approves, then
+# rejects; the q1 reply stays on the row and changes nothing.
+back replied; pm paperclip-plan --issue "$ISSUE" --plan-file "$X/plan.json"
+comments "$A1"; sent 2026-03-08T00:00:00.000Z; poll
+assert_eq "re-publishing the plan revokes the approval and asks again; the q1 reply stays" \
+  "$RC $(row '"\(.question_id) \(.question_seq) \(.question_reply.question_id)"') $(approved)" "0 plan-$D8 3 q1 false"
+A7="$(jcm 7 "approve $D8" 2026-03-09T00:00:00.000Z)"; comments "$A1" "$A7"; poll; rd
+assert_eq "...Josh approves it again: ready on the same evidence" "$RC $(jf .evidence_set_sha256)" "0 $R10"
+comments "$A1" "$A7" "$(jcm 8 "reject $D8" 2026-03-10T00:00:00.000Z)"; poll
+is "...then rejects it: refused despite the reply metadata" "PLAN_NOT_APPROVED,QUESTION_OPEN"
+assert_eq "...whose q1 reply is still on the row" "$(row '.question_reply.question_id')" "q1"
+
+back replied; printf 'And the colour?\n' >"$X/q2.md"; pm paperclip-report --issue "$ISSUE" --question q2 --comment-file "$X/q2.md"
+comments "$A1"; sent 2026-03-07T00:00:00.000Z; poll
+is "a second question closes it again" "QUESTION_OPEN"
+assert_eq "...the earlier reply stays bound to q1" "$(row '"\(.question_id) \(.question_reply.question_id)"')" "q2 q1"
+comments "$A1" "$(jcm 9 "blue" 2026-03-08T00:00:00.000Z)"; poll; rd
+assert_eq "a reply to the second question re-binds to it: ready on the same evidence" \
+  "$RC $(jf .evidence_set_sha256) $(row '.question_reply | "\(.question_id) \(.question_seq) \(.comment_id)"')" \
+  "0 $R10 q2 3 c1000000-0000-4000-8000-000000000009"
+printf 'And the size?\n' >"$X/q3.md"; pm paperclip-report --issue "$ISSUE" --question q3 --comment-file "$X/q3.md"
+sent 2026-03-09T00:00:00.000Z; poll
+is "a third question opens it again" "QUESTION_OPEN"
+assert_eq "...the reply stays bound to q2" "$(row '"\(.question_id) \(.question_seq) \(.question_reply.question_id)"')" "q3 4 q2"
 
 printf '\n%d passed, %d failed (%ds)\n' "$PASS" "$FAIL" "$SECONDS"
 (( FAIL == 0 ))
