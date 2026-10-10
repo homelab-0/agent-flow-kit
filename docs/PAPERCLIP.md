@@ -1125,14 +1125,38 @@ exist.
   legacy read-back, or an owed self-block) is adopted.
 - **What this layer never does.** It never produces a `final_intent` in
   shipped code (only a future producer does), never recomputes readiness for
-  one, and never retries or delivers one. It also does not yet: scan an
-  intent-holding issue's comments for a reply (deferred, not lost — `since`
-  does not advance, and this is a delivery-layer entry requirement), or
-  change what the pre-existing closed-issue sweep does to a raw head (it
-  still dead-letters it as `PAPERCLIP_ISSUE_CLOSED`, because that disposition
-  belongs to the delivery layer, not this one). Legacy `pending_final`,
+  one, and never retries or delivers one. A *raw*, not-yet-persisted head is
+  still untouched by comment scanning and by the closed-issue sweep (it still
+  dead-letters a raw head on a closing issue as `PAPERCLIP_ISSUE_CLOSED`) —
+  both of those for a *persisted* intent are the delivery layer's own
+  classification, documented below. Legacy `pending_final`,
   `final_delivery_hold` and spool `.final` markers are unaffected: this layer
   only ever recognizes the new `final_intent` kind, never those.
+
+## Observing a pending final intent (AFK-PC-DELIVERY-L2A-observe)
+
+This intermediate layer remains inert. It scans comments at all three intent
+suppression points, including the raw head exposed after sending readback.
+An ordinary Josh answer records `question_reply`; an exact plan rejection
+withdraws local approval. Neither permits an ordinary wakeup, status PATCH,
+comment send or reopen while the intent suppresses writes.
+
+A fresh `done` or `cancelled` detail supersedes a persisted intent locally,
+even when it has a hold. Inbox absence alone records `observed.absent_at` and
+retains the intent. A raw head keeps the existing closed-issue behavior.
+
+The first identity observation requires `assigneeAgentId` to equal the
+configured host agent and `createdByUserId` to equal `board_user_id`. Missing,
+null or mismatched ownership sets a terminal `IDENTITY_CHANGED` hold without
+recording an identity baseline. Later ownership changes also hold. Status
+changes alone do not affect identity. The pinned fields come from the issue
+row, not `unblockDescriptor`, which is status dependent.
+
+A valid held intent is visible as `final_awaiting_delivery` with no readiness
+call or at-rest count, whether `final_delivery_enabled` is absent, false or
+true. No withdrawal, marker removal, final publication or sender runs in this
+slice. Those steps belong to the separately qualified withdraw and consumer
+slices.
 
 ## The self-block model
 
