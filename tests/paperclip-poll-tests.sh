@@ -1556,8 +1556,8 @@ pid_n() { printf 'aaaaaaaa-0000-4000-8000-%012d' "$1"; }   # project n
 # issue <n> <status> <projectId-json> [<title>] [<description>] -- one issue's routes.
 issue() {
   local i; i="$(iid "$1")"
-  route GET "/api/issues/$i" 200 "$(jq -nc --arg st "$2" --arg ident "PROJ-$1" --argjson p "$3" --arg t "${4:-T}" --arg d "${5:-D}" --arg a "$AGENT1" \
-    '{status:$st, identifier:$ident, title:$t, description:$d, updatedAt:"2026-01-01T00:00:00Z", projectId:$p}
+  route GET "/api/issues/$i" 200 "$(jq -nc --arg st "$2" --arg ident "PROJ-$1" --argjson p "$3" --arg t "${4:-T}" --arg d "${5:-D}" --arg a "$AGENT1" --arg u "$BOARD" \
+    '{status:$st, identifier:$ident, title:$t, description:$d, updatedAt:"2026-01-01T00:00:00Z", projectId:$p, assigneeAgentId:$a, createdByUserId:$u}
      + (if $st == "blocked" then {unblockDescriptor:{owner:{agentId:$a}}} else {} end)')"
   route GET "/api/issues/$i/active-run" 200 '{"id":"run-1"}'
   route GET "/api/issues/$i/comments" 200 '[]'
@@ -2627,7 +2627,7 @@ run_afk --json
 assert_eq "U5: a wake, a board-recovery block, a todo reopen and raw strand/todo heads all do zero writes while an intent exists" \
   "$(grep -cE '^(POST|PATCH) ' "$LOG")" "0"
 assert_eq "  ...reads remain allowed (every issue detail was still fetched)" \
-  "$(grep -c '^GET /api/issues/' "$LOG")" "5"
+  "$(grep -cE '^GET /api/issues/[^/]+$' "$LOG")" "5"
 assert_eq "  ...no board-recovery notice was posted" \
   "$(grep -c "^POST /api/companies/$COMPANY/issues\$" "$LOG")" "0"
 assert_eq "  ...raw strand head: persisted locally, no reblock_due pollution" \
@@ -2784,14 +2784,14 @@ seed 19 working proj "$(pid_n 1)"
 lset 19 "{\"final_intent\":{\"entry_id\":\"$FI_E1\",\"attempts\":1,\"payload\":$(fi_payload "$FI_E1" "$(iid 19)" PROJ-19)}}"
 inbox 19; issue 19 in_progress "\"$(pid_n 1)\""
 write_spool "$(iid 19)" 001 "{\"id\":\"$E1\",\"kind\":\"comment\",\"body\":\"queued\"}"
-fi_before="$(jq -cS --arg id "$(iid 19)" '.issues[$id].final_intent' "$(LEDGER_OF)")"
+fi_before="$(jq -cS --arg id "$(iid 19)" '.issues[$id].final_intent | del(.observed)' "$(LEDGER_OF)")"
 run_afk --json
 assert_eq "persisted intent + queued comment: zero POST/PATCH" "$(grep -cE '^(POST|PATCH) ' "$LOG")" "0"
 assert_eq "  ...an empty body log" "$(cat "$BODYLOG")" ""
 assert_eq "  ...the queued comment stays in the spool" \
   "$(find "$STATE/paperclip/spool/$(iid 19)" -maxdepth 1 -name '001.json' 2>/dev/null | wc -l | tr -d ' ')" "1"
 assert_eq "  ...the ledger intent is unchanged (canonical)" \
-  "$(jq -cS --arg id "$(iid 19)" '.issues[$id].final_intent' "$(LEDGER_OF)")" "$fi_before"
+  "$(jq -cS --arg id "$(iid 19)" '.issues[$id].final_intent | del(.observed)' "$(LEDGER_OF)")" "$fi_before"
 
 # GAPS-C3-01: a leftover `sending` whose marker read-back confirms the ordinary
 # head removes that head, so the cycle's locked snapshot now sees the intent.
@@ -2813,6 +2813,257 @@ assert_eq "  ...the intent, now the head, is held in place" \
 assert_eq "  ...no agent wakeup after the transition" "$(grep -c "^POST /api/agents/$AGENT1/wakeup$" "$LOG")" "0"
 assert_eq "  ...no in_progress body, and the confirmed entry is never re-posted" \
   "$(grep -c '"status":"in_progress"' "$BODYLOG") $(grep -c "afk-entry:$E1" "$BODYLOG")" "0 0"
+
+# ============================================================================
+head1 "23. Observe a pending final_intent (AFK-PC-DELIVERY-L2A-observe)"
+# ============================================================================
+# The three suppression-point comment observations (U5/L2a map item 2), plus
+# toggle visibility and a board-closure disposition -- all local-only,
+# reusing section 22's final_intent_entry/fi_payload fixtures.
+jcm23() { # <n> <body> <created-at>
+  jq -nc --arg id "c3000000-0000-0000-0000-00000000000$1" --arg b "$2" --arg c "$3" --arg u "$BOARD" \
+    '{id:$id, body:$b, authorUserId:$u, authorAgentId:null, createdAt:$c}'
+}
+plan23() { # issue number; a posted plan and local approval
+  local n="$1" id; id="$(iid "$n")"
+  NOTICE_DIR="$STATE/paperclip/notices/proj"
+  mkdir -p "$STATE/paperclip/plans" "$STATE/paperclip/approvals"
+  jq -nc --arg d "$PD" '{schema:"afk-paperclip-plan-record/1", digest:$d,
+    digest8:$d[0:8], question_id:("plan-" + $d[0:8]), posted_seq:3, state:"posted"}'     >"$STATE/paperclip/plans/$id.json"
+  jq -nc --arg d "$PD" '{schema:"afk-paperclip-approval/1", kind:"plan", digest:$d,
+    digest8:$d[0:8]}' >"$STATE/paperclip/approvals/$id.json"
+}
+
+new_scenario fi_observe_main_loop
+write_config
+seed 21 working proj "$(pid_n 1)"
+lset 21 "{\"final_intent\":{\"entry_id\":\"$FI_E1\",\"attempts\":0,\"payload\":$(fi_payload "$FI_E1" "$(iid 21)" PROJ-21)},
+  \"question_id\":\"q-5\",\"question_seq\":2,\"question_sent_at\":\"2026-04-01T00:00:00.000Z\"}"
+inbox 21; issue 21 in_progress "\"$(pid_n 1)\""
+route GET "/api/issues/$(iid 21)/comments" 200 "[$(jcm23 1 "looks fine, go ahead" 2026-04-02T00:00:00.000Z)]"
+run_afk --json
+assert_eq "23a. main-loop suppression (afk_pc_final_intent_present): a Josh reply is recorded, zero non-GET writes" \
+  "$(grep -cE '^(POST|PATCH) ' "$LOG") $(jq -r --arg id "$(iid 21)" '.issues[$id].question_reply.comment_id' "$(LEDGER_OF)")" \
+  "0 c3000000-0000-0000-0000-000000000001"
+assert_eq "  ...the intent itself is untouched" \
+  "$(jq -c --arg id "$(iid 21)" '.issues[$id].final_intent | {entry_id, attempts}' "$(LEDGER_OF)")" \
+  "{\"entry_id\":\"$FI_E1\",\"attempts\":0}"
+
+# A raw (unpersisted) head is also caught by the main loop's own
+# afk_pc_final_intent_present guard, so this exercises both it and
+# afk_pc_report_cycle's own afk_pc_final_intent_recognize together in one
+# pass -- both call the same observation wrapper, and either one alone is
+# sufficient for the assertion below.
+new_scenario fi_observe_recognize
+write_config
+seed 22 working proj "$(pid_n 1)"
+lset 22 "{\"question_id\":\"q-6\",\"question_seq\":1,\"question_sent_at\":\"2026-04-01T00:00:00.000Z\"}"
+inbox 22; issue 22 in_progress "\"$(pid_n 1)\""
+route GET "/api/issues/$(iid 22)/comments" 200 "[$(jcm23 2 "approved, thanks" 2026-04-02T00:00:00.000Z)]"
+write_spool "$(iid 22)" 001 "$(final_intent_entry "$FI_E1" "$(iid 22)" PROJ-22)"
+run_afk --json
+assert_eq "23b. a raw head: the reply is recorded the same pass the intent is first persisted" \
+  "$(jq -r --arg id "$(iid 22)" '.issues[$id].question_reply.comment_id // "none"' "$(LEDGER_OF)")" \
+  "c3000000-0000-0000-0000-000000000002"
+assert_eq "  ...zero non-GET writes" "$(grep -cE '^(POST|PATCH) ' "$LOG")" "0"
+assert_eq "  ...and the intent was persisted" "$(jq -r --arg id "$(iid 22)" '.issues[$id].final_intent.entry_id' "$(LEDGER_OF)")" "$FI_E1"
+
+# GAPS-C3-01's own fixture (section 22, fi_readback_arrival): a leftover
+# `sending` whose marker read-back confirms and removes the ordinary head
+# is the one non-racy way a final_intent becomes the head *between*
+# recognize's own check and the drain's files[] snapshot -- exactly what
+# NEW-C2-01 guards. A Josh reply, added to the same comments read, must
+# still be recorded there.
+new_scenario fi_observe_new_head
+write_config
+seed 23 working proj "$(pid_n 1)"
+lset 23 "{\"sending\":{\"entry_id\":\"$E1\",\"issue_id\":\"$(iid 23)\",\"at\":\"2026-01-01T00:00:00Z\"},
+  \"question_id\":\"q-7\",\"question_seq\":1,\"question_sent_at\":\"2026-04-01T00:00:00.000Z\"}"
+inbox 23; issue 23 in_progress "\"$(pid_n 1)\""
+route GET "/api/issues/$(iid 23)/comments" 200 \
+  "[{\"authorAgentId\":\"$AGENT1\",\"body\":\"sent\\n\\n<!-- afk-entry:$E1 -->\"}, $(jcm23 3 "ok" 2026-04-02T00:00:00.000Z)]"
+write_spool "$(iid 23)" 001 "{\"id\":\"$E1\",\"kind\":\"comment\",\"body\":\"sent\"}"
+write_spool "$(iid 23)" 002 "$(final_intent_entry "$FI_E1" "$(iid 23)" PROJ-23)"
+run_afk --json
+assert_eq "23c. the NEW-C2-01 arrival point (afk_pc_report_cycle's HEAD recheck): the reply is still recorded" \
+  "$(jq -r --arg id "$(iid 23)" '.issues[$id].question_reply.comment_id // "none"' "$(LEDGER_OF)")" \
+  "c3000000-0000-0000-0000-000000000003"
+assert_eq "  ...the intent, now the head after the read-back confirms, is held in place" \
+  "$(find "$STATE/paperclip/spool/$(iid 23)" -maxdepth 1 -name '002.json' 2>/dev/null | wc -l | tr -d ' ') $(find "$STATE/paperclip/spool/$(iid 23)" -maxdepth 1 -name '001.json' 2>/dev/null | wc -l | tr -d ' ')" \
+  "1 0"
+assert_eq "  ...no agent wakeup after the transition" "$(grep -c "^POST /api/agents/$AGENT1/wakeup$" "$LOG")" "0"
+
+# The first scan sees no decision; the report-cycle recognition must scan
+# again with the issue row's waiting_human state and withdraw approval.
+new_scenario fi_reject_recognize
+write_config
+seed 22 waiting_human proj "$(pid_n 1)"
+lset 22 "{\"question_id\":\"plan-$PD8\",\"question_seq\":3,\"question_sent_at\":\"2026-03-01T00:00:00.000Z\"}"
+inbox 22; issue 22 in_progress "\"$(pid_n 1)\""
+plan23 22
+route GET "/api/issues/$(iid 22)/comments" 200 "[$(jcm23 5 "reject $PD8" 2026-04-02T00:00:00.000Z)]"
+route_nth GET "/api/issues/$(iid 22)/comments" 1 200 '[]'
+write_spool "$(iid 22)" 001 "$(final_intent_entry "$FI_E1" "$(iid 22)" PROJ-22)"
+run_afk --json
+assert_eq "23b-reject. recognition withdraws approval after the earlier empty scan" \
+  "$([[ -e "$STATE/paperclip/approvals/$(iid 22).json" ]] && echo present || echo gone) $(notices approval_rejected) $(grep -cE '^(POST|PATCH) ' "$LOG")" \
+  "gone 1 0"
+assert_eq "  ...the raw intent was persisted" \
+  "$(jq -r --arg id "$(iid 22)" '.issues[$id].final_intent.entry_id' "$(LEDGER_OF)")" "$FI_E1"
+
+# Sending readback exposes the head after recognition. The final scan must
+# process a decision first observed at that exact point.
+new_scenario fi_reject_new_head
+write_config
+seed 23 waiting_human proj "$(pid_n 1)"
+lset 23 "{\"sending\":{\"entry_id\":\"$E1\",\"issue_id\":\"$(iid 23)\",\"at\":\"2026-01-01T00:00:00Z\"},
+  \"question_id\":\"plan-$PD8\",\"question_seq\":3,\"question_sent_at\":\"2026-03-01T00:00:00.000Z\"}"
+inbox 23; issue 23 in_progress "\"$(pid_n 1)\""
+plan23 23
+route GET "/api/issues/$(iid 23)/comments" 200 \
+  "[{\"authorAgentId\":\"$AGENT1\",\"body\":\"sent\\n\\n<!-- afk-entry:$E1 -->\"}, $(jcm23 6 "reject $PD8" 2026-04-02T00:00:00.000Z)]"
+route_nth GET "/api/issues/$(iid 23)/comments" 1 200 \
+  "[{\"authorAgentId\":\"$AGENT1\",\"body\":\"sent\\n\\n<!-- afk-entry:$E1 -->\"}]"
+write_spool "$(iid 23)" 001 "{\"id\":\"$E1\",\"kind\":\"comment\",\"body\":\"sent\"}"
+write_spool "$(iid 23)" 002 "$(final_intent_entry "$FI_E1" "$(iid 23)" PROJ-23)"
+run_afk --json
+assert_eq "23c-reject. exposed-head scan withdraws approval" \
+  "$([[ -e "$STATE/paperclip/approvals/$(iid 23).json" ]] && echo present || echo gone) $(notices approval_rejected)" "gone 1"
+assert_eq "  ...the confirmed ordinary head is gone; raw intent remains" \
+  "$(find "$STATE/paperclip/spool/$(iid 23)" -maxdepth 1 -name '001.json' | wc -l | tr -d ' ') $(find "$STATE/paperclip/spool/$(iid 23)" -maxdepth 1 -name '002.json' | wc -l | tr -d ' ')" "0 1"
+assert_eq "  ...only the two pre-transition writes occur; no wakeup or later write" \
+  "$(grep -cE '^(POST|PATCH) ' "$LOG") $(grep -c "^POST /api/agents/$AGENT1/wakeup$" "$LOG")" "2 0"
+
+new_scenario fi_toggle_off_visible
+write_config
+seed 24 working proj "$(pid_n 1)"
+lset 24 "{\"final_intent\":{\"entry_id\":\"$FI_E1\",\"attempts\":0,\"payload\":$(fi_payload "$FI_E1" "$(iid 24)" PROJ-24)}}"
+inbox 24; issue 24 in_progress "\"$(pid_n 1)\""
+route GET "/api/issues/$(iid 24)/comments" 200 '[]'
+run_afk --json; run_afk --json
+assert_eq "23d. toggle absent (default off): visible, zero non-GET writes across two passes" \
+  "$(grep -cE '^(POST|PATCH) ' "$LOG")" "0"
+assert_eq "  ...no eligible/hold/at-rest fields were ever added" \
+  "$(jq -c --arg id "$(iid 24)" '.issues[$id].final_intent | {eligible: (.eligible // "none"), hold: (.hold // "none"), passes: (.observed.passes // "none")}' "$(LEDGER_OF)")" \
+  '{"eligible":"none","hold":"none","passes":"none"}'
+assert_contains "  ...A4: a per-pass final_awaiting_delivery action is visible" "$OUT_TEXT" "final_awaiting_delivery: PROJ-24"
+set_cfg '.final_delivery_enabled = true'
+run_afk --json
+assert_eq "  ...toggle true remains inert: no eligible, passes or remote writes"   "$(jq -r --arg id "$(iid 24)" '.issues[$id].final_intent | [(.eligible // "none"), (.observed.passes // "none"), (.hold // "none")] | join(" ")' "$(LEDGER_OF)") $(grep -cE '^(POST|PATCH) ' "$LOG")"   "none none none 0"
+assert_contains "  ...toggle true still reports awaiting delivery" "$OUT_TEXT" "final_awaiting_delivery: PROJ-24"
+
+new_scenario fi_board_closed
+write_config
+seed 25 working proj "$(pid_n 1)"
+lset 25 "{\"final_intent\":{\"entry_id\":\"$FI_E1\",\"attempts\":0,\"payload\":$(fi_payload "$FI_E1" "$(iid 25)" PROJ-25)}}"
+inbox 25; issue 25 "done" "\"$(pid_n 1)\""
+route GET "/api/issues/$(iid 25)/comments" 200 '[]'
+set_cfg '.final_delivery_enabled = true'
+run_afk --json
+assert_eq "23e. a board-closed (done) issue supersedes the intent locally, zero non-GET writes" \
+  "$(grep -cE '^(POST|PATCH) ' "$LOG") $(jq -r --arg id "$(iid 25)" '.issues[$id].final_intent.disposition' "$(LEDGER_OF)")" \
+  "0 final_superseded_by_board"
+
+# G1: a plan reject arriving at a suppression point must still reach
+# afk_pcp_on_josh_comment (it needs prev_state, which the wrapper sets) and
+# withdraw the recorded approval -- not be lost as a plain comment.
+new_scenario fi_reject_suppression
+write_config
+seed 26 waiting_human proj "$(pid_n 1)"
+lset 26 "{\"final_intent\":{\"entry_id\":\"$FI_E1\",\"attempts\":0,\"payload\":$(fi_payload "$FI_E1" "$(iid 26)" PROJ-26)},
+  \"question_id\":\"plan-$PD8\",\"question_seq\":3,\"question_sent_at\":\"2026-03-01T00:00:00.000Z\"}"
+inbox 26; issue 26 in_progress "\"$(pid_n 1)\""
+plan23 26
+route GET "/api/issues/$(iid 26)/comments" 200 "[$(jcm23 4 "reject $PD8" 2026-04-02T00:00:00.000Z)]"
+run_afk --json
+assert_eq "23f (G1). a plan reject observed at the suppression point withdraws the approval, zero remote writes" \
+  "$(grep -cE '^(POST|PATCH) ' "$LOG") $([[ -e "$STATE/paperclip/approvals/$(iid 26).json" ]] && echo present || echo gone)" \
+  "0 gone"
+assert_eq "  ...approval_rejected was recorded" "$(notices approval_rejected)" "1"
+assert_eq "  ...never recorded as a plain human_commented reply" \
+  "$(jq -r --arg id "$(iid 26)" '.issues[$id].question_reply // "none"' "$(LEDGER_OF)")" "none"
+assert_eq "  ...the intent itself is untouched (no recompute)" \
+  "$(jq -c --arg id "$(iid 26)" '.issues[$id].final_intent | {entry_id, attempts}' "$(LEDGER_OF)")" \
+  "{\"entry_id\":\"$FI_E1\",\"attempts\":0}"
+
+# G2: inbox absence alone must never supersede a persisted intent locally --
+# only a live done/cancelled status, read fresh, does that.
+new_scenario fi_absence_not_closure
+write_config
+seed 27 working proj "$(pid_n 1)"
+lset 27 "{\"final_intent\":{\"entry_id\":\"$FI_E1\",\"attempts\":0,\"payload\":$(fi_payload "$FI_E1" "$(iid 27)" PROJ-27)}}"
+inbox
+run_afk --json
+assert_eq "23g (G2). inbox absence alone never supersedes a persisted intent locally" \
+  "$(jq -r --arg id "$(iid 27)" '.issues[$id].final_intent.disposition // "none"' "$(LEDGER_OF)")" "none"
+assert_eq "  ...a typed orphan note is recorded instead" \
+  "$(jq -r --arg id "$(iid 27)" '.issues[$id].final_intent.observed.absent_at // "none"' "$(LEDGER_OF)" | grep -c T)" "1"
+assert_eq "  ...the intent payload/entry_id is kept exactly as it was" \
+  "$(jq -c --arg id "$(iid 27)" '.issues[$id].final_intent | {entry_id, attempts}' "$(LEDGER_OF)")" \
+  "{\"entry_id\":\"$FI_E1\",\"attempts\":0}"
+assert_eq "  ...zero remote writes" "$(grep -cE '^(POST|PATCH) ' "$LOG")" "0"
+
+# G3: identity continuity reads assigneeAgentId/createdByUserId, which are
+# status-independent -- a status transition alone is never a hold, but a
+# real assignee change is.
+new_scenario fi_identity_status_independent
+write_config
+seed 28 working proj "$(pid_n 1)"
+lset 28 "{\"final_intent\":{\"entry_id\":\"$FI_E1\",\"attempts\":0,\"payload\":$(fi_payload "$FI_E1" "$(iid 28)" PROJ-28)}}"
+inbox 28
+route GET "/api/issues/$(iid 28)" 200 \
+  "{\"status\":\"in_progress\",\"identifier\":\"PROJ-28\",\"projectId\":\"$(pid_n 1)\",\"updatedAt\":\"2026-01-01T00:00:00Z\",\"assigneeAgentId\":\"$AGENT1\",\"createdByUserId\":\"$BOARD\"}"
+route GET "/api/issues/$(iid 28)/comments" 200 '[]'
+run_afk --json
+assert_eq "23h (G3). first observation: identity baseline from assigneeAgentId/createdByUserId, no hold" \
+  "$(jq -c --arg id "$(iid 28)" '.issues[$id].final_intent.observed.identity' "$(LEDGER_OF)")" \
+  "{\"assignee\":\"$AGENT1\",\"created_by\":\"$BOARD\"}"
+route GET "/api/issues/$(iid 28)" 200 \
+  "{\"status\":\"blocked\",\"identifier\":\"PROJ-28\",\"projectId\":\"$(pid_n 1)\",\"updatedAt\":\"2026-01-01T00:00:00Z\",\"unblockDescriptor\":{\"owner\":{\"agentId\":\"$AGENT1\"}},\"assigneeAgentId\":\"$AGENT1\",\"createdByUserId\":\"$BOARD\"}"
+run_afk --json
+assert_eq "  ...a status transition alone (in_progress -> blocked) is never a hold" \
+  "$(jq -r --arg id "$(iid 28)" '.issues[$id].final_intent.hold // "none"' "$(LEDGER_OF)")" "none"
+route GET "/api/issues/$(iid 28)" 200 \
+  "{\"status\":\"blocked\",\"identifier\":\"PROJ-28\",\"projectId\":\"$(pid_n 1)\",\"updatedAt\":\"2026-01-01T00:00:00Z\",\"assigneeAgentId\":\"$AGENT2\",\"createdByUserId\":\"$BOARD\"}"
+run_afk --json
+assert_eq "  ...a real assignee change is a terminal IDENTITY_CHANGED hold" \
+  "$(jq -r --arg id "$(iid 28)" '.issues[$id].final_intent.hold.reason' "$(LEDGER_OF)")" "IDENTITY_CHANGED"
+assert_eq "  ...zero remote writes across all three passes" "$(grep -cE '^(POST|PATCH) ' "$LOG")" "0"
+
+# Initial authority is checked before any baseline is captured. The first
+# four cases use actual nullable Issue fields or deliberately omit one key.
+for case23 in assignee_mismatch assignee_null assignee_missing creator_null creator_missing creator_mismatch; do
+  new_scenario "fi_first_$case23"
+  write_config
+  seed 29 working proj "$(pid_n 1)"
+  lset 29 "{\"final_intent\":{\"entry_id\":\"$FI_E1\",\"attempts\":0,\"payload\":$(fi_payload "$FI_E1" "$(iid 29)" PROJ-29)}}"
+  inbox 29; issue 29 in_progress "\"$(pid_n 1)\""
+  detail23="$(jq -nc --arg p "$(pid_n 1)" --arg a "$AGENT1" --arg u "$BOARD"     '{status:"in_progress",identifier:"PROJ-29",projectId:$p,updatedAt:"2026-01-01T00:00:00Z",assigneeAgentId:$a,createdByUserId:$u}')"
+  case "$case23" in
+    assignee_mismatch) detail23="$(jq -c --arg a "$AGENT2" '.assigneeAgentId=$a' <<<"$detail23")" ;;
+    assignee_null) detail23="$(jq -c '.assigneeAgentId=null' <<<"$detail23")" ;;
+    assignee_missing) detail23="$(jq -c 'del(.assigneeAgentId)' <<<"$detail23")" ;;
+    creator_null) detail23="$(jq -c '.createdByUserId=null' <<<"$detail23")" ;;
+    creator_missing) detail23="$(jq -c 'del(.createdByUserId)' <<<"$detail23")" ;;
+    creator_mismatch) detail23="$(jq -c '.createdByUserId="other-user"' <<<"$detail23")" ;;
+  esac
+  route GET "/api/issues/$(iid 29)" 200 "$detail23"
+  run_afk --json
+  assert_eq "23i $case23: first observation holds before baseline, zero writes"     "$(jq -r --arg id "$(iid 29)" '.issues[$id].final_intent | [.hold.reason, (.observed.identity // "none")] | map(tostring) | join(" ")' "$(LEDGER_OF)") $(grep -cE '^(POST|PATCH) ' "$LOG")"     "IDENTITY_CHANGED none 0"
+done
+
+new_scenario fi_creator_change_cancelled
+write_config
+seed 30 working proj "$(pid_n 1)"
+lset 30 "{\"final_intent\":{\"entry_id\":\"$FI_E1\",\"attempts\":0,\"payload\":$(fi_payload "$FI_E1" "$(iid 30)" PROJ-30)}}"
+inbox 30; issue 30 in_progress "\"$(pid_n 1)\""
+run_afk --json
+route GET "/api/issues/$(iid 30)" 200   "{\"status\":\"in_progress\",\"identifier\":\"PROJ-30\",\"projectId\":\"$(pid_n 1)\",\"updatedAt\":\"2026-01-01T00:00:00Z\",\"assigneeAgentId\":\"$AGENT1\",\"createdByUserId\":\"other-user\"}"
+run_afk --json
+assert_eq "23j. later creator change holds, retaining the verified first baseline"   "$(jq -r --arg id "$(iid 30)" '.issues[$id].final_intent | [.hold.reason,.observed.identity.created_by] | join(" ")' "$(LEDGER_OF)")"   "IDENTITY_CHANGED $BOARD"
+route GET "/api/issues/$(iid 30)" 200   "{\"status\":\"cancelled\",\"identifier\":\"PROJ-30\",\"projectId\":\"$(pid_n 1)\",\"updatedAt\":\"2026-01-01T00:00:00Z\",\"assigneeAgentId\":null,\"createdByUserId\":\"other-user\"}"
+run_afk --json
+assert_eq "23k. fresh cancelled supersedes even an identity hold, zero writes"   "$(jq -r --arg id "$(iid 30)" '.issues[$id].final_intent.disposition' "$(LEDGER_OF)") $(grep -cE '^(POST|PATCH) ' "$LOG")"   "final_superseded_by_board 0"
 
 # ===========================================================================
 printf '\n\033[1m%d passed, %d failed\033[0m\n' "$PASS" "$FAIL"
