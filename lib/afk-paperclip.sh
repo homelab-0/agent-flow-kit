@@ -1030,6 +1030,89 @@ afk_pc_final_intent_recognize() {
   return 0
 }
 
+# --- AFK-PC-DELIVERY-L2A: classify and withdraw a pending final_intent -----
+# Default-off (final_delivery_enabled, read ad hoc like pm_start_enabled --
+# no new config validation). No sender, no producer: every branch below is a
+# ledger-only write; nothing here ever calls the Paperclip API beyond the
+# single comments GET afk_pc_scan_comments already performs.
+
+# afk_pc_observe_final_intent_comments <issue_id> -- U5/L2a: the comment scan
+# that a final_intent-holding issue otherwise never gets (L1 explicitly
+# defers it), run at each of the three suppression points so a Josh reply or
+# plan reject is recorded before classification runs, never after. Every
+# local afk_pc_scan_comments reads (slug/repo_path/harness/qid/since/
+# identifier) is derived here from the issue's own ledger row and its pinned
+# project row -- never from the main loop's own resolution state, which may
+# not exist yet at the earliest suppression point. api_url/key/agent_id/
+# board_user_id/actions/ledger are the caller's own locals, read and written
+# directly, exactly like afk_pc_scan_comments's other two call sites. Zero
+# remote writes.
+afk_pc_observe_final_intent_comments() {
+  local id="$1" row slug prow repo_path harness qid since newest_since identifier prev_state prior_ledger
+  row="$(jq -c --arg id "$id" '.issues[$id] // empty' <<<"$ledger")"
+  [[ -n "$row" ]] || return 0
+  slug="$(jq -r '.slug // empty' <<<"$row")"
+  [[ -n "$slug" ]] || return 0
+  prow="$(afk_pc_project_row "$slug")"
+  [[ -n "$prow" ]] || return 0
+  repo_path="$(jq -r '.repo_path // empty' <<<"$prow")"
+  harness="$(jq -r '.harness // empty' <<<"$prow")"
+  qid="$(jq -r '.question_id // empty' <<<"$row")"
+  since="$(jq -r '.since // empty' <<<"$row")"
+  newest_since="$since"
+  identifier="$(jq -r '.identifier // empty' <<<"$row")"
+  # G1: afk_pcp_on_josh_comment requires prev_state (plan.sh:238) -- without
+  # it a plan reject/approve is decided against an unset or stale value and
+  # is lost as a plain comment. No local author_unverifiable_reported here:
+  # that would shadow the pass-level flag and let the notice repeat per pass.
+  prev_state="$(jq -r '.state // empty' <<<"$row")"
+  prior_ledger="$ledger"
+  afk_pc_scan_comments
+  if [[ -n "$newest_since" && "$newest_since" != "$since" ]]; then
+    ledger="$(jq -c --arg id "$id" --arg s "$newest_since" '.issues[$id].since = $s' <<<"$ledger")"
+  fi
+  # An answer's ledger fields must be durable before the suppression guard
+  # returns. Approval and notice files are written by the shared scanner.
+  if [[ "$ledger" != "$prior_ledger" ]] && ! afk_state_file_write "$ledger_path" "$ledger"; then
+    AFK_PC_STORAGE_ERROR=true
+    actions="$(jq -c --arg t "PAPERCLIP_STORAGE_ERROR: intent observation was not saved for $identifier" '. + [$t]' <<<"$actions")"
+  fi
+}
+
+# A live closure can supersede a held intent. Every other observation needs
+# current host/creator authority before a baseline is accepted. Neither the
+# delivery toggle nor board status permits readiness in this slice.
+afk_pc_final_intent_classify() {
+  local iid="$1" board_status="$2" assignee="$3" creator="$4" intent_record baseline
+  intent_record="$(jq -c --arg id "$iid" '.issues[$id].final_intent // empty' <<<"$ledger")"
+  [[ -n "$intent_record" ]] || return 0
+  if [[ "$board_status" == "done" || "$board_status" == cancelled ]]; then
+    if [[ "$(jq -r '.disposition // empty' <<<"$intent_record")" != final_superseded_by_board ]]; then
+      ledger="$(jq -c --arg id "$iid" '.issues[$id].final_intent.disposition = "final_superseded_by_board"' <<<"$ledger")"
+      actions="$(jq -c --arg t "final intent superseded by board closure: $identifier" '. + [$t]' <<<"$actions")"
+    fi
+    return 0
+  fi
+  [[ "$(jq -r '.disposition // empty' <<<"$intent_record")" != final_superseded_by_board ]] || return 0
+  [[ "$(jq -r '.hold // empty' <<<"$intent_record")" == "" ]] || return 0
+
+  # The pinned Issue row always serializes these nullable fields. Null or
+  # missing means there is no verified authority; never baseline that value.
+  baseline="$(jq -c '.observed.identity // empty' <<<"$intent_record")"
+  if [[ -z "$assignee" || "$assignee" != "$agent_id" ||
+        -z "$creator" || "$creator" != "$board_user_id" ]] ||
+     { [[ -n "$baseline" ]] &&
+       [[ "$baseline" != "$(jq -nc --arg a "$assignee" --arg c "$creator" '{assignee:$a,created_by:$c}')" ]]; }; then
+    ledger="$(jq -c --arg id "$iid" '.issues[$id].final_intent.hold = {reason:"IDENTITY_CHANGED"}' <<<"$ledger")"
+    actions="$(jq -c --arg t "IDENTITY_CHANGED, held: $identifier" '. + [$t]' <<<"$actions")"
+    return 0
+  fi
+  if [[ -z "$baseline" ]]; then
+    ledger="$(jq -c --arg id "$iid" --arg a "$assignee" --arg c "$creator"       '.issues[$id].final_intent.observed.identity = {assignee:$a,created_by:$c}' <<<"$ledger")"
+  fi
+  actions="$(jq -c --arg t "final_awaiting_delivery: $identifier" '. + [$t]' <<<"$actions")"
+}
+
 # afk_pc_report_cycle <api_url> <key> <agent_id> <issue_id> <identifier>
 #                      <status_file_dir>
 # One report cycle (AC-1..AC-5, AC-10): wakeup, in_progress, drain the spool
@@ -1064,8 +1147,15 @@ afk_pc_report_cycle() {
 
   # U5: a final_intent (persisted, or recognized this pass) suppresses the
   # whole cycle -- no wakeup, no in_progress PATCH, no spool drain, no
-  # self-block. L2 owns its disposition; L1 only guards.
-  afk_pc_final_intent_recognize "$id" && return 0
+  # self-block. L2 owns its disposition; L1 only guards. L2a's own
+  # disposition runs at the earlier per-issue guard, where the fresh issue
+  # detail is available; here, only the comment observation that guard's own
+  # map requires (a reply arriving exactly as this pass recognizes a raw
+  # head for the first time).
+  if afk_pc_final_intent_recognize "$id"; then
+    afk_pc_observe_final_intent_comments "$id"
+    return 0
+  fi
 
   # A failed read-back of a leftover `sending` means nothing is known: post
   # nothing for this issue this pass rather than risk a duplicate.
@@ -1098,6 +1188,7 @@ afk_pc_report_cycle() {
   # the zero-write boundary applies here too -- stop before any wakeup.
   if [[ -n "${files[0]:-}" ]] &&
      [[ "$(jq -r '.kind // empty' "$spool_dir_for_lock/${files[0]}" 2>/dev/null)" == final_intent ]]; then
+    afk_pc_observe_final_intent_comments "$id"
     actions="$(jq -c --arg t "final intent arrived, held: $identifier" '. + [$t]' <<<"$actions")"
     return 0
   fi
@@ -1726,6 +1817,19 @@ afk_cmd_paperclip_poll() { # <json_mode>
       cidentifier="$(jq -r --arg id "$cid" '.issues[$id].identifier // empty' <<<"$ledger")"
       cstate="$(jq -r --arg id "$cid" '.issues[$id].state // empty' <<<"$ledger")"
       ledger="$(jq -c --arg id "$cid" '.issues[$id].state = "closed"' <<<"$ledger")"
+      # G2: inbox disappearance is never proof by itself that Josh closed the
+      # issue (U5/map item 2) -- only a live `done`/`cancelled` status, read
+      # by afk_pc_final_intent_classify from a fresh detail GET, supersedes.
+      # A *persisted* final_intent that simply dropped out of the inbox still
+      # owes a visible, recoverable, typed note so it is never left silently
+      # stale; the intent and its fence stay exactly as they were. A raw
+      # (unpersisted) spool head on a closing issue keeps today's
+      # byte-identical PAPERCLIP_ISSUE_CLOSED dead-letter -- this never
+      # touches afk_pc_spool_dead_all below.
+      if jq -e --arg id "$cid" '.issues[$id].final_intent // empty | length > 0' <<<"$ledger" >/dev/null 2>&1; then
+        ledger="$(jq -c --arg id "$cid" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          '.issues[$id].final_intent.observed.absent_at //= $at' <<<"$ledger")"
+      fi
       # A refused or already-stopped issue has no PM to tell.
       if [[ "$cstate" != waiting_setup && "$cstate" != stopped && "$cstate" != reconciliation_blocked ]]; then
         crow="$(afk_pc_project_row "$(jq -r --arg id "$cid" '.issues[$id].slug // empty' <<<"$ledger")")"
@@ -1763,7 +1867,7 @@ afk_cmd_paperclip_poll() { # <json_mode>
       detail_resp="$(afk_pc_curl GET "$api_url/api/issues/$id" "$key" "")"
       dhttp="${detail_resp%%$'\n'*}"; detail="${detail_resp#*$'\n'}"
       [[ "$dhttp" == 200 ]] || continue
-      local status identifier title desc updated owner_agent owner_user prev prev_st
+      local status identifier title desc updated owner_agent owner_user created_by assignee_agent prev prev_st
       status="$(jq -r '.status' <<<"$detail")"
       identifier="$(jq -r '.identifier' <<<"$detail")"
       title="$(jq -r '.title' <<<"$detail")"
@@ -1771,14 +1875,32 @@ afk_cmd_paperclip_poll() { # <json_mode>
       updated="$(jq -r '.updatedAt' <<<"$detail")"
       owner_agent="$(jq -r '.unblockDescriptor.owner.agentId // empty' <<<"$detail")"
       owner_user="$(jq -r '.unblockDescriptor.owner.userId // empty' <<<"$detail")"
+      created_by="$(jq -r '.createdByUserId // empty' <<<"$detail")"
+      # G3: status-independent identity for the final_intent classifier --
+      # unblockDescriptor is only ever populated while blocked (pinned
+      # contract), so an ordinary status transition must never read it here.
+      assignee_agent="$(jq -r '.assigneeAgentId // empty' <<<"$detail")"
       prev="$(jq -c --arg id "$id" '.issues[$id] // empty' <<<"$ledger")"
       # U5: guard every write path this early -- the claim-comment retry
       # below, the self-wake/self-block/strand/nudge branches in the case
       # below, and the report cycle after this loop, so none of them ever
-      # runs ahead of a final_intent's zero-write boundary. Read-only: no
-      # lock, mkdir or mutation here. Persistence happens only inside
+      # runs ahead of a final_intent's zero-write boundary. Local-write, not
+      # read-only (A6): comment observation and classification below may
+      # write the ledger and local notices, and classification's withdrawal
+      # path may take the spool's `.seq.lock` to remove a marker -- never a
+      # remote write. Persistence to the board happens only inside
       # afk_pc_report_cycle.
-      afk_pc_final_intent_present "$id" && continue
+      # L2a: a persisted intent (never a raw head alone) is also observed and
+      # classified here, while the detail GET's status/identity fields are
+      # fresh -- the only point in the pass where they are. Comment
+      # observation always runs first (U5's "record the reply before
+      # classification"); both are ledger-only, zero remote writes, and
+      # neither changes whether this `continue` fires.
+      if afk_pc_final_intent_present "$id"; then
+        afk_pc_observe_final_intent_comments "$id"
+        afk_pc_final_intent_classify "$id" "$status" "$assignee_agent" "$created_by"
+        continue
+      fi
       if [[ -n "$prev" ]] && jq -e '.claim_comment_pending == true and .claim_attempted == true' \
           <<<"$prev" >/dev/null 2>&1; then
         afk_pc_claim_comment || true

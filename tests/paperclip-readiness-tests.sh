@@ -156,7 +156,7 @@ assert_eq "a linked worktree of the owner's repository on the same tree -> ready
 printf 'private\n' >"$PB/extra-brief.md"; rd
 assert_eq "an ignored private brief does not change product identity" "$RC $(jf .evidence_set_sha256)" "0 $WANT"
 rm -f "$PB/extra-brief.md"
-assert_eq "no automatic caller: only the CLI routes to the reader" \
+assert_eq "observe has no readiness caller, producer or sender" \
   "$(grep -rlE 'paperclip-readiness|afk_pce_readiness|afk_cmd_paperclip_readiness' "$KIT_ROOT/bin" "$KIT_ROOT/lib" "$KIT_ROOT/files" | sed "s|^$KIT_ROOT/||" | LC_ALL=C sort | paste -sd' ' -)" \
   "bin/agent-flow-kit lib/afk-paperclip-evidence.sh"
 
@@ -503,5 +503,7 @@ sent 2026-03-09T00:00:00.000Z; poll
 is "a third question opens it again" "QUESTION_OPEN"
 assert_eq "...the reply stays bound to q2" "$(row '"\(.question_id) \(.question_seq) \(.question_reply.question_id)"')" "q3 4 q2"
 
+# The observe slice has no readiness caller. Eligibility and withdrawal
+# fixtures are reserved for the later withdraw slice.
 printf '\n%d passed, %d failed (%ds)\n' "$PASS" "$FAIL" "$SECONDS"
 (( FAIL == 0 ))
