@@ -156,9 +156,11 @@ assert_eq "a linked worktree of the owner's repository on the same tree -> ready
 printf 'private\n' >"$PB/extra-brief.md"; rd
 assert_eq "an ignored private brief does not change product identity" "$RC $(jf .evidence_set_sha256)" "0 $WANT"
 rm -f "$PB/extra-brief.md"
-assert_eq "observe has no readiness caller, producer or sender" \
+assert_eq "readiness callers: the verb, the reader and the poller's withdrawal recompute only" \
   "$(grep -rlE 'paperclip-readiness|afk_pce_readiness|afk_cmd_paperclip_readiness' "$KIT_ROOT/bin" "$KIT_ROOT/lib" "$KIT_ROOT/files" | sed "s|^$KIT_ROOT/||" | LC_ALL=C sort | paste -sd' ' -)" \
-  "bin/agent-flow-kit lib/afk-paperclip-evidence.sh"
+  "bin/agent-flow-kit lib/afk-paperclip-evidence.sh lib/afk-paperclip.sh"
+assert_eq "  ...the poller calls the shared reader on exactly one line" \
+  "$(grep -cE 'paperclip-readiness|afk_pce_readiness|afk_cmd_paperclip_readiness' "$KIT_ROOT/lib/afk-paperclip.sh")" "1"
 
 head1 "2. Usage"
 for args in "--issue $ISSUE" "--dir $R" "--issue nope --dir $R" "--issue $ISSUE --dir $R --commit xyz" \
@@ -503,7 +505,121 @@ sent 2026-03-09T00:00:00.000Z; poll
 is "a third question opens it again" "QUESTION_OPEN"
 assert_eq "...the reply stays bound to q2" "$(row '"\(.question_id) \(.question_seq) \(.question_reply.question_id)"')" "q3 4 q2"
 
-# The observe slice has no readiness caller. Eligibility and withdrawal
-# fixtures are reserved for the later withdraw slice.
+head1 "11. Withdrawal: readiness at the recorded paths, through the poller"
+# The section-10 world: a committed gates allowlist, a /2 plan approved
+# through the public paths, builder and independent reviewer evidence. Each
+# case restores a kept state, checks that state's own readiness reasons,
+# then persists an intent bound to it with its strict /2 marker and runs real
+# poll passes with final_delivery_enabled true. Nothing may be sent.
+jq '.final_delivery_enabled = true' "$CONFIG" >"$CONFIG.t" && mv "$CONFIG.t" "$CONFIG"
+det11() { # <status> -- the issue detail, with the pinned ownership fields
+  fx GET "/api/issues/$ISSUE" 200 "$(jq -nc --arg s "$1" --arg p "$PROJ" --arg a "$AGENT" --arg u "$BOARD" \
+    '{status:$s, identifier:"HOM-20", projectId:$p, updatedAt:"2026-01-01T00:00:00Z", assigneeAgentId:$a, createdByUserId:$u}
+     + (if $s == "blocked" then {unblockDescriptor:{owner:{agentId:$a}}} else {} end)')"
+}
+det11 blocked
+RP="$(cd -P -- "$R" && pwd -P)"; CD10="$(cd -P -- "$(git -C "$R" rev-parse --path-format=absolute --git-common-dir)" && pwd -P)"
+HEADC="$(git -C "$R" rev-parse HEAD)"; FE="e1000000-0000-4000-8000-000000000001"; MK11="$STATE/paperclip/spool/$ISSUE/.final"
+intent11() { # <attempts> [<payload jq edit>] -- a persisted intent of the current evidence and its /2 marker
+  local p; p="$(jq -nc --arg i "$ISSUE" --arg pd "$PDR" --arg es "$R10" --arg t "$T" --arg c "$HEADC" --arg d "$RP" \
+    --arg cd "$CD10" --arg u "$BOARD" '{issue:$i, identifier:"HOM-20", plan_digest:$pd, evidence_set_sha256:$es, tree:$t,
+      commit:$c, dir:$d, common_dir:$cd, status:"in_review", reviewer_user_id:$u, body:"ready for review",
+      published_at:"2026-10-10T00:00:00Z"}' | jq -c "${2:-.}")"
+  lput "$(jq -c --arg id "$ISSUE" --arg e "$FE" --argjson n "$1" --argjson p "$p" \
+    '.issues[$id].final_intent = {entry_id:$e, attempts:$n, payload:$p}' "$L10")"
+  mkdir -p "$STATE/paperclip/spool/$ISSUE"
+  jq -nc --arg e "$FE" --arg i "$ISSUE" --arg es "$(jq -r .evidence_set_sha256 <<<"$p")" \
+    '{schema:"afk-paperclip-final/2", entry_id:$e, issue:$i, evidence_set_sha256:$es}' >"$MK11"
+}
+# zw -- the poll log's POST/PATCH count: exactly one number, 0 when none.
+zw() { local n; n="$(grep -cE '^(POST|PATCH) ' "$X/curl.log" 2>/dev/null)"; printf '%s' "${n:-0}"; }
+mk11() { if [[ -e "$MK11" ]]; then echo marker; else echo none; fi; }
+wd11() { row '[(.final_withdrawn // [] | length), (.final_withdrawn[0].entry_id // "none"), (.final_withdrawn[0].reasons // [] | join(",")),
+  (.final_intent.entry_id // "none"), (.final_withdraw_cleanup // "none" | tostring)] | map(tostring) | join(" ")'; }
+fw11() { find "$STATE/paperclip/notices/proj1" -name '*.final_withdrawn.json' 2>/dev/null | wc -l | tr -d ' '; }
+: >>"$X/curl.log"
+assert_eq "the zero-write helper prints exactly one number" "$(zw | wc -l | tr -d ' ') $(zw | grep -cE '^[0-9]+$')" "0 1"
+
+back replied; rd
+assert_eq "11a. baseline: the replied state is ready, by its own reasons" \
+  "$RC $(jf .ready) $(jf '.reasons | join(",")') $(jf .evidence_set_sha256)" "0 true  $R10"
+lput "$(jq -c --arg id "$ISSUE" 'del(.issues[$id].question_reply)' "$L10")"
+is "  ...without its reply, q1 is open" "QUESTION_OPEN"
+intent11 0; comments "$A1" "$(jcm a "call it bar" 2026-03-11T00:00:00.000Z)"; w0="$(zw)"; poll
+assert_eq "  ...an answer seen at the suppression point is saved first: eligible in the same pass, nothing sent" \
+  "$(row '.question_reply.comment_id') $(row '.final_intent.eligible.evidence_set_sha256') $(wd11) $(mk11) $(( $(zw) - w0 ))" \
+  "c1000000-0000-4000-8000-00000000000a $R10 0 none  $FE none marker 0"
+
+back approved; rd
+assert_eq "11b. baseline: the approved state is ready, by its own reasons" "$RC $(jf '.reasons | join(",")') $(jf .evidence_set_sha256)" "0  $R10"
+intent11 0; comments "$A1" "$(jcm 2 "reject $D8" 2026-03-03T00:00:00.000Z)"; w0="$(zw)"; poll
+assert_eq "  ...a plan reject seen first makes the same-pass recompute PLAN_NOT_APPROVED: withdrawn at attempts 0" \
+  "$(approved) $(wd11)" "false 1 $FE PLAN_NOT_APPROVED,QUESTION_OPEN none none"
+assert_eq "  ...the full intent is kept in final_withdrawn, its matching marker removed, one notice, nothing sent" \
+  "$(row '.final_withdrawn[0] | [.attempts, .payload.evidence_set_sha256, .payload.dir] | map(tostring) | join(" ")') $(mk11) $(fw11) $(( $(zw) - w0 ))" \
+  "0 $R10 $RP none 1 0"
+
+back approved; intent11 1; comments "$A1" "$(jcm 2 "reject $D8" 2026-03-03T00:00:00.000Z)"; w0="$(zw)"; poll
+assert_eq "11c. attempts>0: a terminal READINESS_CHANGED hold with reasons; intent and marker kept" \
+  "$(row '.final_intent.hold | "\(.reason) \(.reasons | join(","))"') $(wd11) $(mk11)" \
+  "READINESS_CHANGED PLAN_NOT_APPROVED,QUESTION_OPEN 0 none  $FE none marker"
+poll
+assert_eq "  ...a later pass never rearms or withdraws it, nothing sent" \
+  "$(row '.final_intent.hold.reason') $(wd11) $(mk11) $(( $(zw) - w0 ))" "READINESS_CHANGED 0 none  $FE none marker 0"
+
+# Recorded fields that differ from a ready answer.
+PF="$(printf 'f%.0s' {1..64})"
+while IFS='|' read -r fld val want; do
+  back replied; intent11 0 ".$fld = \"$val\""; comments "$A1"; w0="$(zw)"; poll
+  assert_eq "11d. recorded $fld differs from the ready answer: withdrawn with $want, nothing sent" \
+    "$(wd11) $(mk11) $(( $(zw) - w0 ))" "1 $FE $want none none none 0"
+done <<EOF
+evidence_set_sha256|$Z|EVIDENCE_SET_CHANGED
+tree|$T2|TREE_CHANGED
+plan_digest|$PF|PLAN_CHANGED
+EOF
+
+back replied; intent11 0; printf 'edit\n' >"$R/new.txt"; comments "$A1"; w0="$(zw)"; poll
+assert_eq "11e. a current product edit: withdrawn with the reader's own reasons" \
+  "$(row '.final_withdrawn[0].reasons | [index("COMMIT_TREE_MISMATCH") != null, index("TREE_CHANGED:HOM-20.S1") != null] | map(tostring) | join(" ")') $(mk11) $(( $(zw) - w0 ))" \
+  "true true none 0"
+rm -f "$R/new.txt"
+
+# The recorded paths themselves, before readiness runs.
+XF="$X/foreign"; git clone -q "$R" "$XF"; XFP="$(cd -P -- "$XF" && pwd -P)"; ln -s "$R" "$X/rlink"
+while IFS=';' read -r name edit want; do
+  back replied; intent11 0 "$edit"; comments "$A1"; w0="$(zw)"; poll
+  assert_eq "11f. $name: withdrawn with $want, nothing sent" "$(wd11) $(mk11) $(( $(zw) - w0 ))" "1 $FE $want none none none 0"
+done <<EOF
+moved or deleted worktree;.dir = "$X/moved-away";TREE_UNAVAILABLE
+recorded through a symlink;.dir = "$X/rlink";TREE_UNAVAILABLE
+replaced by another repository;.dir = "$XFP" | .common_dir = "$XFP/.git";WORKTREE_FOREIGN
+recorded common_dir of another repository;.common_dir = "$XFP/.git";WORKTREE_FOREIGN
+EOF
+
+back replied; intent11 0; comments "$A1"; w0="$(zw)"
+env -i PATH="$PATH" HOME="$HOME_DIR" LANG=C AFK_STATE_DIR="$STATE" AFK_PAPERCLIP_CONFIG="$CONFIG" \
+  AFK_OP_BIN="$X/op" AFK_CURL_BIN="$X/curl" OP_SERVICE_ACCOUNT_TOKEN=t CURL_LOG="$X/curl.log" CURL_FIX="$X/fix" \
+  GIT_DIR="$XF/.git" GIT_WORK_TREE="$XF" GIT_COMMON_DIR="$XF/.git" GIT_INDEX_FILE="$X/no-index" \
+  bash "$AFK" paperclip-poll --json >>"$X/poll.out" 2>&1 </dev/null
+assert_eq "11g. ambient GIT_* naming another repository is ignored by the path checks and readiness: eligible" \
+  "$(row '.final_intent.eligible.evidence_set_sha256') $(wd11) $(mk11) $(( $(zw) - w0 )) $([[ -e "$X/no-index" ]] && echo INDEX)" \
+  "$R10 0 none  $FE none marker 0 "
+
+# At rest on the ready fixture: two deferrals, a blocked return resets the
+# count (and is eligible), then the third consecutive deferral holds.
+back replied; intent11 0; comments "$A1"; w0="$(zw)"
+p11() { row '.final_intent | [.observed.status, .observed.passes, (.hold.reason // "none"), (.eligible != null)] | map(tostring) | join(" ")'; }
+det11 in_progress; poll; poll
+assert_eq "11h. not blocked twice: two deferrals, no hold, no eligibility" "$(p11)" "in_progress 2 none false"
+det11 blocked; poll
+assert_eq "  ...back to blocked before the bound: count reset, eligible" "$(p11)" "blocked 0 none true"
+det11 in_progress; poll; poll
+assert_eq "  ...two more deferrals from zero: still no hold" "$(p11)" "in_progress 2 none true"
+poll
+assert_eq "  ...the third consecutive one: terminal NOT_AT_REST, never withdrawn, nothing sent" \
+  "$(p11) $(wd11) $(mk11) $(( $(zw) - w0 ))" "in_progress 3 NOT_AT_REST false 0 none  $FE none marker 0"
+det11 blocked
+
 printf '\n%d passed, %d failed (%ds)\n' "$PASS" "$FAIL" "$SECONDS"
 (( FAIL == 0 ))
