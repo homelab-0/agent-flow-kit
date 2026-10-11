@@ -911,15 +911,25 @@ afk_pc_final_intent_valid() {
     and (.published_at // empty | type == "string" and length > 0)' <<<"$1" >/dev/null 2>&1
 }
 
+# afk_pc_final_cleanup_pending <issue_id> -- L2a: a withdrawn intent whose
+# recorded cleanup (notice, matching marker) is not confirmed yet. Once the
+# active final_intent has moved to final_withdrawn[], this durable record is
+# what keeps the issue fenced from ordinary remote writes. Read-only.
+afk_pc_final_cleanup_pending() {
+  jq -e --arg id "$1" '.issues[$id].final_withdraw_cleanup | type == "object"' \
+    <<<"$ledger" >/dev/null 2>&1
+}
+
 # afk_pc_final_intent_present <issue_id> -- U5's shared earliest guard: true
-# when this issue already has a persisted intent, or a raw final_intent is at
-# the spool head. Read-only: no lock, no mkdir, no spool or ledger mutation.
-# Callers that must suppress a write ahead of persistence use this, never
-# the mutating recognize below.
+# when this issue already has a persisted intent, a pending withdrawal
+# cleanup, or a raw final_intent at the spool head. Read-only: no lock, no
+# mkdir, no spool or ledger mutation. Callers that must suppress a write
+# ahead of persistence use this, never the mutating recognize below.
 afk_pc_final_intent_present() {
   local iid="$1" dir head_file=""
   jq -e --arg id "$iid" '.issues[$id].final_intent // empty | length > 0' \
     <<<"$ledger" >/dev/null 2>&1 && return 0
+  afk_pc_final_cleanup_pending "$iid" && return 0
   dir="$(afk_pc_spool_dir "$iid")"
   [[ -d "$dir" ]] || return 1
   head_file="$(afk_pc_spool_files "$iid" | head -n1)"
@@ -936,13 +946,15 @@ afk_pc_final_intent_present() {
 # only a raw final_intent spool head, written by a future producer (L3), is
 # ever recognized here.
 afk_pc_final_intent_recognize() {
-  local iid="$1" dir lockdir existing head_file="" head_kind="" entry entry_id payload
+  local iid="$1" dir lockdir existing head_file="" head_kind="" entry entry_id payload held=false
   existing="$(jq -c --arg id "$iid" '.issues[$id].final_intent // empty' <<<"$ledger")"
+  # L2a: a pending withdrawal cleanup fences exactly like a persisted intent.
+  if [[ -n "$existing" ]] || afk_pc_final_cleanup_pending "$iid"; then held=true; fi
   dir="$(afk_pc_spool_dir "$iid")"
   # A missing spool directory means no raw head is possible: decide from the
   # ledger alone, and never create one just to look (EDGE-C1-09).
   if [[ ! -d "$dir" ]]; then
-    [[ -n "$existing" ]]
+    [[ "$held" == true ]]
     return $?
   fi
   # LOCK: a lock-free precheck. Peek the head kind without the lock, so a
@@ -957,7 +969,7 @@ afk_pc_final_intent_recognize() {
     head_kind="$(jq -r '.kind // empty' "$dir/$head_file" 2>/dev/null)"
   fi
   if [[ "$head_kind" != final_intent ]]; then
-    [[ -n "$existing" ]]
+    [[ "$held" == true ]]
     return $?
   fi
   lockdir="$dir/.seq.lock"
@@ -978,7 +990,7 @@ afk_pc_final_intent_recognize() {
   if [[ -z "$head_file" || "$head_kind" != final_intent ]]; then
     # Raced: the head moved on between the unlocked peek and the lock.
     afk_pc_spool_unlock "$lockdir"
-    [[ -n "$existing" ]]
+    [[ "$held" == true ]]
     return $?
   fi
   if ! afk_pc_final_intent_valid "$entry" "$iid"; then
@@ -1008,6 +1020,29 @@ afk_pc_final_intent_recognize() {
     actions="$(jq -c --arg t "final intent conflict, existing intent kept: $identifier" '. + [$t]' <<<"$actions")"
     return 0
   fi
+  # L2a: a head whose entry is already withdrawn (cleanup pending, or in
+  # final_withdrawn[]) is crash residue, never a new intent. The same payload
+  # is retired as a replay; a different one keeps both and refuses. While a
+  # cleanup is pending, any other entry stays spooled and unpersisted.
+  local cleanup_eid withdrawn_payload
+  cleanup_eid="$(jq -r --arg id "$iid" '.issues[$id].final_withdraw_cleanup | objects | .entry_id // empty' <<<"$ledger" 2>/dev/null)"
+  withdrawn_payload="$(jq -c --arg id "$iid" --arg e "$entry_id" \
+    '[.issues[$id].final_withdrawn[]? | objects | select(.entry_id == $e)] | last | .payload // empty' <<<"$ledger" 2>/dev/null)"
+  if [[ -n "$withdrawn_payload" || "$cleanup_eid" == "$entry_id" ]]; then
+    if [[ -n "$withdrawn_payload" && "$(jq -cS '.' <<<"$withdrawn_payload")" == "$(jq -cS '.' <<<"$payload")" ]]; then
+      rm -f -- "$dir/$head_file"
+      afk_pc_spool_unlock "$lockdir"
+      return 0
+    fi
+    afk_pc_spool_unlock "$lockdir"
+    actions="$(jq -c --arg t "final intent conflict, withdrawn entry kept: $identifier" '. + [$t]' <<<"$actions")"
+    return 0
+  fi
+  if afk_pc_final_cleanup_pending "$iid"; then
+    afk_pc_spool_unlock "$lockdir"
+    actions="$(jq -c --arg t "final intent held behind a pending withdrawal cleanup: $identifier" '. + [$t]' <<<"$actions")"
+    return 0
+  fi
   # Write-ahead: the ledger row is durable before the spool entry is ever
   # removed, so a crash here leaves the entry recoverable and the next pass
   # retries the same persistence rather than losing or duplicating it.
@@ -1032,9 +1067,11 @@ afk_pc_final_intent_recognize() {
 
 # --- AFK-PC-DELIVERY-L2A: classify and withdraw a pending final_intent -----
 # Default-off (final_delivery_enabled, read ad hoc like pm_start_enabled --
-# no new config validation). No sender, no producer: every branch below is a
-# ledger-only write; nothing here ever calls the Paperclip API beyond the
-# single comments GET afk_pc_scan_comments already performs.
+# no new config validation). No sender, no producer: classification writes
+# only the ledger and local notices, and the one file it ever removes is a
+# strict /2 marker naming the withdrawn entry, under the spool's .seq.lock,
+# in the pass-end cleanup below. Nothing here ever calls the Paperclip API
+# beyond the single comments GET afk_pc_scan_comments already performs.
 
 # afk_pc_observe_final_intent_comments <issue_id> -- U5/L2a: the comment scan
 # that a final_intent-holding issue otherwise never gets (L1 explicitly
@@ -1080,8 +1117,10 @@ afk_pc_observe_final_intent_comments() {
 }
 
 # A live closure can supersede a held intent. Every other observation needs
-# current host/creator authority before a baseline is accepted. Neither the
-# delivery toggle nor board status permits readiness in this slice.
+# current host/creator authority before a baseline is accepted. Only then,
+# with final_delivery_enabled true and the pass not paused, does the at-rest
+# count advance and, for a blocked issue, readiness run against the recorded
+# paths; with the toggle off the intent just waits, visibly.
 afk_pc_final_intent_classify() {
   local iid="$1" board_status="$2" assignee="$3" creator="$4" intent_record baseline
   intent_record="$(jq -c --arg id "$iid" '.issues[$id].final_intent // empty' <<<"$ledger")"
@@ -1110,7 +1149,207 @@ afk_pc_final_intent_classify() {
   if [[ -z "$baseline" ]]; then
     ledger="$(jq -c --arg id "$iid" --arg a "$assignee" --arg c "$creator"       '.issues[$id].final_intent.observed.identity = {assignee:$a,created_by:$c}' <<<"$ledger")"
   fi
-  actions="$(jq -c --arg t "final_awaiting_delivery: $identifier" '. + [$t]' <<<"$actions")"
+  # A paused pass is frozen like everything else: no count, no recompute.
+  if [[ "$(jq -r '.final_delivery_enabled // false' <<<"$AFK_PC_CFG")" != true || "${pause_kind:-none}" != none ]]; then
+    actions="$(jq -c --arg t "final_awaiting_delivery: $identifier" '. + [$t]' <<<"$actions")"
+    return 0
+  fi
+  afk_pc_final_intent_at_rest "$iid" "$board_status" || return 0
+  afk_pc_final_intent_recompute "$iid"
+}
+
+# afk_pc_final_intent_at_rest <issue_id> <board_status> -- U5's bounded
+# deferral, toggle on. Records observed {status, first_seen, passes}, where
+# passes counts consecutive observations that were not `blocked` and
+# first_seen is when the current status was first observed. Returns 0 only
+# for `blocked` (at rest, counter reset). The third consecutive not-blocked
+# observation is a terminal NOT_AT_REST hold, so passes never exceeds 3. A
+# stored count that is not an integer in 0..3 fails closed to the same hold.
+afk_pc_final_intent_at_rest() {
+  local iid="$1" st="$2" now passes
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  passes="$(jq -r --arg id "$iid" '.issues[$id].final_intent.observed | if type == "object" then . else {} end
+    | if has("passes") then .passes else 0 end | if type == "number" and . == floor then tostring else "invalid" end' <<<"$ledger")"
+  [[ "$passes" =~ ^[0-3]$ ]] || passes=invalid
+  if [[ "$st" == blocked ]]; then
+    passes=0
+  elif [[ "$passes" == invalid ]]; then
+    passes=3
+  else
+    passes=$((passes + 1)); (( passes <= 3 )) || passes=3
+  fi
+  ledger="$(jq -c --arg id "$iid" --arg st "$st" --arg now "$now" --argjson n "$passes" \
+    '.issues[$id].final_intent.observed |= ((if type == "object" then . else {} end)
+       | (if .status == $st and (.first_seen | type) == "string" then . else .first_seen = $now end)
+       | .status = $st | .passes = $n)' <<<"$ledger")"
+  [[ "$st" == blocked ]] && return 0
+  if (( passes >= 3 )); then
+    ledger="$(jq -c --arg id "$iid" --arg st "$st" '.issues[$id].final_intent |= (del(.eligible) | .hold = {reason:"NOT_AT_REST", status:$st, passes:3})' <<<"$ledger")"
+    actions="$(jq -c --arg t "NOT_AT_REST, held: $identifier" '. + [$t]' <<<"$actions")"
+  else
+    actions="$(jq -c --arg t "final_awaiting_delivery: $identifier (not at rest: $st, pass $passes of 3)" '. + [$t]' <<<"$actions")"
+  fi
+  return 1
+}
+
+# afk_pc_final_intent_paths <issue_id> <payload-json> -- U3's worktree
+# durability, before readiness: the recorded dir must still be an existing
+# directory at exactly that physical path, its common Git directory must be
+# the recorded common_dir, and that must be the owner repository's. Prints
+# one reason per line, nothing when all hold. The caller runs it with
+# ambient GIT_* unset, so only these paths locate Git.
+afk_pc_final_intent_paths() {
+  local iid="$1" dir cdir phys dir_c="" own_c=""
+  dir="$(jq -r '.dir // empty | strings' <<<"$2")"; cdir="$(jq -r '.common_dir // empty | strings' <<<"$2")"
+  if [[ -z "$dir" || ! -d "$dir" ]]; then printf 'TREE_UNAVAILABLE\n'; return 0; fi
+  phys="$(CDPATH='' cd -- "$dir" 2>/dev/null && pwd -P)" || phys=""
+  if [[ "$phys" != "$dir" ]]; then printf 'TREE_UNAVAILABLE\n'; return 0; fi
+  dir_c="$(afk_pce_common_dir "$dir")"
+  if afk_pcr_owner_repo "$iid" 2>/dev/null; then own_c="$(afk_pce_common_dir "$AFK_PCR_REPO_PATH")"; fi
+  [[ -n "$own_c" ]] || printf 'OWNER_REPO_UNKNOWN\n'
+  [[ -n "$dir_c" && "$dir_c" == "$cdir" && "$dir_c" == "$own_c" ]] || printf 'WORKTREE_FOREIGN\n'
+  return 0
+}
+
+# afk_pc_final_intent_recompute <issue_id> -- a blocked intent, toggle on:
+# the recorded paths, then the shared readiness reader at the recorded dir
+# and commit, then the strict /2 marker. Eligible needs ready, the exact
+# recorded evidence set, tree and plan digest, and a marker naming this
+# entry with that evidence set; eligibility is a local record only and
+# nothing is sent. Any reason is "changed": withdrawn while attempts is 0,
+# otherwise a terminal READINESS_CHANGED hold (a malformed count is never
+# taken as 0). Readiness reads this row from disk; the comment observation
+# before it has already saved anything that bears on the answer.
+afk_pc_final_intent_recompute() {
+  local iid="$1" rec payload attempts eid dir commit why r mk reasons
+  rec="$(jq -c --arg id "$iid" '.issues[$id].final_intent' <<<"$ledger")"
+  payload="$(jq -c '.payload | objects' <<<"$rec" 2>/dev/null)"; [[ -n "$payload" ]] || payload='{}'
+  eid="$(jq -r '.entry_id // empty | strings' <<<"$rec")"
+  attempts="$(jq -r '.attempts | if type == "number" and . == floor and . >= 0 then tostring else "invalid" end' <<<"$rec")"
+  dir="$(jq -r '.dir // empty | strings' <<<"$payload")"; commit="$(jq -r '.commit // empty | strings' <<<"$payload")"
+  why="$(unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
+           GIT_ALTERNATE_OBJECT_DIRECTORIES; afk_pc_final_intent_paths "$iid" "$payload")"
+  if [[ -z "$why" ]]; then
+    r="$(unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
+           GIT_ALTERNATE_OBJECT_DIRECTORIES; afk_pce_readiness "$iid" "$dir" "$commit")" || r=""
+    if ! jq -e 'type == "object" and (.ready | type) == "boolean" and (.reasons | type) == "array"' <<<"$r" >/dev/null 2>&1; then
+      why="READINESS_UNAVAILABLE"
+    else
+      why="$(jq -r --argjson p "$payload" '
+        if .ready != true then ([.reasons[] | strings] | if length == 0 then ["READINESS_NOT_READY"] else . end | .[])
+        else (if .evidence_set_sha256 != $p.evidence_set_sha256 then "EVIDENCE_SET_CHANGED" else empty end),
+             (if .tree != $p.tree then "TREE_CHANGED" else empty end),
+             (if .plan_digest != $p.plan_digest then "PLAN_CHANGED" else empty end) end' <<<"$r")"
+    fi
+  fi
+  mk="$(afk_pc_spool_dir "$iid")/.final"
+  if ! afk_pce_final_v2 "$iid" "$mk"; then
+    why+=$'\nFINAL_MARKER_MISSING'
+  elif ! jq -e --arg e "$eid" --argjson p "$payload" '.entry_id == $e and .evidence_set_sha256 == $p.evidence_set_sha256' "$mk" >/dev/null 2>&1; then
+    why+=$'\nFINAL_MARKER_MISMATCH'
+  fi
+  reasons="$(jq -Rsc 'split("\n") | map(select(length > 0))' <<<"$why")"
+  if [[ "$reasons" == "[]" ]]; then
+    ledger="$(jq -c --arg id "$iid" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      '.issues[$id].final_intent |= (.eligible //= {at:$at, evidence_set_sha256:.payload.evidence_set_sha256, tree:.payload.tree})' <<<"$ledger")"
+    actions="$(jq -c --arg t "final_eligible (no sender in this layer): $identifier" '. + [$t]' <<<"$actions")"
+  elif [[ "$attempts" == 0 ]]; then
+    afk_pc_final_intent_withdraw "$iid" "$reasons"
+  else
+    ledger="$(jq -c --arg id "$iid" --argjson r "$reasons" \
+      '.issues[$id].final_intent |= (del(.eligible) | .hold = {reason:"READINESS_CHANGED", reasons:$r})' <<<"$ledger")"
+    actions="$(jq -c --arg t "READINESS_CHANGED, held: $identifier" '. + [$t]' <<<"$actions")"
+  fi
+}
+
+# afk_pc_final_intent_withdraw <issue_id> <reasons-json> -- an unsent
+# (attempts 0) intent. One ledger write appends the full intent and its
+# reasons to final_withdrawn[], records final_withdraw_cleanup and only then
+# drops the active final_intent: the rename is atomic, so no durable state
+# ever has the intent consumed without its record, and the marker is still
+# untouched at that point. A failed write restores the in-memory ledger and
+# leaves the active intent, its fence and its marker exactly as they were.
+afk_pc_final_intent_withdraw() {
+  local iid="$1" reasons="$2" prior="$ledger" slug npath=""
+  if ! jq -e --arg id "$iid" '.issues[$id].final_withdrawn // [] | type == "array"' <<<"$ledger" >/dev/null 2>&1; then
+    actions="$(jq -c --arg t "final withdrawal refused (final_withdrawn is not a list), held: $identifier" '. + [$t]' <<<"$actions")"
+    return 0
+  fi
+  slug="$(jq -r --arg id "$iid" '.issues[$id].slug // empty' <<<"$ledger")"
+  afk_pc_slug_ok "$slug" && npath="$AFK_STATE_DIR/paperclip/notices/$slug/$(date +%s).$iid.final_withdrawn.json"
+  ledger="$(jq -c --arg id "$iid" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg np "$npath" --argjson r "$reasons" \
+    '.issues[$id] |= (.final_withdrawn = ((.final_withdrawn // []) + [.final_intent + {reasons:$r, withdrawn_at:$at}])
+       | .final_withdraw_cleanup = {entry_id:.final_intent.entry_id, notice:(if $np == "" then "none" else "pending" end), notice_path:$np}
+       | del(.final_intent))' <<<"$ledger")"
+  if ! afk_state_file_write "$ledger_path" "$ledger"; then
+    ledger="$prior"
+    AFK_PC_STORAGE_ERROR=true
+    actions="$(jq -c --arg t "PAPERCLIP_STORAGE_ERROR: final intent was not withdrawn for $identifier" '. + [$t]' <<<"$actions")"
+    return 0
+  fi
+  actions="$(jq -c --arg t "final_withdrawn ($(jq -r 'join(" ")' <<<"$reasons")): $identifier" '. + [$t]' <<<"$actions")"
+}
+
+# afk_pc_final_withdraw_cleanup <issue_id> -- resumes only the recorded
+# cleanup, at the end of a pass so every write path above already saw the
+# fence: the final_withdrawn notice once, then the marker under .seq.lock,
+# removed only when it is a strict /2 marker naming the withdrawn entry (a
+# legacy, foreign or absent marker is left exactly as it is; no lock is
+# taken when there is no marker), then the record is cleared. A refused
+# lock or failed write keeps the record, and so the fence, for a later pass.
+afk_pc_final_withdraw_cleanup() {
+  local iid="$1" c eid ident slug prow np sdir mk prior extra
+  c="$(jq -c --arg id "$iid" '.issues[$id].final_withdraw_cleanup | objects' <<<"$ledger" 2>/dev/null)"
+  [[ -n "$c" ]] || return 0
+  ident="$(jq -r --arg id "$iid" '.issues[$id].identifier // empty' <<<"$ledger")"
+  eid="$(jq -r '.entry_id // empty | strings' <<<"$c")"
+  if [[ "$(jq -r '.notice // empty' <<<"$c")" == pending ]]; then
+    np="$(jq -r '.notice_path // empty | strings' <<<"$c")"
+    slug="$(jq -r --arg id "$iid" '.issues[$id].slug // empty' <<<"$ledger")"
+    prow="$(afk_pc_project_row "$slug")"
+    if [[ -z "$prow" || -z "$np" ]]; then
+      actions="$(jq -c --arg t "final withdrawal notice has no project, cleanup held: $ident" '. + [$t]' <<<"$actions")"
+      return 0
+    fi
+    extra="$(jq -c --arg id "$iid" --arg e "$eid" '{entry_id:$e,
+      reasons:([.issues[$id].final_withdrawn[]? | objects | select(.entry_id == $e)] | last | .reasons // [])}' <<<"$ledger")"
+    if [[ ! -e "$np" ]] && ! afk_pc_notice "$slug" "$iid" "$ident" "$agent_id" "$(jq -r '.repo_path' <<<"$prow")" \
+         "$(jq -r '.harness' <<<"$prow")" final_withdrawn "$extra" "$np"; then
+      AFK_PC_STORAGE_ERROR=true
+      actions="$(jq -c --arg t "PAPERCLIP_STORAGE_ERROR: final_withdrawn notice was not written for $ident" '. + [$t]' <<<"$actions")"
+      return 0
+    fi
+    prior="$ledger"
+    ledger="$(jq -c --arg id "$iid" '.issues[$id].final_withdraw_cleanup.notice = "written"' <<<"$ledger")"
+    if ! afk_state_file_write "$ledger_path" "$ledger"; then
+      ledger="$prior"; AFK_PC_STORAGE_ERROR=true
+      actions="$(jq -c --arg t "PAPERCLIP_STORAGE_ERROR: final withdrawal cleanup was not saved for $ident" '. + [$t]' <<<"$actions")"
+      return 0
+    fi
+  fi
+  sdir="$(afk_pc_spool_dir "$iid")"; mk="$sdir/.final"
+  if [[ -e "$mk" || -L "$mk" ]]; then
+    if ! afk_pc_spool_lock "$sdir/.seq.lock"; then
+      actions="$(jq -c --arg t "final withdrawal cleanup lock unavailable, held: $ident" '. + [$t]' <<<"$actions")"
+      return 0
+    fi
+    if [[ -n "$eid" ]] && afk_pce_final_v2 "$iid" "$mk" && [[ "$(jq -r '.entry_id' "$mk" 2>/dev/null)" == "$eid" ]]; then
+      rm -f -- "$mk"
+    fi
+    afk_pc_spool_unlock "$sdir/.seq.lock"
+    if [[ -n "$eid" ]] && afk_pce_final_v2 "$iid" "$mk" && [[ "$(jq -r '.entry_id' "$mk" 2>/dev/null)" == "$eid" ]]; then
+      actions="$(jq -c --arg t "final withdrawal marker not removed, held: $ident" '. + [$t]' <<<"$actions")"
+      return 0
+    fi
+  fi
+  prior="$ledger"
+  ledger="$(jq -c --arg id "$iid" 'del(.issues[$id].final_withdraw_cleanup)' <<<"$ledger")"
+  if ! afk_state_file_write "$ledger_path" "$ledger"; then
+    ledger="$prior"; AFK_PC_STORAGE_ERROR=true
+    actions="$(jq -c --arg t "PAPERCLIP_STORAGE_ERROR: final withdrawal cleanup was not saved for $ident" '. + [$t]' <<<"$actions")"
+    return 0
+  fi
+  actions="$(jq -c --arg t "final withdrawal cleanup complete: $ident" '. + [$t]' <<<"$actions")"
 }
 
 # afk_pc_report_cycle <api_url> <key> <agent_id> <issue_id> <identifier>
@@ -1886,10 +2125,11 @@ afk_cmd_paperclip_poll() { # <json_mode>
       # below, and the report cycle after this loop, so none of them ever
       # runs ahead of a final_intent's zero-write boundary. Local-write, not
       # read-only (A6): comment observation and classification below may
-      # write the ledger and local notices, and classification's withdrawal
-      # path may take the spool's `.seq.lock` to remove a marker -- never a
-      # remote write. Persistence to the board happens only inside
-      # afk_pc_report_cycle.
+      # write the ledger and local notices -- never a remote write. A
+      # withdrawal here is one ledger write; its marker cleanup runs only in
+      # the pass-end sweep, and its pending record keeps this guard firing
+      # until that cleanup is confirmed. First persistence of a raw head
+      # happens only inside afk_pc_report_cycle.
       # L2a: a persisted intent (never a raw head alone) is also observed and
       # classified here, while the detail GET's status/identity fields are
       # fresh -- the only point in the pass where they are. Comment
@@ -2410,6 +2650,17 @@ afk_cmd_paperclip_poll() { # <json_mode>
         afk_pc_retry_report_pm_start "$rid" "$agent_id"
         afk_pc_report_cycle "$api_url" "$key" "$agent_id" "$rid" "$r_ident" "$status_file_dir" || true
         [[ "$AFK_PC_ABORT" == true ]] && break
+      done
+      # L2a: recorded withdrawal cleanup resumes last, for every row that
+      # has one (in the inbox or not), so every write path above saw this
+      # pass's fence. Local only; frozen while paused like the rest.
+      local -a cleanup_ids=()
+      mapfile -t cleanup_ids < <(jq -r --arg a "$agent_id" '.issues | to_entries[]
+        | select(.value.host_agent_id == $a and (.value.final_withdraw_cleanup | type) == "object") | .key' <<<"$ledger")
+      local wid
+      for wid in "${cleanup_ids[@]:-}"; do
+        [[ -n "$wid" ]] || continue
+        afk_pc_final_withdraw_cleanup "$wid"
       done
     fi
     break
