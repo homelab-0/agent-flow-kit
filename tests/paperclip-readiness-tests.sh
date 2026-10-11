@@ -395,13 +395,19 @@ cat >"$X/op" <<'SH'
 exit 2
 SH
 # curl: a fixture per method and path (first line the status), else no answer.
+# The argv (never the key: it is read from a descriptor) and request bodies
+# are logged; "<fixture>.<n>" answers only the n-th call of that route.
 cat >"$X/curl" <<'SH'
 #!/usr/bin/env bash
 args=("$@"); n=$#; method=GET
-for ((i = 0; i < n; i++)); do [[ "${args[$i]}" == -X ]] && method="${args[$((i + 1))]}"; done
+for ((i = 0; i < n; i++)); do
+  [[ "${args[$i]}" == -X ]] && method="${args[$((i + 1))]}"
+  [[ "${args[$i]}" == --data-binary ]] && { cat "${args[$((i + 1))]#@}"; printf '\n'; } >>"$CURL_LOG.bodies"
+done
 url="${args[$((n - 1))]}"; tmp="${url#*://}"; path="/${tmp#*/}"
-printf '%s %s\n' "$method" "$path" >>"$CURL_LOG"
+printf '%s %s\n' "$method" "$path" >>"$CURL_LOG"; printf '%s\n' "$*" >>"$CURL_LOG.argv"
 key="${method}_${path#/}"; f="$CURL_FIX/${key//\//_}"
+c="$(( $(cat "$f.n" 2>/dev/null || printf 0) + 1 ))"; printf '%s' "$c" >"$f.n"; [[ -f "$f.$c" ]] && f="$f.$c"
 [[ -f "$f" ]] || { printf '000'; exit 0; }
 tail -n +2 "$f"; printf '%s' "$(head -1 "$f")"
 SH
@@ -512,9 +518,11 @@ head1 "11. Withdrawal: readiness at the recorded paths, through the poller"
 # then persists an intent bound to it with its strict /2 marker and runs real
 # poll passes with final_delivery_enabled true. Nothing may be sent.
 jq '.final_delivery_enabled = true' "$CONFIG" >"$CONFIG.t" && mv "$CONFIG.t" "$CONFIG"
+# Nothing is sent here: /active-run has no fixture (an unreadable run is a
+# visible wait) and the recorded run id is not a UUID. Section 12 sends.
 det11() { # <status> -- the issue detail, with the pinned ownership fields
-  fx GET "/api/issues/$ISSUE" 200 "$(jq -nc --arg s "$1" --arg p "$PROJ" --arg a "$AGENT" --arg u "$BOARD" \
-    '{status:$s, identifier:"HOM-20", projectId:$p, updatedAt:"2026-01-01T00:00:00Z", assigneeAgentId:$a, createdByUserId:$u}
+  fx GET "/api/issues/$ISSUE" 200 "$(jq -nc --arg i "$ISSUE" --arg s "$1" --arg p "$PROJ" --arg a "$AGENT" --arg u "$BOARD" \
+    '{id:$i, status:$s, identifier:"HOM-20", projectId:$p, updatedAt:"2026-01-01T00:00:00Z", assigneeAgentId:$a, createdByUserId:$u}
      + (if $s == "blocked" then {unblockDescriptor:{owner:{agentId:$a}}} else {} end)')"
 }
 det11 blocked
@@ -620,6 +628,179 @@ poll
 assert_eq "  ...the third consecutive one: terminal NOT_AT_REST, never withdrawn, nothing sent" \
   "$(p11) $(wd11) $(mk11) $(( $(zw) - w0 ))" "in_progress 3 NOT_AT_REST false 0 none  $FE none marker 0"
 det11 blocked
+
+head1 "12. Delivery: one owned creator-return PATCH (AFK-PC-DELIVERY-L2b)"
+# The section-11 ready world, toggle on, plus a recorded same-issue UUID run
+# and a readable no-run. Each case starts from fresh logs and call counters.
+RUN12="a1000000-0000-4000-8000-000000000001"; FM="<!-- afk-final:$FE -->"; LATE=2099-01-01T00:00:00.000Z
+det12() { # <status> [<assigneeAgentId, "" null>] [<assigneeUserId>] [<id>]
+  fx GET "/api/issues/$ISSUE" 200 "$(jq -nc --arg i "${4:-$ISSUE}" --arg s "$1" --arg p "$PROJ" --arg a "${2-$AGENT}" \
+    --arg au "${3:-}" --arg u "$BOARD" '{id:$i, status:$s, identifier:"HOM-20", projectId:$p, updatedAt:"2026-01-01T00:00:00Z",
+      createdByUserId:$u, assigneeAgentId:(if $a == "" then null else $a end), assigneeUserId:(if $au == "" then null else $au end)}')"
+}
+own() { # [<deletedAt>] -- this agent's final comment, as read back
+  jq -nc --arg a "$AGENT" --arg b "ready for review"$'\n\n'"$FM" --arg c "$LATE" --arg d "${1:-}" \
+    '{id:"c2000000-0000-4000-8000-000000000001", authorAgentId:$a, authorUserId:null, createdAt:$c}
+     + (if $d == "" then {body:$b, deletedAt:null} else {body:"", deletedAt:$d} end)'
+}
+receipt() { jq -nc --arg i "$ISSUE" --arg u "$BOARD" --argjson c "${1:-null}" \
+  '{id:$i, status:"in_review", assigneeAgentId:null, assigneeUserId:$u} + (if $c == null then {} else {comment:$c} end)'; }
+inbox12() { if [[ "$1" == in ]]; then fx GET /api/agents/me/inbox-lite 200 "[{\"id\":\"$ISSUE\"}]"; else fx GET /api/agents/me/inbox-lite 200 '[]'; fi; }
+ready12() { # <attempts> [<payload jq edit>]
+  back replied; intent11 "$1" "${2:-.}"
+  lput "$(jq -c --arg id "$ISSUE" --arg r "$RUN12" '.issues[$id].last_self_wake_run_id = $r' "$L10")"
+  rm -f "$X"/fix/*.n "$X"/fix/*.[0-9] "$X"/fix/PATCH_*; : >"$X/curl.log"; : >"$X/curl.log.bodies"; : >"$X/curl.log.argv"
+  comments "$A1"; det12 blocked; inbox12 in; fx GET "/api/issues/$ISSUE/active-run" 200 'null'
+}
+patch12() { fx PATCH "/api/issues/$ISSUE" "$@"; }
+fi12() { row ".final_intent | $1"; }
+np() { grep -c '^PATCH ' "$X/curl.log"; }
+last() { tail -n1 "$X/poll.out"; }
+toggle() { jq ".final_delivery_enabled = $1" "$CONFIG" >"$CONFIG.t" && mv "$CONFIG.t" "$CONFIG"; }
+
+ready12 0; toggle false; poll; poll; poll
+assert_eq "12a. toggle off, three passes: no write, attempt, recompute or delivery" \
+  "$(zw) $(fi12 '[.attempts, (.eligible != null), (.delivery // "none")] | map(tostring) | join(" ")')" "0 0 false none"
+assert_contains "  ...visibly awaiting delivery" "$(last)" "final_awaiting_delivery: HOM-20"
+toggle true; mkdir -p "$HOME_DIR/.config/agent-flow-kit/paperclip"; : >"$HOME_DIR/.config/agent-flow-kit/paperclip/stop"; poll
+assert_eq "  ...toggle on but a paused pass: still nothing" "$(zw) $(fi12 .attempts)" "0 0"
+
+ready12 0; patch12 200 "$(receipt "$(own)")"; poll
+WANT="$(jq -nc --arg u "$BOARD" --arg c "ready for review"$'\n\n'"$FM" '{status:"in_review", assigneeAgentId:null, assigneeUserId:$u, comment:$c}')"
+assert_eq "12b. ready: exactly one PATCH, body exactly the creator-return to the board with the final marker" \
+  "$(zw) $(np) $(head -1 "$X/curl.log.bodies")" "1 1 $WANT"
+assert_eq "  ...carrying the recorded run, never a wakeup" \
+  "$(grep -c -- "-X PATCH .*X-Paperclip-Run-Id: $RUN12" "$X/curl.log.argv") $(grep -c 'wakeup' "$X/curl.log")" "1 0"
+assert_eq "  ...a bound receipt: attempts 1, delivered by receipt, comment present, final_delivered" \
+  "$(fi12 '[.attempts, .delivery.state, .delivery.proof, .delivery.comment, .delivery.run, .disposition] | join(" ")')" \
+  "1 delivered receipt present $RUN12 final_delivered"
+det12 in_review "" "$BOARD"; inbox12 out; poll; poll
+assert_eq "  ...two more passes off the inbox: zero further writes, still a delivered fence" \
+  "$(zw) $(fi12 .disposition) $(mk11)" "1 final_delivered marker"
+inbox12 in
+ready12 0; patch12 200 '{}'; poll; poll; poll
+assert_eq "  ...A8, an unbound 2xx: saved UNEXPLAINED_RESPONSE, delivery uncertain, one PATCH over three passes" \
+  "$(fi12 '"\(.hold.reason) \(.delivery.state)"') $(np)" "UNEXPLAINED_RESPONSE uncertain 1"
+
+ready12 0; mkdir -p "$STATE/paperclip/ledger.json.afk-tmp"; patch12 200 "$(receipt "$(own)")"; poll
+assert_eq "12c. the attempt save fails: no PATCH, the prior ledger kept, storage error" \
+  "$(zw) $(fi12 '[.attempts, (.delivery // "none")] | map(tostring) | join(" ")')" "0 0 none"
+assert_contains "  ...visible" "$(last)" "PAPERCLIP_STORAGE_ERROR: final delivery attempt was not saved for HOM-20"
+rmdir "$STATE/paperclip/ledger.json.afk-tmp"; poll
+assert_eq "  ...the next writable pass sends once" "$(np) $(fi12 .disposition)" "1 final_delivered"
+
+ready12 0; lput "$(jq -c --arg id "$ISSUE" '.issues[$id].last_self_wake_run_id = "run-1"' "$L10")"; poll; poll; poll
+assert_eq "12d. a non-UUID recorded run: saved RUN_CONTEXT_ABSENT, zero writes, no wakeup, over three passes" \
+  "$(fi12 .hold.reason) $(zw) $(fi12 .attempts)" "RUN_CONTEXT_ABSENT 0 0"
+ready12 0; mkdir -p "$STATE/paperclip/ledger.json.afk-tmp"
+lput "$(jq -c --arg id "$ISSUE" 'del(.issues[$id].last_self_wake_run_id)' "$L10")"; poll
+assert_eq "  ...A15, unwritable ledger: storage error, no hold on disk, no held action" \
+  "$(fi12 '.hold // "none"') $(zw) $(last | grep -c 'RUN_CONTEXT_ABSENT, held')" "none 0 0"
+rmdir "$STATE/paperclip/ledger.json.afk-tmp"; poll
+assert_eq "  ...the next writable pass saves it" "$(fi12 .hold.reason) $(zw)" "RUN_CONTEXT_ABSENT 0"
+
+while IFS='|' read -r st code; do
+  ready12 0; patch12 "$st" "{\"error\":\"refused\",\"details\":{\"code\":\"$code\"}}"; poll; poll; poll
+  assert_eq "12e. $st $code: saved RUN_CONTEXT_REJECTED with the code, one PATCH over three passes" \
+    "$(fi12 '"\(.hold.reason) \(.hold.code) \(.delivery.state)"') $(np)" "RUN_CONTEXT_REJECTED $code rejected 1"
+done <<EOF
+403|cross_issue_influence_run_context_required
+422|agent_jwt_run_id_mismatch
+429|cross_issue_influence_cap_exceeded
+EOF
+
+ready12 0; fx GET "/api/issues/$ISSUE/active-run" 200 '{"id":"r0000000-live"}'; poll; poll
+assert_eq "12f. a live active run: two visible waits, no hold, no write" "$(fi12 '"\(.active_run_waits) \(.hold // "none")"') $(zw)" "2 none 0"
+assert_contains "  ...counted" "$(last)" "active run, pass 2 of 3"
+poll
+assert_eq "  ...the third: saved ACTIVE_RUN_PRESENT, never cancelled or woken" "$(fi12 .hold.reason) $(zw)" "ACTIVE_RUN_PRESENT 0"
+
+ready12 0 '.reviewer_user_id = "someone-else"'; poll
+assert_eq "12g. payload reviewer is not board_user_id: saved IDENTITY_CHANGED, zero writes" "$(fi12 '"\(.hold.reason) \(.hold.field)"') $(zw)" "IDENTITY_CHANGED reviewer_user_id 0"
+ready12 0; det12 blocked "$AGENT" "" "e9999999-0000-4000-8000-000000000009"; poll
+assert_eq "  ...detail id mismatch: saved IDENTITY_CHANGED, zero writes" "$(fi12 '"\(.hold.reason) \(.hold.field)"') $(zw)" "IDENTITY_CHANGED id 0"
+
+# A9: the response is lost but the PATCH applied; the issue leaves the inbox.
+ready12 0; poll
+assert_eq "12h. a lost response (000): one PATCH, delivery uncertain, no hold yet" "$(np) $(fi12 '"\(.delivery.state) \(.hold // "none")"')" "1 uncertain none"
+det12 in_review "" "$BOARD"; inbox12 out; comments "$A1" "$(own)"; poll; poll; poll
+assert_eq "  ...the absent-row readback marks it delivered, never a hold; still one PATCH, no POST or wakeup over three passes" \
+  "$(fi12 '[.delivery.state, .delivery.proof, .delivery.comment, .disposition, (.hold // "none")] | map(tostring) | join(" ")') $(np) $(zw) $(grep -c wakeup "$X/curl.log")" \
+  "delivered readback_state present final_delivered none 1 1 0"
+assert_eq "  ...only once resolved does the AC-5d loop close the row" "$(row .state)" "closed"
+inbox12 in
+
+# The ambiguity rule: a 502 not seen applied is never resent.
+ready12 0; patch12 502 '{"error":"bad gateway"}'; poll; poll; poll
+assert_eq "12i. 502 then blocked + agent: saved DELIVERY_UNCONFIRMED, one PATCH over three passes" \
+  "$(fi12 '"\(.hold.reason) \(.delivery.state)"') $(np)" "DELIVERY_UNCONFIRMED uncertain 1"
+det12 in_review "" "$BOARD"; inbox12 out; poll
+assert_eq "  ...a delayed apply is still read back: delivered, the hold cleared, no write" \
+  "$(fi12 '"\(.delivery.state) \(.hold // "none") \(.delivery.comment)"') $(zw)" "delivered none missing 1"
+inbox12 in
+
+# A10: only a credential refusal is a proven non-effect; each retry follows
+# readback and full checks. An uncoded 429 has no pinned pre-mutation proof.
+ready12 0; patch12 429 '{"error":"slow down"}'; poll; poll; poll
+assert_eq "12j. uncoded 429: uncertain, saved DELIVERY_UNCONFIRMED, one PATCH over three passes" \
+  "$(fi12 '"\(.delivery.state) \(.hold.reason)"') $(np)" "uncertain DELIVERY_UNCONFIRMED 1"
+ready12 0; patch12 401 '{"error":"x"}'; poll
+assert_eq "  ...401: not_applied, attempts 1" "$(fi12 '"\(.delivery.state) \(.attempts)"')" "not_applied 1"
+poll; poll; poll; poll
+assert_eq "  ...retried one PATCH per pass to three sends, then saved RETRY_EXHAUSTED, zero writes after" \
+  "$(np) $(fi12 .hold.reason) $(fi12 .attempts)" "3 RETRY_EXHAUSTED 3"
+ready12 0; patch12 401 '{"error":"x"}'; poll; comments "$A1" "$(own)"; poll
+assert_eq "  ...blocked with this agent's marker after a 401: saved DELIVERY_STATE_UNEXPLAINED, no resend" \
+  "$(fi12 .hold.reason) $(np)" "DELIVERY_STATE_UNEXPLAINED 1"
+ready12 0; patch12 401 '{"error":"x"}'; poll; printf 'edit\n' >"$R/new.txt"; poll
+assert_eq "  ...A6, changed readiness before a retry: saved READINESS_CHANGED, not withdrawn, no resend" \
+  "$(fi12 .hold.reason) $(wd11) $(np)" "READINESS_CHANGED 0 none  $FE none 1"
+rm -f "$R/new.txt"
+
+P422='{"error":"Review path required","code":"invalid_issue_disposition","details":{"code":"invalid_issue_disposition","missing":"review_path","validReviewPaths":["a","b"]}}'
+while IFS='|' read -r st body want; do
+  ready12 0; patch12 "$st" "$body"; poll; poll; poll
+  assert_eq "12k. $st: saved $want, sanitized, one PATCH over three passes" \
+    "$(fi12 '"\(.hold.reason) \(.hold.http_status) \(.hold | has("error"))"') $(np)" "$want $st false 1"
+done <<EOF
+400|{"error":"Validation error","details":[{"message":"free text"}]}|FINAL_REJECTED
+422|$P422|FINAL_REJECTED
+409|{"error":"paused","details":{"reason":"free text"}}|CONFLICT
+403|{"error":"Forbidden"}|PERMISSION_REJECTED
+404|{"error":"Not found"}|ISSUE_GONE
+410|{}|ISSUE_GONE
+EOF
+ready12 0; patch12 422 "$P422"; poll
+assert_eq "  ...the proven 422: code and missing review_path kept" "$(fi12 '"\(.hold.code) \(.hold.missing)"')" "invalid_issue_disposition review_path"
+for b in '{"error":"Agent run id required"}' '{"error":"x","code":"RESPONSIBLE_USER_UNAVAILABLE"}'; do
+  ready12 0; patch12 "$([[ "$b" == *RESPONSIBLE* ]] && echo 403 || echo 401)" "$b"; poll
+  assert_eq "  ...credential refusal: not_applied, pass aborted, no hold" \
+    "$(fi12 '"\(.delivery.state) \(.delivery.outcome) \(.hold // "none")"') $(np)" "not_applied credential none 1"
+  assert_contains "  ...visible" "$(last)" "PAPERCLIP_CREDENTIAL_REJECTED: HOM-20"
+done
+
+# A13/A14 under the ambiguity rule: a missing comment is never reposted.
+ready12 0; patch12 200 "$(receipt)"; poll
+assert_eq "12l. bound status, comment not in the receipt and not read back: final_status_delivered, missing" \
+  "$(fi12 '"\(.delivery.state) \(.delivery.comment) \(.disposition)"') $(zw)" "delivered missing final_status_delivered 1"
+assert_contains "  ...a visible incomplete handoff" "$(last)" "final_status_delivered: HOM-20 (comment missing, incomplete handoff, owner action)"
+det12 in_review "" "$BOARD"; inbox12 out; poll; poll
+assert_eq "  ...later passes only read again: no POST, no re-PATCH" "$(fi12 .delivery.comment) $(zw)" "missing 1"
+comments "$A1" "$(own)"; poll
+assert_eq "  ...the original marker appears: final_delivered, still no POST" "$(fi12 '"\(.delivery.comment) \(.disposition)"') $(zw)" "present final_delivered 1"
+inbox12 in
+ready12 0; patch12 200 "$(receipt)"; comments "$A1" "$(own "$LATE")"; poll; det12 in_review "" "$BOARD"; inbox12 out; poll
+assert_eq "  ...an own comment deleted since the attempt: deleted, never missing, no repost" \
+  "$(fi12 '"\(.delivery.comment) \(.disposition)"') $(zw)" "deleted final_status_delivered 1"
+inbox12 in
+ready12 0; patch12 200 "$(receipt)"; printf '500\n{}\n' >"$X/fix/GET_api_issues_${ISSUE}_comments.2"; poll
+assert_eq "  ...the comment read fails: uncertain, final_status_delivered, no write" \
+  "$(fi12 '"\(.delivery.comment) \(.disposition)"') $(zw)" "uncertain final_status_delivered 1"
+
+ready12 0; patch12 200 "$(receipt "$(own)")"; poll; det12 in_progress; poll; det12 blocked; poll
+assert_eq "12m. delivered, then sent back to the agent: zero writes, no resend, ack, re-block or wake" \
+  "$(zw) $(fi12 .disposition) $(grep -c wakeup "$X/curl.log")" "1 final_delivered 0"
+assert_contains "  ...visible for the owner" "$(last)" "final delivered, send-back needs owner action: HOM-20"
 
 printf '\n%d passed, %d failed (%ds)\n' "$PASS" "$FAIL" "$SECONDS"
 (( FAIL == 0 ))

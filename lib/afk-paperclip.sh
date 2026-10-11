@@ -920,6 +920,16 @@ afk_pc_final_cleanup_pending() {
     <<<"$ledger" >/dev/null 2>&1
 }
 
+# L2b: one jq predicate, applied to a final_intent, for a delivery that still
+# needs a readback: a PATCH that may have been sent (sending/uncertain), a
+# proven non-applied attempt with no hold, or a delivered status whose
+# comment is not yet confirmed. The absent-row sweep reads these back and
+# the AC-5d closed loop never closes them. Legacy rows have no .delivery.
+AFK_PC_DELIVERY_OPEN='def delivery_open: type == "object" and .disposition != "final_superseded_by_board"
+  and (.delivery | type) == "object"
+  and ((.delivery.state | IN("sending", "uncertain")) or (.delivery.state == "not_applied" and .hold == null)
+       or (.delivery.state == "delivered" and (.delivery.comment | IN("missing", "uncertain"))));'
+
 # afk_pc_final_intent_present <issue_id> -- U5's shared earliest guard: true
 # when this issue already has a persisted intent, a pending withdrawal
 # cleanup, or a raw final_intent at the spool head. Read-only: no lock, no
@@ -1116,13 +1126,35 @@ afk_pc_observe_final_intent_comments() {
   fi
 }
 
-# A live closure can supersede a held intent. Every other observation needs
-# current host/creator authority before a baseline is accepted. Only then,
-# with final_delivery_enabled true and the pass not paused, does the at-rest
-# count advance and, for a blocked issue, readiness run against the recorded
-# paths; with the toggle off the intent just waits, visibly.
+# afk_pc_final_intent_hold_save <issue_id> <hold-json> -- PR117: a hold is
+# saved with one atomic ledger write before it is reported. A failed write
+# restores the prior in-memory ledger, sets the storage error and reports no
+# hold, so the pass-end save (skipped on a storage error) cannot persist it
+# either; the next writable pass reaches the same hold again. Returns 1 then.
+afk_pc_final_intent_hold_save() {
+  local iid="$1" hold="$2" prior="$ledger" reason
+  reason="$(jq -r '.reason' <<<"$hold")"
+  ledger="$(jq -c --arg id "$iid" --argjson h "$hold" '.issues[$id].final_intent |= (del(.eligible) | .hold = $h)' <<<"$ledger")"
+  if ! afk_state_file_write "$ledger_path" "$ledger"; then
+    ledger="$prior"; AFK_PC_STORAGE_ERROR=true
+    actions="$(jq -c --arg t "PAPERCLIP_STORAGE_ERROR: final intent hold $reason was not saved for $identifier" '. + [$t]' <<<"$actions")"
+    return 1
+  fi
+  actions="$(jq -c --arg t "$reason, held: $identifier" '. + [$t]' <<<"$actions")"
+}
+
+# A live closure can supersede a held intent. An open delivery is read back
+# next (GET-only, whatever the toggle says), before identity, at-rest or
+# readiness can misread a delivered issue; a delivered intent stays a fence.
+# Every other observation needs current host/creator authority before a
+# baseline is accepted. Only then, with final_delivery_enabled true and the
+# pass not paused, does the at-rest count advance and, for a blocked issue,
+# readiness run against the recorded paths, then the sender; with the toggle
+# off the intent just waits, visibly. <absent> true (the absent-row sweep)
+# reads back only and never sends.
 afk_pc_final_intent_classify() {
-  local iid="$1" board_status="$2" assignee="$3" creator="$4" intent_record baseline
+  local iid="$1" board_status="$2" assignee="$3" creator="$4" detail="${5:-}" absent="${6:-false}" intent_record baseline
+  [[ -n "$detail" ]] || detail='{}'
   intent_record="$(jq -c --arg id "$iid" '.issues[$id].final_intent // empty' <<<"$ledger")"
   [[ -n "$intent_record" ]] || return 0
   if [[ "$board_status" == "done" || "$board_status" == cancelled ]]; then
@@ -1133,7 +1165,19 @@ afk_pc_final_intent_classify() {
     return 0
   fi
   [[ "$(jq -r '.disposition // empty' <<<"$intent_record")" != final_superseded_by_board ]] || return 0
+  if [[ "$(jq -r '.delivery.state // empty' <<<"$intent_record" 2>/dev/null)" == delivered ]]; then
+    afk_pc_final_delivered_pass "$iid" "$detail"
+    return 0
+  fi
+  if jq -e "$AFK_PC_DELIVERY_OPEN"' delivery_open' <<<"$intent_record" >/dev/null 2>&1; then
+    afk_pc_final_delivery_readback "$iid" "$detail" && return 0
+    if [[ "$absent" == true ]]; then
+      actions="$(jq -c --arg t "final_awaiting_delivery: $identifier (not in inbox, no retry)" '. + [$t]' <<<"$actions")"
+      return 0
+    fi
+  fi
   [[ "$(jq -r '.hold // empty' <<<"$intent_record")" == "" ]] || return 0
+  [[ "$absent" != true ]] || return 0
 
   # The pinned Issue row always serializes these nullable fields. Null or
   # missing means there is no verified authority; never baseline that value.
@@ -1142,8 +1186,7 @@ afk_pc_final_intent_classify() {
         -z "$creator" || "$creator" != "$board_user_id" ]] ||
      { [[ -n "$baseline" ]] &&
        [[ "$baseline" != "$(jq -nc --arg a "$assignee" --arg c "$creator" '{assignee:$a,created_by:$c}')" ]]; }; then
-    ledger="$(jq -c --arg id "$iid" '.issues[$id].final_intent.hold = {reason:"IDENTITY_CHANGED"}' <<<"$ledger")"
-    actions="$(jq -c --arg t "IDENTITY_CHANGED, held: $identifier" '. + [$t]' <<<"$actions")"
+    afk_pc_final_intent_hold_save "$iid" '{"reason":"IDENTITY_CHANGED"}'
     return 0
   fi
   if [[ -z "$baseline" ]]; then
@@ -1155,7 +1198,7 @@ afk_pc_final_intent_classify() {
     return 0
   fi
   afk_pc_final_intent_at_rest "$iid" "$board_status" || return 0
-  afk_pc_final_intent_recompute "$iid"
+  afk_pc_final_intent_recompute "$iid" "$detail"
 }
 
 # afk_pc_final_intent_at_rest <issue_id> <board_status> -- U5's bounded
@@ -1163,8 +1206,9 @@ afk_pc_final_intent_classify() {
 # passes counts consecutive observations that were not `blocked` and
 # first_seen is when the current status was first observed. Returns 0 only
 # for `blocked` (at rest, counter reset). The third consecutive not-blocked
-# observation is a terminal NOT_AT_REST hold, so passes never exceeds 3. A
-# stored count that is not an integer in 0..3 fails closed to the same hold.
+# observation is a terminal NOT_AT_REST hold, saved immediately (a failed
+# save holds nothing and the next writable pass reaches it again), so passes
+# never exceeds 3. A stored count that is not an integer in 0..3 fails closed to the same hold.
 afk_pc_final_intent_at_rest() {
   local iid="$1" st="$2" now passes
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -1184,8 +1228,7 @@ afk_pc_final_intent_at_rest() {
        | .status = $st | .passes = $n)' <<<"$ledger")"
   [[ "$st" == blocked ]] && return 0
   if (( passes >= 3 )); then
-    ledger="$(jq -c --arg id "$iid" --arg st "$st" '.issues[$id].final_intent |= (del(.eligible) | .hold = {reason:"NOT_AT_REST", status:$st, passes:3})' <<<"$ledger")"
-    actions="$(jq -c --arg t "NOT_AT_REST, held: $identifier" '. + [$t]' <<<"$actions")"
+    afk_pc_final_intent_hold_save "$iid" "$(jq -nc --arg st "$st" '{reason:"NOT_AT_REST", status:$st, passes:3}')"
   else
     actions="$(jq -c --arg t "final_awaiting_delivery: $identifier (not at rest: $st, pass $passes of 3)" '. + [$t]' <<<"$actions")"
   fi
@@ -1215,13 +1258,15 @@ afk_pc_final_intent_paths() {
 # the recorded paths, then the shared readiness reader at the recorded dir
 # and commit, then the strict /2 marker. Eligible needs ready, the exact
 # recorded evidence set, tree and plan digest, and a marker naming this
-# entry with that evidence set; eligibility is a local record only and
-# nothing is sent. Any reason is "changed": withdrawn while attempts is 0,
-# otherwise a terminal READINESS_CHANGED hold (a malformed count is never
-# taken as 0). Readiness reads this row from disk; the comment observation
-# before it has already saved anything that bears on the answer.
+# entry with that evidence set. Eligibility in this pass is the only send
+# trigger (a stored .eligible never authorizes one). Any reason is
+# "changed": withdrawn while attempts is 0, otherwise a READINESS_CHANGED
+# hold saved immediately (a malformed count is never taken as 0). Readiness
+# reads this row from disk; the comment observation before it has saved
+# anything that bears on the answer, unless that save failed (reported as
+# PAPERCLIP_STORAGE_ERROR, and a stale read is only ever less ready).
 afk_pc_final_intent_recompute() {
-  local iid="$1" rec payload attempts eid dir commit why r mk reasons
+  local iid="$1" detail="${2:-}" rec payload attempts eid dir commit why r mk reasons
   rec="$(jq -c --arg id "$iid" '.issues[$id].final_intent' <<<"$ledger")"
   payload="$(jq -c '.payload | objects' <<<"$rec" 2>/dev/null)"; [[ -n "$payload" ]] || payload='{}'
   eid="$(jq -r '.entry_id // empty | strings' <<<"$rec")"
@@ -1252,14 +1297,246 @@ afk_pc_final_intent_recompute() {
   if [[ "$reasons" == "[]" ]]; then
     ledger="$(jq -c --arg id "$iid" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       '.issues[$id].final_intent |= (.eligible //= {at:$at, evidence_set_sha256:.payload.evidence_set_sha256, tree:.payload.tree})' <<<"$ledger")"
-    actions="$(jq -c --arg t "final_eligible (no sender in this layer): $identifier" '. + [$t]' <<<"$actions")"
+    afk_pc_final_intent_send "$iid" "$detail"
   elif [[ "$attempts" == 0 ]]; then
     afk_pc_final_intent_withdraw "$iid" "$reasons"
   else
-    ledger="$(jq -c --arg id "$iid" --argjson r "$reasons" \
-      '.issues[$id].final_intent |= (del(.eligible) | .hold = {reason:"READINESS_CHANGED", reasons:$r})' <<<"$ledger")"
-    actions="$(jq -c --arg t "READINESS_CHANGED, held: $identifier" '. + [$t]' <<<"$actions")"
+    afk_pc_final_intent_hold_save "$iid" "$(jq -nc --argjson r "$reasons" '{reason:"READINESS_CHANGED", reasons:$r}')"
   fi
+}
+
+# afk_pc_final_intent_send <issue_id> <detail-json> -- L2b, an intent found
+# eligible in this pass. Only a first send (attempts 0, no delivery) or a
+# retry of a proven non-applied attempt (fewer than 3 sends) may proceed.
+# Pre-send, on the same fresh detail: the issue id and the payload reviewer
+# equal this issue and board_user_id, /active-run is a readable no-run (else a
+# visible wait, the third consecutive one an ACTIVE_RUN_PRESENT hold; a run
+# is never cancelled or woken), and the recorded same-issue
+# last_self_wake_run_id is a UUID (never minted, borrowed or woken for).
+# attempts+1 and delivery {state:sending} are saved before exactly one
+# creator-return PATCH; a failed save sends nothing.
+afk_pc_final_intent_send() {
+  local iid="$1" detail="$2" rec payload eid n dstate run resp h b prior req
+  rec="$(jq -c --arg id "$iid" '.issues[$id].final_intent' <<<"$ledger")"
+  payload="$(jq -c '.payload | objects' <<<"$rec" 2>/dev/null)"; [[ -n "$payload" ]] || payload='{}'
+  eid="$(jq -r '.entry_id // empty | strings' <<<"$rec")"
+  n="$(jq -r '.attempts | if type == "number" and . == floor and . >= 0 then tostring else "invalid" end' <<<"$rec")"
+  dstate="$(jq -r '.delivery.state // empty | strings' <<<"$rec" 2>/dev/null)"
+  if ! { [[ "$n" == 0 && -z "$dstate" ]] || [[ "$dstate" == not_applied && ( "$n" == 1 || "$n" == 2 ) ]]; }; then
+    afk_pc_final_intent_hold_save "$iid" '{"reason":"DELIVERY_UNCONFIRMED"}'; return 0
+  fi
+  if [[ "$(jq -r '.id // empty | strings' <<<"$detail")" != "$iid" ]]; then
+    afk_pc_final_intent_hold_save "$iid" '{"reason":"IDENTITY_CHANGED","field":"id"}'; return 0
+  fi
+  if [[ "$(jq -r '.reviewer_user_id // empty | strings' <<<"$payload")" != "$board_user_id" ]]; then
+    afk_pc_final_intent_hold_save "$iid" '{"reason":"IDENTITY_CHANGED","field":"reviewer_user_id"}'; return 0
+  fi
+  resp="$(afk_pc_curl GET "$api_url/api/issues/$iid/active-run" "$key" "")"
+  if ! afk_pc_no_run "$resp"; then
+    local w; w="$(jq -r '(.active_run_waits // 0) | if type == "number" and . == floor and . >= 0 and . < 3 then . + 1 else 3 end' <<<"$rec")"
+    if (( w >= 3 )); then
+      afk_pc_final_intent_hold_save "$iid" '{"reason":"ACTIVE_RUN_PRESENT","passes":3}'
+    else
+      ledger="$(jq -c --arg id "$iid" --argjson w "$w" '.issues[$id].final_intent.active_run_waits = $w' <<<"$ledger")"
+      actions="$(jq -c --arg t "final_awaiting_delivery: $identifier (active run, pass $w of 3)" '. + [$t]' <<<"$actions")"
+    fi
+    return 0
+  fi
+  run="$(jq -r --arg id "$iid" '.issues[$id].last_self_wake_run_id // empty | strings' <<<"$ledger")"
+  if ! afk_pc_uuid_ok "$run"; then
+    afk_pc_final_intent_hold_save "$iid" '{"reason":"RUN_CONTEXT_ABSENT"}'; return 0
+  fi
+  prior="$ledger"; n=$((n + 1))
+  ledger="$(jq -c --arg id "$iid" --argjson n "$n" --arg run "$run" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '.issues[$id].final_intent |= (del(.active_run_waits) | .attempts = $n | .delivery = {state:"sending", at:$at, run:$run, attempt:$n})' <<<"$ledger")"
+  if ! afk_state_file_write "$ledger_path" "$ledger"; then
+    ledger="$prior"; AFK_PC_STORAGE_ERROR=true
+    actions="$(jq -c --arg t "PAPERCLIP_STORAGE_ERROR: final delivery attempt was not saved for $identifier" '. + [$t]' <<<"$actions")"
+    return 0
+  fi
+  # status is a constant, never payload-derived: agent `done` cannot be sent.
+  req="$(jq -nc --arg u "$board_user_id" --arg c "$(jq -r '.body // "" | strings' <<<"$payload")" --arg e "$eid" \
+    '{status:"in_review", assigneeAgentId:null, assigneeUserId:$u, comment:($c + "\n\n<!-- afk-final:" + $e + " -->")}')"
+  resp="$(afk_pc_curl PATCH "$api_url/api/issues/$iid" "$key" "$run" "$req")"
+  h="${resp%%$'\n'*}"; b="${resp#*$'\n'}"
+  afk_pc_final_send_outcome "$iid" "$h" "$b" "$eid" "$run"
+}
+
+# afk_pc_final_send_outcome <issue_id> <http> <body> <entry_id> <run> -- one
+# PATCH response. A bound 2xx receipt is delivered; a server rejection that
+# is thrown before any mutation is a known non-effect: permanent ones and
+# run-context refusals (including the coded cap 429) are saved terminal
+# holds, credential refusals are not_applied (a later retry only after
+# readback). Anything else (an uncoded 429, 5xx, 000, transport, an unbound
+# 2xx) is uncertain and is never repeated.
+afk_pc_final_send_outcome() {
+  local iid="$1" h="$2" b="$3" eid="$4" run="$5" code reason="" bound cpresent
+  (( ${#b} <= 65536 )) || b=""
+  code="$(jq -r '[.code, (.details | objects | .code), (.error | objects | .code)] | map(strings) | first // empty' <<<"$b" 2>/dev/null)"
+  case "$h" in
+    2??)
+      bound="$(jq -r --arg id "$iid" --arg u "$board_user_id" \
+        'if type == "object" and .id == $id and .status == "in_review" and .assigneeAgentId == null and .assigneeUserId == $u then "yes" else "no" end' <<<"$b" 2>/dev/null)"
+      if [[ "$bound" != yes ]]; then
+        ledger="$(jq -c --arg id "$iid" '.issues[$id].final_intent.delivery.state = "uncertain"' <<<"$ledger")"
+        afk_pc_final_intent_hold_save "$iid" "$(jq -nc --arg h "$h" '{reason:"UNEXPLAINED_RESPONSE", http_status:($h | tonumber)}')"
+        return 0
+      fi
+      cpresent="$(jq -c --arg a "$agent_id" --arg m "<!-- afk-final:$eid -->" \
+        '.comment | objects | select((.authorAgentId // "") == $a and (.body // "" | strings | contains($m))) | {id:(.id // "" | strings)}' <<<"$b" 2>/dev/null)"
+      ledger="$(jq -c --arg id "$iid" --argjson c "${cpresent:-null}" '.issues[$id].final_intent.delivery |= (.state = "delivered" | .proof = "receipt"
+         | if $c == null then .comment = "uncertain" else .comment = "present" | .comment_id = $c.id end)' <<<"$ledger")"
+      actions="$(jq -c --arg t "final status delivered (receipt): $identifier" '. + [$t]' <<<"$actions")"
+      afk_pc_final_delivered_pass "$iid" '{}'
+      return 0 ;;
+    401) reason=credential ;;
+    403) case "$code" in
+           RESPONSIBLE_USER_UNAVAILABLE) reason=credential ;;
+           cross_issue_influence_run_context_required) reason=RUN_CONTEXT_REJECTED ;;
+           *) reason=PERMISSION_REJECTED ;;
+         esac ;;
+    422) [[ "$code" == agent_jwt_run_id_mismatch ]] && reason=RUN_CONTEXT_REJECTED || reason=FINAL_REJECTED ;;
+    400) reason=FINAL_REJECTED ;;
+    409) reason=CONFLICT ;;
+    404 | 410) reason=ISSUE_GONE ;;
+    429) [[ "$code" == cross_issue_influence_cap_exceeded ]] && reason=RUN_CONTEXT_REJECTED ;;
+  esac
+  case "$reason" in
+    "")
+      ledger="$(jq -c --arg id "$iid" --arg h "${h:-000}" '.issues[$id].final_intent.delivery |= (.state = "uncertain" | .http_status = $h)' <<<"$ledger")"
+      actions="$(jq -c --arg t "final delivery response lost (${h:-000}), read back next pass, never resent: $identifier" '. + [$t]' <<<"$actions")" ;;
+    credential)
+      ledger="$(jq -c --arg id "$iid" --arg h "$h" --arg r "$reason" '.issues[$id].final_intent.delivery |= (.state = "not_applied" | .http_status = $h | .outcome = $r)' <<<"$ledger")"
+      actions="$(jq -c --arg t "PAPERCLIP_CREDENTIAL_REJECTED: $identifier" '. + [$t]' <<<"$actions")"
+      AFK_PC_ABORT=true ;;
+    *)
+      ledger="$(jq -c --arg id "$iid" '.issues[$id].final_intent.delivery.state = "rejected"' <<<"$ledger")"
+      afk_pc_final_intent_hold_save "$iid" "$(afk_pc_final_hold_v2 "$h" "$b" "$reason" "$run")" ;;
+  esac
+}
+
+# afk_pc_final_hold_v2 <http> <body> <reason> <run_id> -- the /2 hold
+# sanitizer beside the legacy afk_pc_final_hold (unchanged). Complete JSON
+# within 64 KiB only; fixed fields only, never free text: a recognized code
+# (top-level, details or error), the legacy missing_field review_path, and
+# details.missing only as an identifier string or at most 16 identifier
+# strings, else missing_shape "unrecognized".
+afk_pc_final_hold_v2() {
+  local LC_ALL=C http_status="$1" body="$2" reason="$3" run_id="$4"
+  (( ${#body} <= 65536 )) || body=""
+  jq -nc --arg http "$http_status" --arg body "$body" --arg reason "$reason" --arg run "$run_id" '
+    def ident: type == "string" and test("^[A-Za-z][A-Za-z0-9_.]{0,63}$");
+    (try ($body | fromjson) catch {} | if type == "object" then . else {} end) as $e
+    | ($e.details | if type == "object" then . else {} end) as $d
+    | ([$e.code, $d.code, ($e.error | objects | .code)] | map(strings) | first) as $code
+    | ($e.missing_field // $e.missingField // $d.missing_field // $d.missingField) as $field
+    | ($e.requestId // $e.request_id // null) as $request
+    | {reason:$reason, http_status:($http | tonumber? // 0)}
+    + (if $code | IN("invalid_issue_disposition", "cross_issue_influence_run_context_required", "agent_jwt_run_id_mismatch",
+                     "cross_issue_influence_cap_exceeded", "runner_goal_reassignment_stop_unconfirmed") then {code:$code} else {} end)
+    + (if $field == "review_path" then {missing_field:$field} else {} end)
+    + (if ($d | has("missing")) | not then {}
+       elif ($d.missing | ident) then {missing:$d.missing}
+       elif ($d.missing | type == "array" and length <= 16 and all(.[]; ident)) then {missing:$d.missing}
+       else {missing_shape:"unrecognized"} end)
+    + (if ($request | type) == "string" and ($request | test("^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$"))
+       then {request_id:$request} else {} end)
+    + (if ($run | test("^[A-Za-z0-9_-]{1,64}$")) then {run_id:$run} else {} end)'
+}
+
+# afk_pc_final_marker_state <issue_id> <entry_id> <since> <comment_id> --
+# prints present (an own-agent, undeleted comment carries the afk-final
+# marker), deleted (the recorded comment, or any own-agent comment created
+# since the attempt, has deletedAt: a deleted body reads back empty, so it is
+# never "missing"), missing (the list was read and neither holds) or
+# uncertain (the read failed). The legacy afk_pc_marker_seen is unchanged.
+afk_pc_final_marker_state() {
+  local resp
+  resp="$(afk_pc_curl GET "$api_url/api/issues/$1/comments" "$key" "")"
+  [[ "${resp%%$'\n'*}" == 2?? ]] || { printf 'uncertain'; return 0; }
+  jq -r --arg a "$agent_id" --arg m "<!-- afk-final:$2 -->" --arg s "${3:0:19}" --arg c "$4" '
+    if type != "array" then "uncertain"
+    elif any(.[]; type == "object" and (.authorAgentId // "") == $a and .deletedAt == null
+             and (.body // "" | type == "string" and contains($m))) then "present"
+    elif any(.[]; type == "object" and .deletedAt != null and (($c != "" and .id == $c)
+             or ((.authorAgentId // "") == $a and ((.createdAt // "") | tostring | .[0:19]) >= $s))) then "deleted"
+    else "missing" end' <<<"${resp#*$'\n'}" 2>/dev/null || printf 'uncertain'
+}
+
+# afk_pc_final_delivered_pass <issue_id> <detail-json> -- a delivered status
+# is a fence: nothing is ever resent, re-PATCHed or reposted. A comment that
+# is missing or uncertain is only read again; a later own marker confirms it.
+# final_delivered needs the comment present; otherwise final_status_delivered
+# is a visible incomplete handoff. A send-back (assigned to this agent again,
+# in progress or blocked) is reported for the owner, never acted on.
+afk_pc_final_delivered_pass() {
+  local iid="$1" detail="$2" d c disp
+  d="$(jq -c --arg id "$iid" '.issues[$id].final_intent.delivery' <<<"$ledger")"
+  c="$(jq -r '.comment // "uncertain"' <<<"$d")"
+  if [[ "$c" == missing || "$c" == uncertain ]]; then
+    c="$(afk_pc_final_marker_state "$iid" "$(jq -r --arg id "$iid" '.issues[$id].final_intent.entry_id' <<<"$ledger")" \
+         "$(jq -r '.at // ""' <<<"$d")" "$(jq -r '.comment_id // ""' <<<"$d")")"
+  fi
+  disp=final_status_delivered; [[ "$c" == present ]] && disp=final_delivered
+  ledger="$(jq -c --arg id "$iid" --arg c "$c" --arg p "$disp" \
+    '.issues[$id].final_intent |= (.delivery.comment = $c | .disposition = $p)' <<<"$ledger")"
+  case "$c" in
+    present) actions="$(jq -c --arg t "final_delivered: $identifier" '. + [$t]' <<<"$actions")" ;;
+    uncertain) actions="$(jq -c --arg t "final_status_delivered: $identifier (comment unconfirmed, read again next pass)" '. + [$t]' <<<"$actions")" ;;
+    *) actions="$(jq -c --arg t "final_status_delivered: $identifier (comment $c, incomplete handoff, owner action)" '. + [$t]' <<<"$actions")" ;;
+  esac
+  if jq -e --arg a "$agent_id" '.assigneeAgentId == $a and (.status | IN("in_progress", "blocked"))' <<<"$detail" >/dev/null 2>&1; then
+    actions="$(jq -c --arg t "final delivered, send-back needs owner action: $identifier" '. + [$t]' <<<"$actions")"
+  fi
+}
+
+# afk_pc_final_delivery_readback <issue_id> <detail-json> -- GET-only, before
+# identity/at-rest/readiness. The board target state (this id, in_review,
+# no agent, assigneeUserId board_user_id) is a delivered status by readback,
+# whatever the attempt's response was. A possibly sent PATCH (sending or
+# uncertain) not seen applied is never resent: GET absence does not prove a
+# timed-out write will not land, so it is a DELIVERY_UNCONFIRMED hold that is
+# still read back each pass. A proven non-applied attempt may be retried
+# only from blocked + this agent with no own marker, within 3 sends. Returns
+# 1 only for that retry candidate (the caller re-validates fully), else 0.
+afk_pc_final_delivery_readback() {
+  local iid="$1" detail="$2" rec dstate target rc
+  rec="$(jq -c --arg id "$iid" '.issues[$id].final_intent' <<<"$ledger")"
+  dstate="$(jq -r '.delivery.state' <<<"$rec")"
+  target="$(jq -r --arg id "$iid" --arg u "$board_user_id" \
+    'if .id == $id and .status == "in_review" and .assigneeAgentId == null and .assigneeUserId == $u then "yes" else "no" end' <<<"$detail" 2>/dev/null)"
+  if [[ "$target" == yes ]]; then
+    ledger="$(jq -c --arg id "$iid" '.issues[$id].final_intent |= (.delivery |= (.state = "delivered" | .proof = (.proof // "readback_state") | .comment = (.comment // "uncertain"))
+       | if (.hold.reason // "") | IN("DELIVERY_UNCONFIRMED", "UNEXPLAINED_RESPONSE") then del(.hold) else . end)' <<<"$ledger")"
+    actions="$(jq -c --arg t "final status delivered (read back): $identifier" '. + [$t]' <<<"$actions")"
+    afk_pc_final_delivered_pass "$iid" "$detail"
+    return 0
+  fi
+  if [[ "$dstate" != not_applied ]]; then
+    if jq -e '.hold == null' <<<"$rec" >/dev/null 2>&1; then
+      afk_pc_final_intent_hold_save "$iid" "$(jq -nc --arg s "$(jq -r '.status // "" | strings' <<<"$detail")" '{reason:"DELIVERY_UNCONFIRMED", status:$s}')"
+    else
+      actions="$(jq -c --arg t "final delivery unconfirmed, held, read back each pass: $identifier" '. + [$t]' <<<"$actions")"
+    fi
+    return 0
+  fi
+  if jq -e --arg a "$agent_id" '.assigneeAgentId == $a and .status == "blocked"' <<<"$detail" >/dev/null 2>&1; then
+    rc="$(afk_pc_final_marker_state "$iid" "$(jq -r '.entry_id' <<<"$rec")" "$(jq -r '.delivery.at // ""' <<<"$rec")" "")"
+    case "$rc" in
+      missing) ;;
+      uncertain)
+        actions="$(jq -c --arg t "final delivery readback unavailable, waiting: $identifier" '. + [$t]' <<<"$actions")"
+        return 0 ;;
+      *) afk_pc_final_intent_hold_save "$iid" '{"reason":"DELIVERY_STATE_UNEXPLAINED","comment":"own_marker"}'; return 0 ;;
+    esac
+    if ! jq -e '.attempts | type == "number" and . < 3' <<<"$rec" >/dev/null 2>&1; then
+      afk_pc_final_intent_hold_save "$iid" '{"reason":"RETRY_EXHAUSTED","attempts":3}'; return 0
+    fi
+    return 1
+  fi
+  jq -e --arg a "$agent_id" '.assigneeAgentId == $a' <<<"$detail" >/dev/null 2>&1 && return 1
+  afk_pc_final_intent_hold_save "$iid" "$(jq -nc --arg s "$(jq -r '.status // "" | strings' <<<"$detail")" '{reason:"DELIVERY_STATE_UNEXPLAINED", status:$s}')"
+  return 0
 }
 
 # afk_pc_final_intent_withdraw <issue_id> <reasons-json> -- an unsent
@@ -2043,10 +2320,31 @@ afk_cmd_paperclip_poll() { # <json_mode>
       done
     fi
 
+    # L2b: an open delivery leaves inbox-lite once the issue is unassigned.
+    # Read it back here, GET-only and never sending, before the AC-5d loop
+    # below could close it; the same predicate keeps it out of that loop.
+    local present_json rb_id rb_resp rb_detail
+    present_json="$(printf '%s\n' "${ids[@]:-}" | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+    local -a rb_ids=()
+    mapfile -t rb_ids < <(jq -r --arg a "$agent_id" --argjson present "$present_json" "$AFK_PC_DELIVERY_OPEN"'
+      .issues | to_entries[] | select(.value.host_agent_id == $a and ([.key] - $present | length) == 1
+        and (.value.final_intent | delivery_open)) | .key' <<<"$ledger")
+    for rb_id in "${rb_ids[@]:-}"; do
+      [[ -n "$rb_id" ]] && afk_pc_uuid_ok "$rb_id" || continue
+      local identifier; identifier="$(jq -r --arg id "$rb_id" '.issues[$id].identifier // empty' <<<"$ledger")"
+      rb_resp="$(afk_pc_curl GET "$api_url/api/issues/$rb_id" "$key" "")"; rb_detail="${rb_resp#*$'\n'}"
+      if [[ "${rb_resp%%$'\n'*}" != 200 ]] || ! jq -e 'type == "object"' >/dev/null 2>&1 <<<"$rb_detail"; then
+        actions="$(jq -c --arg t "final delivery readback unavailable, kept open: $identifier" '. + [$t]' <<<"$actions")"
+        continue
+      fi
+      afk_pc_final_intent_classify "$rb_id" "$(jq -r '.status // empty' <<<"$rb_detail")" \
+        "$(jq -r '.assigneeAgentId // empty' <<<"$rb_detail")" "$(jq -r '.createdByUserId // empty' <<<"$rb_detail")" "$rb_detail" true
+    done
+
     # AC-5d: ledger issues no longer present in the inbox.
-    local closed_ids; mapfile -t closed_ids < <(jq -r --arg a "$agent_id" \
-      --argjson present "$(printf '%s\n' "${ids[@]:-}" | jq -R -s -c 'split("\n") | map(select(length > 0))')" \
-      '.issues | to_entries[] | select(.value.host_agent_id == $a and (.value.state != "closed") and ([.key] - $present | length) == 1) | .key' \
+    local closed_ids; mapfile -t closed_ids < <(jq -r --arg a "$agent_id" --argjson present "$present_json" "$AFK_PC_DELIVERY_OPEN"'
+      .issues | to_entries[] | select(.value.host_agent_id == $a and (.value.state != "closed") and ([.key] - $present | length) == 1
+        and ((.value.final_intent | delivery_open) | not)) | .key' \
       <<<"$ledger")
     local cid
     for cid in "${closed_ids[@]:-}"; do
@@ -2138,7 +2436,9 @@ afk_cmd_paperclip_poll() { # <json_mode>
       # neither changes whether this `continue` fires.
       if afk_pc_final_intent_present "$id"; then
         afk_pc_observe_final_intent_comments "$id"
-        afk_pc_final_intent_classify "$id" "$status" "$assignee_agent" "$created_by"
+        AFK_PC_ABORT=false
+        afk_pc_final_intent_classify "$id" "$status" "$assignee_agent" "$created_by" "$detail"
+        [[ "$AFK_PC_ABORT" == true ]] && break
         continue
       fi
       if [[ -n "$prev" ]] && jq -e '.claim_comment_pending == true and .claim_attempted == true' \
