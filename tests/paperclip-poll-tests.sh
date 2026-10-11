@@ -2949,7 +2949,7 @@ assert_eq "  ...no eligible/hold/at-rest fields were ever added" \
 assert_contains "  ...A4: a per-pass final_awaiting_delivery action is visible" "$OUT_TEXT" "final_awaiting_delivery: PROJ-24"
 set_cfg '.final_delivery_enabled = true'
 run_afk --json
-assert_eq "  ...toggle true remains inert: no eligible, passes or remote writes"   "$(jq -r --arg id "$(iid 24)" '.issues[$id].final_intent | [(.eligible // "none"), (.observed.passes // "none"), (.hold // "none")] | join(" ")' "$(LEDGER_OF)") $(grep -cE '^(POST|PATCH) ' "$LOG")"   "none none none 0"
+assert_eq "  ...toggle true, not blocked: one at-rest deferral counted, no eligible, hold or remote writes"   "$(jq -r --arg id "$(iid 24)" '.issues[$id].final_intent | [(.eligible // "none"), (.observed.passes // "none"), (.hold // "none"), .observed.status] | map(tostring) | join(" ")' "$(LEDGER_OF)") $(grep -cE '^(POST|PATCH) ' "$LOG")"   "none 1 none in_progress 0"
 assert_contains "  ...toggle true still reports awaiting delivery" "$OUT_TEXT" "final_awaiting_delivery: PROJ-24"
 
 new_scenario fi_board_closed
@@ -3064,6 +3064,204 @@ assert_eq "23j. later creator change holds, retaining the verified first baselin
 route GET "/api/issues/$(iid 30)" 200   "{\"status\":\"cancelled\",\"identifier\":\"PROJ-30\",\"projectId\":\"$(pid_n 1)\",\"updatedAt\":\"2026-01-01T00:00:00Z\",\"assigneeAgentId\":null,\"createdByUserId\":\"other-user\"}"
 run_afk --json
 assert_eq "23k. fresh cancelled supersedes even an identity hold, zero writes"   "$(jq -r --arg id "$(iid 30)" '.issues[$id].final_intent.disposition' "$(LEDGER_OF)") $(grep -cE '^(POST|PATCH) ' "$LOG")"   "final_superseded_by_board 0"
+
+# ============================================================================
+head1 "24. Withdraw a pending final_intent (AFK-PC-DELIVERY-L2A-withdraw)"
+# ============================================================================
+# Toggle on. These payloads record a worktree that does not exist, so a
+# blocked observation is TREE_UNAVAILABLE before readiness ever runs. The
+# genuinely ready cases are paperclip-readiness-tests.sh section 11.
+fi_row() { # <n> <attempts> -- a persisted intent whose recorded dir is gone
+  lset "$1" "{\"final_intent\":{\"entry_id\":\"$FI_E1\",\"attempts\":$2,\"payload\":$(fi_payload "$FI_E1" "$(iid "$1")" "PROJ-$1" | jq -c --arg d "$SCEN/no-such-worktree" '.dir = $d')}}"
+}
+fi_marker() { # <n> <entry_id> -- a strict /2 marker in issue n's spool
+  mkdir -p "$STATE/paperclip/spool/$(iid "$1")"
+  jq -nc --arg e "$2" --arg i "$(iid "$1")" --arg es "$FI_ES" \
+    '{schema:"afk-paperclip-final/2", entry_id:$e, issue:$i, evidence_set_sha256:$es}' >"$STATE/paperclip/spool/$(iid "$1")/.final"
+}
+fi_cleanup_row() { # <n> <notice pending|written> -- what a crash after the withdrawal write leaves
+  local id; id="$(iid "$1")"
+  lset "$1" "$(jq -nc --arg e "$FI_E1" --argjson p "$(fi_payload "$FI_E1" "$id" "PROJ-$1")" --arg nt "$2" \
+    --arg np "$STATE/paperclip/notices/$(jq -r --arg id "$id" '.issues[$id].slug' "$(LEDGER_OF)")/1.$id.final_withdrawn.json" \
+    '{final_withdrawn:[{entry_id:$e, attempts:0, payload:$p, reasons:["TREE_UNAVAILABLE"], withdrawn_at:"2026-10-10T00:00:00Z"}],
+      final_withdraw_cleanup:{entry_id:$e, notice:$nt, notice_path:$np}}')"
+}
+mk_of() { printf '%s' "$STATE/paperclip/spool/$(iid "$1")/.final"; }
+fi_legacy_marker() { mkdir -p "$STATE/paperclip/spool/$(iid "$1")"; printf 'in_review' >"$(mk_of "$1")"; }
+wd_of() { # <n> -- count, entry, attempts, reasons, active intent, cleanup
+  jq -r --arg id "$(iid "$1")" '.issues[$id] | [(.final_withdrawn // [] | length), (.final_withdrawn[0].entry_id // "none"),
+    (.final_withdrawn[0].attempts // "none"), (.final_withdrawn[0].reasons // [] | join(",")),
+    (.final_intent.entry_id // "none"), (.final_withdraw_cleanup.entry_id // "none")] | map(tostring) | join(" ")' "$(LEDGER_OF)"
+}
+fw_notices() { find "$STATE/paperclip/notices" -name '*.final_withdrawn.json' 2>/dev/null | wc -l | tr -d ' '; }
+
+new_scenario fi_at_rest_bound
+write_config; set_cfg '.final_delivery_enabled = true'
+seed 31 working proj "$(pid_n 1)"; fi_row 31 0
+inbox 31; issue 31 in_progress "\"$(pid_n 1)\""
+at_rest31() { jq -r --arg id "$(iid 31)" '.issues[$id].final_intent | [.observed.status, (.observed.first_seen | type), .observed.passes, (.hold.reason // "none")] | map(tostring) | join(" ")' "$(LEDGER_OF)"; }
+run_afk --json
+assert_eq "24a. toggle on, not blocked: status, first_seen and passes recorded; deferred" "$(at_rest31)" "in_progress string 1 none"
+assert_contains "  ...visible as awaiting, not at rest" "$OUT_TEXT" "final_awaiting_delivery: PROJ-31 (not at rest: in_progress, pass 1 of 3)"
+run_afk --json
+assert_eq "  ...second consecutive observation: still deferred" "$(at_rest31)" "in_progress string 2 none"
+run_afk --json
+assert_eq "  ...third: terminal NOT_AT_REST hold, passes bounded at 3" "$(at_rest31)" "in_progress string 3 NOT_AT_REST"
+issue 31 blocked "\"$(pid_n 1)\""
+run_afk --json
+assert_eq "  ...a later blocked observation never rearms or recomputes the hold" \
+  "$(at_rest31) $(wd_of 31)" "in_progress string 3 NOT_AT_REST 0 none none  $FI_E1 none"
+assert_eq "  ...zero remote writes across four passes" "$(grep -cE '^(POST|PATCH) ' "$LOG")" "0"
+
+# A blocked return before the bound resets the count and goes on to the
+# eligibility check: attempts 1 makes the changed readiness a hold.
+new_scenario fi_at_rest_reset
+write_config; set_cfg '.final_delivery_enabled = true'
+seed 32 working proj "$(pid_n 1)"; fi_row 32 1
+inbox 32; issue 32 in_progress "\"$(pid_n 1)\""
+run_afk --json; run_afk --json
+issue 32 blocked "\"$(pid_n 1)\""
+run_afk --json
+assert_eq "24b. blocked after two deferrals: count reset to 0, then attempts>0 READINESS_CHANGED with reasons" \
+  "$(jq -r --arg id "$(iid 32)" '.issues[$id].final_intent | [.observed.status, .observed.passes, .hold.reason, (.hold.reasons | join(",")), .attempts] | map(tostring) | join(" ")' "$(LEDGER_OF)")" \
+  "blocked 0 READINESS_CHANGED TREE_UNAVAILABLE,FINAL_MARKER_MISSING 1"
+run_afk --json
+assert_eq "  ...terminal: never withdrawn or rearmed, zero remote writes" \
+  "$(wd_of 32) $(jq -r --arg id "$(iid 32)" '.issues[$id].final_intent.hold.reason' "$(LEDGER_OF)") $(grep -cE '^(POST|PATCH) ' "$LOG")" \
+  "0 none none  $FI_E1 none READINESS_CHANGED 0"
+
+# attempts 0: ledger-first withdrawal, then only the matching marker goes.
+new_scenario fi_withdraw_markers
+write_config; set_cfg '.final_delivery_enabled = true'
+for n in 33 34 35; do seed "$n" working proj "$(pid_n 1)"; fi_row "$n" 0; done
+inbox 33 34 35; for n in 33 34 35; do issue "$n" blocked "\"$(pid_n 1)\""; done
+fi_marker 33 "$FI_E1"; fi_marker 34 "$FI_E2"; fi_legacy_marker 35
+p33="$(jq -cS --arg id "$(iid 33)" '.issues[$id].final_intent.payload' "$(LEDGER_OF)")"
+m34="$(sha256sum <"$(mk_of 34)")"; m35="$(sha256sum <"$(mk_of 35)")"
+run_afk --json
+assert_eq "24c. matching marker: intent and reasons appended, active intent consumed, cleanup done" \
+  "$(wd_of 33)" "1 $FI_E1 0 TREE_UNAVAILABLE none none"
+assert_eq "  ...the withdrawn record keeps the full persisted payload" \
+  "$(jq -cS --arg id "$(iid 33)" '.issues[$id].final_withdrawn[0].payload' "$(LEDGER_OF)")" "$p33"
+assert_eq "  ...and its matching /2 marker is removed" "$([[ -e "$(mk_of 33)" ]] && echo present || echo gone)" "gone"
+assert_eq "  ...a foreign entry's marker: withdrawn with FINAL_MARKER_MISMATCH, marker byte-identical" \
+  "$(wd_of 34) $(sha256sum <"$(mk_of 34)")" "1 $FI_E1 0 TREE_UNAVAILABLE,FINAL_MARKER_MISMATCH none none $m34"
+assert_eq "  ...a legacy marker: withdrawn with FINAL_MARKER_MISSING, marker byte-identical" \
+  "$(wd_of 35) $(sha256sum <"$(mk_of 35)")" "1 $FI_E1 0 TREE_UNAVAILABLE,FINAL_MARKER_MISSING none none $m35"
+assert_eq "  ...one final_withdrawn notice each, zero remote writes" "$(fw_notices) $(grep -cE '^(POST|PATCH) ' "$LOG")" "3 0"
+assert_contains "  ...a visible local disposition" "$OUT_TEXT" "final_withdrawn (TREE_UNAVAILABLE): PROJ-33"
+
+new_scenario fi_withdraw_write_fail
+write_config; set_cfg '.final_delivery_enabled = true'
+seed 36 working proj "$(pid_n 1)"; fi_row 36 0
+inbox 36; issue 36 blocked "\"$(pid_n 1)\""; fi_marker 36 "$FI_E1"
+mkdir -p "$STATE/paperclip/ledger.json.afk-tmp"
+run_afk --json
+assert_eq "24d. failed withdrawal write: the active intent and its marker stay, nothing withdrawn" \
+  "$(wd_of 36) $([[ -e "$(mk_of 36)" ]] && echo present || echo gone)" "0 none none  $FI_E1 none present"
+assert_contains "  ...a visible storage error" "$OUT_TEXT" "PAPERCLIP_STORAGE_ERROR: final intent was not withdrawn for PROJ-36"
+assert_eq "  ...zero remote writes" "$(grep -cE '^(POST|PATCH) ' "$LOG")" "0"
+rmdir "$STATE/paperclip/ledger.json.afk-tmp"
+run_afk --json
+assert_eq "  ...once writes succeed: withdrawn exactly once, marker removed" \
+  "$(wd_of 36) $([[ -e "$(mk_of 36)" ]] && echo present || echo gone) $(fw_notices)" "1 $FI_E1 0 TREE_UNAVAILABLE none none gone 1"
+
+# A crash between the withdrawal write and its cleanup: the record alone
+# must fence every U5 path that would otherwise write (fi_u5_paths's
+# fixtures), the next pass resumes only the matching cleanup, and the same
+# fixtures write again once it is done (the negative control).
+new_scenario fi_cleanup_fence
+three_projects
+seed 37 working proj "$(pid_n 1)"; seed 38 working proj2 "$(pid_n 2)"; seed 39 working proj3 "$(pid_n 3)"; seed 41 working proj "$(pid_n 1)"
+for n in 37 38 39 41; do fi_cleanup_row "$n" pending; done
+inbox 37 38 39 41
+issue 37 in_progress "\"$(pid_n 1)\""
+write_spool "$(iid 37)" 001 "{\"id\":\"$E1\",\"kind\":\"comment\",\"body\":\"queued\"}"
+issue 38 blocked "\"$(pid_n 2)\""
+route GET "/api/issues/$(iid 38)" 200 "{\"status\":\"blocked\",\"identifier\":\"PROJ-38\",\"projectId\":\"$(pid_n 2)\",\"unblockDescriptor\":{\"owner\":{\"agentId\":\"$AGENT1\"}},\"activeRecoveryAction\":{\"status\":\"active\",\"ownerType\":\"board\"}}"
+route POST "/api/companies/$COMPANY/issues" 201 '{"id":"f0000000-0000-0000-0000-000000000002"}'
+issue 39 todo "\"$(pid_n 3)\""
+issue 41 in_progress "\"$(pid_n 1)\""
+route GET "/api/issues/$(iid 41)/active-run" 200 'null'
+fi_marker 37 "$FI_E1"; fi_legacy_marker 38; fi_marker 39 "$FI_E2"; fi_marker 41 "$FI_E1"
+m38="$(sha256sum <"$(mk_of 38)")"; m39="$(sha256sum <"$(mk_of 39)")"
+run_afk --json
+assert_eq "24e. pending cleanup fences a wake, a board-recovery block, a todo nudge, a strand and the report cycle" \
+  "$(grep -cE '^(POST|PATCH) ' "$LOG")" "0"
+assert_eq "  ...the queued entry stays unsent" \
+  "$(find "$STATE/paperclip/spool/$(iid 37)" -maxdepth 1 -name '001.json' | wc -l | tr -d ' ')" "1"
+assert_eq "  ...the sweep resumes cleanup: matching markers removed, records cleared, one notice each" \
+  "$([[ -e "$(mk_of 37)" ]] && echo present || echo gone) $([[ -e "$(mk_of 41)" ]] && echo present || echo gone) $(wd_of 37) $(fw_notices)" \
+  "gone gone 1 $FI_E1 0 TREE_UNAVAILABLE none none 4"
+assert_eq "  ...legacy and foreign markers are never removed, even by the sweep" \
+  "$(sha256sum <"$(mk_of 38)") $(sha256sum <"$(mk_of 39)") $(jq -r --arg a "$(iid 38)" --arg b "$(iid 39)" '[.issues[$a,$b] | .final_withdraw_cleanup // "none"] | join(" ")' "$(LEDGER_OF)")" \
+  "$m38 $m39 none none"
+: >"$LOG"; : >"$BODYLOG"
+run_afk --json
+assert_eq "  ...negative control, cleanup done: the same fixtures write again (wake ack, recovery issue, queued entry)" \
+  "$(( $(grep -c "^POST /api/issues/$(iid 37)/comments\$" "$LOG") > 0 )) $(( $(grep -c "^POST /api/companies/$COMPANY/issues\$" "$LOG") > 0 )) $(( $(grep -c "afk-entry:$E1" "$BODYLOG") > 0 ))" \
+  "1 1 1"
+assert_eq "  ...and no further final_withdrawn notice" "$(fw_notices)" "4"
+
+# PM-start: the held-start retry's first act is its own detail GET.
+new_scenario fi_cleanup_pm_start
+write_config
+seed 43 queued proj "$(pid_n 1)"
+lset 43 '{"action_text":"queued: no PM","action_text_applied":"queued: no PM"}'
+fi_cleanup_row 43 written
+inbox 43; issue 43 blocked "\"$(pid_n 1)\""; fi_marker 43 "$FI_E1"
+run_afk --json
+assert_eq "24f. pending cleanup fences the PM-start retry: only the main loop's detail GET, zero writes" \
+  "$(grep -c "^GET /api/issues/$(iid 43)\$" "$LOG") $(grep -cE '^(POST|PATCH) ' "$LOG") $(wd_of 43)" "1 0 1 $FI_E1 0 TREE_UNAVAILABLE none none"
+: >"$LOG"
+run_afk --json
+assert_eq "  ...negative control, cleanup done: the retry reads the issue again" \
+  "$(( $(grep -c "^GET /api/issues/$(iid 43)\$" "$LOG") > 1 ))" "1"
+
+new_scenario fi_cleanup_lock_refused
+write_config
+seed 44 working proj "$(pid_n 1)"; fi_cleanup_row 44 written
+inbox 44; issue 44 in_progress "\"$(pid_n 1)\""; fi_marker 44 "$FI_E1"
+mkdir -p "$STATE/paperclip/spool/$(iid 44)/.seq.lock"
+run_afk --json
+assert_eq "24g. lock refused: the record and marker stay, and a write-capable wake still writes nothing" \
+  "$(wd_of 44) $([[ -e "$(mk_of 44)" ]] && echo present || echo gone) $(grep -cE '^(POST|PATCH) ' "$LOG")" \
+  "1 $FI_E1 0 TREE_UNAVAILABLE none $FI_E1 present 0"
+assert_contains "  ...visible" "$OUT_TEXT" "final withdrawal cleanup lock unavailable, held: PROJ-44"
+rmdir "$STATE/paperclip/spool/$(iid 44)/.seq.lock"
+run_afk --json
+assert_eq "  ...the next pass resumes it, still fenced for that pass" \
+  "$(wd_of 44) $([[ -e "$(mk_of 44)" ]] && echo present || echo gone) $(grep -cE '^(POST|PATCH) ' "$LOG")" \
+  "1 $FI_E1 0 TREE_UNAVAILABLE none none gone 0"
+
+# Crash residue after a withdrawal: the same entry's raw head (cleanup pending,
+# or only the durable final_withdrawn record) is retired as a replay and never
+# re-persisted; another entry waits behind a pending cleanup; a conflicting
+# payload keeps both. The unfixed path re-persists 45/46 (control: wd_of).
+new_scenario fi_withdrawn_replay
+write_config; set_cfg '.final_delivery_enabled = true'
+for n in 45 46 47 48; do seed "$n" working proj "$(pid_n 1)"; fi_cleanup_row "$n" pending; issue "$n" blocked "\"$(pid_n 1)\""; done
+inbox 45 46 47 48
+jq --arg id "$(iid 46)" 'del(.issues[$id].final_withdraw_cleanup)' "$(LEDGER_OF)" >"$(LEDGER_OF).t" && mv "$(LEDGER_OF).t" "$(LEDGER_OF)"
+for n in 45 46; do write_spool "$(iid "$n")" 001 "$(final_intent_entry "$FI_E1" "$(iid "$n")" "PROJ-$n")"; done
+write_spool "$(iid 47)" 001 "$(final_intent_entry "$FI_E2" "$(iid 47)" PROJ-47)"
+write_spool "$(iid 48)" 001 "$(final_intent_entry "$FI_E1" "$(iid 48)" PROJ-48 | jq -c '.body = "changed"')"
+fi_marker 45 "$FI_E1"
+hd_of() { find "$STATE/paperclip/spool/$(iid "$1")" -maxdepth 1 -name '[0-9]*.json' | wc -l | tr -d ' '; }
+run_afk --json
+assert_eq "24h. same-entry head, cleanup pending or history only: retired, no active intent, zero writes" \
+  "$(wd_of 45) $(hd_of 45) $(wd_of 46) $(hd_of 46) $(grep -cE '^(POST|PATCH) ' "$LOG")" \
+  "1 $FI_E1 0 TREE_UNAVAILABLE none none 0 1 $FI_E1 0 TREE_UNAVAILABLE none none 0 0"
+assert_eq "  ...a different entry behind the pending cleanup stays spooled and unpersisted" "$(wd_of 47) $(hd_of 47)" "1 $FI_E1 0 TREE_UNAVAILABLE none none 1"
+assert_contains "  ...visibly held" "$OUT_TEXT" "final intent held behind a pending withdrawal cleanup: PROJ-47"
+assert_eq "  ...a conflicting same-entry payload keeps both copies" "$(wd_of 48) $(hd_of 48)" "1 $FI_E1 0 TREE_UNAVAILABLE none none 1"
+assert_contains "  ...and refuses" "$OUT_TEXT" "final intent conflict, withdrawn entry kept: PROJ-48"
+run_afk --json
+assert_eq "  ...a second pass: one withdrawal each, no duplicate notice, conflict still refused" \
+  "$(wd_of 45) $(wd_of 46) $(wd_of 48) $(hd_of 48) $(fw_notices)" \
+  "1 $FI_E1 0 TREE_UNAVAILABLE none none 1 $FI_E1 0 TREE_UNAVAILABLE none none 1 $FI_E1 0 TREE_UNAVAILABLE none none 1 3"
+assert_contains "  ...consistently" "$OUT_TEXT" "final intent conflict, withdrawn entry kept: PROJ-48"
+assert_eq "  ...once cleanup is done, the other entry is persisted as a new intent" "$(wd_of 47) $(hd_of 47)" "1 $FI_E1 0 TREE_UNAVAILABLE $FI_E2 none 0"
 
 # ===========================================================================
 printf '\n\033[1m%d passed, %d failed\033[0m\n' "$PASS" "$FAIL"

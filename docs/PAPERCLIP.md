@@ -1152,11 +1152,58 @@ recording an identity baseline. Later ownership changes also hold. Status
 changes alone do not affect identity. The pinned fields come from the issue
 row, not `unblockDescriptor`, which is status dependent.
 
-A valid held intent is visible as `final_awaiting_delivery` with no readiness
-call or at-rest count, whether `final_delivery_enabled` is absent, false or
-true. No withdrawal, marker removal, final publication or sender runs in this
-slice. Those steps belong to the separately qualified withdraw and consumer
-slices.
+With `final_delivery_enabled` absent or false, a valid held intent is visible
+as `final_awaiting_delivery` with no readiness call or at-rest count. Comment
+observation still runs. A paused pass behaves the same way, whatever the
+toggle says. Final publication and any sender belong to later slices.
+
+## Readiness and withdrawal of a pending final intent (AFK-PC-DELIVERY-L2A-withdraw)
+
+This layer is still inert: it never sends a final, a status PATCH or a
+comment, and nothing in shipped code produces an intent. With
+`final_delivery_enabled: true`, and only after the ownership checks above
+pass, each pass does the following for a persisted intent:
+
+- **At rest.** `final_intent.observed` records `status`, `first_seen` (when
+  that status was first seen) and `passes`, the count of consecutive
+  observations that were not `blocked`. Two such passes are deferred. The
+  third becomes a terminal `NOT_AT_REST` hold, so `passes` never exceeds 3.
+  A return to `blocked` before then resets the count to 0. A stored count
+  that is not an integer from 0 to 3 is treated as the bound.
+- **Eligibility, for a blocked issue.** The recorded `dir` must be an
+  existing directory at exactly that physical path. Its common Git directory
+  must equal the recorded `common_dir`, and that must be the owner
+  repository's. Otherwise the reason is `TREE_UNAVAILABLE`,
+  `OWNER_REPO_UNKNOWN` or `WORKTREE_FOREIGN`. If the paths hold, the shared
+  readiness reader runs with ambient `GIT_*` unset, using the recorded dir
+  and commit. It must answer ready with the exact recorded evidence set, tree
+  and plan digest (else `EVIDENCE_SET_CHANGED`, `TREE_CHANGED` or
+  `PLAN_CHANGED`, or the reader's own reasons). The spool `.final` must be a
+  strict `/2` marker naming this `entry_id` and evidence set (else
+  `FINAL_MARKER_MISSING` or `FINAL_MARKER_MISMATCH`). If all of that holds,
+  the intent records local `eligible` and nothing is sent. Answers and plan
+  rejections seen at the suppression points are saved before this check
+  runs, so a rejection seen in the same pass shows up as
+  `PLAN_NOT_APPROVED`.
+- **Changed, attempts 0: withdrawal.** One atomic ledger write appends the
+  full intent and its `reasons` to `final_withdrawn[]`, records
+  `final_withdraw_cleanup` and drops the active `final_intent`. If that write
+  fails, the intent, its fence and its marker stay as they were and the pass
+  reports `PAPERCLIP_STORAGE_ERROR`.
+- **Changed, attempts above 0, or a malformed count:** a terminal
+  `READINESS_CHANGED` hold with its reasons. Holds are never re-armed. Only
+  a fresh `done` or `cancelled` detail supersedes one.
+- **Cleanup.** At the end of the pass, outside any paused pass, every row
+  with `final_withdraw_cleanup` resumes it. First it writes one
+  `final_withdrawn` notice. Then, under the spool's `.seq.lock`, it removes
+  the `.final` marker, but only when it is a strict `/2` marker naming the
+  withdrawn entry. Legacy, foreign and absent markers are left untouched, and
+  no lock is taken when there is no marker. Last, it clears the record. While
+  the record exists, the same U5 and PM-start guards that fence an intent
+  fence the issue, so a crash, a refused lock or a failed write leaves it
+  fenced. The next pass resumes the recorded cleanup. A raw spool head for
+  an entry that is already withdrawn is retired as a replay, never persisted
+  again; a different payload under that entry is kept and refused.
 
 ## The self-block model
 
