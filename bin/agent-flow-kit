@@ -342,15 +342,18 @@ agent-flow-kit — lifecycle entry point
       unknown or foreign notice with PAPERCLIP_NOTICE_UNKNOWN.
 
   agent-flow-kit paperclip-report --issue <id> [--comment-file <path>]
-      [--question <qid>] [--final in_review|done] [--status <text>
-      [--story k/n]] [--json]
+      [--question <qid>] [--final in_review --dir <worktree> --commit <sha>]
+      [--status <text> [--story k/n]] [--json]
       The PM's only way to write to Paperclip: publishes one spool entry
       (comment, question or final) or the declared status, never both in one
       call. Only the registry's live owner (or handoff successor) for the
       issue's project may call it. The body is always read from
       --comment-file, never an argument; a seq comes from a locked per-issue
-      counter and is published by a no-clobber rename. Refuses after a final
-      entry with PAPERCLIP_SPOOL_CLOSED.
+      counter and is published by a no-clobber rename. A final asks for
+      Josh's review only: it needs the handoff worktree and commit, a drained
+      spool (PAPERCLIP_SPOOL_NOT_DRAINED) and a ready paperclip-readiness
+      answer for them (FINAL_NOT_READY). Refuses after a final entry with
+      PAPERCLIP_SPOOL_CLOSED.
 
   agent-flow-kit paperclip-plan --issue <id> --plan-file <path> [--json]
       Validate a plan (every gate must be a line of .afk/gates-allowlist on
@@ -559,7 +562,7 @@ afk_option_allowed() { # <command> <option>
       case "$2" in --json|--notice) return 0 ;; esac ;;
     paperclip-report)
       case "$2" in
-        --json|--issue|--comment-file|--question|--final|--status|--story) return 0 ;;
+        --json|--issue|--comment-file|--question|--final|--dir|--commit|--status|--story) return 0 ;;
       esac ;;
     paperclip-plan)
       case "$2" in --json|--issue|--plan-file) return 0 ;; esac ;;
@@ -585,6 +588,7 @@ afk_main() {
   local pm_write="" pm_continuation="false" pm_harness=""
   local pmr_scope="" pc_slug="" pc_notice="" pct_action=""
   local pc_issue="" pc_plan_file="" pc_comment_file="" pc_question="" pc_final="" pc_status_text="" pc_story=""
+  local pc_dir="" pc_commit=""
   local usage_days=""
   local au_mode="enroll" au_key_ref="" au_key_file="" au_prev=""
   local cs_apply="false"
@@ -808,10 +812,10 @@ afk_main() {
               --merge)      pj_merge="$2" ;;
             esac
             shift ;;
-          --issue|--plan-file|--comment-file|--question|--final|--story|--kind|--actor|--reason)
+          --issue|--plan-file|--comment-file|--question|--final|--dir|--commit|--story|--kind|--actor|--reason)
             # The value is an issue id, a file path, a short question id, a
-            # final status word, or a story fraction — never echoed back;
-            # only the closed option vocabulary is.
+            # final status word, a commit id, or a story fraction — never
+            # echoed back; only the closed option vocabulary is.
             if (( $# < 2 )) || { [[ "$2" == --* ]] && afk_option_allowed "$cmd" "$2"; }; then
               afk_warn "$1 requires its declared value"
               afk_usage >&2
@@ -823,6 +827,8 @@ afk_main() {
               --comment-file) pc_comment_file="$2" ;;
               --question)     pc_question="$2" ;;
               --final)        pc_final="$2" ;;
+              --dir)          pc_dir="$2" ;;
+              --commit)       pc_commit="$2" ;;
               --story)        pc_story="$2" ;;
               --kind)         ra_kind="$2" ;;
               --actor)        ra_actor="$2" ;;
@@ -922,6 +928,10 @@ afk_main() {
     fi
     if [[ -n "$pc_question" && -n "$pc_final" ]]; then
       afk_warn "paperclip-report --question and --final are different entries; ask one at a time."
+      return "$AFK_EXIT_USAGE"
+    fi
+    if [[ ( -n "$pc_dir" || -n "$pc_commit" ) && -z "$pc_final" ]]; then
+      afk_warn "paperclip-report --dir and --commit name a final's handoff; they need --final in_review."
       return "$AFK_EXIT_USAGE"
     fi
   fi
@@ -1064,7 +1074,7 @@ afk_main() {
     paperclip-report)
       afk_require_declared_paths || return "$AFK_EXIT_USAGE"
       afk_cmd_paperclip_report "$json_mode" "$pc_issue" "$pc_comment_file" \
-        "$pc_question" "$pc_final" "$pc_status_text" "$pc_story"
+        "$pc_question" "$pc_final" "$pc_status_text" "$pc_story" "$pc_dir" "$pc_commit"
       return $? ;;
     paperclip-plan)
       afk_require_declared_paths || return "$AFK_EXIT_USAGE"

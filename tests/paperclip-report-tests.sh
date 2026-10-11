@@ -297,16 +297,82 @@ assert_eq "a question entry publishes" "$(jq -r .result <<<"$OUT_TEXT")" "ok"
 qfile="$(find "$STATE/paperclip/spool/$ISSUE" -maxdepth 1 -name '[0-9]*.json' | sort | tail -1)"
 assert_eq "  ...it carries its qid" "$(jq -r .question_id "$qfile")" "q-1"
 
-run_afk termA paperclip-report --issue "$ISSUE" --final "done" --comment-file "$(body_file "all done")" --json
-assert_eq "a final entry publishes" "$(jq -r .result <<<"$OUT_TEXT")" "ok"
+# AFK-PC-DELIVERY-L3: a final is Josh's review only, bound to a handoff
+# worktree and commit. A refusal writes nothing: no spool directory, .seq,
+# marker or ledger change. The ready producer is tested end to end in
+# tests/paperclip-readiness-tests.sh section 10b.
+SP="$STATE/paperclip/spool/$ISSUE"
+HEADC="$(git -C "$REPO" rev-parse HEAD)"
+pstate() { # every path and file byte under paperclip/, as one digest
+  (cd "$STATE/paperclip" && find . -print | LC_ALL=C sort | while IFS= read -r f; do
+     printf '%s %s\n' "$f" "$([[ -f "$f" ]] && sha256sum <"$f" | cut -d' ' -f1)"; done) | sha256sum
+}
+b="$(pstate)"
+run_afk termA paperclip-report --issue "$ISSUE" --final "done" --dir "$REPO" --commit "$HEADC" --comment-file "$(body_file "all done")" --json
+assert_eq "an agent done final is refused, nothing written" "$RC $(jq -r .result <<<"$OUT_TEXT") $(pstate)" "4 PAPERCLIP_FINAL_STATUS_INVALID $b"
 
+reset_state
+b="$(pstate)"
+for args in "--dir $REPO" "--commit $HEADC" "" "--dir $REPO --commit xyz"; do
+  # shellcheck disable=SC2086
+  run_afk termA paperclip-report --issue "$ISSUE" --final in_review $args --comment-file "$(body_file "review")" --json
+  assert_eq "a final without a worktree and a hex commit ($args): refused, no spool directory created" \
+    "$RC $(jq -r .result <<<"$OUT_TEXT") $([[ -e "$SP" ]] && echo SPOOL) $(pstate)" "4 FINAL_EVIDENCE_ARGS_REQUIRED  $b"
+done
+run_afk termA paperclip-report --issue "$ISSUE" --dir "$REPO" --comment-file "$(body_file "hi")" --json
+assert_eq "--dir without --final is a usage error" "$RC $([[ -e "$SP" ]] && echo SPOOL)" "1 "
+run_afk termA paperclip-report --issue "$ISSUE" --status "working" --commit "$HEADC" --json
+assert_eq "--commit without --final is a usage error" "$RC $(pstate)" "1 $b"
+
+# Queued or in-flight entries refuse before readiness runs (the poller drains
+# first); a not-ready answer refuses with the shared reader's reasons.
+run_afk termA paperclip-report --issue "$ISSUE" --comment-file "$(body_file "queued")" --json
+b="$(pstate)"
+run_afk termA paperclip-report --issue "$ISSUE" --final in_review --dir "$REPO" --commit "$HEADC" --comment-file "$(body_file "review")" --json
+assert_eq "a queued comment: PAPERCLIP_SPOOL_NOT_DRAINED, nothing written" "$RC $(jq -r .result <<<"$OUT_TEXT") $(pstate)" "2 PAPERCLIP_SPOOL_NOT_DRAINED $b"
+reset_state
+jq -c --arg id "$ISSUE" '.issues[$id].sending = {entry_id:"e2000000-0000-4000-8000-000000000002"}' \
+  "$STATE/paperclip/ledger.json" >"$TMPROOT/l.json" && mv "$TMPROOT/l.json" "$STATE/paperclip/ledger.json"
+b="$(pstate)"
+run_afk termA paperclip-report --issue "$ISSUE" --final in_review --dir "$REPO" --commit "$HEADC" --comment-file "$(body_file "review")" --json
+assert_eq "a send in flight: PAPERCLIP_SPOOL_NOT_DRAINED, nothing written" "$RC $(jq -r .result <<<"$OUT_TEXT") $(pstate)" "2 PAPERCLIP_SPOOL_NOT_DRAINED $b"
+reset_state
+b="$(pstate)"
+run_afk termA paperclip-report --issue "$ISSUE" --final in_review --dir "$REPO" --commit "$HEADC" --comment-file "$(body_file "review")" --json
+assert_eq "no approved plan or evidence: FINAL_NOT_READY with the reader's reasons, nothing written" \
+  "$RC $(jq -r '"\(.result) \(.reasons | index("PLAN_NOT_APPROVED") != null)"' <<<"$OUT_TEXT") $([[ -e "$SP" ]] && echo SPOOL) $(pstate)" \
+  "2 FINAL_NOT_READY true  $b"
+run_afk termA paperclip-report --issue "$ISSUE" --final in_review --dir "$REPO" --commit "$HEADC" --comment-file "$(body_file "review")"
+assert_contains "  ...text mode names them" "$OUT_TEXT" "paperclip-report: FINAL_NOT_READY: "
+
+# Legacy finals are never adopted or rewritten: a legacy marker closes the spool.
+reset_state; mkdir -p "$SP"; printf 'in_review' >"$SP/.final"; b="$(pstate)"
 run_afk termA paperclip-report --issue "$ISSUE" --comment-file "$(body_file "too late")" --json
-assert_contains "after final, the next entry is refused" "$OUT_TEXT" "PAPERCLIP_SPOOL_CLOSED"
+assert_eq "a legacy .final: the next entry is refused, its bytes unchanged" "$RC $(jq -r .result <<<"$OUT_TEXT") $(pstate)" "2 PAPERCLIP_SPOOL_CLOSED $b"
+run_afk termA paperclip-report --issue "$ISSUE" --final in_review --dir "$REPO" --commit "$HEADC" --comment-file "$(body_file "review")" --json
+assert_eq "  ...and so is a final" "$RC $(jq -r .result <<<"$OUT_TEXT") $(pstate)" "2 PAPERCLIP_SPOOL_CLOSED $b"
+
+# An outstanding /2 intent, or its withdrawal cleanup, closes the spool to
+# every entry; the declared status stays writable.
+for rec in final_intent final_withdraw_cleanup; do
+  reset_state
+  jq -c --arg id "$ISSUE" --arg k "$rec" '.issues[$id][$k] = {entry_id:"e3000000-0000-4000-8000-000000000003"}' \
+    "$STATE/paperclip/ledger.json" >"$TMPROOT/l.json" && mv "$TMPROOT/l.json" "$STATE/paperclip/ledger.json"
+  b="$(pstate)"
+  run_afk termA paperclip-report --issue "$ISSUE" --comment-file "$(body_file "hi")" --json; r1="$RC $(jq -r .result <<<"$OUT_TEXT")"
+  run_afk termA paperclip-report --issue "$ISSUE" --question q-2 --comment-file "$(body_file "hi?")" --json; r2="$RC $(jq -r .result <<<"$OUT_TEXT")"
+  run_afk termA paperclip-report --issue "$ISSUE" --final in_review --dir "$REPO" --commit "$HEADC" --comment-file "$(body_file "review")" --json
+  r3="$RC $(jq -r .result <<<"$OUT_TEXT")"
+  assert_eq "a ledger $rec: comment, question and final refused, nothing written" "$r1 $r2 $r3 $(pstate)" \
+    "2 PAPERCLIP_SPOOL_CLOSED 2 PAPERCLIP_SPOOL_CLOSED 2 PAPERCLIP_SPOOL_CLOSED $b"
+  run_afk termA paperclip-report --issue "$ISSUE" --status "with Josh" --json
+  assert_eq "  ...the status still writes" "$RC $(jq -r .result <<<"$OUT_TEXT")" "0 ok"
+done
 
 head1 "5. Pending cost events (AC-3)"
 reset_state
 write_ledger '["result.c1.json"]'
-run_afk termA paperclip-report --issue "$ISSUE" --final "in_review" --comment-file "$(body_file "review")" --json
+run_afk termA paperclip-report --issue "$ISSUE" --final "in_review" --dir "$REPO" --commit "$HEADC" --comment-file "$(body_file "review")" --json
 assert_contains "COST_EVENTS_PENDING fires with a pending ledger result" "$OUT_TEXT" "COST_EVENTS_PENDING"
 
 head1 "6. Declared status (AC-4, AC-5, AC-6)"
@@ -334,8 +400,6 @@ run_afk termA paperclip-report --issue "$ISSUE" --comment-file "$(body_file "rou
 assert_eq "seed comment published" "$(jq -r .result <<<"$OUT_TEXT")" "ok"
 run_afk termA paperclip-report --issue "$ISSUE" --question q-7 --comment-file "$(body_file "round trip question")" --json
 assert_eq "seed question published" "$(jq -r .result <<<"$OUT_TEXT")" "ok"
-run_afk termA paperclip-report --issue "$ISSUE" --final in_review --comment-file "$(body_file "round trip final")" --json
-assert_eq "seed final published" "$(jq -r .result <<<"$OUT_TEXT")" "ok"
 
 RT_CURL="$TMPROOT/rt-curl"
 RT_LOG="$TMPROOT/rt-curl.log"
@@ -376,8 +440,6 @@ out="$(env -i PATH="$STUBS:$PATH" HOME="$HOME_DIR" LANG=C AFK_STATE_DIR="$STATE"
   ')"
 assert_contains "the report cycle posted a comment" "$(cat "$RT_LOG.body" 2>/dev/null)" "round trip body"
 assert_contains "the report cycle posted the question" "$(cat "$RT_LOG.body" 2>/dev/null)" "round trip question"
-assert_contains "the report cycle posted the final" "$(cat "$RT_LOG.body" 2>/dev/null)" "round trip final"
-assert_contains "the final set the declared status" "$(cat "$RT_LOG.body" 2>/dev/null)" '"in_review"'
 assert_eq "every spool entry was consumed, none dead-lettered" \
   "$(find "$STATE/paperclip/spool/$ISSUE" -name '[0-9]*.json' | wc -l)" "0"
 assert_eq "  ...and the live directory is empty" \
@@ -385,6 +447,13 @@ assert_eq "  ...and the live directory is empty" \
 
 assert_eq "the PATH decoy orca never ran" \
   "$([[ -e "$STUBS/.bare-orca-ran" ]] && echo ran || echo never)" "never"
+
+head1 "9. The playbook Finish step is the same in both managed policy files (AFK-PC-DELIVERY-L3)"
+finish='**Finish.** Only when `agent-flow-kit paperclip-readiness --issue <id> --dir <worktree> --commit <handoff-commit>` reports ready, run `paperclip-report --final in_review --dir <worktree> --commit <handoff-commit> --comment-file` with a summary: what shipped, PR links, gate summary, token use by lane. Merge policy `human`: the handoff commit is the reviewed, unmerged PR head, and the summary says the change is not merged yet and names that commit and its tested tree. Merge policy `pm`, merged before Finish: the handoff commit is the actual merge commit, with the worktree at that commit, never the pre-merge branch commit; a squash whose tree differs from the tested and reviewed tree is not ready, so rebase, re-test and re-review before merging, or run a new builder and reviewer attempt on the merged tree under the same plan. Agent `done` is refused. `PAPERCLIP_SPOOL_NOT_DRAINED` means retry after the next poll pass. When the evidence is not ready, stale, rejected or missing, report `--status` or ask `--question` instead. No secrets, stamp bodies, or transcripts.'
+for fs in claude-global-CLAUDE.md:8 codex-AGENTS.md:6; do
+  assert_eq "playbook: ${fs%%:*} step ${fs##*:} is exactly the shared Finish clause, once" \
+    "$(grep -cF -- "**Finish.**" "$KIT_ROOT/files/${fs%%:*}") $(grep -xF -- "  ${fs##*:}. $finish" "$KIT_ROOT/files/${fs%%:*}" | wc -l | tr -d ' ')" "1 1"
+done
 head1 "Summary"
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

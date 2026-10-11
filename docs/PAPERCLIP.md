@@ -518,19 +518,23 @@ allowed to:
   ledger, refuses with `PAPERCLIP_ISSUE_UNKNOWN`.
 - **`paperclip-report --issue <id> --comment-file <path>`**,
   **`--issue <id> --question <qid> --comment-file <path>`**, or
-  **`--issue <id> --final in_review|done --comment-file <path>`**: the body
-  is always read from a file, at most 16 KiB and valid UTF-8, never from an
-  argument. `qid` matches `^[a-z0-9-]{1,32}$`. The verb writes
-  `{id, kind, body[, question_id | status]}` to
+  **`--issue <id> --final in_review --dir <worktree> --commit <sha>
+  --comment-file <path>`**: the body is always read from a file, at most 16
+  KiB and valid UTF-8, never from an argument. `qid` matches
+  `^[a-z0-9-]{1,32}$`. The verb writes `{id, kind, body[, question_id]}` (a
+  final: the `/2` `final_intent` below) to
   `spool/<issue-id>/.tmp/<uuid>.json`, then publishes it with a no-clobber
   rename to `spool/<issue-id>/<seq>.json` — the same layout
   `paperclip-poll`'s report cycle reads (see above). `seq` is zero-padded to
   8 digits and comes from a per-issue counter file
   (`spool/<issue-id>/.seq`), incremented under the kit's portable `mkdir`
-  lock, never a directory listing. After a `final` entry is published, any
-  further entry for that issue refuses with `PAPERCLIP_SPOOL_CLOSED`; a
-  `final` also refuses with `COST_EVENTS_PENDING` while the ledger lists a
-  pending cost result for the issue.
+  lock, never a directory listing. After a final is published, any further
+  entry for that issue refuses with `PAPERCLIP_SPOOL_CLOSED`; so does every
+  entry while the ledger holds a `/2` `final_intent` or its
+  `final_withdraw_cleanup`. A `final` also refuses with
+  `COST_EVENTS_PENDING` while the ledger lists a pending cost result for the
+  issue. How a final is qualified is in **Publishing a final for Josh's
+  review** below.
 - **`paperclip-report --issue <id> --status "<text>" [--story k/n]`**: writes
   `status/<issue-id>.json` atomically as
   `{schema:"afk-paperclip-status/1", text, story, version, updated_at}`,
@@ -925,10 +929,12 @@ approve and dispatch exactly as before.
 
 `paperclip-readiness --issue <id> --dir <worktree> [--commit <sha>] [--json]`
 answers whether the current approved work has complete, independent evidence
-on the worktree's current tree. It only reads. Nothing calls it
-automatically: no report, poll, dispatch or Finish step uses it, it writes no
-final or spool entry, and it makes no network call or model launch. Finished
-work still goes to Josh for review; nothing here marks an issue done.
+on the worktree's current tree. It only reads: it writes no final or spool
+entry, and it makes no network call or model launch. Its callers are the
+verb itself, the playbook's Finish step, `paperclip-report --final` (which
+refuses unless it answers ready) and the poller's pre-send recompute.
+Finished work still goes to Josh for review; nothing here marks an issue
+done.
 
 It exits 0 only when ready, 3 when not ready, and 1 on a usage error (an
 unknown option, a missing `--issue` or `--dir`, a non-hex `--commit`) or an
@@ -959,7 +965,12 @@ its `role`, `reviews`, the selected `attempt`, `cycle` and `dispatch_id`,
   to exactly its `question_id` and `question_seq` (see **Question replies**
   below). A reply to an older question, or a newer question, leaves it open.
   The other refusals stand regardless: a stop flag, another state or a
-  missing approval is refused whatever reply is recorded.
+  missing approval is refused whatever reply is recorded. A resume or FIFO
+  promotion that restores `working` while the plan question is still open
+  leaves it unanswerable (a plan decision is recorded only from
+  `waiting_human`), so the answer stays `PLAN_NOT_APPROVED,QUESTION_OPEN`;
+  recover by publishing the plan again with `paperclip-plan`, which asks
+  Josh afresh.
 - **Final markers.** A spool `.final` is legacy unless it is a strict
   `afk-paperclip-final/2` marker: a regular, non-symlink file of at most 4
   KiB of UTF-8 (no NUL, no U+FFFD), holding exactly one JSON object with no
@@ -967,8 +978,9 @@ its `role`, `reviews`, the selected `attempt`, `cycle` and `dispatch_id`,
   (`"afk-paperclip-final/2"`), `entry_id` (a UUID), `issue` (this issue)
   and `evidence_set_sha256` (`sha256:` + 64 hex). A missing, extra or
   wrongly typed member makes it legacy. A /2 marker is only not legacy: it
-  proves nothing, and every other check still applies. Nothing in the kit
-  writes, delivers or recovers one yet, and a legacy marker's bytes are
+  proves nothing, and every other check still applies. Only
+  `paperclip-report --final` writes one, after its entry; only the
+  poller's withdrawal cleanup removes one, and a legacy marker's bytes are
   never changed.
 - **Plan.** `paperclip-approval` must be approved (`PLAN_NOT_APPROVED`).
   The stored record must be one regular JSON object (`PLAN_RECORD_INVALID`)
@@ -1045,12 +1057,11 @@ its `role`, `reviews`, the selected `attempt`, `cycle` and `dispatch_id`,
   store and a scratch index, as `paperclip-evidence snapshot` does; no
   other file changes.
 
-## A stored final intent (AFK-PC-DELIVERY-L1, inert)
+## A stored final intent (AFK-PC-DELIVERY-L1)
 
-Nothing in the kit produces a final intent yet, and delivery is not
-available. This section documents the storage and the write guard that a
-future producer (L3) and sender (L2) will build on; it is inert until both
-exist.
+`paperclip-report --final` produces a final intent (see **Publishing a
+final for Josh's review** below) and the L2 layers deliver it. This section
+documents the storage and the write guard both build on.
 
 - **Shape.** A spool entry `kind:"final_intent"`, `schema:
   "afk-paperclip-final/2"`, carries the existing spool envelope's own `id` (a
@@ -1060,8 +1071,8 @@ exist.
   `status:"in_review"`, `reviewer_user_id`, `body` and `published_at`. There
   is no separate spool `entry_id` field: this layer translates the envelope's
   own `id` into `ledger.issues[<id>].final_intent.entry_id`, and the `/2`
-  marker's `entry_id` (a future producer, L3) carries that same value under a
-  different name. Every field, including `schema` and a UUID-shaped `id`, is
+  marker's `entry_id` (written by the producer, L3) carries that same value
+  under a different name. Every field, including `schema` and a UUID-shaped `id`, is
   validated by type, shape and the issue's own identity before anything is
   persisted; a missing or mistyped field, a wrong `schema`, or a status other
   than `in_review`, is invalid.
@@ -1108,12 +1119,13 @@ exist.
   write, but neither is "nothing" either.
 - **A non-head intent is never dead-lettered, and once it is the head
   nothing further is owed.** A `final_intent` behind an undrained entry is
-  the normal producer ordering (the writer appends to the tail). The report
-  cycle's drain stops the moment it reaches one: entries ahead of it are
-  posted and removed as usual (legitimate legacy writes), but there is no
-  trailing self-block PATCH after the drain stops, and the issue stays
-  `in_progress` with AFK's run until the delivery layer (L2) exists to act
-  on it. The same rule covers an intent that arrives as the new raw head
+  the writer's append-to-tail ordering. The report cycle's drain stops the
+  moment it reaches one: entries ahead of it are posted and removed as usual
+  (legitimate legacy writes), but there is no trailing self-block PATCH after
+  the drain stops, and the issue stays `in_progress` with AFK's run. That
+  issue would never come to rest for delivery, so the producer refuses a
+  final while anything is queued or in flight
+  (`PAPERCLIP_SPOOL_NOT_DRAINED`). The same rule covers an intent that arrives as the new raw head
   between the per-issue guard and the report cycle's own spool snapshot: it
   is recognized before any wakeup is sent.
 - **The lock-free precheck.** Recognizing a `final_intent` never takes the
@@ -1123,9 +1135,9 @@ exist.
   count every pass. A contended lock on a raw `final_intent` head always
   holds that issue for the pass — neither rejected exception (a delayed
   legacy read-back, or an owed self-block) is adopted.
-- **What this layer never does.** It never produces a `final_intent` in
-  shipped code (only a future producer does), never recomputes readiness for
-  one, and never retries or delivers one. A *raw*, not-yet-persisted head is
+- **What this layer never does.** It never produces a `final_intent` (only
+  `paperclip-report --final` does), never recomputes readiness for one, and
+  never retries or delivers one. A *raw*, not-yet-persisted head is
   still untouched by comment scanning and by the closed-issue sweep (it still
   dead-letters a raw head on a closing issue as `PAPERCLIP_ISSUE_CLOSED`) —
   both of those for a *persisted* intent are the delivery layer's own
@@ -1155,12 +1167,12 @@ row, not `unblockDescriptor`, which is status dependent.
 With `final_delivery_enabled` absent or false, a valid held intent is visible
 as `final_awaiting_delivery` with no readiness call or at-rest count. Comment
 observation still runs. A paused pass behaves the same way, whatever the
-toggle says. Final publication and any sender belong to later slices.
+toggle says. Publication and the sender are documented in their own
+sections.
 
 ## Readiness and withdrawal of a pending final intent (AFK-PC-DELIVERY-L2A-withdraw)
 
-This layer is still inert: it never sends a final, a status PATCH or a
-comment, and nothing in shipped code produces an intent. With
+This layer never sends a final, a status PATCH or a comment itself. With
 `final_delivery_enabled: true`, and only after the ownership checks above
 pass, each pass does the following for a persisted intent:
 
@@ -1217,12 +1229,11 @@ pass, each pass does the following for a persisted intent:
 
 ## Delivering a final intent to Josh's review (AFK-PC-DELIVERY-L2B)
 
-The sender is inert in shipped code: nothing produces an intent until the
-L3 change ships the readiness guard, the `/2` producer and both Finish
-clauses in one commit, and it only runs with `final_delivery_enabled: true`
-on a pass that is not paused. With the toggle off or a paused pass there are
-no remote writes; a readback of an already open delivery may still update
-the local ledger.
+The sender delivers only intents published by `paperclip-report --final`
+(next section), and it only runs with `final_delivery_enabled: true` on a
+pass that is not paused. The toggle stays off unless the host owner turns it
+on. With the toggle off or a paused pass there are no remote writes; a
+readback of an already open delivery may still update the local ledger.
 
 **Before each send or retry**, in the same pass: the ownership checks and at
 rest bound above, the recorded paths, shared readiness and strict `/2` marker
@@ -1307,6 +1318,68 @@ has no conditional PATCH, so a concurrent human edit, or a delayed apply
 after a client timeout, can still race the send. Mocked tests do not prove
 live run mapping, comment redaction, UI or host runtime loss, or remote
 approval end to end.
+
+## Publishing a final for Josh's review (AFK-PC-DELIVERY-L3)
+
+`paperclip-report --issue <id> --final in_review --dir <worktree> --commit
+<handoff-commit> --comment-file <path>` is the only producer of a
+`final_intent`. It asks for Josh's review and nothing else: Josh completes
+the work in Paperclip. It never writes the ledger. In order:
+
+- **Arguments.** `--final done` refuses `PAPERCLIP_FINAL_STATUS_INVALID`. A
+  missing `--dir`, or a missing or non-hex `--commit`, refuses
+  `FINAL_EVIDENCE_ARGS_REQUIRED` (exit 4). `--dir` or `--commit` without
+  `--final` is a usage error. Nothing is created, not even a spool
+  directory.
+- **Closed or busy spool.** A spool `.final` (legacy or `/2`), or a ledger
+  `final_intent` or `final_withdraw_cleanup`, refuses
+  `PAPERCLIP_SPOOL_CLOSED`. A pending cost result refuses
+  `COST_EVENTS_PENDING`. Any queued spool entry (a comment or a question
+  included) or a ledger `sending` refuses `PAPERCLIP_SPOOL_NOT_DRAINED`:
+  the poller's drain would otherwise stop at the final with the issue left
+  `in_progress`. Retry after the next poll pass sends what is queued.
+- **Readiness.** The full shared reader runs, with ambient `GIT_*` unset, on
+  the physical path of `--dir` and the full commit `--commit` names. A
+  short id is resolved there; a tree id, an unknown commit, or a commit
+  whose tree is not the tested and reviewed tree (an old head, a squash on
+  a moved base) is `COMMIT_TREE_MISMATCH`. Any reason refuses
+  `FINAL_NOT_READY` (exit 2) with the reader's own `reasons`
+  (`READINESS_UNAVAILABLE` when it cannot answer). A legacy `pending_final`
+  or `final_delivery_hold` is `LEGACY_FINAL_PRESENT` and stays untouched.
+- **The entry.** `{id, kind:"final_intent", schema:"afk-paperclip-final/2",
+  issue, identifier, plan_digest, evidence_set_sha256, tree, commit, dir,
+  common_dir, status:"in_review", reviewer_user_id, body, published_at}`:
+  the ready answer's digest, evidence set and tree, the full commit, the
+  physical `dir` and its common Git directory, the ledger's `identifier`,
+  `board_user_id` as the reviewer, and the body as written. The poller's
+  own validator must accept it (`PAPERCLIP_FINAL_INTENT_INVALID` otherwise).
+- **Publication, under `.seq.lock`.** The closed and drained checks run
+  again, and the ledger fields the answer depends on (`state`,
+  `identifier`, the question identity and reply, `sending`, legacy and `/2`
+  finals) must not have moved since the reader ran (`FINAL_NOT_READY` with
+  `READINESS_CHANGED` otherwise). Then the entry is published, `.seq` is
+  written, and last the strict `/2` marker naming the entry and its
+  evidence set. If a later write fails, only this publication's entry is
+  removed. The marker never comes first: an entry without one is withdrawn
+  unsent by the poller (`FINAL_MARKER_MISSING`), while a marker without an
+  entry would close the spool for good.
+- **After publication.** Comments, questions and further finals refuse
+  `PAPERCLIP_SPOOL_CLOSED`; `--status` still writes. The poller persists
+  the entry, and with the toggle off reports `final_awaiting_delivery`. A
+  withdrawal at attempts 0 (any readiness change before a send) removes the
+  matching marker in its cleanup, and the spool reopens for a fresh final
+  under a new entry id. A delivered intent stays as the fence. Re-adoption
+  never reaches a row that holds a persisted intent, so its marker is never
+  removed by a reopen.
+
+**Merge semantics** (the Finish step in both managed policy files). With
+merge policy `human` the handoff commit is the reviewed, unmerged PR head,
+and the summary says the change is not merged. With `pm`, merged before
+Finish, it is the actual merge commit with the worktree at that commit,
+never the old branch commit; a squash whose tree differs from the tested and
+reviewed tree is not ready until it is re-tested and re-reviewed, or a new
+builder and reviewer attempt runs on the merged tree under the same plan.
+Otherwise the PM reports `--status` or asks `--question`.
 
 ## The self-block model
 
