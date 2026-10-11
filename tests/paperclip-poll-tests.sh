@@ -3263,6 +3263,93 @@ assert_eq "  ...a second pass: one withdrawal each, no duplicate notice, conflic
 assert_contains "  ...consistently" "$OUT_TEXT" "final intent conflict, withdrawn entry kept: PROJ-48"
 assert_eq "  ...once cleanup is done, the other entry is persisted as a new intent" "$(wd_of 47) $(hd_of 47)" "1 $FI_E1 0 TREE_UNAVAILABLE $FI_E2 none 0"
 
+# ============================================================================
+head1 "25. Delivery fences, readback, saved holds, /2 sanitizer (AFK-PC-DELIVERY-L2b)"
+# ============================================================================
+# Sends live in paperclip-readiness-tests.sh section 12, the only ready world.
+fi_with() { # <n> <attempts> <json merged into final_intent>
+  fi_row "$1" "$2"
+  jq --arg id "$(iid "$1")" --argjson x "$3" '.issues[$id].final_intent += $x' "$(LEDGER_OF)" >"$(LEDGER_OF).t" && mv "$(LEDGER_OF).t" "$(LEDGER_OF)"
+}
+fi_hold() { jq -r --arg id "$(iid "$1")" '.issues[$id].final_intent.hold.reason // "none"' "$(LEDGER_OF)"; }
+DL_AT='"at":"2026-10-10T00:00:00Z","run":"a1000000-0000-4000-8000-000000000001"'
+
+new_scenario dl_fence
+write_config; set_cfg '.final_delivery_enabled = true'
+for n in 51 52 53; do seed "$n" working proj "$(pid_n 1)"; done
+fi_with 51 1 "{\"delivery\":{\"state\":\"uncertain\",$DL_AT}}"
+fi_with 52 1 "{\"delivery\":{\"state\":\"sending\",$DL_AT}}"
+fi_with 53 1 "{\"delivery\":{\"state\":\"delivered\",\"proof\":\"receipt\",\"comment\":\"present\",$DL_AT},\"disposition\":\"final_delivered\"}"
+inbox 51 53; issue 51 in_progress "\"$(pid_n 1)\""; issue 52 blocked "\"$(pid_n 1)\""; issue 53 in_progress "\"$(pid_n 1)\""
+write_spool "$(iid 52)" 001 "{\"id\":\"$E1\",\"kind\":\"comment\",\"body\":\"queued\"}"
+run_afk --json; run_afk --json; run_afk --json
+assert_eq "25a. open deliveries (in and out of the inbox) and a delivered intent: zero remote writes over three passes" \
+  "$(grep -cE '^(POST|PATCH) ' "$LOG")" "0"
+assert_eq "  ...a possible send not seen applied is DELIVERY_UNCONFIRMED, never NOT_AT_REST or IDENTITY_CHANGED" \
+  "$(fi_hold 51) $(fi_hold 52)" "DELIVERY_UNCONFIRMED DELIVERY_UNCONFIRMED"
+assert_eq "  ...the absent open row is read back, kept out of the AC-5d loop: not closed, no stopped notice, spool kept" \
+  "$(lget "$(iid 52)") $(find "$STATE/paperclip/notices" -name "*$(iid 52)*stopped*" 2>/dev/null | wc -l | tr -d ' ') $(find "$STATE/paperclip/spool/$(iid 52)" -maxdepth 1 -name '001.json' | wc -l | tr -d ' ')" \
+  "working 0 1"
+assert_eq "  ...A17: the delivered intent sent back to in_progress stays a fence, no hold" "$(fi_hold 53)" "none"
+assert_contains "  ...visible for the owner" "$OUT_TEXT" "final delivered, send-back needs owner action: PROJ-53"
+
+# PR117: each hold is saved before it is reported; a failed save holds nothing.
+new_scenario dl_pr117
+write_config; set_cfg '.final_delivery_enabled = true'
+for n in 54 55 56; do seed "$n" working proj "$(pid_n 1)"; done
+fi_row 54 0; fi_row 56 1
+fi_with 55 0 "{\"observed\":{\"status\":\"in_progress\",\"first_seen\":\"2026-10-10T00:00:00Z\",\"passes\":2,\"identity\":{\"assignee\":\"$AGENT1\",\"created_by\":\"$BOARD\"}}}"
+inbox 54 55 56; issue 55 in_progress "\"$(pid_n 1)\""; issue 56 blocked "\"$(pid_n 1)\""
+route GET "/api/issues/$(iid 54)" 200 "{\"status\":\"blocked\",\"identifier\":\"PROJ-54\",\"projectId\":\"$(pid_n 1)\",\"updatedAt\":\"2026-01-01T00:00:00Z\",\"assigneeAgentId\":\"$AGENT1\",\"createdByUserId\":\"other-user\"}"
+mkdir -p "$STATE/paperclip/ledger.json.afk-tmp"
+run_afk --json
+assert_eq "25b. IDENTITY_CHANGED, NOT_AT_REST (third pass), READINESS_CHANGED (attempts 1), ledger unwritable: no hold on disk" \
+  "$(fi_hold 54) $(fi_hold 55) $(fi_hold 56) $(lget "$(iid 55)" .final_intent.observed.passes)" "none none none 2"
+assert_eq "  ...three storage errors, no held action" \
+  "$(grep -o 'PAPERCLIP_STORAGE_ERROR: final intent hold' <<<"$OUT_TEXT" | wc -l | tr -d ' ') $(grep -o ', held: PROJ-5[456]' <<<"$OUT_TEXT" | wc -l | tr -d ' ')" "3 0"
+assert_eq "  ...zero remote writes" "$(grep -cE '^(POST|PATCH) ' "$LOG")" "0"
+rmdir "$STATE/paperclip/ledger.json.afk-tmp"
+run_afk --json
+assert_eq "  ...the next writable pass saves each hold" "$(fi_hold 54) $(fi_hold 55) $(fi_hold 56)" "IDENTITY_CHANGED NOT_AT_REST READINESS_CHANGED"
+assert_contains "  ...and only then reports it" "$OUT_TEXT" "NOT_AT_REST, held: PROJ-55"
+
+# The /2 sanitizer, beside the unchanged legacy afk_pc_final_hold.
+hv2() { lib afk_pc_final_hold_v2 422 "$1" FINAL_REJECTED run-x; }
+ids_of() { jq -nc --argjson n "$1" '{details:{missing:[range($n) | "field_\(.)"]}}'; }
+# PROVEN (error-handler HttpError shape): top-level and details code, details.missing "review_path".
+assert_eq "25c. PROVEN 422 invalid_issue_disposition: code and missing kept, nothing else" \
+  "$(hv2 '{"error":"Review path required","code":"invalid_issue_disposition","details":{"code":"invalid_issue_disposition","missing":"review_path","validReviewPaths":["assign a user"]}}')" \
+  '{"reason":"FINAL_REJECTED","http_status":422,"code":"invalid_issue_disposition","missing":"review_path","run_id":"run-x"}'
+# ASSUMED shapes (not pinned upstream).
+assert_eq "  ...ASSUMED array of 16 identifiers: kept" "$(hv2 "$(ids_of 16)" | jq -c '[(.missing | length), (.missing_shape // "none")]')" '[16,"none"]'
+while IFS='|' read -r label body; do
+  assert_eq "  ...ASSUMED $label: missing_shape unrecognized, no text" "$(hv2 "$body" | jq -c '[(.missing // "none"), .missing_shape]')" '["none","unrecognized"]'
+done <<EOF
+array of 17|$(ids_of 17)
+non-identifier string|{"details":{"missing":"review path; DROP"}}
+object|{"details":{"missing":{"a":"b"}}}
+number|{"details":{"missing":5}}
+EOF
+BIG="$(jq -nc --arg p "$(head -c 70000 /dev/zero | tr '\0' 'x')" '{code:"invalid_issue_disposition", pad:$p}')"
+assert_eq "  ...a body over 64 KiB: no parsed fields" "$(hv2 "$BIG")" '{"reason":"FINAL_REJECTED","http_status":422,"run_id":"run-x"}'
+assert_absent "  ...arbitrary error text never survives" "$(hv2 '{"error":"secret detail","message":"secret","code":"made_up"}')" "secret"
+
+# Legacy finals beside a delivered intent: never adopted, rearmed or rewritten.
+new_scenario dl_legacy
+write_config; set_cfg '.final_delivery_enabled = true'
+seed 57 working proj "$(pid_n 1)"; seed 58 working proj "$(pid_n 1)"
+lset 57 '{"pending_final":"in_review","final_delivery_hold":{"status":"in_review","http_status":422,"reason":"validation_rejected"}}'
+fi_legacy_marker 57
+fi_with 58 1 "{\"delivery\":{\"state\":\"delivered\",\"proof\":\"receipt\",\"comment\":\"present\",$DL_AT},\"disposition\":\"final_delivered\"}"
+inbox 57 58; issue 57 blocked "\"$(pid_n 1)\""; issue 58 blocked "\"$(pid_n 1)\""
+l57() { jq -cS --arg id "$(iid 57)" '.issues[$id] | {pending_final, final_delivery_hold, final_intent}' "$(LEDGER_OF)"; }
+b57="$(l57)"; m57="$(sha256sum <"$(mk_of 57)")"
+run_afk --json; run_afk --json; run_afk --json
+assert_eq "25d. legacy held final over three passes: fields and marker byte-identical, no intent adopted" \
+  "$(l57) $(sha256sum <"$(mk_of 57)")" "$b57 $m57"
+assert_eq "  ...no final status was sent for either issue" "$(cat "$BODYLOG" 2>/dev/null | grep -c 'in_review')" "0"
+assert_eq "  ...the delivered intent is unchanged" "$(jq -r --arg id "$(iid 58)" '.issues[$id].final_intent | "\(.disposition) \(.attempts)"' "$(LEDGER_OF)")" "final_delivered 1"
+
 # ===========================================================================
 printf '\n\033[1m%d passed, %d failed\033[0m\n' "$PASS" "$FAIL"
 (( FAIL == 0 )) || exit 1

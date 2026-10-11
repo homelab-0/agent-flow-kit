@@ -1181,9 +1181,12 @@ pass, each pass does the following for a persisted intent:
   `PLAN_CHANGED`, or the reader's own reasons). The spool `.final` must be a
   strict `/2` marker naming this `entry_id` and evidence set (else
   `FINAL_MARKER_MISSING` or `FINAL_MARKER_MISMATCH`). If all of that holds,
-  the intent records local `eligible` and nothing is sent. Answers and plan
-  rejections seen at the suppression points are saved before this check
-  runs, so a rejection seen in the same pass shows up as
+  the intent records local `eligible` and the sender (next section) runs in
+  the same pass; a stored `eligible` from an earlier pass never authorizes a
+  send. Answers and plan rejections seen at the suppression points are saved
+  before this check runs, unless that save fails: the pass then reports
+  `PAPERCLIP_STORAGE_ERROR`, and the stale answer it reads can only be less
+  ready. A rejection seen and saved in the same pass shows up as
   `PLAN_NOT_APPROVED`.
 - **Changed, attempts 0: withdrawal.** One atomic ledger write appends the
   full intent and its `reasons` to `final_withdrawn[]`, records
@@ -1193,6 +1196,13 @@ pass, each pass does the following for a persisted intent:
 - **Changed, attempts above 0, or a malformed count:** a terminal
   `READINESS_CHANGED` hold with its reasons. Holds are never re-armed. Only
   a fresh `done` or `cancelled` detail supersedes one.
+- **Hold persistence.** `IDENTITY_CHANGED`, `NOT_AT_REST`,
+  `READINESS_CHANGED` and every sender hold are saved with one atomic ledger
+  write as they are assigned, and `<REASON>, held` is reported only after
+  that write succeeds. If it fails, the in-memory ledger is restored, the
+  pass reports `PAPERCLIP_STORAGE_ERROR` and no hold exists on disk (the
+  pass-end save is skipped too, so the at-rest count of that pass is not kept
+  either). The next writable pass reaches the same hold again.
 - **Cleanup.** At the end of the pass, outside any paused pass, every row
   with `final_withdraw_cleanup` resumes it. First it writes one
   `final_withdrawn` notice. Then, under the spool's `.seq.lock`, it removes
@@ -1204,6 +1214,99 @@ pass, each pass does the following for a persisted intent:
   fenced. The next pass resumes the recorded cleanup. A raw spool head for
   an entry that is already withdrawn is retired as a replay, never persisted
   again; a different payload under that entry is kept and refused.
+
+## Delivering a final intent to Josh's review (AFK-PC-DELIVERY-L2B)
+
+The sender is inert in shipped code: nothing produces an intent until the
+L3 change ships the readiness guard, the `/2` producer and both Finish
+clauses in one commit, and it only runs with `final_delivery_enabled: true`
+on a pass that is not paused. With the toggle off or a paused pass there are
+no remote writes; a readback of an already open delivery may still update
+the local ledger.
+
+**Before each send or retry**, in the same pass: the ownership checks and at
+rest bound above, the recorded paths, shared readiness and strict `/2` marker
+(withdrawn at attempts 0, `READINESS_CHANGED` otherwise), then on the same
+fresh issue detail:
+
+- the detail `id` is this issue and the payload `reviewer_user_id` is
+  `board_user_id` (else `IDENTITY_CHANGED`);
+- `/api/issues/:id/active-run` reads as no run. Otherwise the pass waits
+  visibly, and the third consecutive wait is an `ACTIVE_RUN_PRESENT` hold. A
+  run is never cancelled or woken;
+- the run context is the recorded same-issue `last_self_wake_run_id`, which
+  must be a UUID (else `RUN_CONTEXT_ABSENT`). No run id is ever minted,
+  borrowed or woken for.
+
+**The send.** `attempts + 1` and `delivery = {state: "sending", at, run,
+attempt}` are saved first; a failed save sends nothing and reports
+`PAPERCLIP_STORAGE_ERROR`. Then exactly one creator-return PATCH, with
+`X-Paperclip-Run-Id` set to the recorded run, and body `{status:
+"in_review", assigneeAgentId: null, assigneeUserId: <board_user_id>,
+comment: <body> + "<!-- afk-final:<entry_id> -->"}`. The status is a
+constant: an agent `done` is never sent.
+
+**Outcomes.**
+
+| Response | Result |
+|---|---|
+| 2xx naming this issue, `in_review`, no agent, the board user | delivered (`proof: receipt`) |
+| any other 2xx | `UNEXPLAINED_RESPONSE` hold, delivery `uncertain` |
+| 403 `cross_issue_influence_run_context_required`, 422 `agent_jwt_run_id_mismatch`, 429 `cross_issue_influence_cap_exceeded` | `RUN_CONTEXT_REJECTED` hold |
+| 400, other 422 / 409 / other 403 / 404, 410 | `FINAL_REJECTED` / `CONFLICT` / `PERMISSION_REJECTED` / `ISSUE_GONE` hold |
+| 401, 403 `RESPONSIBLE_USER_UNAVAILABLE` | `not_applied`, `PAPERCLIP_CREDENTIAL_REJECTED`, pass aborted |
+| other 429, 5xx, `000`, transport failure | `uncertain`: read back next pass, never resent |
+
+Rejection holds keep only sanitized fields (`afk_pc_final_hold_v2`): the
+HTTP status, a recognized error code, the legacy `missing_field:
+"review_path"`, `details.missing` as an identifier string or at most 16
+identifier strings (any other shape is `missing_shape: "unrecognized"`), a
+UUID request id and the run id. Bodies over 64 KiB keep no parsed fields,
+and free error text is never stored. Only the `details.missing:
+"review_path"` 422 shape is proven upstream; the other shapes are assumed.
+The legacy `afk_pc_final_hold` is unchanged.
+
+**Readback and the ambiguity rule.** An open delivery (`sending`,
+`uncertain`, `not_applied` without a hold, or a delivered status whose
+comment is not confirmed) is read back before identity, at rest or
+readiness, whether the issue is in inbox-lite or not. Once unassigned it
+leaves the inbox, so a sweep before the closed-issue loop reads such rows
+back, and that loop never closes them until they resolve. The board target
+state is a delivered status (`proof: readback_state`). A GET that does not
+show it never proves that a timed-out PATCH will not land later, so a
+possibly sent PATCH is never repeated: it becomes a `DELIVERY_UNCONFIRMED`
+hold that is still read back every pass, and a later target state still
+marks it delivered. Only a proven non-applied attempt (401 or
+`RESPONSIBLE_USER_UNAVAILABLE`) is retried (the pinned source throws only
+the coded cap 429 before mutation, so an uncoded 429 is `uncertain`), and
+only from `blocked` assigned to this agent with no own
+marker (an own marker is `DELIVERY_STATE_UNEXPLAINED`), after the full
+checks above. The limit is three PATCH attempts in total, then
+`RETRY_EXHAUSTED`.
+
+**The comment.** Status and comment are not atomic. `final_delivered` needs
+both the delivered status and this agent's undeleted comment carrying the
+marker. Otherwise the disposition is `final_status_delivered`, a visible
+incomplete handoff: `missing` (the list was read and has no marker),
+`uncertain` (the read failed) or `deleted` (the recorded comment, or one of
+this agent's comments created since the attempt, is deleted). There is no
+comment repair POST and the status is never re-sent. Later passes only read
+the comments again, so the original marker appearing later confirms it;
+otherwise the owner acts.
+
+**Fence.** A delivered intent, and its `.final`, stays in the ledger as the
+U5 fence. If the issue is sent back to the agent (`in_progress` or
+`blocked`), nothing is resent, acknowledged, re-blocked or woken. The pass
+reports `final delivered, send-back needs owner action`. Legacy
+`pending_final`, `final_delivery_hold`, legacy `.final` and `/1` spool
+finals are never adopted or re-armed.
+
+**Rollout limits.** Live activation, the toggle, the allowlist and a
+disposable-issue test of recorded-run acceptance are owner actions. Paperclip
+has no conditional PATCH, so a concurrent human edit, or a delayed apply
+after a client timeout, can still race the send. Mocked tests do not prove
+live run mapping, comment redaction, UI or host runtime loss, or remote
+approval end to end.
 
 ## The self-block model
 
