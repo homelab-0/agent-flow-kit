@@ -2,10 +2,12 @@
 # afk-paperclip-report.sh — `agent-flow-kit paperclip-report`: the PM's only
 # way to write to Paperclip (AFK-PC-3a, AD-7/AD-8). See docs/PAPERCLIP.md.
 #
-# Reuses afk_pc_uuid_ok, afk_pc_spool_dir, afk_pc_load_config (from
-# lib/afk-paperclip.sh) and afk_pm_registry_lookup (from
-# lib/afk-pm-registry.sh), which must already be sourced. This file is
-# SOURCED, never executed.
+# Reuses afk_pc_uuid_ok, afk_pc_spool_dir, afk_pc_load_config,
+# afk_pc_final_intent_valid (from lib/afk-paperclip.sh),
+# afk_pm_registry_lookup (from lib/afk-pm-registry.sh), and, for a final,
+# afk_pce_readiness and afk_pce_common_dir (from lib/afk-paperclip-
+# evidence.sh), which must be sourced before a call. This file is SOURCED,
+# never executed.
 
 if [[ -n "${AFK_PAPERCLIP_REPORT_SOURCED:-}" ]]; then
   return 0
@@ -161,10 +163,95 @@ afk_pcr_body_read() {
   return 0
 }
 
+afk_pcr_emit_not_ready() { # <reasons-json> <json_mode>
+  if [[ "$2" == true ]]; then
+    jq -nc --argjson r "$1" '{result:"FINAL_NOT_READY", reasons:$r}'
+  else
+    printf 'agent-flow-kit paperclip-report: FINAL_NOT_READY: %s\n' "$(jq -r 'join(" ")' <<<"$1")"
+  fi
+}
+
+# afk_pcr_ledger_row <issue> -- the issue's poller ledger row, compact; empty
+# when the ledger or the row is unreadable. Reads only.
+afk_pcr_ledger_row() {
+  local lp="$AFK_STATE_DIR/paperclip/ledger.json"
+  [[ -r "$lp" ]] || return 0
+  jq -c --arg id "$1" '.issues[$id] | objects' "$lp" 2>/dev/null
+}
+
+# afk_pcr_final_outstanding <ledger-row> -- 0 while the row holds a /2 final
+# intent, in any state, or the cleanup of a withdrawn one. The spool stays
+# closed to every entry until the poller's withdrawal cleanup clears it.
+afk_pcr_final_outstanding() {
+  jq -e '(.final_intent // null) != null or (.final_withdraw_cleanup // null) != null' \
+    <<<"${1:-null}" >/dev/null 2>&1
+}
+
+# afk_pcr_spool_drained <issue> <ledger-row> -- 0 when no live entry is
+# queued and no send is in flight. A final behind a queued entry would stop
+# the poller's drain with the issue left in_progress (AFK-PC-DELIVERY-L3 D1).
+afk_pcr_spool_drained() {
+  [[ -z "$(afk_pc_spool_files "$1")" ]] &&
+    ! jq -e '(.sending // null) != null' <<<"${2:-null}" >/dev/null 2>&1
+}
+
+# The ledger fields a readiness answer or a final's payload depends on. The
+# producer reads them before readiness and again under the lock; any change
+# refuses READINESS_CHANGED rather than publishing a stale answer.
+AFK_PCR_FENCE='{state, identifier, question_id, question_seq, question_reply, sending,
+  pending_final, final_delivery_hold, final_intent, final_withdraw_cleanup}'
+
+# afk_pcr_final_prepare <json_mode> <issue> <body> <dir> <commit> -- the
+# producer's unlocked half (AFK-PC-DELIVERY-L3): a drained spool, then the
+# full shared readiness reader for the physical <dir> at <commit>, peeled to a
+# full commit id, with ambient GIT_* unset. Only a ready answer becomes an
+# entry: kind final_intent, schema /2, the ready evidence, tree, plan digest
+# and paths, reviewer board_user_id, status in_review. Writes nothing. Sets
+# AFK_PCR_FINAL_{ENTRY,MARKER,FENCE} or prints its own refusal; a direct
+# call (never `$(...)`).
+afk_pcr_final_prepare() {
+  local json_mode="$1" id="$2" body="$3" dir="$4" commit="$5" row r eid
+  AFK_PCR_FINAL_ENTRY="" AFK_PCR_FINAL_MARKER="" AFK_PCR_FINAL_FENCE=""
+  row="$(afk_pcr_ledger_row "$id")"
+  afk_pcr_spool_drained "$id" "$row" || { afk_pcr_emit_refusal "PAPERCLIP_SPOOL_NOT_DRAINED" "$json_mode"; return 2; }
+  AFK_PCR_FINAL_FENCE="$(jq -cS "$AFK_PCR_FENCE" <<<"${row:-null}" 2>/dev/null)"
+  r="$(unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
+         GIT_ALTERNATE_OBJECT_DIRECTORIES
+       p="$(CDPATH='' cd -- "$dir" 2>/dev/null && pwd -P)" || p="$dir"
+       c="$(git -C "$p" rev-parse -q --verify "$commit^{commit}" 2>/dev/null)" || c=""
+       o="$(afk_pce_readiness "$id" "$p" "${c:-$commit}" 2>/dev/null)" || exit 1
+       jq -c --arg d "$p" --arg cd "$(afk_pce_common_dir "$p")" --arg c "$c" \
+         '. + {dir:$d, common_dir:$cd, commit:$c}' <<<"$o")" || r=""
+  if ! jq -e 'type == "object" and (.ready | type) == "boolean" and (.reasons | type) == "array"' <<<"$r" >/dev/null 2>&1; then
+    afk_pcr_emit_not_ready '["READINESS_UNAVAILABLE"]' "$json_mode"; return 2
+  fi
+  if [[ "$(jq -r .ready <<<"$r")" != true ]]; then
+    afk_pcr_emit_not_ready "$(jq -c '[.reasons[] | strings] | if length == 0 then ["READINESS_NOT_READY"] else . end' <<<"$r")" "$json_mode"
+    return 2
+  fi
+  eid="$(afk_pcr_new_uuid)" || { afk_pcr_emit_refusal "PAPERCLIP_REGISTRY_WRITE_FAILED" "$json_mode"; return 1; }
+  AFK_PCR_FINAL_ENTRY="$(jq -c --arg e "$eid" --arg i "$id" --arg b "$body" --argjson row "${row:-null}" \
+    --arg u "$(jq -r '.board_user_id // empty | strings' <<<"${AFK_PC_CFG:-null}" 2>/dev/null)" \
+    --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{id:$e, kind:"final_intent", schema:"afk-paperclip-final/2", issue:$i, identifier:($row.identifier // null),
+      plan_digest, evidence_set_sha256, tree, commit, dir, common_dir, status:"in_review",
+      reviewer_user_id:$u, body:$b, published_at:$at}' <<<"$r" 2>/dev/null)"
+  # The poller's own validator: an entry it would dead-letter is never written.
+  if ! afk_pc_final_intent_valid "$AFK_PCR_FINAL_ENTRY" "$id"; then
+    AFK_PCR_FINAL_ENTRY=""
+    afk_pcr_emit_refusal "PAPERCLIP_FINAL_INTENT_INVALID" "$json_mode"; return 2
+  fi
+  AFK_PCR_FINAL_MARKER="$(jq -c '{schema, entry_id:.id, issue, evidence_set_sha256}' <<<"$AFK_PCR_FINAL_ENTRY")"
+  return 0
+}
+
 # afk_pcr_report_entry <json_mode> <issue> <comment_file> <question_id> <final>
-# AC-2/AC-3: publish one spool entry under a locked per-issue counter.
+#                      [<dir> <commit>]
+# AC-2/AC-3: publish one spool entry under a locked per-issue counter. A
+# final is only `in_review` with its worktree and handoff commit, and is
+# published as a /2 final_intent followed by its strict marker.
 afk_pcr_report_entry() {
-  local json_mode="$1" id="$2" comment_file="$3" qid="$4" final="$5"
+  local json_mode="$1" id="$2" comment_file="$3" qid="$4" final="$5" dir="${6:-}" commit="${7:-}"
   local spool_dir; spool_dir="$(afk_pc_spool_dir "$id")"
   local final_marker="$spool_dir/.final"
 
@@ -172,11 +259,14 @@ afk_pcr_report_entry() {
     [[ "$qid" =~ $AFK_PCR_QID_RE ]] || { afk_pcr_emit_refusal "PAPERCLIP_QUESTION_ID_INVALID" "$json_mode"; return 4; }
   fi
   if [[ -n "$final" ]]; then
-    case "$final" in in_review | done) ;; *)
-      afk_pcr_emit_refusal "PAPERCLIP_FINAL_STATUS_INVALID" "$json_mode"; return 4 ;;
-    esac
+    # Josh completes the work in Paperclip: an agent `done` is never written.
+    [[ "$final" == in_review ]] || { afk_pcr_emit_refusal "PAPERCLIP_FINAL_STATUS_INVALID" "$json_mode"; return 4; }
+    [[ -n "$dir" && "$commit" =~ ^[0-9a-f]{7,64}$ ]] ||
+      { afk_pcr_emit_refusal "FINAL_EVIDENCE_ARGS_REQUIRED" "$json_mode"; return 4; }
   fi
   [[ -e "$final_marker" ]] && { afk_pcr_emit_refusal "PAPERCLIP_SPOOL_CLOSED" "$json_mode"; return 2; }
+  afk_pcr_final_outstanding "$(afk_pcr_ledger_row "$id")" &&
+    { afk_pcr_emit_refusal "PAPERCLIP_SPOOL_CLOSED" "$json_mode"; return 2; }
 
   if [[ -n "$final" ]]; then
     local ledger_path="$AFK_STATE_DIR/paperclip/ledger.json" ledger="" pending
@@ -188,13 +278,26 @@ afk_pcr_report_entry() {
 
   afk_pcr_body_read "$comment_file" || { afk_pcr_emit_refusal "$AFK_PCR_REFUSAL" "$json_mode"; return 4; }
   local body="$AFK_PCR_BODY"
+  if [[ -n "$final" ]]; then
+    afk_pcr_final_prepare "$json_mode" "$id" "$body" "$dir" "$commit" || return $?
+  fi
 
   afk_state_dir_ensure "$spool_dir" || { afk_pcr_emit_refusal "PAPERCLIP_REGISTRY_WRITE_FAILED" "$json_mode"; return 1; }
   local lockdir="$spool_dir/.seq.lock"
   afk_pcr_lock "$lockdir" || { afk_pcr_emit_refusal "PAPERCLIP_LOCK_TIMEOUT" "$json_mode"; return 1; }
-  if [[ -e "$final_marker" ]]; then
+  local now_row why=""
+  now_row="$(afk_pcr_ledger_row "$id")"
+  if [[ -e "$final_marker" ]] || afk_pcr_final_outstanding "$now_row"; then
+    why=PAPERCLIP_SPOOL_CLOSED
+  elif [[ -n "$final" ]] && ! afk_pcr_spool_drained "$id" "$now_row"; then
+    why=PAPERCLIP_SPOOL_NOT_DRAINED
+  elif [[ -n "$final" && "$(jq -cS "$AFK_PCR_FENCE" <<<"${now_row:-null}" 2>/dev/null)" != "$AFK_PCR_FINAL_FENCE" ]]; then
+    why=READINESS_CHANGED
+  fi
+  if [[ -n "$why" ]]; then
     afk_pcr_unlock "$lockdir"
-    afk_pcr_emit_refusal "PAPERCLIP_SPOOL_CLOSED" "$json_mode"
+    if [[ "$why" == READINESS_CHANGED ]]; then afk_pcr_emit_not_ready '["READINESS_CHANGED"]' "$json_mode"
+    else afk_pcr_emit_refusal "$why" "$json_mode"; fi
     return 2
   fi
 
@@ -208,13 +311,16 @@ afk_pcr_report_entry() {
   while [[ -e "$spool_dir/$(printf '%08d' "$seq").json" ]]; do seq=$((seq + 1)); done
 
   local eid rc=0
-  eid="$(afk_pcr_new_uuid)" || rc=1
+  if [[ -n "$final" ]]; then
+    eid="$(jq -r .id <<<"$AFK_PCR_FINAL_ENTRY")"
+  else
+    eid="$(afk_pcr_new_uuid)" || rc=1
+  fi
   local kind entry
   if (( rc == 0 )); then
     if [[ -n "$final" ]]; then
-      kind=final
-      entry="$(jq -nc --arg id "$eid" --arg k "$kind" --arg b "$body" --arg s "$final" \
-        '{id:$id, kind:$k, body:$b, status:$s}')"
+      kind=final_intent
+      entry="$AFK_PCR_FINAL_ENTRY"
     elif [[ -n "$qid" ]]; then
       kind=question
       entry="$(jq -nc --arg id "$eid" --arg k "$kind" --arg b "$body" --arg q "$qid" \
@@ -241,8 +347,11 @@ afk_pcr_report_entry() {
     fi
   fi
   (( rc == 0 )) && { afk_state_file_write "$seq_file" "$seq" || rc=1; }
-  if (( rc == 0 )) && [[ "$kind" == final ]]; then
-    afk_state_file_write "$final_marker" "$final" || rc=1
+  # The marker comes last, never first: an entry without its marker is
+  # withdrawn by the poller (FINAL_MARKER_MISSING), while a marker without an
+  # entry would close the spool for good.
+  if (( rc == 0 )) && [[ "$kind" == final_intent ]]; then
+    afk_state_file_write "$final_marker" "$AFK_PCR_FINAL_MARKER" || rc=1
   fi
 
   # A later write (seq/final) failing after the entry was already published
@@ -305,9 +414,10 @@ afk_pcr_report_status() {
 }
 
 # afk_cmd_paperclip_report <json_mode> <issue> <comment_file> <question_id>
-#                          <final> <status_text> <story>
+#                          <final> <status_text> <story> <dir> <commit>
 afk_cmd_paperclip_report() {
   local json_mode="$1" id="$2" comment_file="$3" qid="$4" final="$5" status_text="$6" story="$7"
+  local dir="${8:-}" commit="${9:-}"
   AFK_PCR_REFUSAL=""
 
   afk_pc_uuid_ok "$id" || { afk_pcr_emit_refusal "PAPERCLIP_ISSUE_UNKNOWN" "$json_mode"; return 4; }
@@ -320,5 +430,5 @@ afk_cmd_paperclip_report() {
     afk_pcr_report_status "$json_mode" "$id" "$status_text" "$story"
     return $?
   fi
-  afk_pcr_report_entry "$json_mode" "$id" "$comment_file" "$qid" "$final"
+  afk_pcr_report_entry "$json_mode" "$id" "$comment_file" "$qid" "$final" "$dir" "$commit"
 }

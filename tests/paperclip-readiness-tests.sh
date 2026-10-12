@@ -156,9 +156,9 @@ assert_eq "a linked worktree of the owner's repository on the same tree -> ready
 printf 'private\n' >"$PB/extra-brief.md"; rd
 assert_eq "an ignored private brief does not change product identity" "$RC $(jf .evidence_set_sha256)" "0 $WANT"
 rm -f "$PB/extra-brief.md"
-assert_eq "readiness callers: the verb, the reader and the poller's withdrawal recompute only" \
+assert_eq "readiness callers: the verb, the reader, the poller's withdrawal recompute, the final producer and both Finish steps" \
   "$(grep -rlE 'paperclip-readiness|afk_pce_readiness|afk_cmd_paperclip_readiness' "$KIT_ROOT/bin" "$KIT_ROOT/lib" "$KIT_ROOT/files" | sed "s|^$KIT_ROOT/||" | LC_ALL=C sort | paste -sd' ' -)" \
-  "bin/agent-flow-kit lib/afk-paperclip-evidence.sh lib/afk-paperclip.sh"
+  "bin/agent-flow-kit files/claude-global-CLAUDE.md files/codex-AGENTS.md lib/afk-paperclip-evidence.sh lib/afk-paperclip-report.sh lib/afk-paperclip.sh"
 assert_eq "  ...the poller calls the shared reader on exactly one line" \
   "$(grep -cE 'paperclip-readiness|afk_pce_readiness|afk_cmd_paperclip_readiness' "$KIT_ROOT/lib/afk-paperclip.sh")" "1"
 
@@ -349,12 +349,12 @@ reset; fin ""; printf '%s' "$M2" >"$TMPROOT/m2"; rm -f "$MK"; ln -s "$TMPROOT/m2
 reset; mkdir -p "$MK"; legacy "a directory at the marker"
 # L1 (AFK-PC-DELIVERY-L1/U3) adds exactly one more occurrence: the read-side
 # validator comparison in lib/afk-paperclip.sh, which only ever checks an
-# untrusted spool input -- it never writes a /2 marker. No producer exists;
-# the proxy is narrowed to name it precisely rather than widened to permit it
-# anywhere.
-assert_eq "no producer: only the reader and the lib validator name the /2 marker schema" \
+# untrusted spool input -- it never writes a /2 marker. L3 adds the one
+# producer, paperclip-report (section 10b); the proxy names each file rather
+# than permitting the schema anywhere.
+assert_eq "the /2 schema: only the reader, the lib validator and the one producer name it" \
   "$(grep -rl 'afk-paperclip-final/2' "$KIT_ROOT/bin" "$KIT_ROOT/lib" "$KIT_ROOT/files" | sed "s|^$KIT_ROOT/||" | LC_ALL=C sort | paste -sd' ' -)" \
-  "lib/afk-paperclip-evidence.sh lib/afk-paperclip.sh"
+  "lib/afk-paperclip-evidence.sh lib/afk-paperclip-report.sh lib/afk-paperclip.sh"
 assert_eq "  ...and lib/afk-paperclip.sh names it on exactly one line" \
   "$(grep -c 'afk-paperclip-final/2' "$KIT_ROOT/lib/afk-paperclip.sh")" "1"
 assert_eq "  ...that line is exactly the validator's schema comparison" \
@@ -414,7 +414,7 @@ SH
 chmod +x "$X/orca-cli" "$X/op" "$X/curl"
 fx() { local k="${1}_${2#/}"; { printf '%s\n' "$3"; [[ -n "${4:-}" ]] && printf '%s\n' "$4"; } >"$X/fix/${k//\//_}"; }
 pm() { OUT="$(env -i PATH="$PATH" HOME="$HOME_DIR" LANG=C AFK_STATE_DIR="$STATE" AFK_HOST_CONFIG="$X/host.json" \
-  AFK_PAPERCLIP_CONFIG="$CONFIG" ORCA_TERMINAL_HANDLE=termA bash "$AFK" "$@" --json 2>/dev/null </dev/null)"; RC=$?; }
+  AFK_PAPERCLIP_CONFIG="$CONFIG" ORCA_TERMINAL_HANDLE=termA ${LIB10:+"AFK_LIB_DIR=$LIB10"} bash "$AFK" "$@" --json 2>/dev/null </dev/null)"; RC=$?; }
 poll() { env -i PATH="$PATH" HOME="$HOME_DIR" LANG=C AFK_STATE_DIR="$STATE" AFK_PAPERCLIP_CONFIG="$CONFIG" \
   AFK_OP_BIN="$X/op" AFK_CURL_BIN="$X/curl" OP_SERVICE_ACCOUNT_TOKEN=t CURL_LOG="$X/curl.log" CURL_FIX="$X/fix" \
   bash "$AFK" paperclip-poll --json >>"$X/poll.out" 2>&1 </dev/null; }
@@ -445,6 +445,9 @@ assert_eq "a poll pass sends it: waiting_human, its seq and Paperclip's createdA
 A1="$(jcm 1 "approve $D8" 2026-03-02T00:00:00.000Z)"; comments "$A1"; poll
 assert_eq "the next pass reads Josh's approve comment: the approval of record, still waiting_human" \
   "$(approved) $(row .state)" "true waiting_human"
+# Tested and reviewed on a dirty tree: one untracked product file, which
+# section 10b commits as-is for the handoff.
+printf 'dirty\n' >"$R/dirty.txt"
 T="$(bash "$AFK" paperclip-evidence snapshot --dir "$R" 2>/dev/null | jq -r .tree)"
 for s in S1 S3; do accept "$s" >/dev/null; launch "$s" 1 "e$s" >/dev/null; outcome "$s" 1 1 "e$s" "$T" "$T" "$BG" >/dev/null; done
 for p in S2:S1 S4:S3; do
@@ -500,7 +503,7 @@ assert_eq "...whose q1 reply is still on the row" "$(row '.question_reply.questi
 
 back replied; printf 'And the colour?\n' >"$X/q2.md"; pm paperclip-report --issue "$ISSUE" --question q2 --comment-file "$X/q2.md"
 comments "$A1"; sent 2026-03-07T00:00:00.000Z; poll
-is "a second question closes it again" "QUESTION_OPEN"
+is "a second question opens it again" "QUESTION_OPEN"
 assert_eq "...the earlier reply stays bound to q1" "$(row '"\(.question_id) \(.question_reply.question_id)"')" "q2 q1"
 comments "$A1" "$(jcm 9 "blue" 2026-03-08T00:00:00.000Z)"; poll; rd
 assert_eq "a reply to the second question re-binds to it: ready on the same evidence" \
@@ -510,6 +513,121 @@ printf 'And the size?\n' >"$X/q3.md"; pm paperclip-report --issue "$ISSUE" --que
 sent 2026-03-09T00:00:00.000Z; poll
 is "a third question opens it again" "QUESTION_OPEN"
 assert_eq "...the reply stays bound to q2" "$(row '"\(.question_id) \(.question_seq) \(.question_reply.question_id)"')" "q3 4 q2"
+
+head1 "10b. Producer: paperclip-report --final publishes only a ready, drained handoff (AFK-PC-DELIVERY-L3)"
+# The section-10 world: evidence recorded on a dirty tree. The handoff
+# commits that tree as-is, so the commit records exactly the tested tree.
+OLDC="$(git -C "$R" rev-parse HEAD)"
+git -C "$R" add -A; git -C "$R" commit -qm c1; NEWC="$(git -C "$R" rev-parse HEAD)"
+RP="$(cd -P -- "$R" && pwd -P)"; CD10="$(cd -P -- "$(git -C "$R" rev-parse --path-format=absolute --git-common-dir)" && pwd -P)"
+SP10="$STATE/paperclip/spool/$ISSUE"; printf 'ready for review' >"$X/final.md"; printf 'Still there?\n' >"$X/q8.md"
+back replied; rd --commit "$NEWC"
+assert_eq "the dirty tested tree committed as-is is ready at that commit, on the same evidence" "$RC $(jf .evidence_set_sha256)" "0 $R10"
+# pst -- the spool tree (every path and byte) and the ledger, as one digest.
+pst() { { (cd "$X/state/paperclip" && find spool -print 2>/dev/null | LC_ALL=C sort | while IFS= read -r f; do
+            printf '%s %s\n' "$f" "$([[ -f "$f" ]] && sha <"$f")"; done); sha <"$L10"; } | sha; }
+fin10() { pm paperclip-report --issue "$ISSUE" --final in_review --dir "${FD:-$R}" --comment-file "$X/final.md" "$@"; }
+nr10() { # <name> <"rc result reasons"> <final args...> -- refused, and nothing the producer owns changed
+  local n="$1" w="$2" b; shift 2; b="$(pst)"; fin10 "$@"
+  assert_eq "$n" "$RC $(jf .result) $(jf '.reasons // [] | join(",")') $(pst)" "$w $b"
+}
+SQ="$(git -C "$R" commit-tree "$OLDC^{tree}" -p "$NEWC" -m squash)"
+back replied
+nr10 "the old HEAD of the dirty tested tree: FINAL_NOT_READY, nothing written" "2 FINAL_NOT_READY COMMIT_TREE_MISMATCH" --commit "$OLDC"
+nr10 "a bare tree id is not a commit" "2 FINAL_NOT_READY COMMIT_TREE_MISMATCH" --commit "$T"
+nr10 "an unknown commit" "2 FINAL_NOT_READY COMMIT_TREE_MISMATCH" --commit deadbeef
+nr10 "a squash on a moved master whose tree is not the tested tree" "2 FINAL_NOT_READY COMMIT_TREE_MISMATCH" --commit "$SQ"
+printf 'edit\n' >"$R/new.txt"
+nr10 "a product edit after the tests" \
+  "2 FINAL_NOT_READY COMMIT_TREE_MISMATCH,TREE_CHANGED:HOM-20.S1,TREE_CHANGED:HOM-20.S3" --commit "$NEWC"
+rm -f "$R/new.txt"
+back replied; edit "HOM-20.S1/1.c1.outcome.json" '.status = "gates_failed" | .gates_ok = false | .result.gates["bash tests/b.sh"] = "fail"'
+nr10 "a failed build" "2 FINAL_NOT_READY STORY_NOT_DONE:HOM-20.S1,GATES_NOT_PASSED:HOM-20.S1" --commit "$NEWC"
+back replied; accept S1 >/dev/null; launch S1 1 eS1b >/dev/null
+nr10 "a newer accepted, unfinished attempt" "2 FINAL_NOT_READY ATTEMPT_UNFINISHED:HOM-20.S1" --commit "$NEWC"
+back replied; launch S2 2 eS2m >/dev/null; outcome S2 1 2 eS2m "$T" "$T2" "$RGJ" "$(vt S2 S1 APPROVE)" >/dev/null
+nr10 "a reviewer edit during its gates" "2 FINAL_NOT_READY REVIEW_TREE_MUTATED:HOM-20.S2" --commit "$NEWC"
+back replied; launch S2 2 eS2r >/dev/null; outcome S2 1 2 eS2r "$T" "$T" "$RGJ" "$(vt S2 S1 CHANGES_REQUESTED)" >/dev/null
+nr10 "a rejected review" "2 FINAL_NOT_READY REVIEW_NOT_APPROVED:HOM-20.S2,REVIEW_CHECK_NOT_OK:HOM-20.S2" --commit "$NEWC"
+back replied; rm -f "$STATE/paperclip/approvals/$ISSUE.json"
+nr10 "no approval of record" "2 FINAL_NOT_READY PLAN_NOT_APPROVED" --commit "$NEWC"
+back replied; put_plan "$(jq -c --arg r "$R" '.repo = $r | .stories[0].title = "B1 again"' <<<"$PLAN")"
+nr10 "a changed plan: the recorded evidence binds the old one" \
+  "2 FINAL_NOT_READY PLAN_BINDING_CHANGED:HOM-20.S1,PLAN_BINDING_CHANGED:HOM-20.S2,PLAN_BINDING_CHANGED:HOM-20.S3,PLAN_BINDING_CHANGED:HOM-20.S4" --commit "$NEWC"
+back replied; pm paperclip-report --issue "$ISSUE" --question q9 --comment-file "$X/q8.md"
+nr10 "a spooled question, not yet sent: PAPERCLIP_SPOOL_NOT_DRAINED" "2 PAPERCLIP_SPOOL_NOT_DRAINED " --commit "$NEWC"
+back replied; pm paperclip-report --issue "$ISSUE" --comment-file "$X/q8.md"
+nr10 "a spooled comment" "2 PAPERCLIP_SPOOL_NOT_DRAINED " --commit "$NEWC"
+back replied; lput "$(jq -c --arg id "$ISSUE" '.issues[$id].sending = {entry_id:"e2000000-0000-4000-8000-000000000002"}' "$L10")"
+nr10 "a send in flight" "2 PAPERCLIP_SPOOL_NOT_DRAINED " --commit "$NEWC"
+back replied; lput "$(jq -c --arg id "$ISSUE" 'del(.issues[$id].question_reply)' "$L10")"
+nr10 "a sent, unanswered question" "2 FINAL_NOT_READY QUESTION_OPEN" --commit "$NEWC"
+pm paperclip-report --issue "$ISSUE" --status "waiting on Josh"; s1="$RC $(jf .result)"
+pm paperclip-report --issue "$ISSUE" --question q8 --comment-file "$X/q8.md"
+assert_eq "  ...after the refusal a status and a question still publish" "$s1 $RC $(jf .result)" "0 ok 0 ok"
+for lg in '.pending_final = "done"' '.final_delivery_hold = {status:"in_review"}'; do
+  back replied; lput "$(jq -c --arg id "$ISSUE" ".issues[\$id] |= ($lg)" "$L10")"
+  nr10 "a legacy ${lg%% =*}: refused, never adopted, its bytes unchanged" "2 FINAL_NOT_READY LEGACY_FINAL_PRESENT" --commit "$NEWC"
+done
+back replied; mkdir -p "$SP10"; printf 'in_review' >"$SP10/.final"
+nr10 "a legacy spool .final: closed, its bytes unchanged" "2 PAPERCLIP_SPOOL_CLOSED " --commit "$NEWC"
+for rec in final_intent final_withdraw_cleanup; do
+  back replied; lput "$(jq -c --arg id "$ISSUE" --arg k "$rec" '.issues[$id][$k] = {entry_id:"e3000000-0000-4000-8000-000000000003"}' "$L10")"
+  nr10 "an outstanding $rec: closed" "2 PAPERCLIP_SPOOL_CLOSED " --commit "$NEWC"
+done
+# The under-lock fence (D4): the real reader answers ready, then a fenced
+# ledger field changes before .seq.lock. Reopening the answered question reads
+# QUESTION_OPEN before the lock (above), so READINESS_CHANGED is the recheck.
+# A fixture lib dir wraps the reader; the product code is the real CLI's.
+mkdir -p "$X/lib10"; for f in "$KIT_ROOT"/lib/*.sh; do ln -sfn "$f" "$X/lib10/${f##*/}"; done
+rm -f "$X/lib10/afk-paperclip-evidence.sh"; cat >"$X/lib10/afk-paperclip-evidence.sh" <<'SH'
+. "$AFK_INSTALL_ROOT/lib/afk-paperclip-evidence.sh"
+eval "afk_pce_real() $(declare -f afk_pce_readiness | tail -n +2)"
+afk_pce_readiness() { local o rc l="$AFK_STATE_DIR/paperclip/ledger.json"
+  o="$(afk_pce_real "$@")"; rc=$?; printf '%s\n' "$o" >"$AFK_STATE_DIR/../rc1.ready"
+  jq -c --arg id "$1" 'del(.issues[$id].question_reply)' "$l" >"$l.t" && mv "$l.t" "$l"; printf '%s\n' "$o"; return "$rc"; }
+SH
+back replied; B1="$(pst)"; cp "$L10" "$X/rc1.ledger"; LIB10="$X/lib10" fin10 --commit "$NEWC"
+assert_eq "a fenced ledger change after a ready answer: READINESS_CHANGED under the lock" \
+  "$RC $(jf .result) $(jf '.reasons | join(",")') $(jq -r .ready "$X/rc1.ready" 2>/dev/null)" "2 FINAL_NOT_READY READINESS_CHANGED true"
+LE="$(jq -cS . "$L10")"; cp "$X/rc1.ledger" "$L10"
+assert_eq "  ...the ledger differs only by that edit; no entry, .seq or marker written" \
+  "$LE $(pst)" "$(jq -cS --arg id "$ISSUE" 'del(.issues[$id].question_reply)' "$X/rc1.ledger") $B1"
+# A marker that cannot be written: only this publication's entry is removed,
+# never a marker first; the counter keeps the seq it already used.
+back replied; S0="$(cat "$SP10/.seq" 2>/dev/null || echo 0)"; mkdir -p "$SP10/.final.afk-tmp"; fin10 --commit "$NEWC"
+assert_eq "a failed marker write: refused, its entry removed, no marker" \
+  "$RC $(jf .result) $(find "$SP10" -maxdepth 1 -name '[0-9]*.json' | wc -l | tr -d ' ') $([[ -e "$SP10/.final" ]] && echo marker) $(cat "$SP10/.seq")" \
+  "1 PAPERCLIP_REGISTRY_WRITE_FAILED 0  $((S0 + 1))"
+
+back replied; ln -sfn "$R" "$X/rlink10"; S0="$(cat "$SP10/.seq" 2>/dev/null || echo 0)"; L0="$(sha <"$L10")"
+FD="$X/rlink10" fin10 --commit "${NEWC:0:12}"
+E10F="$(find "$SP10" -maxdepth 1 -name '[0-9]*.json' | LC_ALL=C sort | tail -1)"; E10="$(jq -c . "$E10F")"; EID="$(jq -r .id <<<"$E10")"
+keep produced
+assert_eq "a ready, drained handoff through a symlinked worktree and a short commit: one entry, the counter advanced by one" \
+  "$RC $(jf .result) $(jf .seq) $(cat "$SP10/.seq") ${E10F##*/} $(find "$SP10" -maxdepth 1 -name '[0-9]*.json' | wc -l | tr -d ' ')" \
+  "0 ok $((S0 + 1)) $((S0 + 1)) $(printf '%08d' $((S0 + 1))).json 1"
+assert_eq "  ...exactly the /2 fields of the ready answer: full commit, physical paths, board reviewer, in_review" \
+  "$(jq -cS 'del(.id, .published_at)' <<<"$E10")" \
+  "$(jq -cnS --arg i "$ISSUE" --arg pd "$PDR" --arg es "$R10" --arg t "$T" --arg c "$NEWC" --arg d "$RP" --arg cd "$CD10" --arg u "$BOARD" \
+     '{kind:"final_intent", schema:"afk-paperclip-final/2", issue:$i, identifier:"HOM-20", plan_digest:$pd, evidence_set_sha256:$es,
+       tree:$t, commit:$c, dir:$d, common_dir:$cd, status:"in_review", reviewer_user_id:$u, body:"ready for review"}')"
+assert_eq "  ...a fresh UUID, a UTC time, and valid for the poller's own validator" \
+  "$(jq -r '[(.id | test("^[0-9a-f]{8}-[0-9a-f]{4}-")), (.published_at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))] | map(tostring) | join(" ")' <<<"$E10") $(bash -c '
+    . "$1/lib/afk-common.sh"; . "$1/lib/afk-readiness.sh"; . "$1/lib/afk-paperclip.sh"
+    afk_pc_final_intent_valid "$2" "$3" && echo valid' _ "$KIT_ROOT" "$E10" "$ISSUE" 2>/dev/null)" "true true valid"
+assert_eq "  ...then a strict /2 marker naming that entry and evidence set; the ledger untouched" \
+  "$(jq -cS . "$SP10/.final") $(sha <"$L10")" \
+  "$(jq -cnS --arg e "$EID" --arg i "$ISSUE" --arg es "$R10" '{schema:"afk-paperclip-final/2", entry_id:$e, issue:$i, evidence_set_sha256:$es}') $L0"
+rd --commit "$NEWC"
+assert_eq "  ...which readiness reads as strict, not legacy: ready on the same evidence" "$RC $(jf .evidence_set_sha256)" "0 $R10"
+b="$(pst)"
+pm paperclip-report --issue "$ISSUE" --comment-file "$X/q8.md"; c1="$RC $(jf .result)"
+pm paperclip-report --issue "$ISSUE" --question q8 --comment-file "$X/q8.md"; c2="$RC $(jf .result)"
+fin10 --commit "$NEWC"; c3="$RC $(jf .result)"
+pm paperclip-report --issue "$ISSUE" --status "with Josh for review"
+assert_eq "  ...then a comment, a question and another final are closed; the status still writes" \
+  "$c1 $c2 $c3 $RC $(jf .result) $(pst)" "2 PAPERCLIP_SPOOL_CLOSED 2 PAPERCLIP_SPOOL_CLOSED 2 PAPERCLIP_SPOOL_CLOSED 0 ok $b"
 
 head1 "11. Withdrawal: readiness at the recorded paths, through the poller"
 # The section-10 world: a committed gates allowlist, a /2 plan approved
@@ -801,6 +919,36 @@ ready12 0; patch12 200 "$(receipt "$(own)")"; poll; det12 in_progress; poll; det
 assert_eq "12m. delivered, then sent back to the agent: zero writes, no resend, ack, re-block or wake" \
   "$(zw) $(fi12 .disposition) $(grep -c wakeup "$X/curl.log")" "1 final_delivered 0"
 assert_contains "  ...visible for the owner" "$(last)" "final delivered, send-back needs owner action: HOM-20"
+
+head1 "13. Composed: the producer's entry, persisted and delivered by real poll passes (AFK-PC-DELIVERY-L3)"
+# Section 10b's produced state (nothing seeded by hand but the recorded run
+# and the section-12 fixtures), first with the toggle absent, the default.
+prod13() {
+  back produced
+  lput "$(jq -c --arg id "$ISSUE" --arg r "$RUN12" '.issues[$id].last_self_wake_run_id = $r' "$L10")"
+  rm -f "$X"/fix/*.n "$X"/fix/*.[0-9] "$X"/fix/PATCH_*; : >"$X/curl.log"; : >"$X/curl.log.bodies"; : >"$X/curl.log.argv"
+  comments "$A1"; det12 blocked; inbox12 in; fx GET "/api/issues/$ISSUE/active-run" 200 'null'
+}
+prod13; jq 'del(.final_delivery_enabled)' "$CONFIG" >"$CONFIG.t" && mv "$CONFIG.t" "$CONFIG"; poll; poll
+P13="$(jq -cS '{issue, identifier, plan_digest, evidence_set_sha256, tree, commit, dir, common_dir, status, reviewer_user_id, body, published_at}' <<<"$E10")"
+assert_eq "default off: the head is persisted as produced, its entry retired, its marker kept, zero remote writes" \
+  "$(fi12 .entry_id) $(fi12 '.payload | tojson' | jq -cS .) $(find "$SP10" -maxdepth 1 -name '[0-9]*.json' | wc -l | tr -d ' ') $(mk11) $(zw)" \
+  "$EID $P13 0 marker 0"
+assert_contains "  ...visibly awaiting delivery" "$(last)" "final_awaiting_delivery: HOM-20"
+FM="<!-- afk-final:$EID -->"; toggle true; patch12 200 "$(receipt "$(own)")"; poll
+WANT="$(jq -nc --arg u "$BOARD" --arg c "ready for review"$'\n\n'"$FM" '{status:"in_review", assigneeAgentId:null, assigneeUserId:$u, comment:$c}')"
+assert_eq "toggle on, blocked: exactly one creator-return PATCH, carrying the produced entry's own marker" \
+  "$(zw) $(np) $(head -1 "$X/curl.log.bodies")" "1 1 $WANT"
+assert_eq "  ...delivered by its receipt" "$(fi12 '[.attempts, .delivery.state, .disposition] | map(tostring) | join(" ")')" "1 delivered final_delivered"
+
+# A publication lost before its marker: the poller withdraws the unsent
+# intent and cleans up, and the spool reopens for a fresh final.
+prod13; rm -f "$MK11"; poll; poll
+assert_eq "an entry without its marker: withdrawn unsent (FINAL_MARKER_MISSING), cleanup done, zero remote writes" \
+  "$(wd11) $(mk11) $(zw)" "1 $EID FINAL_MARKER_MISSING none none none 0"
+fin10 --commit "$NEWC"
+assert_eq "  ...the spool reopened: a fresh final publishes with a new entry id" \
+  "$RC $(jf .result) $([[ "$(jq -r .entry_id "$MK11")" != "$EID" ]] && echo new)" "0 ok new"
 
 printf '\n%d passed, %d failed (%ds)\n' "$PASS" "$FAIL" "$SECONDS"
 (( FAIL == 0 ))
