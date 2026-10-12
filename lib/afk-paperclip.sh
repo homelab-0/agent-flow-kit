@@ -953,7 +953,7 @@ afk_pc_final_intent_present() {
 # 0 when a final_intent (persisted, or recognized this call) means every
 # remote write this pass must be suppressed for this issue; 1 when there is
 # none, so the caller's ordinary cycle proceeds. Never produces an intent:
-# only a raw final_intent spool head, written by a future producer (L3), is
+# only a raw final_intent spool head, written by paperclip-report (L3), is
 # ever recognized here.
 afk_pc_final_intent_recognize() {
   local iid="$1" dir lockdir existing head_file="" head_kind="" entry entry_id payload held=false
@@ -1915,7 +1915,7 @@ afk_pc_report_cycle() {
 
   # HEAD (NEW-C2-01): once the intent is the head, nothing after the drain
   # is owed -- no final PATCH, no self-block. The issue stays in_progress
-  # with AFK's run until L2 delivers; this inert layer has no producer.
+  # with AFK's run; the producer (L3) refuses a final behind queued entries.
   if [[ "$intent_became_head" == true ]]; then
     actions="$(jq -c --arg t "final intent reached head, held: $identifier" '. + [$t]' <<<"$actions")"
     return 0
