@@ -75,6 +75,17 @@ assert_file_contains() {
   local label="$1" file="$2" pattern="$3"
   if grep -Fq -- "$pattern" "$file"; then ok "$label"; else not_ok "$label"; fi
 }
+# Print a failed case's retained release-result document before the EXIT trap
+# removes $TMP, so its state and reason survive in the gate output. Only the
+# client's stdout result (fixed afk-release-result schema) is shown; its stderr
+# and the environment are not. Diagnostic only; never changes a verdict.
+show_release_result() { # <label> <result file>
+  local doc
+  if ! doc="$(jq -c . "$2" 2>/dev/null)"; then
+    doc="unparseable: $({ head -c 2048 -- "$2" 2>/dev/null || :; } | tr -d '\000')"
+  fi
+  printf '# %s: release result %s\n' "$1" "${doc:-<empty>}"
+}
 tree_identity() {
   /bin/bash -p -c '. "$1"; afk_tree_identity "$2"' _ "$ROOT/lib/afk-common.sh" "$1"
 }
@@ -596,6 +607,9 @@ assert_eq 'fixed bootstrap helpers ignore PATH and function poisoning' \
   "$([[ -e "$POISON_MARKER" ]] && wc -c <"$POISON_MARKER" || printf 0)" 0
 assert_eq 'poison-resistant release check completes' \
   "$(jq -r .state "$TMP/bootstrap-poison.out")" CURRENT
+if [[ "$(jq -r .state "$TMP/bootstrap-poison.out" 2>/dev/null)" != CURRENT ]]; then
+  show_release_result 'poison-resistant release check' "$TMP/bootstrap-poison.out"
+fi
 
 UNTRUSTED_DATE_ROOT="$TMP/user-owned-date"; mkdir -p "$UNTRUSTED_DATE_ROOT"
 UNTRUSTED_DATE_MARKER="$TMP/user-owned-date-executed"
@@ -713,6 +727,9 @@ fi
 touch "$ORPHAN_RELEASE"
 set +e; wait "$orphan_owner"; orphan_rc=$?; set -e
 assert_eq 'leader-exit descendant is drained before completion' "$orphan_rc" 0
+if (( orphan_rc != 0 )); then
+  show_release_result 'leader-exit descendant drain' "$TMP/orphan.out"
+fi
 if [[ ! -d "$STATE/releases/lock" ]]; then ok 'leader-exit lock releases after group drain'; else not_ok 'leader-exit lock releases after group drain'; fi
 
 # If the owning shell is killed after ACTIVE publication, a live child group is

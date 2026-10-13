@@ -20,6 +20,8 @@
 # 10 aggregate them here so one command still answers "is the kit green".
 #
 # Usage: tests/run-tests.sh
+#        AFK_TEST_LOG_DIR=<dir> tests/run-tests.sh   also saves each child
+#        suite's full output to <dir>/<suite>.log (see gate_log_save).
 # Exit:  0 all passed, 1 any failure.
 
 # SC2016 is disabled file-wide ON PURPOSE: many needles here are single-quoted
@@ -78,17 +80,31 @@ afk_test_lock_acquire; AFK_TEST_LOCK_RC=$?
 # total at the end. A warning never changes the exit code.
 GATE_SUITE_BUDGET_S=240
 GATE_TOTAL_BUDGET_S=720
+# Optional evidence capture (CI): with AFK_TEST_LOG_DIR set, each child suite's
+# full combined output is also written to <dir>/<suite>.log, ending with its
+# exit status. The console still shows only the tail, and the child's verdict
+# is reported unchanged. A log that was requested but could not be written is
+# a FAIL of its own, never a silent gap in the evidence. Unset: no change.
+gate_log_save() { # <friendly label> <script path> <output> <exit status> <elapsed>
+  [[ -n "${AFK_TEST_LOG_DIR:-}" ]] || return 0
+  local log; log="$AFK_TEST_LOG_DIR/$(basename "$2" .sh).log"
+  if ! { mkdir -p -- "$AFK_TEST_LOG_DIR" &&
+         printf '%s\n# exit=%s elapsed=%ss\n' "$3" "$4" "$5" >"$log"; } 2>/dev/null; then
+    bad "$1 full log saved" "could not write $log"
+  fi
+}
 run_gate() { # <friendly label> <script path>
-  local label="$1" script="$2" t0=$SECONDS out elapsed
+  local label="$1" script="$2" t0=$SECONDS out elapsed rc
   if [[ ! -f "$script" ]]; then bad "$label present" "missing: $script"; return; fi
   if out="$(bash "$script" {AFK_TEST_LOCK_FD}<&- 2>&1)"; then
-    elapsed=$((SECONDS - t0))
+    rc=0; elapsed=$((SECONDS - t0))
     ok "$label: $(tail -1 <<<"$out") (${elapsed}s)"
   else
-    elapsed=$((SECONDS - t0))
+    rc=$?; elapsed=$((SECONDS - t0))
     bad "$label (${elapsed}s)" "$(tail -1 <<<"$out")"
     printf '%s\n' "$out" | tail -40
   fi
+  gate_log_save "$label" "$script" "$out" "$rc" "$elapsed"
   (( elapsed > GATE_SUITE_BUDGET_S )) &&
     printf '  \033[33mBUDGET\033[0m %s took %ss (over the %ss single-suite budget)\n' \
       "$label" "$elapsed" "$GATE_SUITE_BUDGET_S"
@@ -3575,12 +3591,17 @@ head1 "4b. Offline Claude result-envelope qualification"
 # ===========================================================================
 
 if [[ -x "$CLAUDE_EVIDENCE_TESTS" ]]; then
+  evidence_t0=$SECONDS
   if evidence_out="$(bash "$CLAUDE_EVIDENCE_TESTS" 2>&1)"; then
+    evidence_rc=0
     ok "Claude evidence verifier gate: $(tail -1 <<<"$evidence_out")"
   else
+    evidence_rc=$?
     bad "Claude evidence verifier gate" "$(tail -1 <<<"$evidence_out")"
     printf '%s\n' "$evidence_out" | tail -40
   fi
+  gate_log_save "Claude evidence verifier gate" "$CLAUDE_EVIDENCE_TESTS" "$evidence_out" \
+    "$evidence_rc" "$((SECONDS - evidence_t0))"
 else
   bad "Claude evidence verifier gate present and executable" "missing: $CLAUDE_EVIDENCE_TESTS"
 fi

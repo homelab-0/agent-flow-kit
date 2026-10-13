@@ -338,8 +338,24 @@ eq "refused schema-v2 migration preserves user plugin" "$(jq -r '.plugin[0]' "$v
 # Invoke the exact schema-v2 manager revision with relative home, state, and
 # installed-runtime adapter paths. The current manager proves canonical path
 # equality plus exact command suffixes, then persists only absolute v3 paths.
+# That revision is adapters/manage.sh at commit
+# 245b6a4e76c4354e2f1c87a79b34d111413ddece (blob
+# 5aad6a76d0c9d69a5df8a4f18f626a4e7c2217bf). The commit is not reachable from
+# the published history, so a fresh clone cannot `git show` it; its exact bytes
+# are kept as a test fixture (never installed as active code) and the copy in
+# $TMP is pinned by sha256 and blob id before it is executed.
+v2_base_fixture="$ROOT/tests/fixtures/adapter-manager-schema-v2-245b6a4.sh"
+v2_base_sha256=87c903cd6627b6e7eae3af155a5e1affe43457ec9b4a5500704cd277b5976250
+v2_base_blob=5aad6a76d0c9d69a5df8a4f18f626a4e7c2217bf
 v2_base_manager="$TMP/manage-245b6a4.sh"
-git -C "$ROOT" show 245b6a4:adapters/manage.sh >"$v2_base_manager"; chmod +x "$v2_base_manager"
+cp "$v2_base_fixture" "$v2_base_manager" || { no "schema-v2 base fixture is present: $v2_base_fixture"; exit 1; }
+if command -v sha256sum >/dev/null 2>&1; then v2_base_got="$(sha256sum "$v2_base_manager" | cut -d' ' -f1)"
+else v2_base_got="$(shasum -a 256 "$v2_base_manager" | cut -d' ' -f1)"; fi
+v2_base_got_blob="$(git hash-object "$v2_base_manager")"
+if [[ "$v2_base_got" != "$v2_base_sha256" || "$v2_base_got_blob" != "$v2_base_blob" ]]; then
+  no "schema-v2 base fixture identity expected=$v2_base_sha256/$v2_base_blob got=$v2_base_got/$v2_base_got_blob"; exit 1
+fi
+chmod +x "$v2_base_manager"
 for relative_harness in claude codex opencode; do
   relative_root="$TMP/v2-relative-$relative_harness"; mkdir -p "$relative_root/relative-home"
   mkdir -p "$relative_root/relative-runtime/bin"

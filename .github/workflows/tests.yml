@@ -1,0 +1,283 @@
+# Offline qualification of the kit on its dedicated self-hosted runner set.
+# Contract, environment and the checks this runner cannot qualify: docs/CI.md.
+name: tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  offline-suite:
+    name: offline suite
+    # Same-repository pull requests only: a fork never gets a job on this
+    # trusted runner set (the runner's own guard refuses forks as well).
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: gha-agent-flow-kit
+    # The owner measured 1376s for the aggregate at 2 CPU. The suite's own
+    # 240s/720s budgets stay warnings; this is the hard stop for the job.
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      AFK_LIVE_TESTS: "0"
+    steps:
+      - name: Prepare evidence directory
+        run: |
+          evidence="$RUNNER_TEMP/afk-ci-evidence"
+          mkdir -p "$evidence/suite-logs"
+          printf 'AFK_CI_EVIDENCE=%s\n' "$evidence" >>"$GITHUB_ENV"
+
+      - name: Check out (full history)
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Preflight runner, tools, history and fixture
+        id: preflight
+        run: |
+          fail() { printf '::error title=preflight::%s\n' "$1"; exit 1; }
+
+          # Runner identity and resources (observations; never prerequisites).
+          {
+            printf 'runner_name=%s\nrunner_os=%s\nrunner_arch=%s\n' "${RUNNER_NAME:-}" "${RUNNER_OS:-}" "${RUNNER_ARCH:-}"
+            printf 'uid=%s user=%s\n' "$(id -u)" "$(id -un)"
+            printf 'kernel=%s\n' "$(uname -srm)"
+            if [[ -r /etc/os-release ]]; then sed -n 's/^PRETTY_NAME=/os=/p' /etc/os-release; fi
+            printf 'nproc=%s\n' "$(nproc)"
+            if [[ -r /proc/meminfo ]]; then sed -n 's/^MemTotal: */mem_total=/p' /proc/meminfo; fi
+            for f in cpu.max memory.max; do
+              if [[ -r "/sys/fs/cgroup/$f" ]]; then printf 'cgroup_%s=%s\n' "$f" "$(<"/sys/fs/cgroup/$f")"; fi
+            done
+            df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP" /tmp | sed 's/^/disk: /' || echo "disk: df failed"
+          } | tee "$AFK_CI_EVIDENCE/runner.txt"
+          [[ "${RUNNER_OS:-}" == Linux ]] || fail "expected a Linux runner, got '${RUNNER_OS:-}'"
+          (( $(id -u) != 0 )) || fail "the runner executes as root; the qualified environment is an unprivileged user"
+
+          # Required tools: missing is a failure, never a skip further down.
+          for tool in bash git jq yq shellcheck node python3 sqlite3 perl ssh ssh-keygen \
+                      timeout setsid flock column getent sha256sum mktemp tee; do
+            command -v "$tool" >/dev/null || fail "required tool missing: $tool"
+          done
+          [[ "$(shellcheck --version)" == *ShellCheck* ]] || fail "shellcheck does not identify as ShellCheck"
+          drift() { # <tool> <observed> <declared>
+            [[ "$2" == *"$3"* ]] || printf '::warning title=tool drift::%s reports "%s"; the runner image declares %s\n' "$1" "$2" "$3"
+          }
+          {
+            v="$(bash --version | sed -n 1p)"; echo "bash: $v"
+            v="$(git --version)"; echo "git: $v"; drift git "$v" 2.55.0
+            v="$(jq --version)"; echo "jq: $v"; drift jq "$v" 1.7
+            v="$(yq --version)"; echo "yq: $v"; drift yq "$v" 4.54.1
+            v="$(shellcheck --version | sed -n 's/^version: //p')"; echo "shellcheck: $v"; drift shellcheck "$v" 0.11.0
+            v="$(node --version)"; echo "node: $v"; drift node "$v" 24.21.0
+            v="$(python3 --version)"; echo "python3: $v"; drift python3 "$v" 3.12.3
+            echo "sqlite3: $(sqlite3 --version)"
+            echo "perl: $(perl -e 'print $^V')"
+            echo "ssh: $(ssh -V 2>&1)"
+            echo "coreutils: $(timeout --version | sed -n 1p)"
+            echo "util-linux: $(flock --version | sed -n 1p)"
+            # Optional: without it, installed-validator acceptance in
+            # tests/make-stamp-override-tests.sh skips (not qualified here).
+            echo "agent-stamp-validate: $(command -v agent-stamp-validate || echo absent)"
+          } | tee "$AFK_CI_EVIDENCE/tools.txt"
+
+          # Candidate sandbox: evidence only. The release gate's sandbox cases
+          # are not qualified here and are never reported as qualified. The
+          # release client runs /usr/bin/bwrap exactly, so that path is probed;
+          # PATH lookup is recorded separately.
+          {
+            echo "bwrap on PATH: $(command -v bwrap || echo absent)"
+            if [[ -x /usr/bin/bwrap ]]; then
+              echo "/usr/bin/bwrap: $(/usr/bin/bwrap --version 2>&1)"
+              if out="$(/usr/bin/bwrap --unshare-all --ro-bind / / true 2>&1)"; then
+                echo "/usr/bin/bwrap --unshare-all probe: succeeded"
+              else
+                echo "/usr/bin/bwrap --unshare-all probe: failed: $out"
+              fi
+            else
+              echo "/usr/bin/bwrap: not installed"
+            fi
+          } | tee "$AFK_CI_EVIDENCE/sandbox.txt"
+          echo "::notice title=unqualified::Release candidate sandbox qualification is not qualified on this runner (see docs/CI.md)"
+
+          # History: full, with the release root commit and a usable local master.
+          [[ "$(git rev-parse --is-shallow-repository)" == false ]] || fail "checkout is shallow"
+          git cat-file -e 'd74e7f9542cfe2731e09a0ff5c5e1b4cf325062f^{commit}' || fail "release root commit d74e7f9 is not reachable"
+          if ! git show-ref --verify --quiet refs/heads/master; then
+            git show-ref --verify --quiet refs/remotes/origin/master || fail "origin/master was not fetched"
+            git branch --no-track master refs/remotes/origin/master
+          fi
+          git rev-parse --verify --quiet 'master^{commit}' >/dev/null || fail "local master does not resolve"
+          git show master:files/model-router/scripts/dispatch.sh >/dev/null || fail "master has no dispatch.sh to compare against"
+          # Observation only: without 02b18d0 the aggregate's vacuous-grep
+          # control for retired dispatch code is silently off (HAVE_OLD=0).
+          if git show 02b18d0:files/model-router/scripts/dispatch.sh >/dev/null 2>&1; then
+            old_dispatch=reachable
+          else
+            old_dispatch="unreachable (vacuous-grep control off)"
+          fi
+          printf 'head=%s\nmaster=%s\nold_dispatch_02b18d0=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse master)" "$old_dispatch" \
+            | tee "$AFK_CI_EVIDENCE/refs.txt"
+
+          # The historical schema-v2 manager fixture (see docs/CI.md).
+          printf '%s  %s\n' 87c903cd6627b6e7eae3af155a5e1affe43457ec9b4a5500704cd277b5976250 \
+            tests/fixtures/adapter-manager-schema-v2-245b6a4.sh | sha256sum --check \
+            || fail "historical fixture is missing or does not match its pinned sha256"
+
+          # dispatch.sh requires the passwd home's default .claude store to
+          # exist. Provide it empty: no settings, credentials or auth files.
+          passwd_home="$(getent passwd "$(id -un)" | cut -d: -f6)"
+          [[ -n "$passwd_home" && -d "$passwd_home" && -O "$passwd_home" ]] || fail "passwd home is missing or not owned by the runner user"
+          claude_home="$passwd_home/.claude"
+          if [[ -e "$claude_home" || -L "$claude_home" ]]; then
+            [[ -d "$claude_home" && ! -L "$claude_home" ]] || fail "$claude_home exists and is not a plain directory"
+          else
+            mkdir -m 700 "$claude_home"
+          fi
+          [[ -z "$(find "$claude_home" -mindepth 1 -print -quit)" ]] || fail "$claude_home is not empty on a fresh runner"
+          printf 'AFK_CI_CLAUDE_HOME=%s\n' "$claude_home" >>"$GITHUB_ENV"
+
+      - name: Offline aggregate (tests/run-tests.sh)
+        id: suite
+        run: |
+          # Never inherit router or validator settings; the suite clears them
+          # too, and the live chain stays off (AFK_LIVE_TESTS=0).
+          for name in AGENT_ROUTER_URL AGENT_ROUTER_TOKEN AGENT_ROUTER_TOKEN_ENV \
+                      AGENT_STAMP_VALIDATE AGENT_STAMP_VALIDATE_CATALOG_PATH; do
+            [[ -z "${!name+x}" ]] || printf 'unsetting inherited %s\n' "$name"
+            unset "$name"
+          done
+          export AFK_TEST_LOG_DIR="$AFK_CI_EVIDENCE/suite-logs"
+          timer=()
+          if [[ -x /usr/bin/time ]] && /usr/bin/time -v true >/dev/null 2>&1; then
+            timer=(/usr/bin/time -v -o "$AFK_CI_EVIDENCE/run-tests.time.txt")
+          fi
+          # Overwritten on completion; left in place by a timeout or cancel.
+          echo "exit=interrupted (the aggregate did not finish)" >"$AFK_CI_EVIDENCE/suite-result.txt"
+          started=$(date +%s)
+          set +e
+          "${timer[@]}" bash tests/run-tests.sh 2>&1 | tee "$AFK_CI_EVIDENCE/run-tests.log"
+          statuses=("${PIPESTATUS[@]}")
+          set -e
+          rc=${statuses[0]}
+          printf 'exit=%s\nwall_seconds=%s\n' "$rc" "$(( $(date +%s) - started ))" | tee "$AFK_CI_EVIDENCE/suite-result.txt"
+          if (( statuses[1] != 0 )); then
+            printf '::error title=evidence::the aggregate log could not be written (tee exit %s)\n' "${statuses[1]}"
+            (( rc != 0 )) || rc=1
+          fi
+          exit "$rc"
+
+      - name: Required checks did not skip
+        if: ${{ !cancelled() && steps.suite.outcome != 'skipped' }}
+        run: |
+          log="$AFK_CI_EVIDENCE/run-tests.log"
+          [[ -s "$log" ]] || { echo "::error::the aggregate produced no log"; exit 1; }
+          sed 's/\x1b\[[0-9;]*m//g' "$log" >"$AFK_CI_EVIDENCE/run-tests.plain.log"
+          plain="$AFK_CI_EVIDENCE/run-tests.plain.log"
+          status=0
+
+          # List skip lines from the aggregate and from every child suite log,
+          # colour codes stripped, each prefixed with its log name. Listing
+          # only: no skip here adds a failure. Some child skip helpers print
+          # no such line, so this is not a complete list of unexercised checks.
+          skips="$AFK_CI_EVIDENCE/skips.txt"
+          : >"$skips"
+          list_skips() { # <name> <file> <ERE>
+            local text matches rc=0 line
+            if ! text="$(sed 's/\x1b\[[0-9;]*m//g' "$2")"; then
+              printf '%s: (could not be read for skips)\n' "$1" >>"$skips"
+              echo "::warning title=skip scan::$1 could not be read for skips"
+              return 0
+            fi
+            matches="$(grep -E "$3" <<<"$text")" || rc=$?
+            case "$rc" in
+              0) while IFS= read -r line; do printf '%s: %s\n' "$1" "$line"; done <<<"$matches" >>"$skips" ;;
+              1) ;; # grep found no skip line
+              *) printf '%s: (skip scan failed, grep exit %s)\n' "$1" "$rc" >>"$skips"
+                 echo "::warning title=skip scan::$1 skip scan failed (grep exit $rc)" ;;
+            esac
+          }
+          list_skips run-tests.log "$plain" '^[[:space:]]*SKIP '
+          children=0
+          shopt -s nullglob
+          for child in "$AFK_CI_EVIDENCE"/suite-logs/*.log; do
+            children=$((children + 1))
+            list_skips "suite-logs/${child##*/}" "$child" '^[[:space:]]*SKIP |^skip - '
+          done
+          shopt -u nullglob
+          echo "Scanned the aggregate log and $children child suite logs for skips."
+          if [[ -s "$skips" ]]; then
+            echo "Skipped checks (computed no verdict; listed, not failed):"; cat "$skips"
+          fi
+
+          # Hard failures: the two required checks that may not skip, and the
+          # aggregate's summary line.
+          if grep -qF 'shellcheck NOT RUN' "$plain"; then
+            echo "::error::ShellCheck did not run; section 0 linted nothing"; status=1
+          fi
+          if grep -qF 'SKIP byte-identity vs master' "$plain"; then
+            echo "::error::the launch-text comparison against master was skipped"; status=1
+          fi
+          if ! grep -qE '^[0-9]+ passed, [0-9]+ failed' "$plain"; then
+            echo "::error::the aggregate did not reach its summary line"; status=1
+          fi
+          exit "$status"
+
+      - name: Standalone Node tests
+        if: ${{ !cancelled() && steps.preflight.outcome == 'success' }}
+        run: |
+          set +e
+          node --test tests/*.mjs 2>&1 | tee "$AFK_CI_EVIDENCE/node-tests.log"
+          statuses=("${PIPESTATUS[@]}")
+          set -e
+          (( statuses[1] == 0 )) || { echo "::error::the Node test log could not be written"; exit 1; }
+          exit "${statuses[0]}"
+
+      - name: Default .claude store stayed empty
+        if: ${{ !cancelled() && steps.preflight.outcome == 'success' }}
+        run: |
+          if [[ -n "$(find "$AFK_CI_CLAUDE_HOME" -mindepth 1 -print -quit)" ]]; then
+            echo "::error::the suite wrote into $AFK_CI_CLAUDE_HOME (names only below)"
+            find "$AFK_CI_CLAUDE_HOME" -mindepth 1 -printf '%P\n' | tee "$AFK_CI_EVIDENCE/claude-home-entries.txt"
+            exit 1
+          fi
+
+      - name: Record resource observations and summary
+        if: always()
+        run: |
+          mkdir -p "$AFK_CI_EVIDENCE"
+          {
+            for f in memory.peak memory.max cpu.max cpu.stat; do
+              if [[ -r "/sys/fs/cgroup/$f" ]]; then echo "== cgroup $f"; cat "/sys/fs/cgroup/$f"; fi
+            done
+            echo "== disk"; df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP" /tmp || echo "df failed"
+          } >"$AFK_CI_EVIDENCE/resources-after.txt" 2>&1
+          recorded() { # <file> <fallback>
+            if [[ -r "$1" ]]; then tr '\n' ' ' <"$1"; else printf '%s' "$2"; fi
+          }
+          {
+            echo "### AFK offline qualification"
+            echo
+            echo "- Aggregate: \`$(recorded "$AFK_CI_EVIDENCE/suite-result.txt" 'did not run')\`"
+            echo "- Sandbox probe: \`$(recorded "$AFK_CI_EVIDENCE/sandbox.txt" 'not recorded')\`"
+            echo "- Release candidate sandbox qualification: **not qualified on this runner** (see docs/CI.md)"
+            echo "- Live control-plane chain, Darwin, primitive equivalence: not run here"
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: afk-ci-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/afk-ci-evidence
+          if-no-files-found: warn
+          retention-days: 14
