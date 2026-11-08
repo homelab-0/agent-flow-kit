@@ -236,7 +236,7 @@ cat >"$SB/orca" <<STUB
 #!/bin/sh
 echo "orca \$*" >>"$CALLS"
 case "\$1 \$2" in
-  "worktree list") printf '{"result":{"worktrees":[{"path":"%s","id":"r1::wt1"}]}}' "$W" ;;
+  "worktree show") printf '{"ok":true,"result":{"worktree":{"path":"%s","id":"r1::wt1"}}}' "$W" ;;
   "repo list") echo '{"result":{"repos":[{"id":"r1","hookSettings":{"setupAgentStartupPolicy":"start-immediately"}}]}}' ;;
   *) exit 1 ;;
 esac
@@ -255,7 +255,7 @@ S="$(new_story main '.placement_required = false')"
 mv "$S" "$W/main.md"; mv "$S.stamp.json" "$W/main.md.stamp.json"; S="$W/main.md"
 run_main "$S"
 assert_eq "main(): no acceptance -> exit 4, validator ran first, no terminal, no harness" \
-  "$RC $(blocked "$S") $(paste -sd, "$CALLS")" "4 ACCEPTANCE_MISSING orca worktree list --json,orca repo list --json,validator"
+  "$RC $(blocked "$S") $(paste -sd, "$CALLS")" "4 ACCEPTANCE_MISSING orca worktree show --worktree path:$W --json,orca repo list --json,validator"
 accept --story "$S" --kind pm-auto --actor pm
 rm -f "$S.blocked"; run_main "$S"
 if [[ "$OUT" == *"acceptance digest, plan approval and story gates verified"* && "$OUT" == *"NO VALIDATED LAUNCH CONTRACT"* ]]; then

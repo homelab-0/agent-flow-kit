@@ -360,7 +360,7 @@ cat >"$SB/orca" <<STUB
 #!/bin/sh
 echo "orca \$*" >>"$CALLS"
 case "\$1 \$2" in
-  "worktree list") printf '{"result":{"worktrees":[{"path":"%s","id":"r1::wt1"}]}}' "$W" ;;
+  "worktree show") printf '{"ok":true,"result":{"worktree":{"path":"%s","id":"r1::wt1"}}}' "$W" ;;
   "repo list") echo '{"result":{"repos":[{"id":"r1","hookSettings":{"setupAgentStartupPolicy":"start-immediately"}}]}}' ;;
   "terminal create") echo harness >>"$CALLS"; t=""
     while [ \$# -gt 0 ]; do [ "\$1" = --title ] && t="\$2"; shift; done
