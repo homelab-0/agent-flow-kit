@@ -1018,6 +1018,9 @@ case "$sub" in
       malformed) printf 'not-json\n'; exit 0 ;;
       ambiguous) printf '%s\n' '{"ok":false,"error":{"code":"ambiguous_workspace"}}'; exit 1 ;;
       empty) printf '%s\n' '{"ok":true,"result":{"worktree":null}}'; exit 0 ;;
+      contradictory) jq -n --arg p "$STUB_WT_PATH" --arg id "$STUB_WT_ID" \
+        '{ok:true,error:{code:"lookup_error"},result:{worktree:{id:$id,path:$p}}}'; exit 0 ;;
+      unknown) printf '%s\n' '{"ok":false,"error":{"code":"private-fixture-value","message":"private-response-body"}}'; exit 7 ;;
     esac
     jq -n --arg p "$STUB_WT_PATH" --arg id "$STUB_WT_ID" \
       '{ok:true,result:{worktree:{id:$id,path:$p}}}'
@@ -1199,7 +1202,7 @@ run_dispatch() { # run_dispatch <story> [cycle] -> echoes exit code, stderr to $
 }
 
 # Discovery errors must stop the real dispatch path before terminal creation.
-for response in malformed ambiguous empty failed; do
+for response in malformed ambiguous empty failed unknown contradictory; do
   story="s-discovery-$response.md"
   write_story "$WT/$story" "persona: dev
 gates: [\"true\"]"
@@ -1207,7 +1210,15 @@ gates: [\"true\"]"
   : > "$STUB_STATE/terminal-creates"
   rc="$(STUB_WORKTREE_RESPONSE="$response"; export STUB_WORKTREE_RESPONSE; run_dispatch "$story")"
   assert_eq "discovery $response: config refusal" "$rc" "2"
-  assert_contains "discovery $response: explains refusal" "$(cat "$WORK/err")" "not an Orca-managed worktree"
+  assert_contains "discovery $response: explains refusal" "$(cat "$WORK/err")" "Unable to verify"
+  expected_exit=0 expected_reason=lookup_failed
+  case "$response" in
+    ambiguous) expected_exit=1; expected_reason=ambiguous_workspace ;;
+    failed) expected_exit=1 ;;
+    unknown) expected_exit=7 ;;
+  esac
+  assert_contains "discovery $response: safe exit and reason" "$(cat "$WORK/err")" "exit $expected_exit, reason $expected_reason"
+  assert_absent "discovery $response: response stays private" "$(cat "$WORK/err")" "private-"
   assert_empty_file "discovery $response: no terminal created" "$STUB_STATE/terminal-creates"
   assert_no_file "discovery $response: no result artifact" "$WT/$story.result.json"
 done
@@ -1495,7 +1506,7 @@ assert_contains "setup gate: says STOP" "$(cat "$WORK/err")" "STOP"
 rc="$(STUB_WT_PATH=/nowhere; export STUB_WT_PATH; run_dispatch s-vendor.md)"
 assert_eq "not an Orca worktree -> exit 2 (refuses invisible launch)" "$rc" "2"
 assert_contains "invisible launch: explains the requirement" \
-  "$(cat "$WORK/err")" "invisible to Orca"
+  "$(cat "$WORK/err")" "Unable to verify"
 
 # ---- non-default CLAUDE_CONFIG_DIR fails closed -----------------------
 out_rc="$( cd "$WT" && PATH="$BIN:$PATH" HOME="$HOME_DIR" \
