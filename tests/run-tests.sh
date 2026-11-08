@@ -202,6 +202,7 @@ SC_SCRIPTS=("$DISPATCH" "$MAKE_STAMP" "$USAGE_CHECK" "$GH_HEALTH" \
             "$KIT_ROOT/bin/afk-session-start" \
             "$KIT_ROOT/adapters/runtime-scope.sh" \
             "$KIT_ROOT/tests/orca-resolver-tests.sh" \
+            "$KIT_ROOT/tests/orca-worktree-discovery-tests.sh" \
             "$KIT_ROOT/adapters/render-status.sh" "$KIT_ROOT/adapters/manage.sh" \
             "$KIT_ROOT/adapters/manage-core.sh" "$KIT_ROOT/adapters/manage-transactions.sh" \
             "$KIT_ROOT/adapters/hindsight.sh" "$KIT_ROOT/adapters/publish-runtime.sh" \
@@ -1012,6 +1013,18 @@ cat > "$BIN/orca" <<'STUB'
 sub="$1 $2"; shift 2 || true
 terminal_state="$STUB_STATE/terminal.json"
 case "$sub" in
+  "worktree show")
+    case "${STUB_WORKTREE_RESPONSE:-ok}" in
+      malformed) printf 'not-json\n'; exit 0 ;;
+      ambiguous) printf '%s\n' '{"ok":false,"error":{"code":"ambiguous_workspace"}}'; exit 1 ;;
+      empty) printf '%s\n' '{"ok":true,"result":{"worktree":null}}'; exit 0 ;;
+      contradictory) jq -n --arg p "$STUB_WT_PATH" --arg id "$STUB_WT_ID" \
+        '{ok:true,error:{code:"lookup_error"},result:{worktree:{id:$id,path:$p}}}'; exit 0 ;;
+      unknown) printf '%s\n' '{"ok":false,"error":{"code":"private-fixture-value","message":"private-response-body"}}'; exit 7 ;;
+    esac
+    jq -n --arg p "$STUB_WT_PATH" --arg id "$STUB_WT_ID" \
+      '{ok:true,result:{worktree:{id:$id,path:$p}}}'
+    [[ "${STUB_WORKTREE_RESPONSE:-ok}" != failed ]] ;;
   "worktree list")
     jq -n --arg p "$STUB_WT_PATH" --arg id "$STUB_WT_ID" \
       '{ok:true,result:{worktrees:[{id:$id,path:$p}]}}' ;;
@@ -1166,6 +1179,8 @@ write_story() { # write_story <file> <frontmatter-body>
 
 # Hermetic: every launcher env var dispatch.sh reads is pinned here, so an
 # ambient live-chain configuration (section 5) can never shadow a stub.
+# Pin the approved store too: an empty override resolves the operator's passwd
+# home, even when HOME points to this suite's temporary fixture.
 run_dispatch() { # run_dispatch <story> [cycle] -> echoes exit code, stderr to $WORK/err
   ( cd "$WT" && PATH="$BIN:$PATH" HOME="$HOME_DIR" \
       AGENT_STAMP_VALIDATE="agent-stamp-validate" \
@@ -1176,7 +1191,7 @@ run_dispatch() { # run_dispatch <story> [cycle] -> echoes exit code, stderr to $
       AGENT_ROUTER_URL="https://router.invalid" \
       AGENT_ROUTER_TOKEN="stub-token" \
       AGENT_ROUTER_TOKEN_ENV="AGENT_ROUTER_TOKEN" \
-      AGENT_DIR="" AGENT_FLOW_APPROVED_HOME="${STUB_APPROVED_HOME-}" AGENT_FLOW_APPROVED_PATH="" \
+      AGENT_DIR="" AGENT_FLOW_APPROVED_HOME="${STUB_APPROVED_HOME-$HOME_DIR}" AGENT_FLOW_APPROVED_PATH="" \
       AGENT_FLOW_LAUNCH_TIMEOUT=20 \
       AGENT_FLOW_GATEWAY_URL="${STUB_GATEWAY_URL-https://gateway.invalid}" \
       AGENT_FLOW_GATEWAY_TOKEN_REF="${STUB_TOKEN_REF-op://stubvault/agw-claude-code/credential}" \
@@ -1185,6 +1200,28 @@ run_dispatch() { # run_dispatch <story> [cycle] -> echoes exit code, stderr to $
       bash "$DISPATCH" "$1" "${2:-1}" ) >"$WORK/out" 2>"$WORK/err" {AFK_TEST_LOCK_FD}<&-
   echo $?
 }
+
+# Discovery errors must stop the real dispatch path before terminal creation.
+for response in malformed ambiguous empty failed unknown contradictory; do
+  story="s-discovery-$response.md"
+  write_story "$WT/$story" "persona: dev
+gates: [\"true\"]"
+  write_stamp "$WT/$story.stamp.json" high false
+  : > "$STUB_STATE/terminal-creates"
+  rc="$(STUB_WORKTREE_RESPONSE="$response"; export STUB_WORKTREE_RESPONSE; run_dispatch "$story")"
+  assert_eq "discovery $response: config refusal" "$rc" "2"
+  assert_contains "discovery $response: explains refusal" "$(cat "$WORK/err")" "Unable to verify"
+  expected_exit=0 expected_reason=lookup_failed
+  case "$response" in
+    ambiguous) expected_exit=1; expected_reason=ambiguous_workspace ;;
+    failed) expected_exit=1 ;;
+    unknown) expected_exit=7 ;;
+  esac
+  assert_contains "discovery $response: safe exit and reason" "$(cat "$WORK/err")" "exit $expected_exit, reason $expected_reason"
+  assert_absent "discovery $response: response stays private" "$(cat "$WORK/err")" "private-"
+  assert_empty_file "discovery $response: no terminal created" "$STUB_STATE/terminal-creates"
+  assert_no_file "discovery $response: no result artifact" "$WT/$story.result.json"
+done
 
 # Prove the preflight is on the real dispatch path before terminal creation.
 : > "$STUB_STATE/terminal-creates"
@@ -1469,7 +1506,7 @@ assert_contains "setup gate: says STOP" "$(cat "$WORK/err")" "STOP"
 rc="$(STUB_WT_PATH=/nowhere; export STUB_WT_PATH; run_dispatch s-vendor.md)"
 assert_eq "not an Orca worktree -> exit 2 (refuses invisible launch)" "$rc" "2"
 assert_contains "invisible launch: explains the requirement" \
-  "$(cat "$WORK/err")" "invisible to Orca"
+  "$(cat "$WORK/err")" "Unable to verify"
 
 # ---- non-default CLAUDE_CONFIG_DIR fails closed -----------------------
 out_rc="$( cd "$WT" && PATH="$BIN:$PATH" HOME="$HOME_DIR" \
@@ -3910,6 +3947,11 @@ head1 "33. Paperclip readiness gate — tests/paperclip-readiness-tests.sh"
 # paperclip-readiness (lib/afk-paperclip-evidence.sh), read-only, through the
 # CLI on evidence from the real producers. Temp repos and state, no network.
 run_gate "paperclip readiness gate" "$KIT_ROOT/tests/paperclip-readiness-tests.sh"
+
+# ===========================================================================
+head1 "34. Orca worktree discovery gate"
+# ===========================================================================
+run_gate "Orca worktree discovery gate" "$KIT_ROOT/tests/orca-worktree-discovery-tests.sh"
 
 # ===========================================================================
 # AC-2: total wall time, with a BUDGET warning (never a failure) over 720s.

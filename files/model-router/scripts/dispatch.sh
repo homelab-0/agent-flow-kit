@@ -822,11 +822,29 @@ orca_json() { orca "$@" --json 2>/dev/null; }
 # the story file has to already live inside the worktree for the sandboxed
 # worker to read it at all.
 orca_worktree_selector() {
-  local here="$1" sel
-  sel="$(orca_json worktree list \
-        | jq -r --arg p "$here" '.result.worktrees[]? | select(.path == $p) | .id' \
-        | head -1)"
-  printf '%s' "$sel"
+  local here="$1" response selector code rc=0
+  # The global list is paginated: absence from its first page is not proof
+  # that a checkout is unmanaged. Resolve the exact canonical launch path;
+  # Orca owns ambiguity resolution and the returned workspace ID is opaque.
+  response="$(orca_json worktree show --worktree "path:$here" 2>/dev/null)" || rc=$?
+  if (( rc == 0 )) && selector="$(jq -ers --arg p "$here" '
+    select(length == 1) | .[0] | select(.ok == true and .error == null)
+    | .result.worktree | select(type == "object")
+    | select(.path == $p and (.id | type) == "string")
+    | select(.id | length > 0)
+    | .id
+  ' <<<"$response" 2>/dev/null)"; then
+    printf '%s' "$selector"
+    return 0
+  fi
+  # Only fixed known codes may reach the diagnostic. Arbitrary error values,
+  # messages and raw CLI output can contain credentials even if token-shaped.
+  code="$(jq -ers '
+    select(length == 1) | .[0] | select(.ok == false) | .error.code
+    | select(. == "ambiguous_workspace" or . == "selector_not_found")
+  ' <<<"$response" 2>/dev/null)" || code=lookup_failed
+  printf 'dispatch: Unable to verify Orca worktree (exit %s, reason %s). Check Orca and retry.\n' "$rc" "$code" >&2
+  return 1
 }
 
 # orca_setup_policy_gate — HARNESS-LAUNCH §5 step 0. A repository that waits for
@@ -3224,9 +3242,9 @@ EOF
 
   # ---- Orca visibility ----------------------------------------------------
   local selector repo_id
-  selector="$(orca_worktree_selector "$(realpath "$PWD")")"
+  selector="$(orca_worktree_selector "$(realpath "$PWD")")" || selector=""
   [[ -n "$selector" ]] || \
-    die "$PWD is not an Orca-managed worktree — the worker would be invisible to Orca. Create the story's worktree with 'orca worktree create', mirror the story into it, and dispatch from there."
+    die "Unable to verify the current directory as an Orca-managed worktree. Check Orca and retry from the intended worktree."
   repo_id="${selector%%::*}"
   orca_setup_policy_gate "$repo_id"
 
