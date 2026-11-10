@@ -840,7 +840,38 @@ afk_factory_run_job() {
   return 0
 }
 
-# afk_factory_status <repo_path> <slug> <json_mode>
+# afk_factory_resume <repo_path> <slug> <json_mode>
+# Scans for interrupted in-flight jobs (e.g., after a host reboot) whose stage
+# is not terminal/waiting-human (merged, needs-human, needs-info, rejected) and
+# resumes them from their existing on-disk stage artifacts and checkpoints.
+afk_factory_resume() {
+  local repo="${1:-}" slug="${2:-}" json_mode="${3:-false}"
+  local status_json
+  status_json="$(afk_factory_status "$repo" "$slug" true)"
+  local -a in_flight=()
+  mapfile -t in_flight < <(jq -c '.jobs[]? | select((.stage // "") | IN("merged","needs-human","needs-info","rejected") | not)' <<<"$status_json" 2>/dev/null)
+
+  local resumed="[]" row j_repo j_slug j_id j_issue j_title res_out
+  for row in "${in_flight[@]:-}"; do
+    [[ -n "$row" ]] || continue
+    j_repo="$(jq -r '.repo_path // empty' <<<"$row")"
+    j_slug="$(jq -r '.slug // empty' <<<"$row")"
+    j_id="$(jq -r '.id // empty' <<<"$row")"
+    j_issue="$(jq -r '.issue_id // empty' <<<"$row")"
+    j_title="$(jq -r '.title // "Factory Task"' <<<"$row")"
+    [[ -n "$j_repo" && -n "$j_id" ]] || continue
+    res_out="$(afk_factory_run_job "$j_repo" "$j_slug" "$j_id" "$j_issue" "$j_title" "" true)"
+    resumed="$(jq -c --argjson item "$res_out" '. + [$item]' <<<"$resumed")"
+  done
+
+  if [[ "$json_mode" == "true" ]]; then
+    jq -cn --argjson r "$resumed" '{schema:"afk-factory-resume/1", resumed_count:($r|length), resumed:$r}'
+  else
+    printf 'AFK Factory Resume: %s interrupted job(s) resumed\n' "$(jq -r 'length' <<<"$resumed")"
+    jq -r '.[] | "  [RESUMED] \(.slug)/\(.id): stage=\(.stage) decision=\(.decision)"' <<<"$resumed"
+  fi
+  return 0
+}
 # Summarizes active jobs, hired agents, context usage, and items needing human
 # attention across projects.
 afk_factory_status() {
@@ -1034,11 +1065,14 @@ afk_cmd_factory() {
         printf 'Retired agents for %s: %s\n' "$slug" "$(jq -c '.' <<<"$ret_out")"
       fi
       return 0 ;;
+    resume)
+      afk_factory_resume "$repo" "$slug" "$json_mode"
+      return $? ;;
     status)
       afk_factory_status "$repo" "$slug" "$json_mode"
       return $? ;;
     *)
-      afk_warn "factory: unknown subcommand '$(afk_safe_diagnostic "$subcmd")' (expected: roster, init, run, status, context-check, evaluate-merge, retire)"
+      afk_warn "factory: unknown subcommand '$(afk_safe_diagnostic "$subcmd")' (expected: roster, init, run, resume, status, context-check, evaluate-merge, retire)"
       return 1 ;;
   esac
 }
