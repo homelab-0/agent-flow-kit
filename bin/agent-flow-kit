@@ -37,7 +37,7 @@ AFK_LIB_DIR="${AFK_LIB_DIR:-$AFK_INSTALL_ROOT/lib}"
 # A missing or unreadable library is an internal failure with a stable message
 # and the usage exit code — never a partially loaded lifecycle that answers
 # questions with whichever functions happened to load.
-for _afk_lib in afk-common afk-orca afk-orca-verify afk-source afk-inventory afk-readiness afk-monitor afk-pm-control afk-commands afk-plan afk-mutate afk-usage afk-auto-update afk-catalog-sync afk-paperclip afk-pm-registry afk-paperclip-report afk-paperclip-plan afk-paperclip-start afk-paperclip-project afk-accept afk-paperclip-evidence afk-roster afk-paperclip-hire afk-factory; do
+for _afk_lib in afk-common afk-orca afk-orca-verify afk-source afk-inventory afk-readiness afk-monitor afk-pm-control afk-commands afk-plan afk-mutate afk-usage afk-auto-update afk-catalog-sync afk-paperclip afk-pm-registry afk-paperclip-report afk-paperclip-plan afk-paperclip-start afk-paperclip-project afk-accept afk-paperclip-evidence afk-roster afk-paperclip-hire afk-smart-router afk-factory; do
   if [[ ! -r "$AFK_LIB_DIR/$_afk_lib.sh" ]]; then
     printf 'agent-flow-kit: internal error: required library %s.sh is missing or unreadable under %s\n' \
       "$_afk_lib" "$AFK_LIB_DIR" >&2
@@ -113,6 +113,9 @@ unset _afk_lib
 # shellcheck source=lib/afk-paperclip-hire.sh
 # shellcheck disable=SC1090,SC1091
 . "$AFK_LIB_DIR/afk-paperclip-hire.sh"
+# shellcheck source=lib/afk-smart-router.sh
+# shellcheck disable=SC1090,SC1091
+. "$AFK_LIB_DIR/afk-smart-router.sh"
 # shellcheck source=lib/afk-factory.sh
 # shellcheck disable=SC1090,SC1091
 . "$AFK_LIB_DIR/afk-factory.sh"
