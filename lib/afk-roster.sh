@@ -31,59 +31,74 @@ afk_roster_resolve_skill() {
   local repo="$1" role="$2"
   case "$role" in
     pm)
-      if [[ -f "$repo/.agents/skills/bmad-agent-pm/SKILL.md" ]]; then
-        printf '%s' "$repo/.agents/skills/bmad-agent-pm/SKILL.md"; return 0
-      elif [[ -f "$repo/_bmad/bmm/agents/pm.md" ]]; then
-        printf '%s' "$repo/_bmad/bmm/agents/pm.md"; return 0
-      elif [[ -f "$repo/.claude/agents/spec-writer.md" ]]; then
-        printf '%s' "$repo/.claude/agents/spec-writer.md"; return 0
-      fi ;;
+      for p in \
+        "$repo/.agents/skills/bmad-agent-pm/SKILL.md" \
+        "$repo/_bmad/bmm/agents/pm.md" \
+        "$repo/.claude/agents/pm.md" \
+        "$repo/.claude/agents/spec-writer.md" \
+        "$repo/.github/agents/pm.md" \
+        "$repo/.agents/skills/pm/SKILL.md"; do
+        [[ -f "$p" ]] && { printf '%s' "$p"; return 0; }
+      done ;;
     analyst)
-      if [[ -f "$repo/.agents/skills/bmad-agent-analyst/SKILL.md" ]]; then
-        printf '%s' "$repo/.agents/skills/bmad-agent-analyst/SKILL.md"; return 0
-      elif [[ -f "$repo/_bmad/bmm/agents/analyst.md" ]]; then
-        printf '%s' "$repo/_bmad/bmm/agents/analyst.md"; return 0
-      fi ;;
+      for p in \
+        "$repo/.agents/skills/bmad-agent-analyst/SKILL.md" \
+        "$repo/_bmad/bmm/agents/analyst.md" \
+        "$repo/.claude/agents/analyst.md" \
+        "$repo/.claude/agents/researcher.md" \
+        "$repo/.github/agents/analyst.md" \
+        "$repo/.agents/skills/analyst/SKILL.md"; do
+        [[ -f "$p" ]] && { printf '%s' "$p"; return 0; }
+      done ;;
     architect)
-      if [[ -f "$repo/.agents/skills/bmad-agent-architect/SKILL.md" ]]; then
-        printf '%s' "$repo/.agents/skills/bmad-agent-architect/SKILL.md"; return 0
-      elif [[ -f "$repo/_bmad/bmm/agents/architect.md" ]]; then
-        printf '%s' "$repo/_bmad/bmm/agents/architect.md"; return 0
-      elif [[ -f "$repo/.agents/skills/bmad-architecture/SKILL.md" ]]; then
-        printf '%s' "$repo/.agents/skills/bmad-architecture/SKILL.md"; return 0
-      fi ;;
+      for p in \
+        "$repo/.agents/skills/bmad-agent-architect/SKILL.md" \
+        "$repo/_bmad/bmm/agents/architect.md" \
+        "$repo/.agents/skills/bmad-architecture/SKILL.md" \
+        "$repo/.claude/agents/architect.md" \
+        "$repo/.github/agents/architect.md" \
+        "$repo/.agents/skills/architect/SKILL.md"; do
+        [[ -f "$p" ]] && { printf '%s' "$p"; return 0; }
+      done ;;
     ux-designer)
-      if [[ -f "$repo/.agents/skills/bmad-agent-ux-designer/SKILL.md" ]]; then
-        printf '%s' "$repo/.agents/skills/bmad-agent-ux-designer/SKILL.md"; return 0
-      elif [[ -f "$repo/_bmad/bmm/agents/ux-designer.md" ]]; then
-        printf '%s' "$repo/_bmad/bmm/agents/ux-designer.md"; return 0
-      elif [[ -f "$repo/.agents/skills/bmad-ux/SKILL.md" ]]; then
-        printf '%s' "$repo/.agents/skills/bmad-ux/SKILL.md"; return 0
-      elif [[ -f "$repo/.claude/agents/reviewer-ux.md" ]]; then
-        printf '%s' "$repo/.claude/agents/reviewer-ux.md"; return 0
-      fi ;;
+      for p in \
+        "$repo/.agents/skills/bmad-agent-ux-designer/SKILL.md" \
+        "$repo/_bmad/bmm/agents/ux-designer.md" \
+        "$repo/.agents/skills/bmad-ux/SKILL.md" \
+        "$repo/.claude/agents/ux-designer.md" \
+        "$repo/.claude/agents/reviewer-ux.md" \
+        "$repo/.github/agents/ux-designer.md" \
+        "$repo/.agents/skills/ux-designer/SKILL.md"; do
+        [[ -f "$p" ]] && { printf '%s' "$p"; return 0; }
+      done ;;
     dev)
-      if [[ -f "$repo/.agents/skills/bmad-agent-dev/SKILL.md" ]]; then
-        printf '%s' "$repo/.agents/skills/bmad-agent-dev/SKILL.md"; return 0
-      elif [[ -f "$repo/_bmad/bmm/agents/dev.md" ]]; then
-        printf '%s' "$repo/_bmad/bmm/agents/dev.md"; return 0
-      elif [[ -f "$repo/.agents/skills/bmad-build/SKILL.md" ]]; then
-        printf '%s' "$repo/.agents/skills/bmad-build/SKILL.md"; return 0
-      elif [[ -f "$repo/.claude/agents/builder.md" ]]; then
-        printf '%s' "$repo/.claude/agents/builder.md"; return 0
-      fi ;;
+      for p in \
+        "$repo/.agents/skills/bmad-agent-dev/SKILL.md" \
+        "$repo/_bmad/bmm/agents/dev.md" \
+        "$repo/.agents/skills/bmad-build/SKILL.md" \
+        "$repo/.claude/agents/dev.md" \
+        "$repo/.claude/agents/builder.md" \
+        "$repo/.github/agents/dev.md" \
+        "$repo/.agents/skills/dev/SKILL.md"; do
+        [[ -f "$p" ]] && { printf '%s' "$p"; return 0; }
+      done ;;
     reviewer)
-      if [[ -f "$repo/.agents/skills/bmad-review/SKILL.md" ]]; then
-        printf '%s' "$repo/.agents/skills/bmad-review/SKILL.md"; return 0
-      elif [[ -f "$repo/.agents/skills/bmad-code-review/SKILL.md" ]]; then
-        printf '%s' "$repo/.agents/skills/bmad-code-review/SKILL.md"; return 0
-      elif [[ -f "$repo/.claude/agents/reviewer-code.md" ]]; then
-        printf '%s' "$repo/.claude/agents/reviewer-code.md"; return 0
-      fi ;;
+      for p in \
+        "$repo/.agents/skills/bmad-review/SKILL.md" \
+        "$repo/.agents/skills/bmad-code-review/SKILL.md" \
+        "$repo/.claude/agents/reviewer.md" \
+        "$repo/.claude/agents/reviewer-code.md" \
+        "$repo/.github/agents/reviewer.md" \
+        "$repo/.agents/skills/reviewer/SKILL.md"; do
+        [[ -f "$p" ]] && { printf '%s' "$p"; return 0; }
+      done ;;
     approver)
-      if [[ -f "$repo/.claude/agents/approver.md" ]]; then
-        printf '%s' "$repo/.claude/agents/approver.md"; return 0
-      fi ;;
+      for p in \
+        "$repo/.claude/agents/approver.md" \
+        "$repo/.github/agents/approver.md" \
+        "$repo/.agents/skills/approver/SKILL.md"; do
+        [[ -f "$p" ]] && { printf '%s' "$p"; return 0; }
+      done ;;
   esac
   printf 'builtin'
 }
@@ -100,7 +115,7 @@ afk_roster_detect_framework() {
     printf 'bmad'
     return 0
   fi
-  if [[ -d "$repo/.claude/agents" ]]; then
+  if [[ -d "$repo/.claude/agents" || -d "$repo/.github/agents" ]]; then
     printf 'custom'
     return 0
   fi
