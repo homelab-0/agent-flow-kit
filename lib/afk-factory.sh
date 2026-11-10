@@ -667,12 +667,16 @@ afk_factory_run_job() {
       }' > "$job_file"
   fi
 
-  # Step 1: Hire core team (pm, dev, reviewer, approver) for the project
-  local hired_json
+  # Step 1: Hire core team (pm, dev, reviewer, approver) for the project & resolve Paperclip run_id
+  local hired_json run_id=""
   hired_json="$(afk_pch_ensure_project_team "$slug" "$abs_repo" "$harness" "pm,dev,reviewer,approver" "$issue_id" "$api_url" "$key" "$company_id" "$host_agent_id")"
+  if [[ -n "$api_url" && -n "$key" && -n "$issue_id" ]]; then
+    run_id="$(afk_pch_ensure_run_id "$api_url" "$key" "$host_agent_id" "$issue_id")"
+    export PAPERCLIP_RUN_ID="$run_id"
+  fi
 
   # Step 2: Intake (PM — John in BMAD)
-  afk_pch_assign_stage "$slug" "pm" "$issue_id" "AFK Factory started intake with project PM (\`${slug}-pm\`)." "$api_url" "$key"
+  afk_pch_assign_stage "$slug" "pm" "$issue_id" "AFK Factory started intake with project PM (\`${slug}-pm\`)." "$api_url" "$key" "$run_id"
   afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "pm" "intake" "$job_dir/issue.md" "$job_dir/intake.md" "$issue_id" "$api_url" "$key" "$harness"
 
   local intake_verdict risk surfaces_line
@@ -688,10 +692,10 @@ afk_factory_run_job() {
     question="$(cat "$job_dir/intake.md")"
     jq -c --arg now "$now" '.stage = "needs-info" | .active_agent = "human" | .updated_at = $now' "$job_file" > "$job_file.tmp" && mv "$job_file.tmp" "$job_file"
     if [[ -n "$api_url" && -n "$key" && -n "$issue_id" ]]; then
+      afk_pc_comment "$api_url" "$issue_id" "$key" "$run_id" "## Needs Clarification\n\n$question" >/dev/null 2>&1 || true
       local pbody
-      pbody="$(jq -cn --arg u "$board_user_id" '{status: "in_review"} + (if $u != "" then {assigneeUserId: $u} else {} end)')"
-      afk_pc_curl PATCH "$api_url/api/issues/$issue_id" "$key" "" "$pbody" >/dev/null 2>&1 || true
-      afk_pc_comment "$api_url" "$issue_id" "$key" "" "## Needs Clarification\n\n$question" >/dev/null 2>&1 || true
+      pbody="$(jq -cn --arg u "$board_user_id" '{status: "in_review", assigneeAgentId: null} + (if $u != "" then {assigneeUserId: $u} else {} end)')"
+      afk_pc_curl PATCH "$api_url/api/issues/$issue_id" "$key" "$run_id" "$pbody" >/dev/null 2>&1 || true
     fi
     cat "$job_file"
     return 0
@@ -712,12 +716,12 @@ afk_factory_run_job() {
   if [[ ",$surfaces_line," == *",architecture,"* || "$risk" == "high" ]]; then
     spec_role="architect"
   fi
-  afk_pch_assign_stage "$slug" "$spec_role" "$issue_id" "" "$api_url" "$key"
+  afk_pch_assign_stage "$slug" "$spec_role" "$issue_id" "" "$api_url" "$key" "$run_id"
   afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "$spec_role" "spec" "$job_dir/issue.md" "$job_dir/spec.md" "$issue_id" "$api_url" "$key" "$harness"
 
   # Optional UX Design pass when UI surface is flagged
   if [[ ",$surfaces_line," == *",ui,"* || ",$surfaces_line," == *",ux,"* ]]; then
-    afk_pch_assign_stage "$slug" "ux-designer" "$issue_id" "" "$api_url" "$key"
+    afk_pch_assign_stage "$slug" "ux-designer" "$issue_id" "" "$api_url" "$key" "$run_id"
     afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "ux-designer" "ux" "$job_dir/spec.md" "$job_dir/ux-spec.md" "$issue_id" "$api_url" "$key" "$harness"
   fi
 
@@ -731,7 +735,7 @@ afk_factory_run_job() {
     local round_dir="$job_dir/round-$round"
     mkdir -p "$round_dir"
     jq -c --argjson r "$round" '.stage = "build" | .round = $r | .active_agent = "dev"' "$job_file" > "$job_file.tmp" && mv "$job_file.tmp" "$job_file"
-    afk_pch_assign_stage "$slug" "dev" "$issue_id" "" "$api_url" "$key"
+    afk_pch_assign_stage "$slug" "dev" "$issue_id" "AFK Factory build round ${round} started with \`${slug}-dev\`." "$api_url" "$key" "$run_id"
     afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "dev" "build" "$job_dir/spec.md" "$job_dir/build.md" "$issue_id" "$api_url" "$key" "$harness"
 
     # Deterministic Gate (.afk/checks.sh)
@@ -745,7 +749,7 @@ afk_factory_run_job() {
 
     # Independent Review Stage
     jq -c '.stage = "review" | .active_agent = "reviewer"' "$job_file" > "$job_file.tmp" && mv "$job_file.tmp" "$job_file"
-    afk_pch_assign_stage "$slug" "reviewer" "$issue_id" "" "$api_url" "$key"
+    afk_pch_assign_stage "$slug" "reviewer" "$issue_id" "AFK Factory independent review started with \`${slug}-reviewer\`." "$api_url" "$key" "$run_id"
     afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "reviewer" "review-code" "$job_dir/build.md" "$round_dir/review-code.md" "$issue_id" "$api_url" "$key" "$harness"
 
     if [[ ",$surfaces_line," == *",security,"* ]]; then
@@ -787,20 +791,24 @@ afk_factory_run_job() {
   if [[ "$decision" == "APPROVE" ]]; then
     final_stage="merged"
     if [[ -n "$api_url" && -n "$key" && -n "$issue_id" ]]; then
-      afk_pc_curl PATCH "$api_url/api/issues/$issue_id" "$key" "" '{"status":"done"}' >/dev/null 2>&1 || true
-      afk_pc_comment "$api_url" "$issue_id" "$key" "" \
-        "## AFK Factory — Auto-Approved & Complete\n\n$(cat "$job_dir/decision.md")" >/dev/null 2>&1 || true
+      run_id="$(afk_pch_ensure_run_id "$api_url" "$key" "$host_agent_id" "$issue_id")"
+      afk_pc_curl PATCH "$api_url/api/issues/$issue_id" "$key" "$run_id" '{"status":"in_progress"}' >/dev/null 2>&1 || true
+      afk_pc_comment "$api_url" "$issue_id" "$key" "$run_id" \
+        "$(printf '## AFK Factory — Auto-Approved & Complete\n\n%s' "$(cat "$job_dir/decision.md")")" >/dev/null 2>&1 || true
+      afk_pc_curl PATCH "$api_url/api/issues/$issue_id" "$key" "$run_id" '{"status":"done"}' >/dev/null 2>&1 || true
     fi
     # Job finished cleanly; retire all project agents in Paperclip
     afk_pch_retire_project_agents "$slug" "all" "$api_url" "$key" >/dev/null 2>&1 || true
   else
     final_stage="needs-human"
     if [[ -n "$api_url" && -n "$key" && -n "$issue_id" ]]; then
+      run_id="$(afk_pch_ensure_run_id "$api_url" "$key" "$host_agent_id" "$issue_id")"
+      afk_pc_curl PATCH "$api_url/api/issues/$issue_id" "$key" "$run_id" '{"status":"in_progress"}' >/dev/null 2>&1 || true
+      afk_pc_comment "$api_url" "$issue_id" "$key" "$run_id" \
+        "$(printf '## AFK Factory — Human Approval Requested\n\n%s' "$(cat "$job_dir/decision.md")")" >/dev/null 2>&1 || true
       local pbody
-      pbody="$(jq -cn --arg u "$board_user_id" '{status: "in_review"} + (if $u != "" then {assigneeUserId: $u} else {} end)')"
-      afk_pc_curl PATCH "$api_url/api/issues/$issue_id" "$key" "" "$pbody" >/dev/null 2>&1 || true
-      afk_pc_comment "$api_url" "$issue_id" "$key" "" \
-        "## AFK Factory — Human Approval Requested\n\n$(cat "$job_dir/decision.md")" >/dev/null 2>&1 || true
+      pbody="$(jq -cn --arg u "$board_user_id" '{status: "in_review", assigneeAgentId: null} + (if $u != "" then {assigneeUserId: $u} else {} end)')"
+      afk_pc_curl PATCH "$api_url/api/issues/$issue_id" "$key" "$run_id" "$pbody" >/dev/null 2>&1 || true
     fi
   fi
 
