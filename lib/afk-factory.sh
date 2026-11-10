@@ -436,6 +436,23 @@ afk_factory_resolve_stage_route() {
   if [[ -f "$job_dir/job.json" ]]; then
     risk="$(jq -r '.risk // "low"' "$job_dir/job.json" 2>/dev/null || printf 'low')"
   fi
+
+  local builder_family=""
+  if [[ "$stage" == review* && -f "$job_dir/route-build-dev.json" ]]; then
+    builder_family="$(jq -r '.model_family // empty' "$job_dir/route-build-dev.json" 2>/dev/null || true)"
+  fi
+
+  if declare -F afk_router_select_candidate >/dev/null 2>&1; then
+    local smart_json
+    smart_json="$(afk_router_select_candidate "$repo" "$stage" "$risk" "$builder_family")"
+    if [[ -n "$smart_json" ]]; then
+      smart_json="$(jq -c --arg rl "$role" '. + {role: $rl}' <<<"$smart_json")"
+      printf '%s\n' "$smart_json" > "$job_dir/route-${stage}-${role}.json"
+      printf '%s\n' "$smart_json"
+      return 0
+    fi
+  fi
+
   if [[ "$stage" == review* ]]; then
     case "$risk" in
       high|critical) stage_key="review_high" ;;
@@ -451,31 +468,12 @@ afk_factory_resolve_stage_route() {
     default_mem="$(jq -r '.router.hindsight.build_stages // "advisory"' <<<"$cfg" 2>/dev/null)"
   fi
 
-  local model effort window mem_mode router_mode spektr_url litellm_url source="tier-map"
+  local model effort window mem_mode litellm_url source="tier-map"
   model="$(jq -r --arg k "$stage_key" '.routing[$k].model // "sonnet"' <<<"$cfg" 2>/dev/null)"
   effort="$(jq -r --arg k "$stage_key" '.routing[$k].effort // "medium"' <<<"$cfg" 2>/dev/null)"
   window="$(jq -r --arg k "$stage_key" '.routing[$k].window // 200000' <<<"$cfg" 2>/dev/null)"
   mem_mode="$(jq -r --arg k "$stage_key" --arg dm "$default_mem" '.routing[$k].memory_mode // $dm' <<<"$cfg" 2>/dev/null)"
-  router_mode="$(jq -r '.router.mode // "litellm"' <<<"$cfg" 2>/dev/null)"
-  spektr_url="${AFK_SPEKTR_URL:-$(jq -r '.router.spektr_url // empty' <<<"$cfg" 2>/dev/null)}"
   litellm_url="${AFK_LITELLM_BASE_URL:-$(jq -r '.router.litellm_base_url // empty' <<<"$cfg" 2>/dev/null)}"
-
-  # Optional Spektr (POST /v1/route) non-blocking query when spektr_url is configured
-  if [[ "$router_mode" == "spektr" && -n "$spektr_url" ]]; then
-    local req_body sp_resp sp_model sp_win
-    req_body="$(jq -cn --arg sid "$(basename -- "$job_dir")-$stage" --arg st "$stage" --arg br "$risk" \
-      '{story_id:$sid, title:$st, summary:$st, touched_paths:[], ambiguity:(if $st=="spec" or $st=="intake" then "high" else "low" end), blast_radius:$br, context_size:24000, volume_hint:"low", tags:[$st], repo:"factory", requester:"afk-factory"}')"
-    sp_resp="$(curl -sS --connect-timeout 3 --max-time 8 -X POST -H 'Content-Type: application/json' --data-binary "$req_body" "$spektr_url/v1/route" 2>/dev/null || true)"
-    sp_model="$(jq -r '.model_profile // .model // empty' <<<"$sp_resp" 2>/dev/null || true)"
-    sp_win="$(jq -r '.min_context // .window // empty' <<<"$sp_resp" 2>/dev/null || true)"
-    if [[ -n "$sp_model" ]]; then
-      model="$sp_model"
-      [[ "$sp_win" =~ ^[0-9]+$ ]] && window="$sp_win"
-      source="spektr"
-    fi
-  elif [[ -n "$litellm_url" ]]; then
-    source="litellm"
-  fi
 
   local route_json
   route_json="$(jq -cn \
@@ -487,7 +485,7 @@ afk_factory_resolve_stage_route() {
     --arg src "$source" \
     --arg lurl "$litellm_url" \
     --argjson win "$window" \
-    '{stage:$st, role:$rl, model:$m, effort:$ef, window_tokens:$win, memory_mode:$mm, router_source:$src, litellm_base_url:(if $lurl=="" then null else $lurl end)}')"
+    '{stage:$st, role:$rl, harness:"claude", launch_class:"claude-native", model:$m, model_family:"anthropic", effort:$ef, window_tokens:$win, memory_mode:$mm, router_source:$src, litellm_base_url:(if $lurl=="" then null else $lurl end)}')"
   printf '%s\n' "$route_json" > "$job_dir/route-${stage}-${role}.json"
   printf '%s\n' "$route_json"
 }
@@ -496,18 +494,22 @@ afk_factory_resolve_stage_route() {
 # Executes one bounded agent turn for <stage>.
 # Supports:
 #   1. AFK_FACTORY_AGENT_RUNNER override for custom runners / deterministic tests.
-#   2. AFK_FACTORY_LIVE_HARNESS=1 for headless claude / codex / opencode CLI execution,
+#   2. AFK_FACTORY_LIVE_HARNESS=1 for headless claude / codex / agy / opencode CLI execution,
 #      extracting token usage into AFK_LAST_STAGE_USED_TOKENS.
 #   3. Deterministic local synthesis fallback when running offline without a runner.
+# shellcheck disable=SC2030,SC2031
 afk_factory_invoke_stage_agent() {
-  local repo="$1" wt="$2" job_dir="$3" role="$4" stage="$5" prompt_file="$6" output_file="$7" harness="${8:-claude}"
-  local compiled_prompt route_json routed_model routed_window routed_mem litellm_url
+  local repo="$1" wt="$2" job_dir="$3" role="$4" stage="$5" prompt_file="$6" output_file="$7" harness_override="${8:-}"
+  local compiled_prompt route_json routed_harness routed_launch routed_model routed_window routed_mem litellm_url
   compiled_prompt="$(afk_factory_build_stage_prompt "$repo" "$job_dir" "$role" "$stage" "$prompt_file" "$output_file")"
   route_json="$(afk_factory_resolve_stage_route "$repo" "$job_dir" "$stage" "$role")"
+  routed_harness="$(jq -r '.harness // "claude"' <<<"$route_json")"
+  routed_launch="$(jq -r '.launch_class // "claude-native"' <<<"$route_json")"
   routed_model="$(jq -r '.model // "sonnet"' <<<"$route_json")"
   routed_window="$(jq -r '.window_tokens // 200000' <<<"$route_json")"
   routed_mem="$(jq -r '.memory_mode // "advisory"' <<<"$route_json")"
   litellm_url="$(jq -r '.litellm_base_url // empty' <<<"$route_json")"
+  local harness="${harness_override:-$routed_harness}"
 
   AFK_LAST_STAGE_USED_TOKENS="${AFK_STAGE_USED_TOKENS:-}"
   AFK_LAST_STAGE_WINDOW_TOKENS="${AFK_STAGE_WINDOW_TOKENS:-$routed_window}"
@@ -522,6 +524,8 @@ afk_factory_invoke_stage_agent() {
       AFK_FACTORY_JOB_DIR="$job_dir" \
       AFK_FACTORY_ROLE="$role" \
       AFK_FACTORY_STAGE="$stage" \
+      AFK_FACTORY_HARNESS="$harness" \
+      AFK_FACTORY_LAUNCH_CLASS="$routed_launch" \
       AFK_FACTORY_MODEL="$routed_model" \
       AFK_FACTORY_MEMORY_MODE="$routed_mem" \
       AFK_FACTORY_PROMPT_FILE="$prompt_file" \
@@ -547,7 +551,11 @@ afk_factory_invoke_stage_agent() {
           (
             cd "$wt" || exit 1
             [[ -n "$hs_disabled" ]] && export HINDSIGHT_DISABLED="true"
-            [[ -n "$litellm_url" ]] && export ANTHROPIC_BASE_URL="$litellm_url"
+            # Only point ANTHROPIC_BASE_URL at LiteLLM when launch_class is claude-gateway!
+            # When launch_class is claude-native, Claude uses its flat-rate OAuth subscription directly.
+            if [[ "$routed_launch" == *-gateway && -n "$litellm_url" ]]; then
+              export ANTHROPIC_BASE_URL="$litellm_url"
+            fi
             claude -p "$(cat -- "$compiled_prompt")" --model "$routed_model" --output-format json --permission-mode acceptEdits < /dev/null > "$env_file" 2>/dev/null
           ) || h_rc=$?
         fi
@@ -557,8 +565,19 @@ afk_factory_invoke_stage_agent() {
           (
             cd "$wt" || exit 1
             [[ -n "$hs_disabled" ]] && export HINDSIGHT_DISABLED="true"
-            [[ -n "$litellm_url" ]] && export OPENAI_BASE_URL="$litellm_url"
+            if [[ "$routed_launch" == *-gateway && -n "$litellm_url" ]]; then
+              export OPENAI_BASE_URL="$litellm_url"
+            fi
             codex exec -s workspace-write -m "$routed_model" -- "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
+          ) || h_rc=$?
+        fi
+        ;;
+      agy)
+        if command -v agy >/dev/null 2>&1; then
+          (
+            cd "$wt" || exit 1
+            [[ -n "$hs_disabled" ]] && export HINDSIGHT_DISABLED="true"
+            agy -p "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
           ) || h_rc=$?
         fi
         ;;
@@ -567,6 +586,9 @@ afk_factory_invoke_stage_agent() {
           (
             cd "$wt" || exit 1
             [[ -n "$hs_disabled" ]] && export HINDSIGHT_DISABLED="true"
+            if [[ "$routed_launch" == *-gateway && -n "$litellm_url" ]]; then
+              export OPENAI_BASE_URL="$litellm_url"
+            fi
             opencode run --format json -m "$routed_model" -- "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
           ) || h_rc=$?
         fi
@@ -1058,21 +1080,25 @@ afk_cmd_factory() {
 
   local json_mode=false repo="" slug="" job_id="" issue_id="" title="Factory Task"
   local body_file="" role="" used_tokens="" window_tokens="200000" compacted=false roles_csv="all"
+  local stage_arg="" risk_arg="low" builder_family=""
 
   while (( $# > 0 )); do
     case "$1" in
-      --json)         json_mode=true ;;
-      --compacted)    compacted=true ;;
-      --repo)         [[ $# -ge 2 ]] || { afk_warn "--repo requires a path"; return 1; }; repo="$2"; shift ;;
-      --slug)         [[ $# -ge 2 ]] || { afk_warn "--slug requires a value"; return 1; }; slug="$2"; shift ;;
-      --job)          [[ $# -ge 2 ]] || { afk_warn "--job requires an id"; return 1; }; job_id="$2"; shift ;;
-      --issue)        [[ $# -ge 2 ]] || { afk_warn "--issue requires an id"; return 1; }; issue_id="$2"; shift ;;
-      --title)        [[ $# -ge 2 ]] || { afk_warn "--title requires text"; return 1; }; title="$2"; shift ;;
-      --body-file)    [[ $# -ge 2 ]] || { afk_warn "--body-file requires a path"; return 1; }; body_file="$2"; shift ;;
-      --role)         [[ $# -ge 2 ]] || { afk_warn "--role requires a role name"; return 1; }; role="$2"; shift ;;
-      --used-tokens)  [[ $# -ge 2 ]] || { afk_warn "--used-tokens requires an integer"; return 1; }; used_tokens="$2"; shift ;;
-      --window)       [[ $# -ge 2 ]] || { afk_warn "--window requires an integer"; return 1; }; window_tokens="$2"; shift ;;
-      --roles)        [[ $# -ge 2 ]] || { afk_warn "--roles requires a comma-separated list"; return 1; }; roles_csv="$2"; shift ;;
+      --json)            json_mode=true ;;
+      --compacted)       compacted=true ;;
+      --repo)            [[ $# -ge 2 ]] || { afk_warn "--repo requires a path"; return 1; }; repo="$2"; shift ;;
+      --slug)            [[ $# -ge 2 ]] || { afk_warn "--slug requires a value"; return 1; }; slug="$2"; shift ;;
+      --job)             [[ $# -ge 2 ]] || { afk_warn "--job requires an id"; return 1; }; job_id="$2"; shift ;;
+      --issue)           [[ $# -ge 2 ]] || { afk_warn "--issue requires an id"; return 1; }; issue_id="$2"; shift ;;
+      --title)           [[ $# -ge 2 ]] || { afk_warn "--title requires text"; return 1; }; title="$2"; shift ;;
+      --body-file)       [[ $# -ge 2 ]] || { afk_warn "--body-file requires a path"; return 1; }; body_file="$2"; shift ;;
+      --role)            [[ $# -ge 2 ]] || { afk_warn "--role requires a role name"; return 1; }; role="$2"; shift ;;
+      --used-tokens)     [[ $# -ge 2 ]] || { afk_warn "--used-tokens requires an integer"; return 1; }; used_tokens="$2"; shift ;;
+      --window)          [[ $# -ge 2 ]] || { afk_warn "--window requires an integer"; return 1; }; window_tokens="$2"; shift ;;
+      --roles)           [[ $# -ge 2 ]] || { afk_warn "--roles requires a comma-separated list"; return 1; }; roles_csv="$2"; shift ;;
+      --stage)           [[ $# -ge 2 ]] || { afk_warn "--stage requires a stage name"; return 1; }; stage_arg="$2"; shift ;;
+      --risk)            [[ $# -ge 2 ]] || { afk_warn "--risk requires low|medium|high|critical"; return 1; }; risk_arg="$2"; shift ;;
+      --builder-family)  [[ $# -ge 2 ]] || { afk_warn "--builder-family requires a family name"; return 1; }; builder_family="$2"; shift ;;
       *)
         afk_warn "factory $subcmd: unknown option '$(afk_safe_diagnostic "$1")'"
         return 1 ;;
@@ -1167,11 +1193,57 @@ afk_cmd_factory() {
     resume)
       afk_factory_resume "$repo" "$slug" "$json_mode"
       return $? ;;
+    pools)
+      local p_out
+      p_out="$(afk_router_probe_pools "$repo")"
+      if [[ "$json_mode" == "true" ]]; then
+        printf '%s\n' "$p_out"
+      else
+        jq -r '
+          "Installed Harnesses & Gateways:",
+          "  - claude   (Anthropic Max OAuth): " + (if .harnesses.claude.installed then "INSTALLED (" + .harnesses.claude.binary + ")" else "MISSING" end),
+          "  - codex    (OpenAI Plus/Pro):     " + (if .harnesses.codex.installed then "INSTALLED (" + .harnesses.codex.binary + ")" else "MISSING" end),
+          "  - agy      (Antigravity):         " + (if .harnesses.agy.installed then "INSTALLED (" + .harnesses.agy.binary + ")" else "MISSING" end),
+          "  - opencode (Grok / Multi-Auth):   " + (if .harnesses.opencode.installed then "INSTALLED (" + .harnesses.opencode.binary + ")" else "MISSING" end),
+          "  - litellm  (Local AI Cluster GW): " + (if .harnesses.litellm_gateway.online then "ONLINE (" + (.harnesses.litellm_gateway.base_url // "") + ")" elif .harnesses.litellm_gateway.configured then "OFFLINE (" + (.harnesses.litellm_gateway.base_url // "") + ")" else "NOT_CONFIGURED (set AFK_LITELLM_BASE_URL or .router.litellm_base_url)" end),
+          "",
+          "Entitlement & Subscription Pools (5-Hour Rolling Window):",
+          (.pools | to_entries[] | "  - " + .key + " [" + .value.provider + "]: state=" + .value.state + " used=" + (.value.used_pct|tostring) + "% headroom=" + (.value.headroom_pct|tostring) + "% (5h_sessions=" + (.value.active_sessions_5h|tostring) + ")")
+        ' <<<"$p_out"
+      fi
+      return 0 ;;
+    route-preview)
+      if [[ -n "$stage_arg" ]]; then
+        local rp_out
+        rp_out="$(afk_router_select_candidate "$repo" "$stage_arg" "$risk_arg" "$builder_family")"
+        if [[ "$json_mode" == "true" ]]; then
+          printf '%s\n' "$rp_out"
+        else
+          jq -r '"Stage [\(.stage)] (task_class=\(.task_class), risk=\(.risk)):\n  -> Harness/Launch: \(.harness) (\(.launch_class))\n  -> Model/Pool:     \(.model) [\(.canonical_model)] via pool \(.entitlement_pool) (headroom=\(.pool_headroom_pct)%)\n  -> Benchmark:      \(.benchmark_name) = \(.benchmark_score) (effective=\(.effective_score))\n  -> Memory Mode:    \(.memory_mode)\n  -> Reason:         \(.reason)"' <<<"$rp_out"
+        fi
+      else
+        local st_list=("intake" "spec" "ux" "build" "review-code")
+        local all_routes="[]" b_fam="$builder_family"
+        local s r_item
+        for s in "${st_list[@]}"; do
+          r_item="$(afk_router_select_candidate "$repo" "$s" "$risk_arg" "$b_fam")"
+          if [[ "$s" == "build" && -z "$b_fam" ]]; then
+            b_fam="$(jq -r '.model_family // empty' <<<"$r_item")"
+          fi
+          all_routes="$(jq -c --argjson it "$r_item" '. + [$it]' <<<"$all_routes")"
+        done
+        if [[ "$json_mode" == "true" ]]; then
+          printf '%s\n' "$all_routes"
+        else
+          jq -r '.[] | "[\(.stage)] (\(.task_class), risk=\(.risk)) -> \(.harness)/\(.model) [\(.launch_class)] | pool=\(.entitlement_pool) (\(.pool_headroom_pct)% free) | score=\(.effective_score) (\(.benchmark_name)) | mem=\(.memory_mode)"' <<<"$all_routes"
+        fi
+      fi
+      return 0 ;;
     status)
       afk_factory_status "$repo" "$slug" "$json_mode"
       return $? ;;
     *)
-      afk_warn "factory: unknown subcommand '$(afk_safe_diagnostic "$subcmd")' (expected: roster, init, run, resume, status, context-check, evaluate-merge, retire)"
+      afk_warn "factory: unknown subcommand '$(afk_safe_diagnostic "$subcmd")' (expected: roster, init, run, resume, pools, route-preview, status, context-check, evaluate-merge, retire)"
       return 1 ;;
   esac
 }

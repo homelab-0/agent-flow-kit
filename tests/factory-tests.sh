@@ -231,5 +231,57 @@ STATUS_JSON="$(bash "$AFK" factory status --slug spektacle --json)"
 assert_eq "factory status reports exactly 1 item needing human attention (job-protected, not job-clean)" \
   "$(jq -r '"\(.attention_required_count):\(.attention_required[0].id)"' <<<"$STATUS_JSON")" "1:job-protected"
 
+# ─── Test 7: Smart Multi-Harness + Pool Headroom + Benchmark + LiteLLM Router ───
+export AFK_ROUTER_HARNESS_LIST="claude,codex,agy,opencode"
+export AFK_ROUTER_SIGNALS_FILE="$TMP/pool-signals.json"
+cat > "$AFK_ROUTER_SIGNALS_FILE" <<'JSON'
+{
+  "pools": {
+    "anthropic-max": { "used_pct": 20 },
+    "openai-plus": { "used_pct": 15 },
+    "antigravity-pool": { "used_pct": 10 },
+    "xai-grok": { "used_pct": 10 }
+  }
+}
+JSON
+
+ROUTE_SPEC="$(bash "$AFK" factory route-preview --repo "$BMAD_REPO" --stage spec --risk high --json)"
+assert_eq "Smart router picks claude/opus for high-risk architecture spec" \
+  "$(jq -r '"\(.harness)/\(.model):\(.memory_mode)"' <<<"$ROUTE_SPEC")" "claude/opus:advisory"
+
+ROUTE_REV="$(bash "$AFK" factory route-preview --repo "$BMAD_REPO" --stage review-code --risk medium --builder-family anthropic --json)"
+assert_eq "Smart router enforces cross-family blind review (codex reviews anthropic build with blind memory)" \
+  "$(jq -r '"\(.harness):\(.cross_family_review):\(.memory_mode)"' <<<"$ROUTE_REV")" "codex:true:blind"
+
+# Simulate anthropic-max subscription pool exhausted (95% used) -> should fail over automatically to codex
+cat > "$AFK_ROUTER_SIGNALS_FILE" <<'JSON'
+{
+  "pools": {
+    "anthropic-max": { "used_pct": 95 },
+    "openai-plus": { "used_pct": 15 },
+    "antigravity-pool": { "used_pct": 10 },
+    "xai-grok": { "used_pct": 10 }
+  }
+}
+JSON
+ROUTE_FAILOVER="$(bash "$AFK" factory route-preview --repo "$BMAD_REPO" --stage spec --risk high --json)"
+assert_eq "When anthropic-max pool is exhausted (95%), smart router fails over to codex/gpt-5.6-sol" \
+  "$(jq -r '"\(.harness)/\(.model):\(.entitlement_pool)"' <<<"$ROUTE_FAILOVER")" "codex/gpt-5.6-sol:openai-plus"
+
+# Simulate all cloud pools in warning (82% used) + LiteLLM Local AI cluster online -> low-risk build routes to LiteLLM local cluster
+cat > "$AFK_ROUTER_SIGNALS_FILE" <<'JSON'
+{
+  "pools": {
+    "anthropic-max": { "used_pct": 82 },
+    "openai-plus": { "used_pct": 82 },
+    "antigravity-pool": { "used_pct": 82 },
+    "xai-grok": { "used_pct": 82 }
+  }
+}
+JSON
+ROUTE_LOCAL="$(AFK_LITELLM_BASE_URL="http://litellm.homelab0.org:4000" AFK_ROUTER_LITELLM_ASSUME_ONLINE=1 bash "$AFK" factory route-preview --repo "$BMAD_REPO" --stage build --risk low --json)"
+assert_eq "When subscription pools are in warning (82%) and LiteLLM is online, low-risk build shifts to litellm-local (claude-gateway)" \
+  "$(jq -r '"\(.launch_class):\(.entitlement_pool):\(.router_source)"' <<<"$ROUTE_LOCAL")" "claude-gateway:litellm-local:smart-router+litellm"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
