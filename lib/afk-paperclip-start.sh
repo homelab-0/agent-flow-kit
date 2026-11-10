@@ -27,6 +27,15 @@ AFK_PCT_UNIT="afk-paperclip-poll"
 # behaviour change at all: no registry lookup, no network call, no terminal.
 afk_pcs_start_pm() {
   local enabled created_by lookup state
+  local factory_mode
+  factory_mode="$(jq -r --arg s "${slug:-}" '(.factory_enabled // false) or ((.projects[]? | select(.slug == $s) | .factory_enabled) // false)' <<<"$AFK_PC_CFG" 2>/dev/null)"
+  if [[ "$factory_mode" == true ]] && declare -F afk_factory_run_job >/dev/null 2>&1; then
+    local f_title
+    f_title="$(jq -r '.title // "Paperclip Issue"' <<<"$detail" 2>/dev/null)"
+    afk_factory_run_job "$repo_path" "$slug" "${identifier:-$id}" "$id" "$f_title" "" false >/dev/null 2>&1 || true
+    actions="$(jq -c --arg t "factory started: ${identifier:-$id}" '. + [$t]' <<<"$actions")"
+    return 0
+  fi
   enabled="$(jq -r '.pm_start_enabled // false' <<<"$AFK_PC_CFG" 2>/dev/null)"
   [[ "$enabled" == true ]] || return 0
   created_by="$(jq -r '.createdByUserId // empty' <<<"$detail" 2>/dev/null)"
