@@ -1239,11 +1239,20 @@ afk_cmd_factory() {
         fi
       fi
       return 0 ;;
+    sync-benchmarks)
+      local sb_out
+      sb_out="$(afk_router_sync_benchmarks)"
+      if [[ "$json_mode" == "true" ]]; then
+        printf '%s\n' "$sb_out"
+      else
+        jq -r '"Benchmark Sync Complete (\(.synced_at)):\n  - Catalog Snapshot: \(.catalog_path) (\(.candidates_count) candidates)\n  - models.dev (MIT):            \(.feeds.models_dev_mit)\n  - LMArena (CC-BY-4.0):         \(.feeds.lmarena_cc_by_4)\n  - Epoch AI SWE-bench (CC-BY):  \(.feeds.epoch_ai_swe_bench_cc_by_4)\n  - Artificial Analysis (BYOK):  \(.feeds.artificial_analysis_byok)\n  - Spektr Control Plane:        \(.feeds.spektr_control_plane)"' <<<"$sb_out"
+      fi
+      return 0 ;;
     status)
       afk_factory_status "$repo" "$slug" "$json_mode"
       return $? ;;
     *)
-      afk_warn "factory: unknown subcommand '$(afk_safe_diagnostic "$subcmd")' (expected: roster, init, run, resume, pools, route-preview, status, context-check, evaluate-merge, retire)"
+      afk_warn "factory: unknown subcommand '$(afk_safe_diagnostic "$subcmd")' (expected: roster, init, run, resume, pools, route-preview, sync-benchmarks, status, context-check, evaluate-merge, retire)"
       return 1 ;;
   esac
 }
