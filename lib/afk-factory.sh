@@ -266,7 +266,7 @@ afk_factory_evaluate_merge() {
   for rf in "$round_dir"/review-*.md; do
     [[ -f "$rf" ]] || continue
     review_count=$((review_count + 1))
-    rv="$(head -n 5 "$rf" | sed -n 's/^VERDICT: *//p' | head -n 1)"
+    rv="$(head -n 8 "$rf" | sed -n 's/^[[:space:]*]*VERDICT:[*[:space:]]*//p' | head -n 1 | awk '{print $1}')"
     if [[ "$rv" != "PASS" ]]; then
       review_failures=$((review_failures + 1))
       reasons="$(jq -c --arg r "Reviewer $(basename "$rf" .md) returned ${rv:-MISSING}" '. + [$r]' <<<"$reasons")"
@@ -397,6 +397,12 @@ afk_factory_build_stage_prompt() {
     if [[ -n "$skill_path" && -f "$skill_path" ]]; then
       printf '## Project Agent Persona & Skill (%s)\n' "$skill_path"
       head -n 120 "$skill_path" 2>/dev/null || true
+      local cust_toml
+      cust_toml="$(dirname -- "$skill_path")/customize.toml"
+      if [[ -f "$cust_toml" ]]; then
+        printf '\n### Persona Principles (%s)\n' "$cust_toml"
+        sed '/^\[\[agent\.menu\]\]/,$d' "$cust_toml" 2>/dev/null | head -n 60 || true
+      fi
       printf '\n---\n\n'
     fi
     # Include latest replacement checkpoint if this role was previously replaced due to context limits
@@ -409,15 +415,64 @@ afk_factory_build_stage_prompt() {
       cat "$latest_ckpt"
       printf '\n---\n\n'
     fi
+    printf '## Headless Factory Execution Mode (CRITICAL OVERRIDE)\n'
+    printf -- '- You are executing unattended in an autonomous AFK Software Factory stage (`%s`).\n' "$stage"
+    printf -- '- SKIP all interactive activation greetings, icon prefixes, and menu tables (`On Activation` Steps 1-8). Do NOT pause or wait for user menu selection.\n'
+    printf -- '- Write your final structured stage artifact directly to `%s` (or output ONLY the exact artifact markdown as your final response with no conversational preamble).\n\n' "$output_file"
+    if [[ -f "$input_file" ]]; then
+      printf '## Input Context (`%s`)\n' "$input_file"
+      head -n 200 "$input_file" 2>/dev/null || true
+      printf '\n---\n\n'
+    fi
+    if [[ "$stage" == "build" && -f "$job_dir/job.json" ]]; then
+      local cur_round prev_round
+      cur_round="$(jq -r '.round // 1' "$job_dir/job.json" 2>/dev/null || printf '1')"
+      if [[ "$cur_round" =~ ^[0-9]+$ ]] && (( cur_round > 1 )); then
+        prev_round=$((cur_round - 1))
+        if [[ -f "$job_dir/round-$prev_round/checks.md" ]] && ! head -n 5 "$job_dir/round-$prev_round/checks.md" | grep -q '^VERDICT: PASS'; then
+          printf '## Prior Round %s Deterministic Gate Failure (MUST FIX)\n' "$prev_round"
+          head -n 100 "$job_dir/round-$prev_round/checks.md" 2>/dev/null || true
+          printf '\n---\n\n'
+        fi
+        local pr_rf pr_rv
+        for pr_rf in "$job_dir/round-$prev_round"/review-*.md; do
+          [[ -f "$pr_rf" ]] || continue
+          pr_rv="$(head -n 8 "$pr_rf" | sed -n 's/^[[:space:]*]*VERDICT:[*[:space:]]*//p' | head -n 1 | awk '{print $1}')"
+          if [[ "$pr_rv" != "PASS" ]]; then
+            printf '## Prior Round %s Reviewer Feedback — `%s` (MUST ADDRESS ALL BLOCKING FINDINGS)\n' "$prev_round" "$(basename "$pr_rf")"
+            head -n 120 "$pr_rf" 2>/dev/null || true
+            printf '\n---\n\n'
+          fi
+        done
+      fi
+    fi
     printf '## Stage Instructions\n'
-    printf -- '- Read input context from: `%s`\n' "$input_file"
-    printf -- '- Write your structured stage output to: `%s`\n' "$output_file"
+    printf -- '- Input context path: `%s`\n' "$input_file"
+    printf -- '- Target output path: `%s`\n' "$output_file"
     case "$stage" in
       intake)
-        printf -- '- Start output with `VERDICT: ACCEPT | NEEDS-INFO | REJECT`, `RISK: low | medium | high | critical`, and `SURFACES: <csv>`.\n'
+        printf -- '- Do NOT modify repository source files during `intake`.\n'
+        printf -- '- Begin `%s` with these exact three plain-text header lines (no bolding, no icons):\n' "$output_file"
+        printf '  `VERDICT: ACCEPT` (or `NEEDS-INFO` / `REJECT`)\n'
+        printf '  `RISK: low` (or `medium` / `high` / `critical`)\n'
+        printf '  `SURFACES: code` (comma-separated subset of `code,ui,ux,architecture,security`)\n'
+        printf -- '- Follow with `## Summary` summarizing scope and constraints.\n'
+        ;;
+      spec)
+        printf -- '- Do NOT modify repository source files during `spec`.\n'
+        printf -- '- Inspect the relevant files in the current working directory and write a concise, actionable engineering specification with clear Acceptance Criteria and target files to `%s`.\n' "$output_file"
+        ;;
+      build)
+        printf -- '- Implement the specification (and fix any Prior Round Gate/Reviewer Blocking Findings shown above) in the current git worktree working directory.\n'
+        printf -- '- Run relevant tests to verify your changes pass cleanly.\n'
+        printf -- '- Stage and commit your code changes on the current git branch (`git add` + `git commit`; never stage `.afk/`).\n'
+        printf -- '- Write a concise summary of changes and test verification to `%s`.\n' "$output_file"
         ;;
       review*)
-        printf -- '- Start output with `VERDICT: PASS | CHANGES_REQUESTED`.\n'
+        printf -- '- Do NOT modify repository source files during `%s`.\n' "$stage"
+        printf -- '- Inspect the full branch diff against main (`git log origin/main..HEAD --stat` and `git diff origin/main...HEAD`), and compare against `%s/spec.md` and the current round `checks.md`.\n' "$job_dir"
+        printf -- '- Begin `%s` with this exact plain-text first line (no bolding, no icons): `VERDICT: PASS` or `VERDICT: CHANGES_REQUESTED`.\n' "$output_file"
+        printf -- '- Follow with `## Summary` and any concrete findings.\n'
         ;;
     esac
   } > "$prompt_dest"
@@ -540,67 +595,102 @@ afk_factory_invoke_stage_agent() {
   fi
 
   if [[ "${AFK_FACTORY_LIVE_HARNESS:-0}" == "1" ]]; then
-    local env_file="$job_dir/.result-${stage}-${role}.json"
-    local h_rc=0 hs_disabled=""
-    [[ "$routed_mem" == "blind" || "$routed_mem" == "off" ]] && hs_disabled="true"
-    case "$harness" in
-      claude)
-        if command -v claude >/dev/null 2>&1; then
-          (
-            cd "$wt" || exit 1
-            [[ -n "$hs_disabled" ]] && export HINDSIGHT_DISABLED="true"
-            # Only point ANTHROPIC_BASE_URL at LiteLLM when launch_class is claude-gateway!
-            # When launch_class is claude-native, Claude uses its flat-rate OAuth subscription directly.
-            if [[ "$routed_launch" == *-gateway && -n "$litellm_url" ]]; then
-              export ANTHROPIC_BASE_URL="$litellm_url"
+    local attempt=1 max_attempts=2
+    while (( attempt <= max_attempts )); do
+      local env_file="$job_dir/.result-${stage}-${role}.json"
+      local h_rc=0 hs_disabled="" routed_pool=""
+      routed_pool="$(jq -r '.entitlement_pool // empty' <<<"$route_json")"
+      [[ "$routed_mem" == "blind" || "$routed_mem" == "off" ]] && hs_disabled="true"
+      rm -f "$env_file" "$output_file"
+      case "$harness" in
+        claude)
+          if command -v claude >/dev/null 2>&1; then
+            (
+              cd "$wt" || exit 1
+              [[ -n "$hs_disabled" ]] && export HINDSIGHT_DISABLED="true"
+              if [[ "$routed_launch" == *-gateway && -n "$litellm_url" ]]; then
+                export ANTHROPIC_BASE_URL="$litellm_url"
+              fi
+              claude -p "$(cat -- "$compiled_prompt")" --model "$routed_model" --add-dir "$job_dir" --dangerously-skip-permissions --output-format json < /dev/null > "$env_file" 2>/dev/null
+            ) || h_rc=$?
+          else
+            h_rc=127
+          fi
+          ;;
+        codex)
+          if command -v codex >/dev/null 2>&1; then
+            (
+              cd "$wt" || exit 1
+              [[ -n "$hs_disabled" ]] && export HINDSIGHT_DISABLED="true"
+              if [[ "$routed_launch" == *-gateway && -n "$litellm_url" ]]; then
+                export OPENAI_BASE_URL="$litellm_url"
+              fi
+              codex exec -s workspace-write --add-dir "$job_dir" -o "$output_file" -m "$routed_model" -- "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
+            ) || h_rc=$?
+          else
+            h_rc=127
+          fi
+          ;;
+        agy)
+          if command -v agy >/dev/null 2>&1; then
+            (
+              cd "$wt" || exit 1
+              [[ -n "$hs_disabled" ]] && export HINDSIGHT_DISABLED="true"
+              agy --dangerously-skip-permissions --add-dir "$job_dir" --output-format json -p "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
+            ) || h_rc=$?
+          else
+            h_rc=127
+          fi
+          ;;
+        opencode)
+          if command -v opencode >/dev/null 2>&1; then
+            (
+              cd "$wt" || exit 1
+              [[ -n "$hs_disabled" ]] && export HINDSIGHT_DISABLED="true"
+              if [[ "$routed_launch" == *-gateway && -n "$litellm_url" ]]; then
+                export OPENAI_BASE_URL="$litellm_url"
+              fi
+              opencode run --format json -m "$routed_model" -- "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
+            ) || h_rc=$?
+          else
+            h_rc=127
+          fi
+          ;;
+      esac
+
+      if (( h_rc == 0 )) && [[ -s "$env_file" || -s "$output_file" ]]; then
+        if [[ -s "$env_file" ]]; then
+          local tok
+          tok="$(jq -r '(.usage.total_tokens // .part.tokens.total // ((.usage.input_tokens // 0) + (.usage.output_tokens // 0) + (.usage.cache_read_input_tokens // 0))) | select(. > 0)' "$env_file" 2>/dev/null | tail -n 1 || true)"
+          [[ -n "$tok" ]] && AFK_LAST_STAGE_USED_TOKENS="$tok"
+          if [[ ! -s "$output_file" ]]; then
+            local extracted=""
+            extracted="$(jq -r '(.result // .response // .part.text // empty)' "$env_file" 2>/dev/null || true)"
+            if [[ -n "$extracted" ]]; then
+              printf '%s\n' "$extracted" > "$output_file"
             fi
-            claude -p "$(cat -- "$compiled_prompt")" --model "$routed_model" --output-format json --permission-mode acceptEdits < /dev/null > "$env_file" 2>/dev/null
-          ) || h_rc=$?
+          fi
         fi
-        ;;
-      codex)
-        if command -v codex >/dev/null 2>&1; then
-          (
-            cd "$wt" || exit 1
-            [[ -n "$hs_disabled" ]] && export HINDSIGHT_DISABLED="true"
-            if [[ "$routed_launch" == *-gateway && -n "$litellm_url" ]]; then
-              export OPENAI_BASE_URL="$litellm_url"
-            fi
-            codex exec -s workspace-write -m "$routed_model" -- "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
-          ) || h_rc=$?
-        fi
-        ;;
-      agy)
-        if command -v agy >/dev/null 2>&1; then
-          (
-            cd "$wt" || exit 1
-            [[ -n "$hs_disabled" ]] && export HINDSIGHT_DISABLED="true"
-            agy -p "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
-          ) || h_rc=$?
-        fi
-        ;;
-      opencode)
-        if command -v opencode >/dev/null 2>&1; then
-          (
-            cd "$wt" || exit 1
-            [[ -n "$hs_disabled" ]] && export HINDSIGHT_DISABLED="true"
-            if [[ "$routed_launch" == *-gateway && -n "$litellm_url" ]]; then
-              export OPENAI_BASE_URL="$litellm_url"
-            fi
-            opencode run --format json -m "$routed_model" -- "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
-          ) || h_rc=$?
-        fi
-        ;;
-    esac
-    if [[ -s "$env_file" ]]; then
-      local tok
-      tok="$(jq -r '((.usage.input_tokens // 0) + (.usage.output_tokens // 0) + (.usage.cache_read_input_tokens // 0)) | select(. > 0)' "$env_file" 2>/dev/null | tail -n 1 || true)"
-      [[ -n "$tok" ]] && AFK_LAST_STAGE_USED_TOKENS="$tok"
-      if [[ ! -s "$output_file" ]]; then
-        jq -r '.result // empty' "$env_file" 2>/dev/null > "$output_file" || cp "$env_file" "$output_file"
+        return 0
       fi
-    fi
-    return "$h_rc"
+
+      # Runtime failover: mark degraded pool and re-route to next healthy harness
+      if (( attempt < max_attempts )) && [[ -z "$harness_override" && -n "$routed_pool" ]] && declare -F afk_router_mark_pool_degraded >/dev/null 2>&1; then
+        afk_router_mark_pool_degraded "$routed_pool" "runtime_exit_$h_rc"
+        route_json="$(afk_factory_resolve_stage_route "$repo" "$job_dir" "$stage" "$role")"
+        routed_harness="$(jq -r '.harness // "claude"' <<<"$route_json")"
+        routed_launch="$(jq -r '.launch_class // "claude-native"' <<<"$route_json")"
+        routed_model="$(jq -r '.model // "sonnet"' <<<"$route_json")"
+        routed_window="$(jq -r '.window_tokens // 200000' <<<"$route_json")"
+        routed_mem="$(jq -r '.memory_mode // "advisory"' <<<"$route_json")"
+        litellm_url="$(jq -r '.litellm_base_url // empty' <<<"$route_json")"
+        harness="$routed_harness"
+        AFK_LAST_STAGE_WINDOW_TOKENS="$routed_window"
+        attempt=$((attempt + 1))
+        continue
+      fi
+      return "$h_rc"
+    done
   fi
 
   # Default autonomous local execution if output_file does not already exist
@@ -667,7 +757,7 @@ EOF
 # session, and spawns the replacement generation to finish the stage cleanly.
 afk_factory_run_stage_with_context_guard() {
   local slug="$1" repo="$2" wt="$3" job_dir="$4" role="$5" stage="$6"
-  local prompt_file="$7" output_file="$8" issue_id="$9" api_url="${10:-}" key="${11:-}" harness="${12:-claude}"
+  local prompt_file="$7" output_file="$8" issue_id="$9" api_url="${10:-}" key="${11:-}" harness="${12:-}"
 
   afk_factory_invoke_stage_agent "$repo" "$wt" "$job_dir" "$role" "$stage" "$prompt_file" "$output_file" "$harness"
 
@@ -791,20 +881,22 @@ afk_factory_run_job() {
   hired_json="$(afk_pch_ensure_project_team "$slug" "$abs_repo" "$harness" "pm,dev,reviewer,approver" "$issue_id" "$api_url" "$key" "$company_id" "$host_agent_id")"
   if [[ -n "$api_url" && -n "$key" && -n "$issue_id" ]]; then
     run_id="$(afk_pch_ensure_run_id "$api_url" "$key" "$host_agent_id" "$issue_id")"
-    export PAPERCLIP_RUN_ID="$run_id"
   fi
 
-  # Step 2: Intake (PM — John in BMAD)
-  afk_pch_assign_stage "$slug" "pm" "$issue_id" "AFK Factory started intake with project PM (\`${slug}-pm\`)." "$api_url" "$key" "$run_id"
-  afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "pm" "intake" "$job_dir/issue.md" "$job_dir/intake.md" "$issue_id" "$api_url" "$key" "$harness"
+  # Step 2: Intake (PM — John in BMAD) — skip if already completed on disk (resume-safe)
+  if [[ ! -s "$job_dir/intake.md" ]]; then
+    afk_pch_assign_stage "$slug" "pm" "$issue_id" "AFK Factory started intake with project PM (\`${slug}-pm\`)." "$api_url" "$key" "$run_id"
+    afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "pm" "intake" "$job_dir/issue.md" "$job_dir/intake.md" "$issue_id" "$api_url" "$key" ""
+  fi
 
   local intake_verdict risk surfaces_line
-  intake_verdict="$(head -n 5 "$job_dir/intake.md" 2>/dev/null | sed -n 's/^VERDICT: *//p' | head -n 1)"
-  risk="$(sed -n 's/^RISK: *//p' "$job_dir/intake.md" 2>/dev/null | head -n 1)"
-  surfaces_line="$(sed -n 's/^SURFACES: *//p' "$job_dir/intake.md" 2>/dev/null | head -n 1 | tr -d ' ')"
+  intake_verdict="$(head -n 10 "$job_dir/intake.md" 2>/dev/null | sed -n 's/^[[:space:]*]*VERDICT:[*[:space:]]*//p' | head -n 1 | awk '{print $1}')"
+  risk="$(sed -n 's/^[[:space:]*]*RISK:[*[:space:]]*//p' "$job_dir/intake.md" 2>/dev/null | head -n 1 | awk '{print tolower($1)}')"
+  surfaces_line="$(sed -n 's/^[[:space:]*]*SURFACES:[*[:space:]]*//p' "$job_dir/intake.md" 2>/dev/null | head -n 1 | tr -d ' `*')"
   [[ -n "$intake_verdict" ]] || intake_verdict="ACCEPT"
   [[ "$risk" =~ ^(low|medium|high|critical)$ ]] || risk="low"
   [[ -n "$surfaces_line" ]] || surfaces_line="code"
+  jq -c --arg r "$risk" '.risk = $r' "$job_file" > "$job_file.tmp" && mv "$job_file.tmp" "$job_file"
 
   if [[ "$intake_verdict" == "NEEDS-INFO" ]]; then
     local question
@@ -830,32 +922,42 @@ afk_factory_run_job() {
   full_roles_csv="$(afk_roster_roles_for_job "$risk" "$surfaces_line")"
   hired_json="$(afk_pch_ensure_project_team "$slug" "$abs_repo" "$harness" "$full_roles_csv" "$issue_id" "$api_url" "$key" "$company_id" "$host_agent_id")"
 
-  # Step 3: Spec (PM or Architect when high-risk/architecture)
+  # Step 3: Spec (PM or Architect when high-risk/architecture) — skip if completed on disk
   local spec_role="pm"
   if [[ ",$surfaces_line," == *",architecture,"* || "$risk" == "high" ]]; then
     spec_role="architect"
   fi
-  afk_pch_assign_stage "$slug" "$spec_role" "$issue_id" "" "$api_url" "$key" "$run_id"
-  afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "$spec_role" "spec" "$job_dir/issue.md" "$job_dir/spec.md" "$issue_id" "$api_url" "$key" "$harness"
+  if [[ ! -s "$job_dir/spec.md" ]]; then
+    afk_pch_assign_stage "$slug" "$spec_role" "$issue_id" "" "$api_url" "$key" "$run_id"
+    afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "$spec_role" "spec" "$job_dir/issue.md" "$job_dir/spec.md" "$issue_id" "$api_url" "$key" ""
+  fi
 
   # Optional UX Design pass when UI surface is flagged
-  if [[ ",$surfaces_line," == *",ui,"* || ",$surfaces_line," == *",ux,"* ]]; then
+  if [[ ",$surfaces_line," == *",ui,"* || ",$surfaces_line," == *",ux,"* ]] && [[ ! -s "$job_dir/ux-spec.md" ]]; then
     afk_pch_assign_stage "$slug" "ux-designer" "$issue_id" "" "$api_url" "$key" "$run_id"
-    afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "ux-designer" "ux" "$job_dir/spec.md" "$job_dir/ux-spec.md" "$issue_id" "$api_url" "$key" "$harness"
+    afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "ux-designer" "ux" "$job_dir/spec.md" "$job_dir/ux-spec.md" "$issue_id" "$api_url" "$key" ""
   fi
 
   # Step 4: Build -> Deterministic Gate -> Multi-Lens Review loop (up to max_rounds)
-  local cfg max_rounds round=1 gate_passed=false reviews_passed=false
+  local cfg max_rounds round=1 saved_round gate_passed=false reviews_passed=false
   cfg="$(afk_factory_load_config "$abs_repo")"
   max_rounds="$(jq -r '.max_rounds // 2' <<<"$cfg")"
   [[ "$max_rounds" =~ ^[0-9]+$ && "$max_rounds" -ge 1 ]] || max_rounds=2
+  saved_round="$(jq -r '.round // 1' "$job_file" 2>/dev/null || printf '1')"
+  if [[ "$saved_round" =~ ^[0-9]+$ ]] && (( saved_round > 1 )); then
+    round="$saved_round"
+  fi
 
   while (( round <= max_rounds )); do
     local round_dir="$job_dir/round-$round"
     mkdir -p "$round_dir"
     jq -c --argjson r "$round" '.stage = "build" | .round = $r | .active_agent = "dev"' "$job_file" > "$job_file.tmp" && mv "$job_file.tmp" "$job_file"
     afk_pch_assign_stage "$slug" "dev" "$issue_id" "AFK Factory build round ${round} started with \`${slug}-dev\`." "$api_url" "$key" "$run_id"
-    afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "dev" "build" "$job_dir/spec.md" "$job_dir/build.md" "$issue_id" "$api_url" "$key" "$harness"
+    afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "dev" "build" "$job_dir/spec.md" "$job_dir/build.md" "$issue_id" "$api_url" "$key" ""
+    if [[ "$wt_dir" != "$abs_repo" ]] && [[ -n "$(git -C "$wt_dir" status --porcelain 2>/dev/null || true)" ]]; then
+      git -C "$wt_dir" add -A -- . ':!.afk' >/dev/null 2>&1 || git -C "$wt_dir" add -A >/dev/null 2>&1 || true
+      git -C "$wt_dir" commit -m "feat($job_id): $title" >/dev/null 2>&1 || true
+    fi
 
     # Deterministic Gate (.afk/checks.sh)
     jq -c '.stage = "gate"' "$job_file" > "$job_file.tmp" && mv "$job_file.tmp" "$job_file"
@@ -869,23 +971,24 @@ afk_factory_run_job() {
     # Independent Review Stage
     jq -c '.stage = "review" | .active_agent = "reviewer"' "$job_file" > "$job_file.tmp" && mv "$job_file.tmp" "$job_file"
     afk_pch_assign_stage "$slug" "reviewer" "$issue_id" "AFK Factory independent review started with \`${slug}-reviewer\`." "$api_url" "$key" "$run_id"
-    afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "reviewer" "review-code" "$job_dir/build.md" "$round_dir/review-code.md" "$issue_id" "$api_url" "$key" "$harness"
+    afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "reviewer" "review-code" "$job_dir/build.md" "$round_dir/review-code.md" "$issue_id" "$api_url" "$key" ""
 
     if [[ ",$surfaces_line," == *",security,"* ]]; then
-      afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "reviewer" "review-security" "$job_dir/build.md" "$round_dir/review-security.md" "$issue_id" "$api_url" "$key" "$harness"
+      afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "reviewer" "review-security" "$job_dir/build.md" "$round_dir/review-security.md" "$issue_id" "$api_url" "$key" ""
     fi
     if [[ ",$surfaces_line," == *",ui,"* || ",$surfaces_line," == *",ux,"* ]]; then
-      afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "ux-designer" "review-ux" "$job_dir/build.md" "$round_dir/review-ux.md" "$issue_id" "$api_url" "$key" "$harness"
+      afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "ux-designer" "review-ux" "$job_dir/build.md" "$round_dir/review-ux.md" "$issue_id" "$api_url" "$key" ""
     fi
     if [[ ",$surfaces_line," == *",architecture,"* || "$risk" == "high" ]]; then
-      afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "architect" "review-arch" "$job_dir/build.md" "$round_dir/review-arch.md" "$issue_id" "$api_url" "$key" "$harness"
+      afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "architect" "review-arch" "$job_dir/build.md" "$round_dir/review-arch.md" "$issue_id" "$api_url" "$key" ""
     fi
 
     # Check if all reviewers in round_dir passed
-    local any_changes=false rf
+    local any_changes=false rf r_verdict
     for rf in "$round_dir"/review-*.md; do
       [[ -f "$rf" ]] || continue
-      if ! head -n 5 "$rf" | grep -q '^VERDICT: PASS'; then
+      r_verdict="$(head -n 8 "$rf" | sed -n 's/^[[:space:]*]*VERDICT:[*[:space:]]*//p' | head -n 1 | awk '{print $1}')"
+      if [[ "$r_verdict" != "PASS" ]]; then
         any_changes=true
       fi
     done
@@ -1199,10 +1302,10 @@ afk_cmd_factory() {
       else
         jq -r '
           "Installed Harnesses & Gateways:",
-          "  - claude   (Anthropic Max OAuth): " + (if .harnesses.claude.installed then "INSTALLED (" + .harnesses.claude.binary + ")" else "MISSING" end),
-          "  - codex    (OpenAI Plus/Pro):     " + (if .harnesses.codex.installed then "INSTALLED (" + .harnesses.codex.binary + ")" else "MISSING" end),
-          "  - agy      (Antigravity):         " + (if .harnesses.agy.installed then "INSTALLED (" + .harnesses.agy.binary + ")" else "MISSING" end),
-          "  - opencode (Grok / Multi-Auth):   " + (if .harnesses.opencode.installed then "INSTALLED (" + .harnesses.opencode.binary + ")" else "MISSING" end),
+          "  - claude   (Anthropic Max OAuth): " + (if .harnesses.claude.installed then "HEALTHY (" + .harnesses.claude.binary + ")" else "UNAVAILABLE (" + (.harnesses.claude.health // "missing") + ")" end),
+          "  - codex    (OpenAI Plus/Pro):     " + (if .harnesses.codex.installed then "HEALTHY (" + .harnesses.codex.binary + ")" else "UNAVAILABLE (" + (.harnesses.codex.health // "missing") + ")" end),
+          "  - agy      (Antigravity):         " + (if .harnesses.agy.installed then "HEALTHY (" + .harnesses.agy.binary + ")" else "UNAVAILABLE (" + (.harnesses.agy.health // "missing") + ")" end),
+          "  - opencode (Grok / Multi-Auth):   " + (if .harnesses.opencode.installed then "HEALTHY (" + .harnesses.opencode.binary + ")" else "UNAVAILABLE (" + (.harnesses.opencode.health // "missing") + ")" end),
           "  - litellm  (Local AI Cluster GW): " + (if .harnesses.litellm_gateway.online then "ONLINE (" + (.harnesses.litellm_gateway.base_url // "") + ")" elif .harnesses.litellm_gateway.configured then "OFFLINE (" + (.harnesses.litellm_gateway.base_url // "") + ")" else "NOT_CONFIGURED (set AFK_LITELLM_BASE_URL or .router.litellm_base_url)" end),
           "",
           "Entitlement & Subscription Pools (5-Hour Rolling Window & Capacity):",
