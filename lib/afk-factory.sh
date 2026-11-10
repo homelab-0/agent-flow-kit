@@ -53,9 +53,8 @@ afk_factory_default_config_json() {
     "networkpolicy"
   ],
   "router": {
-    "mode": "litellm",
+    "mode": "smart",
     "litellm_base_url": "",
-    "spektr_url": "",
     "hindsight": {
       "build_stages": "advisory",
       "review_stages": "blind"
@@ -426,9 +425,8 @@ afk_factory_build_stage_prompt() {
 }
 
 # afk_factory_resolve_stage_route <repo> <job_dir> <stage> <role>
-# Resolves the model, effort, context window, and Hindsight memory_mode for a
-# stage. Supports LiteLLM / tier-map routing today and Spektr (POST /v1/route)
-# when configured, with automatic fallback so routing never deadlocks a job.
+# Resolves the harness, model, effort, context window, and Hindsight memory_mode
+# for a stage using public benchmark scores, pool capacity/headroom, and LiteLLM.
 afk_factory_resolve_stage_route() {
   local repo="$1" job_dir="$2" stage="$3" role="$4"
   local cfg risk="low" stage_key="$stage"
@@ -1207,8 +1205,8 @@ afk_cmd_factory() {
           "  - opencode (Grok / Multi-Auth):   " + (if .harnesses.opencode.installed then "INSTALLED (" + .harnesses.opencode.binary + ")" else "MISSING" end),
           "  - litellm  (Local AI Cluster GW): " + (if .harnesses.litellm_gateway.online then "ONLINE (" + (.harnesses.litellm_gateway.base_url // "") + ")" elif .harnesses.litellm_gateway.configured then "OFFLINE (" + (.harnesses.litellm_gateway.base_url // "") + ")" else "NOT_CONFIGURED (set AFK_LITELLM_BASE_URL or .router.litellm_base_url)" end),
           "",
-          "Entitlement & Subscription Pools (5-Hour Rolling Window):",
-          (.pools | to_entries[] | "  - " + .key + " [" + .value.provider + "]: state=" + .value.state + " used=" + (.value.used_pct|tostring) + "% headroom=" + (.value.headroom_pct|tostring) + "% (5h_sessions=" + (.value.active_sessions_5h|tostring) + ")")
+          "Entitlement & Subscription Pools (5-Hour Rolling Window & Capacity):",
+          (.pools | to_entries[] | "  - " + .key + " [" + .value.provider + " / " + .value.pool_tier + "]: state=" + .value.state + " remaining=" + (.value.remaining_units_5h|tostring) + "/" + (.value.capacity_5h|tostring) + " (" + (.value.headroom_pct|tostring) + "% free, active_5h=" + (.value.active_sessions_5h|tostring) + ")")
         ' <<<"$p_out"
       fi
       return 0 ;;
@@ -1219,7 +1217,7 @@ afk_cmd_factory() {
         if [[ "$json_mode" == "true" ]]; then
           printf '%s\n' "$rp_out"
         else
-          jq -r '"Stage [\(.stage)] (task_class=\(.task_class), risk=\(.risk)):\n  -> Harness/Launch: \(.harness) (\(.launch_class))\n  -> Model/Pool:     \(.model) [\(.canonical_model)] via pool \(.entitlement_pool) (headroom=\(.pool_headroom_pct)%)\n  -> Benchmark:      \(.benchmark_name) = \(.benchmark_score) (effective=\(.effective_score))\n  -> Memory Mode:    \(.memory_mode)\n  -> Reason:         \(.reason)"' <<<"$rp_out"
+          jq -r '"Stage [\(.stage)] (task_class=\(.task_class), risk=\(.risk)):\n  -> Harness/Launch: \(.harness) (\(.launch_class))\n  -> Model/Pool:     \(.model) [\(.canonical_model)] via pool \(.entitlement_pool) (\(.pool_remaining_5h)/\(.pool_capacity_5h) free, \(.pool_headroom_pct)%)\n  -> Benchmark:      \(.benchmark_name) = \(.benchmark_score) (effective=\(.effective_score))\n  -> Memory Mode:    \(.memory_mode)\n  -> Reason:         \(.reason)"' <<<"$rp_out"
         fi
       else
         local st_list=("intake" "spec" "ux" "build" "review-code")
@@ -1235,7 +1233,7 @@ afk_cmd_factory() {
         if [[ "$json_mode" == "true" ]]; then
           printf '%s\n' "$all_routes"
         else
-          jq -r '.[] | "[\(.stage)] (\(.task_class), risk=\(.risk)) -> \(.harness)/\(.model) [\(.launch_class)] | pool=\(.entitlement_pool) (\(.pool_headroom_pct)% free) | score=\(.effective_score) (\(.benchmark_name)) | mem=\(.memory_mode)"' <<<"$all_routes"
+          jq -r '.[] | "[\(.stage)] (\(.task_class), risk=\(.risk)) -> \(.harness)/\(.model) [\(.launch_class)] | pool=\(.entitlement_pool) (\(.pool_remaining_5h)/\(.pool_capacity_5h) free, \(.pool_headroom_pct)%) | score=\(.effective_score) (\(.benchmark_name)) | mem=\(.memory_mode)"' <<<"$all_routes"
         fi
       fi
       return 0 ;;
@@ -1245,7 +1243,7 @@ afk_cmd_factory() {
       if [[ "$json_mode" == "true" ]]; then
         printf '%s\n' "$sb_out"
       else
-        jq -r '"Benchmark Sync Complete (\(.synced_at)):\n  - Catalog Snapshot: \(.catalog_path) (\(.candidates_count) candidates)\n  - models.dev (MIT):            \(.feeds.models_dev_mit)\n  - LMArena (CC-BY-4.0):         \(.feeds.lmarena_cc_by_4)\n  - Epoch AI SWE-bench (CC-BY):  \(.feeds.epoch_ai_swe_bench_cc_by_4)\n  - Artificial Analysis (BYOK):  \(.feeds.artificial_analysis_byok)\n  - Spektr Control Plane:        \(.feeds.spektr_control_plane)"' <<<"$sb_out"
+        jq -r '"Public Benchmark Sync Complete (\(.synced_at)):\n  - Catalog Snapshot:     \(.catalog_path) (\(.candidates_count) candidates)\n  - LMArena Agent:        \(.feeds.lmarena_agent)\n  - LMArena WebDev:       \(.feeds.lmarena_webdev)\n  - LMArena Reasoning:    \(.feeds.lmarena_text)\n  - SWE-bench Official:   \(.feeds.swe_bench_official)\n  - models.dev Limits:    \(.feeds.models_dev)\n  - Artificial Analysis:  \(.feeds.artificial_analysis)"' <<<"$sb_out"
       fi
       return 0 ;;
     status)

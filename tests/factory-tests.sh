@@ -233,7 +233,8 @@ assert_eq "factory status reports exactly 1 item needing human attention (job-pr
 
 # ─── Test 7: Smart Multi-Harness + Pool Headroom + Benchmark + LiteLLM Router ───
 export AFK_ROUTER_HARNESS_LIST="claude,codex,agy,opencode"
-export AFK_ROUTER_SIGNALS_FILE="$TMP/pool-signals.json"
+export AFK_ROUTER_BENCHMARKS_FILE="$KIT_ROOT/files/model-router/benchmarks.json"
+export AFK_ROUTER_SIGNALS_FILE="$TMPROOT/pool-signals.json"
 cat > "$AFK_ROUTER_SIGNALS_FILE" <<'JSON'
 {
   "pools": {
@@ -253,7 +254,7 @@ ROUTE_REV="$(bash "$AFK" factory route-preview --repo "$BMAD_REPO" --stage revie
 assert_eq "Smart router enforces cross-family blind review (codex reviews anthropic build with blind memory)" \
   "$(jq -r '"\(.harness):\(.cross_family_review):\(.memory_mode)"' <<<"$ROUTE_REV")" "codex:true:blind"
 
-# Simulate anthropic-max subscription pool exhausted (95% used) -> should fail over automatically to codex
+# Simulate anthropic-max subscription pool exhausted (95% used) -> should fail over automatically to #2 LMArena Agent (agy/gemini-4-carbon)
 cat > "$AFK_ROUTER_SIGNALS_FILE" <<'JSON'
 {
   "pools": {
@@ -265,8 +266,8 @@ cat > "$AFK_ROUTER_SIGNALS_FILE" <<'JSON'
 }
 JSON
 ROUTE_FAILOVER="$(bash "$AFK" factory route-preview --repo "$BMAD_REPO" --stage spec --risk high --json)"
-assert_eq "When anthropic-max pool is exhausted (95%), smart router fails over to codex/gpt-5.6-sol" \
-  "$(jq -r '"\(.harness)/\(.model):\(.entitlement_pool)"' <<<"$ROUTE_FAILOVER")" "codex/gpt-5.6-sol:openai-plus"
+assert_eq "When anthropic-max pool is exhausted (95%), smart router fails over to #2 benchmarked agy/gemini-4-carbon" \
+  "$(jq -r '"\(.harness)/\(.model):\(.entitlement_pool)"' <<<"$ROUTE_FAILOVER")" "agy/gemini-4-carbon:antigravity-pool"
 
 # Simulate all cloud pools in warning (82% used) + LiteLLM Local AI cluster online -> low-risk build routes to LiteLLM local cluster
 cat > "$AFK_ROUTER_SIGNALS_FILE" <<'JSON'
@@ -281,7 +282,7 @@ cat > "$AFK_ROUTER_SIGNALS_FILE" <<'JSON'
 JSON
 ROUTE_LOCAL="$(AFK_LITELLM_BASE_URL="http://litellm.homelab0.org:4000" AFK_ROUTER_LITELLM_ASSUME_ONLINE=1 bash "$AFK" factory route-preview --repo "$BMAD_REPO" --stage build --risk low --json)"
 assert_eq "When subscription pools are in warning (82%) and LiteLLM is online, low-risk build shifts to litellm-local (claude-gateway)" \
-  "$(jq -r '"\(.launch_class):\(.entitlement_pool):\(.router_source)"' <<<"$ROUTE_LOCAL")" "claude-gateway:litellm-local:smart-router+litellm"
+  "$(jq -r '"\(.launch_class):\(.entitlement_pool):\(.router_source)"' <<<"$ROUTE_LOCAL")" "claude-gateway:litellm-local:afk-benchmarks+litellm"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
