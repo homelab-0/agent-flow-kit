@@ -198,15 +198,45 @@ afk_pch_ensure_project_team() {
   printf '%s\n' "$hired_list"
 }
 
-# afk_pch_assign_stage <slug> <role> <issue_id> <stage_summary> [<api_url>] [<key>]
+# afk_pch_ensure_run_id <api_url> <key> <host_agent_id> <issue_id>
+# Resolves an active Paperclip heartbeat run_id for <issue_id> (required by
+# Paperclip v2026.1012.0+ on issue PATCH and comment POST via X-Paperclip-Run-Id).
+afk_pch_ensure_run_id() {
+  local api_url="$1" key="$2" host_agent_id="${3:-}" issue_id="${4:-}"
+  if [[ -n "${PAPERCLIP_RUN_ID:-}" ]]; then
+    printf '%s' "$PAPERCLIP_RUN_ID"
+    return 0
+  fi
+  [[ -n "$api_url" && -n "$key" && -n "$issue_id" ]] || return 0
+  local ar ar_code ar_body rid=""
+  ar="$(afk_pc_curl GET "$api_url/api/issues/$issue_id/active-run" "$key" "")"
+  ar_code="${ar%%$'\n'*}"
+  ar_body="${ar#*$'\n'}"
+  if [[ "$ar_code" == 2?? ]]; then
+    rid="$(jq -r '.id // empty' <<<"$ar_body" 2>/dev/null)"
+  fi
+  if [[ -z "$rid" || ! "$rid" =~ ^[A-Za-z0-9_-]+$ ]] && [[ -n "$host_agent_id" ]]; then
+    local wr wr_code wr_body
+    wr="$(afk_pc_curl POST "$api_url/api/agents/$host_agent_id/wakeup" "$key" "" \
+      "$(jq -nc --arg id "$issue_id" '{source:"timer", payload:{issueId:$id}}')")"
+    wr_code="${wr%%$'\n'*}"
+    wr_body="${wr#*$'\n'}"
+    if [[ "$wr_code" == 2?? ]]; then
+      rid="$(jq -r '.id // empty' <<<"$wr_body" 2>/dev/null)"
+    fi
+  fi
+  [[ "$rid" =~ ^[A-Za-z0-9_-]+$ ]] && printf '%s' "$rid"
+  return 0
+}
+
+# afk_pch_assign_stage <slug> <role> <issue_id> <stage_summary> [<api_url>] [<key>] [<run_id>]
 # Updates the active role in the local hiring ledger and, when Paperclip API
-# credentials are supplied, updates the Paperclip issue assignee and posts a
-# concise stage handoff note.
+# credentials are supplied, ensures the issue is in_progress and posts a
+# concise stage handoff note attributed to <run_id>.
 afk_pch_assign_stage() {
-  local slug="$1" role="$2" issue_id="${3:-}" summary="${4:-}" api_url="${5:-}" key="${6:-}"
-  local ledger agent_id
+  local slug="$1" role="$2" issue_id="${3:-}" summary="${4:-}" api_url="${5:-}" key="${6:-}" run_id="${7:-${PAPERCLIP_RUN_ID:-}}"
+  local ledger
   ledger="$(afk_pch_load_ledger)"
-  agent_id="$(jq -r --arg s "$slug" --arg r "$role" '.projects[$s].agents[$r].agent_id // empty' <<<"$ledger" 2>/dev/null)"
   local now
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   ledger="$(jq -c --arg s "$slug" --arg r "$role" --arg i "$issue_id" --arg now "$now" \
@@ -214,23 +244,19 @@ afk_pch_assign_stage() {
   afk_pch_save_ledger "$ledger"
 
   if [[ -n "$api_url" && -n "$key" && -n "$issue_id" ]]; then
-    if [[ -n "$agent_id" && "$agent_id" != local-* ]]; then
-      local patch_body
-      patch_body="$(jq -cn --arg a "$agent_id" '{status: "in_progress", assigneeAgentId: $a}')"
-      afk_pc_curl PATCH "$api_url/api/issues/$issue_id" "$key" "" "$patch_body" >/dev/null 2>&1 || true
-    fi
+    afk_pc_curl PATCH "$api_url/api/issues/$issue_id" "$key" "$run_id" '{"status":"in_progress"}' >/dev/null 2>&1 || true
     if [[ -n "$summary" ]]; then
-      afk_pc_comment "$api_url" "$issue_id" "$key" "" "$summary" >/dev/null 2>&1 || true
+      afk_pc_comment "$api_url" "$issue_id" "$key" "$run_id" "$summary" >/dev/null 2>&1 || true
     fi
   fi
 }
 
-# afk_pch_replace_agent_session <slug> <role> <new_gen> <issue_id> <reason> [<api_url>] [<key>]
+# afk_pch_replace_agent_session <slug> <role> <new_gen> <issue_id> <reason> [<api_url>] [<key>] [<run_id>]
 # Resets the Paperclip runtime session for an agent that hit its context threshold
 # and records the replacement generation in the ledger.
 afk_pch_replace_agent_session() {
   local slug="$1" role="$2" new_gen="$3" issue_id="${4:-}" reason="${5:-context threshold reached}"
-  local api_url="${6:-}" key="${7:-}"
+  local api_url="${6:-}" key="${7:-}" run_id="${8:-${PAPERCLIP_RUN_ID:-}}"
   local ledger agent_id persona
   ledger="$(afk_pch_load_ledger)"
   agent_id="$(jq -r --arg s "$slug" --arg r "$role" '.projects[$s].agents[$r].agent_id // empty' <<<"$ledger" 2>/dev/null)"
@@ -244,12 +270,12 @@ afk_pch_replace_agent_session() {
 
   if [[ -n "$api_url" && -n "$key" ]]; then
     if [[ -n "$agent_id" && "$agent_id" != local-* ]]; then
-      afk_pc_curl POST "$api_url/api/agents/$agent_id/runtime-state/reset-session" "$key" "" '{}' >/dev/null 2>&1 || true
-      afk_pc_curl PATCH "$api_url/api/agents/$agent_id" "$key" "" '{"status":"paused"}' >/dev/null 2>&1 || true
-      afk_pc_curl POST "$api_url/api/agents/$agent_id/resume" "$key" "" '{}' >/dev/null 2>&1 || true
+      afk_pc_curl POST "$api_url/api/agents/$agent_id/runtime-state/reset-session" "$key" "$run_id" '{}' >/dev/null 2>&1 || true
+      afk_pc_curl PATCH "$api_url/api/agents/$agent_id" "$key" "$run_id" '{"status":"paused"}' >/dev/null 2>&1 || true
+      afk_pc_curl POST "$api_url/api/agents/$agent_id/resume" "$key" "$run_id" '{}' >/dev/null 2>&1 || true
     fi
     if [[ -n "$issue_id" ]]; then
-      afk_pc_comment "$api_url" "$issue_id" "$key" "" \
+      afk_pc_comment "$api_url" "$issue_id" "$key" "$run_id" \
         "AFK replaced project agent \`${slug}-${role}\` (${persona}) with fresh generation ${new_gen} (${reason}). Continuing from checkpoint." >/dev/null 2>&1 || true
     fi
   fi
