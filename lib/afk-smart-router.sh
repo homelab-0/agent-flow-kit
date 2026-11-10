@@ -358,40 +358,47 @@ afk_router_sync_benchmarks() {
   [[ -f "$base_file" ]] || base_file="$HOME/.agents/skills/model-router/benchmarks.json"
 
   mkdir -p "$(dirname -- "$out_file")"
-  local today
+  local today sync_tmp
   today="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  sync_tmp="$(mktemp -d)"
 
-  local arena_agent="{}" arena_webdev="{}" arena_text="{}" swebench="{}" mdev="{}" aa_data="{}"
+  printf '[]' > "$sync_tmp/agent.json"
+  printf '[]' > "$sync_tmp/webdev.json"
+  printf '[]' > "$sync_tmp/text.json"
+  printf '[]' > "$sync_tmp/swebench.json"
+  printf '{}' > "$sync_tmp/mdev.json"
+  printf '[]' > "$sync_tmp/aa.json"
+
   local st_agent="offline" st_webdev="offline" st_text="offline" st_swe="offline" st_mdev="offline" st_aa="no_key"
 
   local raw
   raw="$(curl -sS --connect-timeout 3 --max-time 8 "https://datasets-server.huggingface.co/rows?dataset=lmarena-ai%2Fleaderboard-dataset&config=agent&split=latest&offset=0&length=50" 2>/dev/null || true)"
   if [[ -n "$raw" ]] && jq -e '.rows | length > 0' <<<"$raw" >/dev/null 2>&1; then
-    arena_agent="$(jq -c '[.rows[].row | {model_name, rank, score, date: .leaderboard_publish_date}]' <<<"$raw")"
-    st_agent="live_synced ($(jq -r '.[0].date // "latest"' <<<"$arena_agent"))"
+    jq -c '[.rows[].row | {model_name, rank, score, date: .leaderboard_publish_date}]' <<<"$raw" > "$sync_tmp/agent.json"
+    st_agent="live_synced ($(jq -r '.[0].date // "latest"' "$sync_tmp/agent.json"))"
   fi
 
   raw="$(curl -sS --connect-timeout 3 --max-time 8 "https://datasets-server.huggingface.co/rows?dataset=lmarena-ai%2Fleaderboard-dataset&config=webdev&split=latest&offset=0&length=50" 2>/dev/null || true)"
   if [[ -n "$raw" ]] && jq -e '.rows | length > 0' <<<"$raw" >/dev/null 2>&1; then
-    arena_webdev="$(jq -c '[.rows[].row | {model_name, rank, rating, date: .leaderboard_publish_date}]' <<<"$raw")"
-    st_webdev="live_synced ($(jq -r '.[0].date // "latest"' <<<"$arena_webdev"))"
+    jq -c '[.rows[].row | {model_name, rank, rating, date: .leaderboard_publish_date}]' <<<"$raw" > "$sync_tmp/webdev.json"
+    st_webdev="live_synced ($(jq -r '.[0].date // "latest"' "$sync_tmp/webdev.json"))"
   fi
 
   raw="$(curl -sS --connect-timeout 3 --max-time 8 "https://datasets-server.huggingface.co/rows?dataset=lmarena-ai%2Fleaderboard-dataset&config=text&split=latest&offset=0&length=50" 2>/dev/null || true)"
   if [[ -n "$raw" ]] && jq -e '.rows | length > 0' <<<"$raw" >/dev/null 2>&1; then
-    arena_text="$(jq -c '[.rows[].row | {model_name, rank, rating}]' <<<"$raw")"
+    jq -c '[.rows[].row | {model_name, rank, rating}]' <<<"$raw" > "$sync_tmp/text.json"
     st_text="live_synced"
   fi
 
   raw="$(curl -sS --connect-timeout 3 --max-time 8 "https://raw.githubusercontent.com/SWE-bench/swe-bench.github.io/master/data/leaderboards.json" 2>/dev/null || true)"
   if [[ -n "$raw" ]] && jq -e '.leaderboards' <<<"$raw" >/dev/null 2>&1; then
-    swebench="$(jq -c '[.leaderboards[] | select(.name=="Verified") | .results[] | {name, resolved}] | .[0:50]' <<<"$raw" 2>/dev/null || printf '[]')"
+    jq -c '[.leaderboards[] | select(.name=="Verified") | .results[] | {name, resolved}] | .[0:50]' <<<"$raw" > "$sync_tmp/swebench.json" 2>/dev/null || true
     st_swe="live_synced"
   fi
 
   raw="$(curl -sS --connect-timeout 3 --max-time 8 "https://models.dev/api.json" 2>/dev/null || true)"
   if [[ -n "$raw" ]] && jq -e 'type == "object"' <<<"$raw" >/dev/null 2>&1; then
-    mdev="$(jq -c 'with_entries(.value = (.value.models // {} | with_entries(.value = (.value.limit.context // null))))' <<<"$raw" 2>/dev/null || printf '{}')"
+    jq -c 'with_entries(.value = (.value.models // {} | with_entries(.value = (.value.limit.context // null))))' <<<"$raw" > "$sync_tmp/mdev.json" 2>/dev/null || true
     st_mdev="live_synced"
   fi
 
@@ -399,7 +406,7 @@ afk_router_sync_benchmarks() {
   if [[ -n "$aa_key" ]]; then
     raw="$(curl -sS --connect-timeout 3 --max-time 8 -H "x-api-key: $aa_key" "https://artificialanalysis.ai/api/v2/data/llms/models" 2>/dev/null || true)"
     if [[ -n "$raw" ]] && jq -e '.data' <<<"$raw" >/dev/null 2>&1; then
-      aa_data="$(jq -c '[.data[] | {slug, name, coding: .evaluations.artificial_analysis_coding_index, intelligence: .evaluations.artificial_analysis_intelligence_index}]' <<<"$raw")"
+      jq -c '[.data[] | {slug, name, coding: .evaluations.artificial_analysis_coding_index, intelligence: .evaluations.artificial_analysis_intelligence_index}]' <<<"$raw" > "$sync_tmp/aa.json"
       st_aa="live_synced"
     else
       st_aa="error"
@@ -416,12 +423,19 @@ afk_router_sync_benchmarks() {
     --arg ss "$st_swe" \
     --arg sm "$st_mdev" \
     --arg saa "$st_aa" \
-    --argjson ag "${arena_agent:-[]}" \
-    --argjson wd "${arena_webdev:-[]}" \
-    --argjson tx "${arena_text:-[]}" \
-    --argjson md "${mdev:-{}}" \
-    --argjson aa "${aa_data:-[]}" \
+    --slurpfile agf "$sync_tmp/agent.json" \
+    --slurpfile wdf "$sync_tmp/webdev.json" \
+    --slurpfile txf "$sync_tmp/text.json" \
+    --slurpfile swf "$sync_tmp/swebench.json" \
+    --slurpfile mdf "$sync_tmp/mdev.json" \
+    --slurpfile aaf "$sync_tmp/aa.json" \
     '
+    ($agf[0] // []) as $ag |
+    ($wdf[0] // []) as $wd |
+    ($txf[0] // []) as $tx |
+    ($swf[0] // []) as $swb |
+    ($mdf[0] // {}) as $md |
+    ($aaf[0] // []) as $aa |
     .updated_at = $ts |
     .sync_receipt = {
       synced_at: $ts,
@@ -429,6 +443,7 @@ afk_router_sync_benchmarks() {
       lmarena_webdev: $sw,
       lmarena_text: $stx,
       swe_bench_official: $ss,
+      swe_bench_entries: ($swb | length),
       models_dev: $sm,
       artificial_analysis: $saa
     } |
@@ -483,6 +498,7 @@ afk_router_sync_benchmarks() {
       else . end
     )
     ' "$base_file" > "$tmp_out" && mv "$tmp_out" "$out_file"
+  rm -rf "$sync_tmp"
 
   jq -cn \
     --arg out "$out_file" \
