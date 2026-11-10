@@ -52,15 +52,25 @@ afk_factory_default_config_json() {
     "migrations/",
     "networkpolicy"
   ],
+  "router": {
+    "mode": "litellm",
+    "litellm_base_url": "",
+    "spektr_url": "",
+    "hindsight": {
+      "build_stages": "advisory",
+      "review_stages": "blind"
+    }
+  },
   "routing": {
-    "intake": {"model": "opus", "effort": "high", "window": 200000},
-    "spec": {"model": "opus", "effort": "high", "window": 200000},
-    "ux": {"model": "sonnet", "effort": "medium", "window": 200000},
-    "build": {"model": "opus", "effort": "high", "window": 200000},
-    "review_low": {"model": "haiku", "effort": "medium", "window": 200000},
-    "review_medium": {"model": "sonnet", "effort": "high", "window": 200000},
-    "review_high": {"model": "opus", "effort": "high", "window": 200000},
-    "approve": {"model": "opus", "effort": "high", "window": 200000}
+    "intake": {"model": "sonnet", "effort": "medium", "window": 200000, "memory_mode": "advisory"},
+    "research": {"model": "sonnet", "effort": "medium", "window": 200000, "memory_mode": "advisory"},
+    "spec": {"model": "opus", "effort": "high", "window": 200000, "memory_mode": "advisory"},
+    "ux": {"model": "sonnet", "effort": "medium", "window": 200000, "memory_mode": "advisory"},
+    "build": {"model": "sonnet", "effort": "high", "window": 200000, "memory_mode": "advisory"},
+    "review_low": {"model": "sonnet", "effort": "medium", "window": 200000, "memory_mode": "blind"},
+    "review_medium": {"model": "sonnet", "effort": "high", "window": 200000, "memory_mode": "blind"},
+    "review_high": {"model": "opus", "effort": "high", "window": 200000, "memory_mode": "blind"},
+    "approve": {"model": "sonnet", "effort": "medium", "window": 200000, "memory_mode": "blind"}
   }
 }
 JSON
@@ -415,6 +425,73 @@ afk_factory_build_stage_prompt() {
   printf '%s' "$prompt_dest"
 }
 
+# afk_factory_resolve_stage_route <repo> <job_dir> <stage> <role>
+# Resolves the model, effort, context window, and Hindsight memory_mode for a
+# stage. Supports LiteLLM / tier-map routing today and Spektr (POST /v1/route)
+# when configured, with automatic fallback so routing never deadlocks a job.
+afk_factory_resolve_stage_route() {
+  local repo="$1" job_dir="$2" stage="$3" role="$4"
+  local cfg risk="low" stage_key="$stage"
+  cfg="$(afk_factory_load_config "$repo")"
+  if [[ -f "$job_dir/job.json" ]]; then
+    risk="$(jq -r '.risk // "low"' "$job_dir/job.json" 2>/dev/null || printf 'low')"
+  fi
+  if [[ "$stage" == review* ]]; then
+    case "$risk" in
+      high|critical) stage_key="review_high" ;;
+      medium)        stage_key="review_medium" ;;
+      *)             stage_key="review_low" ;;
+    esac
+  fi
+
+  local default_mem="advisory"
+  if [[ "$stage" == review* || "$stage" == "approve" ]]; then
+    default_mem="$(jq -r '.router.hindsight.review_stages // "blind"' <<<"$cfg" 2>/dev/null)"
+  else
+    default_mem="$(jq -r '.router.hindsight.build_stages // "advisory"' <<<"$cfg" 2>/dev/null)"
+  fi
+
+  local model effort window mem_mode router_mode spektr_url litellm_url source="tier-map"
+  model="$(jq -r --arg k "$stage_key" '.routing[$k].model // "sonnet"' <<<"$cfg" 2>/dev/null)"
+  effort="$(jq -r --arg k "$stage_key" '.routing[$k].effort // "medium"' <<<"$cfg" 2>/dev/null)"
+  window="$(jq -r --arg k "$stage_key" '.routing[$k].window // 200000' <<<"$cfg" 2>/dev/null)"
+  mem_mode="$(jq -r --arg k "$stage_key" --arg dm "$default_mem" '.routing[$k].memory_mode // $dm' <<<"$cfg" 2>/dev/null)"
+  router_mode="$(jq -r '.router.mode // "litellm"' <<<"$cfg" 2>/dev/null)"
+  spektr_url="${AFK_SPEKTR_URL:-$(jq -r '.router.spektr_url // empty' <<<"$cfg" 2>/dev/null)}"
+  litellm_url="${AFK_LITELLM_BASE_URL:-$(jq -r '.router.litellm_base_url // empty' <<<"$cfg" 2>/dev/null)}"
+
+  # Optional Spektr (POST /v1/route) non-blocking query when spektr_url is configured
+  if [[ "$router_mode" == "spektr" && -n "$spektr_url" ]]; then
+    local req_body sp_resp sp_model sp_win
+    req_body="$(jq -cn --arg sid "$(basename -- "$job_dir")-$stage" --arg st "$stage" --arg br "$risk" \
+      '{story_id:$sid, title:$st, summary:$st, touched_paths:[], ambiguity:(if $st=="spec" or $st=="intake" then "high" else "low" end), blast_radius:$br, context_size:24000, volume_hint:"low", tags:[$st], repo:"factory", requester:"afk-factory"}')"
+    sp_resp="$(curl -sS --connect-timeout 3 --max-time 8 -X POST -H 'Content-Type: application/json' --data-binary "$req_body" "$spektr_url/v1/route" 2>/dev/null || true)"
+    sp_model="$(jq -r '.model_profile // .model // empty' <<<"$sp_resp" 2>/dev/null || true)"
+    sp_win="$(jq -r '.min_context // .window // empty' <<<"$sp_resp" 2>/dev/null || true)"
+    if [[ -n "$sp_model" ]]; then
+      model="$sp_model"
+      [[ "$sp_win" =~ ^[0-9]+$ ]] && window="$sp_win"
+      source="spektr"
+    fi
+  elif [[ -n "$litellm_url" ]]; then
+    source="litellm"
+  fi
+
+  local route_json
+  route_json="$(jq -cn \
+    --arg st "$stage" \
+    --arg rl "$role" \
+    --arg m "$model" \
+    --arg ef "$effort" \
+    --arg mm "$mem_mode" \
+    --arg src "$source" \
+    --arg lurl "$litellm_url" \
+    --argjson win "$window" \
+    '{stage:$st, role:$rl, model:$m, effort:$ef, window_tokens:$win, memory_mode:$mm, router_source:$src, litellm_base_url:(if $lurl=="" then null else $lurl end)}')"
+  printf '%s\n' "$route_json" > "$job_dir/route-${stage}-${role}.json"
+  printf '%s\n' "$route_json"
+}
+
 # afk_factory_invoke_stage_agent <repo_path> <worktree_path> <job_dir> <role> <stage> <prompt_file> <output_file> [<harness>]
 # Executes one bounded agent turn for <stage>.
 # Supports:
@@ -424,12 +501,17 @@ afk_factory_build_stage_prompt() {
 #   3. Deterministic local synthesis fallback when running offline without a runner.
 afk_factory_invoke_stage_agent() {
   local repo="$1" wt="$2" job_dir="$3" role="$4" stage="$5" prompt_file="$6" output_file="$7" harness="${8:-claude}"
-  AFK_LAST_STAGE_USED_TOKENS="${AFK_STAGE_USED_TOKENS:-}"
-  AFK_LAST_STAGE_WINDOW_TOKENS="${AFK_STAGE_WINDOW_TOKENS:-200000}"
-  AFK_LAST_STAGE_COMPACTED="${AFK_STAGE_COMPACTED:-false}"
-
-  local compiled_prompt
+  local compiled_prompt route_json routed_model routed_window routed_mem litellm_url
   compiled_prompt="$(afk_factory_build_stage_prompt "$repo" "$job_dir" "$role" "$stage" "$prompt_file" "$output_file")"
+  route_json="$(afk_factory_resolve_stage_route "$repo" "$job_dir" "$stage" "$role")"
+  routed_model="$(jq -r '.model // "sonnet"' <<<"$route_json")"
+  routed_window="$(jq -r '.window_tokens // 200000' <<<"$route_json")"
+  routed_mem="$(jq -r '.memory_mode // "advisory"' <<<"$route_json")"
+  litellm_url="$(jq -r '.litellm_base_url // empty' <<<"$route_json")"
+
+  AFK_LAST_STAGE_USED_TOKENS="${AFK_STAGE_USED_TOKENS:-}"
+  AFK_LAST_STAGE_WINDOW_TOKENS="${AFK_STAGE_WINDOW_TOKENS:-$routed_window}"
+  AFK_LAST_STAGE_COMPACTED="${AFK_STAGE_COMPACTED:-false}"
 
   local runner="${AFK_FACTORY_AGENT_RUNNER:-}"
   if [[ -n "$runner" && -x "$runner" ]]; then
@@ -440,6 +522,8 @@ afk_factory_invoke_stage_agent() {
       AFK_FACTORY_JOB_DIR="$job_dir" \
       AFK_FACTORY_ROLE="$role" \
       AFK_FACTORY_STAGE="$stage" \
+      AFK_FACTORY_MODEL="$routed_model" \
+      AFK_FACTORY_MEMORY_MODE="$routed_mem" \
       AFK_FACTORY_PROMPT_FILE="$prompt_file" \
       AFK_FACTORY_COMPILED_PROMPT="$compiled_prompt" \
       AFK_FACTORY_OUTPUT_FILE="$output_file" \
@@ -447,7 +531,7 @@ afk_factory_invoke_stage_agent() {
     )" || runner_rc=$?
     if [[ -n "$runner_out" ]] && jq -e '.used_tokens' <<<"$runner_out" >/dev/null 2>&1; then
       AFK_LAST_STAGE_USED_TOKENS="$(jq -r '.used_tokens // empty' <<<"$runner_out")"
-      AFK_LAST_STAGE_WINDOW_TOKENS="$(jq -r '.window_tokens // 200000' <<<"$runner_out")"
+      AFK_LAST_STAGE_WINDOW_TOKENS="$(jq -r --argjson rw "$routed_window" '.window_tokens // $rw' <<<"$runner_out")"
       AFK_LAST_STAGE_COMPACTED="$(jq -r '.compacted // false' <<<"$runner_out")"
     fi
     return "$runner_rc"
@@ -455,21 +539,36 @@ afk_factory_invoke_stage_agent() {
 
   if [[ "${AFK_FACTORY_LIVE_HARNESS:-0}" == "1" ]]; then
     local env_file="$job_dir/.result-${stage}-${role}.json"
-    local h_rc=0
+    local h_rc=0 hs_disabled=""
+    [[ "$routed_mem" == "blind" || "$routed_mem" == "off" ]] && hs_disabled="true"
     case "$harness" in
       claude)
         if command -v claude >/dev/null 2>&1; then
-          (cd "$wt" && claude -p "$(cat -- "$compiled_prompt")" --output-format json --permission-mode acceptEdits < /dev/null > "$env_file" 2>/dev/null) || h_rc=$?
+          (
+            cd "$wt" || exit 1
+            [[ -n "$hs_disabled" ]] && export HINDSIGHT_DISABLED="true"
+            [[ -n "$litellm_url" ]] && export ANTHROPIC_BASE_URL="$litellm_url"
+            claude -p "$(cat -- "$compiled_prompt")" --model "$routed_model" --output-format json --permission-mode acceptEdits < /dev/null > "$env_file" 2>/dev/null
+          ) || h_rc=$?
         fi
         ;;
       codex)
         if command -v codex >/dev/null 2>&1; then
-          (cd "$wt" && codex exec -s workspace-write -- "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null) || h_rc=$?
+          (
+            cd "$wt" || exit 1
+            [[ -n "$hs_disabled" ]] && export HINDSIGHT_DISABLED="true"
+            [[ -n "$litellm_url" ]] && export OPENAI_BASE_URL="$litellm_url"
+            codex exec -s workspace-write -m "$routed_model" -- "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
+          ) || h_rc=$?
         fi
         ;;
       opencode)
         if command -v opencode >/dev/null 2>&1; then
-          (cd "$wt" && opencode run --format json -- "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null) || h_rc=$?
+          (
+            cd "$wt" || exit 1
+            [[ -n "$hs_disabled" ]] && export HINDSIGHT_DISABLED="true"
+            opencode run --format json -m "$routed_model" -- "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
+          ) || h_rc=$?
         fi
         ;;
     esac
