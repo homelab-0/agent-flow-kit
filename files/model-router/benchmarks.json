@@ -1,65 +1,77 @@
 {
-  "schema": "afk-smart-router-catalog/1",
-  "updated_at": "2026-11-10",
+  "schema": "afk-benchmark-catalog/2",
+  "updated_at": "2026-11-10T22:30:00Z",
   "sources": [
     {
-      "id": "epoch-swe-bench",
-      "name": "Epoch AI Benchmarking Hub — SWE-bench Verified",
-      "url": "https://epoch.ai/benchmarks/swe-bench-verified",
-      "licence": "CC-BY-4.0"
+      "id": "lmarena-agent",
+      "name": "LMArena Agent & Task-Outcome Leaderboard",
+      "url": "https://datasets-server.huggingface.co/rows?dataset=lmarena-ai%2Fleaderboard-dataset&config=agent&split=latest&offset=0&length=50"
     },
     {
       "id": "lmarena-webdev",
-      "name": "LMArena Leaderboard — WebDev & Coding",
-      "url": "https://huggingface.co/datasets/lmarena-ai/leaderboard-dataset",
-      "licence": "CC-BY-4.0"
+      "name": "LMArena WebDev & Frontend Code Leaderboard",
+      "url": "https://datasets-server.huggingface.co/rows?dataset=lmarena-ai%2Fleaderboard-dataset&config=webdev&split=latest&offset=0&length=50"
     },
     {
-      "id": "spektr-review-eval",
-      "name": "Spektr Internal Adversarial Code Review Eval",
-      "url": "https://agent-router.homelab0.org",
-      "licence": "proprietary"
+      "id": "lmarena-text",
+      "name": "LMArena Reasoning & Synthesis Leaderboard",
+      "url": "https://datasets-server.huggingface.co/rows?dataset=lmarena-ai%2Fleaderboard-dataset&config=text&split=latest&offset=0&length=50"
+    },
+    {
+      "id": "swe-bench-official",
+      "name": "SWE-bench Official Leaderboard",
+      "url": "https://raw.githubusercontent.com/SWE-bench/swe-bench.github.io/master/data/leaderboards.json"
+    },
+    {
+      "id": "artificial-analysis",
+      "name": "Artificial Analysis LLM & Coding Index API",
+      "url": "https://artificialanalysis.ai/api/v2/data/llms/models"
+    },
+    {
+      "id": "models-dev",
+      "name": "models.dev Model Limits & Capabilities Registry",
+      "url": "https://models.dev/api.json"
     }
   ],
   "entitlement_pools": {
     "anthropic-max": {
       "provider": "Anthropic",
       "cost_class": "subscription",
-      "funding_type": "subscription_window",
-      "five_hour_SoftCap_calls": 450,
-      "seven_day_SoftCap_calls": 12000,
+      "pool_tier": "max-20x",
+      "five_hour_session_capacity": 60,
+      "seven_day_session_capacity": 600,
       "description": "Claude Code Max flat-rate OAuth subscription pool"
     },
     "openai-plus": {
       "provider": "OpenAI",
       "cost_class": "subscription",
-      "funding_type": "subscription_window",
-      "five_hour_SoftCap_calls": 300,
-      "seven_day_SoftCap_calls": 6000,
-      "description": "OpenAI Codex / ChatGPT Plus-Pro OAuth subscription pool"
+      "pool_tier": "pro",
+      "five_hour_session_capacity": 40,
+      "seven_day_session_capacity": 400,
+      "description": "OpenAI Codex flat-rate OAuth subscription pool"
     },
     "antigravity-pool": {
       "provider": "Google DeepMind",
       "cost_class": "subscription",
-      "funding_type": "subscription_window",
-      "five_hour_SoftCap_calls": 400,
-      "seven_day_SoftCap_calls": 8000,
+      "pool_tier": "pro",
+      "five_hour_session_capacity": 50,
+      "seven_day_session_capacity": 500,
       "description": "Google Antigravity (agy) subscription allowance pool"
     },
     "xai-grok": {
       "provider": "xAI / OpenCode",
       "cost_class": "subscription",
-      "funding_type": "subscription_window",
-      "five_hour_SoftCap_calls": 500,
-      "seven_day_SoftCap_calls": 10000,
-      "description": "Grok / OpenCode subscription & token plan pool"
+      "pool_tier": "standard",
+      "five_hour_session_capacity": 50,
+      "seven_day_session_capacity": 500,
+      "description": "Grok / OpenCode subscription pool"
     },
     "litellm-local": {
       "provider": "Homelab Local AI Cluster (via LiteLLM)",
       "cost_class": "free",
-      "funding_type": "local_cluster",
-      "five_hour_SoftCap_calls": 999999,
-      "seven_day_SoftCap_calls": 999999,
+      "pool_tier": "unlimited-local",
+      "five_hour_session_capacity": 9999,
+      "seven_day_session_capacity": 99999,
       "description": "Self-hosted homelab GPU cluster fronted by LiteLLM smart router"
     }
   },
@@ -70,18 +82,22 @@
       "launch_class": "claude-native",
       "entitlement_pool": "anthropic-max",
       "model": "opus",
-      "canonical_model": "anthropic/claude-opus-4-6",
+      "canonical_model": "anthropic/claude-opus-5-5",
+      "models_dev_provider": "anthropic",
+      "models_dev_id": "claude-opus-5-5",
+      "arena_match": "Claude Opus 5.5",
+      "aa_slug_match": "claude-opus",
       "model_family": "anthropic",
       "effort": "high",
-      "window_tokens": 200000,
+      "window_tokens": 1000000,
       "requires_gateway": false,
       "benchmarks": {
-        "architecture": { "score": 94.5, "benchmark": "SWE-bench Verified + Architecture Eval" },
-        "coding_complex": { "score": 93.8, "benchmark": "SWE-bench Verified (High Effort)" },
-        "coding_standard": { "score": 89.0, "benchmark": "SWE-bench Verified" },
-        "coding_review": { "score": 92.5, "benchmark": "Spektr Review Eval v3" },
-        "webdev": { "score": 91.0, "benchmark": "LMArena WebDev" },
-        "research": { "score": 86.0, "benchmark": "SWE-bench Triage" }
+        "architecture":    { "score": 96.5, "benchmark": "LMArena Agent #1 + Reasoning" },
+        "coding_complex":  { "score": 97.0, "benchmark": "LMArena Agent #1 (0.200) + Task Outcome #1" },
+        "coding_standard": { "score": 92.0, "benchmark": "LMArena Agent + SWE-bench" },
+        "coding_review":   { "score": 95.0, "benchmark": "LMArena Agent + Adversarial Review" },
+        "webdev":          { "score": 96.8, "benchmark": "LMArena WebDev #1 (1818 Elo)" },
+        "research":        { "score": 93.0, "benchmark": "LMArena Text #3 (1513 Elo)" }
       }
     },
     {
@@ -90,58 +106,94 @@
       "launch_class": "claude-native",
       "entitlement_pool": "anthropic-max",
       "model": "sonnet",
-      "canonical_model": "anthropic/claude-sonnet-4-6",
+      "canonical_model": "anthropic/claude-sonnet-5-5",
+      "models_dev_provider": "anthropic",
+      "models_dev_id": "claude-sonnet-5-5",
+      "arena_match": "Claude Sonnet 5.5",
+      "aa_slug_match": "claude-sonnet",
       "model_family": "anthropic",
       "effort": "medium",
-      "window_tokens": 200000,
-      "requires_gateway": false,
-      "benchmarks": {
-        "architecture": { "score": 86.5, "benchmark": "SWE-bench Verified + Architecture Eval" },
-        "coding_complex": { "score": 87.2, "benchmark": "SWE-bench Verified" },
-        "coding_standard": { "score": 91.5, "benchmark": "SWE-bench Verified (Speed/Quality)" },
-        "coding_review": { "score": 87.0, "benchmark": "Spektr Review Eval v3" },
-        "webdev": { "score": 93.5, "benchmark": "LMArena WebDev" },
-        "research": { "score": 90.5, "benchmark": "SWE-bench Triage" }
-      }
-    },
-    {
-      "id": "codex-strong-native",
-      "harness": "codex",
-      "launch_class": "codex-native",
-      "entitlement_pool": "openai-plus",
-      "model": "gpt-5.6-sol",
-      "canonical_model": "openai/gpt-5.6-sol",
-      "model_family": "openai",
-      "effort": "high",
-      "window_tokens": 200000,
-      "requires_gateway": false,
-      "benchmarks": {
-        "architecture": { "score": 91.8, "benchmark": "SWE-bench Verified + Architecture Eval" },
-        "coding_complex": { "score": 92.4, "benchmark": "SWE-bench Verified (High Effort)" },
-        "coding_standard": { "score": 90.8, "benchmark": "SWE-bench Verified" },
-        "coding_review": { "score": 94.0, "benchmark": "Spektr Review Eval v3 (Adversarial Bug Hunt)" },
-        "webdev": { "score": 86.5, "benchmark": "LMArena WebDev" },
-        "research": { "score": 88.0, "benchmark": "SWE-bench Triage" }
-      }
-    },
-    {
-      "id": "agy-pro-native",
-      "harness": "agy",
-      "launch_class": "agy-native",
-      "entitlement_pool": "antigravity-pool",
-      "model": "pro",
-      "canonical_model": "google/gemini-2.5-pro",
-      "model_family": "google",
-      "effort": "high",
       "window_tokens": 1000000,
       "requires_gateway": false,
       "benchmarks": {
-        "architecture": { "score": 90.5, "benchmark": "SWE-bench Verified + Long-Context Arch" },
-        "coding_complex": { "score": 88.5, "benchmark": "SWE-bench Verified" },
-        "coding_standard": { "score": 89.5, "benchmark": "SWE-bench Verified" },
-        "coding_review": { "score": 90.2, "benchmark": "Spektr Review Eval v3" },
-        "webdev": { "score": 92.0, "benchmark": "LMArena WebDev" },
-        "research": { "score": 94.0, "benchmark": "1M Context Repo Recon & Triage" }
+        "architecture":    { "score": 90.5, "benchmark": "LMArena Agent #3 + Task Outcome #2" },
+        "coding_complex":  { "score": 92.5, "benchmark": "LMArena Agent #3 (0.160) + Task Outcome #2" },
+        "coding_standard": { "score": 95.0, "benchmark": "LMArena Agent #3 (Best Speed/Throughput)" },
+        "coding_review":   { "score": 90.0, "benchmark": "LMArena Agent + Code Review" },
+        "webdev":          { "score": 95.2, "benchmark": "LMArena WebDev #2 (1774 Elo)" },
+        "research":        { "score": 91.0, "benchmark": "LMArena Text + Fast Repo Scan" }
+      }
+    },
+    {
+      "id": "codex-astra-native",
+      "harness": "codex",
+      "launch_class": "codex-native",
+      "entitlement_pool": "openai-plus",
+      "model": "gpt-6-astra",
+      "canonical_model": "openai/gpt-6-astra",
+      "models_dev_provider": "openai",
+      "models_dev_id": "gpt-6-astra",
+      "arena_match": "GPT-6 Astra",
+      "aa_slug_match": "gpt-6-astra",
+      "model_family": "openai",
+      "effort": "high",
+      "window_tokens": 1050000,
+      "requires_gateway": false,
+      "benchmarks": {
+        "architecture":    { "score": 93.5, "benchmark": "LMArena Agent #5 + Architecture" },
+        "coding_complex":  { "score": 93.8, "benchmark": "LMArena Agent #5 (0.142) + SWE-bench" },
+        "coding_standard": { "score": 92.5, "benchmark": "LMArena Agent + Codex Scaffold" },
+        "coding_review":   { "score": 95.5, "benchmark": "LMArena Agent + Deep Diff Verification" },
+        "webdev":          { "score": 92.8, "benchmark": "LMArena WebDev #4" },
+        "research":        { "score": 90.5, "benchmark": "LMArena Search & Codebase Recon" }
+      }
+    },
+    {
+      "id": "codex-sol-native",
+      "harness": "codex",
+      "launch_class": "codex-native",
+      "entitlement_pool": "openai-plus",
+      "model": "gpt-6.1-sol",
+      "canonical_model": "openai/gpt-6.1-sol",
+      "models_dev_provider": "openai",
+      "models_dev_id": "gpt-6.1-sol",
+      "arena_match": "GPT-6.1 Sol",
+      "aa_slug_match": "gpt-6.1-sol",
+      "model_family": "openai",
+      "effort": "medium",
+      "window_tokens": 1050000,
+      "requires_gateway": false,
+      "benchmarks": {
+        "architecture":    { "score": 90.0, "benchmark": "LMArena Agent #6" },
+        "coding_complex":  { "score": 91.0, "benchmark": "LMArena Agent #6 (0.125)" },
+        "coding_standard": { "score": 93.2, "benchmark": "LMArena Agent #6 (Fast Codex Loop)" },
+        "coding_review":   { "score": 93.0, "benchmark": "LMArena Agent + Code Review" },
+        "webdev":          { "score": 91.0, "benchmark": "LMArena WebDev #6" },
+        "research":        { "score": 91.5, "benchmark": "LMArena Search #8" }
+      }
+    },
+    {
+      "id": "agy-carbon-native",
+      "harness": "agy",
+      "launch_class": "agy-native",
+      "entitlement_pool": "antigravity-pool",
+      "model": "gemini-4-carbon",
+      "canonical_model": "google/gemini-4-carbon",
+      "models_dev_provider": "google",
+      "models_dev_id": "gemini-4-carbon",
+      "arena_match": "Gemini 4 Carbon",
+      "aa_slug_match": "gemini-4-carbon",
+      "model_family": "google",
+      "effort": "high",
+      "window_tokens": 1048576,
+      "requires_gateway": false,
+      "benchmarks": {
+        "architecture":    { "score": 94.2, "benchmark": "LMArena Text #1 (1538 Elo) + Agent #2" },
+        "coding_complex":  { "score": 94.8, "benchmark": "LMArena Agent #2 (0.166) + Task Outcome #3" },
+        "coding_standard": { "score": 93.8, "benchmark": "LMArena Agent #2 (Low Cost/Token)" },
+        "coding_review":   { "score": 93.5, "benchmark": "LMArena Agent #2 + 1M Context Review" },
+        "webdev":          { "score": 94.0, "benchmark": "LMArena WebDev #3" },
+        "research":        { "score": 97.0, "benchmark": "LMArena Text #1 (1538 Elo) + 1M Context" }
       }
     },
     {
@@ -149,19 +201,23 @@
       "harness": "opencode",
       "launch_class": "opencode-native",
       "entitlement_pool": "xai-grok",
-      "model": "xai/grok-code-fast-1",
-      "canonical_model": "xai/grok-code-fast-1",
+      "model": "xai/grok-4.5",
+      "canonical_model": "xai/grok-4.5",
+      "models_dev_provider": "xai",
+      "models_dev_id": "grok-4.5",
+      "arena_match": "Grok",
+      "aa_slug_match": "grok-4",
       "model_family": "xai",
       "effort": "medium",
-      "window_tokens": 131072,
+      "window_tokens": 500000,
       "requires_gateway": false,
       "benchmarks": {
-        "architecture": { "score": 83.0, "benchmark": "SWE-bench Verified" },
-        "coding_complex": { "score": 84.0, "benchmark": "SWE-bench Verified" },
-        "coding_standard": { "score": 88.2, "benchmark": "SWE-bench Verified (Fast Iteration)" },
-        "coding_review": { "score": 86.5, "benchmark": "Spektr Review Eval v3" },
-        "webdev": { "score": 85.0, "benchmark": "LMArena WebDev" },
-        "research": { "score": 91.5, "benchmark": "Fast Recon & Triage" }
+        "architecture":    { "score": 86.0, "benchmark": "Public Coding & Reasoning Aggregate" },
+        "coding_complex":  { "score": 87.0, "benchmark": "Public Agentic Coding Aggregate" },
+        "coding_standard": { "score": 89.5, "benchmark": "Fast Iteration Coding" },
+        "coding_review":   { "score": 88.0, "benchmark": "Independent Cross-Model Review" },
+        "webdev":          { "score": 87.5, "benchmark": "LMArena WebDev" },
+        "research":        { "score": 92.0, "benchmark": "500K Context Recon & Triage" }
       }
     },
     {
@@ -170,18 +226,22 @@
       "launch_class": "claude-gateway",
       "entitlement_pool": "litellm-local",
       "model": "local-coding",
-      "canonical_model": "local/qwen3-coder-32b",
-      "model_family": "local-qwen",
+      "canonical_model": "local/qwen3.8-coder",
+      "models_dev_provider": "alibaba",
+      "models_dev_id": "qwen3-coder-plus",
+      "arena_match": "Qwen3.8",
+      "aa_slug_match": "qwen3",
+      "model_family": "local-cluster",
       "effort": "medium",
       "window_tokens": 131072,
       "requires_gateway": true,
       "benchmarks": {
-        "architecture": { "score": 78.0, "benchmark": "SWE-bench Verified (Local GPU)" },
-        "coding_complex": { "score": 80.5, "benchmark": "SWE-bench Verified (Local GPU)" },
-        "coding_standard": { "score": 87.5, "benchmark": "SWE-bench Verified (Local Zero-Cost)" },
-        "coding_review": { "score": 83.0, "benchmark": "Spektr Review Eval v3" },
-        "webdev": { "score": 82.0, "benchmark": "LMArena WebDev" },
-        "research": { "score": 89.0, "benchmark": "Local Cluster Fast Triage" }
+        "architecture":    { "score": 82.0, "benchmark": "Open-Weights Agentic Eval" },
+        "coding_complex":  { "score": 84.0, "benchmark": "Open-Weights Coding Eval" },
+        "coding_standard": { "score": 89.0, "benchmark": "Open-Weights Coding + Zero Subscription Cost" },
+        "coding_review":   { "score": 85.0, "benchmark": "Open-Weights Code Review" },
+        "webdev":          { "score": 85.5, "benchmark": "LMArena WebDev (Open-Weights)" },
+        "research":        { "score": 91.5, "benchmark": "LMArena Search #1 (Qwen3.8) Local Triage" }
       }
     }
   ]
