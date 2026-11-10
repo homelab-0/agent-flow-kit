@@ -30,10 +30,15 @@ afk_pcs_start_pm() {
   local factory_mode
   factory_mode="$(jq -r --arg s "${slug:-}" '(.factory_enabled // false) or ((.projects[]? | select(.slug == $s) | .factory_enabled) // false)' <<<"$AFK_PC_CFG" 2>/dev/null)"
   if [[ "$factory_mode" == true ]] && declare -F afk_factory_run_job >/dev/null 2>&1; then
-    local f_title
+    local f_title f_job_id="${identifier:-$id}" f_job_file f_stage
+    f_job_file="$repo_path/.afk/jobs/$f_job_id/job.json"
+    f_stage="$(jq -r '.stage // empty' "$f_job_file" 2>/dev/null || true)"
+    if [[ "$f_stage" =~ ^(merged|needs-human|needs-info|rejected)$ ]]; then
+      return 0
+    fi
     f_title="$(jq -r '.title // "Paperclip Issue"' <<<"$detail" 2>/dev/null)"
-    afk_factory_run_job "$repo_path" "$slug" "${identifier:-$id}" "$id" "$f_title" "" false >/dev/null 2>&1 || true
-    actions="$(jq -c --arg t "factory started: ${identifier:-$id}" '. + [$t]' <<<"$actions")"
+    afk_factory_run_job "$repo_path" "$slug" "$f_job_id" "$id" "$f_title" "" false >/dev/null 2>&1 || true
+    actions="$(jq -c --arg t "factory started: $f_job_id" '. + [$t]' <<<"$actions")"
     return 0
   fi
   enabled="$(jq -r '.pm_start_enabled // false' <<<"$AFK_PC_CFG" 2>/dev/null)"
