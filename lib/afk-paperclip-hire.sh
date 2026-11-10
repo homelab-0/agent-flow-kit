@@ -74,52 +74,64 @@ afk_pch_hire_role() {
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
   # If already hired and paused, resume it in Paperclip.
-  if [[ -n "$existing_id" && "$existing_state" == "paused" && -n "$api_url" && -n "$key" ]]; then
+  if [[ -n "$existing_id" && "$existing_id" != local-* && "$existing_state" == "paused" && -n "$api_url" && -n "$key" ]]; then
     afk_pc_curl POST "$api_url/api/agents/$existing_id/resume" "$key" "" '{}' >/dev/null 2>&1 || true
     existing_state="active"
   fi
 
-  # If not yet hired (or previously terminated), submit a hire request to Paperclip when credentials are present.
-  if [[ -z "$existing_id" || "$existing_state" == "terminated" ]]; then
-    local prompt_text
-    if [[ "$skill_path" != "builtin" && -f "$skill_path" ]]; then
-      prompt_text="$(head -c 8192 "$skill_path" 2>/dev/null)"
-    else
-      prompt_text="$(afk_roster_builtin_prompt "$role")"
-    fi
+  # If not yet hired in Paperclip (or previously local/terminated), adopt an existing
+  # Paperclip agent with the same name or submit a hire request when credentials are present.
+  if [[ -z "$existing_id" || "$existing_id" == local-* || "$existing_state" == "terminated" ]]; then
     if [[ -n "$api_url" && -n "$key" && -n "$company_id" ]]; then
-      local hire_body resp code body hired_id
-      hire_body="$(jq -cn \
-        --arg name "$agent_name" \
-        --arg role "$pc_role" \
-        --arg title "$slug — $title" \
-        --arg icon "$icon" \
-        --arg reportsTo "$host_agent_id" \
-        --arg caps "$caps" \
-        --arg adapter "$adapter_type" \
-        --arg cwd "$repo_path" \
-        --arg prompt "$prompt_text" \
-        --arg issue "$issue_id" \
-        '{
-          name: $name,
-          role: $role,
-          title: $title,
-          icon: $icon,
-          reportsTo: $reportsTo,
-          capabilities: $caps,
-          adapterType: $adapter,
-          adapterConfig: {cwd: $cwd},
-          instructionsBundle: {files: {"AGENTS.md": $prompt}},
-          runtimeConfig: {heartbeat: {enabled: false, wakeOnDemand: true}}
-        } + (if $issue != "" then {sourceIssueId: $issue} else {} end)')"
-      resp="$(afk_pc_curl POST "$api_url/api/companies/$company_id/agent-hires" "$key" "" "$hire_body")"
-      code="${resp%%$'\n'*}"
-      body="${resp#*$'\n'}"
-      if [[ "$code" == 2?? ]]; then
-        hired_id="$(jq -r '.agent.id // .id // empty' <<<"$body" 2>/dev/null)"
-        if [[ -n "$hired_id" ]]; then
-          existing_id="$hired_id"
+      local list_resp list_code list_body found_id found_status
+      list_resp="$(afk_pc_curl GET "$api_url/api/companies/$company_id/agents" "$key" "")"
+      list_code="${list_resp%%$'\n'*}"
+      list_body="${list_resp#*$'\n'}"
+      if [[ "$list_code" == 2?? ]]; then
+        found_id="$(jq -r --arg n "$agent_name" '[.[] | select(.name == $n and .status != "terminated")][0].id // empty' <<<"$list_body" 2>/dev/null)"
+        found_status="$(jq -r --arg n "$agent_name" '[.[] | select(.name == $n and .status != "terminated")][0].status // empty' <<<"$list_body" 2>/dev/null)"
+        if [[ -n "$found_id" ]]; then
+          existing_id="$found_id"
+          if [[ "$found_status" == "paused" ]]; then
+            afk_pc_curl POST "$api_url/api/agents/$existing_id/resume" "$key" "" '{}' >/dev/null 2>&1 || true
+          fi
           existing_state="active"
+        fi
+      fi
+      if [[ -z "$existing_id" || "$existing_id" == local-* || "$existing_state" == "terminated" ]]; then
+        local hire_body resp code body hired_id valid_issue=""
+        if [[ "$issue_id" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+          valid_issue="$issue_id"
+        fi
+        hire_body="$(jq -cn \
+          --arg name "$agent_name" \
+          --arg role "$pc_role" \
+          --arg title "$slug — $title" \
+          --arg icon "$icon" \
+          --arg reportsTo "$host_agent_id" \
+          --arg caps "$caps" \
+          --arg adapter "$adapter_type" \
+          --arg issue "$valid_issue" \
+          '{
+            name: $name,
+            role: $role,
+            title: $title,
+            icon: $icon,
+            reportsTo: $reportsTo,
+            capabilities: $caps,
+            adapterType: $adapter,
+            adapterConfig: {},
+            runtimeConfig: {heartbeat: {enabled: false, wakeOnDemand: false, intervalSec: 0}}
+          } + (if $issue != "" then {sourceIssueId: $issue} else {} end)')"
+        resp="$(afk_pc_curl POST "$api_url/api/companies/$company_id/agent-hires" "$key" "" "$hire_body")"
+        code="${resp%%$'\n'*}"
+        body="${resp#*$'\n'}"
+        if [[ "$code" == 2?? ]]; then
+          hired_id="$(jq -r '.agent.id // .id // empty' <<<"$body" 2>/dev/null)"
+          if [[ -n "$hired_id" ]]; then
+            existing_id="$hired_id"
+            existing_state="active"
+          fi
         fi
       fi
     fi
@@ -233,6 +245,8 @@ afk_pch_replace_agent_session() {
   if [[ -n "$api_url" && -n "$key" ]]; then
     if [[ -n "$agent_id" && "$agent_id" != local-* ]]; then
       afk_pc_curl POST "$api_url/api/agents/$agent_id/runtime-state/reset-session" "$key" "" '{}' >/dev/null 2>&1 || true
+      afk_pc_curl PATCH "$api_url/api/agents/$agent_id" "$key" "" '{"status":"paused"}' >/dev/null 2>&1 || true
+      afk_pc_curl POST "$api_url/api/agents/$agent_id/resume" "$key" "" '{}' >/dev/null 2>&1 || true
     fi
     if [[ -n "$issue_id" ]]; then
       afk_pc_comment "$api_url" "$issue_id" "$key" "" \
@@ -243,8 +257,8 @@ afk_pch_replace_agent_session() {
 
 # afk_pch_retire_project_agents <slug> [<roles_csv_or_all>] [<api_url>] [<key>]
 # Retires/pauses project agents in Paperclip when work completes or specialist
-# roles are no longer needed. Attempts /terminate first; falls back to /pause
-# if board authority is required for termination.
+# roles are no longer needed. Attempts /terminate first; falls back to PATCH
+# status="paused" (or /pause) when using an agent key.
 afk_pch_retire_project_agents() {
   local slug="$1" target_roles="${2:-all}" api_url="${3:-}" key="${4:-}"
   local ledger
@@ -268,7 +282,8 @@ afk_pch_retire_project_agents() {
       if [[ "$code" == 2?? ]]; then
         new_state="terminated"
       else
-        afk_pc_curl POST "$api_url/api/agents/$aid/pause" "$key" "" '{}' >/dev/null 2>&1 || true
+        afk_pc_curl PATCH "$api_url/api/agents/$aid" "$key" "" '{"status":"paused"}' >/dev/null 2>&1 || \
+          afk_pc_curl POST "$api_url/api/agents/$aid/pause" "$key" "" '{}' >/dev/null 2>&1 || true
         new_state="paused"
       fi
     fi
