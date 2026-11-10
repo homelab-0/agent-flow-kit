@@ -62,11 +62,22 @@ afk_router_stage_to_task_class() {
   esac
 }
 
+_afk_router_verify_binary() {
+  local name="$1" cand=""
+  cand="$(command -v "$name" 2>/dev/null || true)"
+  if [[ -n "$cand" ]] && "$cand" --version >/dev/null 2>&1; then
+    printf '%s' "$cand"
+    return 0
+  fi
+  printf ''
+}
+
 # afk_router_discover_harnesses [<litellm_url>]
-# Discovers installed CLI binaries and LiteLLM gateway availability.
+# Discovers installed & executable CLI binaries and LiteLLM gateway availability.
 afk_router_discover_harnesses() {
   local litellm_url="${1:-${AFK_LITELLM_BASE_URL:-}}"
   local claude_bin="" codex_bin="" agy_bin="" opencode_bin=""
+  local codex_note=""
   if [[ -n "${AFK_ROUTER_HARNESS_LIST:-}" ]]; then
     local list=",${AFK_ROUTER_HARNESS_LIST},"
     [[ "$list" == *",claude,"* ]] && claude_bin="/mock/bin/claude"
@@ -74,10 +85,13 @@ afk_router_discover_harnesses() {
     [[ "$list" == *",agy,"* ]] && agy_bin="/mock/bin/agy"
     [[ "$list" == *",opencode,"* ]] && opencode_bin="/mock/bin/opencode"
   else
-    claude_bin="$(command -v claude 2>/dev/null || true)"
-    codex_bin="$(command -v codex 2>/dev/null || true)"
-    agy_bin="$(command -v agy 2>/dev/null || true)"
-    opencode_bin="$(command -v opencode 2>/dev/null || true)"
+    claude_bin="$(_afk_router_verify_binary claude)"
+    codex_bin="$(_afk_router_verify_binary codex)"
+    if [[ -z "$codex_bin" ]] && command -v codex >/dev/null 2>&1; then
+      codex_note="broken_binary ($(command -v codex) failed --version)"
+    fi
+    agy_bin="$(_afk_router_verify_binary agy)"
+    opencode_bin="$(_afk_router_verify_binary opencode)"
   fi
 
   local litellm_online=false litellm_models="[]"
@@ -98,16 +112,17 @@ afk_router_discover_harnesses() {
   jq -cn \
     --arg cb "$claude_bin" \
     --arg xb "$codex_bin" \
+    --arg xn "$codex_note" \
     --arg ab "$agy_bin" \
     --arg ob "$opencode_bin" \
     --arg lurl "$litellm_url" \
     --argjson lon "$litellm_online" \
     --argjson lmods "$litellm_models" \
     '{
-      claude:   {installed: ($cb != ""), binary: (if $cb == "" then null else $cb end)},
-      codex:    {installed: ($xb != ""), binary: (if $xb == "" then null else $xb end)},
-      agy:      {installed: ($ab != ""), binary: (if $ab == "" then null else $ab end)},
-      opencode: {installed: ($ob != ""), binary: (if $ob == "" then null else $ob end)},
+      claude:   {installed: ($cb != ""), binary: (if $cb == "" then null else $cb end), health: (if $cb != "" then "ok" else "missing" end)},
+      codex:    {installed: ($xb != ""), binary: (if $xb == "" then null else $xb end), health: (if $xb != "" then "ok" elif $xn != "" then $xn else "missing" end)},
+      agy:      {installed: ($ab != ""), binary: (if $ab == "" then null else $ab end), health: (if $ab != "" then "ok" else "missing" end)},
+      opencode: {installed: ($ob != ""), binary: (if $ob == "" then null else $ob end), health: (if $ob != "" then "ok" else "missing" end)},
       litellm_gateway: {
         configured: ($lurl != ""),
         base_url: (if $lurl == "" then null else $lurl end),
@@ -115,6 +130,23 @@ afk_router_discover_harnesses() {
         models: $lmods
       }
     }'
+}
+
+# afk_router_mark_pool_degraded <pool_id> [<reason>]
+# Marks an entitlement pool exhausted/degraded in pool-signals.json when a CLI
+# fails at runtime with 401/429/auth/quota errors so AFK immediately fails over.
+afk_router_mark_pool_degraded() {
+  local pool_id="$1" reason="${2:-runtime_failure}"
+  [[ -n "$pool_id" ]] || return 0
+  local sig_file cur="{}"
+  sig_file="$(afk_router_signals_path)"
+  mkdir -p "$(dirname -- "$sig_file")"
+  [[ -f "$sig_file" ]] && cur="$(cat -- "$sig_file" 2>/dev/null || printf '{}')"
+  local now
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  jq --arg pid "$pool_id" --arg r "$reason" --arg ts "$now" \
+    '.pools[$pid] = ((.pools[$pid] // {}) + {used_pct: 100, degraded_reason: $r, updated_at: $ts})' \
+    <<<"$cur" > "${sig_file}.tmp.$$" && mv "${sig_file}.tmp.$$" "$sig_file"
 }
 
 _afk_router_count_recent_activity() {
@@ -148,7 +180,7 @@ afk_router_probe_pools() {
     x1="$(_afk_router_count_recent_activity "$HOME/.codex/sessions" 300)"
     x2="$(_afk_router_count_recent_activity "$HOME/.config/orca/codex-accounts" 300)"
     x_5h=$(( x1 + x2 ))
-    a_5h="$(_afk_router_count_recent_activity "$HOME/.gemini/antigravity-cli/brain" 300)"
+    a_5h="$(find "$HOME/.gemini/antigravity-cli/brain" -mindepth 1 -maxdepth 1 -type d -mmin -300 2>/dev/null | wc -l | tr -d '[:space:]')"
     o_5h="$(_afk_router_count_recent_activity "$HOME/.local/share/opencode" 300)"
   fi
 
