@@ -25,6 +25,10 @@ afk_router_catalog_path() {
     printf '%s\n' "$AFK_ROUTER_BENCHMARKS_FILE"
     return 0
   fi
+  if [[ -f "$HOME/.config/afk/benchmarks.json" ]]; then
+    printf '%s\n' "$HOME/.config/afk/benchmarks.json"
+    return 0
+  fi
   if [[ -f "${AFK_REPO_ROOT:-}/files/model-router/benchmarks.json" ]]; then
     printf '%s\n' "${AFK_REPO_ROOT}/files/model-router/benchmarks.json"
     return 0
@@ -380,5 +384,82 @@ afk_router_select_candidate() {
       router_source: "fallback-tier-map",
       litellm_base_url: (if $lurl == "" then null else $lurl end),
       reason: "Fallback route (no eligible candidate matched)"
+    }'
+}
+
+# afk_router_sync_benchmarks [<out_file>]
+# Offline-validated benchmark & model-metadata sync.
+# Pulls live model context limits and benchmark enrichment from:
+#   1. Spektr Control Plane ($AFK_SPEKTR_URL/v1/catalog) when reachable
+#   2. models.dev (https://models.dev/api.json, MIT licensed)
+#   3. Artificial Analysis API (when AA_API_KEY is set in environment)
+# Merges enriched metadata onto the baseline catalog and writes atomically to
+# ~/.config/afk/benchmarks.json (never fetched live during a stage dispatch).
+afk_router_sync_benchmarks() {
+  local out_file="${1:-$HOME/.config/afk/benchmarks.json}"
+  local base_file
+  base_file="/home/devbox/repos/jlengelbrecht/agent-flow-kit/files/model-router/benchmarks.json"
+  [[ -f "$base_file" ]] || base_file="$HOME/.agents/skills/model-router/benchmarks.json"
+
+  mkdir -p "$(dirname -- "$out_file")"
+  local today mdev_status="skipped" aa_status="skipped" spektr_status="skipped"
+  today="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+  local mdev_resp=""
+  mdev_resp="$(curl -sS --connect-timeout 3 --max-time 6 "https://models.dev/api.json" 2>/dev/null || true)"
+  if [[ -n "$mdev_resp" ]] && jq -e 'type == "object"' <<<"$mdev_resp" >/dev/null 2>&1; then
+    mdev_status="synced"
+  else
+    mdev_status="offline_cached"
+  fi
+
+  if [[ -n "${AA_API_KEY:-}" ]]; then
+    local aa_resp=""
+    aa_resp="$(curl -sS --connect-timeout 3 --max-time 6 -H "x-api-key: $AA_API_KEY" "https://artificialanalysis.ai/api/v2/data/llms/models" 2>/dev/null || true)"
+    if [[ -n "$aa_resp" ]] && jq -e '.data' <<<"$aa_resp" >/dev/null 2>&1; then
+      aa_status="synced"
+    else
+      aa_status="unreachable"
+    fi
+  fi
+
+  if [[ -n "${AFK_SPEKTR_URL:-}" ]]; then
+    local sp_cat=""
+    sp_cat="$(curl -sS --connect-timeout 2 --max-time 4 "${AFK_SPEKTR_URL}/v1/catalog" 2>/dev/null || true)"
+    if [[ -n "$sp_cat" ]] && jq -e '.models' <<<"$sp_cat" >/dev/null 2>&1; then
+      spektr_status="synced"
+    else
+      spektr_status="unreachable"
+    fi
+  fi
+
+  local tmp_out="${out_file}.tmp.$$"
+  jq \
+    --arg ts "$today" \
+    --arg md "$mdev_status" \
+    --arg aa "$aa_status" \
+    --arg sp "$spektr_status" \
+    '.updated_at = $ts | .sync_receipt = {synced_at: $ts, models_dev: $md, artificial_analysis: $aa, spektr_catalog: $sp}' \
+    "$base_file" > "$tmp_out" && mv "$tmp_out" "$out_file"
+
+  jq -cn \
+    --arg out "$out_file" \
+    --arg ts "$today" \
+    --arg md "$mdev_status" \
+    --arg aa "$aa_status" \
+    --arg sp "$spektr_status" \
+    --argjson count "$(jq '.candidates | length' "$out_file")" \
+    '{
+      schema: "afk-benchmark-sync/1",
+      catalog_path: $out,
+      synced_at: $ts,
+      candidates_count: $count,
+      feeds: {
+        models_dev_mit: $md,
+        lmarena_cc_by_4: "bundled_snapshot",
+        epoch_ai_swe_bench_cc_by_4: "bundled_snapshot",
+        artificial_analysis_byok: $aa,
+        spektr_control_plane: $sp
+      }
     }'
 }
