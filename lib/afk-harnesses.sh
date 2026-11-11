@@ -698,11 +698,11 @@ afk_harness_sync_models() {
   # 2. Discover live Antigravity (`agy models`) entries when agy is healthy
   local agy_bin=""
   if [[ -n "${AFK_AGY_MODELS_FIXTURE:-}" && -f "${AFK_AGY_MODELS_FIXTURE}" ]]; then
-    awk -F'\t' 'NF >= 2 { printf "{\"id\":\"%s\",\"name\":\"%s\"}\n", $1, $2 }' "$AFK_AGY_MODELS_FIXTURE" | jq -cs '.' > "$tmp_agy" 2>/dev/null || printf '[]' > "$tmp_agy"
+    tr '\r' '\n' < "$AFK_AGY_MODELS_FIXTURE" | sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g; s/^[[:space:]]+//' | awk 'NF >= 2 && $1 ~ /^[a-z0-9][a-z0-9._-]+$/ { id=$1; $1=""; sub(/^[[:space:]]+/, ""); gsub(/"/, "\\\"", $0); printf "{\"id\":\"%s\",\"name\":\"%s\"}\n", id, $0 }' | jq -cs '.' > "$tmp_agy" 2>/dev/null || printf '[]' > "$tmp_agy"
   else
     agy_bin="$(_afk_harness_locate_bin agy || true)"
     if [[ -n "$agy_bin" ]] && "$agy_bin" --version >/dev/null 2>&1; then
-      "$agy_bin" models 2>/dev/null | awk -F'\t' 'NF >= 2 { gsub(/\r/, "", $2); printf "{\"id\":\"%s\",\"name\":\"%s\"}\n", $1, $2 }' | jq -cs '.' > "$tmp_agy" 2>/dev/null || printf '[]' > "$tmp_agy"
+      "$agy_bin" models 2>/dev/null | tr '\r' '\n' | sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g; s/^[[:space:]]+//' | awk 'NF >= 2 && $1 ~ /^[a-z0-9][a-z0-9._-]+$/ { id=$1; $1=""; sub(/^[[:space:]]+/, ""); gsub(/"/, "\\\"", $0); printf "{\"id\":\"%s\",\"name\":\"%s\"}\n", id, $0 }' | jq -cs '.' > "$tmp_agy" 2>/dev/null || printf '[]' > "$tmp_agy"
     fi
   fi
 
