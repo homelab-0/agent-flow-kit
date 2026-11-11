@@ -755,9 +755,9 @@ afk_harness_sync_models() {
         }
       else
         # Calibrate newly added free/open models by family + capabilities (models.dev & LMArena open-weights tiers)
-        (if ($lid | test("deepseek-v4")) then 88.5
-         elif ($lid | test("glm-5")) then 87.5
-         elif ($lid | test("minimax-m3")) then 86.5
+        (if ($lid | test("glm-5")) then 90.5
+         elif ($lid | test("deepseek-v4")) then 88.5
+         elif ($lid | test("minimax-m3")) then 88.0
          elif ($lid | test("nemotron-3\\.5-super")) then 85.0
          elif ($lid | test("mimo-v2")) then 84.5
          elif ($lid | test("gemini-4-argon|gemini-3\\.8-flash")) then 89.0
@@ -767,7 +767,7 @@ afk_harness_sync_models() {
          else 70.0 end) as $base |
         {
           benchmarks: {
-            research:        {score: (if $ctx >= 500000 then ($base + 2.0) else $base end), source: "Dynamic Capability + Open-Weights Eval"},
+            research:        {score: (if $ctx >= 500000 then ($base + 1.0) else $base end), source: "Dynamic Capability + Open-Weights Eval"},
             architecture:    {score: (if $reasoning then $base else ($base - 6.0) end), source: "Dynamic Capability + Open-Weights Eval"},
             webdev:          {score: (if $vision then ($base + 1.0) else ($base - 2.0) end), source: "Dynamic Capability + Open-Weights Eval"},
             coding_standard: {score: (if $toolcall then $base else ($base - 12.0) end), source: "Dynamic Capability + Open-Weights Eval"},
