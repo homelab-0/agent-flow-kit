@@ -353,16 +353,19 @@ afk_pc_load_config() {
 
   local -A seen_ids=() seen_slugs=() seen_repos=()
   for ((i = 0; i < n; i++)); do
-    IFS=$'\x1f' read -r pid slug repo_path harness max merge < <(jq -r --argjson i "$i" \
+    local fac_en
+    IFS=$'\x1f' read -r pid slug repo_path harness max merge fac_en < <(jq -r --argjson i "$i" \
       '.projects[$i] | [(.paperclip_project_id // "" | strings), (.slug // "" | strings), (.repo_path // "" | strings),
-        (.harness // "" | strings), (.max_active_issues // 1 | tostring), (.merge // "human" | tostring)] | map(gsub("[[:cntrl:]]"; "?")) | join("\u001f")' <<<"$cfg")
+        (.harness // "" | strings), (.max_active_issues // 1 | tostring), (.merge // "human" | tostring),
+        (.factory_enabled | if . == null then "false" elif type == "boolean" then tostring else "bad" end)] | map(gsub("[[:cntrl:]]"; "?")) | join("\u001f")' <<<"$cfg")
     if [[ -z "$pid" || -z "$repo_path" ]]; then AFK_PC_REFUSAL="PAPERCLIP_CONFIG_INVALID"; return 1; fi
     if ! afk_pc_uuid_ok "$pid"; then AFK_PC_REFUSAL="PAPERCLIP_ID_INVALID"; return 1; fi
     afk_pc_slug_ok "$slug" || { AFK_PC_REFUSAL="PAPERCLIP_CONFIG_INVALID"; return 1; }
     [[ "$repo_path" == /* ]] || { AFK_PC_REFUSAL="PAPERCLIP_CONFIG_INVALID"; return 1; }
-    case "$harness" in claude | codex | opencode) ;; *) AFK_PC_REFUSAL="PAPERCLIP_CONFIG_INVALID"; return 1 ;; esac
+    case "$harness" in claude | codex | opencode | pi | agy) ;; *) AFK_PC_REFUSAL="PAPERCLIP_CONFIG_INVALID"; return 1 ;; esac
     [[ "$max" =~ ^[1-9][0-9]{0,2}$ ]] || { AFK_PC_REFUSAL="PAPERCLIP_CONFIG_INVALID"; return 1; }
     case "$merge" in human | pm) ;; *) AFK_PC_REFUSAL="PAPERCLIP_CONFIG_INVALID"; return 1 ;; esac
+    [[ "$fac_en" == true || "$fac_en" == false ]] || { AFK_PC_REFUSAL="PAPERCLIP_CONFIG_INVALID"; return 1; }
     if [[ "$merge" == pm ]]; then
       AFK_PC_REFUSAL="$(afk_pc_kit_merge_code "$repo_path")"
       if [[ "$AFK_PC_REFUSAL" == PAPERCLIP_MERGE_KIT_REPO ]]; then
@@ -385,7 +388,7 @@ afk_pc_load_config() {
   done
 
   AFK_PC_CFG="$(jq -c '.projects = [(.projects // [])[] | .paperclip_project_id |= ascii_downcase
-    | .max_active_issues = (.max_active_issues // 1) | .merge = (.merge // "human")]
+    | .max_active_issues = (.max_active_issues // 1) | .merge = (.merge // "human") | .factory_enabled = (.factory_enabled // false)]
     | .host.intermittent = ($i == "true") | .host.max_active_issues = ($m | tonumber) | .host.adoption = $ad' \
     --arg i "$intermittent" --arg m "$host_max" --arg ad "$adoption" <<<"$cfg")"
   return 0
@@ -494,6 +497,7 @@ afk_pc_origin_normalize() {
 # when the repo is shown not to be the kit.
 afk_pc_is_kit_repo() {
   local root="${AFK_INSTALL_ROOT:-}" policy kit_common="" common release origin
+  [[ -n "$root" ]] || root="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd -P)"
   policy="${AFK_RELEASE_POLICY:-$root/lifecycle/release-policy.json}"
   [[ -n "$root" ]] && kit_common="$(git -C "$root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
   common="$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
@@ -2404,6 +2408,11 @@ afk_cmd_paperclip_poll() { # <json_mode>
       detail_resp="$(afk_pc_curl GET "$api_url/api/issues/$id" "$key" "")"
       dhttp="${detail_resp%%$'\n'*}"; detail="${detail_resp#*$'\n'}"
       [[ "$dhttp" == 200 ]] || continue
+      local _fac_pid
+      _fac_pid="$(jq -r '.projectId // empty | strings | ascii_downcase' <<<"$detail" 2>/dev/null || true)"
+      if [[ -n "$_fac_pid" ]] && jq -e --arg p "$_fac_pid" 'any(.projects[]; .paperclip_project_id == $p and .factory_enabled == true)' <<<"$AFK_PC_CFG" >/dev/null 2>&1; then
+        continue
+      fi
       local status identifier title desc updated owner_agent owner_user created_by assignee_agent prev prev_st
       status="$(jq -r '.status' <<<"$detail")"
       identifier="$(jq -r '.identifier' <<<"$detail")"
@@ -2962,6 +2971,14 @@ afk_cmd_paperclip_poll() { # <json_mode>
         [[ -n "$wid" ]] || continue
         afk_pc_final_withdraw_cleanup "$wid"
       done
+      if jq -e 'any(.projects[]; .factory_enabled == true)' <<<"$AFK_PC_CFG" >/dev/null 2>&1; then
+        declare -F afk_factory_poll_paperclip >/dev/null 2>&1 || . "$(dirname -- "${BASH_SOURCE[0]}")/afk-factory.sh"
+        local _fac_poll
+        _fac_poll="$(afk_factory_poll_paperclip "" false true true 2>/dev/null || true)"
+        if [[ -n "$_fac_poll" ]] && jq -e '(.dispatched_count // 0) > 0 or (.reviewed_count // 0) > 0' <<<"$_fac_poll" >/dev/null 2>&1; then
+          actions="$(jq -c --argjson fp "$_fac_poll" '. + [($fp.summary_lines[]? | "factory: " + .)]' <<<"$actions")"
+        fi
+      fi
     fi
     break
   done

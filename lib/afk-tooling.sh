@@ -186,10 +186,11 @@ afk_tooling_discover() {
   # 2. Host / central skills
   local host_skills="[]"
   if [[ -z "${AFK_TOOLING_HERMETIC:-}" ]]; then
-    local hs1 hs2
+    local hs1 hs2 hs3
     hs1="$(_afk_tooling_scan_skills_dir "$HOME/.agents/skills" "host-global")"
     hs2="$(_afk_tooling_scan_skills_dir "$HOME/.config/afk/skills" "afk-central")"
-    host_skills="$(jq -cs '.[0] + .[1] | unique_by(.name)' <(printf '%s' "$hs1") <(printf '%s' "$hs2"))"
+    hs3="$(_afk_tooling_scan_skills_dir "${AFK_PAPERCLIP_SKILLS_DIR:-$HOME/.config/afk/paperclip-skills}" "paperclip-store")"
+    host_skills="$(jq -cs '.[0] + .[1] + .[2] | unique_by(.name)' <(printf '%s' "$hs1") <(printf '%s' "$hs2") <(printf '%s' "$hs3"))"
   fi
 
   # 3. Project MCP servers
@@ -377,5 +378,98 @@ afk_tooling_sync_project() {
       litellm_mcp_url: (if $lurl == "" then null else $lurl end),
       synced_mcp_servers: $mcp,
       synced_skills: $sk
+    }'
+}
+
+# afk_tooling_sync_paperclip_skills [<api_url>] [<key>] [<company_id>]
+# Pulls the Paperclip Company Skills Store (`GET /api/companies/{companyId}/skills`
+# and `/files?path=...`, Paperclip v2026.1106.0+) into AFK's central registry so
+# company-curated and GitHub-imported skills can be materialized into any project.
+afk_tooling_sync_paperclip_skills() {
+  local api_url="${1:-}" key="${2:-}" company_id="${3:-}"
+  declare -F afk_pc_curl >/dev/null 2>&1 || . "$(dirname -- "${BASH_SOURCE[0]}")/afk-paperclip.sh"
+
+  if [[ -z "$api_url" || -z "$company_id" || -z "$key" ]]; then
+    local pc_cfg_path pc_cfg key_ref
+    pc_cfg_path="$(afk_pc_config_path)"
+    if [[ -f "$pc_cfg_path" ]]; then
+      pc_cfg="$(cat -- "$pc_cfg_path" 2>/dev/null || true)"
+      [[ -n "$api_url" ]] || api_url="$(jq -r '.api_url // empty' <<<"$pc_cfg" 2>/dev/null)"
+      [[ -n "$company_id" ]] || company_id="$(jq -r '.company_id // empty' <<<"$pc_cfg" 2>/dev/null)"
+      if [[ -z "$key" ]]; then
+        key_ref="$(jq -r '.host.key_ref // empty' <<<"$pc_cfg" 2>/dev/null)"
+        if [[ -n "$key_ref" ]]; then
+          AFK_PC_CFG="$pc_cfg"
+          key="$(afk_pc_read_key "$key_ref" 2>/dev/null || true)"
+        fi
+      fi
+    fi
+  fi
+
+  if [[ -z "$api_url" || -z "$company_id" || -z "$key" ]]; then
+    jq -cn '{schema:"afk-paperclip-skills-sync/1", ok:false, error:"PAPERCLIP_NOT_CONFIGURED", synced_count:0, synced_skills:[]}'
+    return 1
+  fi
+
+  local resp code body
+  resp="$(afk_pc_curl GET "$api_url/api/companies/$company_id/skills" "$key" "")"
+  code="${resp%%$'\n'*}"
+  body="${resp#*$'\n'}"
+  if [[ "$code" != 2?? ]] || ! jq -e 'type == "array"' <<<"$body" >/dev/null 2>&1; then
+    jq -cn --arg c "$code" '{schema:"afk-paperclip-skills-sync/1", ok:false, error:("HTTP_" + $c), synced_count:0, synced_skills:[]}'
+    return 1
+  fi
+
+  local dest_root="${AFK_PAPERCLIP_SKILLS_DIR:-${HOME:-/tmp}/.config/afk/paperclip-skills}"
+  mkdir -p "$dest_root"
+  local synced="[]" row sid sslug sdesc files_csv fpath enc_path f_resp f_code f_body f_content sdir
+  local -a rows=()
+  mapfile -t rows < <(jq -c '.[] | select((.slug // "") != "")' <<<"$body" 2>/dev/null)
+
+  for row in "${rows[@]:-}"; do
+    [[ -n "$row" ]] || continue
+    sid="$(jq -r '.id // empty' <<<"$row")"
+    sslug="$(jq -r '.slug // empty' <<<"$row")"
+    sdesc="$(jq -r '.description // ""' <<<"$row")"
+    [[ "$sslug" =~ ^[a-zA-Z0-9._-]+$ && -n "$sid" ]] || continue
+    sdir="$dest_root/$sslug"
+    mkdir -p "$sdir"
+
+    local -a fpaths=()
+    mapfile -t fpaths < <(jq -r '(.fileInventory // [{path:"SKILL.md"}])[]?.path // empty' <<<"$row" 2>/dev/null)
+    (( ${#fpaths[@]} > 0 )) || fpaths=("SKILL.md")
+
+    for fpath in "${fpaths[@]}"; do
+      [[ -n "$fpath" && "$fpath" != *".."* && "$fpath" != /* ]] || continue
+      enc_path="$(jq -rn --arg v "$fpath" '$v | @uri')"
+      f_resp="$(afk_pc_curl GET "$api_url/api/companies/$company_id/skills/$sid/files?path=$enc_path" "$key" "")"
+      f_code="${f_resp%%$'\n'*}"
+      f_body="${f_resp#*$'\n'}"
+      if [[ "$f_code" == 2?? ]]; then
+        f_content="$(jq -r '.content // empty' <<<"$f_body" 2>/dev/null || true)"
+        if [[ -n "$f_content" ]]; then
+          mkdir -p "$(dirname -- "$sdir/$fpath")"
+          printf '%s\n' "$f_content" > "$sdir/$fpath"
+        fi
+      fi
+    done
+
+    if [[ -f "$sdir/SKILL.md" ]]; then
+      afk_tooling_register_skill "$sslug" "$sdir" "$sdesc" >/dev/null 2>&1 || true
+      synced="$(jq -c --arg s "$sslug" --arg id "$sid" --arg p "$sdir" '. + [{slug:$s, skill_id:$id, path:$p}]' <<<"$synced")"
+    fi
+  done
+
+  jq -cn \
+    --arg cid "$company_id" \
+    --arg root "$dest_root" \
+    --argjson items "$synced" \
+    '{
+      schema: "afk-paperclip-skills-sync/1",
+      ok: true,
+      company_id: $cid,
+      skills_dir: $root,
+      synced_count: ($items | length),
+      synced_skills: $items
     }'
 }
