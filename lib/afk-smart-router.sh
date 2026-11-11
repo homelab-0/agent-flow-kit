@@ -145,9 +145,19 @@ afk_router_discover_harnesses() {
     }'
 }
 
+# Portable file mtime epoch (Linux GNU stat -c %Y and macOS BSD stat -f %m)
+_afk_router_file_mtime() {
+  local f="$1"
+  [[ -f "$f" ]] || { printf '0\n'; return 0; }
+  stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || printf '0\n'
+}
+
 # afk_router_mark_pool_degraded <pool_id> [<reason>]
-# Marks an entitlement pool exhausted/degraded in pool-signals.json when a CLI
-# fails at runtime with 401/429/auth/quota errors so AFK immediately fails over.
+# Marks an entitlement pool degraded in pool-signals.json with severity-aware TTLs:
+#   - Hard auth revocation (401/token_revoked): 24h TTL (auto-cleared on re-auth mtime)
+#   - Rate limit / quota exhaustion (429/quota/out_of_credits): 1h cooldown TTL
+#   - Transient stage timeout / empty output: 15m (900s) cooldown TTL so immediate
+#     retries fail over cleanly without permanently bricking the pool.
 afk_router_mark_pool_degraded() {
   local pool_id="$1" reason="${2:-runtime_failure}"
   [[ -n "$pool_id" ]] || return 0
@@ -155,10 +165,22 @@ afk_router_mark_pool_degraded() {
   sig_file="$(afk_router_signals_path)"
   mkdir -p "$(dirname -- "$sig_file")"
   [[ -f "$sig_file" ]] && cur="$(cat -- "$sig_file" 2>/dev/null || printf '{}')"
-  local now
+  local now now_ep lreason kind="transient" ttl_sec=900 used_val=95
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  jq --arg pid "$pool_id" --arg r "$reason" --arg ts "$now" \
-    '.pools[$pid] = ((.pools[$pid] // {}) + {used_pct: 100, degraded_reason: $r, updated_at: $ts})' \
+  now_ep="$(date -u +%s)"
+  lreason="$(printf '%s' "$reason" | tr '[:upper:]' '[:lower:]')"
+  if [[ "$lreason" =~ (401|unauthorized|token_revoked|invalidated[[:space:]]+oauth|refresh[[:space:]]+token) ]]; then
+    kind="auth"
+    ttl_sec=86400
+    used_val=100
+  elif [[ "$lreason" =~ (429|rate_limit|rate[[:space:]]+limit|quota|out_of_credits|spend_limit|exhausted) ]]; then
+    kind="quota"
+    ttl_sec=3600
+    used_val=100
+  fi
+  jq --arg pid "$pool_id" --arg r "$reason" --arg k "$kind" --arg ts "$now" \
+    --argjson ep "$now_ep" --argjson ttl "$ttl_sec" --argjson u "$used_val" \
+    '.pools[$pid] = ((.pools[$pid] // {}) + {used_pct: $u, degraded_reason: $r, degraded_kind: $k, updated_at: $ts, updated_epoch: $ep, ttl_sec: $ttl})' \
     <<<"$cur" > "${sig_file}.tmp.$$" && mv "${sig_file}.tmp.$$" "$sig_file"
 }
 
@@ -168,9 +190,147 @@ _afk_router_count_recent_activity() {
   find "$dir" -maxdepth 5 -type f \( -name '*.jsonl' -o -name '*.json' \) -mmin "-$mmin" 2>/dev/null | wc -l | tr -d '[:space:]'
 }
 
+# _afk_router_probe_claude_quota
+# Queries real 5-hour & 7-day OAuth utilization from Anthropic's official usage API
+# (`https://api.anthropic.com/api/oauth/usage`) with a 120s local metadata cache
+# (never stores or prints tokens). Supports AFK_CLAUDE_USAGE_FIXTURE for hermetic tests.
+_afk_router_probe_claude_quota() {
+  local raw=""
+  if [[ -n "${AFK_CLAUDE_USAGE_FIXTURE:-}" && -f "${AFK_CLAUDE_USAGE_FIXTURE}" ]]; then
+    raw="$(cat -- "$AFK_CLAUDE_USAGE_FIXTURE" 2>/dev/null || true)"
+  elif [[ -n "${AFK_ROUTER_SIGNALS_FILE:-}" || -n "${AFK_ROUTER_HARNESS_LIST:-}" ]]; then
+    printf '{}\n'
+    return 0
+  else
+    local creds_file="${AFK_CLAUDE_CREDS_FILE:-$HOME/.claude/.credentials.json}"
+    [[ -f "$creds_file" ]] || { printf '{}\n'; return 0; }
+    local cache_file="${AFK_QUOTA_CACHE_FILE:-$HOME/.config/afk/live-quota-cache.json}"
+    local now_ep
+    now_ep="$(date -u +%s)"
+    if [[ -f "$cache_file" ]]; then
+      local cached
+      cached="$(jq -c --argjson now "$now_ep" '
+        if (.claude.fetched_epoch // 0) > 0 and (($now - (.claude.fetched_epoch // 0)) < 120) then
+          .claude.data
+        else empty end
+      ' "$cache_file" 2>/dev/null || true)"
+      if [[ -n "$cached" ]]; then
+        printf '%s\n' "$cached"
+        return 0
+      fi
+    fi
+    local tok=""
+    tok="$(jq -r '.claudeAiOauth.accessToken // empty' "$creds_file" 2>/dev/null || true)"
+    [[ -n "$tok" ]] || { printf '{}\n'; return 0; }
+    raw="$(curl -fsSL --connect-timeout 2 --max-time 4 \
+      -H "Authorization: Bearer $tok" \
+      -H "anthropic-beta: oauth-2025-04-20" \
+      "https://api.anthropic.com/api/oauth/usage" 2>/dev/null || true)"
+    tok=""
+    [[ -n "$raw" ]] || { printf '{}\n'; return 0; }
+  fi
+
+  local parsed=""
+  parsed="$(jq -c '
+    if (type == "object") and (has("seven_day") or has("five_hour") or has("limits")) then
+      ((.five_hour.utilization // 0) | tonumber? // 0) as $fh |
+      ((.seven_day.utilization // ([.limits[]? | select(.is_active == true and .group == "weekly") | .percent] | max) // 0) | tonumber? // 0) as $wk |
+      ((.extra_usage.is_enabled // false) == true and ((.extra_usage.utilization // 100) < 90)) as $extra_ok |
+      (if $extra_ok then ([ $fh, (($wk * 0.80)) ] | max | round)
+       else ([ $fh, $wk, ([.limits[]? | select(.is_active == true) | .percent] | max // 0) ] | max | round) end) as $eff |
+      {
+        ok: true,
+        source: "anthropic_oauth_api",
+        used_pct: (if $eff > 100 then 100 elif $eff < 0 then 0 else $eff end),
+        five_hour_pct: ($fh | round),
+        seven_day_pct: ($wk | round),
+        resets_at: (.seven_day.resets_at // (.limits[0].resets_at // null)),
+        severity: (([.limits[]? | select(.is_active == true) | .severity][0]) // null),
+        extra_usage_enabled: (.extra_usage.is_enabled // false)
+      }
+    else {} end
+  ' <<<"$raw" 2>/dev/null || printf '{}')"
+
+  if [[ -z "${AFK_CLAUDE_USAGE_FIXTURE:-}" && -n "$parsed" && "$parsed" != "{}" ]]; then
+    local cache_file="${AFK_QUOTA_CACHE_FILE:-$HOME/.config/afk/live-quota-cache.json}"
+    local cur_cache="{}" now_ep
+    now_ep="$(date -u +%s)"
+    mkdir -p "$(dirname -- "$cache_file")"
+    [[ -f "$cache_file" ]] && cur_cache="$(cat -- "$cache_file" 2>/dev/null || printf '{}')"
+    (umask 077 && jq -cn --argjson cur "$cur_cache" --argjson d "$parsed" --argjson ep "$now_ep" \
+      '$cur + {claude: {fetched_epoch: $ep, data: $d}}' > "${cache_file}.tmp.$$" && mv "${cache_file}.tmp.$$" "$cache_file") 2>/dev/null || true
+  fi
+  [[ -n "$parsed" ]] || parsed="{}"
+  printf '%s\n' "$parsed"
+}
+
+# _afk_router_probe_codex_quota
+# Reads the freshest non-expired `rate_limits` snapshot written by Codex into
+# rollout-*.jsonl (zero network cost). Supports AFK_CODEX_SESSIONS_DIR for tests.
+_afk_router_probe_codex_quota() {
+  local -a search_dirs=()
+  if [[ -n "${AFK_CODEX_SESSIONS_DIR:-}" ]]; then
+    [[ -d "$AFK_CODEX_SESSIONS_DIR" ]] && search_dirs+=("$AFK_CODEX_SESSIONS_DIR")
+  elif [[ -n "${AFK_ROUTER_SIGNALS_FILE:-}" || -n "${AFK_ROUTER_HARNESS_LIST:-}" ]]; then
+    printf '{}\n'
+    return 0
+  else
+    [[ -d "$HOME/.codex/sessions" ]] && search_dirs+=("$HOME/.codex/sessions")
+    local d
+    for d in "$HOME"/.config/orca/codex-accounts/*/home/sessions; do
+      [[ -d "$d" ]] && search_dirs+=("$d")
+    done
+  fi
+  (( ${#search_dirs[@]} > 0 )) || { printf '{}\n'; return 0; }
+
+  local -a recent_files=()
+  mapfile -t recent_files < <(find "${search_dirs[@]}" -name 'rollout-*.jsonl' -type f 2>/dev/null | awk -F/ '{print $NF" "$0}' | sort | tail -8 | cut -d' ' -f2-)
+  local idx f rl_line now_ep
+  now_ep="$(date -u +%s)"
+  for (( idx=${#recent_files[@]}-1; idx>=0; idx-- )); do
+    f="${recent_files[$idx]}"
+    [[ -f "$f" ]] || continue
+    rl_line="$(grep -a '"rate_limits"' "$f" 2>/dev/null | tail -1 || true)"
+    [[ -n "$rl_line" ]] || continue
+    local parsed
+    parsed="$(jq -c --argjson now "$now_ep" '
+      ([.. | objects | select(has("rate_limits")) | .rate_limits] | last // null) as $rl |
+      if $rl == null then empty
+      else
+        ([ $rl.primary, $rl.secondary ] | map(select(. != null and .used_percent != null and ((.resets_at // ($now + 1)) > $now)))) as $wins |
+        if ($wins | length) == 0 then empty
+        else
+          ($wins | map(.used_percent) | max | round) as $eff |
+          ([ $wins[] | select((.window_minutes // 0) < 1000) | .used_percent ][0] // null) as $fh |
+          ([ $wins[] | select((.window_minutes // 0) >= 1000) | .used_percent ][0] // null) as $wk |
+          ([ $wins[] | .resets_at | select(. != null) ] | min // null) as $rst |
+          {
+            ok: true,
+            source: "codex_rate_limits",
+            used_pct: (if $eff > 100 then 100 elif $eff < 0 then 0 else $eff end),
+            five_hour_pct: (if $fh == null then null else ($fh | round) end),
+            seven_day_pct: (if $wk == null then null else ($wk | round) end),
+            resets_at_epoch: $rst,
+            plan_type: ($rl.plan_type // null)
+          }
+        end
+      end
+    ' <<<"$rl_line" 2>/dev/null || true)"
+    if [[ -n "$parsed" ]]; then
+      printf '%s\n' "$parsed"
+      return 0
+    fi
+  done
+  printf '{}\n'
+}
+
 # afk_router_probe_pools [<repo>]
-# Computes 5-hour (300m) rolling usage & remaining capacity per subscription pool,
-# factoring in each pool's declared size (five_hour_session_capacity & pool_tier).
+# Computes real subscription pool utilization & remaining capacity by combining:
+#   1. Live provider quota telemetry (Anthropic OAuth 5h/7d API, Codex session rate_limits)
+#   2. TTL-bounded runtime failure signals (expiring transient timeouts after 15m & clearing
+#      auth failures automatically when credential files are refreshed)
+#   3. Real account bindings (preventing unauthenticated pools like xai-grok from appearing available)
+#   4. 5-hour (300m) local session activity fallback when provider telemetry is unavailable.
 afk_router_probe_pools() {
   local repo="${1:-}"
   local cfg="{}" litellm_url="${AFK_LITELLM_BASE_URL:-}"
@@ -201,7 +361,6 @@ afk_router_probe_pools() {
     a_5h="$(find "$HOME/.gemini/antigravity-cli/brain" -mindepth 1 -maxdepth 1 -type d -mmin -300 2>/dev/null | wc -l | tr -d '[:space:]')"
     o_5h="$(_afk_router_count_recent_activity "$HOME/.local/share/opencode" 300)"
     p_5h="$(_afk_router_count_recent_activity "$HOME/.pi/agent/sessions" 300)"
-    # Shared subscription pool accounting: if OpenCode or Pi uses OpenAI OAuth, feed `openai-plus`
     if jq -e '.[] | select(.harness == "opencode" and .entitlement_pool == "openai-plus")' <<<"$bindings_json" >/dev/null 2>&1; then
       x_5h=$(( x_5h + o_5h ))
     fi
@@ -210,47 +369,107 @@ afk_router_probe_pools() {
     fi
   fi
 
+  local claude_q="{}" codex_q="{}"
+  claude_q="$(_afk_router_probe_claude_quota)"
+  codex_q="$(_afk_router_probe_codex_quota)"
+
   local sig_json="{}"
   if [[ -f "$sig_file" ]]; then
     sig_json="$(cat -- "$sig_file" 2>/dev/null || printf '{}')"
   fi
 
-  local litellm_on
+  local now_ep openai_auth_mtime=0 claude_auth_mtime=0 m1=0 m2=0
+  now_ep="$(date -u +%s)"
+  m1="$(_afk_router_file_mtime "${AFK_CODEX_AUTH_FILE:-$HOME/.codex/auth.json}")"
+  m2="$(_afk_router_file_mtime "${AFK_OPENCODE_AUTH_FILE:-$HOME/.local/share/opencode/auth.json}")"
+  (( m1 > m2 )) && openai_auth_mtime="$m1" || openai_auth_mtime="$m2"
+  claude_auth_mtime="$(_afk_router_file_mtime "${AFK_CLAUDE_CREDS_FILE:-$HOME/.claude/.credentials.json}")"
+
+  local litellm_on hermetic_mode="false"
   litellm_on="$(jq -r '.litellm_gateway.online' <<<"$harnesses_json")"
+  [[ -n "${AFK_ROUTER_HARNESS_LIST:-}" && -z "${AFK_OPENCODE_AUTH_FILE:-}" ]] && hermetic_mode="true"
 
   jq -cn \
     --slurpfile cat "$cat_file" \
     --argjson h "$harnesses_json" \
     --argjson bind "$bindings_json" \
     --argjson sig "$sig_json" \
+    --argjson cq "$claude_q" \
+    --argjson xq "$codex_q" \
     --argjson c5 "$c_5h" \
     --argjson x5 "$x_5h" \
     --argjson a5 "$a_5h" \
     --argjson o5 "$o_5h" \
+    --argjson now "$now_ep" \
+    --argjson oa_mt "$openai_auth_mtime" \
+    --argjson ca_mt "$claude_auth_mtime" \
     --argjson lon "$litellm_on" \
+    --argjson herm "$hermetic_mode" \
     '
-    def calc_pool($pid; $raw_sessions; $is_local; $default_harnesses):
+    def parse_ep($obj):
+      if ($obj.updated_epoch // null) != null then $obj.updated_epoch
+      elif ($obj.updated_at // null) != null then
+        (($obj.updated_at | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) // 0)
+      else null end;
+
+    def active_signal($pid; $auth_mtime):
+      ($sig.pools[$pid] // null) as $s |
+      if $s == null then null
+      else
+        parse_ep($s) as $up_ep |
+        if $up_ep == null then $s
+        else
+          (($s.degraded_reason // "") | ascii_downcase) as $lr |
+          ($s.degraded_kind // (
+            if ($lr | test("401|unauthorized|revoked|invalidated oauth|refresh token")) then "auth"
+            elif ($lr | test("429|rate_limit|rate limit|quota|out_of_credits|exhausted")) then "quota"
+            else "transient" end
+          )) as $kind |
+          ($s.ttl_sec // (
+            if $kind == "auth" then 86400
+            elif $kind == "quota" then 3600
+            else 900 end
+          )) as $ttl |
+          if ($kind == "auth" and $auth_mtime > $up_ep) then null
+          elif (($now - $up_ep) >= $ttl) then null
+          else ($s + {degraded_kind: $kind, ttl_remaining_sec: ($ttl - ($now - $up_ep))}) end
+        end
+      end;
+
+    def calc_pool($pid; $raw_sessions; $is_local; $default_harnesses; $live_q; $auth_mtime):
       (($cat[0].entitlement_pools[$pid] // null) // (
         if $pid == "opencode-free" then {provider:"OpenCode Free Tier", cost_class:"free", pool_tier:"free", five_hour_session_capacity:200}
         else {} end
       )) as $meta |
-      ($sig.pools[$pid].capacity_5h // $meta.five_hour_session_capacity // 50) as $cap |
-      ($sig.pools[$pid].used_pct // (
-        if $is_local then
-          (if $lon then 0 else 100 end)
+      active_signal($pid; $auth_mtime) as $asig |
+      ([ $bind[] | select(.entitlement_pool == $pid) | .harness ] | unique) as $bound_h |
+      ([ $bind[] | select(.entitlement_pool == $pid) | .account_fingerprint ] | unique) as $fps |
+      ($asig.capacity_5h // ($sig.pools[$pid].capacity_5h // null) // $meta.five_hour_session_capacity // 50) as $cap |
+      (
+        $pid == "xai-grok" and ($herm | not) and ($asig == null) and (($bound_h | length) == 0)
+      ) as $unauthenticated |
+      (
+        if $asig != null and ($asig.used_pct // null) != null then
+          {used: $asig.used_pct, src: ("runtime_signal:" + ($asig.degraded_kind // "manual"))}
+        elif $unauthenticated then
+          {used: 100, src: "unauthenticated"}
+        elif ($live_q.ok // false) == true then
+          {used: $live_q.used_pct, src: $live_q.source}
+        elif $is_local then
+          {used: (if $lon then 0 else 100 end), src: "gateway_probe"}
         else
-          ((($raw_sessions * 100) / $cap) | round | if . > 98 then 98 else . end)
+          {used: (((($raw_sessions * 100) / $cap) | round) | if . > 98 then 98 else . end), src: "local_5h_activity"}
         end
-      )) as $used |
+      ) as $uinfo |
+      $uinfo.used as $used |
       (100 - $used) as $headroom |
       (($cap * $headroom / 100) | floor) as $rem_units |
       (if $is_local and ($lon | not) then "offline"
        elif $pid == "opencode-free" and (($h.opencode.installed // false) | not) then "offline"
+       elif $unauthenticated then "offline"
        elif $used >= 90 then "exhausted"
        elif $used >= 75 then "warning"
        else "available" end) as $state |
-      ([ $bind[] | select(.entitlement_pool == $pid) | .harness ] | unique) as $bound_h |
-      ([ $bind[] | select(.entitlement_pool == $pid) | .account_fingerprint ] | unique) as $fps |
       {
         pool_id: $pid,
         provider: ($meta.provider // $pid),
@@ -261,6 +480,11 @@ afk_router_probe_pools() {
         remaining_units_5h: $rem_units,
         used_pct: $used,
         headroom_pct: $headroom,
+        quota_source: $uinfo.src,
+        weekly_used_pct: ($live_q.seven_day_pct // null),
+        five_hour_used_pct: ($live_q.five_hour_pct // null),
+        resets_at: ($live_q.resets_at // null),
+        degraded_reason: ($asig.degraded_reason // null),
         active_sessions_5h: $raw_sessions,
         harnesses_feeding_pool: (if ($bound_h | length) > 0 then $bound_h else $default_harnesses end),
         account_fingerprints: $fps
@@ -270,12 +494,12 @@ afk_router_probe_pools() {
       schema: "afk-router-pools/2",
       harnesses: $h,
       pools: {
-        "anthropic-max":    calc_pool("anthropic-max"; $c5; false; ["claude"]),
-        "openai-plus":      calc_pool("openai-plus"; $x5; false; ["codex"]),
-        "antigravity-pool": calc_pool("antigravity-pool"; $a5; false; ["agy"]),
-        "xai-grok":         calc_pool("xai-grok"; $o5; false; ["opencode"]),
-        "opencode-free":    calc_pool("opencode-free"; $o5; false; ["opencode"]),
-        "litellm-local":    calc_pool("litellm-local"; 0; true; ["claude","opencode"])
+        "anthropic-max":    calc_pool("anthropic-max"; $c5; false; ["claude"]; $cq; $ca_mt),
+        "openai-plus":      calc_pool("openai-plus"; $x5; false; ["codex"]; $xq; $oa_mt),
+        "antigravity-pool": calc_pool("antigravity-pool"; $a5; false; ["agy"]; {}; 0),
+        "xai-grok":         calc_pool("xai-grok"; $o5; false; ["opencode"]; {}; 0),
+        "opencode-free":    calc_pool("opencode-free"; $o5; false; ["opencode"]; {}; 0),
+        "litellm-local":    calc_pool("litellm-local"; 0; true; ["claude","opencode"]; {}; 0)
       }
     }'
 }
@@ -341,10 +565,12 @@ afk_router_select_candidate() {
       $disc[0].models[]? |
       select(.capabilities.toolcall == true) |
       select(.cost_class == "free" or .cost_class == "subscription" or ($allow_api == true and .cost_class == "api-metered")) |
-      # Avoid flooding with dozens of minor variants; keep free models + flagship bridged models
+      # Avoid flooding with dozens of minor variants; keep free models + flagship bridged models,
+      # and deduplicate agy gemini-4-carbon against catalog agy-carbon-native.
+      select((.harness == "agy" and (.model | test("^gemini-4-carbon"))) | not) |
       select(
         .is_free == true or
-        (.model | test("gpt-6-astra$|gpt-6\\.1-sol$|gpt-5\\.3-codex-spark$|claude-opus-5-5$|claude-sonnet-5-5$|gemini-4-carbon"))
+        (.model | test("gpt-6-astra$|gpt-6\\.1-sol$|gpt-5\\.3-codex-spark$|claude-opus-5-5(-high)?$|claude-sonnet-5-5(-high)?$|gemini-4-argon-high$|gemini-3\\.8-flash-high$"))
       ) |
       {
         id: .id,
@@ -359,7 +585,10 @@ afk_router_select_candidate() {
         effort: (if .capabilities.reasoning then "high" else "medium" end),
         window_tokens: .window_tokens,
         requires_gateway: false,
-        is_bridged_oauth: (.harness == "opencode" and .cost_class == "subscription"),
+        is_bridged_oauth: (
+          (.harness == "opencode" and .cost_class == "subscription") or
+          (.harness == "agy" and (.model | test("^claude-")))
+        ),
         benchmarks: (
           .benchmarks | with_entries(.value = {score: .value.score, benchmark: (.value.benchmark // .value.source // "Dynamic Eval")})
         )

@@ -697,7 +697,13 @@ afk_factory_invoke_stage_agent() {
             (
               cd "$wt" || exit 1
               [[ -n "$hs_disabled" ]] && export HINDSIGHT_DISABLED="true"
-              "${tmo_cmd[@]}" "$bin_exec" --dangerously-skip-permissions --add-dir "$job_dir" --output-format json -p "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
+              local agy_model="$routed_model"
+              if [[ -n "$agy_model" && "$agy_model" != *"-low" && "$agy_model" != *"-medium" && "$agy_model" != *"-high" ]]; then
+                agy_model="${agy_model}-high"
+              fi
+              local -a agy_mod_args=()
+              [[ -n "$agy_model" ]] && agy_mod_args=(--model "$agy_model")
+              "${tmo_cmd[@]}" "$bin_exec" --dangerously-skip-permissions "${agy_mod_args[@]}" --add-dir "$job_dir" --output-format json -p "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
             ) || h_rc=$?
           else
             h_rc=127
@@ -745,7 +751,7 @@ afk_factory_invoke_stage_agent() {
           tok="$(jq -sr '[ .[] | (.usage.total_tokens // .part.tokens.total // ((.usage.input_tokens // 0) + (.usage.output_tokens // 0) + (.usage.cache_read_input_tokens // 0) + (.usage.cached_input_tokens // 0))) | select(. > 0) ] | max // empty' "$env_file" 2>/dev/null || true)"
           [[ -n "$tok" ]] && AFK_LAST_STAGE_USED_TOKENS="$tok"
           in_tok="$(jq -sr '[ .[] | (.usage.input_tokens // .part.tokens.input // 0) ] | max // 0' "$env_file" 2>/dev/null || printf '0')"
-          cached_tok="$(jq -sr '[ .[] | (.usage.cache_read_input_tokens // .usage.cached_input_tokens // .part.tokens.cache.read // 0) ] | max // 0' "$env_file" 2>/dev/null || printf '0')"
+          cached_tok="$(jq -sr '[ .[] | (.usage.cache_read_input_tokens // .usage.cached_input_tokens // .usage.cache_read_tokens // .part.tokens.cache.read // 0) ] | max // 0' "$env_file" 2>/dev/null || printf '0')"
           out_tok="$(jq -sr '[ .[] | (.usage.output_tokens // .part.tokens.output // 0) ] | max // 0' "$env_file" 2>/dev/null || printf '0')"
           if [[ ! -s "$output_file" ]]; then
             local extracted=""
@@ -2247,8 +2253,8 @@ afk_cmd_factory() {
           "  - pi       (Multi-Auth CLI):      " + (if .harnesses.pi.installed then "HEALTHY (" + .harnesses.pi.binary + ")" else "UNAVAILABLE (" + (.harnesses.pi.health // "missing") + ")" end),
           "  - litellm  (Local AI Cluster GW): " + (if .harnesses.litellm_gateway.online then "ONLINE (" + (.harnesses.litellm_gateway.base_url // "") + ")" elif .harnesses.litellm_gateway.configured then "OFFLINE (" + (.harnesses.litellm_gateway.base_url // "") + ")" else "NOT_CONFIGURED (set AFK_LITELLM_BASE_URL or .router.litellm_base_url)" end),
           "",
-          "Entitlement & Subscription Pools (5-Hour Rolling Window & Shared Accounts):",
-          (.pools | to_entries[] | "  - " + .key + " [" + .value.provider + " / " + .value.pool_tier + " / cost=" + .value.cost_class + "]: state=" + .value.state + " remaining=" + (.value.remaining_units_5h|tostring) + "/" + (.value.capacity_5h|tostring) + " (" + (.value.headroom_pct|tostring) + "% free, active_5h=" + (.value.active_sessions_5h|tostring) + ", harnesses=" + ((.value.harnesses_feeding_pool // []) | join("+")) + ")")
+          "Entitlement & Subscription Pools (Live Provider Quota, TTL Signals & Shared Accounts):",
+          (.pools | to_entries[] | "  - " + .key + " [" + .value.provider + " / " + .value.pool_tier + " / cost=" + .value.cost_class + "]: state=" + .value.state + " used=" + (.value.used_pct|tostring) + "% remaining=" + (.value.remaining_units_5h|tostring) + "/" + (.value.capacity_5h|tostring) + " (" + (.value.headroom_pct|tostring) + "% free, src=" + (.value.quota_source // "local") + (if .value.weekly_used_pct != null then ", weekly=" + (.value.weekly_used_pct|tostring) + "%" else "" end) + (if .value.resets_at != null then ", resets=" + (.value.resets_at | sub("\\.[0-9]+"; "")) else "" end) + (if .value.degraded_reason != null then ", reason=" + (.value.degraded_reason[0:56]) else "" end) + ", harnesses=" + ((.value.harnesses_feeding_pool // []) | join("+")) + ")")
         ' <<<"$p_out"
       fi
       return 0 ;;

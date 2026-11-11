@@ -951,5 +951,112 @@ assert_eq "Autonomous factory poll claims todo issue HOM-99 via atomic checkout,
   "$(jq -r '"\(.dispatched_count):\(.dispatched[0].job_id):\(.dispatched[0].stage)"' <<<"$POLL_OUT"):$([[ -f "$PC_REPO/poller_ok.go" ]] && echo landed || echo missing)" \
   "1:hom-99:merged:landed"
 
+# ----------------------------------------------------------------------------
+# 11. Live Quota Accuracy: Anthropic OAuth 7d/5h Telemetry, Codex rate_limits,
+#     Transient Timeout TTL Recovery & Unauthenticated Pool Gating
+# ----------------------------------------------------------------------------
+head1 "11. Live quota accuracy (Anthropic OAuth 97%/82%, Codex rate_limits, transient timeout TTL, unauthenticated xai-grok)"
+
+QUOTA_TMP="$TMPROOT/quota-accuracy"
+mkdir -p "$QUOTA_TMP/codex-sessions" "$QUOTA_TMP/bin"
+for hbin in claude codex agy opencode; do
+  cat > "$QUOTA_TMP/bin/$hbin" <<'SH'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "--version" ]]; then echo "1.0.0"; exit 0; fi
+exit 0
+SH
+  chmod +x "$QUOTA_TMP/bin/$hbin"
+done
+
+cat > "$QUOTA_TMP/claude-97.json" <<'JSON'
+{
+  "five_hour": null,
+  "seven_day": {
+    "utilization": 97.0,
+    "resets_at": "2026-11-13T20:59:59Z"
+  },
+  "extra_usage": {
+    "is_enabled": false,
+    "disabled_reason": "out_of_credits"
+  },
+  "limits": [
+    {"kind": "weekly_all", "group": "weekly", "percent": 97, "severity": "critical", "is_active": true}
+  ]
+}
+JSON
+
+cat > "$QUOTA_TMP/claude-82.json" <<'JSON'
+{
+  "five_hour": {"utilization": 25.0},
+  "seven_day": {
+    "utilization": 82.0,
+    "resets_at": "2026-11-13T20:59:59Z"
+  },
+  "extra_usage": {"is_enabled": false},
+  "limits": [
+    {"kind": "weekly_all", "group": "weekly", "percent": 82, "severity": "warning", "is_active": true}
+  ]
+}
+JSON
+
+FUTURE_EPOCH=$(( $(date -u +%s) + 43200 ))
+cat > "$QUOTA_TMP/codex-sessions/rollout-2026-11-11T01-00-00-test.jsonl" <<EOF
+{"type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","primary":{"used_percent":84.0,"window_minutes":10080,"resets_at":$FUTURE_EPOCH},"secondary":null,"plan_type":"pro"}}}
+EOF
+
+STALE_TIMEOUT_EP=$(( $(date -u +%s) - 1800 ))
+cat > "$QUOTA_TMP/signals-stale-timeout.json" <<EOF
+{
+  "pools": {
+    "antigravity-pool": {
+      "used_pct": 100,
+      "degraded_reason": "stage_timeout_900s",
+      "updated_epoch": $STALE_TIMEOUT_EP
+    }
+  }
+}
+EOF
+
+cat > "$QUOTA_TMP/oc-auth-no-xai.json" <<'JSON'
+{
+  "openai": {"type": "oauth", "accountId": "acct_qtest"}
+}
+JSON
+cat > "$QUOTA_TMP/codex-auth.json" <<'JSON'
+{"auth_mode": "oauth", "tokens": {"account_id": "acct_qtest"}}
+JSON
+
+Q_POOLS_97="$(
+  unset AFK_ROUTER_HARNESS_LIST
+  AFK_HARNESS_BIN_DIR_OVERRIDE="$QUOTA_TMP/bin" \
+  AFK_ROUTER_BENCHMARKS_FILE="$KIT_ROOT/files/model-router/benchmarks.json" \
+  AFK_ROUTER_SIGNALS_FILE="$QUOTA_TMP/signals-stale-timeout.json" \
+  AFK_CLAUDE_USAGE_FIXTURE="$QUOTA_TMP/claude-97.json" \
+  AFK_CODEX_SESSIONS_DIR="$QUOTA_TMP/codex-sessions" \
+  AFK_OPENCODE_AUTH_FILE="$QUOTA_TMP/oc-auth-no-xai.json" \
+  AFK_CODEX_AUTH_FILE="$QUOTA_TMP/codex-auth.json" \
+  AFK_PI_AUTH_FILE="$QUOTA_TMP/nonexistent-pi.json" \
+  bash "$AFK" factory pools --json
+)"
+assert_eq "Live quota probe detects Claude 97% exhausted, Codex 84% warning, expires stale 30m agy timeout, and marks unauthenticated xai-grok offline" \
+  "$(jq -r '"\(.pools["anthropic-max"].state):\(.pools["anthropic-max"].used_pct):\(.pools["anthropic-max"].quota_source):\(.pools["openai-plus"].state):\(.pools["openai-plus"].used_pct):\(.pools["antigravity-pool"].state):\(.pools["xai-grok"].state)"' <<<"$Q_POOLS_97")" \
+  "exhausted:97:anthropic_oauth_api:warning:84:available:offline"
+
+Q_ROUTE_82_LOW="$(
+  unset AFK_ROUTER_HARNESS_LIST
+  AFK_HARNESS_BIN_DIR_OVERRIDE="$QUOTA_TMP/bin" \
+  AFK_ROUTER_BENCHMARKS_FILE="$KIT_ROOT/files/model-router/benchmarks.json" \
+  AFK_ROUTER_SIGNALS_FILE="$QUOTA_TMP/signals-stale-timeout.json" \
+  AFK_CLAUDE_USAGE_FIXTURE="$QUOTA_TMP/claude-82.json" \
+  AFK_CODEX_SESSIONS_DIR="$QUOTA_TMP/codex-sessions" \
+  AFK_OPENCODE_AUTH_FILE="$QUOTA_TMP/oc-auth-no-xai.json" \
+  AFK_CODEX_AUTH_FILE="$QUOTA_TMP/codex-auth.json" \
+  AFK_DISCOVERED_MODELS_FILE="$QUOTA_TMP/empty-disc.json" \
+  bash "$AFK" factory route-preview --repo "$BMAD_REPO" --stage build --risk low --json
+)"
+assert_eq "When Claude is nearly used up (82% warning) and Codex is 84% warning, low-risk build conserves both and routes to agy/gemini-4-carbon" \
+  "$(jq -r '"\(.harness)/\(.model):\(.entitlement_pool)"' <<<"$Q_ROUTE_82_LOW")" \
+  "agy/gemini-4-carbon:antigravity-pool"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
