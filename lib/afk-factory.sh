@@ -738,7 +738,7 @@ afk_factory_invoke_stage_agent() {
               [[ -n "$hs_disabled" ]] && export HINDSIGHT_DISABLED="true"
               local -a gr_eff_args=()
               [[ -n "$routed_effort" ]] && gr_eff_args=(--effort "$routed_effort")
-              "${tmo_cmd[@]}" "$bin_exec" --always-approve --add-dir "$job_dir" --output-format json -m "$routed_model" "${gr_eff_args[@]}" -p "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
+              "${tmo_cmd[@]}" "$bin_exec" --always-approve --output-format json -m "$routed_model" "${gr_eff_args[@]}" -p "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
             ) || h_rc=$?
           else
             h_rc=127

@@ -581,7 +581,6 @@ afk_tooling_sync_paperclip_skills() {
 
     is_bundled="$(jq -r '
       if (((.folderPath // "") | startswith("bundled/"))
-          or ((.sourceBadge // "") == "paperclip")
           or ((.sourceLabel // "") == "Paperclip bundled")
           or ((.key // "") | startswith("paperclipai/paperclip/")))
       then "true" else "false" end
@@ -943,17 +942,34 @@ afk_tooling_prepare_worktree() {
       rendered="$(_afk_tooling_render_mcp_doc "{}" "$mcp_mode" "$litellm_url" "$mcp_arr" "$reg")"
       if (( $(jq -r '.synced_mcp | length' <<<"$rendered") > 0 )); then
         mcp_doc_str="$(jq '.doc' <<<"$rendered")"
-        printf '%s\n' "$mcp_doc_str" > "$wt_dir/.mcp.json"
-        grep -qxF ".mcp.json" "$eph_file" 2>/dev/null || printf '.mcp.json\n' >> "$eph_file"
-
-        # Also materialize opencode.json for OpenCode harness if not already present/tracked
-        local oc_tracked=false
-        if [[ -d "$wt_dir/.git" || -f "$wt_dir/.git" ]] && git -C "$wt_dir" ls-files --error-unmatch "opencode.json" >/dev/null 2>&1; then
-          oc_tracked=true
+        # In live CLI harness runs, drop unreachable HTTP/SSE MCP endpoints so offline gateways never break CLI harness startup
+        if [[ "${AFK_FACTORY_LIVE_HARNESS:-0}" == "1" && -z "${AFK_FACTORY_AGENT_RUNNER:-}" && "${AFK_CURL_BIN:-curl}" == "curl" ]]; then
+          local -a http_pairs=()
+          mapfile -t http_pairs < <(jq -r '(.mcpServers // {}) | to_entries[] | select((.value.url // "") != "") | "\(.key)|\(.value.url)"' <<<"$mcp_doc_str" 2>/dev/null || true)
+          local hp s_key s_url
+          for hp in "${http_pairs[@]:-}"; do
+            [[ -n "$hp" ]] || continue
+            s_key="${hp%%|*}"
+            s_url="${hp#*|}"
+            if ! curl -sS -o /dev/null --connect-timeout 2 --max-time 3 "$s_url" >/dev/null 2>&1; then
+              mcp_doc_str="$(jq --arg k "$s_key" 'del(.mcpServers[$k])' <<<"$mcp_doc_str")"
+              printf 'skipped unreachable HTTP MCP server %s (%s)\n' "$s_key" "$s_url" >> "$job_dir/tooling-warnings.log"
+            fi
+          done
         fi
-        if [[ "$oc_tracked" == "false" ]] && { [[ ! -f "$wt_dir/opencode.json" ]] || grep -qxF "opencode.json" "$eph_file" 2>/dev/null; }; then
-          _afk_tooling_render_opencode_doc "{}" "$mcp_doc_str" > "$wt_dir/opencode.json"
-          grep -qxF "opencode.json" "$eph_file" 2>/dev/null || printf 'opencode.json\n' >> "$eph_file"
+        if (( $(jq -r '(.mcpServers // {}) | length' <<<"$mcp_doc_str") > 0 )); then
+          printf '%s\n' "$mcp_doc_str" > "$wt_dir/.mcp.json"
+          grep -qxF ".mcp.json" "$eph_file" 2>/dev/null || printf '.mcp.json\n' >> "$eph_file"
+
+          # Also materialize opencode.json for OpenCode harness if not already present/tracked
+          local oc_tracked=false
+          if [[ -d "$wt_dir/.git" || -f "$wt_dir/.git" ]] && git -C "$wt_dir" ls-files --error-unmatch "opencode.json" >/dev/null 2>&1; then
+            oc_tracked=true
+          fi
+          if [[ "$oc_tracked" == "false" ]] && { [[ ! -f "$wt_dir/opencode.json" ]] || grep -qxF "opencode.json" "$eph_file" 2>/dev/null; }; then
+            _afk_tooling_render_opencode_doc "{}" "$mcp_doc_str" > "$wt_dir/opencode.json"
+            grep -qxF "opencode.json" "$eph_file" 2>/dev/null || printf 'opencode.json\n' >> "$eph_file"
+          fi
         fi
       fi
     fi
