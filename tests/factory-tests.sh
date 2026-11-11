@@ -1280,5 +1280,215 @@ assert_eq "Headless grok CLI runner passes --effort high and extracts .text + to
   "$(head -n 1 "$GF_TMP/grok-out.md"):$(jq -r '.used_tokens' <<<"$GROK_EXEC_RES"):$(grep -c -- '--effort high' "$GF_TMP/grok-invocations.log")" \
   "VERDICT: PASS:4120:1"
 
+# ----------------------------------------------------------------------------
+# 13. Paperclip Central Tooling + Skills Auto-Bridge, 3-Tier Precedence,
+#     Studio Publisher & Zero-Pollution Ephemeral Worktree Materialization
+# ----------------------------------------------------------------------------
+head1 "13. Paperclip Central Tooling + Skills Auto-Bridge, 3-tier fallback, Studio publish & clean worktree git merges"
+
+BRIDGE_TMP="$TMPROOT/pc-bridge"
+mkdir -p "$BRIDGE_TMP/curl-bin" "$BRIDGE_TMP/state" "$BRIDGE_TMP/skills-store"
+BRIDGE_REQ_LOG="$BRIDGE_TMP/requests.jsonl"
+: > "$BRIDGE_REQ_LOG"
+
+cat > "$BRIDGE_TMP/paperclip.json" <<JSON
+{
+  "schema": "afk-paperclip-config/2",
+  "api_url": "https://paperclip.bridge.test",
+  "company_id": "4ffcc005-8076-4062-b72e-e4f2d899ecb0",
+  "board_user_id": "emXp8Svi8ncWyL1EORTkRNQYjFjCdQon",
+  "host": {
+    "label": "ubuntu-devbox",
+    "agent_id": "479f0f09-ee4a-4b31-902b-b662d906f41b",
+    "key_ref": "op://develop/paperclip/KEY"
+  },
+  "projects": []
+}
+JSON
+chmod 600 "$BRIDGE_TMP/paperclip.json"
+
+cat > "$BRIDGE_TMP/curl-bin/curl" <<'BCCURL'
+#!/usr/bin/env bash
+method="GET"; url=""; body=""
+while (( $# > 0 )); do
+  case "$1" in
+    -X) method="$2"; shift 2 ;;
+    -H|-w) shift 2 ;;
+    --data-binary) body="$2"; shift 2 ;;
+    -s|-S|-sS|--max-time) [[ "$1" == "--max-time" ]] && shift 2 || shift ;;
+    http*://*) url="$1"; shift ;;
+    *) shift ;;
+  esac
+done
+if [[ -n "${BRIDGE_REQ_LOG:-}" ]]; then
+  jq -cn --arg m "$method" --arg u "$url" --arg b "$body" \
+    '{method:$m, url:$u, body:(try ($b | fromjson) catch $b)}' >> "$BRIDGE_REQ_LOG"
+fi
+case "$method $url" in
+  "GET "*"/api/agents/479f0f09-ee4a-4b31-902b-b662d906f41b/skills")
+    printf '%s200' '{"adapterType":"process","supported":false,"desiredSkills":["company/4ffcc005-8076-4062-b72e-e4f2d899ecb0/afk-fleet-tooling","company/4ffcc005-8076-4062-b72e-e4f2d899ecb0/qa-acceptance"],"desiredSkillEntries":[{"slug":"afk-fleet-tooling"},{"slug":"qa-acceptance"}]}' ;;
+  "POST "*"/api/agents/"*"/skills/sync")
+    printf '%s200' '{"ok":true,"desiredSkills":["company/4ffcc005-8076-4062-b72e-e4f2d899ecb0/afk-fleet-tooling"]}' ;;
+  "GET "*"/api/companies/"*"/skills")
+    if [[ -f "${BRIDGE_STATE_SKILLS:-}" ]]; then
+      printf '%s200' "$(cat "$BRIDGE_STATE_SKILLS")"
+    else
+      cat <<'SKJSON' | tr -d '\n'
+[
+  {"id":"b0000001-0000-4000-8000-000000000001","slug":"agentmail","key":"paperclipai/paperclip/agentmail","folderPath":"bundled/paperclip-core","sourceBadge":"paperclip","sourceLabel":"Paperclip bundled","editable":false,"fileInventory":[{"path":"SKILL.md"}]},
+  {"id":"b0000002-0000-4000-8000-000000000002","slug":"complain","key":"paperclipai/paperclip/complain","folderPath":"bundled/paperclip-core","sourceBadge":"paperclip","sourceLabel":"Paperclip bundled","editable":false,"fileInventory":[{"path":"SKILL.md"}]},
+  {"id":"c0000001-0000-4000-8000-000000000001","slug":"afk-fleet-tooling","key":"company/4ffcc005-8076-4062-b72e-e4f2d899ecb0/afk-fleet-tooling","editable":true,"description":"Fleet MCP Gateway","fileInventory":[{"path":"SKILL.md"},{"path":"mcp.json"}]},
+  {"id":"c0000002-0000-4000-8000-000000000002","slug":"qa-acceptance","key":"company/4ffcc005-8076-4062-b72e-e4f2d899ecb0/qa-acceptance","editable":true,"description":"QA Acceptance Playbook","fileInventory":[{"path":"SKILL.md"}]}
+]
+SKJSON
+      printf '200'
+    fi ;;
+  "POST "*"/api/companies/"*"/skills")
+    printf '%s201' '{"id":"c0000099-0000-4000-8000-000000000099","slug":"afk-fleet-tooling"}' ;;
+  "PATCH "*"/api/companies/"*"/skills/"*"/files")
+    printf '%s200' '{"ok":true,"editable":true}' ;;
+  "GET "*"/api/companies/"*"/skills/c0000001-0000-4000-8000-000000000001/files?path=SKILL.md")
+    printf '%s200' '{"path":"SKILL.md","content":"---\nname: afk-fleet-tooling\ndescription: Fleet MCP Gateway\n---\n# Fleet Tooling\n"}' ;;
+  "GET "*"/api/companies/"*"/skills/c0000001-0000-4000-8000-000000000001/files?path=mcp.json")
+    mcp_c='{"mcp_mode":"litellm","litellm_mcp_url":"http://gateway.example.com:4000","enabled_mcp":["postgres-ro","github","homelab-prom"],"enabled_skills":[],"mcpServers":{"homelab-prom":{"type":"http","url":"http://gateway.example.com:8080/mcp","headers":{"Authorization":"Bearer ${PROM_MCP_TOKEN}"}}}}'
+    jq -cn --arg c "$mcp_c" '{path:"mcp.json", content:$c}' | tr -d '\n'
+    printf '200' ;;
+  "GET "*"/api/companies/"*"/skills/c0000002-0000-4000-8000-000000000002/files?path=SKILL.md")
+    printf '%s200' '{"path":"SKILL.md","content":"---\nname: qa-acceptance\ndescription: QA Acceptance Playbook\n---\n# QA Acceptance\n"}' ;;
+  *)
+    printf '{"ok":true}200' ;;
+esac
+BCCURL
+chmod +x "$BRIDGE_TMP/curl-bin/curl"
+
+# 13a: Bundled Paperclip internal skills skipped; Studio mcp.json + desiredSkills synced
+BRIDGE_SYNC_OUT="$(
+  AFK_PAPERCLIP_CONFIG="$BRIDGE_TMP/paperclip.json" \
+  AFK_PAPERCLIP_SKILLS_DIR="$BRIDGE_TMP/skills-store" \
+  AFK_TOOLING_REGISTRY_FILE="$BRIDGE_TMP/tooling.json" \
+  OP_SERVICE_ACCOUNT_TOKEN=stub \
+  AFK_OP_BIN="$STUB_BIN/op" \
+  AFK_CURL_BIN="$BRIDGE_TMP/curl-bin/curl" \
+  bash "$AFK" factory tooling --sync-paperclip-skills --json
+)"
+assert_eq "Paperclip sync skips bundled internal skills (agentmail, complain) and syncs Studio mcp.json + qa-acceptance" \
+  "$(jq -r '"\(.ok):\(.skipped_bundled_count):\(.synced_count):\(.central_mcp_synced):\(.central_source_skill):\([.synced_skills[].slug] | sort | join(","))"' <<<"$BRIDGE_SYNC_OUT"):$([[ -d "$BRIDGE_TMP/skills-store/agentmail" ]] && echo leaked || echo clean)" \
+  "true:2:2:true:afk-fleet-tooling:afk-fleet-tooling,qa-acceptance:clean"
+
+# 13b: Three-tier config precedence (Paperclip Central -> Repo Override -> Standalone Offline Fallback)
+REPO_PC_INHERIT="$BRIDGE_TMP/repo-inherit"
+mkdir -p "$REPO_PC_INHERIT"
+INHERIT_SYNC="$(
+  AFK_PAPERCLIP_CONFIG="$BRIDGE_TMP/paperclip.json" \
+  AFK_PAPERCLIP_SKILLS_DIR="$BRIDGE_TMP/skills-store" \
+  AFK_TOOLING_REGISTRY_FILE="$BRIDGE_TMP/tooling.json" \
+  OP_SERVICE_ACCOUNT_TOKEN=stub \
+  AFK_OP_BIN="$STUB_BIN/op" \
+  AFK_CURL_BIN="$BRIDGE_TMP/curl-bin/curl" \
+  bash "$AFK" factory tooling-sync --repo "$REPO_PC_INHERIT" --json
+)"
+assert_eq "Zero-flag tooling-sync inherits Paperclip Central LiteLLM gateway, custom MCP headers, and attached desiredSkills (excluding carrier)" \
+  "$(jq -r '"\(.config_source):\(.mcp_mode):\(.synced_skills | join(","))"' <<<"$INHERIT_SYNC")|$(jq -r '"\(.mcpServers["postgres-ro"].url)|\(.mcpServers["homelab-prom"].url)"' "$REPO_PC_INHERIT/.mcp.json")|$([[ -f "$REPO_PC_INHERIT/.agents/skills/qa-acceptance/SKILL.md" && ! -d "$REPO_PC_INHERIT/.agents/skills/afk-fleet-tooling" ]] && echo skills_ok || echo bad)" \
+  "paperclip-central:litellm:qa-acceptance|http://gateway.example.com:4000/mcp/postgres-ro|http://gateway.example.com:8080/mcp|skills_ok"
+
+REPO_LOCAL_OVR="$BRIDGE_TMP/repo-override"
+mkdir -p "$REPO_LOCAL_OVR"
+AFK_TOOLING_REGISTRY_FILE="$BRIDGE_TMP/tooling.json" bash "$AFK" factory tooling-register-mcp --name sqlite-local --transport stdio --target sqlite-mcp --args "--ro" >/dev/null
+OVR_SYNC="$(
+  AFK_PAPERCLIP_CONFIG="$BRIDGE_TMP/paperclip.json" \
+  AFK_PAPERCLIP_SKILLS_DIR="$BRIDGE_TMP/skills-store" \
+  AFK_TOOLING_REGISTRY_FILE="$BRIDGE_TMP/tooling.json" \
+  bash "$AFK" factory tooling-sync --repo "$REPO_LOCAL_OVR" --mcp-mode standalone --enable-mcp sqlite-local --json
+)"
+STANDALONE_DISC="$(
+  AFK_PAPERCLIP_CONFIG="$BRIDGE_TMP/no-paperclip.json" \
+  AFK_TOOLING_REGISTRY_FILE="$BRIDGE_TMP/standalone-only.json" \
+  AFK_TOOLING_HERMETIC=1 \
+  bash "$AFK" factory tooling --json
+)"
+assert_eq "Explicit repo override beats Paperclip Central, and AFK without Paperclip runs in standalone-local mode" \
+  "$(jq -r '"\(.config_source):\(.mcp_mode)"' <<<"$OVR_SYNC"):$(jq -r '.mcpServers["sqlite-local"].command' "$REPO_LOCAL_OVR/.mcp.json")|$(jq -r '"\(.config_source):\(.mcp_mode)"' <<<"$STANDALONE_DISC")" \
+  "repo-override:standalone:sqlite-mcp|standalone-local:standalone"
+
+# 13c: One-command Studio Publisher (`tooling-publish-paperclip`)
+printf '[]' > "$BRIDGE_TMP/empty-skills.json"
+: > "$BRIDGE_REQ_LOG"
+PUB_OUT="$(
+  BRIDGE_REQ_LOG="$BRIDGE_REQ_LOG" \
+  BRIDGE_STATE_SKILLS="$BRIDGE_TMP/empty-skills.json" \
+  AFK_PAPERCLIP_CONFIG="$BRIDGE_TMP/paperclip.json" \
+  AFK_PAPERCLIP_SKILLS_DIR="$BRIDGE_TMP/skills-store" \
+  AFK_TOOLING_REGISTRY_FILE="$BRIDGE_TMP/pub-tooling.json" \
+  OP_SERVICE_ACCOUNT_TOKEN=stub \
+  AFK_OP_BIN="$STUB_BIN/op" \
+  AFK_CURL_BIN="$BRIDGE_TMP/curl-bin/curl" \
+  bash "$AFK" factory tooling-publish-paperclip --mcp-mode litellm --litellm-url "http://gateway.example.com:4000" --enable-mcp "postgres-ro,github" --enable-skills "qa-acceptance" --json
+)"
+assert_eq "tooling-publish-paperclip creates Studio skill, PATCHes mcp.json, and attaches bundle to host agent via POST /skills/sync" \
+  "$(jq -r '"\(.ok):\(.created):\(.attached_to_host_agent)"' <<<"$PUB_OUT")|$(jq -sr '[.[] | select(.method == "POST" or .method == "PATCH") | "\(.method):\(.url | sub("^https://[^/]+"; ""))"] | join(",")' "$BRIDGE_REQ_LOG")" \
+  "true:true:true|POST:/api/companies/4ffcc005-8076-4062-b72e-e4f2d899ecb0/skills,PATCH:/api/companies/4ffcc005-8076-4062-b72e-e4f2d899ecb0/skills/c0000099-0000-4000-8000-000000000099/files,POST:/api/agents/479f0f09-ee4a-4b31-902b-b662d906f41b/skills/sync"
+
+# 13d: Ephemeral job worktree auto-materialization (.mcp.json + opencode.json + .agents/skills) with ZERO git diff pollution on merge
+WT_BRIDGE_REPO="$BRIDGE_TMP/wt-clean-repo"
+mkdir -p "$WT_BRIDGE_REPO/.agents/skills/bmad-agent-dev"
+git -C "$WT_BRIDGE_REPO" init -b main >/dev/null
+git -C "$WT_BRIDGE_REPO" config user.email "factory@afk.test"
+git -C "$WT_BRIDGE_REPO" config user.name "AFK Factory Test"
+cat > "$WT_BRIDGE_REPO/.agents/skills/bmad-agent-dev/SKILL.md" <<'MD'
+---
+name: bmad-agent-dev
+description: Original repo BMAD dev persona
+---
+# Original BMAD Dev
+MD
+printf 'package clean\n' > "$WT_BRIDGE_REPO/main.go"
+git -C "$WT_BRIDGE_REPO" add -A
+git -C "$WT_BRIDGE_REPO" commit -m "chore: initial commit with bmad skill" >/dev/null
+bash "$AFK" factory init --repo "$WT_BRIDGE_REPO" --json >/dev/null
+
+WT_PROBE_FILE="$BRIDGE_TMP/wt-probe.txt"
+WT_BRIDGE_RUNNER="$BRIDGE_TMP/wt-runner.sh"
+cat > "$WT_BRIDGE_RUNNER" <<SH
+#!/usr/bin/env bash
+STAGE="\$1"; ROLE="\$2"; PROMPT="\$3"; OUT="\$4"
+case "\$STAGE" in
+  intake) printf 'VERDICT: ACCEPT\nRISK: low\nSURFACES: code\n## Summary\n- Ready.\n' > "\$OUT" ;;
+  spec)   printf '# Spec\n- Add clean_feature.go.\n' > "\$OUT" ;;
+  build)
+    mcp_u="\$(jq -r '.mcpServers["postgres-ro"].url // "missing"' "\$AFK_FACTORY_WORKTREE/.mcp.json" 2>/dev/null)"
+    oc_u="\$(jq -r '.mcp["postgres-ro"].url // "missing"' "\$AFK_FACTORY_WORKTREE/opencode.json" 2>/dev/null)"
+    sk_ok="\$([[ -f "\$AFK_FACTORY_WORKTREE/.agents/skills/qa-acceptance/SKILL.md" ]] && echo yes || echo no)"
+    bmad_ok="\$(grep -q 'Original BMAD Dev' "\$AFK_FACTORY_WORKTREE/.agents/skills/bmad-agent-dev/SKILL.md" && echo intact || echo overwritten)"
+    git_clean="\$([[ -z "\$(git -C "\$AFK_FACTORY_WORKTREE" status --porcelain)" ]] && echo clean || echo dirty)"
+    prompt_has="\$(grep -q 'qa-acceptance' "\$AFK_FACTORY_COMPILED_PROMPT" && grep -q 'postgres-ro' "\$AFK_FACTORY_COMPILED_PROMPT" && echo both || echo missing)"
+    printf '%s|%s|%s|%s|%s|%s\n' "\$mcp_u" "\$oc_u" "\$sk_ok" "\$bmad_ok" "\$git_clean" "\$prompt_has" > "$WT_PROBE_FILE"
+    printf 'package clean\nfunc CleanFeature() bool { return true }\n' > "\$AFK_FACTORY_WORKTREE/clean_feature.go"
+    printf '## Summary\n- Implemented CleanFeature.\n' > "\$OUT"
+    ;;
+  review-code)
+    printf 'VERDICT: PASS\n## Summary\n- Verified.\n' > "\$OUT" ;;
+esac
+printf '{"used_tokens":2000,"input_tokens":1500,"output_tokens":500,"window_tokens":200000,"compacted":false}\n'
+SH
+chmod +x "$WT_BRIDGE_RUNNER"
+
+WT_RUN_OUT="$(
+  AFK_PAPERCLIP_CONFIG="$BRIDGE_TMP/no-live-pc.json" \
+  AFK_PAPERCLIP_SKILLS_DIR="$BRIDGE_TMP/skills-store" \
+  AFK_TOOLING_REGISTRY_FILE="$BRIDGE_TMP/tooling.json" \
+  AFK_FACTORY_AGENT_RUNNER="$WT_BRIDGE_RUNNER" \
+  bash "$AFK" factory run --repo "$WT_BRIDGE_REPO" --slug cleanproj --job job-ephemeral-bridge --title "Verify clean ephemeral bridge" --json
+)"
+MERGED_FILES="$(git -C "$WT_BRIDGE_REPO" diff --name-only HEAD~1..HEAD | tr '\n' ',' | sed 's/,$//')"
+LEFTOVER_EXCL="$(grep -c 'AFK-EPHEMERAL' "$WT_BRIDGE_REPO/.git/info/exclude" 2>/dev/null || true)"
+
+assert_eq "Ephemeral worktree exposes Paperclip MCPs (.mcp.json + opencode.json) & skills to agents while leaving BMAD intact" \
+  "$(cat "$WT_PROBE_FILE")" \
+  "http://gateway.example.com:4000/mcp/postgres-ro|http://gateway.example.com:4000/mcp/postgres-ro|yes|intact|clean|both"
+
+assert_eq "Merged commit on main contains ONLY clean_feature.go with zero .mcp.json/opencode.json/.agents/skills pollution and cleaned info/exclude" \
+  "$(jq -r '.stage' <<<"$WT_RUN_OUT"):${MERGED_FILES}:${LEFTOVER_EXCL}:$([[ -f "$WT_BRIDGE_REPO/.mcp.json" || -d "$WT_BRIDGE_REPO/.agents/skills/qa-acceptance" ]] && echo leaked || echo spotless)" \
+  "merged:clean_feature.go:0:spotless"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

@@ -423,14 +423,19 @@ afk_factory_build_stage_prompt() {
     printf -- '- SKIP all interactive activation greetings, icon prefixes, and menu tables (`On Activation` Steps 1-8). Do NOT pause or wait for user menu selection.\n'
     printf -- '- Write your final structured stage artifact directly to `%s` (or output ONLY the exact artifact markdown as your final response with no conversational preamble).\n\n' "$output_file"
     if declare -F afk_tooling_discover >/dev/null 2>&1; then
-      local t_inv t_mcp t_skills
-      t_inv="$(AFK_TOOLING_HERMETIC=1 afk_tooling_discover "$repo" 2>/dev/null || printf '{}')"
+      local t_inv t_mcp t_skills scan_target="$repo" job_wt="" job_slug=""
+      if [[ -f "$job_dir/job.json" ]]; then
+        job_wt="$(jq -r '.worktree_path // empty' "$job_dir/job.json" 2>/dev/null || true)"
+        job_slug="$(jq -r '.slug // empty' "$job_dir/job.json" 2>/dev/null || true)"
+        [[ -n "$job_wt" && -d "$job_wt" ]] && scan_target="$job_wt"
+      fi
+      t_inv="$(AFK_TOOLING_HERMETIC=1 afk_tooling_discover "$scan_target" "$job_slug" 2>/dev/null || printf '{}')"
       t_mcp="$(jq -r '[.project.mcp_servers[]?.name] | join(", ")' <<<"$t_inv" 2>/dev/null || true)"
       t_skills="$(jq -r '[.project.skills[]? | select(.is_bmad | not) | .name] | join(", ")' <<<"$t_inv" 2>/dev/null || true)"
       if [[ -n "$t_mcp" || -n "$t_skills" ]]; then
-        printf '## Project MCP Servers & Custom Skills\n'
-        [[ -n "$t_mcp" ]] && printf -- '- Project MCP Servers (`%s` mode): %s\n' "$(jq -r '.mcp_mode // "standalone"' <<<"$t_inv")" "$t_mcp"
-        [[ -n "$t_skills" ]] && printf -- '- Project Custom Skills: %s\n' "$t_skills"
+        printf '## Project MCP Servers & Custom Skills (`%s`)\n' "$(jq -r '.config_source // "standalone-local"' <<<"$t_inv")"
+        [[ -n "$t_mcp" ]] && printf -- '- Active MCP Servers (`%s` mode): %s\n' "$(jq -r '.mcp_mode // "standalone"' <<<"$t_inv")" "$t_mcp"
+        [[ -n "$t_skills" ]] && printf -- '- Active Custom/Fleet Skills (`.agents/skills/`): %s\n' "$t_skills"
         printf '\n---\n\n'
       fi
     fi
@@ -1259,6 +1264,9 @@ EOF
 
   local hired_json
   hired_json="$(afk_pch_ensure_project_team "$slug" "$abs_repo" "$harness" "pm,dev,reviewer,approver" "$issue_id" "$api_url" "$key" "$company_id" "$host_agent_id")"
+  if declare -F afk_tooling_prepare_worktree >/dev/null 2>&1; then
+    afk_tooling_prepare_worktree "$abs_repo" "$wt_dir" "$job_dir" "$slug"
+  fi
 
   # Step 2: Intake (PM — John in BMAD) — skip if already completed on disk (resume-safe)
   if [[ ! -s "$job_dir/intake.md" ]]; then
@@ -1294,6 +1302,7 @@ EOF
     return 0
   elif [[ "$intake_verdict" == "REJECT" ]]; then
     jq -c --arg now "$now" '.stage = "rejected" | .active_agent = null | .updated_at = $now' "$job_file" > "$job_file.tmp" && mv "$job_file.tmp" "$job_file"
+    declare -F afk_tooling_cleanup_worktree >/dev/null 2>&1 && afk_tooling_cleanup_worktree "$abs_repo" "$wt_dir" "$job_dir"
     afk_pch_retire_project_agents "$slug" "all" "$api_url" "$key" >/dev/null
     cat "$job_file"
     return 0
@@ -1303,6 +1312,9 @@ EOF
   local full_roles_csv
   full_roles_csv="$(afk_roster_roles_for_job "$risk" "$surfaces_line")"
   hired_json="$(afk_pch_ensure_project_team "$slug" "$abs_repo" "$harness" "$full_roles_csv" "$issue_id" "$api_url" "$key" "$company_id" "$host_agent_id")"
+  if declare -F afk_tooling_prepare_worktree >/dev/null 2>&1; then
+    afk_tooling_prepare_worktree "$abs_repo" "$wt_dir" "$job_dir" "$slug"
+  fi
 
   # Step 3: Spec (PM or Architect when high/critical-risk or architecture) — skip if completed on disk
   local spec_role="pm"
@@ -1349,8 +1361,10 @@ EOF
     afk_pch_assign_stage "$slug" "dev" "$issue_id" "AFK Factory build round ${round} started with \`${slug}-dev\`." "$api_url" "$key" "$run_id"
     afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "dev" "build" "$job_dir/spec.md" "$job_dir/build.md" "$issue_id" "$api_url" "$key" "" "$company_id" "$host_agent_id" "$project_id" "$run_id"
     rm -f "$job_dir/human-feedback.md"
+    declare -F afk_tooling_unstage_ephemeral >/dev/null 2>&1 && afk_tooling_unstage_ephemeral "$wt_dir" "$job_dir"
     if [[ "$wt_dir" != "$abs_repo" ]] && [[ -n "$(git -C "$wt_dir" status --porcelain 2>/dev/null || true)" ]]; then
       git -C "$wt_dir" add -A -- . ':!.afk' >/dev/null 2>&1 || git -C "$wt_dir" add -A >/dev/null 2>&1 || true
+      declare -F afk_tooling_unstage_ephemeral >/dev/null 2>&1 && afk_tooling_unstage_ephemeral "$wt_dir" "$job_dir"
       git -C "$wt_dir" commit -m "feat($job_id): $title" >/dev/null 2>&1 || true
     fi
 
@@ -1501,6 +1515,9 @@ EOF
      | .merge_evaluation = $meval
      | .active_agent = (if $st == "needs-human" then "human" else null end)
      | .updated_at = $now' "$job_file" > "$job_file.tmp" && mv "$job_file.tmp" "$job_file"
+  if [[ "$final_stage" == "merged" ]] && declare -F afk_tooling_cleanup_worktree >/dev/null 2>&1; then
+    afk_tooling_cleanup_worktree "$abs_repo" "$wt_dir" "$job_dir"
+  fi
   _afk_factory_touch_heartbeat "$job_dir" "$final_stage" "" "done"
 
   if [[ "$json_mode" == "true" ]]; then
@@ -1852,6 +1869,7 @@ EOF
           "## AFK Factory — Human Approval Received & Merged\n\nLanded commit \`${merged_sha}\` from \`${j_branch}\`." >/dev/null 2>&1 || true
         afk_pc_curl PATCH "$api_url/api/issues/$j_issue" "$key" "$run_id" '{"status":"done"}' >/dev/null 2>&1 || true
         afk_pch_retire_project_agents "$j_slug" "all" "$api_url" "$key" >/dev/null 2>&1 || true
+        declare -F afk_tooling_cleanup_worktree >/dev/null 2>&1 && afk_tooling_cleanup_worktree "$j_repo" "$j_wt" "$j_dir"
 
         jq -c --arg now "$now_iso" --arg sha "$merged_sha" --arg lcid "$newest_cid" \
           '.stage = "merged" | .decision = "APPROVE" | .merged_commit = $sha | .active_agent = null | .pending_interaction_id = null | .last_seen_comment_id = (if $lcid == "" then .last_seen_comment_id else $lcid end) | .updated_at = $now' \
@@ -1935,6 +1953,7 @@ afk_factory_poll_paperclip() {
   fi
 
   if [[ -n "$api_url" && -n "$company_id" && -n "$key" ]]; then
+    declare -F afk_tooling_ensure_paperclip_synced >/dev/null 2>&1 && afk_tooling_ensure_paperclip_synced
     local b_chk b_ok="true"
     if declare -F afk_pch_check_budget >/dev/null 2>&1 && [[ -n "$host_agent_id" ]]; then
       b_chk="$(afk_pch_check_budget "$api_url" "$key" "$host_agent_id")"
@@ -2172,7 +2191,7 @@ afk_cmd_factory() {
   local stage_arg="" risk_arg="low" builder_family="" round_arg="1" surfaces_arg="" diff_lines_arg="0"
   local check_updates=false dry_run_flag=false harness_arg="" sync_flag=false free_only=false
   local sync_pc_skills=false bg_flag=false
-  local mcp_mode_arg="standalone" enable_mcp_csv="" enable_skills_csv="" litellm_url_arg=""
+  local mcp_mode_arg="" enable_mcp_csv="" enable_skills_csv="" litellm_url_arg=""
   local item_name="" transport_arg="stdio" target_arg="" args_csv="" desc_arg="" skill_path_arg=""
   local stale_sec_arg=""
 
@@ -2427,17 +2446,22 @@ afk_cmd_factory() {
         if [[ "$json_mode" == "true" ]]; then
           printf '%s\n' "$pcs_out"
         else
-          jq -r '"Synced \(.synced_count) skill(s) from Paperclip Company Skills Store into \(.skills_dir): \([.synced_skills[].slug] | join(", "))"' <<<"$pcs_out"
+          jq -r '"Synced \(.synced_count) skill(s) from Paperclip Skills Studio into \(.skills_dir) (skipped_bundled=\(.skipped_bundled_count // 0), central_mcp=\(.central_source_skill // "none")): \([.synced_skills[].slug] | if length > 0 then join(", ") else "none" end)"' <<<"$pcs_out"
         fi
         return 0
       fi
       local tl_out
-      tl_out="$(afk_tooling_discover "$repo")"
+      tl_out="$(afk_tooling_discover "$repo" "$slug")"
       if [[ "$json_mode" == "true" ]]; then
         printf '%s\n' "$tl_out"
       else
         jq -r '
-          "AFK Skills & MCP Tooling Inventory (mcp_mode=\(.mcp_mode), litellm_mcp=\(.litellm_mcp_url // "none")):",
+          "AFK Skills & MCP Tooling Inventory (source=\(.config_source), mcp_mode=\(.mcp_mode), litellm_mcp=\(.litellm_mcp_url // "none")):",
+          (if .paperclip_central != null then
+            "  Paperclip Central Studio (synced=\(.paperclip_central.synced_at), bundle=\(.paperclip_central.source_skill // "none")):\n    - Central MCPs: \([.paperclip_central.enabled_mcp[]?] | if length > 0 then join(", ") else "none" end) | Attached/Central Skills: \([(.paperclip_central.enabled_skills // [])[], (.paperclip_central.desired_skills // [])[]] | unique | if length > 0 then join(", ") else "none" end)"
+          else
+            "  Paperclip Central Studio: not synced (standalone host mode)"
+          end),
           "  Project (\(.repo_path // "none")):",
           "    - Skills: \(.project.skills_count) total (\(.project.non_bmad_skills_count) non-BMAD custom)",
           "    - MCP Servers (\(.project.mcp_count)): \([.project.mcp_servers[].name] | if length > 0 then join(", ") else "none" end)",
@@ -2454,11 +2478,20 @@ afk_cmd_factory() {
         return 1
       fi
       local ts_out
-      ts_out="$(afk_tooling_sync_project "$repo" "$mcp_mode_arg" "$enable_mcp_csv" "$enable_skills_csv" "$litellm_url_arg")"
+      ts_out="$(afk_tooling_sync_project "$repo" "$mcp_mode_arg" "$enable_mcp_csv" "$enable_skills_csv" "$litellm_url_arg" "$slug")"
       if [[ "$json_mode" == "true" ]]; then
         printf '%s\n' "$ts_out"
       else
-        jq -r '"Synced tooling to \(.repo_path) (mcp_mode=\(.mcp_mode)): mcp=[\(.synced_mcp_servers | join(", "))] skills=[\(.synced_skills | join(", "))]"' <<<"$ts_out"
+        jq -r '"Synced tooling to \(.repo_path) (source=\(.config_source), mcp_mode=\(.mcp_mode)): mcp=[\(.synced_mcp_servers | join(", "))] skills=[\(.synced_skills | join(", "))]"' <<<"$ts_out"
+      fi
+      return 0 ;;
+    tooling-publish-paperclip)
+      local pub_slug="${item_name:-afk-fleet-tooling}" tp_out
+      tp_out="$(afk_tooling_publish_paperclip "$mcp_mode_arg" "$litellm_url_arg" "$enable_mcp_csv" "$enable_skills_csv" "$pub_slug")" || return 1
+      if [[ "$json_mode" == "true" ]]; then
+        printf '%s\n' "$tp_out"
+      else
+        jq -r '"Published Paperclip Studio bundle \(.skill_slug) (\(.skill_id)): mcp_mode=\(.mcp_mode) litellm_mcp=\(.litellm_mcp_url // "none") mcp=[\(.enabled_mcp | join(", "))] skills=[\(.enabled_skills | join(", "))] attached_to_host=\(.attached_to_host_agent)"' <<<"$tp_out"
       fi
       return 0 ;;
     tooling-register-mcp)
@@ -2540,7 +2573,7 @@ afk_cmd_factory() {
       afk_factory_status "$repo" "$slug" "$json_mode"
       return $? ;;
     *)
-      afk_warn "factory: unknown subcommand '$(afk_safe_diagnostic "$subcmd")' (expected: roster, init, run, poll, sync-reviews, resume, watchdog, pools, harnesses, update-harnesses, models, tooling, tooling-sync, tooling-register-mcp, tooling-register-skill, route-preview, sync-benchmarks, status, context-check, evaluate-merge, retire)"
+      afk_warn "factory: unknown subcommand '$(afk_safe_diagnostic "$subcmd")' (expected: roster, init, run, poll, sync-reviews, resume, watchdog, pools, harnesses, update-harnesses, models, tooling, tooling-sync, tooling-publish-paperclip, tooling-register-mcp, tooling-register-skill, route-preview, sync-benchmarks, status, context-check, evaluate-merge, retire)"
       return 1 ;;
   esac
 }
