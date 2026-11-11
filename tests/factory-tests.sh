@@ -555,5 +555,122 @@ assert_eq "Single factory run automatically loops Round 1 CHANGES_REQUESTED -> R
   "$(jq -r '"\(.round):\(.stage):\(.decision)"' <<<"$MULTI_ROUND_OUT")" \
   "2:merged:APPROVE"
 
+# ----------------------------------------------------------------------------
+# 9. Factory Stall Watchdog, Auto-Nudge Recovery & Universal Stage Timeout
+# ----------------------------------------------------------------------------
+printf '\n9. Factory stall watchdog, auto-nudge recovery & universal stage timeout\n'
+
+WD_REPO="$TMPROOT/repo-watchdog"
+mkdir -p "$WD_REPO"
+git -C "$WD_REPO" init -b main >/dev/null 2>&1
+git -C "$WD_REPO" config user.email "test@example.com"
+git -C "$WD_REPO" config user.name "AFK Test"
+echo "watchdog" > "$WD_REPO/README.md"
+git -C "$WD_REPO" add README.md
+git -C "$WD_REPO" commit -m "init" >/dev/null 2>&1
+bash "$AFK" factory init --repo "$WD_REPO" >/dev/null
+
+# 9a: Healthy active job (current bash PID $$, fresh epoch) is NOT interrupted
+ACTIVE_DIR="$WD_REPO/.afk/jobs/job-healthy"
+mkdir -p "$ACTIVE_DIR"
+NOW_EP="$(date -u +%s)"
+cat > "$ACTIVE_DIR/job.json" <<JSON
+{"schema":"afk-factory-job/1","id":"job-healthy","slug":"wd","repo_path":"$WD_REPO","worktree_path":"$WD_REPO","stage":"build","round":1}
+JSON
+cat > "$ACTIVE_DIR/heartbeat.json" <<JSON
+{"schema":"afk-factory-heartbeat/1","pid":$$,"state":"running","stage":"build","role":"dev","last_beat_epoch":$NOW_EP,"nudge_count":0}
+JSON
+
+# 9b: Dead coordinator mid-build (intake + spec already saved on disk) -> nudged & resumed to completion
+STALLED_DIR="$WD_REPO/.afk/jobs/job-crashed"
+mkdir -p "$STALLED_DIR/round-1"
+cat > "$STALLED_DIR/job.json" <<JSON
+{"schema":"afk-factory-job/1","id":"job-crashed","slug":"wd","title":"Recover stalled build","repo_path":"$WD_REPO","worktree_path":"$WD_REPO","stage":"build","round":1}
+JSON
+printf 'VERDICT: ACCEPT\nRISK: low\nSURFACES: code\n## Summary\n- Accepted.\n' > "$STALLED_DIR/intake.md"
+printf '# Spec\n- Finish stalled task.\n' > "$STALLED_DIR/spec.md"
+cat > "$STALLED_DIR/heartbeat.json" <<JSON
+{"schema":"afk-factory-heartbeat/1","pid":999999,"state":"running","stage":"build","role":"dev","last_beat_epoch":$((NOW_EP - 1200)),"nudge_count":0}
+JSON
+
+# 9c: Job that already exhausted max_nudges -> escalates to needs-human instead of looping forever
+CAP_DIR="$WD_REPO/.afk/jobs/job-cap"
+mkdir -p "$CAP_DIR/round-1"
+cat > "$CAP_DIR/job.json" <<JSON
+{"schema":"afk-factory-job/1","id":"job-cap","slug":"wd","title":"Repeatedly stalled job","repo_path":"$WD_REPO","worktree_path":"$WD_REPO","stage":"build","round":1}
+JSON
+cat > "$CAP_DIR/heartbeat.json" <<JSON
+{"schema":"afk-factory-heartbeat/1","pid":999998,"state":"running","stage":"build","role":"dev","last_beat_epoch":$((NOW_EP - 1200)),"nudge_count":2}
+JSON
+
+WD_OUT="$(
+  AFK_WATCHDOG_MAX_NUDGES=2 \
+  OP_SERVICE_ACCOUNT_TOKEN=stub \
+  AFK_OP_BIN="$STUB_BIN/op" \
+  AFK_CURL_BIN="$STUB_BIN/curl" \
+  bash "$AFK" factory watchdog --repo "$WD_REPO" --stale-seconds 600 --json
+)"
+
+assert_eq "Watchdog leaves healthy live PID untouched, nudges+resumes dead runner to APPROVE, and escalates job exceeding max_nudges" \
+  "$(jq -r '[.actions[] | "\(.job_id)=\(.action):\(.stage)"] | sort | join(",")' <<<"$WD_OUT")" \
+  "job-cap=escalated_max_nudges:needs-human,job-crashed=nudged_and_resumed:merged,job-healthy=healthy_running:build"
+
+assert_contains "Watchdog recovery nudge was injected into resumed build prompt" \
+  "$(cat "$STALLED_DIR/.prompt-build-dev.md")" \
+  "Watchdog Stall Recovery Nudge"
+
+# 9d: Subscription harness wall-clock timeout kills hung claude (`sleep 5` > 1s) and fails over in-flight to agy
+HUNG_BIN="$TMPROOT/hung-cli-bin"
+mkdir -p "$HUNG_BIN"
+cat > "$HUNG_BIN/claude" <<'SH'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "--version" ]]; then echo "2.1.322 (Claude Code)"; exit 0; fi
+sleep 5
+exit 0
+SH
+cp "$MOCK_CLI_BIN/agy" "$HUNG_BIN/agy"
+chmod +x "$HUNG_BIN/claude" "$HUNG_BIN/agy"
+
+rm -f "$AFK_ROUTER_SIGNALS_FILE" "$AFK_STATE_DIR/router/pool-signals.json"
+# Clean job-healthy before running timeout test so repo is clean
+rm -rf "$ACTIVE_DIR"
+TMO_JOB_DIR="$WD_REPO/.afk/jobs/job-hung-claude"
+mkdir -p "$TMO_JOB_DIR/round-1"
+printf 'VERDICT: ACCEPT\nRISK: high\nSURFACES: architecture\n## Summary\n- High risk.\n' > "$TMO_JOB_DIR/intake.md"
+cat > "$TMO_JOB_DIR/job.json" <<JSON
+{"schema":"afk-factory-job/1","id":"job-hung-claude","slug":"wd","title":"Timeout failover test","repo_path":"$WD_REPO","worktree_path":"$WD_REPO","stage":"spec","round":1,"risk":"high","surfaces":["architecture"]}
+JSON
+
+# Invoke stage agent directly on high-risk `spec` (where claude/opus is #1 and agy/gemini-4-carbon is #2):
+# claude hangs -> killed after 1s (`stage_timeout_1s`) -> marks anthropic-max degraded -> fails over to agy!
+(
+  export PATH="$HUNG_BIN:$PATH"
+  export AFK_FACTORY_LIVE_HARNESS=1
+  export AFK_STAGE_TIMEOUT_SEC=1
+  export AFK_ROUTER_HARNESS_LIST=""
+  # shellcheck disable=SC1091
+  . "$KIT_ROOT/lib/afk-common.sh"
+  # shellcheck disable=SC1091
+  . "$KIT_ROOT/lib/afk-paperclip.sh"
+  # shellcheck disable=SC1091
+  . "$KIT_ROOT/lib/afk-roster.sh"
+  # shellcheck disable=SC1091
+  . "$KIT_ROOT/lib/afk-paperclip-hire.sh"
+  # shellcheck disable=SC1091
+  . "$KIT_ROOT/lib/afk-harnesses.sh"
+  # shellcheck disable=SC1091
+  . "$KIT_ROOT/lib/afk-tooling.sh"
+  # shellcheck disable=SC1091
+  . "$KIT_ROOT/lib/afk-smart-router.sh"
+  # shellcheck disable=SC1091
+  . "$KIT_ROOT/lib/afk-factory.sh"
+  printf '# Issue\nTest hung claude\n' > "$TMO_JOB_DIR/issue.md"
+  afk_factory_invoke_stage_agent "$WD_REPO" "$WD_REPO" "$TMO_JOB_DIR" "architect" "spec" "$TMO_JOB_DIR/issue.md" "$TMO_JOB_DIR/spec.md" ""
+)
+
+assert_eq "Universal stage timeout kills hung subscription harness (claude 1s) and fails over in-flight to agy" \
+  "$(jq -sr '[.[] | "\(.status):\(.harness):\(.error // "ok")"] | join("->")' "$TMO_JOB_DIR/route-history.jsonl")" \
+  "failed_attempt:claude:stage_timeout_1s->ok:agy:ok"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
