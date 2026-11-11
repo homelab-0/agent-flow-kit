@@ -450,7 +450,7 @@ agent-flow-kit — lifecycle entry point
       execution plane:
         init | roster | run | poll | sync-reviews | resume | watchdog | status
         pools | harnesses | update-harnesses | models | route-preview | sync-benchmarks
-        tooling [--sync-paperclip-skills] | tooling-sync | tooling-register-mcp | tooling-register-skill
+        tooling [--sync-paperclip-skills] | tooling-sync | tooling-publish-paperclip | tooling-register-mcp | tooling-register-skill
         evaluate-merge | context-check | retire
 
   agent-flow-kit schema
