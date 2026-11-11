@@ -262,7 +262,7 @@ afk_roster_roles_for_job() {
   if [[ "$surfaces" == *",research,"* || "$surfaces" == *",discovery,"* ]]; then
     roles+=(analyst)
   fi
-  if [[ "$risk" == "high" || "$surfaces" == *",architecture,"* || "$surfaces" == *",security,"* ]]; then
+  if [[ "$risk" == "high" || "$risk" == "critical" || "$surfaces" == *",architecture,"* || "$surfaces" == *",security,"* ]]; then
     roles+=(architect)
   fi
   if [[ "$surfaces" == *",ui,"* || "$surfaces" == *",ux,"* || "$surfaces" == *",frontend,"* ]]; then
@@ -284,7 +284,7 @@ You are the Project Intake & Specification PM managed by AFK.
 Read the issue file (`issue.md`) and repository context.
 - If a critical product decision is missing and cannot be derived from the repository, start your output with `VERDICT: NEEDS-INFO` followed by ONE concrete question for the human.
 - If the request is invalid or harmful, start with `VERDICT: REJECT` and state why.
-- Otherwise, start with `VERDICT: ACCEPT`, rate `RISK: low|medium|high`, list `SURFACES: code[,ui][,security][,architecture]`, and write a clear, bounded `spec.md` with explicit Acceptance Criteria and target files. Never implement the code yourself.
+- Otherwise, start with `VERDICT: ACCEPT`, rate `RISK: low|medium|high|critical`, list `SURFACES: code[,ui][,security][,architecture]`, and write a clear, bounded `spec.md` with explicit Acceptance Criteria and target files. Never implement the code yourself.
 EOF
       ;;
     analyst)
