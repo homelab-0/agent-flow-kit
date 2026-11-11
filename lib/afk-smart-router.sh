@@ -1,14 +1,22 @@
 #!/usr/bin/env bash
-# afk-smart-router.sh — Multi-Harness, Pool-Capacity & Public-Benchmark Smart Router
+# afk-smart-router.sh — Multi-Harness, Pool-Capacity, Effort-Escalating &
+# Public-Benchmark Smart Router (with Frontier & Security Specialist Routing)
 #
 # Evaluates which installed CLI harness + subscription pool (or LiteLLM gateway)
-# should execute each Software Factory stage based strictly on:
-#   1. Installed harnesses on the host (claude, codex, agy, opencode, + LiteLLM gateway)
-#   2. Subscription pool size (capacity) and live 5h/7d usage headroom
-#   3. Live public benchmark leaderboards (LMArena Agent/WebDev/Text, SWE-bench,
-#      Artificial Analysis API, and models.dev context limits)
-#   4. Independent Cross-Family Blind Review (ensuring code reviewers use a
-#      different model family than the builder whenever available)
+# should execute each Software Factory or BMAD stage based strictly on:
+#   1. Installed & authenticated harnesses on the host (claude, codex, agy, grok,
+#      opencode, pi, devin + LiteLLM gateway)
+#   2. Subscription pool size (capacity), live 5h/7d usage headroom, and scoped
+#      frontier sub-quotas (e.g., Anthropic `seven_day:fable`)
+#   3. Auto-refreshed public benchmark leaderboards (LMArena Agent/WebDev/Text,
+#      SWE-bench, Artificial Analysis API, and models.dev context limits)
+#   4. Task class, BMAD persona complexity floors (`pm` PRD/epics, `architect`),
+#      frontier escalation (`Fable`), and cybersecurity specialist models
+#      (`Claude Mythos`, `OpenAI Daybreak Blue`)
+#   5. Dynamic reasoning effort selection & automatic mid-task effort escalation
+#      across retry rounds (`medium` -> `high` -> `xhigh` -> `max`)
+#   6. Independent Cross-Family Blind Review (ensuring reviewers use a different
+#      model family than the builder whenever available)
 
 if [[ -n "${AFK_SMART_ROUTER_SOURCED:-}" ]]; then
   return 0
@@ -23,16 +31,30 @@ afk_router_catalog_path() {
     printf '%s\n' "$AFK_ROUTER_BENCHMARKS_FILE"
     return 0
   fi
-  if [[ -f "$HOME/.config/afk/benchmarks.json" ]]; then
-    printf '%s\n' "$HOME/.config/afk/benchmarks.json"
-    return 0
-  fi
+  local user_cat="$HOME/.config/afk/benchmarks.json"
+  local repo_cat=""
   if [[ -f "${AFK_REPO_ROOT:-}/files/model-router/benchmarks.json" ]]; then
-    printf '%s\n' "${AFK_REPO_ROOT}/files/model-router/benchmarks.json"
+    repo_cat="${AFK_REPO_ROOT}/files/model-router/benchmarks.json"
+  elif [[ -f "$(dirname -- "${BASH_SOURCE[0]}")/../files/model-router/benchmarks.json" ]]; then
+    repo_cat="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/files/model-router/benchmarks.json"
+  elif [[ -f "$HOME/.agents/skills/model-router/benchmarks.json" ]]; then
+    repo_cat="$HOME/.agents/skills/model-router/benchmarks.json"
+  fi
+  if [[ -f "$user_cat" ]]; then
+    # Prefer repo catalog if user cache is from an older schema lacking grok/fable/mythos/daybreak
+    if [[ -n "$repo_cat" && -f "$repo_cat" ]]; then
+      local u_schema
+      u_schema="$(jq -r '.schema // ""' "$user_cat" 2>/dev/null || true)"
+      if [[ "$u_schema" != "afk-benchmark-catalog/3" ]]; then
+        printf '%s\n' "$repo_cat"
+        return 0
+      fi
+    fi
+    printf '%s\n' "$user_cat"
     return 0
   fi
-  if [[ -f "$HOME/.agents/skills/model-router/benchmarks.json" ]]; then
-    printf '%s\n' "$HOME/.agents/skills/model-router/benchmarks.json"
+  if [[ -n "$repo_cat" && -f "$repo_cat" ]]; then
+    printf '%s\n' "$repo_cat"
     return 0
   fi
   printf '%s\n' "/home/user/repos/jlengelbrecht/agent-flow-kit/files/model-router/benchmarks.json"
@@ -42,14 +64,76 @@ afk_router_signals_path() {
   printf '%s\n' "${AFK_ROUTER_SIGNALS_FILE:-$HOME/.config/afk/pool-signals.json}"
 }
 
-# afk_router_stage_to_task_class <stage> <risk>
+# Portable file mtime epoch (Linux GNU stat -c %Y and macOS BSD stat -f %m)
+_afk_router_file_mtime() {
+  local f="$1"
+  [[ -f "$f" ]] || { printf '0\n'; return 0; }
+  stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || printf '0\n'
+}
+
+# afk_router_ensure_fresh_benchmarks [<ttl_sec>]
+# Ensures public benchmark facts are gathered/refreshed prior to live dispatch
+# whenever ~/.config/afk/benchmarks.json is missing, older than TTL (default 24h),
+# or on an older schema. Skipped automatically in hermetic test modes.
+afk_router_ensure_fresh_benchmarks() {
+  local ttl="${1:-${AFK_BENCHMARK_TTL_SEC:-86400}}"
+  if [[ -n "${AFK_ROUTER_BENCHMARKS_FILE:-}" || -n "${AFK_ROUTER_HARNESS_LIST:-}" || -n "${AFK_FACTORY_AGENT_RUNNER:-}" || -n "${AFK_CURL_BIN:-}" || "${AFK_SKIP_BENCHMARK_AUTOSYNC:-0}" == "1" ]]; then
+    return 0
+  fi
+  local user_cat="$HOME/.config/afk/benchmarks.json"
+  local now_ep mtime schema=""
+  now_ep="$(date -u +%s)"
+  mtime="$(_afk_router_file_mtime "$user_cat")"
+  if [[ -f "$user_cat" ]]; then
+    schema="$(jq -r '.schema // ""' "$user_cat" 2>/dev/null || true)"
+  fi
+  if [[ ! -f "$user_cat" || "$schema" != "afk-benchmark-catalog/3" || $(( now_ep - mtime )) -ge ttl ]]; then
+    afk_router_sync_benchmarks "$user_cat" >/dev/null 2>&1 || true
+  fi
+}
+
+# afk_router_stage_to_task_class <stage> <risk> [<role>] [<surfaces>] [<round>]
 afk_router_stage_to_task_class() {
-  local stage="$1" risk="${2:-low}"
+  local stage="$1" risk="${2:-low}" role="${3:-}" surfaces="${4:-}" round="${5:-1}"
+  local norm_surf=",$(printf '%s' "$surfaces" | tr '[:upper:]' '[:lower:]' | tr -d ' '), "
+  norm_surf="${norm_surf% }"
+
+  # 1. Explicit security stages, roles, or security-flagged surfaces
+  if [[ "$stage" == "review-security" || "$stage" == security* || "$stage" == threat* || "$role" == "security" ]]; then
+    printf 'security\n'
+    return 0
+  fi
+  if [[ "$norm_surf" =~ ,(security|auth|crypto|iam|cve|vuln|pentest), ]] && [[ "$stage" == "spec" || "$stage" == "build" ]]; then
+    printf 'security\n'
+    return 0
+  fi
+
+  # 2. Critical frontier synthesis or Round 3+ high-risk escalation
+  if [[ "$risk" == "critical" ]] && [[ "$stage" =~ ^(spec|arch.*|prd|epics|stories|build)$ ]]; then
+    printf 'frontier_synthesis\n'
+    return 0
+  fi
+  if [[ "$round" =~ ^[0-9]+$ ]] && (( round >= 3 )) && [[ "$risk" == "high" ]] && [[ "$stage" =~ ^(spec|arch.*|build)$ ]]; then
+    printf 'frontier_synthesis\n'
+    return 0
+  fi
+
+  # 3. BMAD PM / Architect synthesis & planning artifacts (PRD, Epics, Stories, Architecture, Spec)
+  case "$stage" in
+    prd|epics|stories|product-brief|correct-course|spec|arch*)
+      printf 'architecture\n'
+      return 0
+      ;;
+  esac
+  if [[ "$role" == "pm" || "$role" == "architect" ]] && [[ "$stage" != "intake" && "$stage" != "research" && "$stage" != review* ]]; then
+    printf 'architecture\n'
+    return 0
+  fi
+
+  # 4. Standard lifecycle stages
   case "$stage" in
     intake|research)
       printf 'research\n' ;;
-    spec|arch*)
-      printf 'architecture\n' ;;
     ux)
       printf 'webdev\n' ;;
     build)
@@ -83,15 +167,17 @@ _afk_router_verify_binary() {
 # Discovers installed & executable CLI binaries and LiteLLM gateway availability.
 afk_router_discover_harnesses() {
   local litellm_url="${1:-${AFK_LITELLM_BASE_URL:-}}"
-  local claude_bin="" codex_bin="" agy_bin="" opencode_bin="" pi_bin=""
+  local claude_bin="" codex_bin="" agy_bin="" grok_bin="" opencode_bin="" pi_bin="" devin_bin=""
   local codex_note=""
   if [[ -n "${AFK_ROUTER_HARNESS_LIST:-}" ]]; then
     local list=",${AFK_ROUTER_HARNESS_LIST},"
     [[ "$list" == *",claude,"* ]] && claude_bin="/mock/bin/claude"
     [[ "$list" == *",codex,"* ]] && codex_bin="/mock/bin/codex"
     [[ "$list" == *",agy,"* ]] && agy_bin="/mock/bin/agy"
+    [[ "$list" == *",grok,"* ]] && grok_bin="/mock/bin/grok"
     [[ "$list" == *",opencode,"* ]] && opencode_bin="/mock/bin/opencode"
     [[ "$list" == *",pi,"* ]] && pi_bin="/mock/bin/pi"
+    [[ "$list" == *",devin,"* ]] && devin_bin="/mock/bin/devin"
   else
     claude_bin="$(_afk_router_verify_binary claude)"
     codex_bin="$(_afk_router_verify_binary codex)"
@@ -101,8 +187,10 @@ afk_router_discover_harnesses() {
       codex_note="broken_binary ($raw_codex failed --version)"
     fi
     agy_bin="$(_afk_router_verify_binary agy)"
+    grok_bin="$(_afk_router_verify_binary grok)"
     opencode_bin="$(_afk_router_verify_binary opencode)"
     pi_bin="$(_afk_router_verify_binary pi)"
+    devin_bin="$(_afk_router_verify_binary devin)"
   fi
 
   local litellm_online=false litellm_models="[]"
@@ -125,8 +213,10 @@ afk_router_discover_harnesses() {
     --arg xb "$codex_bin" \
     --arg xn "$codex_note" \
     --arg ab "$agy_bin" \
+    --arg gb "$grok_bin" \
     --arg ob "$opencode_bin" \
     --arg pb "$pi_bin" \
+    --arg db "$devin_bin" \
     --arg lurl "$litellm_url" \
     --argjson lon "$litellm_online" \
     --argjson lmods "$litellm_models" \
@@ -134,8 +224,10 @@ afk_router_discover_harnesses() {
       claude:   {installed: ($cb != ""), binary: (if $cb == "" then null else $cb end), health: (if $cb != "" then "ok" else "missing" end)},
       codex:    {installed: ($xb != ""), binary: (if $xb == "" then null else $xb end), health: (if $xb != "" then "ok" elif $xn != "" then $xn else "missing" end)},
       agy:      {installed: ($ab != ""), binary: (if $ab == "" then null else $ab end), health: (if $ab != "" then "ok" else "missing" end)},
+      grok:     {installed: ($gb != ""), binary: (if $gb == "" then null else $gb end), health: (if $gb != "" then "ok" else "missing" end)},
       opencode: {installed: ($ob != ""), binary: (if $ob == "" then null else $ob end), health: (if $ob != "" then "ok" else "missing" end)},
       pi:       {installed: ($pb != ""), binary: (if $pb == "" then null else $pb end), health: (if $pb != "" then "ok" else "missing" end)},
+      devin:    {installed: ($db != ""), binary: (if $db == "" then null else $db end), health: (if $db != "" then "ok" else "missing" end)},
       litellm_gateway: {
         configured: ($lurl != ""),
         base_url: (if $lurl == "" then null else $lurl end),
@@ -145,19 +237,11 @@ afk_router_discover_harnesses() {
     }'
 }
 
-# Portable file mtime epoch (Linux GNU stat -c %Y and macOS BSD stat -f %m)
-_afk_router_file_mtime() {
-  local f="$1"
-  [[ -f "$f" ]] || { printf '0\n'; return 0; }
-  stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || printf '0\n'
-}
-
 # afk_router_mark_pool_degraded <pool_id> [<reason>]
 # Marks an entitlement pool degraded in pool-signals.json with severity-aware TTLs:
 #   - Hard auth revocation (401/token_revoked): 24h TTL (auto-cleared on re-auth mtime)
 #   - Rate limit / quota exhaustion (429/quota/out_of_credits): 1h cooldown TTL
-#   - Transient stage timeout / empty output: 15m (900s) cooldown TTL so immediate
-#     retries fail over cleanly without permanently bricking the pool.
+#   - Transient stage timeout / empty output: 15m (900s) cooldown TTL
 afk_router_mark_pool_degraded() {
   local pool_id="$1" reason="${2:-runtime_failure}"
   [[ -n "$pool_id" ]] || return 0
@@ -169,7 +253,7 @@ afk_router_mark_pool_degraded() {
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   now_ep="$(date -u +%s)"
   lreason="$(printf '%s' "$reason" | tr '[:upper:]' '[:lower:]')"
-  if [[ "$lreason" =~ (401|unauthorized|token_revoked|invalidated[[:space:]]+oauth|refresh[[:space:]]+token) ]]; then
+  if [[ "$lreason" =~ (401|unauthorized|token_revoked|invalidated[[:space:]]+oauth|refresh[[:space:]]+token|not[[:space:]]+logged[[:space:]]+in) ]]; then
     kind="auth"
     ttl_sec=86400
     used_val=100
@@ -184,6 +268,24 @@ afk_router_mark_pool_degraded() {
     <<<"$cur" > "${sig_file}.tmp.$$" && mv "${sig_file}.tmp.$$" "$sig_file"
 }
 
+# afk_router_mark_model_unavailable <model_id> [<reason>]
+# Quarantines a single restricted/unavailable model (e.g., 403/model_not_found on
+# Mythos or Daybreak Blue) for 1h without poisoning the rest of the provider pool.
+afk_router_mark_model_unavailable() {
+  local model_id="$1" reason="${2:-model_unavailable}"
+  [[ -n "$model_id" ]] || return 0
+  local sig_file cur="{}"
+  sig_file="$(afk_router_signals_path)"
+  mkdir -p "$(dirname -- "$sig_file")"
+  [[ -f "$sig_file" ]] && cur="$(cat -- "$sig_file" 2>/dev/null || printf '{}')"
+  local now now_ep
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  now_ep="$(date -u +%s)"
+  jq --arg mid "$model_id" --arg r "$reason" --arg ts "$now" --argjson ep "$now_ep" \
+    '.unavailable_models[$mid] = {reason: $r, updated_at: $ts, updated_epoch: $ep, ttl_sec: 3600}' \
+    <<<"$cur" > "${sig_file}.tmp.$$" && mv "${sig_file}.tmp.$$" "$sig_file"
+}
+
 _afk_router_count_recent_activity() {
   local dir="$1" mmin="$2"
   [[ -d "$dir" ]] || { printf '0\n'; return 0; }
@@ -191,9 +293,9 @@ _afk_router_count_recent_activity() {
 }
 
 # _afk_router_probe_claude_quota
-# Queries real 5-hour & 7-day OAuth utilization from Anthropic's official usage API
-# (`https://api.anthropic.com/api/oauth/usage`) with a 120s local metadata cache
-# (never stores or prints tokens). Supports AFK_CLAUDE_USAGE_FIXTURE for hermetic tests.
+# Queries real 5-hour & 7-day OAuth utilization (plus scoped `fable` sub-quota)
+# from Anthropic's official usage API (`https://api.anthropic.com/api/oauth/usage`)
+# with a 120s local metadata cache (never stores or prints tokens).
 _afk_router_probe_claude_quota() {
   local raw=""
   if [[ -n "${AFK_CLAUDE_USAGE_FIXTURE:-}" && -f "${AFK_CLAUDE_USAGE_FIXTURE}" ]]; then
@@ -234,16 +336,18 @@ _afk_router_probe_claude_quota() {
   parsed="$(jq -c '
     if (type == "object") and (has("seven_day") or has("five_hour") or has("limits")) then
       ((.five_hour.utilization // 0) | tonumber? // 0) as $fh |
-      ((.seven_day.utilization // ([.limits[]? | select(.is_active == true and .group == "weekly") | .percent] | max) // 0) | tonumber? // 0) as $wk |
+      ((.seven_day.utilization // ([.limits[]? | select(.is_active == true and .group == "weekly" and (.kind // "weekly_all") == "weekly_all") | .percent] | max) // 0) | tonumber? // 0) as $wk |
+      (([.limits[]? | select((.group // "") == "scoped_weekly" or (.kind // "") == "weekly_scoped" or (((.kind // .id // .name // .label // "") | ascii_downcase) | contains("fable"))) | .percent] | max) // (.seven_day_fable.utilization // null)) as $fable_wk |
       ((.extra_usage.is_enabled // false) == true and ((.extra_usage.utilization // 100) < 90)) as $extra_ok |
       (if $extra_ok then ([ $fh, (($wk * 0.80)) ] | max | round)
-       else ([ $fh, $wk, ([.limits[]? | select(.is_active == true) | .percent] | max // 0) ] | max | round) end) as $eff |
+       else ([ $fh, $wk, ([.limits[]? | select(.is_active == true and (.group // "weekly") != "scoped_weekly" and (.kind // "weekly_all") != "weekly_scoped" and ((((.kind // "") | ascii_downcase) | contains("fable")) | not)) | .percent] | max // 0) ] | max | round) end) as $eff |
       {
         ok: true,
         source: "anthropic_oauth_api",
         used_pct: (if $eff > 100 then 100 elif $eff < 0 then 0 else $eff end),
         five_hour_pct: ($fh | round),
         seven_day_pct: ($wk | round),
+        fable_weekly_pct: (if $fable_wk == null then null else ($fable_wk | tonumber? // 0 | round) end),
         resets_at: (.seven_day.resets_at // (.limits[0].resets_at // null)),
         severity: (([.limits[]? | select(.is_active == true) | .severity][0]) // null),
         extra_usage_enabled: (.extra_usage.is_enabled // false)
@@ -325,12 +429,7 @@ _afk_router_probe_codex_quota() {
 }
 
 # afk_router_probe_pools [<repo>]
-# Computes real subscription pool utilization & remaining capacity by combining:
-#   1. Live provider quota telemetry (Anthropic OAuth 5h/7d API, Codex session rate_limits)
-#   2. TTL-bounded runtime failure signals (expiring transient timeouts after 15m & clearing
-#      auth failures automatically when credential files are refreshed)
-#   3. Real account bindings (preventing unauthenticated pools like xai-grok from appearing available)
-#   4. 5-hour (300m) local session activity fallback when provider telemetry is unavailable.
+# Computes real subscription pool utilization, remaining capacity, and auth alerts.
 afk_router_probe_pools() {
   local repo="${1:-}"
   local cfg="{}" litellm_url="${AFK_LITELLM_BASE_URL:-}"
@@ -346,12 +445,12 @@ afk_router_probe_pools() {
   local harnesses_json bindings_json="[]"
   harnesses_json="$(afk_router_discover_harnesses "$litellm_url")"
   if declare -F afk_harness_probe_account_bindings >/dev/null 2>&1; then
-    if [[ -z "${AFK_ROUTER_HARNESS_LIST:-}" || -n "${AFK_OPENCODE_AUTH_FILE:-}" || -n "${AFK_CODEX_AUTH_FILE:-}" || -n "${AFK_PI_AUTH_FILE:-}" ]]; then
+    if [[ -z "${AFK_ROUTER_HARNESS_LIST:-}" || -n "${AFK_OPENCODE_AUTH_FILE:-}" || -n "${AFK_CODEX_AUTH_FILE:-}" || -n "${AFK_PI_AUTH_FILE:-}" || -n "${AFK_GROK_AUTH_FILE:-}" ]]; then
       bindings_json="$(afk_harness_probe_account_bindings)"
     fi
   fi
 
-  local c_5h=0 x_5h=0 a_5h=0 o_5h=0 p_5h=0
+  local c_5h=0 x_5h=0 a_5h=0 o_5h=0 p_5h=0 g_5h=0 xai_5h=0
   if [[ -z "${AFK_ROUTER_SIGNALS_FILE:-}" ]]; then
     c_5h="$(_afk_router_count_recent_activity "$HOME/.claude/projects" 300)"
     local x1 x2
@@ -361,6 +460,11 @@ afk_router_probe_pools() {
     a_5h="$(find "$HOME/.gemini/antigravity-cli/brain" -mindepth 1 -maxdepth 1 -type d -mmin -300 2>/dev/null | wc -l | tr -d '[:space:]')"
     o_5h="$(_afk_router_count_recent_activity "$HOME/.local/share/opencode" 300)"
     p_5h="$(_afk_router_count_recent_activity "$HOME/.pi/agent/sessions" 300)"
+    g_5h="$(_afk_router_count_recent_activity "$HOME/.grok" 300)"
+    xai_5h="$g_5h"
+    if jq -e '.[] | select(.harness == "opencode" and .entitlement_pool == "xai-grok")' <<<"$bindings_json" >/dev/null 2>&1; then
+      xai_5h=$(( xai_5h + o_5h ))
+    fi
     if jq -e '.[] | select(.harness == "opencode" and .entitlement_pool == "openai-plus")' <<<"$bindings_json" >/dev/null 2>&1; then
       x_5h=$(( x_5h + o_5h ))
     fi
@@ -378,16 +482,17 @@ afk_router_probe_pools() {
     sig_json="$(cat -- "$sig_file" 2>/dev/null || printf '{}')"
   fi
 
-  local now_ep openai_auth_mtime=0 claude_auth_mtime=0 m1=0 m2=0
+  local now_ep openai_auth_mtime=0 claude_auth_mtime=0 grok_auth_mtime=0 m1=0 m2=0
   now_ep="$(date -u +%s)"
   m1="$(_afk_router_file_mtime "${AFK_CODEX_AUTH_FILE:-$HOME/.codex/auth.json}")"
   m2="$(_afk_router_file_mtime "${AFK_OPENCODE_AUTH_FILE:-$HOME/.local/share/opencode/auth.json}")"
   (( m1 > m2 )) && openai_auth_mtime="$m1" || openai_auth_mtime="$m2"
   claude_auth_mtime="$(_afk_router_file_mtime "${AFK_CLAUDE_CREDS_FILE:-$HOME/.claude/.credentials.json}")"
+  grok_auth_mtime="$(_afk_router_file_mtime "${AFK_GROK_AUTH_FILE:-$HOME/.grok/auth.json}")"
 
   local litellm_on hermetic_mode="false"
   litellm_on="$(jq -r '.litellm_gateway.online' <<<"$harnesses_json")"
-  [[ -n "${AFK_ROUTER_HARNESS_LIST:-}" && -z "${AFK_OPENCODE_AUTH_FILE:-}" ]] && hermetic_mode="true"
+  [[ -n "${AFK_ROUTER_HARNESS_LIST:-}" && -z "${AFK_OPENCODE_AUTH_FILE:-}" && -z "${AFK_GROK_AUTH_FILE:-}" ]] && hermetic_mode="true"
 
   jq -cn \
     --slurpfile cat "$cat_file" \
@@ -400,9 +505,11 @@ afk_router_probe_pools() {
     --argjson x5 "$x_5h" \
     --argjson a5 "$a_5h" \
     --argjson o5 "$o_5h" \
+    --argjson g5 "$xai_5h" \
     --argjson now "$now_ep" \
     --argjson oa_mt "$openai_auth_mtime" \
     --argjson ca_mt "$claude_auth_mtime" \
+    --argjson ga_mt "$grok_auth_mtime" \
     --argjson lon "$litellm_on" \
     --argjson herm "$hermetic_mode" \
     '
@@ -421,7 +528,7 @@ afk_router_probe_pools() {
         else
           (($s.degraded_reason // "") | ascii_downcase) as $lr |
           ($s.degraded_kind // (
-            if ($lr | test("401|unauthorized|revoked|invalidated oauth|refresh token")) then "auth"
+            if ($lr | test("401|unauthorized|revoked|invalidated oauth|refresh token|not logged in")) then "auth"
             elif ($lr | test("429|rate_limit|rate limit|quota|out_of_credits|exhausted")) then "quota"
             else "transient" end
           )) as $kind |
@@ -467,6 +574,7 @@ afk_router_probe_pools() {
       (if $is_local and ($lon | not) then "offline"
        elif $pid == "opencode-free" and (($h.opencode.installed // false) | not) then "offline"
        elif $unauthenticated then "offline"
+       elif ($asig.degraded_kind // "") == "auth" then "auth_required"
        elif $used >= 90 then "exhausted"
        elif $used >= 75 then "warning"
        else "available" end) as $state |
@@ -483,7 +591,9 @@ afk_router_probe_pools() {
         quota_source: $uinfo.src,
         weekly_used_pct: ($live_q.seven_day_pct // null),
         five_hour_used_pct: ($live_q.five_hour_pct // null),
+        fable_weekly_used_pct: ($live_q.fable_weekly_pct // null),
         resets_at: ($live_q.resets_at // null),
+        degraded_kind: ($asig.degraded_kind // null),
         degraded_reason: ($asig.degraded_reason // null),
         active_sessions_5h: $raw_sessions,
         harnesses_feeding_pool: (if ($bound_h | length) > 0 then $bound_h else $default_harnesses end),
@@ -491,32 +601,68 @@ afk_router_probe_pools() {
       };
 
     {
-      schema: "afk-router-pools/2",
+      "anthropic-max":    calc_pool("anthropic-max"; $c5; false; ["claude"]; $cq; $ca_mt),
+      "openai-plus":      calc_pool("openai-plus"; $x5; false; ["codex"]; $xq; $oa_mt),
+      "antigravity-pool": calc_pool("antigravity-pool"; $a5; false; ["agy"]; {}; 0),
+      "xai-grok":         calc_pool("xai-grok"; $g5; false; ["grok","opencode"]; {}; $ga_mt),
+      "opencode-free":    calc_pool("opencode-free"; $o5; false; ["opencode"]; {}; 0),
+      "litellm-local":    calc_pool("litellm-local"; 0; true; ["claude","opencode"]; {}; 0)
+    } as $pools |
+
+    (
+      [
+        $pools | to_entries[] | select(.value.state == "auth_required") |
+        .value as $p |
+        ($p.harnesses_feeding_pool[0] // "unknown") as $primary_h |
+        {
+          pool: .key,
+          pool_id: .key,
+          harnesses: $p.harnesses_feeding_pool,
+          reason: ($p.degraded_reason // "Authentication token expired or signed out"),
+          reauth_command: (
+            if $primary_h == "codex" then "codex login"
+            elif $primary_h == "claude" then "claude auth login"
+            elif $primary_h == "grok" then "grok login"
+            elif $primary_h == "agy" then "agy login"
+            else ($primary_h + " login") end
+          )
+        }
+      ] +
+      (if (($h.grok.installed // false) == true and ($herm | not) and ($pools["xai-grok"].quota_source == "unauthenticated")) then
+        [{pool: "xai-grok", pool_id: "xai-grok", harnesses: ["grok"], reason: "grok CLI installed on disk but not signed in", reauth_command: "grok login"}]
+       else [] end)
+    ) as $alerts |
+
+    {
+      schema: "afk-router-pools/3",
       harnesses: $h,
-      pools: {
-        "anthropic-max":    calc_pool("anthropic-max"; $c5; false; ["claude"]; $cq; $ca_mt),
-        "openai-plus":      calc_pool("openai-plus"; $x5; false; ["codex"]; $xq; $oa_mt),
-        "antigravity-pool": calc_pool("antigravity-pool"; $a5; false; ["agy"]; {}; 0),
-        "xai-grok":         calc_pool("xai-grok"; $o5; false; ["opencode"]; {}; 0),
-        "opencode-free":    calc_pool("opencode-free"; $o5; false; ["opencode"]; {}; 0),
-        "litellm-local":    calc_pool("litellm-local"; 0; true; ["claude","opencode"]; {}; 0)
-      }
+      auth_alerts: $alerts,
+      unavailable_models: (
+        ($sig.unavailable_models // {})
+        | with_entries(select(($now - (.value.updated_epoch // 0)) < (.value.ttl_sec // 3600)))
+      ),
+      pools: $pools
     }'
 }
 
-# afk_router_select_candidate <repo> <stage> <risk> [<builder_family>]
-# Evaluates public benchmark scores + pool size/headroom + live discovered models
-# (including free OpenCode models and shared multi-harness OAuth pools) to pick
-# the winning (harness, launch_class, model, entitlement_pool) for <stage>.
+# afk_router_select_candidate <repo> <stage> <risk> [<builder_family>] [<role>] [<round>] [<surfaces>] [<diff_lines>]
+# Evaluates public benchmark scores + pool size/headroom + live discovered models +
+# BMAD role complexity + security/frontier entitlements + automatic effort escalation.
 afk_router_select_candidate() {
   local repo="${1:-}" stage="${2:-build}" risk="${3:-low}" builder_family="${4:-}"
+  local role="${5:-}" round="${6:-1}" surfaces="${7:-}" diff_lines="${8:-0}"
+  [[ "$round" =~ ^[0-9]+$ && "$round" -ge 1 ]] || round=1
+  [[ "$diff_lines" =~ ^[0-9]+$ ]] || diff_lines=0
+
+  afk_router_ensure_fresh_benchmarks
+
   local cfg="{}"
   if [[ -n "$repo" && -f "$repo/.afk/config.json" ]]; then
     cfg="$(cat -- "$repo/.afk/config.json" 2>/dev/null || printf '{}')"
   fi
 
   local task_class
-  task_class="$(afk_router_stage_to_task_class "$stage" "$risk")"
+  task_class="$(afk_router_stage_to_task_class "$stage" "$risk" "$role" "$surfaces" "$round")"
 
   local default_mem="advisory"
   if [[ "$stage" == review* || "$stage" == "approve" ]]; then
@@ -525,10 +671,14 @@ afk_router_select_candidate() {
     default_mem="$(jq -r '.router.hindsight.build_stages // "advisory"' <<<"$cfg" 2>/dev/null)"
   fi
 
-  local litellm_url allow_metered prefer_free
+  local litellm_url allow_metered prefer_free sec_models_csv
   litellm_url="${AFK_LITELLM_BASE_URL:-$(jq -r '.router.litellm_base_url // empty' <<<"$cfg" 2>/dev/null)}"
   allow_metered="${AFK_ROUTER_ALLOW_METERED_API:-$(jq -r '.router.allow_metered_api // false' <<<"$cfg" 2>/dev/null)}"
   prefer_free="${AFK_ROUTER_PREFER_FREE:-$(jq -r '.router.prefer_free_for_low_risk // false' <<<"$cfg" 2>/dev/null)}"
+  sec_models_csv="${AFK_SECURITY_MODELS:-$(jq -r '(.router.security_models // []) | join(",")' <<<"$cfg" 2>/dev/null)}"
+  if [[ -z "$sec_models_csv" && -f "$HOME/.config/afk/router.json" ]]; then
+    sec_models_csv="$(jq -r '(.security_models // []) | join(",")' "$HOME/.config/afk/router.json" 2>/dev/null || true)"
+  fi
   [[ "$allow_metered" == "true" || "$allow_metered" == "1" ]] && allow_metered="true" || allow_metered="false"
   [[ "$prefer_free" == "true" || "$prefer_free" == "1" ]] && prefer_free="true" || prefer_free="false"
 
@@ -553,24 +703,99 @@ afk_router_select_candidate() {
     --arg st "$stage" \
     --arg tc "$task_class" \
     --arg rk "$risk" \
+    --arg rl "$role" \
+    --arg sf "$surfaces" \
+    --argjson rnd "$round" \
+    --argjson dl "$diff_lines" \
     --arg bf "$builder_family" \
     --arg mm "$default_mem" \
     --arg lurl "$litellm_url" \
+    --arg sec_csv "$sec_models_csv" \
     --argjson allow_api "$allow_metered" \
     --argjson pref_free "$prefer_free" \
     '
-    # Convert dynamically discovered models (free tier + bridged OAuth frontier models)
-    # into router candidate records so newly added models enter routing automatically.
+    # Determine which restricted security specialist models are entitled/enabled
+    (("," + ($sec_csv | ascii_downcase | gsub(" "; "")) + ",")) as $sec_norm |
+    (
+      ($sec_norm | contains(",all,")) or
+      ($sec_norm | contains(",mythos,")) or
+      ($sec_norm | contains(",claude-mythos,")) or
+      ([ $disc[0].models[]? | select(.model | ascii_downcase | contains("mythos")) ] | length > 0)
+    ) as $mythos_enabled |
+    (
+      ($sec_norm | contains(",all,")) or
+      ($sec_norm | contains(",daybreak,")) or
+      ($sec_norm | contains(",daybreak-blue,")) or
+      ($sec_norm | contains(",gpt-daybreak-blue,")) or
+      ([ $disc[0].models[]? | select(.model | ascii_downcase | contains("daybreak")) ] | length > 0)
+    ) as $daybreak_enabled |
+
+    def effort_rank($e):
+      if $e == "low" then 1
+      elif $e == "medium" then 2
+      elif $e == "high" then 3
+      elif $e == "xhigh" then 4
+      elif $e == "max" or $e == "ultra" then 5
+      else 2 end;
+
+    def rank_to_effort($r):
+      if $r <= 1 then "low"
+      elif $r == 2 then "medium"
+      elif $r == 3 then "high"
+      elif $r == 4 then "xhigh"
+      else "max" end;
+
+    # Clamp desired effort rank to the closest effort level supported by the model/harness
+    def clamp_effort($target_rank; $supported):
+      ($supported // ["low","medium","high"]) as $sup |
+      rank_to_effort($target_rank) as $ideal |
+      if ($sup | index($ideal)) != null then $ideal
+      else
+        ([ $sup[] | {e: ., d: ((effort_rank(.) - $target_rank) | if . < 0 then -. else . end), r: effort_rank(.)} ]
+         | sort_by(.d, -.r) | .[0].e // "high")
+      end;
+
+    # Compute base reasoning effort + automatic mid-task effort escalation
+    def resolve_effort($cand_def; $supported):
+      (
+        if ($tc == "frontier_synthesis" or $rk == "critical") then 4
+        elif ($tc == "security" or $tc == "architecture" or $tc == "coding_complex" or $rk == "high") then 3
+        elif ($rl == "pm" or $rl == "architect" or $rl == "security") and ($st != "intake" or $rk != "low") then 3
+        elif ($st | startswith("review")) and ($rk == "medium") then 3
+        elif ($rk == "low" and ($tc == "research" or $tc == "coding_standard")) then 2
+        else effort_rank($cand_def // "medium") end
+      ) as $base_r |
+      (if $rnd == 2 then 1 elif $rnd >= 3 then 2 else 0 end) as $round_bump |
+      (if (($st | startswith("review")) and $dl >= 250 and $round_bump == 0) then 1 else 0 end) as $diff_bump |
+      ($base_r + $round_bump + $diff_bump) as $raw_target |
+      (if $raw_target > 5 then 5 else $raw_target end) as $target_r |
+      clamp_effort($target_r; $supported) as $chosen |
+      {
+        effort: $chosen,
+        base_effort: clamp_effort($base_r; $supported),
+        escalated: (($round_bump + $diff_bump) > 0),
+        reason: (
+          if $round_bump > 0 then ("auto_escalated_round_" + ($rnd|tostring))
+          elif $diff_bump > 0 then ("auto_escalated_large_diff_" + ($dl|tostring) + "L")
+          elif $tc == "frontier_synthesis" then "critical_frontier_synthesis"
+          elif $tc == "security" then "security_deep_audit"
+          elif ($rl == "pm" or $rl == "architect") and $tc == "architecture" then ("bmad_" + $rl + "_synthesis_floor")
+          else ("benchmark_task_" + $tc) end
+        )
+      };
+
+    # Convert dynamically discovered models into router candidate records
     ([
       $disc[0].models[]? |
       select(.capabilities.toolcall == true) |
       select(.cost_class == "free" or .cost_class == "subscription" or ($allow_api == true and .cost_class == "api-metered")) |
-      # Avoid flooding with dozens of minor variants; keep free models + flagship bridged models,
-      # and deduplicate agy gemini-4-carbon against catalog agy-carbon-native.
+      # Deduplicate native catalog flagship entries so we do not double-count them
       select((.harness == "agy" and (.model | test("^gemini-4-carbon"))) | not) |
+      select((.harness == "grok" and (.model == "grok-4.7")) | not) |
+      select((.harness == "codex" and (.model == "gpt-6-astra" or .model == "gpt-6.1-sol")) | not) |
       select(
         .is_free == true or
-        (.model | test("gpt-6-astra$|gpt-6\\.1-sol$|gpt-5\\.3-codex-spark$|claude-opus-5-5(-high)?$|claude-sonnet-5-5(-high)?$|gemini-4-argon-high$|gemini-3\\.8-flash-high$"))
+        (.model | test("gpt-6-astra$|gpt-6\\.1-sol$|gpt-5\\.3-codex-spark$|claude-fable|claude-mythos|daybreak-blue|claude-opus-5-5(-high)?$|claude-sonnet-5-5(-high)?$|gemini-4-argon-high$|gemini-3\\.8-flash-high$|^grok-4\\.6$"))
       ) |
       {
         id: .id,
@@ -579,10 +804,12 @@ afk_router_select_candidate() {
         entitlement_pool: .entitlement_pool,
         cost_class: .cost_class,
         is_free: .is_free,
+        tier: (if (.model | test("sonnet|sol|flash|luna")) then "standard" else "strong" end),
         model: .model,
         canonical_model: .canonical_model,
         model_family: .model_family,
         effort: (if .capabilities.reasoning then "high" else "medium" end),
+        supported_efforts: (.supported_efforts // (if .capabilities.reasoning then ["low","medium","high"] else ["medium"] end)),
         window_tokens: .window_tokens,
         requires_gateway: false,
         is_bridged_oauth: (
@@ -598,7 +825,8 @@ afk_router_select_candidate() {
     (($cat[0].candidates // []) + $dyn_cands) as $cands |
     (
       ($probe.pools["anthropic-max"].state != "available") and
-      ($probe.pools["antigravity-pool"].state != "available")
+      ($probe.pools["antigravity-pool"].state != "available") and
+      ($probe.pools["xai-grok"].state != "available")
     ) as $subs_under_pressure |
 
     [
@@ -607,17 +835,33 @@ afk_router_select_candidate() {
       ($probe.harnesses[$c.harness].installed // false) as $h_installed |
       ($probe.pools[$c.entitlement_pool] // {state:"available", headroom_pct:100, used_pct:0, capacity_5h:50, remaining_units_5h:50, cost_class:($c.cost_class // "subscription")}) as $pool |
       ($c.cost_class // $pool.cost_class // "subscription") as $cclass |
-      ($c.benchmarks[$tc].score // 75.0) as $base_score |
+      ($c.benchmarks[$tc].score // $c.benchmarks.coding_complex.score // 75.0) as $base_score |
       ($c.benchmarks[$tc].benchmark // "Public Leaderboard Aggregate") as $b_name |
+      (($c.requires_entitlement // "") == "") as $no_special_ent |
+      (
+        $no_special_ent or
+        (($c.requires_entitlement == "mythos") and $mythos_enabled) or
+        (($c.requires_entitlement == "daybreak-blue") and $daybreak_enabled)
+      ) as $ent_ok |
+      (
+        (($c.scoped_quota // "") != "fable") or
+        (($pool.fable_weekly_used_pct // 0) < 90)
+      ) as $scoped_quota_ok |
+      (($probe.unavailable_models[$c.model] // null) == null) as $model_ok |
 
       # Eligibility gates:
       # 1. Harness binary installed & healthy on host
-      # 2. Metered API models blocked unless allow_metered_api == true
-      # 3. Pool not exhausted (>=90%) or offline
-      # 4. Gateway candidates require LiteLLM gateway to be online
+      # 2. Specialist security entitlement (Mythos / Daybreak Blue) verified if required
+      # 3. Model not quarantined by recent 403/model_not_found & scoped quota <90%
+      # 4. Metered API models blocked unless allow_metered_api == true
+      # 5. Pool not exhausted (>=90%), auth_required, or offline
+      # 6. Gateway candidates require LiteLLM gateway to be online
       select($h_installed == true) |
+      select($ent_ok == true) |
+      select($scoped_quota_ok == true) |
+      select($model_ok == true) |
       select($cclass != "api-metered" or $allow_api == true) |
-      select($pool.state != "exhausted" and $pool.state != "offline") |
+      select($pool.state != "exhausted" and $pool.state != "offline" and $pool.state != "auth_required") |
       select((($c.requires_gateway // false) == false) or ($probe.harnesses.litellm_gateway.online == true)) |
 
       # Pool conservation adjustment:
@@ -630,21 +874,34 @@ afk_router_select_candidate() {
       # Prefer native harness slightly (+0.5) over bridged OAuth when both are healthy on the same pool
       (if ($c.is_bridged_oauth // false) then -0.5 else 0.0 end) as $bridge_adj |
 
-      # Cross-Family Blind Review Bonus:
-      (if ($tc == "coding_review" and $bf != "" and $c.model_family != $bf) then 6.0 else 0.0 end) as $cross_family_bonus |
+      # Frontier quota-preservation rule: reserve Fable (`frontier_only`) for `frontier_synthesis` / `critical` / Round 3+
+      (if (($c.frontier_only // false) == true and $tc != "frontier_synthesis" and $rk != "critical") then -6.0 else 0.0 end) as $frontier_adj |
+
+      # Specialist security routing rule: boost Mythos & Daybreak Blue on security tasks (+4.0), reserve them (-15.0) on non-security tasks
+      (if (($c.specialist_domain // "") == "security") then
+         (if $tc == "security" then 4.0 else -15.0 end)
+       else 0.0 end) as $security_adj |
+
+      # BMAD Role Complexity Floor: prevent mid-tier execution models (`sonnet`, `sol`, `flash`, `local-coding`)
+      # from handling BMAD PM (PRD/Epics/Stories) or Architect system-design synthesis!
+      (if (($rl == "pm" or $rl == "architect") and ($tc == "architecture" or $tc == "frontier_synthesis") and (($c.tier // "") == "standard" or ($c.is_free // false) == true)) then -8.0 else 0.0 end) as $role_floor_adj |
+
+      # Cross-Family Blind Review Bonus (applies to both `coding_review` and `review-security`):
+      (if ((($tc == "coding_review") or ($st | startswith("review"))) and $bf != "" and $c.model_family != $bf) then 6.0 else 0.0 end) as $cross_family_bonus |
 
       # Local AI Zero-Cost Bonus on low-risk tasks when LiteLLM cluster is online
       (if (($c.requires_gateway // false) == true and $rk == "low" and ($tc == "research" or $tc == "coding_standard")) then 6.5 else 0.0 end) as $local_bonus |
 
       # Free OpenCode Model Bonus ($0 cost):
-      # Boost capable free models on low-risk intake/build when `prefer_free_for_low_risk` is enabled
-      # OR when primary subscription pools are under pressure (warning/exhausted).
       (if (($c.is_free // false) == true and $rk == "low" and ($tc == "research" or $tc == "coding_standard") and ($pref_free == true or $subs_under_pressure == true)) then 14.0 else 0.0 end) as $free_bonus |
 
-      ($base_score + $pool_adj + $headroom_bonus + $capacity_bonus + $bridge_adj + $cross_family_bonus + $local_bonus + $free_bonus) as $eff_score |
+      ($base_score + $pool_adj + $headroom_bonus + $capacity_bonus + $bridge_adj + $frontier_adj + $security_adj + $role_floor_adj + $cross_family_bonus + $local_bonus + $free_bonus) as $eff_score |
+      resolve_effort($c.effort; $c.supported_efforts) as $ef |
 
       {
         stage: $st,
+        role: (if $rl == "" then null else $rl end),
+        round: $rnd,
         task_class: $tc,
         risk: $rk,
         candidate_id: $c.id,
@@ -653,9 +910,14 @@ afk_router_select_candidate() {
         model: $c.model,
         canonical_model: $c.canonical_model,
         model_family: $c.model_family,
+        specialist_domain: ($c.specialist_domain // null),
         cost_class: $cclass,
         is_free: ($c.is_free // ($cclass == "free")),
-        effort: $c.effort,
+        effort: $ef.effort,
+        base_effort: $ef.base_effort,
+        effort_escalated: $ef.escalated,
+        effort_reason: $ef.reason,
+        supported_efforts: ($c.supported_efforts // ["low","medium","high"]),
         window_tokens: $c.window_tokens,
         entitlement_pool: $c.entitlement_pool,
         pool_state: $pool.state,
@@ -666,20 +928,26 @@ afk_router_select_candidate() {
         benchmark_name: $b_name,
         benchmark_score: $base_score,
         effective_score: (($eff_score * 100 | round) / 100),
-        cross_family_review: ($tc == "coding_review" and $bf != "" and $c.model_family != $bf),
+        cross_family_review: (((($tc == "coding_review") or ($st | startswith("review"))) and $bf != "" and $c.model_family != $bf)),
         memory_mode: $mm,
         router_source: (if ($c.requires_gateway // false) then "afk-benchmarks+litellm" else "afk-benchmarks" end),
         litellm_base_url: (if (($c.requires_gateway // false) and $lurl != "") then $lurl else null end),
+        auth_alerts: $probe.auth_alerts,
         reason: (
-          "Selected " + $c.harness + "/" + $c.model + " [" + $c.canonical_model + ", cost=" + $cclass + "] " +
+          "Selected " + $c.harness + "/" + $c.model + " [" + $c.canonical_model + ", effort=" + $ef.effort +
+          (if $ef.escalated then " (" + $ef.reason + ")" else "" end) +
+          ", cost=" + $cclass + "] " +
           "(pool=" + $c.entitlement_pool + " " + ($pool.remaining_units_5h|tostring) + "/" + ($pool.capacity_5h|tostring) + " free [" + ($pool.headroom_pct|tostring) + "%], " +
           "benchmark=" + ($base_score|tostring) + " via " + $b_name +
-          (if ($tc == "coding_review" and $bf != "" and $c.model_family != $bf) then ", cross-family blind review vs " + $bf else "" end) +
+          (if (($c.specialist_domain // "") == "security" and $tc == "security") then ", specialist cybersecurity model" else "" end) +
+          (if ((($tc == "coding_review") or ($st | startswith("review"))) and $bf != "" and $c.model_family != $bf) then ", cross-family blind review vs " + $bf else "" end) +
           (if $pool.state == "warning" then ", pool conservation penalty applied" else "" end) + ")"
         )
       }
     ] | sort_by(-.effective_score) | .[0] // {
       stage: $st,
+      role: (if $rl == "" then null else $rl end),
+      round: $rnd,
       task_class: $tc,
       risk: $rk,
       harness: "claude",
@@ -690,6 +958,10 @@ afk_router_select_candidate() {
       cost_class: "subscription",
       is_free: false,
       effort: "medium",
+      base_effort: "medium",
+      effort_escalated: false,
+      effort_reason: "fallback_default",
+      supported_efforts: ["low","medium","high"],
       window_tokens: 1000000,
       entitlement_pool: "anthropic-max",
       pool_headroom_pct: 100,
@@ -699,6 +971,7 @@ afk_router_select_candidate() {
       memory_mode: $mm,
       router_source: "fallback-default",
       litellm_base_url: (if $lurl == "" then null else $lurl end),
+      auth_alerts: $probe.auth_alerts,
       reason: "Fallback route (no eligible candidate matched)"
     }')"
   rm -f "$tmp_disc"
@@ -706,18 +979,12 @@ afk_router_select_candidate() {
 }
 
 # afk_router_sync_benchmarks [<out_file>]
-# Pulls live public benchmark rankings and model capabilities from popular public sources:
-#   1. LMArena Agent Leaderboard (HuggingFace Datasets API — real-world agentic coding)
-#   2. LMArena WebDev Leaderboard (HuggingFace Datasets API — UI/UX & frontend coding Elo)
-#   3. LMArena Text Leaderboard (HuggingFace Datasets API — reasoning & synthesis Elo)
-#   4. SWE-bench Official Leaderboard (GitHub JSON — verified issue resolution)
-#   5. Artificial Analysis API (optional when ARTIFICIAL_ANALYSIS_API_KEY / AA_API_KEY is set)
-#   6. models.dev API (live context window & output token limits)
-# Computes normalized 0-100 task-class scores for every candidate and writes atomically
-# to ~/.config/afk/benchmarks.json.
+# Pulls live public benchmark rankings and model capabilities from 6 public feeds
+# and writes normalized 0-100 task-class scores atomically to ~/.config/afk/benchmarks.json.
 afk_router_sync_benchmarks() {
   local out_file="${1:-$HOME/.config/afk/benchmarks.json}"
-  local base_file="/home/user/repos/jlengelbrecht/agent-flow-kit/files/model-router/benchmarks.json"
+  local base_file
+  base_file="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/files/model-router/benchmarks.json"
   [[ -f "$base_file" ]] || base_file="$HOME/.agents/skills/model-router/benchmarks.json"
 
   mkdir -p "$(dirname -- "$out_file")"
@@ -776,7 +1043,6 @@ afk_router_sync_benchmarks() {
     fi
   fi
 
-  # Recompute live context windows and normalized 0-100 benchmark scores from live feeds!
   local tmp_out="${out_file}.tmp.$$"
   jq \
     --arg ts "$today" \
@@ -812,32 +1078,27 @@ afk_router_sync_benchmarks() {
     } |
     .candidates |= map(
       . as $c |
-      # 1. Update context window dynamically from models.dev if present
       (($md[$c.models_dev_provider // ""][$c.models_dev_id // ""]) // $c.window_tokens) as $live_win |
       .window_tokens = $live_win |
 
-      # 2. Match live LMArena Agent row (rank -> normalized 84..98 score)
       ([ $ag[]? | select((.model_name // "") | contains($c.arena_match // "__none__")) ][0]) as $ag_hit |
       (if $ag_hit != null and ($ag_hit.rank != null) then
         ((98.0 - (($ag_hit.rank - 1) * 0.9)) | if . < 80 then 80 else (. * 10 | round / 10) end)
        else null end) as $ag_score |
 
-      # 3. Match live LMArena WebDev row (rating/rank -> normalized 84..97.5 score)
       ([ $wd[]? | select((.model_name // "") | contains($c.arena_match // "__none__")) ][0]) as $wd_hit |
       (if $wd_hit != null and ($wd_hit.rank != null) then
         ((97.5 - (($wd_hit.rank - 1) * 0.9)) | if . < 80 then 80 else (. * 10 | round / 10) end)
        else null end) as $wd_score |
 
-      # 4. Match live LMArena Text row (rank -> normalized 85..97.5 score)
       ([ $tx[]? | select((.model_name // "") | contains($c.arena_match // "__none__")) ][0]) as $tx_hit |
       (if $tx_hit != null and ($tx_hit.rank != null) then
         ((97.5 - (($tx_hit.rank - 1) * 0.9)) | if . < 80 then 80 else (. * 10 | round / 10) end)
        else null end) as $tx_score |
 
-      # 5. Match Artificial Analysis Coding Index when API key is configured
       ([ $aa[]? | select((.slug // "") | contains($c.aa_slug_match // "__none__")) | select(.coding != null) ][0]) as $aa_hit |
 
-      if $ag_score != null then
+      if $ag_score != null and (($c.specialist_domain // "") == "") and (($c.frontier_only // false) == false) then
         .benchmarks.coding_complex = {
           score: (if $aa_hit != null then (($ag_score * 0.6 + $aa_hit.coding * 0.4) * 10 | round / 10) else $ag_score end),
           benchmark: ("LMArena Agent #" + ($ag_hit.rank|tostring) + " (" + ($ag_hit.date // "live") + ")")
@@ -847,13 +1108,13 @@ afk_router_sync_benchmarks() {
           benchmark: ("LMArena Agent #" + ($ag_hit.rank|tostring) + " + Reasoning")
         }
       else . end |
-      if $wd_score != null then
+      if $wd_score != null and (($c.specialist_domain // "") == "") then
         .benchmarks.webdev = {
           score: $wd_score,
           benchmark: ("LMArena WebDev #" + ($wd_hit.rank|tostring) + (if $wd_hit.rating != null then " (" + ($wd_hit.rating|round|tostring) + " Elo)" else "" end))
         }
       else . end |
-      if $tx_score != null then
+      if $tx_score != null and (($c.specialist_domain // "") == "") then
         .benchmarks.research = {
           score: $tx_score,
           benchmark: ("LMArena Reasoning #" + ($tx_hit.rank|tostring) + (if $tx_hit.rating != null then " (" + ($tx_hit.rating|round|tostring) + " Elo)" else "" end))
@@ -874,7 +1135,7 @@ afk_router_sync_benchmarks() {
     --arg saa "$st_aa" \
     --argjson count "$(jq '.candidates | length' "$out_file")" \
     '{
-      schema: "afk-benchmark-sync/2",
+      schema: "afk-benchmark-sync/3",
       catalog_path: $out,
       synced_at: $ts,
       candidates_count: $count,

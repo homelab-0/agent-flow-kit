@@ -1058,5 +1058,227 @@ assert_eq "When Claude is nearly used up (82% warning) and Codex is 84% warning,
   "$(jq -r '"\(.harness)/\(.model):\(.entitlement_pool)"' <<<"$Q_ROUTE_82_LOW")" \
   "agy/gemini-4-carbon:antigravity-pool"
 
+# ----------------------------------------------------------------------------
+# 12. Grok Auto-Onboarding, Frontier/Security Models (Fable, Mythos, Daybreak),
+#     BMAD PM Floor, Dynamic Effort Escalation & Signed-Out Auth Alerts
+GF_TMP="$TMPROOT/grok-frontier-sec"
+mkdir -p "$GF_TMP/bin" "$GF_TMP/codex-sessions"
+head1 "12. Grok CLI onboarding, Fable/Mythos/Daybreak routing, BMAD PM floor, effort escalation & auth alerts"
+
+for hbin in claude codex agy; do
+  cat > "$GF_TMP/bin/$hbin" <<'SH'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "--version" ]]; then echo "2.5.0"; exit 0; fi
+exit 0
+SH
+  chmod +x "$GF_TMP/bin/$hbin"
+done
+
+cat > "$GF_TMP/bin/grok" <<SH
+#!/usr/bin/env bash
+if [[ "\${1:-}" == "--version" ]]; then echo "1.0.77"; exit 0; fi
+printf '%s\n' "\$*" >> "$GF_TMP/grok-invocations.log"
+printf '%s\n' '{"text":"VERDICT: PASS\n## Summary\n- Grok blind review clean.","stopReason":"end_turn","usage":{"input_tokens":3200,"cache_read_input_tokens":800,"output_tokens":120,"total_tokens":4120}}'
+SH
+chmod +x "$GF_TMP/bin/grok"
+
+cat > "$GF_TMP/grok-auth.json" <<'JSON'
+{
+  "https://auth.x.ai::77777777-8888-4999-aaaa-bbbbbbbbbbbb": {
+    "access_token": "redacted-test-token",
+    "expires_at": 1893456000000
+  }
+}
+JSON
+
+cat > "$GF_TMP/grok-models.json" <<'JSON'
+{
+  "default_model": "grok-4.7",
+  "models": [
+    {
+      "id": "grok-4.7",
+      "name": "Grok 4.7",
+      "context_window": 256000,
+      "max_context_window": 500000,
+      "default_reasoning_effort": "medium",
+      "reasoning_efforts": ["xhigh", "high", "medium", "low"]
+    },
+    {
+      "id": "grok-4.7-build-fast",
+      "name": "Grok 4.7 Build Fast",
+      "context_window": 256000,
+      "default_reasoning_effort": "low",
+      "reasoning_efforts": ["medium", "low"]
+    }
+  ]
+}
+JSON
+
+cat > "$GF_TMP/claude-healthy-fable.json" <<'JSON'
+{
+  "five_hour": {"utilization": 22.0},
+  "seven_day": {"utilization": 40.0, "resets_at": "2026-11-13T20:59:59Z"},
+  "extra_usage": {"is_enabled": false},
+  "limits": [
+    {"kind": "weekly_all", "group": "weekly", "percent": 40, "severity": "info", "is_active": true},
+    {"kind": "fable", "group": "scoped_weekly", "percent": 56, "severity": "info", "is_active": true}
+  ]
+}
+JSON
+
+cat > "$GF_TMP/codex-auth-valid.json" <<'JSON'
+{"auth_mode": "chatgpt", "tokens": {"access_token": "tok_test", "account_id": "acct_sec_test"}}
+JSON
+
+# 12a: Grok CLI auto-discovery, xai-grok auth binding, and model + effort dial inventory
+GF_MODELS="$(
+  unset AFK_ROUTER_HARNESS_LIST
+  AFK_HARNESS_BIN_DIR_OVERRIDE="$GF_TMP/bin" \
+  AFK_ROUTER_BENCHMARKS_FILE="$KIT_ROOT/files/model-router/benchmarks.json" \
+  AFK_DISCOVERED_MODELS_FILE="$GF_TMP/discovered-models.json" \
+  AFK_GROK_AUTH_FILE="$GF_TMP/grok-auth.json" \
+  AFK_GROK_MODELS_CACHE="$GF_TMP/grok-models.json" \
+  AFK_CODEX_AUTH_FILE="$GF_TMP/codex-auth-valid.json" \
+  AFK_OPENCODE_AUTH_FILE="$GF_TMP/no-oc.json" \
+  AFK_PI_AUTH_FILE="$GF_TMP/no-pi.json" \
+  bash "$AFK" factory models --sync --harness grok --json
+)"
+assert_eq "Newly installed grok CLI is auto-discovered with xai-grok subscription pool and effort dial [low,medium,high,xhigh]" \
+  "$(jq -r '"\(.harness_effort_dials.grok.cli_flag):\([.models[] | "\(.model)=\(.entitlement_pool)[\(.supported_efforts | join("/"))]"] | sort | join(","))"' <<<"$GF_MODELS")" \
+  "--effort <level>:grok-4.7-build-fast=xai-grok[low/medium],grok-4.7=xai-grok[low/medium/high/xhigh]"
+
+# 12b: High vs Critical risk spec (Opus 5.5 vs Fable frontier reservation) & BMAD PM epics complexity floor
+GF_ENV_ARGS=(
+  AFK_HARNESS_BIN_DIR_OVERRIDE="$GF_TMP/bin"
+  AFK_ROUTER_BENCHMARKS_FILE="$KIT_ROOT/files/model-router/benchmarks.json"
+  AFK_DISCOVERED_MODELS_FILE="$GF_TMP/discovered-models.json"
+  AFK_ROUTER_SIGNALS_FILE="$GF_TMP/signals.json"
+  AFK_CLAUDE_USAGE_FIXTURE="$GF_TMP/claude-healthy-fable.json"
+  AFK_CODEX_SESSIONS_DIR="$GF_TMP/codex-sessions"
+  AFK_CODEX_AUTH_FILE="$GF_TMP/codex-auth-valid.json"
+  AFK_GROK_AUTH_FILE="$GF_TMP/grok-auth.json"
+  AFK_OPENCODE_AUTH_FILE="$GF_TMP/no-oc.json"
+  AFK_PI_AUTH_FILE="$GF_TMP/no-pi.json"
+)
+
+SPEC_HIGH="$(unset AFK_ROUTER_HARNESS_LIST; env "${GF_ENV_ARGS[@]}" bash "$AFK" factory route-preview --repo "$BMAD_REPO" --stage spec --risk high --json)"
+SPEC_CRIT="$(unset AFK_ROUTER_HARNESS_LIST; env "${GF_ENV_ARGS[@]}" bash "$AFK" factory route-preview --repo "$BMAD_REPO" --stage spec --risk critical --json)"
+BMAD_PM_EPICS="$(unset AFK_ROUTER_HARNESS_LIST; env "${GF_ENV_ARGS[@]}" bash "$AFK" factory route-preview --repo "$BMAD_REPO" --stage epics --role pm --risk medium --json)"
+
+assert_eq "High-risk spec uses claude/opus (effort=high) while critical-risk frontier_synthesis unlocks claude/claude-fable-5-1 (effort=xhigh)" \
+  "$(jq -r '"\(.model):\(.effort):\(.task_class)"' <<<"$SPEC_HIGH")->$(jq -r '"\(.model):\(.effort):\(.task_class)"' <<<"$SPEC_CRIT")" \
+  "opus:high:architecture->claude-fable-5-1:xhigh:frontier_synthesis"
+
+assert_eq "BMAD PM creating epics/PRD at medium risk routes to Opus 5.5 (effort=high) and never downgrades to Sonnet" \
+  "$(jq -r '"\(.harness)/\(.canonical_model):\(.task_class):\(.effort)"' <<<"$BMAD_PM_EPICS")" \
+  "claude/anthropic/claude-opus-5-5:architecture:high"
+
+# 12c: Security specialist routing (Mythos + cross-family Daybreak Blue) & per-model 403 quarantine
+SEC_BUILD="$(unset AFK_ROUTER_HARNESS_LIST; env "${GF_ENV_ARGS[@]}" AFK_SECURITY_MODELS="mythos,daybreak-blue" bash "$AFK" factory route-preview --repo "$BMAD_REPO" --stage build --surfaces code,security --risk high --json)"
+SEC_REVIEW="$(unset AFK_ROUTER_HARNESS_LIST; env "${GF_ENV_ARGS[@]}" AFK_SECURITY_MODELS="mythos,daybreak-blue" bash "$AFK" factory route-preview --repo "$BMAD_REPO" --stage review-security --surfaces code,security --risk high --builder-family anthropic --json)"
+STD_BUILD="$(unset AFK_ROUTER_HARNESS_LIST; env "${GF_ENV_ARGS[@]}" AFK_SECURITY_MODELS="mythos,daybreak-blue" bash "$AFK" factory route-preview --repo "$BMAD_REPO" --stage build --surfaces code --risk medium --json)"
+
+assert_eq "Security-surface build routes to Claude Mythos while cross-family blind review-security routes to OpenAI Daybreak Blue (and non-security build reserves them)" \
+  "$(jq -r '"\(.harness)/\(.model):\(.task_class)"' <<<"$SEC_BUILD")->$(jq -r '"\(.harness)/\(.model):\(.task_class)"' <<<"$SEC_REVIEW")|std=$(jq -r '.model' <<<"$STD_BUILD")" \
+  "claude/claude-mythos-5-2:security->codex/gpt-daybreak-blue-latest:security|std=sonnet"
+
+# Quarantine restricted Mythos model on 403 without poisoning anthropic-max pool
+(
+  # shellcheck disable=SC1091
+  source "$KIT_ROOT/lib/afk-harnesses.sh"
+  # shellcheck disable=SC1091
+  source "$KIT_ROOT/lib/afk-smart-router.sh"
+  AFK_ROUTER_SIGNALS_FILE="$GF_TMP/signals.json" afk_router_mark_model_unavailable "claude-mythos-5-2" "403 model_not_found"
+)
+SEC_BUILD_FALLBACK="$(unset AFK_ROUTER_HARNESS_LIST; env "${GF_ENV_ARGS[@]}" AFK_SECURITY_MODELS="mythos,daybreak-blue" bash "$AFK" factory route-preview --repo "$BMAD_REPO" --stage build --surfaces code,security --risk high --json)"
+assert_eq "Quarantining 403 Mythos model leaves anthropic-max healthy and fails security build over to Daybreak Blue" \
+  "$(jq -r '"\(.harness)/\(.model)"' <<<"$SEC_BUILD_FALLBACK")" \
+  "codex/gpt-daybreak-blue-latest"
+
+# 12d: Dynamic mid-job effort escalation across rounds & headless Grok review when Claude=97% + Codex=401
+EFF_R1="$(unset AFK_ROUTER_HARNESS_LIST; env "${GF_ENV_ARGS[@]}" bash "$AFK" factory route-preview --repo "$BMAD_REPO" --stage build --risk medium --round 1 --json)"
+EFF_R2="$(unset AFK_ROUTER_HARNESS_LIST; env "${GF_ENV_ARGS[@]}" bash "$AFK" factory route-preview --repo "$BMAD_REPO" --stage build --risk medium --round 2 --json)"
+EFF_R3="$(unset AFK_ROUTER_HARNESS_LIST; env "${GF_ENV_ARGS[@]}" bash "$AFK" factory route-preview --repo "$BMAD_REPO" --stage build --risk medium --round 3 --json)"
+
+assert_eq "Dynamic effort escalates automatically as rounds increase (round 1 medium -> round 2 high -> round 3 xhigh)" \
+  "$(jq -r '"\(.effort):\(.effort_escalated)"' <<<"$EFF_R1")->$(jq -r '"\(.effort):\(.effort_escalated)"' <<<"$EFF_R2")->$(jq -r '"\(.effort):\(.effort_escalated)"' <<<"$EFF_R3")" \
+  "medium:false->high:true->xhigh:true"
+
+# Simulate devbox live state: Claude 97% exhausted + Codex 401 token_revoked + Grok signed in + Agy healthy
+NOW_EP="$(date -u +%s)"
+cat > "$GF_TMP/signals-devbox.json" <<EOF
+{
+  "pools": {
+    "openai-plus": {
+      "used_pct": 100,
+      "degraded_kind": "auth",
+      "degraded_reason": "401 token_revoked: signing key invalidated",
+      "updated_epoch": $NOW_EP
+    }
+  }
+}
+EOF
+touch -d "@$((NOW_EP - 3600))" "$GF_TMP/codex-auth-valid.json" 2>/dev/null || true
+
+DEVBOX_SIM_POOLS="$(
+  unset AFK_ROUTER_HARNESS_LIST
+  AFK_HARNESS_BIN_DIR_OVERRIDE="$GF_TMP/bin" \
+  AFK_ROUTER_BENCHMARKS_FILE="$KIT_ROOT/files/model-router/benchmarks.json" \
+  AFK_DISCOVERED_MODELS_FILE="$GF_TMP/discovered-models.json" \
+  AFK_ROUTER_SIGNALS_FILE="$GF_TMP/signals-devbox.json" \
+  AFK_CLAUDE_USAGE_FIXTURE="$QUOTA_TMP/claude-97.json" \
+  AFK_CODEX_SESSIONS_DIR="$GF_TMP/codex-sessions" \
+  AFK_CODEX_AUTH_FILE="$GF_TMP/codex-auth-valid.json" \
+  AFK_GROK_AUTH_FILE="$GF_TMP/grok-auth.json" \
+  AFK_OPENCODE_AUTH_FILE="$GF_TMP/no-oc.json" \
+  AFK_PI_AUTH_FILE="$GF_TMP/no-pi.json" \
+  bash "$AFK" factory pools --json
+)"
+DEVBOX_SIM_ROUTES="$(
+  unset AFK_ROUTER_HARNESS_LIST
+  AFK_HARNESS_BIN_DIR_OVERRIDE="$GF_TMP/bin" \
+  AFK_ROUTER_BENCHMARKS_FILE="$KIT_ROOT/files/model-router/benchmarks.json" \
+  AFK_DISCOVERED_MODELS_FILE="$GF_TMP/discovered-models.json" \
+  AFK_ROUTER_SIGNALS_FILE="$GF_TMP/signals-devbox.json" \
+  AFK_CLAUDE_USAGE_FIXTURE="$QUOTA_TMP/claude-97.json" \
+  AFK_CODEX_SESSIONS_DIR="$GF_TMP/codex-sessions" \
+  AFK_CODEX_AUTH_FILE="$GF_TMP/codex-auth-valid.json" \
+  AFK_GROK_AUTH_FILE="$GF_TMP/grok-auth.json" \
+  AFK_OPENCODE_AUTH_FILE="$GF_TMP/no-oc.json" \
+  AFK_PI_AUTH_FILE="$GF_TMP/no-pi.json" \
+  bash "$AFK" factory route-preview --repo "$BMAD_REPO" --risk medium --json
+)"
+
+assert_eq "Signed-out/revoked Codex pool surfaces auth_required + codex login alert while Agy builds and Grok blind-reviews cross-family" \
+  "$(jq -r '"\(.pools["openai-plus"].state):\(.auth_alerts[0].reauth_command)"' <<<"$DEVBOX_SIM_POOLS")|$(jq -r '[.[] | select(.stage == "build" or .stage == "review-code") | "\(.stage)=\(.harness)/\(.model)"] | join(",")' <<<"$DEVBOX_SIM_ROUTES")" \
+  "auth_required:codex login|build=agy/gemini-4-carbon,review-code=grok/grok-4.7"
+
+# Verify headless grok invocation extracts .text and passes --effort
+GROK_EXEC_RES="$(
+  # shellcheck disable=SC1091
+  source "$KIT_ROOT/lib/afk-harnesses.sh"
+  # shellcheck disable=SC1091
+  source "$KIT_ROOT/lib/afk-smart-router.sh"
+  # shellcheck disable=SC1091
+  source "$KIT_ROOT/lib/afk-roster.sh"
+  # shellcheck disable=SC1091
+  source "$KIT_ROOT/lib/afk-paperclip-hire.sh"
+  # shellcheck disable=SC1091
+  source "$KIT_ROOT/lib/afk-factory.sh"
+  PATH="$GF_TMP/bin:$PATH"
+  AFK_HARNESS_BIN_DIR_OVERRIDE="$GF_TMP/bin"
+  AFK_ROUTER_HARNESS_LIST="grok"
+  AFK_GROK_AUTH_FILE="$GF_TMP/grok-auth.json"
+  AFK_ROUTER_BENCHMARKS_FILE="$KIT_ROOT/files/model-router/benchmarks.json"
+  AFK_ROUTER_SIGNALS_FILE="$GF_TMP/grok-only-sig.json"
+  AFK_FACTORY_LIVE_HARNESS=1
+  printf 'Review diff\n' > "$GF_TMP/prompt.md"
+  afk_factory_invoke_stage_agent "$BMAD_REPO" "$BMAD_REPO" "$BMAD_REPO/.afk/jobs/job-clean" "reviewer" "review-code" "$GF_TMP/prompt.md" "$GF_TMP/grok-out.md"
+  printf '{"used_tokens":%s}\n' "${AFK_LAST_STAGE_USED_TOKENS:-0}"
+)"
+assert_eq "Headless grok CLI runner passes --effort high and extracts .text + token usage cleanly" \
+  "$(head -n 1 "$GF_TMP/grok-out.md"):$(jq -r '.used_tokens' <<<"$GROK_EXEC_RES"):$(grep -c -- '--effort high' "$GF_TMP/grok-invocations.log")" \
+  "VERDICT: PASS:4120:1"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

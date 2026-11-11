@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
 # afk-harnesses.sh — Universal Cross-Platform Harness Lifecycle, Update Engine,
-# Live Model Catalog Discovery & Shared Subscription Pool Attribution.
+# Auth-Health Inspection, Effort-Dial Inventory, Live Model Catalog Discovery &
+# Shared Subscription Pool Attribution.
 #
 # Works across Linux and macOS (Darwin) without requiring GNU-only utilities:
-#   1. Detects installed CLI harnesses (claude, codex, agy, opencode, pi) and
-#      determines HOW each binary was installed (homebrew, npm + prefix, bun,
+#   1. Detects installed CLI harnesses (claude, codex, agy, grok, opencode, pi, devin)
+#      and determines HOW each binary was installed (homebrew, npm + prefix, bun,
 #      pnpm, uv, pipx, cargo, or native self-managed installer).
 #   2. Checks for upstream updates and applies updates via the exact install
-#      channel (`codex` via npm/brew, `claude update`, `opencode upgrade`,
-#      `agy update`, `pi` via npm/brew/self), repairing broken binary shims.
-#   3. Enumerates live models exposed by each harness after updates, classifies
+#      channel (`codex` via npm/brew, `claude update`, `grok update`, `opencode upgrade`,
+#      `agy update`, `pi` via npm/brew/self, `devin update`), repairing broken binary shims.
+#   3. Inventories per-harness and per-model reasoning effort dials (`--effort`,
+#      `-c model_reasoning_effort=...`, model tier suffixes) and live auth health
+#      (detecting signed-out / `401 token_revoked` harnesses and surfacing exact
+#      re-login commands without ever printing secrets).
+#   4. Enumerates live models exposed by each harness after updates, classifies
 #      exact cost (FREE $0 vs OAuth Subscription vs Local Cluster vs Metered API),
-#      maps multi-provider harnesses (e.g., OpenCode or Pi logged into OpenAI
-#      Codex OAuth) onto the SAME shared entitlement pool + privacy-safe account
-#      fingerprint, and scores new models against synced public benchmarks.
+#      maps multi-provider harnesses onto shared entitlement pools + privacy-safe
+#      account fingerprints, and scores models against synced public benchmarks.
 
 if [[ -n "${AFK_HARNESSES_SOURCED:-}" ]]; then
   return 0
@@ -75,7 +79,7 @@ _afk_harness_hash12() {
   fi
 }
 
-#Locate candidate binary on Linux or macOS without requiring it in minimal cron/systemd PATH
+# Locate candidate binary on Linux or macOS without requiring it in minimal cron/systemd PATH
 _afk_harness_locate_bin() {
   local name="$1"
   if [[ -n "${AFK_HARNESS_BIN_DIR_OVERRIDE:-}" ]]; then
@@ -94,6 +98,7 @@ _afk_harness_locate_bin() {
   local cand
   for cand in \
     "$HOME/.local/bin/$name" \
+    "$HOME/.grok/bin/$name" \
     "$HOME/.opencode/bin/$name" \
     "$HOME/.bun/bin/$name" \
     "$HOME/.cargo/bin/$name" \
@@ -116,6 +121,42 @@ _afk_harness_default_npm_pkg() {
     opencode) printf 'opencode-ai' ;;
     pi)       printf '@mariozechner/pi-coding-agent' ;;
     *)        printf '%s' "$1" ;;
+  esac
+}
+
+# Per-harness reasoning effort dial descriptor (CLI flag + supported effort levels)
+_afk_harness_effort_dial() {
+  case "$1" in
+    claude)
+      printf '{"supports_effort":true,"cli_flag":"--effort <level>","supported_efforts":["low","medium","high","xhigh","max"]}\n' ;;
+    codex)
+      printf '{"supports_effort":true,"cli_flag":"-c model_reasoning_effort=<level>","supported_efforts":["low","medium","high","xhigh","max","ultra"]}\n' ;;
+    agy)
+      printf '{"supports_effort":true,"cli_flag":"--effort <level> (+ model tier suffix)","supported_efforts":["low","medium","high","xhigh","max"]}\n' ;;
+    grok)
+      printf '{"supports_effort":true,"cli_flag":"--effort <level>","supported_efforts":["low","medium","high","xhigh"]}\n' ;;
+    opencode)
+      printf '{"supports_effort":true,"cli_flag":"--variant <level>","supported_efforts":["low","medium","high"]}\n' ;;
+    pi)
+      printf '{"supports_effort":true,"cli_flag":"--thinking <level>","supported_efforts":["low","medium","high"]}\n' ;;
+    devin)
+      printf '{"supports_effort":true,"cli_flag":"--model <id>-<level>","supported_efforts":["low","medium","high","xhigh","max"]}\n' ;;
+    *)
+      printf '{"supports_effort":false,"cli_flag":null,"supported_efforts":["medium","high"]}\n' ;;
+  esac
+}
+
+# Re-login command for operator recovery when a harness gets signed out or revoked
+_afk_harness_reauth_command() {
+  case "$1" in
+    claude)   printf 'claude auth login' ;;
+    codex)    printf 'codex login' ;;
+    agy)      printf 'agy login' ;;
+    grok)     printf 'grok login' ;;
+    opencode) printf 'opencode auth login' ;;
+    pi)       printf 'pi /login' ;;
+    devin)    printf 'devin auth login' ;;
+    *)        printf '%s login' "$1" ;;
   esac
 }
 
@@ -155,7 +196,6 @@ afk_harness_classify_origin() {
 
   if [[ "$bin_path" == /opt/homebrew/* || "$resolved" == /opt/homebrew/* || "$resolved" == /usr/local/Cellar/* || "$bin_path" == /home/linuxbrew/.linuxbrew/* || "$resolved" == /home/linuxbrew/.linuxbrew/* ]]; then
     method="homebrew"
-    # Extract formula/cask folder name after Cellar/ or Caskroom/ if present
     if [[ "$resolved" == */Cellar/* ]]; then
       local after_cellar="${resolved#*/Cellar/}"
       pkg="${after_cellar%%/*}"
@@ -218,6 +258,8 @@ afk_harness_classify_origin() {
       claude)   update_cmd="\"$bin_path\" update" ;;
       opencode) update_cmd="\"$bin_path\" upgrade" ;;
       agy)      update_cmd="\"$bin_path\" update" ;;
+      grok)     update_cmd="\"$bin_path\" update" ;;
+      devin)    update_cmd="\"$bin_path\" update" ;;
       codex)    update_cmd="\"$bin_path\" --upgrade" ;;
       pi)       update_cmd="\"$bin_path\" update" ;;
       *)        update_cmd="\"$bin_path\" update" ;;
@@ -249,8 +291,6 @@ _afk_harness_fetch_latest_version() {
   local method="$1" pkg="$2"
   case "$method" in
     npm|bun|pnpm)
-      local encoded="${pkg//@/%40}"
-      encoded="${encoded//\//%2F}"
       curl -fsSL --max-time 5 "https://registry.npmjs.org/${pkg}/latest" 2>/dev/null | jq -r '.version // empty' 2>/dev/null || true
       ;;
     homebrew)
@@ -259,7 +299,6 @@ _afk_harness_fetch_latest_version() {
       fi
       ;;
     *)
-      # Check npm mirror when a known npm package exists for reference
       case "$pkg" in
         opencode)
           curl -fsSL --max-time 5 "https://registry.npmjs.org/opencode-ai/latest" 2>/dev/null | jq -r '.version // empty' 2>/dev/null || true
@@ -275,11 +314,127 @@ _afk_harness_fetch_latest_version() {
   esac
 }
 
+# afk_harness_inspect_auth_one <name> [<present_on_disk:true|false>]
+# Checks non-secret credential presence & runtime auth-revocation signals for <name>.
+# NEVER reads or prints secret tokens.
+afk_harness_inspect_auth_one() {
+  local name="$1" present="${2:-true}"
+  local reauth_cmd
+  reauth_cmd="$(_afk_harness_reauth_command "$name")"
+  if [[ "$present" != "true" ]]; then
+    jq -cn --arg cmd "$reauth_cmd" '{auth_state:"not_installed", signed_in:false, reason:null, reauth_command:$cmd}'
+    return 0
+  fi
+
+  local sig_file="${AFK_ROUTER_SIGNALS_FILE:-$HOME/.config/afk/pool-signals.json}"
+  local now_ep
+  now_ep="$(date -u +%s)"
+  local pool_id="" cred_file="" signed_in=false auth_state="signed_out" reason=""
+
+  case "$name" in
+    claude)
+      pool_id="anthropic-max"
+      cred_file="${AFK_CLAUDE_CREDS_FILE:-$HOME/.claude/.credentials.json}"
+      if [[ -f "$cred_file" ]] && jq -e '(.claudeAiOauth.accessToken // .claudeAiOauth.refreshToken // "") != ""' "$cred_file" >/dev/null 2>&1; then
+        signed_in=true
+      fi
+      ;;
+    codex)
+      pool_id="openai-plus"
+      cred_file="${AFK_CODEX_AUTH_FILE:-$HOME/.codex/auth.json}"
+      if [[ -f "$cred_file" ]] && jq -e '((.tokens.access_token // .tokens.refresh_token // .OPENAI_API_KEY // "") != "") or ((.tokens.account_id // "") != "")' "$cred_file" >/dev/null 2>&1; then
+        signed_in=true
+      fi
+      ;;
+    agy)
+      pool_id="antigravity-pool"
+      cred_file="$HOME/.gemini/antigravity-cli"
+      if [[ -d "$cred_file" || -n "${AFK_HARNESS_BIN_DIR_OVERRIDE:-}" ]]; then
+        signed_in=true
+      fi
+      ;;
+    grok)
+      pool_id="xai-grok"
+      cred_file="${AFK_GROK_AUTH_FILE:-$HOME/.grok/auth.json}"
+      if [[ -f "$cred_file" ]] && jq -e '(keys | length) > 0' "$cred_file" >/dev/null 2>&1; then
+        signed_in=true
+      fi
+      ;;
+    opencode)
+      pool_id="opencode-free"
+      cred_file="${AFK_OPENCODE_AUTH_FILE:-$HOME/.local/share/opencode/auth.json}"
+      # OpenCode always exposes free tier even without OAuth; report authenticated
+      signed_in=true
+      ;;
+    pi)
+      pool_id="openai-plus"
+      cred_file="${AFK_PI_AUTH_FILE:-$HOME/.pi/agent/auth.json}"
+      if [[ -f "$cred_file" ]] && jq -e '(keys | length) > 0' "$cred_file" >/dev/null 2>&1; then
+        signed_in=true
+      fi
+      ;;
+    devin)
+      pool_id="devin-pool"
+      cred_file="${AFK_DEVIN_CREDS_FILE:-$HOME/.local/share/devin/credentials.toml}"
+      if [[ -f "$cred_file" && -s "$cred_file" ]]; then
+        signed_in=true
+      fi
+      ;;
+  esac
+
+  if [[ "$signed_in" == "true" ]]; then
+    auth_state="authenticated"
+  else
+    auth_state="signed_out"
+    reason="No active credentials found on disk"
+  fi
+
+  # Check if runtime signal recorded a 401 / token_revoked after credential file mtime
+  if [[ -n "$pool_id" && -f "$sig_file" ]]; then
+    local c_mtime=0
+    if [[ -f "$cred_file" ]]; then
+      c_mtime="$(stat -c %Y "$cred_file" 2>/dev/null || stat -f %m "$cred_file" 2>/dev/null || printf '0')"
+    fi
+    local sig_hit
+    sig_hit="$(jq -r --arg pid "$pool_id" --argjson now "$now_ep" --argjson cm "$c_mtime" '
+      (.pools[$pid] // null) as $s |
+      if $s == null then empty
+      else
+        (($s.updated_epoch // null) // (if ($s.updated_at // null) != null then (($s.updated_at | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) // 0) else 0 end)) as $ue |
+        (($s.degraded_reason // "") | ascii_downcase) as $lr |
+        ($s.degraded_kind // (if ($lr | test("401|unauthorized|revoked|invalidated oauth|refresh token")) then "auth" else "other" end)) as $k |
+        ($s.ttl_sec // 86400) as $ttl |
+        if $k == "auth" and ($cm <= $ue) and (($now - $ue) < $ttl) then
+          ($s.degraded_reason // "401 token_revoked")
+        else empty end
+      end
+    ' "$sig_file" 2>/dev/null || true)"
+    if [[ -n "$sig_hit" ]]; then
+      signed_in=false
+      auth_state="auth_revoked"
+      reason="$sig_hit"
+    fi
+  fi
+
+  jq -cn \
+    --arg st "$auth_state" \
+    --arg r "$reason" \
+    --arg cmd "$reauth_cmd" \
+    --argjson si "$signed_in" \
+    '{
+      auth_state: $st,
+      signed_in: $si,
+      reason: (if $r == "" then null else $r end),
+      reauth_command: $cmd
+    }'
+}
+
 # afk_harness_inspect_one <name> [<check_updates:true|false>]
 afk_harness_inspect_one() {
   local name="$1" check_updates="${2:-false}"
-  local os_name
+  local os_name effort_dial
   os_name="$(_afk_harness_os)"
+  effort_dial="$(_afk_harness_effort_dial "$name")"
   local bin_path=""
   bin_path="$(_afk_harness_locate_bin "$name" || true)"
 
@@ -287,6 +442,7 @@ afk_harness_inspect_one() {
     jq -cn \
       --arg n "$name" \
       --arg os "$os_name" \
+      --argjson ed "$effort_dial" \
       '{
         harness: $n,
         os: $os,
@@ -294,6 +450,9 @@ afk_harness_inspect_one() {
         healthy: false,
         needs_repair: false,
         health: "not_installed",
+        auth_state: "not_installed",
+        signed_in: false,
+        reauth_command: null,
         binary_path: null,
         resolved_path: null,
         install_method: null,
@@ -302,12 +461,13 @@ afk_harness_inspect_one() {
         current_version: null,
         latest_version: null,
         update_available: false,
-        update_command: null
+        update_command: null,
+        effort_dial: $ed
       }'
     return 0
   fi
 
-  local resolved origin method pkg prefix pkg_json update_cmd
+  local resolved origin method pkg prefix pkg_json update_cmd auth_info
   resolved="$(_afk_harness_realpath "$bin_path")"
   origin="$(afk_harness_classify_origin "$name" "$bin_path" "$resolved")"
   method="$(jq -r '.install_method' <<<"$origin")"
@@ -315,6 +475,7 @@ afk_harness_inspect_one() {
   prefix="$(jq -r '.install_prefix // empty' <<<"$origin")"
   pkg_json="$(jq -r '.package_json // empty' <<<"$origin")"
   update_cmd="$(jq -r '.update_command' <<<"$origin")"
+  auth_info="$(afk_harness_inspect_auth_one "$name" true)"
 
   local ver_out="" ver_rc=0 healthy=true needs_repair=false health="healthy" cur_ver=""
   ver_out="$("$bin_path" --version 2>&1)" || ver_rc=$?
@@ -357,6 +518,8 @@ afk_harness_inspect_one() {
     --argjson ok "$healthy" \
     --argjson nr "$needs_repair" \
     --argjson ua "$update_avail" \
+    --argjson au "$auth_info" \
+    --argjson ed "$effort_dial" \
     '{
       harness: $n,
       os: $os,
@@ -364,6 +527,10 @@ afk_harness_inspect_one() {
       healthy: $ok,
       needs_repair: $nr,
       health: $hl,
+      auth_state: $au.auth_state,
+      signed_in: $au.signed_in,
+      auth_reason: $au.reason,
+      reauth_command: $au.reauth_command,
       binary_path: $bp,
       resolved_path: $rp,
       install_method: $m,
@@ -372,7 +539,8 @@ afk_harness_inspect_one() {
       current_version: (if $cv == "" then null else $cv end),
       latest_version: (if $lv == "" then null else $lv end),
       update_available: $ua,
-      update_command: $uc
+      update_command: $uc,
+      effort_dial: $ed
     }'
 }
 
@@ -381,7 +549,7 @@ afk_harness_inspect_all() {
   local check_updates="${1:-false}"
   local os_name list="[]" h item
   os_name="$(_afk_harness_os)"
-  for h in claude codex agy opencode pi; do
+  for h in claude codex agy grok opencode pi devin; do
     item="$(afk_harness_inspect_one "$h" "$check_updates")"
     list="$(jq -c --argjson it "$item" '. + [$it]' <<<"$list")"
   done
@@ -389,7 +557,16 @@ afk_harness_inspect_all() {
     --arg os "$os_name" \
     --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --argjson items "$list" \
-    '{schema: "afk-harnesses/1", os: $os, checked_at: $ts, harnesses: $items}'
+    '{
+      schema: "afk-harnesses/2",
+      os: $os,
+      checked_at: $ts,
+      auth_alerts: [
+        $items[] | select(.present_on_disk == true and .healthy == true and (.signed_in == false)) |
+        {harness: .harness, auth_state: .auth_state, reason: .auth_reason, reauth_command: .reauth_command}
+      ],
+      harnesses: $items
+    }'
 }
 
 # afk_harness_update <target_harness|all> [<dry_run:true|false>]
@@ -399,7 +576,7 @@ afk_harness_update() {
   local target="${1:-all}" dry_run="${2:-false}"
   local -a names=()
   if [[ "$target" == "all" ]]; then
-    names=(claude codex agy opencode pi)
+    names=(claude codex agy grok opencode pi devin)
   else
     IFS=, read -r -a names <<<"$target"
   fi
@@ -466,13 +643,18 @@ afk_harness_update() {
 # afk_harness_probe_account_bindings
 # Inspects non-secret auth metadata across installed harnesses so AFK knows WHICH
 # account & subscription pool backs each harness+provider pair (e.g., OpenCode or
-# Pi authenticated via OpenAI Codex OAuth shares `openai-plus` with `codex`!).
+# Pi authenticated via OpenAI Codex OAuth shares `openai-plus` with `codex`, and
+# native `grok` CLI shares `xai-grok` with xAI OAuth!).
 # NEVER outputs secret keys or tokens — only auth_type and 12-hex SHA-256 account_id hash.
 afk_harness_probe_account_bindings() {
   local codex_auth="${AFK_CODEX_AUTH_FILE:-$HOME/.codex/auth.json}"
   local opencode_auth="${AFK_OPENCODE_AUTH_FILE:-$HOME/.local/share/opencode/auth.json}"
   local pi_auth="${AFK_PI_AUTH_FILE:-$HOME/.pi/agent/auth.json}"
   local claude_creds="${AFK_CLAUDE_CREDS_FILE:-$HOME/.claude/.credentials.json}"
+  local grok_auth="${AFK_GROK_AUTH_FILE:-}"
+  if [[ -z "$grok_auth" && -z "${AFK_OPENCODE_AUTH_FILE:-}" && -z "${AFK_HARNESS_BIN_DIR_OVERRIDE:-}" ]]; then
+    grok_auth="$HOME/.grok/auth.json"
+  fi
 
   local bindings="[]"
 
@@ -525,7 +707,28 @@ afk_harness_probe_account_bindings() {
     }]' <<<"$bindings")"
   fi
 
-  # 4. OpenCode multi-provider credentials (free + bridged subscriptions + metered APIs)
+  # 4. Grok native CLI subscription (`~/.grok/auth.json` key name `https://auth.x.ai::<uuid>`)
+  local xai_acct_fp=""
+  if [[ -n "$grok_auth" && -f "$grok_auth" ]] && jq -e '(keys | length) > 0' "$grok_auth" >/dev/null 2>&1; then
+    local raw_xkey raw_xuid
+    raw_xkey="$(jq -r 'keys[0] // empty' "$grok_auth" 2>/dev/null || true)"
+    if [[ "$raw_xkey" == *"::"* ]]; then
+      raw_xuid="${raw_xkey#*::}"
+      xai_acct_fp="xai-acct:$(_afk_harness_hash12 "$raw_xuid")"
+    else
+      xai_acct_fp="xai-oauth:primary"
+    fi
+    bindings="$(jq -c --arg fp "$xai_acct_fp" '. + [{
+      harness: "grok",
+      provider: "xai",
+      auth_type: "oauth",
+      cost_class: "subscription",
+      entitlement_pool: "xai-grok",
+      account_fingerprint: $fp
+    }]' <<<"$bindings")"
+  fi
+
+  # 5. OpenCode multi-provider credentials (free + bridged subscriptions + metered APIs)
   if _afk_harness_locate_bin opencode >/dev/null 2>&1 || [[ -f "$opencode_auth" ]]; then
     bindings="$(jq -c '. + [{
       harness: "opencode",
@@ -569,7 +772,13 @@ afk_harness_probe_account_bindings() {
               ;;
             xai|grok)
               pool="xai-grok"
-              fp="xai-oauth:primary"
+              if [[ -n "$raw_aid" ]]; then
+                fp="xai-acct:$(_afk_harness_hash12 "$raw_aid")"
+              elif [[ -n "$xai_acct_fp" ]]; then
+                fp="$xai_acct_fp"
+              else
+                fp="xai-oauth:primary"
+              fi
               ;;
             *)
               pool="xai-grok"
@@ -599,7 +808,7 @@ afk_harness_probe_account_bindings() {
     fi
   fi
 
-  # 5. Pi coding agent multi-provider credentials (when ~/.pi/agent/auth.json exists)
+  # 6. Pi coding agent multi-provider credentials (when ~/.pi/agent/auth.json exists)
   if [[ -f "$pi_auth" ]]; then
     local -a pi_rows=()
     mapfile -t pi_rows < <(jq -r 'to_entries[] | "\(.key)|\(.value.type // "oauth")|\(.value.accountId // .value.account_id // "")"' "$pi_auth" 2>/dev/null || true)
@@ -621,6 +830,11 @@ afk_harness_probe_account_bindings() {
           anthropic*)
             ppool="anthropic-max"
             pfp="anthropic-oauth:shared"
+            ;;
+          xai*|grok*)
+            ppool="xai-grok"
+            pfp="${praw:+xai-acct:$(_afk_harness_hash12 "$praw")}"
+            [[ -n "$pfp" ]] || pfp="${xai_acct_fp:-xai-oauth:primary}"
             ;;
           *)
             ppool="xai-grok"
@@ -653,9 +867,10 @@ afk_harness_probe_account_bindings() {
 }
 
 # afk_harness_sync_models
-# Queries live models across installed harnesses, joins them with account/pool
-# bindings and public benchmark scores, classifies FREE vs OAuth Subscription vs
-# Metered API models + task purposes, and writes ~/.config/afk/discovered-models.json.
+# Queries live models + supported reasoning effort dials across installed harnesses,
+# joins them with account/pool bindings and public benchmark scores, classifies FREE
+# vs OAuth Subscription vs Metered API models + task purposes (including security &
+# frontier synthesis), and writes ~/.config/afk/discovered-models.json.
 afk_harness_sync_models() {
   local dest cat_path bindings
   dest="$(afk_harness_discovered_models_path)"
@@ -667,11 +882,15 @@ afk_harness_sync_models() {
   fi
   bindings="$(afk_harness_probe_account_bindings)"
 
-  local tmp_oc tmp_agy
+  local tmp_oc tmp_agy tmp_grok tmp_codex
   tmp_oc="$(mktemp "${TMPDIR:-/tmp}/afk-oc-models.XXXXXX")"
   tmp_agy="$(mktemp "${TMPDIR:-/tmp}/afk-agy-models.XXXXXX")"
+  tmp_grok="$(mktemp "${TMPDIR:-/tmp}/afk-grok-models.XXXXXX")"
+  tmp_codex="$(mktemp "${TMPDIR:-/tmp}/afk-codex-models.XXXXXX")"
   printf '[]' > "$tmp_oc"
   printf '[]' > "$tmp_agy"
+  printf '[]' > "$tmp_grok"
+  printf '[]' > "$tmp_codex"
 
   # 1. Discover live OpenCode models (free tier + authenticated providers) with exact cost & capability metadata
   local oc_bin=""
@@ -695,7 +914,7 @@ afk_harness_sync_models() {
     fi
   fi
 
-  # 2. Discover live Antigravity (`agy models`) entries when agy is healthy
+  # 2. Discover live Antigravity (`agy models`) entries + effort levels when agy is healthy
   local agy_bin=""
   if [[ -n "${AFK_AGY_MODELS_FIXTURE:-}" && -f "${AFK_AGY_MODELS_FIXTURE}" ]]; then
     tr '\r' '\n' < "$AFK_AGY_MODELS_FIXTURE" | sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g; s/^[[:space:]]+//' | awk 'NF >= 2 && $1 ~ /^[a-z0-9][a-z0-9._-]+$/ { id=$1; $1=""; sub(/^[[:space:]]+/, ""); gsub(/"/, "\\\"", $0); printf "{\"id\":\"%s\",\"name\":\"%s\"}\n", id, $0 }' | jq -cs '.' > "$tmp_agy" 2>/dev/null || printf '[]' > "$tmp_agy"
@@ -706,6 +925,59 @@ afk_harness_sync_models() {
     fi
   fi
 
+  # 3. Discover live Grok CLI models + per-model reasoning_efforts (`~/.grok/models_cache.json` or `grok models`)
+  local grok_cache="${AFK_GROK_MODELS_FIXTURE:-${AFK_GROK_MODELS_CACHE:-}}"
+  if [[ -z "$grok_cache" && -z "${AFK_OPENCODE_MODELS_FIXTURE:-}" && -z "${AFK_HARNESS_BIN_DIR_OVERRIDE:-}" ]]; then
+    grok_cache="$HOME/.grok/models_cache.json"
+  fi
+  if [[ -n "$grok_cache" && -f "$grok_cache" ]]; then
+    jq -c '
+      def erank($e): if $e=="low" then 1 elif $e=="medium" then 2 elif $e=="high" then 3 elif $e=="xhigh" then 4 else 5 end;
+      [
+        (if (.models | type) == "array" then .models[] else (.models | to_entries[]? | (.value.info // .value)) end)
+        | select((.hidden // false) == false)
+        | {
+            id: .id,
+            name: (.name // .id),
+            description: (.description // ""),
+            context_window: ((.context_windows // [.max_context_window // .context_window // 256000]) | max),
+            default_effort: (.reasoning_effort // .default_reasoning_effort // "high"),
+            supported_efforts: (
+              ([.reasoning_efforts[]? | if type == "object" then .value else . end] | unique | sort_by(erank(.)))
+              | if length > 0 then . else ["low","medium","high","xhigh"] end
+            )
+          }
+      ]
+    ' "$grok_cache" > "$tmp_grok" 2>/dev/null || printf '[]' > "$tmp_grok"
+  elif [[ -z "${AFK_OPENCODE_MODELS_FIXTURE:-}" && -z "${AFK_HARNESS_BIN_DIR_OVERRIDE:-}" ]]; then
+    local grok_bin=""
+    grok_bin="$(_afk_harness_locate_bin grok || true)"
+    if [[ -n "$grok_bin" ]] && "$grok_bin" --version >/dev/null 2>&1; then
+      "$grok_bin" models 2>/dev/null | sed -nE 's/^[[:space:]]*[-*][[:space:]]+([A-Za-z0-9._-]+).*$/\1/p' | awk '{printf "{\"id\":\"%s\",\"name\":\"%s\",\"context_window\":500000,\"default_effort\":\"high\",\"supported_efforts\":[\"low\",\"medium\",\"high\",\"xhigh\"]}\n", $1, $1}' | jq -cs '.' > "$tmp_grok" 2>/dev/null || printf '[]' > "$tmp_grok"
+    fi
+  fi
+
+  # 4. Discover live Codex models + per-model supported_reasoning_levels (`~/.codex/models_cache.json`)
+  local codex_cache="${AFK_CODEX_MODELS_FIXTURE:-${AFK_CODEX_MODELS_CACHE:-}}"
+  if [[ -z "$codex_cache" && -z "${AFK_OPENCODE_MODELS_FIXTURE:-}" && -z "${AFK_HARNESS_BIN_DIR_OVERRIDE:-}" ]]; then
+    codex_cache="$HOME/.codex/models_cache.json"
+  fi
+  if [[ -n "$codex_cache" && -f "$codex_cache" ]]; then
+    jq -c '
+      def erank($e): if $e=="low" then 1 elif $e=="medium" then 2 elif $e=="high" then 3 elif $e=="xhigh" then 4 else 5 end;
+      [.models[]? | {
+        id: (.slug // .id),
+        name: (.display_name // .name // .slug // .id),
+        context_window: (.context_window // 400000),
+        default_effort: (.default_reasoning_level // "high"),
+        supported_efforts: (
+          ([.supported_reasoning_levels[]? | if type == "object" then .effort else . end] | unique | sort_by(erank(.)))
+          | if length > 0 then . else ["low","medium","high","xhigh"] end
+        )
+      }]
+    ' "$codex_cache" > "$tmp_codex" 2>/dev/null || printf '[]' > "$tmp_codex"
+  fi
+
   local harnesses_info
   harnesses_info="$(afk_harness_inspect_all false)"
 
@@ -714,13 +986,15 @@ afk_harness_sync_models() {
     --slurpfile cat "$cat_path" \
     --slurpfile oc "$tmp_oc" \
     --slurpfile agy "$tmp_agy" \
+    --slurpfile grk "$tmp_grok" \
+    --slurpfile cdx "$tmp_codex" \
     --argjson bind "$bindings" \
     --argjson hinfo "$harnesses_info" \
     '
     def infer_family($prov; $id):
       ($id | ascii_downcase) as $lid |
-      if ($lid | test("claude")) or $prov == "anthropic" then "anthropic"
-      elif ($lid | test("gpt|codex|o1|o3|o4")) or $prov == "openai" then "openai"
+      if ($lid | test("claude|fable|mythos")) or $prov == "anthropic" then "anthropic"
+      elif ($lid | test("gpt|codex|daybreak|o1|o3|o4")) or $prov == "openai" then "openai"
       elif ($lid | test("gemini")) or $prov == "google" then "google"
       elif ($lid | test("grok")) or $prov == "xai" then "xai"
       elif ($lid | test("deepseek")) then "deepseek"
@@ -729,23 +1003,28 @@ afk_harness_sync_models() {
       elif ($lid | test("nemotron")) then "nvidia"
       else $prov end;
 
-    # Estimate benchmark profile for newly discovered / free models using catalog + capabilities
+    # Estimate benchmark profile for newly discovered / free / specialist models
     def score_discovered($id; $fam; $cost_class; $reasoning; $toolcall; $vision; $ctx):
       ($id | ascii_downcase) as $lid |
-      # Match against catalog candidates first when canonical family/version matches
       ([ $cat[0].candidates[]? | select(
           (.canonical_model | ascii_downcase | endswith("/" + $lid)) or
+          (($lid | test("claude-mythos")) and (.canonical_model == "anthropic/claude-mythos-5-2")) or
+          (($lid | test("daybreak-blue")) and (.canonical_model == "openai/gpt-daybreak-blue-latest")) or
+          (($lid | test("claude-fable")) and (.canonical_model == "anthropic/claude-fable-5-1")) or
           (($lid | test("gpt-6\\.1-sol")) and (.canonical_model == "openai/gpt-6.1-sol")) or
           (($lid | test("gpt-6-astra")) and (.canonical_model == "openai/gpt-6-astra")) or
           (($lid | test("claude-opus-5-5")) and (.canonical_model == "anthropic/claude-opus-5-5")) or
           (($lid | test("claude-sonnet-5-5")) and (.canonical_model == "anthropic/claude-sonnet-5-5")) or
-          (($lid | test("gemini-4-carbon")) and (.canonical_model == "google/gemini-4-carbon"))
+          (($lid | test("gemini-4-carbon")) and (.canonical_model == "google/gemini-4-carbon")) or
+          (($lid | test("^grok-4\\.7")) and (.canonical_model == "xai/grok-4.7"))
         ) ][0]) as $known |
       if $known != null then
         {
           benchmarks: $known.benchmarks,
           recommended_purposes: (
-            (if ($known.benchmarks.architecture.score // 0) >= 92 then ["architecture","spec"] else [] end) +
+            (if ($known.specialist_domain // "") == "security" then ["security-audit","threat-modeling","review-security","cve-triage"] else [] end) +
+            (if ($known.frontier_only // false) == true then ["frontier-synthesis","critical-architecture"] else [] end) +
+            (if ($known.benchmarks.architecture.score // 0) >= 92 then ["architecture","spec","bmad-pm"] else [] end) +
             (if ($known.benchmarks.coding_standard.score // 0) >= 90 then ["build","coding"] else [] end) +
             (if ($known.benchmarks.coding_review.score // 0) >= 90 then ["review-code"] else [] end) +
             (if ($known.benchmarks.research.score // 0) >= 90 then ["intake","research"] else [] end) +
@@ -754,8 +1033,9 @@ afk_harness_sync_models() {
           evaluation_source: "public_benchmark_match"
         }
       else
-        # Calibrate newly added free/open models by family + capabilities (models.dev & LMArena open-weights tiers)
-        (if ($lid | test("glm-5")) then 90.5
+        (if ($lid | test("grok-4\\.6")) then 91.0
+         elif ($lid | test("grok-4\\.5")) then 89.5
+         elif ($lid | test("glm-5")) then 90.5
          elif ($lid | test("deepseek-v4")) then 88.5
          elif ($lid | test("minimax-m3")) then 88.0
          elif ($lid | test("nemotron-3\\.5-super")) then 85.0
@@ -767,12 +1047,14 @@ afk_harness_sync_models() {
          else 70.0 end) as $base |
         {
           benchmarks: {
-            research:        {score: (if $ctx >= 500000 then ($base + 1.0) else $base end), source: "Dynamic Capability + Open-Weights Eval"},
-            architecture:    {score: (if $reasoning then $base else ($base - 6.0) end), source: "Dynamic Capability + Open-Weights Eval"},
-            webdev:          {score: (if $vision then ($base + 1.0) else ($base - 2.0) end), source: "Dynamic Capability + Open-Weights Eval"},
-            coding_standard: {score: (if $toolcall then $base else ($base - 12.0) end), source: "Dynamic Capability + Open-Weights Eval"},
-            coding_hard:     {score: (if $reasoning and $toolcall then ($base - 2.0) else ($base - 12.0) end), source: "Dynamic Capability + Open-Weights Eval"},
-            coding_review:   {score: (if $reasoning then ($base - 1.0) else ($base - 8.0) end), source: "Dynamic Capability + Open-Weights Eval"}
+            research:           {score: (if $ctx >= 500000 then ($base + 1.0) else $base end), source: "Dynamic Capability + Open-Weights Eval"},
+            architecture:       {score: (if $reasoning then $base else ($base - 6.0) end), source: "Dynamic Capability + Open-Weights Eval"},
+            frontier_synthesis: {score: (if $reasoning then ($base - 1.0) else ($base - 10.0) end), source: "Dynamic Capability + Open-Weights Eval"},
+            webdev:             {score: (if $vision then ($base + 1.0) else ($base - 2.0) end), source: "Dynamic Capability + Open-Weights Eval"},
+            coding_standard:    {score: (if $toolcall then $base else ($base - 12.0) end), source: "Dynamic Capability + Open-Weights Eval"},
+            coding_complex:     {score: (if $reasoning and $toolcall then ($base - 1.5) else ($base - 12.0) end), source: "Dynamic Capability + Open-Weights Eval"},
+            coding_review:      {score: (if $reasoning then ($base - 1.0) else ($base - 8.0) end), source: "Dynamic Capability + Open-Weights Eval"},
+            security:           {score: (if $reasoning then ($base - 1.5) else ($base - 10.0) end), source: "Dynamic Capability + Open-Weights Eval"}
           },
           recommended_purposes: (
             (if $cost_class == "free" and $toolcall then ["intake","low-risk-build","triage","pool-conservation"]
@@ -785,9 +1067,7 @@ afk_harness_sync_models() {
         }
       end;
 
-    ($hinfo.harnesses | map({key: .harness, value: .}) | from_entries) as $hmap |
-
-    # Build OpenCode discovered entries
+    # 1. OpenCode discovered entries
     ([
       $oc[0][]? |
       select((.status // "active") == "active") |
@@ -828,6 +1108,8 @@ afk_harness_sync_models() {
         entitlement_pool: $pool,
         account_fingerprint: $b.account_fingerprint,
         window_tokens: $ctx,
+        effort_flag: "--variant",
+        supported_efforts: (if $reas then ["low","medium","high"] else ["medium"] end),
         capabilities: {
           reasoning: $reas,
           toolcall: $tc,
@@ -839,12 +1121,14 @@ afk_harness_sync_models() {
       }
     ]) as $oc_models |
 
-    # Build Antigravity (`agy models`) discovered entries (deduplicated to high/default effort tiers)
+    # 2. Antigravity (`agy models`) discovered entries (computing exact supported_efforts per base model)
+    (($agy[0] // []) | map({base: (.id | sub("-(high|medium|low)$"; "")), eff: (if (.id | test("-(high|medium|low)$")) then (.id | capture("-(?<e>high|medium|low)$").e) else "medium" end)})) as $agy_eff_pairs |
     ([
       $agy[0][]? |
       select((.id | endswith("-low") or endswith("-medium")) | not) |
       . as $am |
       ($am.id | sub("-(high|medium|low)$"; "")) as $base_id |
+      (([ $agy_eff_pairs[] | select(.base == $base_id) | .eff ] + ["xhigh","max"]) | unique) as $sup_eff |
       infer_family("antigravity"; $base_id) as $fam |
       score_discovered($base_id; $fam; "subscription"; true; true; true; 1048576) as $ev |
       {
@@ -863,6 +1147,8 @@ afk_harness_sync_models() {
         entitlement_pool: "antigravity-pool",
         account_fingerprint: "agy-oauth:primary",
         window_tokens: 1048576,
+        effort_flag: "--effort",
+        supported_efforts: $sup_eff,
         capabilities: {reasoning: true, toolcall: true, vision: true},
         recommended_purposes: $ev.recommended_purposes,
         evaluation_source: $ev.evaluation_source,
@@ -870,7 +1156,70 @@ afk_harness_sync_models() {
       }
     ]) as $agy_models |
 
-    ($oc_models + $agy_models) as $all_discovered |
+    # 3. Native Grok CLI (`grok models` / `~/.grok/models_cache.json`) discovered entries
+    (([ $bind[] | select(.harness == "grok") ][0]) // null) as $grok_bind |
+    ([
+      $grk[0][]? |
+      . as $gm |
+      score_discovered($gm.id; "xai"; "subscription"; true; true; true; ($gm.context_window // 500000)) as $ev |
+      {
+        id: ("grok:" + $gm.id),
+        harness: "grok",
+        launch_class: "grok-native",
+        provider: "xai",
+        model: $gm.id,
+        canonical_model: ("xai/" + $gm.id),
+        display_name: ($gm.name // $gm.id),
+        model_family: "xai",
+        auth_type: ($grok_bind.auth_type // "oauth"),
+        cost_class: "subscription",
+        is_free: false,
+        cost_per_1m_usd: {input: 0, output: 0},
+        entitlement_pool: "xai-grok",
+        account_fingerprint: ($grok_bind.account_fingerprint // "xai:unauthenticated"),
+        window_tokens: ($gm.context_window // 500000),
+        effort_flag: "--effort",
+        supported_efforts: ($gm.supported_efforts // ["low","medium","high","xhigh"]),
+        capabilities: {reasoning: true, toolcall: true, vision: true},
+        recommended_purposes: $ev.recommended_purposes,
+        evaluation_source: $ev.evaluation_source,
+        benchmarks: $ev.benchmarks
+      }
+    ]) as $grok_models |
+
+    # 4. Native Codex CLI (`~/.codex/models_cache.json`) effort-dial inventory
+    (([ $bind[] | select(.harness == "codex") ][0]) // null) as $codex_bind |
+    ([
+      $cdx[0][]? |
+      select((.id | test("^codex-auto-review$|^gpt-reserve$")) | not) |
+      . as $cm |
+      score_discovered($cm.id; "openai"; ($codex_bind.cost_class // "subscription"); true; true; true; ($cm.context_window // 1000000)) as $ev |
+      {
+        id: ("codex:" + $cm.id),
+        harness: "codex",
+        launch_class: "codex-native",
+        provider: "openai",
+        model: $cm.id,
+        canonical_model: ("openai/" + $cm.id),
+        display_name: ($cm.name // $cm.id),
+        model_family: "openai",
+        auth_type: ($codex_bind.auth_type // "oauth"),
+        cost_class: ($codex_bind.cost_class // "subscription"),
+        is_free: false,
+        cost_per_1m_usd: {input: 0, output: 0},
+        entitlement_pool: ($codex_bind.entitlement_pool // "openai-plus"),
+        account_fingerprint: ($codex_bind.account_fingerprint // "openai:unauthenticated"),
+        window_tokens: ($cm.context_window // 1000000),
+        effort_flag: "-c model_reasoning_effort=<level>",
+        supported_efforts: ($cm.supported_efforts // ["low","medium","high","xhigh","max"]),
+        capabilities: {reasoning: true, toolcall: true, vision: true},
+        recommended_purposes: $ev.recommended_purposes,
+        evaluation_source: $ev.evaluation_source,
+        benchmarks: $ev.benchmarks
+      }
+    ]) as $codex_models |
+
+    ($oc_models + $agy_models + $grok_models + $codex_models) as $all_discovered |
 
     # Summarize shared pools where multiple harnesses share the same account/subscription!
     (
@@ -886,10 +1235,24 @@ afk_harness_sync_models() {
     ) as $shared_pools |
 
     {
-      schema: "afk-discovered-models/1",
+      schema: "afk-discovered-models/2",
       synced_at: $ts,
       account_bindings: $bind,
       shared_pool_topology: $shared_pools,
+      harness_effort_dials: (
+        [
+          $hinfo.harnesses[] | select(.present_on_disk == true) |
+          {
+            key: .harness,
+            value: {
+              auth_state: .auth_state,
+              supports_effort: .effort_dial.supports_effort,
+              cli_flag: .effort_dial.cli_flag,
+              supported_efforts: .effort_dial.supported_efforts
+            }
+          }
+        ] | from_entries
+      ),
       summary: {
         total_models: ($all_discovered | length),
         free_models: ([ $all_discovered[] | select(.is_free == true) ] | length),
@@ -900,5 +1263,6 @@ afk_harness_sync_models() {
     }
     ' > "${dest}.tmp.$$" && mv "${dest}.tmp.$$" "$dest"
 
+  rm -f "$tmp_oc" "$tmp_agy" "$tmp_grok" "$tmp_codex"
   cat -- "$dest"
 }
