@@ -444,6 +444,11 @@ afk_factory_build_stage_prompt() {
       cat -- "$job_dir/watchdog-nudge.md" 2>/dev/null || true
       printf '\n---\n\n'
     fi
+    if [[ -f "$job_dir/human-feedback.md" ]]; then
+      printf '## Human Board Feedback (MUST ADDRESS)\n'
+      cat -- "$job_dir/human-feedback.md" 2>/dev/null || true
+      printf '\n---\n\n'
+    fi
     if [[ "$stage" == "build" && -f "$job_dir/job.json" ]]; then
       local cur_round prev_round
       cur_round="$(jq -r '.round // 1' "$job_dir/job.json" 2>/dev/null || printf '1')"
@@ -587,6 +592,14 @@ afk_factory_invoke_stage_agent() {
   AFK_LAST_STAGE_USED_TOKENS="${AFK_STAGE_USED_TOKENS:-}"
   AFK_LAST_STAGE_WINDOW_TOKENS="${AFK_STAGE_WINDOW_TOKENS:-$routed_window}"
   AFK_LAST_STAGE_COMPACTED="${AFK_STAGE_COMPACTED:-false}"
+  AFK_LAST_STAGE_INPUT_TOKENS=0
+  AFK_LAST_STAGE_CACHED_TOKENS=0
+  AFK_LAST_STAGE_OUTPUT_TOKENS=0
+  AFK_LAST_STAGE_HARNESS="$harness"
+  AFK_LAST_STAGE_MODEL="$routed_model"
+  AFK_LAST_STAGE_PROVIDER="$(jq -r '.model_family // .provider // "anthropic"' <<<"$route_json" 2>/dev/null || printf 'anthropic')"
+  AFK_LAST_STAGE_COST_CLASS="$(jq -r '.cost_class // "subscription"' <<<"$route_json" 2>/dev/null || printf 'subscription')"
+  AFK_LAST_STAGE_COST_CENTS=0
 
   local runner="${AFK_FACTORY_AGENT_RUNNER:-}"
   if [[ -n "$runner" && -x "$runner" ]]; then
@@ -606,10 +619,17 @@ afk_factory_invoke_stage_agent() {
       AFK_FACTORY_OUTPUT_FILE="$output_file" \
         "$runner" "$stage" "$role" "$prompt_file" "$output_file" 2>/dev/null
     )" || runner_rc=$?
-    if [[ -n "$runner_out" ]] && jq -e '.used_tokens' <<<"$runner_out" >/dev/null 2>&1; then
-      AFK_LAST_STAGE_USED_TOKENS="$(jq -r '.used_tokens // empty' <<<"$runner_out")"
+    if [[ -n "$runner_out" ]] && jq -e '.used_tokens or .input_tokens' <<<"$runner_out" >/dev/null 2>&1; then
+      AFK_LAST_STAGE_USED_TOKENS="$(jq -r '.used_tokens // ((.input_tokens // 0) + (.output_tokens // 0)) // empty' <<<"$runner_out")"
       AFK_LAST_STAGE_WINDOW_TOKENS="$(jq -r --argjson rw "$routed_window" '.window_tokens // $rw' <<<"$runner_out")"
       AFK_LAST_STAGE_COMPACTED="$(jq -r '.compacted // false' <<<"$runner_out")"
+      AFK_LAST_STAGE_INPUT_TOKENS="$(jq -r '.input_tokens // (((.used_tokens // 0) * 80) / 100 | floor)' <<<"$runner_out")"
+      AFK_LAST_STAGE_CACHED_TOKENS="$(jq -r '.cached_input_tokens // 0' <<<"$runner_out")"
+      AFK_LAST_STAGE_OUTPUT_TOKENS="$(jq -r '.output_tokens // ((.used_tokens // 0) - (((.used_tokens // 0) * 80) / 100 | floor))' <<<"$runner_out")"
+      AFK_LAST_STAGE_COST_CENTS="$(jq -r '.cost_cents // 0' <<<"$runner_out")"
+    elif [[ -s "$output_file" ]]; then
+      AFK_LAST_STAGE_INPUT_TOKENS=$(( $(wc -c < "$compiled_prompt" 2>/dev/null || printf '400') / 4 ))
+      AFK_LAST_STAGE_OUTPUT_TOKENS=$(( $(wc -c < "$output_file" 2>/dev/null || printf '200') / 4 ))
     fi
     return "$runner_rc"
   fi
@@ -719,10 +739,14 @@ afk_factory_invoke_stage_agent() {
       fi
 
       if (( h_rc == 0 )) && [[ -s "$env_file" || -s "$output_file" ]]; then
+        local in_tok=0 cached_tok=0 out_tok=0
         if [[ -s "$env_file" ]]; then
           local tok
-          tok="$(jq -sr '[ .[] | (.usage.total_tokens // .part.tokens.total // ((.usage.input_tokens // 0) + (.usage.output_tokens // 0) + (.usage.cache_read_input_tokens // 0))) | select(. > 0) ] | max // empty' "$env_file" 2>/dev/null || true)"
+          tok="$(jq -sr '[ .[] | (.usage.total_tokens // .part.tokens.total // ((.usage.input_tokens // 0) + (.usage.output_tokens // 0) + (.usage.cache_read_input_tokens // 0) + (.usage.cached_input_tokens // 0))) | select(. > 0) ] | max // empty' "$env_file" 2>/dev/null || true)"
           [[ -n "$tok" ]] && AFK_LAST_STAGE_USED_TOKENS="$tok"
+          in_tok="$(jq -sr '[ .[] | (.usage.input_tokens // .part.tokens.input // 0) ] | max // 0' "$env_file" 2>/dev/null || printf '0')"
+          cached_tok="$(jq -sr '[ .[] | (.usage.cache_read_input_tokens // .usage.cached_input_tokens // .part.tokens.cache.read // 0) ] | max // 0' "$env_file" 2>/dev/null || printf '0')"
+          out_tok="$(jq -sr '[ .[] | (.usage.output_tokens // .part.tokens.output // 0) ] | max // 0' "$env_file" 2>/dev/null || printf '0')"
           if [[ ! -s "$output_file" ]]; then
             local extracted=""
             extracted="$(jq -sr '[ .[] | (.result // .response // .part.text // empty) ] | join("")' "$env_file" 2>/dev/null || true)"
@@ -732,6 +756,26 @@ afk_factory_invoke_stage_agent() {
           fi
         fi
         if [[ -s "$output_file" ]]; then
+          if (( in_tok == 0 && out_tok == 0 )); then
+            in_tok=$(( $(wc -c < "$compiled_prompt" 2>/dev/null || printf '400') / 4 ))
+            out_tok=$(( $(wc -c < "$output_file" 2>/dev/null || printf '200') / 4 ))
+          fi
+          [[ -n "${AFK_LAST_STAGE_USED_TOKENS:-}" ]] || AFK_LAST_STAGE_USED_TOKENS=$(( in_tok + cached_tok + out_tok ))
+          AFK_LAST_STAGE_INPUT_TOKENS="$in_tok"
+          AFK_LAST_STAGE_CACHED_TOKENS="$cached_tok"
+          AFK_LAST_STAGE_OUTPUT_TOKENS="$out_tok"
+          AFK_LAST_STAGE_HARNESS="$harness"
+          AFK_LAST_STAGE_MODEL="$routed_model"
+          AFK_LAST_STAGE_PROVIDER="$(jq -r '.model_family // .provider // "anthropic"' <<<"$route_json" 2>/dev/null || printf 'anthropic')"
+          AFK_LAST_STAGE_COST_CLASS="$routed_cost"
+          if [[ "$routed_cost" == "api-metered" ]]; then
+            AFK_LAST_STAGE_COST_CENTS="$(jq -cn --argjson r "$route_json" --argjson it "$in_tok" --argjson ot "$out_tok" '
+              (($r.cost_per_1m_usd.input // 3.0) * $it / 10000.0) + (($r.cost_per_1m_usd.output // 15.0) * $ot / 10000.0)
+              | ceil
+            ' 2>/dev/null || printf '0')"
+          else
+            AFK_LAST_STAGE_COST_CENTS=0
+          fi
           jq -cn \
             --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --arg st "$stage" \
@@ -743,7 +787,10 @@ afk_factory_invoke_stage_agent() {
             --arg cc "$routed_cost" \
             --arg ff "$failover_from" \
             --arg tok "${AFK_LAST_STAGE_USED_TOKENS:-0}" \
-            '{ts:$ts, stage:$st, role:$rl, status:"ok", attempt:$att, harness:$h, model:$m, entitlement_pool:$p, cost_class:$cc, used_tokens:($tok|tonumber? // 0), failover_from:(if $ff=="" then null else $ff end)}' >> "$job_dir/route-history.jsonl"
+            --argjson it "$in_tok" \
+            --argjson ct "$cached_tok" \
+            --argjson ot "$out_tok" \
+            '{ts:$ts, stage:$st, role:$rl, status:"ok", attempt:$att, harness:$h, model:$m, entitlement_pool:$p, cost_class:$cc, used_tokens:($tok|tonumber? // 0), input_tokens:$it, cached_input_tokens:$ct, output_tokens:$ot, failover_from:(if $ff=="" then null else $ff end)}' >> "$job_dir/route-history.jsonl"
           return 0
         fi
         h_rc=1
@@ -872,18 +919,140 @@ _afk_factory_touch_heartbeat() {
     }' > "${hb_file}.tmp.$$" && mv "${hb_file}.tmp.$$" "$hb_file"
 }
 
-# afk_factory_run_stage_with_context_guard <slug> <repo> <wt> <job_dir> <role> <stage> <prompt_file> <output_file> <issue_id> <api_url> <key> <harness>
-# Invokes a stage agent, records its context window consumption, and if it crosses
-# the 80% threshold (or compacts), automatically checkpoints, resets its Paperclip
-# session, and spawns the replacement generation to finish the stage cleanly.
+# _afk_factory_report_stage_telemetry <slug> <job_dir> <stage> <role> <issue_id> <api_url> <key> <company_id> <host_agent_id> <project_id> <run_id> [<gen>]
+_afk_factory_report_stage_telemetry() {
+  local slug="$1" job_dir="$2" stage="$3" role="$4" issue_id="${5:-}"
+  local api_url="${6:-}" key="${7:-}" company_id="${8:-}" host_agent_id="${9:-}"
+  local project_id="${10:-}" run_id="${11:-}" gen="${12:-1}"
+  [[ -n "$api_url" && -n "$key" && -n "$company_id" && -n "$host_agent_id" ]] || return 0
+  declare -F afk_pch_report_cost_event >/dev/null 2>&1 || return 0
+
+  local round_num=1 job_id_val
+  job_id_val="$(basename -- "$job_dir")"
+  if [[ -f "$job_dir/job.json" ]]; then
+    round_num="$(jq -r '.round // 1' "$job_dir/job.json" 2>/dev/null || printf '1')"
+  fi
+  local cc="${AFK_LAST_STAGE_COST_CLASS:-subscription}" btype="subscription_included"
+  case "$cc" in
+    free)        btype="fixed" ;;
+    api-metered) btype="metered_api" ;;
+    *)           btype="subscription_included" ;;
+  esac
+  local prov="${AFK_LAST_STAGE_PROVIDER:-anthropic}"
+  local biller="${AFK_LAST_STAGE_HARNESS:-claude}"
+  local model="${AFK_LAST_STAGE_MODEL:-sonnet}"
+  local in_tok="${AFK_LAST_STAGE_INPUT_TOKENS:-0}"
+  local cached_tok="${AFK_LAST_STAGE_CACHED_TOKENS:-0}"
+  local out_tok="${AFK_LAST_STAGE_OUTPUT_TOKENS:-0}"
+  local cost_cents="${AFK_LAST_STAGE_COST_CENTS:-0}"
+  local bcode="afk:${slug}:${stage}:${role}"
+  local idem="afk-cost:${job_id_val}:${stage}:${role}:r${round_num}:g${gen}"
+
+  afk_pch_report_cost_event "$api_url" "$key" "$company_id" "$host_agent_id" \
+    "$issue_id" "$project_id" "$run_id" "$bcode" "$prov" "$biller" "$btype" \
+    "$model" "$in_tok" "$cached_tok" "$out_tok" "$cost_cents" "$idem" >/dev/null 2>&1 || true
+}
+
+# _afk_factory_write_review_report <job_dir> <round>
+# Aggregates deterministic check gate output and all reviewer verdicts for <round>
+# into <job_dir>/review-report.md for Paperclip Issue Document publication.
+_afk_factory_write_review_report() {
+  local job_dir="$1" round="$2"
+  local round_dir="$job_dir/round-$round" out_file="$job_dir/review-report.md"
+  {
+    printf '# Gate & Independent Review Report (Round %s)\n\n' "$round"
+    if [[ -f "$round_dir/checks.md" ]]; then
+      printf '## Deterministic Gate (`.afk/checks.sh`)\n\n'
+      cat -- "$round_dir/checks.md" 2>/dev/null || true
+      printf '\n\n'
+    fi
+    local rf
+    for rf in "$round_dir"/review-*.md; do
+      [[ -f "$rf" ]] || continue
+      printf '## Independent Review — `%s`\n\n' "$(basename -- "$rf" .md)"
+      cat -- "$rf" 2>/dev/null || true
+      printf '\n\n'
+    done
+  } > "$out_file"
+}
+
+# _afk_factory_land_branch <abs_repo> <wt_dir> <branch> <job_id> <title>
+# Merges <branch> into <abs_repo>'s checked-out base branch when <wt_dir> is an
+# isolated git worktree and <abs_repo> has no dirty tracked files.
+# Prints JSON: {ok: true|false, action: "merged"|"already_up_to_date"|"in_place"|"conflict", commit: "<sha>", reason?: "..."}
+_afk_factory_land_branch() {
+  local abs_repo="$1" wt_dir="$2" branch="$3" job_id="$4" title="$5"
+  if [[ ! -d "$abs_repo/.git" && ! -f "$abs_repo/.git" ]]; then
+    printf '{"ok":true,"action":"non_git","commit":""}\n'
+    return 0
+  fi
+  if [[ "$wt_dir" == "$abs_repo" ]]; then
+    local sha
+    sha="$(git -C "$abs_repo" rev-parse HEAD 2>/dev/null || true)"
+    jq -cn --arg c "$sha" '{ok:true, action:"in_place", commit:$c}'
+    return 0
+  fi
+  if ! git -C "$abs_repo" rev-parse --verify "$branch" >/dev/null 2>&1; then
+    local sha
+    sha="$(git -C "$abs_repo" rev-parse HEAD 2>/dev/null || true)"
+    jq -cn --arg c "$sha" '{ok:true, action:"already_up_to_date", commit:$c}'
+    return 0
+  fi
+  local ahead=0
+  ahead="$(git -C "$abs_repo" rev-list --count "HEAD..$branch" 2>/dev/null || printf '0')"
+  if (( ahead == 0 )); then
+    local sha
+    sha="$(git -C "$abs_repo" rev-parse HEAD 2>/dev/null || true)"
+    [[ -d "$wt_dir" ]] && git -C "$abs_repo" worktree remove --force "$wt_dir" >/dev/null 2>&1 || true
+    jq -cn --arg c "$sha" '{ok:true, action:"already_up_to_date", commit:$c}'
+    return 0
+  fi
+  local dirty_tracked
+  dirty_tracked="$(git -C "$abs_repo" status --porcelain --untracked-files=no 2>/dev/null || true)"
+  if [[ -n "$dirty_tracked" ]]; then
+    jq -cn '{ok:false, action:"dirty_base", commit:"", reason:"Base repository checkout has uncommitted tracked modifications"}'
+    return 1
+  fi
+  if git -C "$abs_repo" merge --no-ff "$branch" -m "Merge branch '$branch' ($job_id): $title" >/dev/null 2>&1; then
+    local merged_sha
+    merged_sha="$(git -C "$abs_repo" rev-parse HEAD 2>/dev/null || true)"
+    [[ -d "$wt_dir" ]] && git -C "$abs_repo" worktree remove --force "$wt_dir" >/dev/null 2>&1 || true
+    jq -cn --arg c "$merged_sha" '{ok:true, action:"merged", commit:$c}'
+    return 0
+  else
+    git -C "$abs_repo" merge --abort >/dev/null 2>&1 || true
+    jq -cn --arg b "$branch" '{ok:false, action:"conflict", commit:"", reason:("Git merge conflict landing " + $b + " into base checkout")}'
+    return 1
+  fi
+}
+
+# _afk_factory_latest_comment_id <api_url> <key> <issue_id>
+_afk_factory_latest_comment_id() {
+  local api_url="${1:-}" key="${2:-}" issue_id="${3:-}"
+  [[ -n "$api_url" && -n "$key" && -n "$issue_id" ]] || return 0
+  local resp code body
+  resp="$(afk_pc_curl GET "$api_url/api/issues/$issue_id/comments" "$key" "")"
+  code="${resp%%$'\n'*}"
+  body="${resp#*$'\n'}"
+  if [[ "$code" == 2?? ]]; then
+    jq -r 'if type == "array" then (last.id // empty) else ((.comments // []) | last.id // empty) end' <<<"$body" 2>/dev/null || true
+  fi
+}
+
+# afk_factory_run_stage_with_context_guard <slug> <repo> <wt> <job_dir> <role> <stage> <prompt_file> <output_file> <issue_id> <api_url> <key> <harness> [<company_id>] [<host_agent_id>] [<project_id>] [<run_id>]
+# Invokes a stage agent, records its context window consumption & Paperclip cost telemetry,
+# and if it crosses the 80% threshold (or compacts), automatically checkpoints, resets its
+# Paperclip session, and spawns the replacement generation to finish the stage cleanly.
 afk_factory_run_stage_with_context_guard() {
   local slug="$1" repo="$2" wt="$3" job_dir="$4" role="$5" stage="$6"
   local prompt_file="$7" output_file="$8" issue_id="$9" api_url="${10:-}" key="${11:-}" harness="${12:-}"
+  local company_id="${13:-}" host_agent_id="${14:-}" project_id="${15:-}" run_id="${16:-}"
 
   _afk_factory_touch_heartbeat "$job_dir" "$stage" "$role" "running"
   afk_factory_invoke_stage_agent "$repo" "$wt" "$job_dir" "$role" "$stage" "$prompt_file" "$output_file" "$harness"
   rm -f "$job_dir/watchdog-nudge.md"
   _afk_factory_touch_heartbeat "$job_dir" "$stage" "$role" "running"
+  _afk_factory_report_stage_telemetry "$slug" "$job_dir" "$stage" "$role" "$issue_id" "$api_url" "$key" "$company_id" "$host_agent_id" "$project_id" "$run_id" "1"
 
   if [[ -n "${AFK_LAST_STAGE_USED_TOKENS:-}" ]]; then
     local ctx_res ctx_act ctx_new_gen ckpt_file
@@ -892,11 +1061,12 @@ afk_factory_run_stage_with_context_guard() {
     if [[ "$ctx_act" == "replaced" ]]; then
       ctx_new_gen="$(jq -r '.active_generation' <<<"$ctx_res")"
       ckpt_file="$job_dir/checkpoints/${role}-gen-$((ctx_new_gen - 1)).md"
-      afk_pch_replace_agent_session "$slug" "$role" "$ctx_new_gen" "$issue_id" "context usage crossed 80% threshold during $stage" "$api_url" "$key"
+      afk_pch_replace_agent_session "$slug" "$role" "$ctx_new_gen" "$issue_id" "context usage crossed 80% threshold during $stage" "$api_url" "$key" "$run_id"
       # Clear token override before re-running replacement generation so it doesn't loop infinitely on a static env var
       local saved_stage_tokens="${AFK_STAGE_USED_TOKENS:-}"
       unset AFK_STAGE_USED_TOKENS
       afk_factory_invoke_stage_agent "$repo" "$wt" "$job_dir" "$role" "$stage" "$ckpt_file" "$output_file" "$harness"
+      _afk_factory_report_stage_telemetry "$slug" "$job_dir" "$stage" "$role" "$issue_id" "$api_url" "$key" "$company_id" "$host_agent_id" "$project_id" "$run_id" "$ctx_new_gen"
       [[ -n "$saved_stage_tokens" ]] && AFK_STAGE_USED_TOKENS="$saved_stage_tokens"
     fi
   fi
@@ -926,7 +1096,7 @@ afk_factory_run_job() {
   mkdir -p "$job_dir/round-1"
 
   # Load Paperclip connection settings if configured on this host
-  local api_url="" company_id="" host_agent_id="" board_user_id="" key="" harness="claude"
+  local api_url="" company_id="" host_agent_id="" board_user_id="" project_id="" key="" harness="claude"
   local pc_cfg_path
   pc_cfg_path="$(afk_pc_config_path)"
   if [[ -f "$pc_cfg_path" ]]; then
@@ -937,6 +1107,7 @@ afk_factory_run_job() {
       company_id="$(jq -r '.company_id // empty' <<<"$pc_cfg" 2>/dev/null)"
       host_agent_id="$(jq -r '.host.agent_id // empty' <<<"$pc_cfg" 2>/dev/null)"
       board_user_id="$(jq -r '.board_user_id // empty' <<<"$pc_cfg" 2>/dev/null)"
+      project_id="$(jq -r --arg s "$slug" '(.projects[]? | select(.slug == $s) | .paperclip_project_id) // empty' <<<"$pc_cfg" 2>/dev/null)"
       harness="$(jq -r --arg s "$slug" '(.projects[]? | select(.slug == $s) | .harness) // "claude"' <<<"$pc_cfg" 2>/dev/null)"
       local key_ref
       key_ref="$(jq -r '.host.key_ref // empty' <<<"$pc_cfg" 2>/dev/null)"
@@ -949,7 +1120,9 @@ afk_factory_run_job() {
 
   # Write issue.md (untrusted input data)
   if [[ -n "$body_file" && -f "$body_file" ]]; then
-    cp "$body_file" "$job_dir/issue.md"
+    if [[ "$(cd -P -- "$(dirname -- "$body_file")" && pwd -P)/$(basename -- "$body_file")" != "$job_dir/issue.md" ]]; then
+      cp "$body_file" "$job_dir/issue.md"
+    fi
   elif [[ ! -f "$job_dir/issue.md" ]]; then
     printf '# %s\n\nIssue ID: %s\n' "$title" "${issue_id:-local}" > "$job_dir/issue.md"
   fi
@@ -1000,17 +1173,42 @@ afk_factory_run_job() {
       }' > "$job_file"
   fi
 
-  # Step 1: Hire core team (pm, dev, reviewer, approver) for the project & resolve Paperclip run_id
-  local hired_json run_id=""
-  hired_json="$(afk_pch_ensure_project_team "$slug" "$abs_repo" "$harness" "pm,dev,reviewer,approver" "$issue_id" "$api_url" "$key" "$company_id" "$host_agent_id")"
+  # Step 1: Pre-flight Paperclip budget check + hire core team (pm, dev, reviewer, approver) & resolve run_id
+  local run_id=""
   if [[ -n "$api_url" && -n "$key" && -n "$issue_id" ]]; then
     run_id="$(afk_pch_ensure_run_id "$api_url" "$key" "$host_agent_id" "$issue_id")"
   fi
+  if [[ -n "$api_url" && -n "$key" && -n "$host_agent_id" ]] && declare -F afk_pch_check_budget >/dev/null 2>&1; then
+    local b_chk b_state b_spent b_limit
+    b_chk="$(afk_pch_check_budget "$api_url" "$key" "$host_agent_id")"
+    b_state="$(jq -r '.state // "ok"' <<<"$b_chk" 2>/dev/null || printf 'ok')"
+    if [[ "$b_state" == "hard_stop" ]]; then
+      b_spent="$(jq -r '.spent_cents // 0' <<<"$b_chk")"
+      b_limit="$(jq -r '.budget_cents // 0' <<<"$b_chk")"
+      cat > "$job_dir/decision.md" <<EOF
+DECISION: ESCALATE
+## Summary
+- Paperclip monthly agent budget hard-stop reached (${b_spent}c / ${b_limit}c).
+- Pausing autonomous execution until board increases budget or approves continuation.
+EOF
+      jq -c --arg now "$now" --arg r "Paperclip monthly budget hard-stop (${b_spent}c/${b_limit}c)" \
+        '.stage = "needs-human" | .decision = "ESCALATE" | .active_agent = "human" | .updated_at = $now | .merge_evaluation = {decision:"ESCALATE", reasons:[$r]}' \
+        "$job_file" > "$job_file.tmp" && mv "$job_file.tmp" "$job_file"
+      if [[ -n "$issue_id" ]]; then
+        afk_pc_comment "$api_url" "$issue_id" "$key" "$run_id" "$(cat "$job_dir/decision.md")" >/dev/null 2>&1 || true
+      fi
+      [[ "$json_mode" == "true" ]] && cat "$job_file" || printf 'AFK Factory job %s (%s): budget hard_stop\n' "$job_id" "$slug"
+      return 0
+    fi
+  fi
+
+  local hired_json
+  hired_json="$(afk_pch_ensure_project_team "$slug" "$abs_repo" "$harness" "pm,dev,reviewer,approver" "$issue_id" "$api_url" "$key" "$company_id" "$host_agent_id")"
 
   # Step 2: Intake (PM — John in BMAD) — skip if already completed on disk (resume-safe)
   if [[ ! -s "$job_dir/intake.md" ]]; then
     afk_pch_assign_stage "$slug" "pm" "$issue_id" "AFK Factory started intake with project PM (\`${slug}-pm\`)." "$api_url" "$key" "$run_id"
-    afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "pm" "intake" "$job_dir/issue.md" "$job_dir/intake.md" "$issue_id" "$api_url" "$key" ""
+    afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "pm" "intake" "$job_dir/issue.md" "$job_dir/intake.md" "$issue_id" "$api_url" "$key" "" "$company_id" "$host_agent_id" "$project_id" "$run_id"
   fi
 
   local intake_verdict risk surfaces_line
@@ -1023,15 +1221,18 @@ afk_factory_run_job() {
   jq -c --arg r "$risk" '.risk = $r' "$job_file" > "$job_file.tmp" && mv "$job_file.tmp" "$job_file"
 
   if [[ "$intake_verdict" == "NEEDS-INFO" ]]; then
-    local question
+    local question last_cid=""
     question="$(cat "$job_dir/intake.md")"
-    jq -c --arg now "$now" '.stage = "needs-info" | .active_agent = "human" | .updated_at = $now' "$job_file" > "$job_file.tmp" && mv "$job_file.tmp" "$job_file"
     if [[ -n "$api_url" && -n "$key" && -n "$issue_id" ]]; then
       afk_pc_comment "$api_url" "$issue_id" "$key" "$run_id" "## Needs Clarification\n\n$question" >/dev/null 2>&1 || true
+      last_cid="$(_afk_factory_latest_comment_id "$api_url" "$key" "$issue_id")"
       local pbody
       pbody="$(jq -cn --arg u "$board_user_id" '{status: "in_review", assigneeAgentId: null} + (if $u != "" then {assigneeUserId: $u} else {} end)')"
       afk_pc_curl PATCH "$api_url/api/issues/$issue_id" "$key" "$run_id" "$pbody" >/dev/null 2>&1 || true
     fi
+    jq -c --arg now "$now" --arg lcid "$last_cid" \
+      '.stage = "needs-info" | .active_agent = "human" | .last_seen_comment_id = (if $lcid == "" then null else $lcid end) | .updated_at = $now' \
+      "$job_file" > "$job_file.tmp" && mv "$job_file.tmp" "$job_file"
     cat "$job_file"
     return 0
   elif [[ "$intake_verdict" == "REJECT" ]]; then
@@ -1053,20 +1254,32 @@ afk_factory_run_job() {
   fi
   if [[ ! -s "$job_dir/spec.md" ]]; then
     afk_pch_assign_stage "$slug" "$spec_role" "$issue_id" "" "$api_url" "$key" "$run_id"
-    afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "$spec_role" "spec" "$job_dir/issue.md" "$job_dir/spec.md" "$issue_id" "$api_url" "$key" ""
+    afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "$spec_role" "spec" "$job_dir/issue.md" "$job_dir/spec.md" "$issue_id" "$api_url" "$key" "" "$company_id" "$host_agent_id" "$project_id" "$run_id"
+  fi
+  if [[ -s "$job_dir/spec.md" && -n "$api_url" && -n "$key" && -n "$issue_id" ]]; then
+    run_id="$(afk_pch_ensure_run_id "$api_url" "$key" "$host_agent_id" "$issue_id")"
+    afk_pch_upsert_document "$api_url" "$key" "$run_id" "$issue_id" "plan" "Engineering Specification ($job_id)" "$job_dir/spec.md" "Generated engineering specification via ${slug}-${spec_role}" >/dev/null 2>&1 || true
   fi
 
   # Optional UX Design pass when UI surface is flagged
   if [[ ",$surfaces_line," == *",ui,"* || ",$surfaces_line," == *",ux,"* ]] && [[ ! -s "$job_dir/ux-spec.md" ]]; then
     afk_pch_assign_stage "$slug" "ux-designer" "$issue_id" "" "$api_url" "$key" "$run_id"
-    afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "ux-designer" "ux" "$job_dir/spec.md" "$job_dir/ux-spec.md" "$issue_id" "$api_url" "$key" ""
+    afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "ux-designer" "ux" "$job_dir/spec.md" "$job_dir/ux-spec.md" "$issue_id" "$api_url" "$key" "" "$company_id" "$host_agent_id" "$project_id" "$run_id"
+    if [[ -n "$api_url" && -n "$key" && -n "$issue_id" ]]; then
+      run_id="$(afk_pch_ensure_run_id "$api_url" "$key" "$host_agent_id" "$issue_id")"
+      afk_pch_upsert_document "$api_url" "$key" "$run_id" "$issue_id" "ux-design" "UX Design Specification ($job_id)" "$job_dir/ux-spec.md" "Generated UX design specification via ${slug}-ux-designer" >/dev/null 2>&1 || true
+    fi
   fi
 
   # Step 4: Build -> Deterministic Gate -> Multi-Lens Review loop (up to max_rounds)
-  local cfg max_rounds round=1 saved_round gate_passed=false reviews_passed=false
+  local cfg max_rounds max_rounds_ovr round=1 saved_round gate_passed=false reviews_passed=false
   cfg="$(afk_factory_load_config "$abs_repo")"
   max_rounds="$(jq -r '.max_rounds // 2' <<<"$cfg")"
   [[ "$max_rounds" =~ ^[0-9]+$ && "$max_rounds" -ge 1 ]] || max_rounds=2
+  max_rounds_ovr="$(jq -r '.max_rounds_override // 0' "$job_file" 2>/dev/null || printf '0')"
+  if [[ "$max_rounds_ovr" =~ ^[0-9]+$ ]] && (( max_rounds_ovr > max_rounds )); then
+    max_rounds="$max_rounds_ovr"
+  fi
   saved_round="$(jq -r '.round // 1' "$job_file" 2>/dev/null || printf '1')"
   if [[ "$saved_round" =~ ^[0-9]+$ ]] && (( saved_round > 1 )); then
     round="$saved_round"
@@ -1077,7 +1290,8 @@ afk_factory_run_job() {
     mkdir -p "$round_dir"
     jq -c --argjson r "$round" '.stage = "build" | .round = $r | .active_agent = "dev"' "$job_file" > "$job_file.tmp" && mv "$job_file.tmp" "$job_file"
     afk_pch_assign_stage "$slug" "dev" "$issue_id" "AFK Factory build round ${round} started with \`${slug}-dev\`." "$api_url" "$key" "$run_id"
-    afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "dev" "build" "$job_dir/spec.md" "$job_dir/build.md" "$issue_id" "$api_url" "$key" ""
+    afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "dev" "build" "$job_dir/spec.md" "$job_dir/build.md" "$issue_id" "$api_url" "$key" "" "$company_id" "$host_agent_id" "$project_id" "$run_id"
+    rm -f "$job_dir/human-feedback.md"
     if [[ "$wt_dir" != "$abs_repo" ]] && [[ -n "$(git -C "$wt_dir" status --porcelain 2>/dev/null || true)" ]]; then
       git -C "$wt_dir" add -A -- . ':!.afk' >/dev/null 2>&1 || git -C "$wt_dir" add -A >/dev/null 2>&1 || true
       git -C "$wt_dir" commit -m "feat($job_id): $title" >/dev/null 2>&1 || true
@@ -1087,6 +1301,10 @@ afk_factory_run_job() {
     jq -c '.stage = "gate"' "$job_file" > "$job_file.tmp" && mv "$job_file.tmp" "$job_file"
     if ! afk_factory_run_gate "$abs_repo" "$wt_dir" "$round_dir"; then
       gate_passed=false
+      _afk_factory_write_review_report "$job_dir" "$round"
+      if [[ -n "$api_url" && -n "$key" && -n "$issue_id" ]]; then
+        afk_pch_upsert_document "$api_url" "$key" "$run_id" "$issue_id" "review-report" "Gate & Review Report (Round $round)" "$job_dir/review-report.md" "Round $round deterministic gate failed" >/dev/null 2>&1 || true
+      fi
       round=$((round + 1))
       continue
     fi
@@ -1095,16 +1313,22 @@ afk_factory_run_job() {
     # Independent Review Stage
     jq -c '.stage = "review" | .active_agent = "reviewer"' "$job_file" > "$job_file.tmp" && mv "$job_file.tmp" "$job_file"
     afk_pch_assign_stage "$slug" "reviewer" "$issue_id" "AFK Factory independent review started with \`${slug}-reviewer\`." "$api_url" "$key" "$run_id"
-    afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "reviewer" "review-code" "$job_dir/build.md" "$round_dir/review-code.md" "$issue_id" "$api_url" "$key" ""
+    afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "reviewer" "review-code" "$job_dir/build.md" "$round_dir/review-code.md" "$issue_id" "$api_url" "$key" "" "$company_id" "$host_agent_id" "$project_id" "$run_id"
 
     if [[ ",$surfaces_line," == *",security,"* ]]; then
-      afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "reviewer" "review-security" "$job_dir/build.md" "$round_dir/review-security.md" "$issue_id" "$api_url" "$key" ""
+      afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "reviewer" "review-security" "$job_dir/build.md" "$round_dir/review-security.md" "$issue_id" "$api_url" "$key" "" "$company_id" "$host_agent_id" "$project_id" "$run_id"
     fi
     if [[ ",$surfaces_line," == *",ui,"* || ",$surfaces_line," == *",ux,"* ]]; then
-      afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "ux-designer" "review-ux" "$job_dir/build.md" "$round_dir/review-ux.md" "$issue_id" "$api_url" "$key" ""
+      afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "ux-designer" "review-ux" "$job_dir/build.md" "$round_dir/review-ux.md" "$issue_id" "$api_url" "$key" "" "$company_id" "$host_agent_id" "$project_id" "$run_id"
     fi
     if [[ ",$surfaces_line," == *",architecture,"* || "$risk" == "high" ]]; then
-      afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "architect" "review-arch" "$job_dir/build.md" "$round_dir/review-arch.md" "$issue_id" "$api_url" "$key" ""
+      afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "architect" "review-arch" "$job_dir/build.md" "$round_dir/review-arch.md" "$issue_id" "$api_url" "$key" "" "$company_id" "$host_agent_id" "$project_id" "$run_id"
+    fi
+
+    _afk_factory_write_review_report "$job_dir" "$round"
+    if [[ -n "$api_url" && -n "$key" && -n "$issue_id" ]]; then
+      run_id="$(afk_pch_ensure_run_id "$api_url" "$key" "$host_agent_id" "$issue_id")"
+      afk_pch_upsert_document "$api_url" "$key" "$run_id" "$issue_id" "review-report" "Gate & Review Report (Round $round)" "$job_dir/review-report.md" "Round $round gate & independent review report" >/dev/null 2>&1 || true
     fi
 
     # Check if all reviewers in round_dir passed
@@ -1128,30 +1352,67 @@ afk_factory_run_job() {
   # Retire specialist on-demand agents now that spec/ux/review completed
   afk_pch_retire_project_agents "$slug" "analyst,architect,ux-designer" "$api_url" "$key" >/dev/null 2>&1 || true
 
-  # Step 5: Situational Merge Approver
+  # Step 5: Situational Merge Approver & Real Git Branch Landing
   jq -c '.stage = "approve" | .active_agent = "approver"' "$job_file" > "$job_file.tmp" && mv "$job_file.tmp" "$job_file"
-  local merge_eval decision final_stage
+  local merge_eval decision final_stage merged_commit="" pending_inter_id="" last_cid="" branch_head=""
+  branch_head="$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || git -C "$abs_repo" rev-parse HEAD 2>/dev/null || true)"
   merge_eval="$(afk_factory_evaluate_merge "$abs_repo" "$job_dir" "$wt_dir")"
   decision="$(jq -r '.decision' <<<"$merge_eval")"
 
   if [[ "$decision" == "APPROVE" ]]; then
-    final_stage="merged"
-    if [[ -n "$api_url" && -n "$key" && -n "$issue_id" ]]; then
-      run_id="$(afk_pch_ensure_run_id "$api_url" "$key" "$host_agent_id" "$issue_id")"
-      afk_pc_curl PATCH "$api_url/api/issues/$issue_id" "$key" "$run_id" '{"status":"in_progress"}' >/dev/null 2>&1 || true
-      afk_pc_comment "$api_url" "$issue_id" "$key" "$run_id" \
-        "$(printf '## AFK Factory — Auto-Approved & Complete\n\n%s' "$(cat "$job_dir/decision.md")")" >/dev/null 2>&1 || true
-      afk_pc_curl PATCH "$api_url/api/issues/$issue_id" "$key" "$run_id" '{"status":"done"}' >/dev/null 2>&1 || true
+    local land_res land_ok land_reason
+    land_res="$(_afk_factory_land_branch "$abs_repo" "$wt_dir" "$branch" "$job_id" "$title")" || true
+    land_ok="$(jq -r '.ok // false' <<<"$land_res" 2>/dev/null || printf 'false')"
+    if [[ "$land_ok" == "true" ]]; then
+      merged_commit="$(jq -r '.commit // empty' <<<"$land_res" 2>/dev/null || printf '%s' "$branch_head")"
+      final_stage="merged"
+      if [[ -n "$merged_commit" ]]; then
+        printf '\n- Landed commit: `%s` (branch `%s`)\n' "$merged_commit" "$branch" >> "$job_dir/decision.md"
+      fi
+      if [[ -n "$api_url" && -n "$key" && -n "$issue_id" ]]; then
+        run_id="$(afk_pch_ensure_run_id "$api_url" "$key" "$host_agent_id" "$issue_id")"
+        afk_pc_curl PATCH "$api_url/api/issues/$issue_id" "$key" "$run_id" '{"status":"in_progress"}' >/dev/null 2>&1 || true
+        afk_pch_upsert_document "$api_url" "$key" "$run_id" "$issue_id" "merge-decision" "Situational Merge Decision ($job_id)" "$job_dir/decision.md" "Auto-approved and merged commit ${merged_commit:0:8}" >/dev/null 2>&1 || true
+        if [[ -n "$merged_commit" ]]; then
+          afk_pch_register_commit_work_product "$api_url" "$key" "$run_id" "$issue_id" "$project_id" "$merged_commit" "$branch" "feat($job_id): $title" "Autonomous AFK Factory merge ($slug)" "merged" "approved" >/dev/null 2>&1 || true
+        fi
+        afk_pc_comment "$api_url" "$issue_id" "$key" "$run_id" \
+          "$(printf '## AFK Factory — Auto-Approved & Merged\n\n%s' "$(cat "$job_dir/decision.md")")" >/dev/null 2>&1 || true
+        afk_pc_curl PATCH "$api_url/api/issues/$issue_id" "$key" "$run_id" '{"status":"done"}' >/dev/null 2>&1 || true
+      fi
+      # Job finished cleanly; retire all project agents in Paperclip
+      afk_pch_retire_project_agents "$slug" "all" "$api_url" "$key" >/dev/null 2>&1 || true
+    else
+      land_reason="$(jq -r '.reason // "Git branch merge failed"' <<<"$land_res" 2>/dev/null || printf 'Git branch merge failed')"
+      decision="ESCALATE"
+      merge_eval="$(jq -c --arg r "$land_reason" '.decision = "ESCALATE" | .reasons = ((.reasons // []) + [$r])' <<<"$merge_eval")"
+      printf '\n## Merge Blocked\n- %s\n' "$land_reason" >> "$job_dir/decision.md"
     fi
-    # Job finished cleanly; retire all project agents in Paperclip
-    afk_pch_retire_project_agents "$slug" "all" "$api_url" "$key" >/dev/null 2>&1 || true
-  else
+  fi
+
+  if [[ "$decision" != "APPROVE" ]]; then
     final_stage="needs-human"
     if [[ -n "$api_url" && -n "$key" && -n "$issue_id" ]]; then
       run_id="$(afk_pch_ensure_run_id "$api_url" "$key" "$host_agent_id" "$issue_id")"
       afk_pc_curl PATCH "$api_url/api/issues/$issue_id" "$key" "$run_id" '{"status":"in_progress"}' >/dev/null 2>&1 || true
+      local dec_doc_json="" inter_json=""
+      dec_doc_json="$(afk_pch_upsert_document "$api_url" "$key" "$run_id" "$issue_id" "merge-decision" "Situational Merge Escalation ($job_id)" "$job_dir/decision.md" "Escalated to board for review (round $round)" 2>/dev/null || true)"
+      if [[ -n "$branch_head" ]]; then
+        afk_pch_register_commit_work_product "$api_url" "$key" "$run_id" "$issue_id" "$project_id" "$branch_head" "$branch" "feat($job_id): $title" "Awaiting human board review on branch $branch" "ready_for_review" "needs_board_review" >/dev/null 2>&1 || true
+      fi
       afk_pc_comment "$api_url" "$issue_id" "$key" "$run_id" \
         "$(printf '## AFK Factory — Human Approval Requested\n\n%s' "$(cat "$job_dir/decision.md")")" >/dev/null 2>&1 || true
+      last_cid="$(_afk_factory_latest_comment_id "$api_url" "$key" "$issue_id")"
+      inter_json="$(afk_pch_request_confirmation "$api_url" "$key" "$run_id" "$issue_id" "$board_user_id" \
+        "afk-confirm:${issue_id}:r${round}" \
+        "Approve AFK Factory Merge ($job_id)" \
+        "Branch \`$branch\` requires human board review before landing." \
+        "Approve and merge branch \`$branch\` into \`$slug\`, or request revisions?" \
+        "$(cat "$job_dir/decision.md")" \
+        "$dec_doc_json" 2>/dev/null || true)"
+      if [[ -n "$inter_json" ]]; then
+        pending_inter_id="$(jq -r '.id // empty' <<<"$inter_json" 2>/dev/null || true)"
+      fi
       local pbody
       pbody="$(jq -cn --arg u "$board_user_id" '{status: "in_review", assigneeAgentId: null} + (if $u != "" then {assigneeUserId: $u} else {} end)')"
       afk_pc_curl PATCH "$api_url/api/issues/$issue_id" "$key" "$run_id" "$pbody" >/dev/null 2>&1 || true
@@ -1165,6 +1426,9 @@ afk_factory_run_job() {
     --arg st "$final_stage" \
     --arg r "$risk" \
     --arg dec "$decision" \
+    --arg msha "$merged_commit" \
+    --arg piid "$pending_inter_id" \
+    --arg lcid "$last_cid" \
     --arg now "$now" \
     --argjson surf "$surfaces_arr" \
     --argjson hired "$hired_json" \
@@ -1174,6 +1438,9 @@ afk_factory_run_job() {
      | .surfaces = $surf
      | .hired_roles = ($hired | map(.role))
      | .decision = $dec
+     | .merged_commit = (if $msha == "" then (.merged_commit // null) else $msha end)
+     | .pending_interaction_id = (if $piid == "" then null else $piid end)
+     | .last_seen_comment_id = (if $lcid == "" then (.last_seen_comment_id // null) else $lcid end)
      | .merge_evaluation = $meval
      | .active_agent = (if $st == "needs-human" then "human" else null end)
      | .updated_at = $now' "$job_file" > "$job_file.tmp" && mv "$job_file.tmp" "$job_file"
@@ -1324,8 +1591,11 @@ EOF
     jq -cn --arg ts "$now_iso" --arg st "$j_stage" --arg r "$stall_reason" --argjson nc "$nudges" \
       '{ts:$ts, stage:$st, status:"watchdog_nudge", nudge_count:$nc, reason:$r}' >> "$j_dir/route-history.jsonl"
 
-    local res_out new_st new_dec
-    res_out="$(afk_factory_run_job "$j_repo" "$j_slug" "$j_id" "$j_issue" "$j_title" "" true)"
+    local res_out new_st new_dec _wd_live="${AFK_FACTORY_LIVE_HARNESS:-0}"
+    if [[ -n "$j_issue" && -z "${AFK_FACTORY_AGENT_RUNNER:-}" && -z "${AFK_CURL_BIN:-}" ]]; then
+      _wd_live="1"
+    fi
+    res_out="$(AFK_FACTORY_LIVE_HARNESS="$_wd_live" afk_factory_run_job "$j_repo" "$j_slug" "$j_id" "$j_issue" "$j_title" "" true)"
     new_st="$(jq -r '.stage // "unknown"' <<<"$res_out" 2>/dev/null)"
     new_dec="$(jq -r '.decision // "null"' <<<"$res_out" 2>/dev/null)"
     actions="$(jq -c --arg s "$j_slug" --arg id "$j_id" --arg st "$new_st" --arg dec "$new_dec" --arg r "$stall_reason" --argjson nc "$nudges" \
@@ -1370,6 +1640,363 @@ afk_factory_resume() {
   else
     printf 'AFK Factory Resume: %s interrupted job(s) resumed\n' "$(jq -r 'length' <<<"$resumed")"
     jq -r '.[] | "  [RESUMED] \(.slug)/\(.id): stage=\(.stage) decision=\(.decision)"' <<<"$resumed"
+  fi
+  return 0
+}
+
+# afk_factory_sync_reviews [<repo_path>] [<slug>] [<dry_run>] [<json_mode>]
+# Reconciles `needs-human` and `needs-info` Factory jobs against Paperclip's
+# structured `request_confirmation` interactions and board user comments:
+#   - Accepted / Approved -> merges git branch, registers commit Work Product,
+#     updates `merge-decision` document, marks issue `done`, retires agents.
+#   - Rejected / Revision feedback -> writes `human-feedback.md`, increments
+#     repair round (`max_rounds_override`), transitions issue to `in_progress`,
+#     and re-enters `afk_factory_run_job` with the human's exact instructions.
+afk_factory_sync_reviews() {
+  local repo="${1:-}" slug="${2:-}" dry_run="${3:-false}" json_mode="${4:-false}"
+  local status_json
+  status_json="$(afk_factory_status "$repo" "$slug" true)"
+  local -a waiting=()
+  mapfile -t waiting < <(jq -c '.attention_required[]?' <<<"$status_json" 2>/dev/null)
+
+  local pc_cfg_path pc_cfg="" api_url="" company_id="" host_agent_id="" key=""
+  pc_cfg_path="$(afk_pc_config_path)"
+  if [[ -f "$pc_cfg_path" ]]; then
+    pc_cfg="$(cat -- "$pc_cfg_path" 2>/dev/null || true)"
+    api_url="$(jq -r '.api_url // empty' <<<"$pc_cfg" 2>/dev/null)"
+    company_id="$(jq -r '.company_id // empty' <<<"$pc_cfg" 2>/dev/null)"
+    host_agent_id="$(jq -r '.host.agent_id // empty' <<<"$pc_cfg" 2>/dev/null)"
+    local key_ref
+    key_ref="$(jq -r '.host.key_ref // empty' <<<"$pc_cfg" 2>/dev/null)"
+    if [[ -n "$key_ref" ]]; then
+      AFK_PC_CFG="$pc_cfg"
+      key="$(afk_pc_read_key "$key_ref" 2>/dev/null || true)"
+    fi
+  fi
+
+  local actions="[]" summary_lines="[]"
+  if [[ -z "$api_url" || -z "$key" ]]; then
+    if [[ "$json_mode" == "true" ]]; then
+      jq -cn '{schema:"afk-factory-sync-reviews/1", reviewed_count:0, actions:[], summary_lines:[]}'
+    else
+      printf 'AFK Factory Sync Reviews: Paperclip credentials unavailable or offline (0 synced)\n'
+    fi
+    return 0
+  fi
+
+  local row j_repo j_slug j_id j_issue j_title j_stage j_wt j_branch j_round j_piid j_lcid j_dir project_id
+  for row in "${waiting[@]:-}"; do
+    [[ -n "$row" ]] || continue
+    j_repo="$(jq -r '.repo_path // empty' <<<"$row")"
+    j_slug="$(jq -r '.slug // empty' <<<"$row")"
+    j_id="$(jq -r '.id // empty' <<<"$row")"
+    j_issue="$(jq -r '.issue_id // empty' <<<"$row")"
+    j_title="$(jq -r '.title // "Factory Task"' <<<"$row")"
+    j_stage="$(jq -r '.stage // "needs-human"' <<<"$row")"
+    j_wt="$(jq -r '.worktree_path // empty' <<<"$row")"
+    j_branch="$(jq -r '.branch // ("factory/" + (.id // ""))' <<<"$row")"
+    j_round="$(jq -r '.round // 1' <<<"$row")"
+    j_piid="$(jq -r '.pending_interaction_id // empty' <<<"$row")"
+    j_lcid="$(jq -r '.last_seen_comment_id // empty' <<<"$row")"
+    [[ -n "$j_repo" && -n "$j_id" && -n "$j_issue" ]] || continue
+    j_dir="$j_repo/.afk/jobs/$j_id"
+    [[ -d "$j_dir" ]] || continue
+    [[ -n "$j_wt" ]] || j_wt="$j_repo"
+    project_id="$(jq -r --arg s "$j_slug" '(.projects[]? | select(.slug == $s) | .paperclip_project_id) // empty' <<<"$pc_cfg" 2>/dev/null)"
+
+    local int_resp int_code int_body com_resp com_code com_body
+    int_resp="$(afk_pc_curl GET "$api_url/api/issues/$j_issue/interactions" "$key" "")"
+    int_code="${int_resp%%$'\n'*}"
+    int_body="${int_resp#*$'\n'}"
+    com_resp="$(afk_pc_curl GET "$api_url/api/issues/$j_issue/comments" "$key" "")"
+    com_code="${com_resp%%$'\n'*}"
+    com_body="${com_resp#*$'\n'}"
+
+    local inter_obj="{}" outcome="" reason="" sup_cid=""
+    if [[ "$int_code" == 2?? ]]; then
+      inter_obj="$(jq -c --arg pid "$j_piid" '
+        (if type == "array" then . else (.interactions // []) end) as $arr
+        | if $pid != "" then ([$arr[] | select(.id == $pid)][0] // {})
+          else ([$arr[] | select(.kind == "request_confirmation")] | last // {}) end
+      ' <<<"$int_body" 2>/dev/null || printf '{}')"
+      outcome="$(jq -r '.result.outcome // empty' <<<"$inter_obj" 2>/dev/null || true)"
+      reason="$(jq -r '.result.reason // empty' <<<"$inter_obj" 2>/dev/null || true)"
+      sup_cid="$(jq -r '.result.commentId // empty' <<<"$inter_obj" 2>/dev/null || true)"
+    fi
+
+    local newest_cid="" new_human_body="" sup_body=""
+    if [[ "$com_code" == 2?? ]]; then
+      newest_cid="$(jq -r '(if type == "array" then . else (.comments // []) end) | last.id // empty' <<<"$com_body" 2>/dev/null || true)"
+      if [[ -n "$sup_cid" ]]; then
+        sup_body="$(jq -r --arg cid "$sup_cid" '
+          (if type == "array" then . else (.comments // []) end)
+          | map(select(.id == $cid)) | first.body // empty
+        ' <<<"$com_body" 2>/dev/null || true)"
+      fi
+      new_human_body="$(jq -r --arg lcid "$j_lcid" '
+        (if type == "array" then . else (.comments // []) end) as $all
+        | (if $lcid == "" then $all
+           else ([$all | to_entries[] | select(.value.id == $lcid) | .key] | last // -1) as $idx
+                | if $idx >= 0 then $all[($idx + 1):] else $all end
+           end)
+        | map(select((.authorUserId // "") != "" and (.authorAgentId // "") == ""))
+        | last.body // empty
+      ' <<<"$com_body" 2>/dev/null || true)"
+    fi
+
+    local action_kind="" feedback_text=""
+    if [[ "$outcome" == "accepted" ]]; then
+      action_kind="approve"
+    elif [[ "$outcome" == "rejected" ]]; then
+      action_kind="revise"
+      feedback_text="${reason:-Human board reviewer requested changes via Paperclip confirmation card.}"
+    elif [[ "$outcome" == "superseded_by_comment" || -n "$new_human_body" ]]; then
+      local cand_body="${sup_body:-$new_human_body}"
+      if [[ -n "$cand_body" ]]; then
+        if [[ "$j_stage" == "needs-human" ]] && printf '%s\n' "$cand_body" | head -n 1 | grep -iqE '^[[:space:]]*(approve|approved|lgtm|merge|ship it)([[:space:]!.,:—-]|$)'; then
+          action_kind="approve"
+        else
+          action_kind="revise"
+          feedback_text="$cand_body"
+        fi
+      fi
+    fi
+
+    [[ -n "$action_kind" ]] || continue
+
+    if [[ "$dry_run" == "true" ]]; then
+      actions="$(jq -c --arg s "$j_slug" --arg id "$j_id" --arg a "would_${action_kind}" \
+        '. + [{slug:$s, job_id:$id, action:$a}]' <<<"$actions")"
+      continue
+    fi
+
+    local now_iso run_id=""
+    now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    run_id="$(afk_pch_ensure_run_id "$api_url" "$key" "$host_agent_id" "$j_issue")"
+
+    if [[ "$action_kind" == "approve" ]]; then
+      local land_res land_ok merged_sha
+      land_res="$(_afk_factory_land_branch "$j_repo" "$j_wt" "$j_branch" "$j_id" "$j_title")" || true
+      land_ok="$(jq -r '.ok // false' <<<"$land_res" 2>/dev/null || printf 'false')"
+      if [[ "$land_ok" == "true" ]]; then
+        merged_sha="$(jq -r '.commit // empty' <<<"$land_res" 2>/dev/null || true)"
+        cat >> "$j_dir/decision.md" <<EOF
+
+## Human Board Resolution ($now_iso)
+- Outcome: APPROVED by board user in Paperclip
+- Landed commit: \`${merged_sha}\` (branch \`${j_branch}\`)
+EOF
+        afk_pc_curl PATCH "$api_url/api/issues/$j_issue" "$key" "$run_id" '{"status":"in_progress"}' >/dev/null 2>&1 || true
+        afk_pch_upsert_document "$api_url" "$key" "$run_id" "$j_issue" "merge-decision" "Situational Merge Decision ($j_id)" "$j_dir/decision.md" "Human board approved; merged ${merged_sha:0:8}" >/dev/null 2>&1 || true
+        if [[ -n "$merged_sha" ]]; then
+          afk_pch_register_commit_work_product "$api_url" "$key" "$run_id" "$j_issue" "$project_id" "$merged_sha" "$j_branch" "feat($j_id): $j_title" "Approved by human board and merged into $j_slug" "merged" "approved" >/dev/null 2>&1 || true
+        fi
+        afk_pc_comment "$api_url" "$j_issue" "$key" "$run_id" \
+          "## AFK Factory — Human Approval Received & Merged\n\nLanded commit \`${merged_sha}\` from \`${j_branch}\`." >/dev/null 2>&1 || true
+        afk_pc_curl PATCH "$api_url/api/issues/$j_issue" "$key" "$run_id" '{"status":"done"}' >/dev/null 2>&1 || true
+        afk_pch_retire_project_agents "$j_slug" "all" "$api_url" "$key" >/dev/null 2>&1 || true
+
+        jq -c --arg now "$now_iso" --arg sha "$merged_sha" --arg lcid "$newest_cid" \
+          '.stage = "merged" | .decision = "APPROVE" | .merged_commit = $sha | .active_agent = null | .pending_interaction_id = null | .last_seen_comment_id = (if $lcid == "" then .last_seen_comment_id else $lcid end) | .updated_at = $now' \
+          "$j_dir/job.json" > "$j_dir/job.json.tmp" && mv "$j_dir/job.json.tmp" "$j_dir/job.json"
+        actions="$(jq -c --arg s "$j_slug" --arg id "$j_id" --arg sha "$merged_sha" \
+          '. + [{slug:$s, job_id:$id, action:"approved_and_merged", merged_commit:$sha}]' <<<"$actions")"
+        summary_lines="$(jq -c --arg m "merged $j_slug/$j_id (${merged_sha:0:8})" '. + [$m]' <<<"$summary_lines")"
+      fi
+    elif [[ "$action_kind" == "revise" ]]; then
+      cat > "$j_dir/human-feedback.md" <<EOF
+- Human board feedback recorded at $now_iso:
+$feedback_text
+EOF
+      local next_round=$(( j_round + 1 ))
+      if [[ "$j_stage" == "needs-info" ]]; then
+        rm -f "$j_dir/intake.md"
+        jq -c --arg now "$now_iso" --arg lcid "$newest_cid" \
+          '.stage = "intake" | .active_agent = "pm" | .pending_interaction_id = null | .last_seen_comment_id = (if $lcid == "" then .last_seen_comment_id else $lcid end) | .updated_at = $now' \
+          "$j_dir/job.json" > "$j_dir/job.json.tmp" && mv "$j_dir/job.json.tmp" "$j_dir/job.json"
+      else
+        jq -c --arg now "$now_iso" --arg lcid "$newest_cid" --argjson nr "$next_round" \
+          '.stage = "build" | .round = $nr | .max_rounds_override = $nr | .active_agent = "dev" | .pending_interaction_id = null | .last_seen_comment_id = (if $lcid == "" then .last_seen_comment_id else $lcid end) | .updated_at = $now' \
+          "$j_dir/job.json" > "$j_dir/job.json.tmp" && mv "$j_dir/job.json.tmp" "$j_dir/job.json"
+      fi
+      local claim_patch
+      claim_patch="$(jq -cn --arg a "$host_agent_id" '{status:"in_progress", assigneeUserId:null} + (if $a != "" then {assigneeAgentId:$a} else {} end)')"
+      afk_pc_curl PATCH "$api_url/api/issues/$j_issue" "$key" "$run_id" "$claim_patch" >/dev/null 2>&1 || true
+
+      local rerun_out new_st new_dec _sr_live="${AFK_FACTORY_LIVE_HARNESS:-0}"
+      if [[ -n "$j_issue" && -z "${AFK_FACTORY_AGENT_RUNNER:-}" && -z "${AFK_CURL_BIN:-}" ]]; then
+        _sr_live="1"
+      fi
+      rerun_out="$(AFK_FACTORY_LIVE_HARNESS="$_sr_live" afk_factory_run_job "$j_repo" "$j_slug" "$j_id" "$j_issue" "$j_title" "" true)"
+      new_st="$(jq -r '.stage // "unknown"' <<<"$rerun_out" 2>/dev/null)"
+      new_dec="$(jq -r '.decision // "null"' <<<"$rerun_out" 2>/dev/null)"
+      actions="$(jq -c --arg s "$j_slug" --arg id "$j_id" --arg st "$new_st" --arg dec "$new_dec" \
+        '. + [{slug:$s, job_id:$id, action:"reentered_with_feedback", stage:$st, decision:$dec}]' <<<"$actions")"
+      summary_lines="$(jq -c --arg m "re-ran $j_slug/$j_id with feedback -> $new_st" '. + [$m]' <<<"$summary_lines")"
+    fi
+  done
+
+  if [[ "$json_mode" == "true" ]]; then
+    jq -cn --argjson a "$actions" --argjson sl "$summary_lines" \
+      '{schema:"afk-factory-sync-reviews/1", reviewed_count:($a|length), actions:$a, summary_lines:$sl}'
+  else
+    printf 'AFK Factory Sync Reviews: processed %s item(s)\n' "$(jq -r 'length' <<<"$actions")"
+    jq -r '.[] | "  [\(.action | ascii_upcase)] \(.slug)/\(.job_id)" + (if .merged_commit then " -> \(.merged_commit)" elif .stage then " -> stage=\(.stage)" else "" end)' <<<"$actions"
+  fi
+  return 0
+}
+
+# afk_factory_poll_paperclip [<slug>] [<dry_run>] [<background>] [<json_mode>]
+# Autonomous Paperclip work loop for Factory-enabled projects:
+#   1. Reconciles human review confirmations & comments (`afk_factory_sync_reviews`).
+#   2. Recovers stalled or interrupted jobs (`afk_factory_watchdog`).
+#   3. Claims `todo` issues (and unclaimed `in_progress` host issues) via atomic
+#      Paperclip checkout for projects with `factory_enabled: true` (or explicit <slug>),
+#      enforcing `max_active_issues` and Paperclip monthly budget caps.
+afk_factory_poll_paperclip() {
+  local slug_filter="${1:-}" dry_run="${2:-false}" bg_mode="${3:-false}" json_mode="${4:-false}"
+  local sr_json wd_json reviewed_cnt=0 summary_lines="[]" dispatched="[]"
+
+  sr_json="$(afk_factory_sync_reviews "" "$slug_filter" "$dry_run" true 2>/dev/null || printf '{"reviewed_count":0,"summary_lines":[]}')"
+  reviewed_cnt="$(jq -r '.reviewed_count // 0' <<<"$sr_json" 2>/dev/null || printf '0')"
+  summary_lines="$(jq -c '.summary_lines // []' <<<"$sr_json" 2>/dev/null || printf '[]')"
+  wd_json="$(afk_factory_watchdog "" "$slug_filter" "" "$dry_run" true 2>/dev/null || printf '{"actions":[]}')"
+
+  local pc_cfg_path pc_cfg="" api_url="" company_id="" host_agent_id="" key=""
+  pc_cfg_path="$(afk_pc_config_path)"
+  if [[ -f "$pc_cfg_path" ]]; then
+    pc_cfg="$(cat -- "$pc_cfg_path" 2>/dev/null || true)"
+    api_url="$(jq -r '.api_url // empty' <<<"$pc_cfg" 2>/dev/null)"
+    company_id="$(jq -r '.company_id // empty' <<<"$pc_cfg" 2>/dev/null)"
+    host_agent_id="$(jq -r '.host.agent_id // empty' <<<"$pc_cfg" 2>/dev/null)"
+    local key_ref
+    key_ref="$(jq -r '.host.key_ref // empty' <<<"$pc_cfg" 2>/dev/null)"
+    if [[ -n "$key_ref" ]]; then
+      AFK_PC_CFG="$pc_cfg"
+      key="$(afk_pc_read_key "$key_ref" 2>/dev/null || true)"
+    fi
+  fi
+
+  if [[ -n "$api_url" && -n "$company_id" && -n "$key" ]]; then
+    local b_chk b_ok="true"
+    if declare -F afk_pch_check_budget >/dev/null 2>&1 && [[ -n "$host_agent_id" ]]; then
+      b_chk="$(afk_pch_check_budget "$api_url" "$key" "$host_agent_id")"
+      b_ok="$(jq -r '.ok // true' <<<"$b_chk" 2>/dev/null || printf 'true')"
+    fi
+
+    if [[ "$b_ok" == "true" ]]; then
+      local -a proj_rows=()
+      mapfile -t proj_rows < <(jq -c --arg sf "$slug_filter" '
+        .projects[]?
+        | select(if $sf != "" then .slug == $sf else (.factory_enabled == true) end)
+      ' <<<"$pc_cfg" 2>/dev/null)
+
+      local prow p_slug p_pid p_repo p_max
+      for prow in "${proj_rows[@]:-}"; do
+        [[ -n "$prow" ]] || continue
+        p_slug="$(jq -r '.slug // empty' <<<"$prow")"
+        p_pid="$(jq -r '.paperclip_project_id // empty' <<<"$prow")"
+        p_repo="$(jq -r '.repo_path // empty' <<<"$prow")"
+        p_max="$(jq -r '.max_active_issues // 1' <<<"$prow")"
+        [[ -n "$p_slug" && -n "$p_pid" && -d "$p_repo" ]] || continue
+
+        # Count active running jobs for this project
+        local st_json active_cnt=0
+        st_json="$(afk_factory_status "$p_repo" "$p_slug" true)"
+        active_cnt="$(jq -r '[.jobs[]? | select((.stage // "") | IN("merged","needs-human","needs-info","rejected") | not)] | length' <<<"$st_json" 2>/dev/null || printf '0')"
+        (( active_cnt < p_max )) || continue
+
+        local l_resp l_code l_body
+        l_resp="$(afk_pc_curl GET "$api_url/api/companies/$company_id/issues?projectId=$p_pid&status=todo" "$key" "")"
+        l_code="${l_resp%%$'\n'*}"
+        l_body="${l_resp#*$'\n'}"
+        [[ "$l_code" == 2?? ]] || continue
+
+        local -a cand_issues=()
+        mapfile -t cand_issues < <(jq -c --arg ha "$host_agent_id" '
+          (if type == "array" then . else (.issues // []) end)[]?
+          | select((.assigneeAgentId == null) or (.assigneeAgentId == "") or (.assigneeAgentId == $ha))
+        ' <<<"$l_body" 2>/dev/null)
+
+        local iss iss_id iss_ident iss_title iss_desc job_id
+        for iss in "${cand_issues[@]:-}"; do
+          (( active_cnt < p_max )) || break
+          iss_id="$(jq -r '.id // empty' <<<"$iss")"
+          iss_ident="$(jq -r '.identifier // empty' <<<"$iss")"
+          iss_title="$(jq -r '.title // "Factory Task"' <<<"$iss")"
+          iss_desc="$(jq -r '.description // ""' <<<"$iss")"
+          [[ -n "$iss_id" ]] || continue
+
+          # Skip if already tracked in .afk/jobs
+          if jq -e --arg iid "$iss_id" 'any(.jobs[]?; .issue_id == $iid)' <<<"$st_json" >/dev/null 2>&1; then
+            continue
+          fi
+
+          job_id="$(printf '%s' "${iss_ident:-$iss_id}" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-')"
+          job_id="${job_id%-}"
+
+          if [[ "$dry_run" == "true" ]]; then
+            dispatched="$(jq -c --arg s "$p_slug" --arg j "$job_id" --arg i "$iss_id" \
+              '. + [{slug:$s, job_id:$j, issue_id:$i, action:"would_claim"}]' <<<"$dispatched")"
+            active_cnt=$((active_cnt + 1))
+            continue
+          fi
+
+          # Atomic Paperclip checkout (Paperclip v2026.1106.0 requires X-Paperclip-Run-Id)
+          local co_run_id co_body co_resp co_code
+          co_run_id="$(afk_pch_ensure_run_id "$api_url" "$key" "$host_agent_id" "$iss_id")"
+          co_body="$(jq -cn --arg a "$host_agent_id" '{agentId:$a, expectedStatuses:["todo","backlog","in_progress"]}')"
+          co_resp="$(afk_pc_curl POST "$api_url/api/issues/$iss_id/checkout" "$key" "$co_run_id" "$co_body")"
+          co_code="${co_resp%%$'\n'*}"
+          [[ "$co_code" == 2?? ]] || continue
+
+          [[ -f "$p_repo/.afk/config.json" ]] || afk_factory_init_repo "$p_repo" true >/dev/null 2>&1 || true
+          mkdir -p "$p_repo/.afk/jobs/$job_id"
+          local body_file="$p_repo/.afk/jobs/$job_id/issue.md"
+          printf '# %s: %s\n\n%s\n' "${iss_ident:-$job_id}" "$iss_title" "$iss_desc" > "$body_file"
+
+          if [[ "$bg_mode" == "true" ]]; then
+            (
+              AFK_FACTORY_LIVE_HARNESS="${AFK_FACTORY_LIVE_HARNESS:-1}" \
+                afk_factory_run_job "$p_repo" "$p_slug" "$job_id" "$iss_id" "$iss_title" "$body_file" true >/dev/null 2>&1
+            ) &
+            dispatched="$(jq -c --arg s "$p_slug" --arg j "$job_id" --arg i "$iss_id" \
+              '. + [{slug:$s, job_id:$j, issue_id:$i, action:"dispatched_background"}]' <<<"$dispatched")"
+            summary_lines="$(jq -c --arg m "claimed $p_slug/$job_id (background)" '. + [$m]' <<<"$summary_lines")"
+          else
+            local run_res f_st f_dec
+            run_res="$(AFK_FACTORY_LIVE_HARNESS="${AFK_FACTORY_LIVE_HARNESS:-1}" afk_factory_run_job "$p_repo" "$p_slug" "$job_id" "$iss_id" "$iss_title" "$body_file" true)"
+            f_st="$(jq -r '.stage // "unknown"' <<<"$run_res" 2>/dev/null)"
+            f_dec="$(jq -r '.decision // "null"' <<<"$run_res" 2>/dev/null)"
+            dispatched="$(jq -c --arg s "$p_slug" --arg j "$job_id" --arg i "$iss_id" --arg st "$f_st" --arg d "$f_dec" \
+              '. + [{slug:$s, job_id:$j, issue_id:$i, action:"completed_sync", stage:$st, decision:$d}]' <<<"$dispatched")"
+            summary_lines="$(jq -c --arg m "claimed $p_slug/$job_id -> $f_st ($f_dec)" '. + [$m]' <<<"$summary_lines")"
+          fi
+          active_cnt=$((active_cnt + 1))
+        done
+      done
+    fi
+  fi
+
+  if [[ "$json_mode" == "true" ]]; then
+    jq -cn \
+      --argjson rev "$reviewed_cnt" \
+      --argjson disp "$dispatched" \
+      --argjson sr "$sr_json" \
+      --argjson wd "$wd_json" \
+      --argjson sl "$summary_lines" \
+      '{
+        schema: "afk-factory-poll/1",
+        reviewed_count: $rev,
+        dispatched_count: ($disp | length),
+        dispatched: $disp,
+        sync_reviews: $sr.actions,
+        watchdog: $wd.actions,
+        summary_lines: $sl
+      }'
+  else
+    printf 'AFK Factory Poll: reviewed=%s dispatched=%s\n' "$reviewed_cnt" "$(jq -r 'length' <<<"$dispatched")"
+    jq -r '.[] | "  " + .' <<<"$summary_lines"
   fi
   return 0
 }
@@ -1462,18 +2089,21 @@ afk_cmd_factory() {
   local body_file="" role="" used_tokens="" window_tokens="200000" compacted=false roles_csv="all"
   local stage_arg="" risk_arg="low" builder_family=""
   local check_updates=false dry_run_flag=false harness_arg="" sync_flag=false free_only=false
+  local sync_pc_skills=false bg_flag=false
   local mcp_mode_arg="standalone" enable_mcp_csv="" enable_skills_csv="" litellm_url_arg=""
   local item_name="" transport_arg="stdio" target_arg="" args_csv="" desc_arg="" skill_path_arg=""
   local stale_sec_arg=""
 
   while (( $# > 0 )); do
     case "$1" in
-      --json)            json_mode=true ;;
-      --compacted)       compacted=true ;;
-      --check-updates)   check_updates=true ;;
-      --dry-run)         dry_run_flag=true ;;
-      --sync)            sync_flag=true ;;
-      --free-only)       free_only=true ;;
+      --json)                  json_mode=true ;;
+      --compacted)             compacted=true ;;
+      --check-updates)         check_updates=true ;;
+      --dry-run)               dry_run_flag=true ;;
+      --sync)                  sync_flag=true ;;
+      --sync-paperclip-skills) sync_pc_skills=true ;;
+      --background)            bg_flag=true ;;
+      --free-only)             free_only=true ;;
       --stale-seconds)   [[ $# -ge 2 ]] || { afk_warn "--stale-seconds requires an integer"; return 1; }; stale_sec_arg="$2"; shift ;;
       --repo)            [[ $# -ge 2 ]] || { afk_warn "--repo requires a path"; return 1; }; repo="$2"; shift ;;
       --slug)            [[ $# -ge 2 ]] || { afk_warn "--slug requires a value"; return 1; }; slug="$2"; shift ;;
@@ -1596,6 +2226,12 @@ afk_cmd_factory() {
     watchdog)
       afk_factory_watchdog "$repo" "$slug" "$stale_sec_arg" "$dry_run_flag" "$json_mode"
       return $? ;;
+    sync-reviews)
+      afk_factory_sync_reviews "$repo" "$slug" "$dry_run_flag" "$json_mode"
+      return $? ;;
+    poll)
+      afk_factory_poll_paperclip "$slug" "$dry_run_flag" "$bg_flag" "$json_mode"
+      return $? ;;
     pools)
       local p_out
       p_out="$(afk_router_probe_pools "$repo")"
@@ -1683,6 +2319,16 @@ afk_cmd_factory() {
       fi
       return 0 ;;
     tooling)
+      if [[ "$sync_pc_skills" == "true" ]]; then
+        local pcs_out
+        pcs_out="$(afk_tooling_sync_paperclip_skills)" || return 1
+        if [[ "$json_mode" == "true" ]]; then
+          printf '%s\n' "$pcs_out"
+        else
+          jq -r '"Synced \(.synced_count) skill(s) from Paperclip Company Skills Store into \(.skills_dir): \([.synced_skills[].slug] | join(", "))"' <<<"$pcs_out"
+        fi
+        return 0
+      fi
       local tl_out
       tl_out="$(afk_tooling_discover "$repo")"
       if [[ "$json_mode" == "true" ]]; then
@@ -1779,7 +2425,7 @@ afk_cmd_factory() {
       afk_factory_status "$repo" "$slug" "$json_mode"
       return $? ;;
     *)
-      afk_warn "factory: unknown subcommand '$(afk_safe_diagnostic "$subcmd")' (expected: roster, init, run, resume, watchdog, pools, harnesses, update-harnesses, models, tooling, tooling-sync, tooling-register-mcp, tooling-register-skill, route-preview, sync-benchmarks, status, context-check, evaluate-merge, retire)"
+      afk_warn "factory: unknown subcommand '$(afk_safe_diagnostic "$subcmd")' (expected: roster, init, run, poll, sync-reviews, resume, watchdog, pools, harnesses, update-harnesses, models, tooling, tooling-sync, tooling-register-mcp, tooling-register-skill, route-preview, sync-benchmarks, status, context-check, evaluate-merge, retire)"
       return 1 ;;
   esac
 }

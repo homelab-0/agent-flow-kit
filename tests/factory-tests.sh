@@ -672,5 +672,284 @@ assert_eq "Universal stage timeout kills hung subscription harness (claude 1s) a
   "$(jq -sr '[.[] | "\(.status):\(.harness):\(.error // "ok")"] | join("->")' "$TMO_JOB_DIR/route-history.jsonl")" \
   "failed_attempt:claude:stage_timeout_1s->ok:agy:ok"
 
+# ----------------------------------------------------------------------------
+# 10. Paperclip v2026.1106.0 Native Integration: Real Git Merge, Issue Docs,
+#     Work Products, Cost Telemetry, Confirmation Cards, Sync-Reviews & Poller
+# ----------------------------------------------------------------------------
+head1 "10. Paperclip v2026.1106.0 native integration (docs, work-products, cost-events, confirmations, sync-reviews, skills-store, poll)"
+
+PC_REPO="$TMPROOT/repo-pc-native"
+mkdir -p "$PC_REPO"
+git -C "$PC_REPO" init -b main >/dev/null 2>&1
+git -C "$PC_REPO" config user.email "test@example.com"
+git -C "$PC_REPO" config user.name "AFK Test"
+printf 'package demo\n' > "$PC_REPO/app.go"
+git -C "$PC_REPO" add app.go
+git -C "$PC_REPO" commit -m "initial main commit" >/dev/null 2>&1
+bash "$AFK" factory init --repo "$PC_REPO" >/dev/null
+
+PC_STATE="$TMPROOT/pc-mock-state"
+mkdir -p "$PC_STATE"
+PC_REQ_LOG="$PC_STATE/requests.jsonl"
+: > "$PC_REQ_LOG"
+printf '0\n' > "$PC_STATE/spent_cents"
+printf '[]\n' > "$PC_STATE/interactions.json"
+printf '[]\n' > "$PC_STATE/comments.json"
+printf '[{"id":"44444444-2222-4333-8444-555555555555","identifier":"HOM-99","title":"Add poller helper","description":"Create poller_ok.go","status":"todo","assigneeAgentId":null}]\n' > "$PC_STATE/todo_issues.json"
+
+PC_CURL_BIN="$TMPROOT/pc-curl-bin"
+mkdir -p "$PC_CURL_BIN"
+cat > "$PC_CURL_BIN/curl" <<'PCCURL'
+#!/usr/bin/env bash
+method="GET" url="" data=""
+while (($#)); do
+  case "$1" in
+    -X) method="$2"; shift 2 ;;
+    --data|--data-binary|--data-raw|-d)
+      if [[ "${2:-}" == @* ]]; then
+        data="$(cat -- "${2#@}" 2>/dev/null || true)"
+      else
+        data="${2:-}"
+      fi
+      shift 2 ;;
+    http*://*) url="$1"; shift ;;
+    *) shift ;;
+  esac
+done
+jq -cn --arg m "$method" --arg u "$url" --arg d "$data" \
+  '{method:$m, url:$u, body:(try ($d | fromjson) catch $d)}' >> "$PC_REQ_LOG"
+
+case "$method $url" in
+  "GET "*"/api/agents/479f0f09-ee4a-4b31-902b-b662d906f41b")
+    spent="$(cat "$PC_STATE/spent_cents" 2>/dev/null || echo 0)"
+    printf '{"id":"479f0f09-ee4a-4b31-902b-b662d906f41b","status":"idle","budgetMonthlyCents":1000,"spentMonthlyCents":%s}200' "$spent" ;;
+  "POST "*"/api/companies/"*"/agent-hires")
+    printf '{"agent":{"id":"a1111111-2222-4333-8444-555555555555","status":"active"}}201' ;;
+  "GET "*"/api/issues/"*"/active-run")
+    printf '{"id":"b1111111-2222-4333-8444-555555555555"}200' ;;
+  "GET "*"/api/issues/"*"/documents/"*)
+    printf '{"error":"not_found"}404' ;;
+  "PUT "*"/api/issues/"*"/documents/"*)
+    dkey="${url##*/}"
+    printf '{"id":"d1111111-2222-4333-8444-555555555555","key":"%s","latestRevisionId":"f1111111-2222-4333-8444-555555555555","latestRevisionNumber":1}200' "$dkey" ;;
+  "POST "*"/api/companies/"*"/cost-events")
+    printf '{"id":"c1111111-2222-4333-8444-555555555555"}201' ;;
+  "POST "*"/api/issues/"*"/work-products")
+    printf '{"id":"e2222222-2222-4333-8444-555555555555","type":"commit"}201' ;;
+  "POST "*"/api/issues/"*"/interactions")
+    printf '{"interaction":{"id":"e1111111-2222-4333-8444-555555555555","kind":"request_confirmation"}}201' ;;
+  "GET "*"/api/issues/"*"/interactions")
+    printf '%s200' "$(cat "$PC_STATE/interactions.json")" ;;
+  "GET "*"/api/issues/"*"/comments")
+    printf '%s200' "$(cat "$PC_STATE/comments.json")" ;;
+  "GET "*"/api/companies/"*"/skills/"*"/files?path="*)
+    printf '%s200' '{"path":"SKILL.md","kind":"skill","content":"---\nname: paperclip-audit-skill\ndescription: Company audit skill from Paperclip store\n---\n# Audit Skill\n"}' ;;
+  "GET "*"/api/companies/"*"/skills")
+    printf '[{"id":"99999999-2222-4333-8444-555555555555","slug":"paperclip-audit-skill","description":"Company audit skill","fileInventory":[{"path":"SKILL.md","kind":"skill"}]}]200' ;;
+  "GET "*"/api/companies/"*"/issues?projectId="*)
+    printf '%s200' "$(cat "$PC_STATE/todo_issues.json")" ;;
+  "POST "*"/api/issues/"*"/checkout")
+    printf '{"ok":true}200' ;;
+  *)
+    printf '{"ok":true}200' ;;
+esac
+PCCURL
+chmod +x "$PC_CURL_BIN/curl"
+
+cat > "$AFK_PAPERCLIP_CONFIG" <<JSON
+{
+  "schema": "afk-paperclip-config/2",
+  "api_url": "https://paperclip.example",
+  "company_id": "4ffcc005-8076-4062-b72e-e4f2d899ecb0",
+  "board_user_id": "emXp8Svi8ncWyL1EORTkRNQYjFjCdQon",
+  "host": {
+    "label": "ubuntu-devbox",
+    "agent_id": "479f0f09-ee4a-4b31-902b-b662d906f41b",
+    "key_ref": "op://develop/paperclip/KEY"
+  },
+  "projects": [
+    {
+      "paperclip_project_id": "7254d23d-3987-406d-a04f-9acf3854d6c1",
+      "slug": "pcproj",
+      "repo_path": "$PC_REPO",
+      "harness": "claude",
+      "max_active_issues": 1,
+      "merge": "pm",
+      "factory_enabled": true
+    }
+  ]
+}
+JSON
+chmod 600 "$AFK_PAPERCLIP_CONFIG"
+
+PC_RUNNER="$TMPROOT/pc-runner.sh"
+cat > "$PC_RUNNER" <<'SH'
+#!/usr/bin/env bash
+STAGE="$1"; ROLE="$2"; PROMPT="$3"; OUT="$4"
+case "$STAGE" in
+  intake) printf 'VERDICT: ACCEPT\nRISK: low\nSURFACES: code\n## Summary\n- Ready.\n' > "$OUT" ;;
+  spec)   printf '# Engineering Plan\n- Create feature file cleanly.\n' > "$OUT" ;;
+  build)
+    if [[ "$AFK_FACTORY_JOB_DIR" == *"job-pc-merge"* ]]; then
+      printf 'package demo\nfunc Feature() string { return "merged" }\n' > "$AFK_FACTORY_WORKTREE/feature.go"
+    elif [[ "$AFK_FACTORY_JOB_DIR" == *"job-pc-escalate"* ]]; then
+      if grep -q "Human Board Feedback" "$AFK_FACTORY_COMPILED_PROMPT"; then
+        git -C "$AFK_FACTORY_WORKTREE" rm -f CODEOWNERS >/dev/null 2>&1 || rm -f "$AFK_FACTORY_WORKTREE/CODEOWNERS"
+        # Reset branch to main so CODEOWNERS is no longer in branch diff, then add clean file
+        git -C "$AFK_FACTORY_WORKTREE" reset --soft main >/dev/null 2>&1 || true
+        git -C "$AFK_FACTORY_WORKTREE" checkout HEAD -- CODEOWNERS >/dev/null 2>&1 || rm -f "$AFK_FACTORY_WORKTREE/CODEOWNERS"
+        printf 'owner note addressed\n' > "$AFK_FACTORY_WORKTREE/owner_note.txt"
+      else
+        printf '* @org/owners\n' > "$AFK_FACTORY_WORKTREE/CODEOWNERS"
+      fi
+    elif [[ "$AFK_FACTORY_JOB_DIR" == *"job-pc-human-accept"* ]]; then
+      printf '* @org/security\n' > "$AFK_FACTORY_WORKTREE/CODEOWNERS"
+    else
+      printf 'package demo\nfunc Polled() bool { return true }\n' > "$AFK_FACTORY_WORKTREE/poller_ok.go"
+    fi
+    printf '## Summary\n- Built changes in worktree.\n' > "$OUT"
+    ;;
+  review-code)
+    printf 'VERDICT: PASS\n## Summary\n- Clean implementation.\n' > "$OUT" ;;
+esac
+printf '{"used_tokens":5000,"input_tokens":4000,"output_tokens":1000,"window_tokens":200000,"compacted":false}\n'
+SH
+chmod +x "$PC_RUNNER"
+
+# 10a: Auto-approved job merges git branch into main, upserts Issue Documents, logs cost-events & registers commit Work Product
+PC_MERGE_OUT="$(
+  PC_REQ_LOG="$PC_REQ_LOG" PC_STATE="$PC_STATE" \
+  AFK_FACTORY_AGENT_RUNNER="$PC_RUNNER" \
+  OP_SERVICE_ACCOUNT_TOKEN=stub \
+  AFK_OP_BIN="$STUB_BIN/op" \
+  AFK_CURL_BIN="$PC_CURL_BIN/curl" \
+  bash "$AFK" factory run --repo "$PC_REPO" --slug pcproj --job job-pc-merge \
+    --issue 11111111-2222-4333-8444-555555555555 --title "Land real git merge" --json
+)"
+
+assert_eq "Approved job actually lands feature.go onto base repository main branch" \
+  "$([[ -f "$PC_REPO/feature.go" ]] && echo present || echo missing):$(jq -r '.stage' <<<"$PC_MERGE_OUT")" \
+  "present:merged"
+
+assert_eq "job.json records exact merged_commit matching base repo HEAD" \
+  "$(jq -r '.merged_commit' <<<"$PC_MERGE_OUT")" \
+  "$(git -C "$PC_REPO" rev-parse HEAD)"
+
+assert_eq "Paperclip Issue Documents upserted for plan, review-report, and merge-decision" \
+  "$(jq -sr '[.[] | select(.method == "PUT" and (.url | contains("/documents/"))) | (.url | split("/") | last)] | sort | unique | join(",")' "$PC_REQ_LOG")" \
+  "merge-decision,plan,review-report"
+
+assert_eq "Paperclip cost-events posted for all 4 stages with host agentId and positive token counts" \
+  "$(jq -sr '[.[] | select(.method == "POST" and (.url | endswith("/cost-events"))) | select(.body.agentId == "479f0f09-ee4a-4b31-902b-b662d906f41b" and .body.inputTokens == 4000 and .body.outputTokens == 1000)] | length' "$PC_REQ_LOG")" \
+  "4"
+
+assert_eq "Paperclip commit Work Product registered with status=merged and reviewState=approved" \
+  "$(jq -sr '[.[] | select(.method == "POST" and (.url | endswith("/work-products"))) | "\(.body.type):\(.body.status):\(.body.reviewState)"] | last' "$PC_REQ_LOG")" \
+  "commit:merged:approved"
+
+# 10b: Escalated job creates request_confirmation card; human rejection triggers Round 2 repair with feedback; human acceptance merges
+: > "$PC_REQ_LOG"
+PC_ESC_OUT="$(
+  PC_REQ_LOG="$PC_REQ_LOG" PC_STATE="$PC_STATE" \
+  AFK_FACTORY_AGENT_RUNNER="$PC_RUNNER" \
+  OP_SERVICE_ACCOUNT_TOKEN=stub \
+  AFK_OP_BIN="$STUB_BIN/op" \
+  AFK_CURL_BIN="$PC_CURL_BIN/curl" \
+  bash "$AFK" factory run --repo "$PC_REPO" --slug pcproj --job job-pc-escalate \
+    --issue 22222222-2222-4333-8444-555555555555 --title "Touch protected CODEOWNERS" --json
+)"
+
+assert_eq "Escalated job leaves CODEOWNERS unmerged on main, registers ready_for_review Work Product, and creates request_confirmation card" \
+  "$([[ -f "$PC_REPO/CODEOWNERS" ]] && echo leaked || echo isolated):$(jq -r '.stage' <<<"$PC_ESC_OUT"):$(jq -r '.pending_interaction_id' <<<"$PC_ESC_OUT"):$(jq -sr '[.[] | select(.url | endswith("/interactions")) | .body.kind] | last' "$PC_REQ_LOG")" \
+  "isolated:needs-human:e1111111-2222-4333-8444-555555555555:request_confirmation"
+
+# Simulate human board clicking "Request changes" on the confirmation card
+cat > "$PC_STATE/interactions.json" <<'JSON'
+[{"id":"e1111111-2222-4333-8444-555555555555","kind":"request_confirmation","result":{"outcome":"rejected","reason":"Do not touch CODEOWNERS; write owner_note.txt instead."}}]
+JSON
+
+SYNC_REJ_OUT="$(
+  PC_REQ_LOG="$PC_REQ_LOG" PC_STATE="$PC_STATE" \
+  AFK_FACTORY_AGENT_RUNNER="$PC_RUNNER" \
+  OP_SERVICE_ACCOUNT_TOKEN=stub \
+  AFK_OP_BIN="$STUB_BIN/op" \
+  AFK_CURL_BIN="$PC_CURL_BIN/curl" \
+  bash "$AFK" factory sync-reviews --repo "$PC_REPO" --slug pcproj --json
+)"
+
+assert_eq "sync-reviews detects rejected confirmation card, injects feedback into Round 2 build, fixes protected path, and lands owner_note.txt" \
+  "$(jq -r '.actions[0].action + ":" + .actions[0].stage' <<<"$SYNC_REJ_OUT"):$([[ -f "$PC_REPO/owner_note.txt" && ! -f "$PC_REPO/CODEOWNERS" ]] && echo clean_landed || echo bad)" \
+  "reentered_with_feedback:merged:clean_landed"
+
+# Now test human clicking "Approve & merge" (`outcome: "accepted"`) on an escalated CODEOWNERS change
+printf '[]\n' > "$PC_STATE/interactions.json"
+PC_ACC_ESC="$(
+  PC_REQ_LOG="$PC_REQ_LOG" PC_STATE="$PC_STATE" \
+  AFK_FACTORY_AGENT_RUNNER="$PC_RUNNER" \
+  OP_SERVICE_ACCOUNT_TOKEN=stub \
+  AFK_OP_BIN="$STUB_BIN/op" \
+  AFK_CURL_BIN="$PC_CURL_BIN/curl" \
+  bash "$AFK" factory run --repo "$PC_REPO" --slug pcproj --job job-pc-human-accept \
+    --issue 33333333-2222-4333-8444-555555555555 --title "Authorized CODEOWNERS update" --json
+)"
+cat > "$PC_STATE/interactions.json" <<'JSON'
+[{"id":"e1111111-2222-4333-8444-555555555555","kind":"request_confirmation","result":{"outcome":"accepted"}}]
+JSON
+
+SYNC_ACC_OUT="$(
+  PC_REQ_LOG="$PC_REQ_LOG" PC_STATE="$PC_STATE" \
+  AFK_FACTORY_AGENT_RUNNER="$PC_RUNNER" \
+  OP_SERVICE_ACCOUNT_TOKEN=stub \
+  AFK_OP_BIN="$STUB_BIN/op" \
+  AFK_CURL_BIN="$PC_CURL_BIN/curl" \
+  bash "$AFK" factory sync-reviews --repo "$PC_REPO" --slug pcproj --json
+)"
+
+assert_eq "sync-reviews detects accepted confirmation card and merges authorized CODEOWNERS onto main" \
+  "$(jq -r '.actions[0].action' <<<"$SYNC_ACC_OUT"):$([[ -f "$PC_REPO/CODEOWNERS" ]] && echo landed || echo missing)" \
+  "approved_and_merged:landed"
+
+# 10c: Budget hard-stop check, Paperclip Skills Store sync, and autonomous `factory poll`
+printf '1000\n' > "$PC_STATE/spent_cents"
+BUDGET_OUT="$(
+  PC_REQ_LOG="$PC_REQ_LOG" PC_STATE="$PC_STATE" \
+  AFK_FACTORY_AGENT_RUNNER="$PC_RUNNER" \
+  OP_SERVICE_ACCOUNT_TOKEN=stub \
+  AFK_OP_BIN="$STUB_BIN/op" \
+  AFK_CURL_BIN="$PC_CURL_BIN/curl" \
+  bash "$AFK" factory run --repo "$PC_REPO" --slug pcproj --job job-pc-budget \
+    --issue 55555555-2222-4333-8444-555555555555 --title "Should stop on budget" --json
+)"
+assert_contains "Pre-flight Paperclip monthly budget hard-stop pauses job before spending LLM tokens" \
+  "$(jq -r '.merge_evaluation.reasons[0]' <<<"$BUDGET_OUT")" \
+  "budget hard-stop"
+rm -rf "$PC_REPO/.afk/jobs/job-pc-budget"
+printf '100\n' > "$PC_STATE/spent_cents"
+
+PC_SKILLS_SYNC="$(
+  PC_REQ_LOG="$PC_REQ_LOG" PC_STATE="$PC_STATE" \
+  AFK_PAPERCLIP_SKILLS_DIR="$TMPROOT/pc-skills" \
+  AFK_TOOLING_REGISTRY_FILE="$TMPROOT/pc-tooling-reg.json" \
+  OP_SERVICE_ACCOUNT_TOKEN=stub \
+  AFK_OP_BIN="$STUB_BIN/op" \
+  AFK_CURL_BIN="$PC_CURL_BIN/curl" \
+  bash "$AFK" factory tooling --sync-paperclip-skills --json
+)"
+assert_eq "Paperclip Company Skills Store sync downloads SKILL.md and registers skill in AFK central registry" \
+  "$(jq -r '"\(.ok):\(.synced_count):\(.synced_skills[0].slug)"' <<<"$PC_SKILLS_SYNC"):$([[ -f "$TMPROOT/pc-skills/paperclip-audit-skill/SKILL.md" ]] && echo file_ok || echo missing)" \
+  "true:1:paperclip-audit-skill:file_ok"
+
+POLL_OUT="$(
+  PC_REQ_LOG="$PC_REQ_LOG" PC_STATE="$PC_STATE" \
+  AFK_FACTORY_AGENT_RUNNER="$PC_RUNNER" \
+  OP_SERVICE_ACCOUNT_TOKEN=stub \
+  AFK_OP_BIN="$STUB_BIN/op" \
+  AFK_CURL_BIN="$PC_CURL_BIN/curl" \
+  bash "$AFK" factory poll --slug pcproj --json
+)"
+assert_eq "Autonomous factory poll claims todo issue HOM-99 via atomic checkout, runs pipeline, and merges poller_ok.go onto main" \
+  "$(jq -r '"\(.dispatched_count):\(.dispatched[0].job_id):\(.dispatched[0].stage)"' <<<"$POLL_OUT"):$([[ -f "$PC_REPO/poller_ok.go" ]] && echo landed || echo missing)" \
+  "1:hom-99:merged:landed"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
