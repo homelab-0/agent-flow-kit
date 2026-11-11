@@ -1337,8 +1337,9 @@ case "$method $url" in
 [
   {"id":"b0000001-0000-4000-8000-000000000001","slug":"agentmail","key":"paperclipai/paperclip/agentmail","folderPath":"bundled/paperclip-core","sourceBadge":"paperclip","sourceLabel":"Paperclip bundled","editable":false,"fileInventory":[{"path":"SKILL.md"}]},
   {"id":"b0000002-0000-4000-8000-000000000002","slug":"complain","key":"paperclipai/paperclip/complain","folderPath":"bundled/paperclip-core","sourceBadge":"paperclip","sourceLabel":"Paperclip bundled","editable":false,"fileInventory":[{"path":"SKILL.md"}]},
-  {"id":"c0000001-0000-4000-8000-000000000001","slug":"afk-fleet-tooling","key":"company/4ffcc005-8076-4062-b72e-e4f2d899ecb0/afk-fleet-tooling","editable":true,"description":"Fleet MCP Gateway","fileInventory":[{"path":"SKILL.md"},{"path":"mcp.json"}]},
-  {"id":"c0000002-0000-4000-8000-000000000002","slug":"qa-acceptance","key":"company/4ffcc005-8076-4062-b72e-e4f2d899ecb0/qa-acceptance","editable":true,"description":"QA Acceptance Playbook","fileInventory":[{"path":"SKILL.md"}]}
+  {"id":"c0000001-0000-4000-8000-000000000001","slug":"afk-fleet-tooling","key":"company/4ffcc005-8076-4062-b72e-e4f2d899ecb0/afk-fleet-tooling","sourceBadge":"paperclip","sourceLabel":"Paperclip workspace","editable":true,"description":"Fleet MCP Gateway","fileInventory":[{"path":"SKILL.md"},{"path":"mcp.json"}]},
+  {"id":"c0000002-0000-4000-8000-000000000002","slug":"qa-acceptance","key":"company/4ffcc005-8076-4062-b72e-e4f2d899ecb0/qa-acceptance","sourceBadge":"catalog","sourceLabel":"Paperclip catalog","editable":false,"description":"QA Acceptance Playbook","fileInventory":[{"path":"SKILL.md"}]},
+  {"id":"c0000003-0000-4000-8000-000000000003","slug":"unattached-studio-skill","key":"company/4ffcc005-8076-4062-b72e-e4f2d899ecb0/unattached-studio-skill","sourceBadge":"paperclip","sourceLabel":"Paperclip workspace","editable":true,"description":"Unattached My Skills Studio skill","fileInventory":[{"path":"SKILL.md"}]}
 ]
 SKJSON
       printf '200'
@@ -1355,6 +1356,8 @@ SKJSON
     printf '200' ;;
   "GET "*"/api/companies/"*"/skills/c0000002-0000-4000-8000-000000000002/files?path=SKILL.md")
     printf '%s200' '{"path":"SKILL.md","content":"---\nname: qa-acceptance\ndescription: QA Acceptance Playbook\n---\n# QA Acceptance\n"}' ;;
+  "GET "*"/api/companies/"*"/skills/c0000003-0000-4000-8000-000000000003/files?path=SKILL.md")
+    printf '%s200' '{"path":"SKILL.md","content":"---\nname: unattached-studio-skill\ndescription: Unattached Studio Skill\n---\n# Studio Skill\n"}' ;;
   *)
     printf '{"ok":true}200' ;;
 esac
@@ -1371,9 +1374,9 @@ BRIDGE_SYNC_OUT="$(
   AFK_CURL_BIN="$BRIDGE_TMP/curl-bin/curl" \
   bash "$AFK" factory tooling --sync-paperclip-skills --json
 )"
-assert_eq "Paperclip sync skips bundled internal skills (agentmail, complain) and syncs Studio mcp.json + qa-acceptance" \
+assert_eq "Paperclip sync skips bundled internal skills (agentmail, complain) while syncing Studio workspace skills (even unattached) + catalog skills" \
   "$(jq -r '"\(.ok):\(.skipped_bundled_count):\(.synced_count):\(.central_mcp_synced):\(.central_source_skill):\([.synced_skills[].slug] | sort | join(","))"' <<<"$BRIDGE_SYNC_OUT"):$([[ -d "$BRIDGE_TMP/skills-store/agentmail" ]] && echo leaked || echo clean)" \
-  "true:2:2:true:afk-fleet-tooling:afk-fleet-tooling,qa-acceptance:clean"
+  "true:2:3:true:afk-fleet-tooling:afk-fleet-tooling,qa-acceptance,unattached-studio-skill:clean"
 
 # 13b: Three-tier config precedence (Paperclip Central -> Repo Override -> Standalone Offline Fallback)
 REPO_PC_INHERIT="$BRIDGE_TMP/repo-inherit"
