@@ -43,6 +43,8 @@ afk_pch_adapter_for_harness() { # <harness>
   case "${1:-claude}" in
     codex)    printf 'codex_local' ;;
     opencode) printf 'opencode_local' ;;
+    pi)       printf 'pi_local' ;;
+    agy)      printf 'gemini_local' ;;
     *)        printf 'claude_local' ;;
   esac
 }
@@ -322,4 +324,251 @@ afk_pch_retire_project_agents() {
   fi
   afk_pch_save_ledger "$ledger"
   printf '%s\n' "$retired"
+}
+
+# _afk_pch_is_uuid <val>
+_afk_pch_is_uuid() {
+  [[ "${1:-}" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]
+}
+
+# afk_pch_check_budget <api_url> <key> <agent_id>
+# Queries Paperclip's live agent budget & monthly spend (Paperclip v2026.1106.0).
+# Returns JSON: {ok, state: unlimited|ok|soft_warn|hard_stop|offline, budget_cents, spent_cents, utilization_pct, agent_status}
+afk_pch_check_budget() {
+  local api_url="${1:-}" key="${2:-}" agent_id="${3:-}"
+  if [[ -z "$api_url" || -z "$key" || -z "$agent_id" ]]; then
+    printf '{"ok":true,"state":"offline","budget_cents":0,"spent_cents":0,"utilization_pct":0,"agent_status":"local"}\n'
+    return 0
+  fi
+  local resp code body
+  resp="$(afk_pc_curl GET "$api_url/api/agents/$agent_id" "$key" "")"
+  code="${resp%%$'\n'*}"
+  body="${resp#*$'\n'}"
+  if [[ "$code" != 2?? ]]; then
+    printf '{"ok":true,"state":"offline","budget_cents":0,"spent_cents":0,"utilization_pct":0,"agent_status":"unreachable"}\n'
+    return 0
+  fi
+  jq -cn --argjson a "$body" '
+    ($a.budgetMonthlyCents // 0) as $b
+    | ($a.spentMonthlyCents // 0) as $s
+    | ($a.status // "idle") as $st
+    | (if $b <= 0 then 0 else (($s * 100) / $b | floor) end) as $pct
+    | (if $b <= 0 then "unlimited"
+       elif $s >= $b then "hard_stop"
+       elif $pct >= 80 then "soft_warn"
+       else "ok" end) as $bstate
+    | {
+        ok: ($bstate != "hard_stop"),
+        state: $bstate,
+        budget_cents: $b,
+        spent_cents: $s,
+        utilization_pct: $pct,
+        agent_status: $st
+      }
+  '
+}
+
+# afk_pch_report_cost_event <api_url> <key> <company_id> <host_agent_id> <issue_id> <project_id> <run_id> <billing_code> <provider> <biller> <billing_type> <model> <in_tok> <cached_in_tok> <out_tok> <cost_cents> <idem_key>
+# Posts granular per-stage token & cost telemetry to POST /api/companies/{companyId}/cost-events.
+# Note: Paperclip enforces req.actor.agentId === body.agentId for agent bearer keys,
+# so agentId is always host_agent_id while billingCode encodes project/stage/role.
+afk_pch_report_cost_event() {
+  local api_url="${1:-}" key="${2:-}" company_id="${3:-}" host_agent_id="${4:-}"
+  local issue_id="${5:-}" project_id="${6:-}" run_id="${7:-}" billing_code="${8:-}"
+  local provider="${9:-anthropic}" biller="${10:-$provider}" billing_type="${11:-subscription_included}"
+  local model="${12:-sonnet}" in_tok="${13:-0}" cached_tok="${14:-0}" out_tok="${15:-0}"
+  local cost_cents="${16:-0}" idem_key="${17:-}"
+
+  [[ -n "$api_url" && -n "$key" && -n "$company_id" ]] && _afk_pch_is_uuid "$host_agent_id" || return 0
+  local v_issue="" v_proj="" v_run=""
+  _afk_pch_is_uuid "$issue_id" && v_issue="$issue_id"
+  _afk_pch_is_uuid "$project_id" && v_proj="$project_id"
+  _afk_pch_is_uuid "$run_id" && v_run="$run_id"
+  [[ "$in_tok" =~ ^[0-9]+$ ]] || in_tok=0
+  [[ "$cached_tok" =~ ^[0-9]+$ ]] || cached_tok=0
+  [[ "$out_tok" =~ ^[0-9]+$ ]] || out_tok=0
+  [[ "$cost_cents" =~ ^[0-9]+$ ]] || cost_cents=0
+
+  local occurred_at payload resp code body
+  occurred_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  payload="$(jq -cn \
+    --arg aid "$host_agent_id" \
+    --arg iss "$v_issue" \
+    --arg prj "$v_proj" \
+    --arg rid "$v_run" \
+    --arg bc "${billing_code:0:100}" \
+    --arg prov "${provider:0:50}" \
+    --arg bil "${biller:0:50}" \
+    --arg btype "$billing_type" \
+    --arg mod "${model:0:100}" \
+    --arg idem "${idem_key:0:200}" \
+    --arg occ "$occurred_at" \
+    --argjson it "$in_tok" \
+    --argjson ct "$cached_tok" \
+    --argjson ot "$out_tok" \
+    --argjson cc "$cost_cents" \
+    '{
+      agentId: $aid,
+      provider: $prov,
+      biller: $bil,
+      billingType: $btype,
+      costStatus: "reported",
+      model: $mod,
+      inputTokens: $it,
+      cachedInputTokens: $ct,
+      outputTokens: $ot,
+      costCents: $cc,
+      occurredAt: $occ
+    }
+    + (if $iss != "" then {issueId: $iss} else {} end)
+    + (if $prj != "" then {projectId: $prj} else {} end)
+    + (if $rid != "" then {heartbeatRunId: $rid} else {} end)
+    + (if $bc != "" then {billingCode: $bc} else {} end)
+    + (if $idem != "" then {idempotencyKey: $idem} else {} end)')"
+  resp="$(afk_pc_curl POST "$api_url/api/companies/$company_id/cost-events" "$key" "$run_id" "$payload")"
+  code="${resp%%$'\n'*}"
+  body="${resp#*$'\n'}"
+  [[ "$code" == 2?? ]] && printf '%s\n' "$body"
+  return 0
+}
+
+# afk_pch_upsert_document <api_url> <key> <run_id> <issue_id> <doc_key> <title> <file_path> [<change_summary>]
+# Upserts a keyed, revisioned Paperclip Issue Document (e.g. "plan", "ux-design",
+# "review-report", "merge-decision") via PUT /api/issues/{id}/documents/{key}.
+afk_pch_upsert_document() {
+  local api_url="${1:-}" key="${2:-}" run_id="${3:-}" issue_id="${4:-}"
+  local doc_key="${5:-}" title="${6:-}" file_path="${7:-}" change_summary="${8:-Updated by AFK Software Factory}"
+  [[ -n "$api_url" && -n "$key" && -n "$issue_id" && -n "$doc_key" && -f "$file_path" ]] || return 0
+  _afk_pch_is_uuid "$issue_id" || return 0
+
+  local get_resp get_code get_body base_rev=""
+  get_resp="$(afk_pc_curl GET "$api_url/api/issues/$issue_id/documents/$doc_key" "$key" "")"
+  get_code="${get_resp%%$'\n'*}"
+  get_body="${get_resp#*$'\n'}"
+  if [[ "$get_code" == 200 ]]; then
+    base_rev="$(jq -r '.latestRevisionId // empty' <<<"$get_body" 2>/dev/null || true)"
+  fi
+
+  local content payload put_resp put_code put_body
+  content="$(head -c 500000 -- "$file_path" 2>/dev/null || true)"
+  [[ -n "$content" ]] || return 0
+  payload="$(jq -cn \
+    --arg t "${title:0:200}" \
+    --arg b "$content" \
+    --arg cs "${change_summary:0:500}" \
+    --arg rev "$base_rev" \
+    '{
+      title: $t,
+      format: "markdown",
+      body: $b,
+      changeSummary: $cs
+    } + (if $rev != "" then {baseRevisionId: $rev} else {} end)')"
+  put_resp="$(afk_pc_curl PUT "$api_url/api/issues/$issue_id/documents/$doc_key" "$key" "$run_id" "$payload")"
+  put_code="${put_resp%%$'\n'*}"
+  put_body="${put_resp#*$'\n'}"
+  if [[ "$put_code" == 2?? ]]; then
+    jq -c '{id: .id, key: .key, latestRevisionId: .latestRevisionId, latestRevisionNumber: .latestRevisionNumber}' <<<"$put_body" 2>/dev/null || true
+  fi
+  return 0
+}
+
+# afk_pch_request_confirmation <api_url> <key> <run_id> <issue_id> <board_user_id> <idem_key> <title> <summary> <prompt> <details_md> [<doc_json>]
+# Creates a structured interactive confirmation card on the issue thread
+# (`POST /api/issues/{id}/interactions`) addressed to the human board user.
+afk_pch_request_confirmation() {
+  local api_url="${1:-}" key="${2:-}" run_id="${3:-}" issue_id="${4:-}"
+  local board_user_id="${5:-}" idem_key="${6:-}" title="${7:-}" summary="${8:-}"
+  local prompt="${9:-}" details_md="${10:-}" doc_json="${11:-}"
+  [[ -n "$api_url" && -n "$key" && -n "$issue_id" ]] && _afk_pch_is_uuid "$issue_id" || return 0
+
+  local target_json="null"
+  if [[ -n "$doc_json" ]] && jq -e '.id != null and .latestRevisionId != null' <<<"$doc_json" >/dev/null 2>&1; then
+    target_json="$(jq -cn --arg iid "$issue_id" --argjson d "$doc_json" '{
+      type: "issue_document",
+      issueId: $iid,
+      documentId: $d.id,
+      key: $d.key,
+      revisionId: $d.latestRevisionId,
+      revisionNumber: ($d.latestRevisionNumber // 1)
+    }')"
+  fi
+
+  local payload resp code body
+  payload="$(jq -cn \
+    --arg u "$board_user_id" \
+    --arg idem "${idem_key:0:200}" \
+    --arg ttl "${title:0:200}" \
+    --arg sum "${summary:0:2000}" \
+    --arg pr "${prompt:0:2000}" \
+    --arg det "${details_md:0:50000}" \
+    --argjson tgt "$target_json" \
+    '{
+      kind: "request_confirmation",
+      resolverPolicy: "human_only",
+      continuationPolicy: "wake_assignee",
+      title: $ttl,
+      summary: $sum,
+      payload: ({
+        version: 1,
+        prompt: $pr,
+        acceptLabel: "Approve & merge",
+        rejectLabel: "Request changes",
+        rejectRequiresReason: true,
+        rejectReasonLabel: "What needs to change?",
+        detailsMarkdown: $det,
+        supersedeOnUserComment: true
+      } + (if $tgt != null then {target: $tgt} else {} end))
+    }
+    + (if $u != "" then {addresseeUserId: $u} else {} end)
+    + (if $idem != "" then {idempotencyKey: $idem} else {} end)')"
+  resp="$(afk_pc_curl POST "$api_url/api/issues/$issue_id/interactions" "$key" "$run_id" "$payload")"
+  code="${resp%%$'\n'*}"
+  body="${resp#*$'\n'}"
+  if [[ "$code" == 2?? ]]; then
+    jq -c '(.interaction // .)' <<<"$body" 2>/dev/null || true
+  fi
+  return 0
+}
+
+# afk_pch_register_commit_work_product <api_url> <key> <run_id> <issue_id> <project_id> <commit_sha> <branch> <title> <summary> <status> <review_state>
+# Registers or updates a first-class git commit Work Product on the Paperclip issue
+# (`POST /api/issues/{id}/work-products`).
+afk_pch_register_commit_work_product() {
+  local api_url="${1:-}" key="${2:-}" run_id="${3:-}" issue_id="${4:-}"
+  local project_id="${5:-}" commit_sha="${6:-}" branch="${7:-}" title="${8:-}"
+  local summary="${9:-}" status="${10:-merged}" review_state="${11:-approved}"
+  [[ -n "$api_url" && -n "$key" && -n "$issue_id" && -n "$commit_sha" ]] && _afk_pch_is_uuid "$issue_id" || return 0
+
+  local v_proj=""
+  _afk_pch_is_uuid "$project_id" && v_proj="$project_id"
+  local payload resp code body
+  payload="$(jq -cn \
+    --arg prj "$v_proj" \
+    --arg sha "${commit_sha:0:120}" \
+    --arg br "$branch" \
+    --arg ttl "${title:0:500}" \
+    --arg sum "${summary:0:4000}" \
+    --arg st "$status" \
+    --arg rs "$review_state" \
+    '{
+      type: "commit",
+      provider: "git",
+      externalId: $sha,
+      title: $ttl,
+      status: $st,
+      reviewState: $rs,
+      isPrimary: true,
+      summary: $sum,
+      metadata: {
+        branch: $br,
+        commitSha: $sha
+      }
+    } + (if $prj != "" then {projectId: $prj} else {} end)')"
+  resp="$(afk_pc_curl POST "$api_url/api/issues/$issue_id/work-products" "$key" "$run_id" "$payload")"
+  code="${resp%%$'\n'*}"
+  body="${resp#*$'\n'}"
+  if [[ "$code" == 2?? ]]; then
+    jq -c '.' <<<"$body" 2>/dev/null || true
+  fi
+  return 0
 }

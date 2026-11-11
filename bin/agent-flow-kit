@@ -445,6 +445,14 @@ agent-flow-kit — lifecycle entry point
       intervals, and reaps a provably stale poll lock (AC-7b) before
       answering. macOS refuses with PAPERCLIP_TIMER_UNSUPPORTED_PLATFORM.
 
+  agent-flow-kit factory <subcommand> [options]
+      Autonomous multi-harness Software Factory orchestrator & Paperclip native
+      execution plane:
+        init | roster | run | poll | sync-reviews | resume | watchdog | status
+        pools | harnesses | update-harnesses | models | route-preview | sync-benchmarks
+        tooling [--sync-paperclip-skills] | tooling-sync | tooling-register-mcp | tooling-register-skill
+        evaluate-merge | context-check | retire
+
   agent-flow-kit schema
       The documented machine contract: schema version, state, reason and
       ownership vocabularies, plan and operation vocabularies, and exit
