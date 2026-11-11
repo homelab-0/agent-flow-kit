@@ -284,5 +284,127 @@ ROUTE_LOCAL="$(AFK_LITELLM_BASE_URL="http://litellm.homelab0.org:4000" AFK_ROUTE
 assert_eq "When subscription pools are in warning (82%) and LiteLLM is online, low-risk build shifts to litellm-local (claude-gateway)" \
   "$(jq -r '"\(.launch_class):\(.entitlement_pool):\(.router_source)"' <<<"$ROUTE_LOCAL")" "claude-gateway:litellm-local:afk-benchmarks+litellm"
 
+# ----------------------------------------------------------------------------
+# 5. Universal Cross-Platform Harness Install Detection & Update Engine (Linux + macOS)
+# ----------------------------------------------------------------------------
+printf '\n5. Universal cross-platform harness install-origin & update engine (Linux + macOS)\n'
+
+# Source library directly to test pure cross-platform origin classification across macOS Homebrew, Linux npm --prefix, Bun, and self-managed
+# shellcheck disable=SC1091
+. "$KIT_ROOT/lib/afk-harnesses.sh"
+
+BREW_ORIGIN="$(afk_harness_classify_origin "codex" "/opt/homebrew/bin/codex" "/opt/homebrew/Cellar/codex/0.167.1/bin/codex")"
+assert_eq "macOS Homebrew path resolves to brew upgrade codex" \
+  "$(jq -r '"\(.install_method):\(.update_command)"' <<<"$BREW_ORIGIN")" "homebrew:brew upgrade codex"
+
+NPM_ORIGIN="$(afk_harness_classify_origin "codex" "/home/user/.local/bin/codex" "/home/user/.local/lib/node_modules/@openai/codex/bin/codex.js")"
+assert_eq "Custom npm prefix resolves to npm install -g --prefix ... @openai/codex@latest" \
+  "$(jq -r '"\(.install_method):\(.package_name):\(.install_prefix)"' <<<"$NPM_ORIGIN")" "npm:@openai/codex:/home/user/.local"
+
+BUN_ORIGIN="$(afk_harness_classify_origin "pi" "/Users/dev/.bun/bin/pi" "/Users/dev/.bun/install/global/node_modules/@mariozechner/pi-coding-agent/dist/cli.js")"
+assert_eq "Bun global path resolves to bun add -g @mariozechner/pi-coding-agent@latest" \
+  "$(jq -r '"\(.install_method):\(.update_command)"' <<<"$BUN_ORIGIN")" "bun:bun add -g @mariozechner/pi-coding-agent@latest"
+
+SELF_ORIGIN="$(afk_harness_classify_origin "opencode" "/Users/dev/.opencode/bin/opencode" "/Users/dev/.opencode/bin/opencode")"
+assert_eq "Self-managed OpenCode binary resolves to opencode upgrade" \
+  "$(jq -r '"\(.install_method):\(.update_command)"' <<<"$SELF_ORIGIN")" 'self-managed:"/Users/dev/.opencode/bin/opencode" upgrade'
+
+# ----------------------------------------------------------------------------
+# 6. Shared Subscription Pool Attribution (Codex + OpenCode + Pi) & Free vs Metered Models
+# ----------------------------------------------------------------------------
+printf '\n6. Shared subscription pool attribution & OpenCode free vs metered-API models\n'
+
+MOCK_AUTH_DIR="$TMPROOT/mock-auth"
+mkdir -p "$MOCK_AUTH_DIR"
+cat > "$MOCK_AUTH_DIR/codex-auth.json" <<'JSON'
+{"auth_mode": "oauth", "tokens": {"account_id": "acct_shared_12345"}}
+JSON
+cat > "$MOCK_AUTH_DIR/opencode-auth.json" <<'JSON'
+{
+  "openai": {"type": "oauth", "accountId": "acct_shared_12345"},
+  "anthropic": {"type": "api", "key": "sk-ant-redacted"}
+}
+JSON
+cat > "$MOCK_AUTH_DIR/pi-auth.json" <<'JSON'
+{
+  "openai-codex": {"type": "oauth", "accountId": "acct_shared_12345"}
+}
+JSON
+cat > "$MOCK_AUTH_DIR/opencode-models.txt" <<'TXT'
+opencode/deepseek-v4.1-flash-free
+{"id":"deepseek-v4.1-flash-free","providerID":"opencode","name":"DeepSeek V4.1 Flash Free","status":"active","cost":{"input":0,"output":0},"limit":{"context":262144,"output":65536},"capabilities":{"reasoning":true,"toolcall":true,"input":{"image":false}}}
+openai/gpt-6.1-sol
+{"id":"gpt-6.1-sol","providerID":"openai","name":"GPT-6.1 Sol","status":"active","cost":{"input":2.5,"output":10},"limit":{"context":400000,"output":128000},"capabilities":{"reasoning":true,"toolcall":true,"input":{"image":true}}}
+anthropic/claude-opus-5-5
+{"id":"claude-opus-5-5","providerID":"anthropic","name":"Claude Opus 5.5 (Metered API)","status":"active","cost":{"input":15,"output":75},"limit":{"context":1000000,"output":128000},"capabilities":{"reasoning":true,"toolcall":true,"input":{"image":true}}}
+TXT
+cat > "$MOCK_AUTH_DIR/agy-models.txt" <<'TXT'
+gemini-4-carbon-high	Gemini 4 Carbon (High)
+TXT
+
+DISC_FILE="$TMPROOT/discovered-models.json"
+MODELS_OUT="$(
+  AFK_CODEX_AUTH_FILE="$MOCK_AUTH_DIR/codex-auth.json" \
+  AFK_OPENCODE_AUTH_FILE="$MOCK_AUTH_DIR/opencode-auth.json" \
+  AFK_PI_AUTH_FILE="$MOCK_AUTH_DIR/pi-auth.json" \
+  AFK_OPENCODE_MODELS_FIXTURE="$MOCK_AUTH_DIR/opencode-models.txt" \
+  AFK_AGY_MODELS_FIXTURE="$MOCK_AUTH_DIR/agy-models.txt" \
+  AFK_DISCOVERED_MODELS_FILE="$DISC_FILE" \
+  bash "$AFK" factory models --sync --json
+)"
+
+assert_eq "Codex, OpenCode (OpenAI OAuth), and Pi share the exact same openai-plus pool & account fingerprint" \
+  "$(jq -r '.shared_pool_topology[] | select(.entitlement_pool == "openai-plus") | "\(.shared_across_harnesses):\(.harnesses_feeding_pool | join("+")):\(.account_fingerprints | length)"' <<<"$MODELS_OUT")" \
+  "true:codex+opencode+pi:1"
+
+assert_eq "OpenCode \$0 model is classified free (opencode-free), OpenAI OAuth is subscription (openai-plus), Anthropic API key is api-metered" \
+  "$(jq -r '[.models[] | select(.harness == "opencode") | "\(.model)=\(.cost_class)/\(.entitlement_pool)"] | sort | join(",")' <<<"$MODELS_OUT")" \
+  "anthropic/claude-opus-5-5=api-metered/api-metered,openai/gpt-6.1-sol=subscription/openai-plus,opencode/deepseek-v4.1-flash-free=free/opencode-free"
+
+# When subscription pools are under pressure (warning 82%) and LiteLLM is offline, free OpenCode model wins low-risk intake/build while metered API stays blocked!
+ROUTE_FREE="$(
+  AFK_ROUTER_HARNESS_LIST="claude,agy,opencode" \
+  AFK_DISCOVERED_MODELS_FILE="$DISC_FILE" \
+  bash "$AFK" factory route-preview --repo "$BMAD_REPO" --stage intake --risk low --json
+)"
+assert_eq "When subscription pools are in warning and LiteLLM is offline, router shifts low-risk intake to \$0 opencode/deepseek-v4.1-flash-free (blocking metered API)" \
+  "$(jq -r '"\(.harness)/\(.model):\(.cost_class):\(.is_free)"' <<<"$ROUTE_FREE")" \
+  "opencode/opencode/deepseek-v4.1-flash-free:free:true"
+
+# ----------------------------------------------------------------------------
+# 7. Centralized & Per-Project Skills + MCP Management (LiteLLM Gateway vs Standalone)
+# ----------------------------------------------------------------------------
+printf '\n7. Centralized & per-project Skills and MCP management (litellm vs standalone)\n'
+
+export AFK_TOOLING_REGISTRY_FILE="$TMPROOT/tooling-registry.json"
+CENTRAL_SKILL_SRC="$TMPROOT/central-skills/k8s-ops"
+mkdir -p "$CENTRAL_SKILL_SRC"
+cat > "$CENTRAL_SKILL_SRC/SKILL.md" <<'MD'
+---
+name: k8s-ops
+description: Kubernetes cluster operations helper
+---
+# K8s Ops Skill
+MD
+
+bash "$AFK" factory tooling-register-mcp --name postgres-ro --transport stdio --target npx --args "-y,@modelcontextprotocol/server-postgres" --description "Read-only Postgres MCP" >/dev/null
+bash "$AFK" factory tooling-register-skill --name k8s-ops --path "$CENTRAL_SKILL_SRC" >/dev/null
+
+# Mode A: Standalone per-project provisioning (for users without LiteLLM)
+STANDALONE_REPO="$TMPROOT/repo-standalone-mcp"
+mkdir -p "$STANDALONE_REPO"
+bash "$AFK" factory tooling-sync --repo "$STANDALONE_REPO" --mcp-mode standalone --enable-mcp postgres-ro --enable-skills k8s-ops --json >/dev/null
+assert_eq "Standalone tooling-sync writes native stdio command to project .mcp.json and installs central skill" \
+  "$(jq -r '.mcpServers["postgres-ro"].command' "$STANDALONE_REPO/.mcp.json"):$(test -f "$STANDALONE_REPO/.agents/skills/k8s-ops/SKILL.md" && echo ok)" \
+  "npx:ok"
+
+# Mode B: Centralized LiteLLM MCP Gateway provisioning
+LITELLM_REPO="$TMPROOT/repo-litellm-mcp"
+mkdir -p "$LITELLM_REPO"
+bash "$AFK" factory tooling-sync --repo "$LITELLM_REPO" --mcp-mode litellm --litellm-url "http://litellm.homelab0.org:4000" --enable-mcp postgres-ro,github --json >/dev/null
+assert_eq "LiteLLM tooling-sync routes project .mcp.json servers through LiteLLM /mcp/<server> gateway" \
+  "$(jq -r '"\(.mcpServers["postgres-ro"].url)|\(.mcpServers["github"].headers["x-litellm-mcp"])"' "$LITELLM_REPO/.mcp.json")" \
+  "http://litellm.homelab0.org:4000/mcp/postgres-ro|true"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

@@ -27,6 +27,9 @@ AFK_FACTORY_SOURCED=1
 
 declare -F afk_roster_discover >/dev/null 2>&1 || . "$(dirname -- "${BASH_SOURCE[0]}")/afk-roster.sh"
 declare -F afk_pch_ensure_project_team >/dev/null 2>&1 || . "$(dirname -- "${BASH_SOURCE[0]}")/afk-paperclip-hire.sh"
+declare -F afk_harness_inspect_all >/dev/null 2>&1 || . "$(dirname -- "${BASH_SOURCE[0]}")/afk-harnesses.sh"
+declare -F afk_tooling_discover >/dev/null 2>&1 || . "$(dirname -- "${BASH_SOURCE[0]}")/afk-tooling.sh"
+declare -F afk_router_select_candidate >/dev/null 2>&1 || . "$(dirname -- "${BASH_SOURCE[0]}")/afk-smart-router.sh"
 
 AFK_FACTORY_DEFAULT_MAX_ROUNDS=2
 AFK_FACTORY_DEFAULT_MAX_LINES=800
@@ -419,6 +422,18 @@ afk_factory_build_stage_prompt() {
     printf -- '- You are executing unattended in an autonomous AFK Software Factory stage (`%s`).\n' "$stage"
     printf -- '- SKIP all interactive activation greetings, icon prefixes, and menu tables (`On Activation` Steps 1-8). Do NOT pause or wait for user menu selection.\n'
     printf -- '- Write your final structured stage artifact directly to `%s` (or output ONLY the exact artifact markdown as your final response with no conversational preamble).\n\n' "$output_file"
+    if declare -F afk_tooling_discover >/dev/null 2>&1; then
+      local t_inv t_mcp t_skills
+      t_inv="$(AFK_TOOLING_HERMETIC=1 afk_tooling_discover "$repo" 2>/dev/null || printf '{}')"
+      t_mcp="$(jq -r '[.project.mcp_servers[]?.name] | join(", ")' <<<"$t_inv" 2>/dev/null || true)"
+      t_skills="$(jq -r '[.project.skills[]? | select(.is_bmad | not) | .name] | join(", ")' <<<"$t_inv" 2>/dev/null || true)"
+      if [[ -n "$t_mcp" || -n "$t_skills" ]]; then
+        printf '## Project MCP Servers & Custom Skills\n'
+        [[ -n "$t_mcp" ]] && printf -- '- Project MCP Servers (`%s` mode): %s\n' "$(jq -r '.mcp_mode // "standalone"' <<<"$t_inv")" "$t_mcp"
+        [[ -n "$t_skills" ]] && printf -- '- Project Custom Skills: %s\n' "$t_skills"
+        printf '\n---\n\n'
+      fi
+    fi
     if [[ -f "$input_file" ]]; then
       printf '## Input Context (`%s`)\n' "$input_file"
       head -n 200 "$input_file" 2>/dev/null || true
@@ -602,55 +617,76 @@ afk_factory_invoke_stage_agent() {
       routed_pool="$(jq -r '.entitlement_pool // empty' <<<"$route_json")"
       [[ "$routed_mem" == "blind" || "$routed_mem" == "off" ]] && hs_disabled="true"
       rm -f "$env_file" "$output_file"
+      local mcp_cfg=""
+      if [[ -f "$wt/.mcp.json" ]]; then
+        mcp_cfg="$wt/.mcp.json"
+      elif [[ -f "$repo/.mcp.json" ]]; then
+        mcp_cfg="$repo/.mcp.json"
+      fi
+      local bin_exec=""
+      bin_exec="$(_afk_harness_locate_bin "$harness" 2>/dev/null || command -v "$harness" 2>/dev/null || true)"
       case "$harness" in
         claude)
-          if command -v claude >/dev/null 2>&1; then
+          if [[ -n "$bin_exec" ]]; then
             (
               cd "$wt" || exit 1
               [[ -n "$hs_disabled" ]] && export HINDSIGHT_DISABLED="true"
               if [[ "$routed_launch" == *-gateway && -n "$litellm_url" ]]; then
                 export ANTHROPIC_BASE_URL="$litellm_url"
               fi
-              claude -p "$(cat -- "$compiled_prompt")" --model "$routed_model" --add-dir "$job_dir" --dangerously-skip-permissions --output-format json < /dev/null > "$env_file" 2>/dev/null
+              local -a cl_mcp_args=()
+              [[ -n "$mcp_cfg" ]] && cl_mcp_args=(--mcp-config "$mcp_cfg")
+              "$bin_exec" -p "$(cat -- "$compiled_prompt")" --model "$routed_model" "${cl_mcp_args[@]}" --add-dir "$job_dir" --dangerously-skip-permissions --output-format json < /dev/null > "$env_file" 2>/dev/null
             ) || h_rc=$?
           else
             h_rc=127
           fi
           ;;
         codex)
-          if command -v codex >/dev/null 2>&1; then
+          if [[ -n "$bin_exec" ]]; then
             (
               cd "$wt" || exit 1
               [[ -n "$hs_disabled" ]] && export HINDSIGHT_DISABLED="true"
               if [[ "$routed_launch" == *-gateway && -n "$litellm_url" ]]; then
                 export OPENAI_BASE_URL="$litellm_url"
               fi
-              codex exec -s workspace-write --add-dir "$job_dir" -o "$output_file" -m "$routed_model" -- "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
+              "$bin_exec" exec -s workspace-write --add-dir "$job_dir" -o "$output_file" -m "$routed_model" -- "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
             ) || h_rc=$?
           else
             h_rc=127
           fi
           ;;
         agy)
-          if command -v agy >/dev/null 2>&1; then
+          if [[ -n "$bin_exec" ]]; then
             (
               cd "$wt" || exit 1
               [[ -n "$hs_disabled" ]] && export HINDSIGHT_DISABLED="true"
-              agy --dangerously-skip-permissions --add-dir "$job_dir" --output-format json -p "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
+              "$bin_exec" --dangerously-skip-permissions --add-dir "$job_dir" --output-format json -p "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
             ) || h_rc=$?
           else
             h_rc=127
           fi
           ;;
         opencode)
-          if command -v opencode >/dev/null 2>&1; then
+          if [[ -n "$bin_exec" ]]; then
             (
               cd "$wt" || exit 1
               [[ -n "$hs_disabled" ]] && export HINDSIGHT_DISABLED="true"
               if [[ "$routed_launch" == *-gateway && -n "$litellm_url" ]]; then
                 export OPENAI_BASE_URL="$litellm_url"
               fi
-              opencode run --format json -m "$routed_model" -- "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
+              "$bin_exec" run --format json -m "$routed_model" -- "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
+            ) || h_rc=$?
+          else
+            h_rc=127
+          fi
+          ;;
+        pi)
+          if [[ -n "$bin_exec" ]]; then
+            (
+              cd "$wt" || exit 1
+              [[ -n "$hs_disabled" ]] && export HINDSIGHT_DISABLED="true"
+              "$bin_exec" -p --mode json --model "$routed_model" "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
             ) || h_rc=$?
           else
             h_rc=127
@@ -1182,11 +1218,18 @@ afk_cmd_factory() {
   local json_mode=false repo="" slug="" job_id="" issue_id="" title="Factory Task"
   local body_file="" role="" used_tokens="" window_tokens="200000" compacted=false roles_csv="all"
   local stage_arg="" risk_arg="low" builder_family=""
+  local check_updates=false dry_run_flag=false harness_arg="" sync_flag=false free_only=false
+  local mcp_mode_arg="standalone" enable_mcp_csv="" enable_skills_csv="" litellm_url_arg=""
+  local item_name="" transport_arg="stdio" target_arg="" args_csv="" desc_arg="" skill_path_arg=""
 
   while (( $# > 0 )); do
     case "$1" in
       --json)            json_mode=true ;;
       --compacted)       compacted=true ;;
+      --check-updates)   check_updates=true ;;
+      --dry-run)         dry_run_flag=true ;;
+      --sync)            sync_flag=true ;;
+      --free-only)       free_only=true ;;
       --repo)            [[ $# -ge 2 ]] || { afk_warn "--repo requires a path"; return 1; }; repo="$2"; shift ;;
       --slug)            [[ $# -ge 2 ]] || { afk_warn "--slug requires a value"; return 1; }; slug="$2"; shift ;;
       --job)             [[ $# -ge 2 ]] || { afk_warn "--job requires an id"; return 1; }; job_id="$2"; shift ;;
@@ -1200,6 +1243,17 @@ afk_cmd_factory() {
       --stage)           [[ $# -ge 2 ]] || { afk_warn "--stage requires a stage name"; return 1; }; stage_arg="$2"; shift ;;
       --risk)            [[ $# -ge 2 ]] || { afk_warn "--risk requires low|medium|high|critical"; return 1; }; risk_arg="$2"; shift ;;
       --builder-family)  [[ $# -ge 2 ]] || { afk_warn "--builder-family requires a family name"; return 1; }; builder_family="$2"; shift ;;
+      --harness)         [[ $# -ge 2 ]] || { afk_warn "--harness requires a harness name or all"; return 1; }; harness_arg="$2"; shift ;;
+      --mcp-mode)        [[ $# -ge 2 ]] || { afk_warn "--mcp-mode requires litellm|standalone"; return 1; }; mcp_mode_arg="$2"; shift ;;
+      --enable-mcp)      [[ $# -ge 2 ]] || { afk_warn "--enable-mcp requires a comma-separated list"; return 1; }; enable_mcp_csv="$2"; shift ;;
+      --enable-skills)   [[ $# -ge 2 ]] || { afk_warn "--enable-skills requires a comma-separated list"; return 1; }; enable_skills_csv="$2"; shift ;;
+      --litellm-url)     [[ $# -ge 2 ]] || { afk_warn "--litellm-url requires a URL"; return 1; }; litellm_url_arg="$2"; shift ;;
+      --name)            [[ $# -ge 2 ]] || { afk_warn "--name requires an identifier"; return 1; }; item_name="$2"; shift ;;
+      --transport)       [[ $# -ge 2 ]] || { afk_warn "--transport requires stdio|http|sse"; return 1; }; transport_arg="$2"; shift ;;
+      --target)          [[ $# -ge 2 ]] || { afk_warn "--target requires a command or URL"; return 1; }; target_arg="$2"; shift ;;
+      --args)            [[ $# -ge 2 ]] || { afk_warn "--args requires a comma-separated list"; return 1; }; args_csv="$2"; shift ;;
+      --description)     [[ $# -ge 2 ]] || { afk_warn "--description requires text"; return 1; }; desc_arg="$2"; shift ;;
+      --path)            [[ $# -ge 2 ]] || { afk_warn "--path requires a directory"; return 1; }; skill_path_arg="$2"; shift ;;
       *)
         afk_warn "factory $subcmd: unknown option '$(afk_safe_diagnostic "$1")'"
         return 1 ;;
@@ -1305,12 +1359,136 @@ afk_cmd_factory() {
           "  - claude   (Anthropic Max OAuth): " + (if .harnesses.claude.installed then "HEALTHY (" + .harnesses.claude.binary + ")" else "UNAVAILABLE (" + (.harnesses.claude.health // "missing") + ")" end),
           "  - codex    (OpenAI Plus/Pro):     " + (if .harnesses.codex.installed then "HEALTHY (" + .harnesses.codex.binary + ")" else "UNAVAILABLE (" + (.harnesses.codex.health // "missing") + ")" end),
           "  - agy      (Antigravity):         " + (if .harnesses.agy.installed then "HEALTHY (" + .harnesses.agy.binary + ")" else "UNAVAILABLE (" + (.harnesses.agy.health // "missing") + ")" end),
-          "  - opencode (Grok / Multi-Auth):   " + (if .harnesses.opencode.installed then "HEALTHY (" + .harnesses.opencode.binary + ")" else "UNAVAILABLE (" + (.harnesses.opencode.health // "missing") + ")" end),
+          "  - opencode (Free + Bridged OAuth):" + (if .harnesses.opencode.installed then " HEALTHY (" + .harnesses.opencode.binary + ")" else " UNAVAILABLE (" + (.harnesses.opencode.health // "missing") + ")" end),
+          "  - pi       (Multi-Auth CLI):      " + (if .harnesses.pi.installed then "HEALTHY (" + .harnesses.pi.binary + ")" else "UNAVAILABLE (" + (.harnesses.pi.health // "missing") + ")" end),
           "  - litellm  (Local AI Cluster GW): " + (if .harnesses.litellm_gateway.online then "ONLINE (" + (.harnesses.litellm_gateway.base_url // "") + ")" elif .harnesses.litellm_gateway.configured then "OFFLINE (" + (.harnesses.litellm_gateway.base_url // "") + ")" else "NOT_CONFIGURED (set AFK_LITELLM_BASE_URL or .router.litellm_base_url)" end),
           "",
-          "Entitlement & Subscription Pools (5-Hour Rolling Window & Capacity):",
-          (.pools | to_entries[] | "  - " + .key + " [" + .value.provider + " / " + .value.pool_tier + "]: state=" + .value.state + " remaining=" + (.value.remaining_units_5h|tostring) + "/" + (.value.capacity_5h|tostring) + " (" + (.value.headroom_pct|tostring) + "% free, active_5h=" + (.value.active_sessions_5h|tostring) + ")")
+          "Entitlement & Subscription Pools (5-Hour Rolling Window & Shared Accounts):",
+          (.pools | to_entries[] | "  - " + .key + " [" + .value.provider + " / " + .value.pool_tier + " / cost=" + .value.cost_class + "]: state=" + .value.state + " remaining=" + (.value.remaining_units_5h|tostring) + "/" + (.value.capacity_5h|tostring) + " (" + (.value.headroom_pct|tostring) + "% free, active_5h=" + (.value.active_sessions_5h|tostring) + ", harnesses=" + ((.value.harnesses_feeding_pool // []) | join("+")) + ")")
         ' <<<"$p_out"
+      fi
+      return 0 ;;
+    harnesses)
+      local h_out
+      h_out="$(afk_harness_inspect_all "$check_updates")"
+      if [[ "$json_mode" == "true" ]]; then
+        printf '%s\n' "$h_out"
+      else
+        jq -r '
+          "Host Harness Lifecycle Inventory (os=\(.os), checked=\(.checked_at)):",
+          (.harnesses[] |
+            if .present_on_disk then
+              "  - \(.harness): " +
+              (if .healthy then "HEALTHY" else "NEEDS_REPAIR (\(.health))" end) +
+              " | method=\(.install_method) | pkg=\(.package_name)" +
+              " | version=\(.current_version // "unknown")" +
+              (if .latest_version != null then " -> latest=\(.latest_version)" else "" end) +
+              (if .update_available then " [UPDATE/REPAIR AVAILABLE]" else "" end) +
+              "\n      bin=\(.binary_path) -> \(.resolved_path)\n      update_cmd: \(.update_command)"
+            else
+              "  - \(.harness): NOT_INSTALLED"
+            end
+          )
+        ' <<<"$h_out"
+      fi
+      return 0 ;;
+    update-harnesses)
+      local uh_target="${harness_arg:-all}" uh_out
+      uh_out="$(afk_harness_update "$uh_target" "$dry_run_flag")"
+      if [[ "$json_mode" == "true" ]]; then
+        printf '%s\n' "$uh_out"
+      else
+        jq -r '
+          "Harness Update Report (dry_run=\(.dry_run), at=\(.updated_at)):",
+          (.results[] | "  - \(.harness): action=\(.action) method=\(.install_method // "n/a") version=\(.before_version // "-") -> \(.after_version // .before_version // "-") | cmd=\(.command // .reason // "-")"),
+          (if .model_catalog_refresh != null then "  -> Refreshed live model catalog: \(.model_catalog_refresh.total_models) models (\(.model_catalog_refresh.free_models) free, \(.model_catalog_refresh.subscription_models) subscription)" else empty end)
+        ' <<<"$uh_out"
+      fi
+      return 0 ;;
+    models)
+      local dm_path dm_out
+      dm_path="$(afk_harness_discovered_models_path)"
+      if [[ "$sync_flag" == "true" || ! -f "$dm_path" ]]; then
+        dm_out="$(afk_harness_sync_models)"
+      else
+        dm_out="$(cat -- "$dm_path")"
+      fi
+      if [[ -n "$harness_arg" ]]; then
+        dm_out="$(jq -c --arg h "$harness_arg" '.models |= map(select(.harness == $h))' <<<"$dm_out")"
+      fi
+      if [[ "$free_only" == "true" ]]; then
+        dm_out="$(jq -c '.models |= map(select(.is_free == true))' <<<"$dm_out")"
+      fi
+      if [[ "$json_mode" == "true" ]]; then
+        printf '%s\n' "$dm_out"
+      else
+        jq -r '
+          "Discovered Harness Models & Shared Pool Topology (synced=\(.synced_at)):",
+          "  Summary: total=\(.summary.total_models) | FREE($0)=\(.summary.free_models) | OAuth-Subscription=\(.summary.subscription_models) | Metered-API(gated)=\(.summary.metered_api_models)",
+          "",
+          "  Shared Pool & Account Bindings:",
+          (.shared_pool_topology[] | "    * pool=\(.entitlement_pool) [cost=\(.cost_class)] <- harnesses=[\(.harnesses_feeding_pool | join(", "))] accounts=[\(.account_fingerprints | join(", "))]" + (if .shared_across_harnesses then " (SHARED ACROSS HARNESSES)" else "" end)),
+          "",
+          "  Models (\( .models | length ) shown):",
+          (.models[] | "    - [\(.harness)] \(.model) | cost=\(.cost_class)" + (if .cost_class == "api-metered" then " ($\(.cost_per_1m_usd.input)/$\(.cost_per_1m_usd.output) per 1M)" elif .is_free then " ($0 FREE)" else "" end) + " | pool=\(.entitlement_pool) | ctx=\(.window_tokens) | coding=\(.benchmarks.coding_standard.score) | best_for=[\(.recommended_purposes | join(","))]")
+        ' <<<"$dm_out"
+      fi
+      return 0 ;;
+    tooling)
+      local tl_out
+      tl_out="$(afk_tooling_discover "$repo")"
+      if [[ "$json_mode" == "true" ]]; then
+        printf '%s\n' "$tl_out"
+      else
+        jq -r '
+          "AFK Skills & MCP Tooling Inventory (mcp_mode=\(.mcp_mode), litellm_mcp=\(.litellm_mcp_url // "none")):",
+          "  Project (\(.repo_path // "none")):",
+          "    - Skills: \(.project.skills_count) total (\(.project.non_bmad_skills_count) non-BMAD custom)",
+          "    - MCP Servers (\(.project.mcp_count)): \([.project.mcp_servers[].name] | if length > 0 then join(", ") else "none" end)",
+          "  Host & Central Catalog:",
+          "    - Host Skills (\(.host.skills_count)): \([.host.skills[].name] | if length > 0 then join(", ") else "none" end)",
+          "    - Host MCP Servers (\(.host.mcp_count)): \([.host.mcp_servers[].name] | if length > 0 then join(", ") else "none" end)",
+          "    - AFK Central Registry: mcp=[\(.central_catalog.mcp_servers | join(", "))] skills=[\(.central_catalog.skills | join(", "))]"
+        ' <<<"$tl_out"
+      fi
+      return 0 ;;
+    tooling-sync)
+      if [[ -z "$repo" ]]; then
+        afk_warn "factory tooling-sync requires --repo <path> or --slug <slug>"
+        return 1
+      fi
+      local ts_out
+      ts_out="$(afk_tooling_sync_project "$repo" "$mcp_mode_arg" "$enable_mcp_csv" "$enable_skills_csv" "$litellm_url_arg")"
+      if [[ "$json_mode" == "true" ]]; then
+        printf '%s\n' "$ts_out"
+      else
+        jq -r '"Synced tooling to \(.repo_path) (mcp_mode=\(.mcp_mode)): mcp=[\(.synced_mcp_servers | join(", "))] skills=[\(.synced_skills | join(", "))]"' <<<"$ts_out"
+      fi
+      return 0 ;;
+    tooling-register-mcp)
+      if [[ -z "$item_name" || -z "$target_arg" ]]; then
+        afk_warn "factory tooling-register-mcp requires --name <id> and --target <cmd_or_url>"
+        return 1
+      fi
+      local rm_out
+      rm_out="$(afk_tooling_register_mcp "$item_name" "$transport_arg" "$target_arg" "$args_csv" "$desc_arg")"
+      if [[ "$json_mode" == "true" ]]; then
+        printf '%s\n' "$rm_out"
+      else
+        jq -r '"Registered central MCP server \(.name) (\(.transport))"' <<<"$rm_out"
+      fi
+      return 0 ;;
+    tooling-register-skill)
+      if [[ -z "$item_name" || -z "$skill_path_arg" ]]; then
+        afk_warn "factory tooling-register-skill requires --name <id> and --path <skill_dir>"
+        return 1
+      fi
+      local rs_out
+      rs_out="$(afk_tooling_register_skill "$item_name" "$skill_path_arg" "$desc_arg")"
+      if [[ "$json_mode" == "true" ]]; then
+        printf '%s\n' "$rs_out"
+      else
+        jq -r '"Registered central skill \(.name) -> \(.path)"' <<<"$rs_out"
       fi
       return 0 ;;
     route-preview)
@@ -1353,7 +1531,7 @@ afk_cmd_factory() {
       afk_factory_status "$repo" "$slug" "$json_mode"
       return $? ;;
     *)
-      afk_warn "factory: unknown subcommand '$(afk_safe_diagnostic "$subcmd")' (expected: roster, init, run, resume, pools, route-preview, sync-benchmarks, status, context-check, evaluate-merge, retire)"
+      afk_warn "factory: unknown subcommand '$(afk_safe_diagnostic "$subcmd")' (expected: roster, init, run, resume, pools, harnesses, update-harnesses, models, tooling, tooling-sync, tooling-register-mcp, tooling-register-skill, route-preview, sync-benchmarks, status, context-check, evaluate-merge, retire)"
       return 1 ;;
   esac
 }
