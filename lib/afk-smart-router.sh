@@ -15,6 +15,9 @@ if [[ -n "${AFK_SMART_ROUTER_SOURCED:-}" ]]; then
 fi
 AFK_SMART_ROUTER_SOURCED=1
 
+# shellcheck disable=SC1091
+declare -F afk_harness_inspect_all >/dev/null 2>&1 || . "$(dirname -- "${BASH_SOURCE[0]}")/afk-harnesses.sh"
+
 afk_router_catalog_path() {
   if [[ -n "${AFK_ROUTER_BENCHMARKS_FILE:-}" && -f "${AFK_ROUTER_BENCHMARKS_FILE}" ]]; then
     printf '%s\n' "$AFK_ROUTER_BENCHMARKS_FILE"
@@ -64,7 +67,11 @@ afk_router_stage_to_task_class() {
 
 _afk_router_verify_binary() {
   local name="$1" cand=""
-  cand="$(command -v "$name" 2>/dev/null || true)"
+  if declare -F _afk_harness_locate_bin >/dev/null 2>&1; then
+    cand="$(_afk_harness_locate_bin "$name" || true)"
+  else
+    cand="$(command -v "$name" 2>/dev/null || true)"
+  fi
   if [[ -n "$cand" ]] && "$cand" --version >/dev/null 2>&1; then
     printf '%s' "$cand"
     return 0
@@ -76,7 +83,7 @@ _afk_router_verify_binary() {
 # Discovers installed & executable CLI binaries and LiteLLM gateway availability.
 afk_router_discover_harnesses() {
   local litellm_url="${1:-${AFK_LITELLM_BASE_URL:-}}"
-  local claude_bin="" codex_bin="" agy_bin="" opencode_bin=""
+  local claude_bin="" codex_bin="" agy_bin="" opencode_bin="" pi_bin=""
   local codex_note=""
   if [[ -n "${AFK_ROUTER_HARNESS_LIST:-}" ]]; then
     local list=",${AFK_ROUTER_HARNESS_LIST},"
@@ -84,14 +91,18 @@ afk_router_discover_harnesses() {
     [[ "$list" == *",codex,"* ]] && codex_bin="/mock/bin/codex"
     [[ "$list" == *",agy,"* ]] && agy_bin="/mock/bin/agy"
     [[ "$list" == *",opencode,"* ]] && opencode_bin="/mock/bin/opencode"
+    [[ "$list" == *",pi,"* ]] && pi_bin="/mock/bin/pi"
   else
     claude_bin="$(_afk_router_verify_binary claude)"
     codex_bin="$(_afk_router_verify_binary codex)"
-    if [[ -z "$codex_bin" ]] && command -v codex >/dev/null 2>&1; then
-      codex_note="broken_binary ($(command -v codex) failed --version)"
+    local raw_codex=""
+    raw_codex="$(_afk_harness_locate_bin codex 2>/dev/null || command -v codex 2>/dev/null || true)"
+    if [[ -z "$codex_bin" && -n "$raw_codex" ]]; then
+      codex_note="broken_binary ($raw_codex failed --version)"
     fi
     agy_bin="$(_afk_router_verify_binary agy)"
     opencode_bin="$(_afk_router_verify_binary opencode)"
+    pi_bin="$(_afk_router_verify_binary pi)"
   fi
 
   local litellm_online=false litellm_models="[]"
@@ -115,6 +126,7 @@ afk_router_discover_harnesses() {
     --arg xn "$codex_note" \
     --arg ab "$agy_bin" \
     --arg ob "$opencode_bin" \
+    --arg pb "$pi_bin" \
     --arg lurl "$litellm_url" \
     --argjson lon "$litellm_online" \
     --argjson lmods "$litellm_models" \
@@ -123,6 +135,7 @@ afk_router_discover_harnesses() {
       codex:    {installed: ($xb != ""), binary: (if $xb == "" then null else $xb end), health: (if $xb != "" then "ok" elif $xn != "" then $xn else "missing" end)},
       agy:      {installed: ($ab != ""), binary: (if $ab == "" then null else $ab end), health: (if $ab != "" then "ok" else "missing" end)},
       opencode: {installed: ($ob != ""), binary: (if $ob == "" then null else $ob end), health: (if $ob != "" then "ok" else "missing" end)},
+      pi:       {installed: ($pb != ""), binary: (if $pb == "" then null else $pb end), health: (if $pb != "" then "ok" else "missing" end)},
       litellm_gateway: {
         configured: ($lurl != ""),
         base_url: (if $lurl == "" then null else $lurl end),
@@ -170,10 +183,15 @@ afk_router_probe_pools() {
   cat_file="$(afk_router_catalog_path)"
   sig_file="$(afk_router_signals_path)"
 
-  local harnesses_json
+  local harnesses_json bindings_json="[]"
   harnesses_json="$(afk_router_discover_harnesses "$litellm_url")"
+  if declare -F afk_harness_probe_account_bindings >/dev/null 2>&1; then
+    if [[ -z "${AFK_ROUTER_HARNESS_LIST:-}" || -n "${AFK_OPENCODE_AUTH_FILE:-}" || -n "${AFK_CODEX_AUTH_FILE:-}" || -n "${AFK_PI_AUTH_FILE:-}" ]]; then
+      bindings_json="$(afk_harness_probe_account_bindings)"
+    fi
+  fi
 
-  local c_5h=0 x_5h=0 a_5h=0 o_5h=0
+  local c_5h=0 x_5h=0 a_5h=0 o_5h=0 p_5h=0
   if [[ -z "${AFK_ROUTER_SIGNALS_FILE:-}" ]]; then
     c_5h="$(_afk_router_count_recent_activity "$HOME/.claude/projects" 300)"
     local x1 x2
@@ -182,6 +200,14 @@ afk_router_probe_pools() {
     x_5h=$(( x1 + x2 ))
     a_5h="$(find "$HOME/.gemini/antigravity-cli/brain" -mindepth 1 -maxdepth 1 -type d -mmin -300 2>/dev/null | wc -l | tr -d '[:space:]')"
     o_5h="$(_afk_router_count_recent_activity "$HOME/.local/share/opencode" 300)"
+    p_5h="$(_afk_router_count_recent_activity "$HOME/.pi/agent/sessions" 300)"
+    # Shared subscription pool accounting: if OpenCode or Pi uses OpenAI OAuth, feed `openai-plus`
+    if jq -e '.[] | select(.harness == "opencode" and .entitlement_pool == "openai-plus")' <<<"$bindings_json" >/dev/null 2>&1; then
+      x_5h=$(( x_5h + o_5h ))
+    fi
+    if jq -e '.[] | select(.harness == "pi" and .entitlement_pool == "openai-plus")' <<<"$bindings_json" >/dev/null 2>&1; then
+      x_5h=$(( x_5h + p_5h ))
+    fi
   fi
 
   local sig_json="{}"
@@ -195,6 +221,7 @@ afk_router_probe_pools() {
   jq -cn \
     --slurpfile cat "$cat_file" \
     --argjson h "$harnesses_json" \
+    --argjson bind "$bindings_json" \
     --argjson sig "$sig_json" \
     --argjson c5 "$c_5h" \
     --argjson x5 "$x_5h" \
@@ -202,8 +229,11 @@ afk_router_probe_pools() {
     --argjson o5 "$o_5h" \
     --argjson lon "$litellm_on" \
     '
-    def calc_pool($pid; $raw_sessions; $is_local):
-      ($cat[0].entitlement_pools[$pid] // {}) as $meta |
+    def calc_pool($pid; $raw_sessions; $is_local; $default_harnesses):
+      (($cat[0].entitlement_pools[$pid] // null) // (
+        if $pid == "opencode-free" then {provider:"OpenCode Free Tier", cost_class:"free", pool_tier:"free", five_hour_session_capacity:200}
+        else {} end
+      )) as $meta |
       ($sig.pools[$pid].capacity_5h // $meta.five_hour_session_capacity // 50) as $cap |
       ($sig.pools[$pid].used_pct // (
         if $is_local then
@@ -215,9 +245,12 @@ afk_router_probe_pools() {
       (100 - $used) as $headroom |
       (($cap * $headroom / 100) | floor) as $rem_units |
       (if $is_local and ($lon | not) then "offline"
+       elif $pid == "opencode-free" and (($h.opencode.installed // false) | not) then "offline"
        elif $used >= 90 then "exhausted"
        elif $used >= 75 then "warning"
        else "available" end) as $state |
+      ([ $bind[] | select(.entitlement_pool == $pid) | .harness ] | unique) as $bound_h |
+      ([ $bind[] | select(.entitlement_pool == $pid) | .account_fingerprint ] | unique) as $fps |
       {
         pool_id: $pid,
         provider: ($meta.provider // $pid),
@@ -228,25 +261,29 @@ afk_router_probe_pools() {
         remaining_units_5h: $rem_units,
         used_pct: $used,
         headroom_pct: $headroom,
-        active_sessions_5h: $raw_sessions
+        active_sessions_5h: $raw_sessions,
+        harnesses_feeding_pool: (if ($bound_h | length) > 0 then $bound_h else $default_harnesses end),
+        account_fingerprints: $fps
       };
 
     {
       schema: "afk-router-pools/2",
       harnesses: $h,
       pools: {
-        "anthropic-max":    calc_pool("anthropic-max"; $c5; false),
-        "openai-plus":      calc_pool("openai-plus"; $x5; false),
-        "antigravity-pool": calc_pool("antigravity-pool"; $a5; false),
-        "xai-grok":         calc_pool("xai-grok"; $o5; false),
-        "litellm-local":    calc_pool("litellm-local"; 0; true)
+        "anthropic-max":    calc_pool("anthropic-max"; $c5; false; ["claude"]),
+        "openai-plus":      calc_pool("openai-plus"; $x5; false; ["codex"]),
+        "antigravity-pool": calc_pool("antigravity-pool"; $a5; false; ["agy"]),
+        "xai-grok":         calc_pool("xai-grok"; $o5; false; ["opencode"]),
+        "opencode-free":    calc_pool("opencode-free"; $o5; false; ["opencode"]),
+        "litellm-local":    calc_pool("litellm-local"; 0; true; ["claude","opencode"])
       }
     }'
 }
 
 # afk_router_select_candidate <repo> <stage> <risk> [<builder_family>]
-# Evaluates public benchmark scores + pool size/headroom to pick the winning
-# (harness, launch_class, model, entitlement_pool) for <stage>.
+# Evaluates public benchmark scores + pool size/headroom + live discovered models
+# (including free OpenCode models and shared multi-harness OAuth pools) to pick
+# the winning (harness, launch_class, model, entitlement_pool) for <stage>.
 afk_router_select_candidate() {
   local repo="${1:-}" stage="${2:-build}" risk="${3:-low}" builder_family="${4:-}"
   local cfg="{}"
@@ -264,15 +301,30 @@ afk_router_select_candidate() {
     default_mem="$(jq -r '.router.hindsight.build_stages // "advisory"' <<<"$cfg" 2>/dev/null)"
   fi
 
-  local litellm_url
+  local litellm_url allow_metered prefer_free
   litellm_url="${AFK_LITELLM_BASE_URL:-$(jq -r '.router.litellm_base_url // empty' <<<"$cfg" 2>/dev/null)}"
+  allow_metered="${AFK_ROUTER_ALLOW_METERED_API:-$(jq -r '.router.allow_metered_api // false' <<<"$cfg" 2>/dev/null)}"
+  prefer_free="${AFK_ROUTER_PREFER_FREE:-$(jq -r '.router.prefer_free_for_low_risk // false' <<<"$cfg" 2>/dev/null)}"
+  [[ "$allow_metered" == "true" || "$allow_metered" == "1" ]] && allow_metered="true" || allow_metered="false"
+  [[ "$prefer_free" == "true" || "$prefer_free" == "1" ]] && prefer_free="true" || prefer_free="false"
 
-  local cat_file probe_json
+  local cat_file probe_json disc_file tmp_disc
   cat_file="$(afk_router_catalog_path)"
   probe_json="$(afk_router_probe_pools "$repo")"
+  disc_file="$(afk_harness_discovered_models_path)"
+  tmp_disc="$(mktemp "${TMPDIR:-/tmp}/afk-disc-ref.XXXXXX")"
+  if [[ -n "${AFK_DISCOVERED_MODELS_FILE:-}" && -f "${AFK_DISCOVERED_MODELS_FILE}" ]]; then
+    cp -- "$AFK_DISCOVERED_MODELS_FILE" "$tmp_disc"
+  elif [[ -z "${AFK_ROUTER_HARNESS_LIST:-}" && -f "$disc_file" ]]; then
+    cp -- "$disc_file" "$tmp_disc"
+  else
+    printf '{"models":[]}\n' > "$tmp_disc"
+  fi
 
-  jq -cn \
+  local result_json
+  result_json="$(jq -cn \
     --slurpfile cat "$cat_file" \
+    --slurpfile disc "$tmp_disc" \
     --argjson probe "$probe_json" \
     --arg st "$stage" \
     --arg tc "$task_class" \
@@ -280,43 +332,87 @@ afk_router_select_candidate() {
     --arg bf "$builder_family" \
     --arg mm "$default_mem" \
     --arg lurl "$litellm_url" \
+    --argjson allow_api "$allow_metered" \
+    --argjson pref_free "$prefer_free" \
     '
-    ($cat[0].candidates // []) as $cands |
+    # Convert dynamically discovered models (free tier + bridged OAuth frontier models)
+    # into router candidate records so newly added models enter routing automatically.
+    ([
+      $disc[0].models[]? |
+      select(.capabilities.toolcall == true) |
+      select(.cost_class == "free" or .cost_class == "subscription" or ($allow_api == true and .cost_class == "api-metered")) |
+      # Avoid flooding with dozens of minor variants; keep free models + flagship bridged models
+      select(
+        .is_free == true or
+        (.model | test("gpt-6-astra$|gpt-6\\.1-sol$|gpt-5\\.3-codex-spark$|claude-opus-5-5$|claude-sonnet-5-5$|gemini-4-carbon"))
+      ) |
+      {
+        id: .id,
+        harness: .harness,
+        launch_class: .launch_class,
+        entitlement_pool: .entitlement_pool,
+        cost_class: .cost_class,
+        is_free: .is_free,
+        model: .model,
+        canonical_model: .canonical_model,
+        model_family: .model_family,
+        effort: (if .capabilities.reasoning then "high" else "medium" end),
+        window_tokens: .window_tokens,
+        requires_gateway: false,
+        is_bridged_oauth: (.harness == "opencode" and .cost_class == "subscription"),
+        benchmarks: (
+          .benchmarks | with_entries(.value = {score: .value.score, benchmark: (.value.benchmark // .value.source // "Dynamic Eval")})
+        )
+      }
+    ]) as $dyn_cands |
+
+    (($cat[0].candidates // []) + $dyn_cands) as $cands |
+    (
+      ($probe.pools["anthropic-max"].state != "available") and
+      ($probe.pools["antigravity-pool"].state != "available")
+    ) as $subs_under_pressure |
+
     [
       $cands[] |
       . as $c |
       ($probe.harnesses[$c.harness].installed // false) as $h_installed |
-      ($probe.pools[$c.entitlement_pool] // {state:"available", headroom_pct:100, used_pct:0, capacity_5h:50, remaining_units_5h:50}) as $pool |
+      ($probe.pools[$c.entitlement_pool] // {state:"available", headroom_pct:100, used_pct:0, capacity_5h:50, remaining_units_5h:50, cost_class:($c.cost_class // "subscription")}) as $pool |
+      ($c.cost_class // $pool.cost_class // "subscription") as $cclass |
       ($c.benchmarks[$tc].score // 75.0) as $base_score |
       ($c.benchmarks[$tc].benchmark // "Public Leaderboard Aggregate") as $b_name |
 
       # Eligibility gates:
-      # 1. Harness binary installed on host
-      # 2. Pool not exhausted (>=90%) or offline
-      # 3. Gateway candidates require LiteLLM gateway to be online
+      # 1. Harness binary installed & healthy on host
+      # 2. Metered API models blocked unless allow_metered_api == true
+      # 3. Pool not exhausted (>=90%) or offline
+      # 4. Gateway candidates require LiteLLM gateway to be online
       select($h_installed == true) |
+      select($cclass != "api-metered" or $allow_api == true) |
       select($pool.state != "exhausted" and $pool.state != "offline") |
-      select(($c.requires_gateway == false) or ($probe.harnesses.litellm_gateway.online == true)) |
+      select((($c.requires_gateway // false) == false) or ($probe.harnesses.litellm_gateway.online == true)) |
 
       # Pool conservation adjustment:
-      # When a subscription pool enters warning (75-89% used), penalize it by -15 pts on
-      # low/medium risk tasks so work flows to larger/healthier pools or Local AI via LiteLLM.
       (if ($pool.state == "warning" and ($rk == "low" or $rk == "medium")) then -15.0 else 0.0 end) as $pool_adj |
 
       # Pool headroom + pool size bonus:
-      # Rewards pools with higher % free headroom (up to +2.0) and larger remaining unit capacity (up to +1.5)
       (($pool.headroom_pct // 50) * 0.02) as $headroom_bonus |
       ((($pool.remaining_units_5h // 25) | if . > 60 then 60 else . end) * 0.025) as $capacity_bonus |
 
+      # Prefer native harness slightly (+0.5) over bridged OAuth when both are healthy on the same pool
+      (if ($c.is_bridged_oauth // false) then -0.5 else 0.0 end) as $bridge_adj |
+
       # Cross-Family Blind Review Bonus:
-      # On code review stages, if family X (e.g. anthropic) built the code, boost independent
-      # model families (e.g. openai/codex or google/agy) by +6.0 pts.
       (if ($tc == "coding_review" and $bf != "" and $c.model_family != $bf) then 6.0 else 0.0 end) as $cross_family_bonus |
 
       # Local AI Zero-Cost Bonus on low-risk tasks when LiteLLM cluster is online
-      (if ($c.requires_gateway == true and $rk == "low" and ($tc == "research" or $tc == "coding_standard")) then 6.5 else 0.0 end) as $local_bonus |
+      (if (($c.requires_gateway // false) == true and $rk == "low" and ($tc == "research" or $tc == "coding_standard")) then 6.5 else 0.0 end) as $local_bonus |
 
-      ($base_score + $pool_adj + $headroom_bonus + $capacity_bonus + $cross_family_bonus + $local_bonus) as $eff_score |
+      # Free OpenCode Model Bonus ($0 cost):
+      # Boost capable free models on low-risk intake/build when `prefer_free_for_low_risk` is enabled
+      # OR when primary subscription pools are under pressure (warning/exhausted).
+      (if (($c.is_free // false) == true and $rk == "low" and ($tc == "research" or $tc == "coding_standard") and ($pref_free == true or $subs_under_pressure == true)) then 14.0 else 0.0 end) as $free_bonus |
+
+      ($base_score + $pool_adj + $headroom_bonus + $capacity_bonus + $bridge_adj + $cross_family_bonus + $local_bonus + $free_bonus) as $eff_score |
 
       {
         stage: $st,
@@ -328,6 +424,8 @@ afk_router_select_candidate() {
         model: $c.model,
         canonical_model: $c.canonical_model,
         model_family: $c.model_family,
+        cost_class: $cclass,
+        is_free: ($c.is_free // ($cclass == "free")),
         effort: $c.effort,
         window_tokens: $c.window_tokens,
         entitlement_pool: $c.entitlement_pool,
@@ -341,10 +439,10 @@ afk_router_select_candidate() {
         effective_score: (($eff_score * 100 | round) / 100),
         cross_family_review: ($tc == "coding_review" and $bf != "" and $c.model_family != $bf),
         memory_mode: $mm,
-        router_source: (if $c.requires_gateway then "afk-benchmarks+litellm" else "afk-benchmarks" end),
-        litellm_base_url: (if ($c.requires_gateway and $lurl != "") then $lurl else null end),
+        router_source: (if ($c.requires_gateway // false) then "afk-benchmarks+litellm" else "afk-benchmarks" end),
+        litellm_base_url: (if (($c.requires_gateway // false) and $lurl != "") then $lurl else null end),
         reason: (
-          "Selected " + $c.harness + "/" + $c.model + " [" + $c.canonical_model + "] " +
+          "Selected " + $c.harness + "/" + $c.model + " [" + $c.canonical_model + ", cost=" + $cclass + "] " +
           "(pool=" + $c.entitlement_pool + " " + ($pool.remaining_units_5h|tostring) + "/" + ($pool.capacity_5h|tostring) + " free [" + ($pool.headroom_pct|tostring) + "%], " +
           "benchmark=" + ($base_score|tostring) + " via " + $b_name +
           (if ($tc == "coding_review" and $bf != "" and $c.model_family != $bf) then ", cross-family blind review vs " + $bf else "" end) +
@@ -360,6 +458,8 @@ afk_router_select_candidate() {
       model: "sonnet",
       canonical_model: "anthropic/claude-sonnet-5-5",
       model_family: "anthropic",
+      cost_class: "subscription",
+      is_free: false,
       effort: "medium",
       window_tokens: 1000000,
       entitlement_pool: "anthropic-max",
@@ -371,7 +471,9 @@ afk_router_select_candidate() {
       router_source: "fallback-default",
       litellm_base_url: (if $lurl == "" then null else $lurl end),
       reason: "Fallback route (no eligible candidate matched)"
-    }'
+    }')"
+  rm -f "$tmp_disc"
+  printf '%s\n' "$result_json"
 }
 
 # afk_router_sync_benchmarks [<out_file>]

@@ -66,6 +66,14 @@
       "seven_day_session_capacity": 500,
       "description": "Grok / OpenCode subscription pool"
     },
+    "opencode-free": {
+      "provider": "OpenCode Free Tier",
+      "cost_class": "free",
+      "pool_tier": "free",
+      "five_hour_session_capacity": 200,
+      "seven_day_session_capacity": 2000,
+      "description": "Zero-cost OpenCode community & open-weights inference models"
+    },
     "litellm-local": {
       "provider": "Homelab Local AI Cluster (via LiteLLM)",
       "cost_class": "free",
