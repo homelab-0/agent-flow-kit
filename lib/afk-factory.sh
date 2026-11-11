@@ -439,6 +439,11 @@ afk_factory_build_stage_prompt() {
       head -n 200 "$input_file" 2>/dev/null || true
       printf '\n---\n\n'
     fi
+    if [[ -f "$job_dir/watchdog-nudge.md" ]]; then
+      printf '## Watchdog Stall Recovery Nudge (IMPORTANT)\n'
+      cat -- "$job_dir/watchdog-nudge.md" 2>/dev/null || true
+      printf '\n---\n\n'
+    fi
     if [[ "$stage" == "build" && -f "$job_dir/job.json" ]]; then
       local cur_round prev_round
       cur_round="$(jq -r '.round // 1' "$job_dir/job.json" 2>/dev/null || printf '1')"
@@ -624,8 +629,18 @@ afk_factory_invoke_stage_agent() {
       elif [[ -f "$repo/.mcp.json" ]]; then
         mcp_cfg="$repo/.mcp.json"
       fi
-      local bin_exec=""
+      local bin_exec="" stage_cfg stage_tmo
       bin_exec="$(_afk_harness_locate_bin "$harness" 2>/dev/null || command -v "$harness" 2>/dev/null || true)"
+      stage_cfg="$(afk_factory_load_config "$repo")"
+      if [[ "$routed_cost" == "free" ]]; then
+        stage_tmo="${AFK_FREE_MODEL_TIMEOUT_SEC:-$(jq -r '.watchdog.free_stage_timeout_sec // 120' <<<"$stage_cfg" 2>/dev/null || printf '120')}"
+      else
+        stage_tmo="${AFK_STAGE_TIMEOUT_SEC:-$(jq -r '.watchdog.stage_timeout_sec // 900' <<<"$stage_cfg" 2>/dev/null || printf '900')}"
+      fi
+      [[ "$stage_tmo" =~ ^[0-9]+$ && "$stage_tmo" -gt 0 ]] || stage_tmo=900
+      local -a tmo_cmd=()
+      command -v timeout >/dev/null 2>&1 && tmo_cmd=(timeout "$stage_tmo")
+
       case "$harness" in
         claude)
           if [[ -n "$bin_exec" ]]; then
@@ -637,7 +652,7 @@ afk_factory_invoke_stage_agent() {
               fi
               local -a cl_mcp_args=()
               [[ -n "$mcp_cfg" ]] && cl_mcp_args=(--mcp-config "$mcp_cfg")
-              "$bin_exec" -p "$(cat -- "$compiled_prompt")" --model "$routed_model" "${cl_mcp_args[@]}" --add-dir "$job_dir" --dangerously-skip-permissions --output-format json < /dev/null > "$env_file" 2>/dev/null
+              "${tmo_cmd[@]}" "$bin_exec" -p "$(cat -- "$compiled_prompt")" --model "$routed_model" "${cl_mcp_args[@]}" --add-dir "$job_dir" --dangerously-skip-permissions --output-format json < /dev/null > "$env_file" 2>/dev/null
             ) || h_rc=$?
           else
             h_rc=127
@@ -651,7 +666,7 @@ afk_factory_invoke_stage_agent() {
               if [[ "$routed_launch" == *-gateway && -n "$litellm_url" ]]; then
                 export OPENAI_BASE_URL="$litellm_url"
               fi
-              "$bin_exec" exec --dangerously-bypass-approvals-and-sandbox --json -o "$output_file" -m "$routed_model" -- "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
+              "${tmo_cmd[@]}" "$bin_exec" exec --dangerously-bypass-approvals-and-sandbox --json -o "$output_file" -m "$routed_model" -- "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
             ) || h_rc=$?
           else
             h_rc=127
@@ -662,7 +677,7 @@ afk_factory_invoke_stage_agent() {
             (
               cd "$wt" || exit 1
               [[ -n "$hs_disabled" ]] && export HINDSIGHT_DISABLED="true"
-              "$bin_exec" --dangerously-skip-permissions --add-dir "$job_dir" --output-format json -p "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
+              "${tmo_cmd[@]}" "$bin_exec" --dangerously-skip-permissions --add-dir "$job_dir" --output-format json -p "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
             ) || h_rc=$?
           else
             h_rc=127
@@ -676,11 +691,7 @@ afk_factory_invoke_stage_agent() {
               if [[ "$routed_launch" == *-gateway && -n "$litellm_url" ]]; then
                 export OPENAI_BASE_URL="$litellm_url"
               fi
-              if [[ "$routed_cost" == "free" ]] && command -v timeout >/dev/null 2>&1; then
-                timeout "${AFK_FREE_MODEL_TIMEOUT_SEC:-120}" "$bin_exec" run --pure --auto --format json -m "$routed_model" -- "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
-              else
-                "$bin_exec" run --pure --auto --format json -m "$routed_model" -- "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
-              fi
+              "${tmo_cmd[@]}" "$bin_exec" run --pure --auto --format json -m "$routed_model" -- "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
             ) || h_rc=$?
           else
             h_rc=127
@@ -691,7 +702,7 @@ afk_factory_invoke_stage_agent() {
             (
               cd "$wt" || exit 1
               [[ -n "$hs_disabled" ]] && export HINDSIGHT_DISABLED="true"
-              "$bin_exec" -p --mode json --model "$routed_model" "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
+              "${tmo_cmd[@]}" "$bin_exec" -p --mode json --model "$routed_model" "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
             ) || h_rc=$?
           else
             h_rc=127
@@ -700,7 +711,9 @@ afk_factory_invoke_stage_agent() {
       esac
 
       local env_err_msg=""
-      if [[ -s "$env_file" ]] && jq -se 'any(.[]; (.is_error == true) or (.type == "error") or (.type == "turn.failed"))' "$env_file" >/dev/null 2>&1; then
+      if (( h_rc == 124 )); then
+        env_err_msg="stage_timeout_${stage_tmo}s"
+      elif [[ -s "$env_file" ]] && jq -se 'any(.[]; (.is_error == true) or (.type == "error") or (.type == "turn.failed"))' "$env_file" >/dev/null 2>&1; then
         env_err_msg="$(jq -sr '[ .[] | (.error.data.message // .error.message // (if .is_error == true then .result else empty end) // .message // empty) ] | map(select(length > 0)) | first // "json_runtime_error"' "$env_file" 2>/dev/null || printf 'json_runtime_error')"
         (( h_rc == 0 )) && h_rc=1
       fi
@@ -827,6 +840,38 @@ EOF
   return 0
 }
 
+# _afk_factory_touch_heartbeat <job_dir> <stage> <role> <state:running|idle|done>
+# Writes deterministic liveness/heartbeat metadata so `factory watchdog` can distinguish
+# an actively working stage from a crashed runner or silent/stalled process.
+_afk_factory_touch_heartbeat() {
+  local job_dir="$1" stage="$2" role="${3:-}" state="${4:-running}"
+  local hb_file="$job_dir/heartbeat.json" cur="{}"
+  [[ -f "$hb_file" ]] && cur="$(cat -- "$hb_file" 2>/dev/null || printf '{}')"
+  local now_iso now_ep nudges pid_val="null"
+  now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  now_ep="$(date -u +%s)"
+  nudges="$(jq -r '.nudge_count // 0' <<<"$cur" 2>/dev/null || printf '0')"
+  [[ "$state" == "running" ]] && pid_val="$$"
+  jq -cn \
+    --arg st "$stage" \
+    --arg rl "$role" \
+    --arg s "$state" \
+    --arg iso "$now_iso" \
+    --argjson ep "$now_ep" \
+    --argjson pid "$pid_val" \
+    --argjson nc "$nudges" \
+    '{
+      schema: "afk-factory-heartbeat/1",
+      pid: $pid,
+      state: $s,
+      stage: $st,
+      role: $rl,
+      last_beat_at: $iso,
+      last_beat_epoch: $ep,
+      nudge_count: $nc
+    }' > "${hb_file}.tmp.$$" && mv "${hb_file}.tmp.$$" "$hb_file"
+}
+
 # afk_factory_run_stage_with_context_guard <slug> <repo> <wt> <job_dir> <role> <stage> <prompt_file> <output_file> <issue_id> <api_url> <key> <harness>
 # Invokes a stage agent, records its context window consumption, and if it crosses
 # the 80% threshold (or compacts), automatically checkpoints, resets its Paperclip
@@ -835,7 +880,10 @@ afk_factory_run_stage_with_context_guard() {
   local slug="$1" repo="$2" wt="$3" job_dir="$4" role="$5" stage="$6"
   local prompt_file="$7" output_file="$8" issue_id="$9" api_url="${10:-}" key="${11:-}" harness="${12:-}"
 
+  _afk_factory_touch_heartbeat "$job_dir" "$stage" "$role" "running"
   afk_factory_invoke_stage_agent "$repo" "$wt" "$job_dir" "$role" "$stage" "$prompt_file" "$output_file" "$harness"
+  rm -f "$job_dir/watchdog-nudge.md"
+  _afk_factory_touch_heartbeat "$job_dir" "$stage" "$role" "running"
 
   if [[ -n "${AFK_LAST_STAGE_USED_TOKENS:-}" ]]; then
     local ctx_res ctx_act ctx_new_gen ckpt_file
@@ -1129,11 +1177,166 @@ afk_factory_run_job() {
      | .merge_evaluation = $meval
      | .active_agent = (if $st == "needs-human" then "human" else null end)
      | .updated_at = $now' "$job_file" > "$job_file.tmp" && mv "$job_file.tmp" "$job_file"
+  _afk_factory_touch_heartbeat "$job_dir" "$final_stage" "" "done"
 
   if [[ "$json_mode" == "true" ]]; then
     cat "$job_file"
   else
     printf 'AFK Factory job %s (%s): stage=%s decision=%s\n' "$job_id" "$slug" "$final_stage" "$decision"
+  fi
+  return 0
+}
+
+# afk_factory_watchdog [<repo_path>] [<slug>] [<stale_seconds>] [<dry_run>] [<json_mode>]
+# Deterministic stall detector & auto-nudge/recovery loop:
+#   - Inspects in-flight jobs (`stage` not in `merged|needs-human|needs-info|rejected`).
+#   - Detects crashed coordinators (`dead_runner` when PID no longer exists) and
+#     silent/hung stages (`stalled_stage` when `now - last_beat_epoch >= stale_seconds`).
+#   - Terminates hung PIDs, injects a Watchdog Recovery Nudge into the stage prompt,
+#     and re-dispatches from the last completed stage artifact (up to `max_nudges`, default 2).
+#   - Escalates to Paperclip (`in_review` assigned to human board user) if `nudge_count > max_nudges`.
+afk_factory_watchdog() {
+  local repo="${1:-}" slug="${2:-}" stale_arg="${3:-}" dry_run="${4:-false}" json_mode="${5:-false}"
+  local status_json
+  status_json="$(afk_factory_status "$repo" "$slug" true)"
+  local -a in_flight=()
+  mapfile -t in_flight < <(jq -c '.jobs[]? | select((.stage // "") | IN("merged","needs-human","needs-info","rejected") | not)' <<<"$status_json" 2>/dev/null)
+
+  local actions="[]" now_ep row j_repo j_slug j_id j_issue j_title j_stage j_dir hb_file cfg stale_sec max_nudges
+  now_ep="$(date -u +%s)"
+
+  for row in "${in_flight[@]:-}"; do
+    [[ -n "$row" ]] || continue
+    j_repo="$(jq -r '.repo_path // empty' <<<"$row")"
+    j_slug="$(jq -r '.slug // empty' <<<"$row")"
+    j_id="$(jq -r '.id // empty' <<<"$row")"
+    j_issue="$(jq -r '.issue_id // empty' <<<"$row")"
+    j_title="$(jq -r '.title // "Factory Task"' <<<"$row")"
+    j_stage="$(jq -r '.stage // "unknown"' <<<"$row")"
+    [[ -n "$j_repo" && -n "$j_id" ]] || continue
+    j_dir="$j_repo/.afk/jobs/$j_id"
+    hb_file="$j_dir/heartbeat.json"
+
+    cfg="$(afk_factory_load_config "$j_repo")"
+    stale_sec="${stale_arg:-${AFK_WATCHDOG_STALE_SEC:-$(jq -r '.watchdog.stale_seconds // 900' <<<"$cfg" 2>/dev/null || printf '900')}}"
+    max_nudges="${AFK_WATCHDOG_MAX_NUDGES:-$(jq -r '.watchdog.max_nudges // 2' <<<"$cfg" 2>/dev/null || printf '2')}"
+    [[ "$stale_sec" =~ ^[0-9]+$ ]] || stale_sec=900
+    [[ "$max_nudges" =~ ^[0-9]+$ ]] || max_nudges=2
+
+    local hb="{}" pid="" beat_ep=0 nudges=0 age=0 stall_reason=""
+    if [[ -f "$hb_file" ]]; then
+      hb="$(cat -- "$hb_file" 2>/dev/null || printf '{}')"
+      pid="$(jq -r '.pid // empty' <<<"$hb" 2>/dev/null)"
+      beat_ep="$(jq -r '.last_beat_epoch // 0' <<<"$hb" 2>/dev/null || printf '0')"
+      nudges="$(jq -r '.nudge_count // 0' <<<"$hb" 2>/dev/null || printf '0')"
+    else
+      # Fallback if job.json was created without heartbeat.json
+      beat_ep="$(stat -c %Y "$j_dir/job.json" 2>/dev/null || stat -f %m "$j_dir/job.json" 2>/dev/null || printf '%s' "$now_ep")"
+    fi
+    age=$(( now_ep - beat_ep ))
+
+    if [[ -n "$pid" && "$pid" != "null" ]]; then
+      if ! kill -0 "$pid" 2>/dev/null; then
+        stall_reason="dead_runner (pid $pid exited while job in stage=$j_stage)"
+      elif (( age >= stale_sec )); then
+        stall_reason="stalled_stage (stage=$j_stage silent for ${age}s >= ${stale_sec}s, pid=$pid)"
+      fi
+    else
+      if (( age >= stale_sec )); then
+        stall_reason="orphaned_job (stage=$j_stage idle for ${age}s >= ${stale_sec}s)"
+      else
+        stall_reason="dead_runner (no active pid in stage=$j_stage)"
+      fi
+    fi
+
+    if [[ -z "$stall_reason" ]]; then
+      actions="$(jq -c --arg s "$j_slug" --arg id "$j_id" --arg st "$j_stage" --argjson a "$age" \
+        '. + [{slug:$s, job_id:$id, stage:$st, action:"healthy_running", age_sec:$a}]' <<<"$actions")"
+      continue
+    fi
+
+    if [[ "$dry_run" == "true" ]]; then
+      actions="$(jq -c --arg s "$j_slug" --arg id "$j_id" --arg st "$j_stage" --arg r "$stall_reason" --argjson nc "$nudges" \
+        '. + [{slug:$s, job_id:$id, stage:$st, action:"would_recover", reason:$r, nudge_count:$nc}]' <<<"$actions")"
+      continue
+    fi
+
+    # Terminate hung runner PID if still alive
+    if [[ -n "$pid" && "$pid" != "null" ]] && kill -0 "$pid" 2>/dev/null; then
+      kill -TERM "$pid" 2>/dev/null || true
+      sleep 1
+      kill -KILL "$pid" 2>/dev/null || true
+    fi
+
+    nudges=$(( nudges + 1 ))
+    local now_iso
+    now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    jq -cn \
+      --arg st "$j_stage" \
+      --arg iso "$now_iso" \
+      --argjson ep "$now_ep" \
+      --argjson nc "$nudges" \
+      '{schema:"afk-factory-heartbeat/1", pid:null, state:"recovering", stage:$st, role:"", last_beat_at:$iso, last_beat_epoch:$ep, nudge_count:$nc}' > "${hb_file}.tmp.$$" && mv "${hb_file}.tmp.$$" "$hb_file"
+
+    if (( nudges > max_nudges )); then
+      cat > "$j_dir/decision.md" <<EOF
+DECISION: ESCALATE
+
+## Summary
+- Watchdog detected repeated stall/interruption on job \`$j_id\` (\`$stall_reason\`).
+- Exceeded \`max_nudges=$max_nudges\` (${nudges} attempts); escalating for human inspection.
+EOF
+      jq -c --arg now "$now_iso" --arg r "Watchdog stall cap exceeded ($nudges/$max_nudges): $stall_reason" \
+        '.stage = "needs-human" | .decision = "ESCALATE" | .active_agent = "human" | .updated_at = $now | .merge_evaluation = {decision:"ESCALATE", reasons:[$r]}' \
+        "$j_dir/job.json" > "$j_dir/job.json.tmp" && mv "$j_dir/job.json.tmp" "$j_dir/job.json"
+
+      # Notify Paperclip if linked to an issue
+      local pc_cfg_path pc_cfg api_url host_agent_id board_user_id key_ref key="" run_id=""
+      pc_cfg_path="$(afk_pc_config_path)"
+      if [[ -n "$j_issue" && -f "$pc_cfg_path" ]]; then
+        pc_cfg="$(cat "$pc_cfg_path" 2>/dev/null || true)"
+        api_url="$(jq -r '.api_url // empty' <<<"$pc_cfg" 2>/dev/null)"
+        host_agent_id="$(jq -r '.host.agent_id // empty' <<<"$pc_cfg" 2>/dev/null)"
+        board_user_id="$(jq -r '.board_user_id // empty' <<<"$pc_cfg" 2>/dev/null)"
+        key_ref="$(jq -r '.host.key_ref // empty' <<<"$pc_cfg" 2>/dev/null)"
+        if [[ -n "$api_url" && -n "$key_ref" ]]; then
+          AFK_PC_CFG="$pc_cfg"
+          key="$(afk_pc_read_key "$key_ref" 2>/dev/null || true)"
+          if [[ -n "$key" ]]; then
+            run_id="$(afk_pch_ensure_run_id "$api_url" "$key" "$host_agent_id" "$j_issue")"
+            afk_pc_comment "$api_url" "$j_issue" "$key" "$run_id" "$(cat "$j_dir/decision.md")" >/dev/null 2>&1 || true
+            local pbody
+            pbody="$(jq -cn --arg u "$board_user_id" '{status:"in_review", assigneeAgentId:null} + (if $u != "" then {assigneeUserId:$u} else {} end)')"
+            afk_pc_curl PATCH "$api_url/api/issues/$j_issue" "$key" "$run_id" "$pbody" >/dev/null 2>&1 || true
+          fi
+        fi
+      fi
+      actions="$(jq -c --arg s "$j_slug" --arg id "$j_id" --arg r "$stall_reason" --argjson nc "$nudges" \
+        '. + [{slug:$s, job_id:$id, stage:"needs-human", action:"escalated_max_nudges", reason:$r, nudge_count:$nc}]' <<<"$actions")"
+      continue
+    fi
+
+    # Write Watchdog Nudge note & log event, then re-dispatch job from last completed stage
+    cat > "$j_dir/watchdog-nudge.md" <<EOF
+- Watchdog recovery #${nudges} triggered because the prior attempt stalled or exited unexpectedly: \`${stall_reason}\`.
+- Inspect \`git status\` and \`git log -n 2\` in the worktree first so you continue cleanly from any partial work without redoing completed commits, then finish the current stage output immediately.
+EOF
+    jq -cn --arg ts "$now_iso" --arg st "$j_stage" --arg r "$stall_reason" --argjson nc "$nudges" \
+      '{ts:$ts, stage:$st, status:"watchdog_nudge", nudge_count:$nc, reason:$r}' >> "$j_dir/route-history.jsonl"
+
+    local res_out new_st new_dec
+    res_out="$(afk_factory_run_job "$j_repo" "$j_slug" "$j_id" "$j_issue" "$j_title" "" true)"
+    new_st="$(jq -r '.stage // "unknown"' <<<"$res_out" 2>/dev/null)"
+    new_dec="$(jq -r '.decision // "null"' <<<"$res_out" 2>/dev/null)"
+    actions="$(jq -c --arg s "$j_slug" --arg id "$j_id" --arg st "$new_st" --arg dec "$new_dec" --arg r "$stall_reason" --argjson nc "$nudges" \
+      '. + [{slug:$s, job_id:$id, stage:$st, decision:$dec, action:"nudged_and_resumed", reason:$r, nudge_count:$nc}]' <<<"$actions")"
+  done
+
+  if [[ "$json_mode" == "true" ]]; then
+    jq -cn --argjson a "$actions" '{schema:"afk-factory-watchdog/1", inspected_count:($a|length), actions:$a}'
+  else
+    printf 'AFK Factory Watchdog: inspected %s in-flight job(s)\n' "$(jq -r 'length' <<<"$actions")"
+    jq -r '.[] | "  [\(.action | ascii_upcase)] \(.slug)/\(.job_id): stage=\(.stage)" + (if .reason then " (\(.reason))" else "" end)' <<<"$actions"
   fi
   return 0
 }
@@ -1261,6 +1464,7 @@ afk_cmd_factory() {
   local check_updates=false dry_run_flag=false harness_arg="" sync_flag=false free_only=false
   local mcp_mode_arg="standalone" enable_mcp_csv="" enable_skills_csv="" litellm_url_arg=""
   local item_name="" transport_arg="stdio" target_arg="" args_csv="" desc_arg="" skill_path_arg=""
+  local stale_sec_arg=""
 
   while (( $# > 0 )); do
     case "$1" in
@@ -1270,6 +1474,7 @@ afk_cmd_factory() {
       --dry-run)         dry_run_flag=true ;;
       --sync)            sync_flag=true ;;
       --free-only)       free_only=true ;;
+      --stale-seconds)   [[ $# -ge 2 ]] || { afk_warn "--stale-seconds requires an integer"; return 1; }; stale_sec_arg="$2"; shift ;;
       --repo)            [[ $# -ge 2 ]] || { afk_warn "--repo requires a path"; return 1; }; repo="$2"; shift ;;
       --slug)            [[ $# -ge 2 ]] || { afk_warn "--slug requires a value"; return 1; }; slug="$2"; shift ;;
       --job)             [[ $# -ge 2 ]] || { afk_warn "--job requires an id"; return 1; }; job_id="$2"; shift ;;
@@ -1387,6 +1592,9 @@ afk_cmd_factory() {
       return 0 ;;
     resume)
       afk_factory_resume "$repo" "$slug" "$json_mode"
+      return $? ;;
+    watchdog)
+      afk_factory_watchdog "$repo" "$slug" "$stale_sec_arg" "$dry_run_flag" "$json_mode"
       return $? ;;
     pools)
       local p_out
@@ -1571,7 +1779,7 @@ afk_cmd_factory() {
       afk_factory_status "$repo" "$slug" "$json_mode"
       return $? ;;
     *)
-      afk_warn "factory: unknown subcommand '$(afk_safe_diagnostic "$subcmd")' (expected: roster, init, run, resume, pools, harnesses, update-harnesses, models, tooling, tooling-sync, tooling-register-mcp, tooling-register-skill, route-preview, sync-benchmarks, status, context-check, evaluate-merge, retire)"
+      afk_warn "factory: unknown subcommand '$(afk_safe_diagnostic "$subcmd")' (expected: roster, init, run, resume, watchdog, pools, harnesses, update-harnesses, models, tooling, tooling-sync, tooling-register-mcp, tooling-register-skill, route-preview, sync-benchmarks, status, context-check, evaluate-merge, retire)"
       return 1 ;;
   esac
 }
