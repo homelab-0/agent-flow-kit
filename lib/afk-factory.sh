@@ -463,7 +463,7 @@ afk_factory_build_stage_prompt() {
     fi
     printf '## Stage Instructions\n'
     printf -- '- Input context path: `%s`\n' "$input_file"
-    printf -- '- Target output path: `%s`\n' "$output_file"
+    printf -- '- Target output path: `%s` (if `%s` is outside your writable workspace root, output the exact required markdown directly as your final response without outer code fences).\n' "$output_file" "$output_file"
     case "$stage" in
       intake)
         printf -- '- Do NOT modify repository source files during `intake`.\n'
@@ -610,11 +610,12 @@ afk_factory_invoke_stage_agent() {
   fi
 
   if [[ "${AFK_FACTORY_LIVE_HARNESS:-0}" == "1" ]]; then
-    local attempt=1 max_attempts=2
+    local attempt=1 max_attempts=3 failover_from=""
     while (( attempt <= max_attempts )); do
       local env_file="$job_dir/.result-${stage}-${role}.json"
-      local h_rc=0 hs_disabled="" routed_pool=""
+      local h_rc=0 hs_disabled="" routed_pool="" routed_cost=""
       routed_pool="$(jq -r '.entitlement_pool // empty' <<<"$route_json")"
+      routed_cost="$(jq -r '.cost_class // "subscription"' <<<"$route_json")"
       [[ "$routed_mem" == "blind" || "$routed_mem" == "off" ]] && hs_disabled="true"
       rm -f "$env_file" "$output_file"
       local mcp_cfg=""
@@ -650,7 +651,7 @@ afk_factory_invoke_stage_agent() {
               if [[ "$routed_launch" == *-gateway && -n "$litellm_url" ]]; then
                 export OPENAI_BASE_URL="$litellm_url"
               fi
-              "$bin_exec" exec -s workspace-write --add-dir "$job_dir" -o "$output_file" -m "$routed_model" -- "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
+              "$bin_exec" exec --dangerously-bypass-approvals-and-sandbox --json -o "$output_file" -m "$routed_model" -- "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
             ) || h_rc=$?
           else
             h_rc=127
@@ -675,7 +676,11 @@ afk_factory_invoke_stage_agent() {
               if [[ "$routed_launch" == *-gateway && -n "$litellm_url" ]]; then
                 export OPENAI_BASE_URL="$litellm_url"
               fi
-              "$bin_exec" run --format json -m "$routed_model" -- "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
+              if [[ "$routed_cost" == "free" ]] && command -v timeout >/dev/null 2>&1; then
+                timeout "${AFK_FREE_MODEL_TIMEOUT_SEC:-120}" "$bin_exec" run --pure --auto --format json -m "$routed_model" -- "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
+              else
+                "$bin_exec" run --pure --auto --format json -m "$routed_model" -- "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
+              fi
             ) || h_rc=$?
           else
             h_rc=127
@@ -694,25 +699,60 @@ afk_factory_invoke_stage_agent() {
           ;;
       esac
 
+      local env_err_msg=""
+      if [[ -s "$env_file" ]] && jq -se 'any(.[]; (.is_error == true) or (.type == "error") or (.type == "turn.failed"))' "$env_file" >/dev/null 2>&1; then
+        env_err_msg="$(jq -sr '[ .[] | (.error.data.message // .error.message // (if .is_error == true then .result else empty end) // .message // empty) ] | map(select(length > 0)) | first // "json_runtime_error"' "$env_file" 2>/dev/null || printf 'json_runtime_error')"
+        (( h_rc == 0 )) && h_rc=1
+      fi
+
       if (( h_rc == 0 )) && [[ -s "$env_file" || -s "$output_file" ]]; then
         if [[ -s "$env_file" ]]; then
           local tok
-          tok="$(jq -r '(.usage.total_tokens // .part.tokens.total // ((.usage.input_tokens // 0) + (.usage.output_tokens // 0) + (.usage.cache_read_input_tokens // 0))) | select(. > 0)' "$env_file" 2>/dev/null | tail -n 1 || true)"
+          tok="$(jq -sr '[ .[] | (.usage.total_tokens // .part.tokens.total // ((.usage.input_tokens // 0) + (.usage.output_tokens // 0) + (.usage.cache_read_input_tokens // 0))) | select(. > 0) ] | max // empty' "$env_file" 2>/dev/null || true)"
           [[ -n "$tok" ]] && AFK_LAST_STAGE_USED_TOKENS="$tok"
           if [[ ! -s "$output_file" ]]; then
             local extracted=""
-            extracted="$(jq -r '(.result // .response // .part.text // empty)' "$env_file" 2>/dev/null || true)"
+            extracted="$(jq -sr '[ .[] | (.result // .response // .part.text // empty) ] | join("")' "$env_file" 2>/dev/null || true)"
             if [[ -n "$extracted" ]]; then
               printf '%s\n' "$extracted" > "$output_file"
             fi
           fi
         fi
-        return 0
+        if [[ -s "$output_file" ]]; then
+          jq -cn \
+            --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg st "$stage" \
+            --arg rl "$role" \
+            --argjson att "$attempt" \
+            --arg h "$harness" \
+            --arg m "$routed_model" \
+            --arg p "$routed_pool" \
+            --arg cc "$routed_cost" \
+            --arg ff "$failover_from" \
+            --arg tok "${AFK_LAST_STAGE_USED_TOKENS:-0}" \
+            '{ts:$ts, stage:$st, role:$rl, status:"ok", attempt:$att, harness:$h, model:$m, entitlement_pool:$p, cost_class:$cc, used_tokens:($tok|tonumber? // 0), failover_from:(if $ff=="" then null else $ff end)}' >> "$job_dir/route-history.jsonl"
+          return 0
+        fi
+        h_rc=1
+        env_err_msg="empty_stage_output"
       fi
+
+      local fail_reason="${env_err_msg:-runtime_exit_$h_rc}"
+      jq -cn \
+        --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --arg st "$stage" \
+        --arg rl "$role" \
+        --argjson att "$attempt" \
+        --arg h "$harness" \
+        --arg m "$routed_model" \
+        --arg p "$routed_pool" \
+        --arg err "${fail_reason:0:160}" \
+        '{ts:$ts, stage:$st, role:$rl, status:"failed_attempt", attempt:$att, harness:$h, model:$m, entitlement_pool:$p, error:$err}' >> "$job_dir/route-history.jsonl"
 
       # Runtime failover: mark degraded pool and re-route to next healthy harness
       if (( attempt < max_attempts )) && [[ -z "$harness_override" && -n "$routed_pool" ]] && declare -F afk_router_mark_pool_degraded >/dev/null 2>&1; then
-        afk_router_mark_pool_degraded "$routed_pool" "runtime_exit_$h_rc"
+        failover_from="${harness}/${routed_model}(${routed_pool})"
+        afk_router_mark_pool_degraded "$routed_pool" "${fail_reason:0:120}"
         route_json="$(afk_factory_resolve_stage_route "$repo" "$job_dir" "$stage" "$role")"
         routed_harness="$(jq -r '.harness // "claude"' <<<"$route_json")"
         routed_launch="$(jq -r '.launch_class // "claude-native"' <<<"$route_json")"

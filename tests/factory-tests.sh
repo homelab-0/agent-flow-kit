@@ -406,5 +406,154 @@ assert_eq "LiteLLM tooling-sync routes project .mcp.json servers through LiteLLM
   "$(jq -r '"\(.mcpServers["postgres-ro"].url)|\(.mcpServers["github"].headers["x-litellm-mcp"])"' "$LITELLM_REPO/.mcp.json")" \
   "http://gateway.example.com:4000/mcp/postgres-ro|true"
 
+# ----------------------------------------------------------------------------
+# 8. Live-Harness Runtime Failover, Multi-Round Review Loop & Non-BMAD E2E
+# ----------------------------------------------------------------------------
+printf '\n8. Live-harness runtime pool failover, multi-round review fix loop & non-BMAD E2E\n'
+
+MOCK_CLI_BIN="$TMPROOT/mock-cli-bin"
+mkdir -p "$MOCK_CLI_BIN"
+
+cat > "$MOCK_CLI_BIN/codex" <<'SH'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "--version" ]]; then echo "codex-cli 0.167.1"; exit 0; fi
+printf '{"type":"turn.failed","error":{"message":"token_revoked 401"}}\n'
+exit 1
+SH
+cat > "$MOCK_CLI_BIN/opencode" <<'SH'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "--version" ]]; then echo "1.19.5"; exit 0; fi
+if [[ "$*" == *"openai/"* ]]; then
+  # OpenCode exits 0 even on JSON auth errors — verify AFK catches this!
+  printf '%s\n' '{"type":"error","error":{"data":{"message":"Token refresh failed: 401"}}}'
+  exit 0
+fi
+printf '%s\n' '{"type":"text","part":{"type":"text","text":"VERDICT: ACCEPT\nRISK: low\nSURFACES: code\n## Summary\n- Handled by free OpenCode model."}}'
+printf '%s\n' '{"type":"step_finish","part":{"tokens":{"total":14200}}}'
+exit 0
+SH
+cat > "$MOCK_CLI_BIN/agy" <<'SH'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "--version" ]]; then echo "agy version 1.5.5"; exit 0; fi
+printf '%s\n' '{"response":"VERDICT: PASS\n## Summary\n- Blind cross-family review passed after automatic openai-plus failover.","usage":{"total_tokens":18500}}'
+exit 0
+SH
+cat > "$MOCK_CLI_BIN/claude" <<'SH'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "--version" ]]; then echo "2.1.322 (Claude Code)"; exit 0; fi
+PROMPT_TEXT="$*"
+if [[ "$PROMPT_TEXT" == *"review-code.md"* ]]; then
+  printf '%s\n' '{"result":"VERDICT: PASS\n## Summary\n- Review passed.","usage":{"input_tokens":7000,"output_tokens":250}}'
+  exit 0
+fi
+if [[ "$PROMPT_TEXT" == *"Target output path:"*"/spec.md"* ]]; then
+  printf '%s\n' '{"result":"# Spec\n- Add widget helper.","usage":{"input_tokens":5000,"output_tokens":300}}'
+  exit 0
+fi
+if [[ "$PROMPT_TEXT" == *"Prior Round 1 Reviewer Feedback"* ]]; then
+  printf '%s\n' '{"result":"## Summary\n- Fixed Round 1 reviewer finding cleanly.","usage":{"input_tokens":8000,"output_tokens":400}}'
+  exit 0
+fi
+printf '%s\n' '{"result":"## Summary\n- Initial Round 1 implementation.","usage":{"input_tokens":6000,"output_tokens":350}}'
+exit 0
+SH
+chmod +x "$MOCK_CLI_BIN/codex" "$MOCK_CLI_BIN/opencode" "$MOCK_CLI_BIN/agy" "$MOCK_CLI_BIN/claude"
+
+# Reset pool signals & harness list so router probes MOCK_CLI_BIN and starts fresh (`available`)
+rm -f "$AFK_ROUTER_SIGNALS_FILE" "$AFK_STATE_DIR/router/pool-signals.json"
+unset AFK_ROUTER_HARNESS_LIST
+unset AFK_FACTORY_AGENT_RUNNER
+
+FAILOVER_REPO="$TMPROOT/repo-non-bmad-e2e"
+mkdir -p "$FAILOVER_REPO"
+git -C "$FAILOVER_REPO" init -b main >/dev/null 2>&1
+git -C "$FAILOVER_REPO" config user.email "test@example.com"
+git -C "$FAILOVER_REPO" config user.name "AFK Test"
+echo "hello" > "$FAILOVER_REPO/README.md"
+git -C "$FAILOVER_REPO" add README.md
+git -C "$FAILOVER_REPO" commit -m "init" >/dev/null 2>&1
+bash "$AFK" factory init --repo "$FAILOVER_REPO" >/dev/null
+
+# 8a: Low-risk job with AFK_ROUTER_PREFER_FREE=1 on non-BMAD repo -> free OpenCode model + auto-merge
+NON_BMAD_FREE_OUT="$(
+  PATH="$MOCK_CLI_BIN:$PATH" \
+  AFK_CODEX_AUTH_FILE="$MOCK_AUTH_DIR/codex-auth.json" \
+  AFK_OPENCODE_AUTH_FILE="$MOCK_AUTH_DIR/opencode-auth.json" \
+  AFK_PI_AUTH_FILE="$MOCK_AUTH_DIR/pi-auth.json" \
+  AFK_FACTORY_LIVE_HARNESS=1 \
+  AFK_ROUTER_PREFER_FREE=1 \
+  AFK_DISCOVERED_MODELS_FILE="$DISC_FILE" \
+  OP_SERVICE_ACCOUNT_TOKEN=stub \
+  AFK_OP_BIN="$STUB_BIN/op" \
+  AFK_CURL_BIN="$STUB_BIN/curl" \
+  bash "$AFK" factory run --repo "$FAILOVER_REPO" --slug nonbmad --job job-nonbmad-free --title "Add widget helper" --json
+)"
+
+assert_eq "Non-BMAD repo runs full live-harness pipeline end-to-end and auto-merges" \
+  "$(jq -r '"\(.stage):\(.decision)"' <<<"$NON_BMAD_FREE_OUT")" \
+  "merged:APPROVE"
+
+assert_eq "Low-risk intake used \$0 free OpenCode model under AFK_ROUTER_PREFER_FREE=1" \
+  "$(jq -sr '[.[] | select(.stage == "intake" and .status == "ok") | "\(.harness):\(.cost_class)"] | first' "$FAILOVER_REPO/.afk/jobs/job-nonbmad-free/route-history.jsonl")" \
+  "opencode:free"
+
+# 8b: Default subscription routing: claude builds -> codex picked for cross-family review -> hits 401 -> marks shared openai-plus degraded -> fails over in-flight to agy!
+rm -f "$AFK_ROUTER_SIGNALS_FILE" "$AFK_STATE_DIR/router/pool-signals.json"
+NON_BMAD_FAILOVER_OUT="$(
+  PATH="$MOCK_CLI_BIN:$PATH" \
+  AFK_CODEX_AUTH_FILE="$MOCK_AUTH_DIR/codex-auth.json" \
+  AFK_OPENCODE_AUTH_FILE="$MOCK_AUTH_DIR/opencode-auth.json" \
+  AFK_PI_AUTH_FILE="$MOCK_AUTH_DIR/pi-auth.json" \
+  AFK_FACTORY_LIVE_HARNESS=1 \
+  AFK_DISCOVERED_MODELS_FILE="$DISC_FILE" \
+  OP_SERVICE_ACCOUNT_TOKEN=stub \
+  AFK_OP_BIN="$STUB_BIN/op" \
+  AFK_CURL_BIN="$STUB_BIN/curl" \
+  bash "$AFK" factory run --repo "$FAILOVER_REPO" --slug nonbmad --job job-nonbmad-failover --title "Add second helper" --json
+)"
+
+assert_eq "review-code caught codex 401, marked shared openai-plus degraded, skipped opencode/openai, and failed over in-flight to agy" \
+  "$(jq -sr '[.[] | select(.stage == "review-code") | "\(.status):\(.harness):\(.attempt)"] | join("->")' "$FAILOVER_REPO/.afk/jobs/job-nonbmad-failover/route-history.jsonl"):$(jq -r '.decision' <<<"$NON_BMAD_FAILOVER_OUT")" \
+  "failed_attempt:codex:1->ok:agy:2:APPROVE"
+
+# Test automatic Round 1 CHANGES_REQUESTED -> Round 2 fix loop inside a single `factory run`
+ROUND_RUNNER="$TMPROOT/round-runner.sh"
+cat > "$ROUND_RUNNER" <<'SH'
+#!/usr/bin/env bash
+STAGE="$1"; ROLE="$2"; PROMPT="$3"; OUT="$4"
+case "$STAGE" in
+  intake) printf 'VERDICT: ACCEPT\nRISK: low\nSURFACES: code\n## Summary\n- Accept.\n' > "$OUT" ;;
+  spec)   printf '# Spec\n- Build feature cleanly.\n' > "$OUT" ;;
+  build)
+    if grep -q "Prior Round 1 Reviewer Feedback" "$AFK_FACTORY_COMPILED_PROMPT"; then
+      printf '## Summary\n- Addressed Round 1 finding.\n' > "$OUT"
+    else
+      printf '## Summary\n- Initial draft.\n' > "$OUT"
+    fi
+    ;;
+  review-code)
+    if [[ "$OUT" == *"/round-1/"* ]]; then
+      printf 'VERDICT: CHANGES_REQUESTED\n## Summary\n- Missing edge-case guard.\n' > "$OUT"
+    else
+      printf 'VERDICT: PASS\n## Summary\n- Edge-case guard verified.\n' > "$OUT"
+    fi
+    ;;
+esac
+printf '{"used_tokens":12000,"window_tokens":200000,"compacted":false}\n'
+SH
+chmod +x "$ROUND_RUNNER"
+
+MULTI_ROUND_OUT="$(
+  AFK_FACTORY_AGENT_RUNNER="$ROUND_RUNNER" \
+  OP_SERVICE_ACCOUNT_TOKEN=stub \
+  AFK_OP_BIN="$STUB_BIN/op" \
+  AFK_CURL_BIN="$STUB_BIN/curl" \
+  bash "$AFK" factory run --repo "$FAILOVER_REPO" --slug spektacle --job job-two-round --title "Edge case fix loop" --json
+)"
+
+assert_eq "Single factory run automatically loops Round 1 CHANGES_REQUESTED -> Round 2 build fix -> PASS -> APPROVE" \
+  "$(jq -r '"\(.round):\(.stage):\(.decision)"' <<<"$MULTI_ROUND_OUT")" \
+  "2:merged:APPROVE"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
