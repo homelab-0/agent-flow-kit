@@ -479,8 +479,8 @@ afk_factory_build_stage_prompt() {
         printf -- '- Do NOT modify repository source files during `intake`.\n'
         printf -- '- Begin `%s` with these exact three plain-text header lines (no bolding, no icons):\n' "$output_file"
         printf '  `VERDICT: ACCEPT` (or `NEEDS-INFO` / `REJECT`)\n'
-        printf '  `RISK: low` (or `medium` / `high` / `critical`)\n'
-        printf '  `SURFACES: code` (comma-separated subset of `code,ui,ux,architecture,security`)\n'
+        printf '  `RISK: low` (or `medium` / `high` / `critical` — use `critical` for multi-subsystem frontier overhauls or severe security/data-integrity impact)\n'
+        printf '  `SURFACES: code` (comma-separated subset of `code,ui,ux,architecture,security` — always include `security` when auth, tokens, crypto, secrets, IAM/RBAC, or vulnerabilities/CVEs are involved)\n'
         printf -- '- Follow with `## Summary` summarizing scope and constraints.\n'
         ;;
       spec)
@@ -509,10 +509,16 @@ afk_factory_build_stage_prompt() {
 # for a stage using public benchmark scores, pool capacity/headroom, and LiteLLM.
 afk_factory_resolve_stage_route() {
   local repo="$1" job_dir="$2" stage="$3" role="$4"
-  local cfg risk="low" stage_key="$stage"
+  local cfg risk="low" round_num=1 surfaces_csv="code" wt_path="" diff_lines=0 stage_key="$stage"
   cfg="$(afk_factory_load_config "$repo")"
   if [[ -f "$job_dir/job.json" ]]; then
     risk="$(jq -r '.risk // "low"' "$job_dir/job.json" 2>/dev/null || printf 'low')"
+    round_num="$(jq -r '.round // 1' "$job_dir/job.json" 2>/dev/null || printf '1')"
+    surfaces_csv="$(jq -r '(.surfaces // ["code"]) | join(",")' "$job_dir/job.json" 2>/dev/null || printf 'code')"
+    wt_path="$(jq -r '.worktree_path // empty' "$job_dir/job.json" 2>/dev/null || true)"
+  fi
+  if [[ "$stage" == review* && -n "$wt_path" && -d "$wt_path" ]]; then
+    diff_lines="$(git -C "$wt_path" diff --numstat HEAD~1..HEAD 2>/dev/null | awk '{s += ($1+0) + ($2+0)} END {print s+0}' 2>/dev/null || printf '0')"
   fi
 
   local builder_family=""
@@ -522,7 +528,7 @@ afk_factory_resolve_stage_route() {
 
   if declare -F afk_router_select_candidate >/dev/null 2>&1; then
     local smart_json
-    smart_json="$(afk_router_select_candidate "$repo" "$stage" "$risk" "$builder_family")"
+    smart_json="$(afk_router_select_candidate "$repo" "$stage" "$risk" "$builder_family" "$role" "$round_num" "$surfaces_csv" "$diff_lines")"
     if [[ -n "$smart_json" ]]; then
       smart_json="$(jq -c --arg rl "$role" '. + {role: $rl}' <<<"$smart_json")"
       printf '%s\n' "$smart_json" > "$job_dir/route-${stage}-${role}.json"
@@ -578,12 +584,13 @@ afk_factory_resolve_stage_route() {
 # shellcheck disable=SC2030,SC2031
 afk_factory_invoke_stage_agent() {
   local repo="$1" wt="$2" job_dir="$3" role="$4" stage="$5" prompt_file="$6" output_file="$7" harness_override="${8:-}"
-  local compiled_prompt route_json routed_harness routed_launch routed_model routed_window routed_mem litellm_url
+  local compiled_prompt route_json routed_harness routed_launch routed_model routed_effort routed_window routed_mem litellm_url
   compiled_prompt="$(afk_factory_build_stage_prompt "$repo" "$job_dir" "$role" "$stage" "$prompt_file" "$output_file")"
   route_json="$(afk_factory_resolve_stage_route "$repo" "$job_dir" "$stage" "$role")"
   routed_harness="$(jq -r '.harness // "claude"' <<<"$route_json")"
   routed_launch="$(jq -r '.launch_class // "claude-native"' <<<"$route_json")"
   routed_model="$(jq -r '.model // "sonnet"' <<<"$route_json")"
+  routed_effort="$(jq -r '.effort // "medium"' <<<"$route_json")"
   routed_window="$(jq -r '.window_tokens // 200000' <<<"$route_json")"
   routed_mem="$(jq -r '.memory_mode // "advisory"' <<<"$route_json")"
   litellm_url="$(jq -r '.litellm_base_url // empty' <<<"$route_json")"
@@ -597,6 +604,7 @@ afk_factory_invoke_stage_agent() {
   AFK_LAST_STAGE_OUTPUT_TOKENS=0
   AFK_LAST_STAGE_HARNESS="$harness"
   AFK_LAST_STAGE_MODEL="$routed_model"
+  AFK_LAST_STAGE_EFFORT="$routed_effort"
   AFK_LAST_STAGE_PROVIDER="$(jq -r '.model_family // .provider // "anthropic"' <<<"$route_json" 2>/dev/null || printf 'anthropic')"
   AFK_LAST_STAGE_COST_CLASS="$(jq -r '.cost_class // "subscription"' <<<"$route_json" 2>/dev/null || printf 'subscription')"
   AFK_LAST_STAGE_COST_CENTS=0
@@ -613,6 +621,7 @@ afk_factory_invoke_stage_agent() {
       AFK_FACTORY_HARNESS="$harness" \
       AFK_FACTORY_LAUNCH_CLASS="$routed_launch" \
       AFK_FACTORY_MODEL="$routed_model" \
+      AFK_FACTORY_EFFORT="$routed_effort" \
       AFK_FACTORY_MEMORY_MODE="$routed_mem" \
       AFK_FACTORY_PROMPT_FILE="$prompt_file" \
       AFK_FACTORY_COMPILED_PROMPT="$compiled_prompt" \
@@ -670,9 +679,10 @@ afk_factory_invoke_stage_agent() {
               if [[ "$routed_launch" == *-gateway && -n "$litellm_url" ]]; then
                 export ANTHROPIC_BASE_URL="$litellm_url"
               fi
-              local -a cl_mcp_args=()
+              local -a cl_mcp_args=() cl_eff_args=()
               [[ -n "$mcp_cfg" ]] && cl_mcp_args=(--mcp-config "$mcp_cfg")
-              "${tmo_cmd[@]}" "$bin_exec" -p "$(cat -- "$compiled_prompt")" --model "$routed_model" "${cl_mcp_args[@]}" --add-dir "$job_dir" --dangerously-skip-permissions --output-format json < /dev/null > "$env_file" 2>/dev/null
+              [[ -n "$routed_effort" ]] && cl_eff_args=(--effort "$routed_effort")
+              "${tmo_cmd[@]}" "$bin_exec" -p "$(cat -- "$compiled_prompt")" --model "$routed_model" "${cl_eff_args[@]}" "${cl_mcp_args[@]}" --add-dir "$job_dir" --dangerously-skip-permissions --output-format json < /dev/null > "$env_file" 2>/dev/null
             ) || h_rc=$?
           else
             h_rc=127
@@ -686,7 +696,9 @@ afk_factory_invoke_stage_agent() {
               if [[ "$routed_launch" == *-gateway && -n "$litellm_url" ]]; then
                 export OPENAI_BASE_URL="$litellm_url"
               fi
-              "${tmo_cmd[@]}" "$bin_exec" exec --dangerously-bypass-approvals-and-sandbox --json -o "$output_file" -m "$routed_model" -- "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
+              local -a cx_eff_args=()
+              [[ -n "$routed_effort" ]] && cx_eff_args=(-c "model_reasoning_effort=\"$routed_effort\"")
+              "${tmo_cmd[@]}" "$bin_exec" exec --dangerously-bypass-approvals-and-sandbox --json -o "$output_file" -m "$routed_model" "${cx_eff_args[@]}" -- "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
             ) || h_rc=$?
           else
             h_rc=127
@@ -697,13 +709,31 @@ afk_factory_invoke_stage_agent() {
             (
               cd "$wt" || exit 1
               [[ -n "$hs_disabled" ]] && export HINDSIGHT_DISABLED="true"
-              local agy_model="$routed_model"
+              local agy_model="$routed_model" agy_tier="high"
+              case "$routed_effort" in
+                low|medium|high) agy_tier="$routed_effort" ;;
+                *)               agy_tier="high" ;;
+              esac
               if [[ -n "$agy_model" && "$agy_model" != *"-low" && "$agy_model" != *"-medium" && "$agy_model" != *"-high" ]]; then
-                agy_model="${agy_model}-high"
+                agy_model="${agy_model}-${agy_tier}"
               fi
               local -a agy_mod_args=()
-              [[ -n "$agy_model" ]] && agy_mod_args=(--model "$agy_model")
+              [[ -n "$agy_model" ]] && agy_mod_args+=(--model "$agy_model")
+              [[ -n "$routed_effort" ]] && agy_mod_args+=(--effort "$routed_effort")
               "${tmo_cmd[@]}" "$bin_exec" --dangerously-skip-permissions "${agy_mod_args[@]}" --add-dir "$job_dir" --output-format json -p "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
+            ) || h_rc=$?
+          else
+            h_rc=127
+          fi
+          ;;
+        grok)
+          if [[ -n "$bin_exec" ]]; then
+            (
+              cd "$wt" || exit 1
+              [[ -n "$hs_disabled" ]] && export HINDSIGHT_DISABLED="true"
+              local -a gr_eff_args=()
+              [[ -n "$routed_effort" ]] && gr_eff_args=(--effort "$routed_effort")
+              "${tmo_cmd[@]}" "$bin_exec" --always-approve --add-dir "$job_dir" --output-format json -m "$routed_model" "${gr_eff_args[@]}" -p "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
             ) || h_rc=$?
           else
             h_rc=127
@@ -755,7 +785,7 @@ afk_factory_invoke_stage_agent() {
           out_tok="$(jq -sr '[ .[] | (.usage.output_tokens // .part.tokens.output // 0) ] | max // 0' "$env_file" 2>/dev/null || printf '0')"
           if [[ ! -s "$output_file" ]]; then
             local extracted=""
-            extracted="$(jq -sr '[ .[] | (.result // .response // .part.text // empty) ] | join("")' "$env_file" 2>/dev/null || true)"
+            extracted="$(jq -sr '[ .[] | (.result // .response // .text // .part.text // empty) ] | join("")' "$env_file" 2>/dev/null || true)"
             if [[ -n "$extracted" ]]; then
               printf '%s\n' "$extracted" > "$output_file"
             fi
@@ -772,6 +802,7 @@ afk_factory_invoke_stage_agent() {
           AFK_LAST_STAGE_OUTPUT_TOKENS="$out_tok"
           AFK_LAST_STAGE_HARNESS="$harness"
           AFK_LAST_STAGE_MODEL="$routed_model"
+          AFK_LAST_STAGE_EFFORT="$routed_effort"
           AFK_LAST_STAGE_PROVIDER="$(jq -r '.model_family // .provider // "anthropic"' <<<"$route_json" 2>/dev/null || printf 'anthropic')"
           AFK_LAST_STAGE_COST_CLASS="$routed_cost"
           if [[ "$routed_cost" == "api-metered" ]]; then
@@ -782,10 +813,20 @@ afk_factory_invoke_stage_agent() {
           else
             AFK_LAST_STAGE_COST_CENTS=0
           fi
+          local r_tc r_bn r_bs r_es
+          r_tc="$(jq -r '.task_class // "coding_standard"' <<<"$route_json" 2>/dev/null || printf 'coding_standard')"
+          r_bn="$(jq -r '.benchmark_name // "Public Leaderboard"' <<<"$route_json" 2>/dev/null || printf 'Public Leaderboard')"
+          r_bs="$(jq -r '.benchmark_score // 0' <<<"$route_json" 2>/dev/null || printf '0')"
+          r_es="$(jq -r '.effective_score // 0' <<<"$route_json" 2>/dev/null || printf '0')"
           jq -cn \
             --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --arg st "$stage" \
             --arg rl "$role" \
+            --arg tc "$r_tc" \
+            --arg ef "$routed_effort" \
+            --arg bn "$r_bn" \
+            --argjson bs "$r_bs" \
+            --argjson es "$r_es" \
             --argjson att "$attempt" \
             --arg h "$harness" \
             --arg m "$routed_model" \
@@ -796,7 +837,7 @@ afk_factory_invoke_stage_agent() {
             --argjson it "$in_tok" \
             --argjson ct "$cached_tok" \
             --argjson ot "$out_tok" \
-            '{ts:$ts, stage:$st, role:$rl, status:"ok", attempt:$att, harness:$h, model:$m, entitlement_pool:$p, cost_class:$cc, used_tokens:($tok|tonumber? // 0), input_tokens:$it, cached_input_tokens:$ct, output_tokens:$ot, failover_from:(if $ff=="" then null else $ff end)}' >> "$job_dir/route-history.jsonl"
+            '{ts:$ts, stage:$st, role:$rl, task_class:$tc, status:"ok", attempt:$att, harness:$h, model:$m, effort:$ef, entitlement_pool:$p, cost_class:$cc, benchmark_name:$bn, benchmark_score:$bs, effective_score:$es, used_tokens:($tok|tonumber? // 0), input_tokens:$it, cached_input_tokens:$ct, output_tokens:$ot, failover_from:(if $ff=="" then null else $ff end)}' >> "$job_dir/route-history.jsonl"
           return 0
         fi
         h_rc=1
@@ -808,21 +849,29 @@ afk_factory_invoke_stage_agent() {
         --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         --arg st "$stage" \
         --arg rl "$role" \
+        --arg ef "$routed_effort" \
         --argjson att "$attempt" \
         --arg h "$harness" \
         --arg m "$routed_model" \
         --arg p "$routed_pool" \
         --arg err "${fail_reason:0:160}" \
-        '{ts:$ts, stage:$st, role:$rl, status:"failed_attempt", attempt:$att, harness:$h, model:$m, entitlement_pool:$p, error:$err}' >> "$job_dir/route-history.jsonl"
+        '{ts:$ts, stage:$st, role:$rl, status:"failed_attempt", attempt:$att, harness:$h, model:$m, effort:$ef, entitlement_pool:$p, error:$err}' >> "$job_dir/route-history.jsonl"
 
-      # Runtime failover: mark degraded pool and re-route to next healthy harness
+      # Runtime failover: quarantine restricted model (403/model_not_found) OR mark degraded pool, then re-route!
       if (( attempt < max_attempts )) && [[ -z "$harness_override" && -n "$routed_pool" ]] && declare -F afk_router_mark_pool_degraded >/dev/null 2>&1; then
         failover_from="${harness}/${routed_model}(${routed_pool})"
-        afk_router_mark_pool_degraded "$routed_pool" "${fail_reason:0:120}"
+        local lfail
+        lfail="$(printf '%s' "$fail_reason" | tr '[:upper:]' '[:lower:]')"
+        if [[ "$lfail" =~ (model_not_found|does[[:space:]]+not[[:space:]]+have[[:space:]]+access|not[[:space:]]+authorized[[:space:]]+for[[:space:]]+model|unknown[[:space:]]+model|403) ]] && declare -F afk_router_mark_model_unavailable >/dev/null 2>&1; then
+          afk_router_mark_model_unavailable "$routed_model" "${fail_reason:0:120}"
+        else
+          afk_router_mark_pool_degraded "$routed_pool" "${fail_reason:0:120}"
+        fi
         route_json="$(afk_factory_resolve_stage_route "$repo" "$job_dir" "$stage" "$role")"
         routed_harness="$(jq -r '.harness // "claude"' <<<"$route_json")"
         routed_launch="$(jq -r '.launch_class // "claude-native"' <<<"$route_json")"
         routed_model="$(jq -r '.model // "sonnet"' <<<"$route_json")"
+        routed_effort="$(jq -r '.effort // "medium"' <<<"$route_json")"
         routed_window="$(jq -r '.window_tokens // 200000' <<<"$route_json")"
         routed_mem="$(jq -r '.memory_mode // "advisory"' <<<"$route_json")"
         litellm_url="$(jq -r '.litellm_base_url // empty' <<<"$route_json")"
@@ -1224,7 +1273,9 @@ EOF
   [[ -n "$intake_verdict" ]] || intake_verdict="ACCEPT"
   [[ "$risk" =~ ^(low|medium|high|critical)$ ]] || risk="low"
   [[ -n "$surfaces_line" ]] || surfaces_line="code"
-  jq -c --arg r "$risk" '.risk = $r' "$job_file" > "$job_file.tmp" && mv "$job_file.tmp" "$job_file"
+  jq -c --arg r "$risk" --arg s "$surfaces_line" \
+    '.risk = $r | .surfaces = ($s | split(",") | map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) | map(select(length > 0)))' \
+    "$job_file" > "$job_file.tmp" && mv "$job_file.tmp" "$job_file"
 
   if [[ "$intake_verdict" == "NEEDS-INFO" ]]; then
     local question last_cid=""
@@ -1253,9 +1304,9 @@ EOF
   full_roles_csv="$(afk_roster_roles_for_job "$risk" "$surfaces_line")"
   hired_json="$(afk_pch_ensure_project_team "$slug" "$abs_repo" "$harness" "$full_roles_csv" "$issue_id" "$api_url" "$key" "$company_id" "$host_agent_id")"
 
-  # Step 3: Spec (PM or Architect when high-risk/architecture) — skip if completed on disk
+  # Step 3: Spec (PM or Architect when high/critical-risk or architecture) — skip if completed on disk
   local spec_role="pm"
-  if [[ ",$surfaces_line," == *",architecture,"* || "$risk" == "high" ]]; then
+  if [[ ",$surfaces_line," == *",architecture,"* || "$risk" == "high" || "$risk" == "critical" ]]; then
     spec_role="architect"
   fi
   if [[ ! -s "$job_dir/spec.md" ]]; then
@@ -1327,7 +1378,7 @@ EOF
     if [[ ",$surfaces_line," == *",ui,"* || ",$surfaces_line," == *",ux,"* ]]; then
       afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "ux-designer" "review-ux" "$job_dir/build.md" "$round_dir/review-ux.md" "$issue_id" "$api_url" "$key" "" "$company_id" "$host_agent_id" "$project_id" "$run_id"
     fi
-    if [[ ",$surfaces_line," == *",architecture,"* || "$risk" == "high" ]]; then
+    if [[ ",$surfaces_line," == *",architecture,"* || "$risk" == "high" || "$risk" == "critical" ]]; then
       afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "architect" "review-arch" "$job_dir/build.md" "$round_dir/review-arch.md" "$issue_id" "$api_url" "$key" "" "$company_id" "$host_agent_id" "$project_id" "$run_id"
     fi
 
@@ -1984,12 +2035,25 @@ afk_factory_poll_paperclip() {
     fi
   fi
 
+  local auth_alerts="[]"
+  if declare -F afk_router_probe_pools >/dev/null 2>&1; then
+    local probe_json
+    probe_json="$(afk_router_probe_pools "" 2>/dev/null || printf '{}')"
+    auth_alerts="$(jq -c '.auth_alerts // []' <<<"$probe_json" 2>/dev/null || printf '[]')"
+    if [[ "$(jq -r 'length' <<<"$auth_alerts" 2>/dev/null || printf '0')" -gt 0 ]]; then
+      summary_lines="$(jq -c --argjson aa "$auth_alerts" \
+        '. + ($aa | map("[AUTH REQUIRED] " + .pool + " (" + (.harnesses | join("+")) + "): " + (.reason // "signed out") + " -> run: " + (.reauth_command // "login")))' \
+        <<<"$summary_lines" 2>/dev/null || printf '%s' "$summary_lines")"
+    fi
+  fi
+
   if [[ "$json_mode" == "true" ]]; then
     jq -cn \
       --argjson rev "$reviewed_cnt" \
       --argjson disp "$dispatched" \
       --argjson sr "$sr_json" \
       --argjson wd "$wd_json" \
+      --argjson aa "$auth_alerts" \
       --argjson sl "$summary_lines" \
       '{
         schema: "afk-factory-poll/1",
@@ -1998,6 +2062,7 @@ afk_factory_poll_paperclip() {
         dispatched: $disp,
         sync_reviews: $sr.actions,
         watchdog: $wd.actions,
+        auth_alerts: $aa,
         summary_lines: $sl
       }'
   else
@@ -2059,27 +2124,38 @@ afk_factory_status() {
     done
   done
 
-  local hired_ledger
+  local hired_ledger auth_alerts="[]"
   hired_ledger="$(afk_pch_load_ledger)"
+  if declare -F afk_router_probe_pools >/dev/null 2>&1; then
+    local st_pools
+    st_pools="$(afk_router_probe_pools "$repo" 2>/dev/null || printf '{}')"
+    auth_alerts="$(jq -c '.auth_alerts // []' <<<"$st_pools" 2>/dev/null || printf '[]')"
+  fi
 
   if [[ "$json_mode" == "true" ]]; then
     jq -cn \
       --argjson jobs "$jobs_list" \
       --argjson nh "$needs_human_list" \
       --argjson hired "$hired_ledger" \
+      --argjson aa "$auth_alerts" \
       '{
         schema: "afk-factory-status/1",
         attention_required_count: ($nh | length),
         attention_required: $nh,
+        auth_alerts: $aa,
         jobs: $jobs,
         hired_agents: $hired.projects
       }'
   else
-    local nh_count
+    local nh_count aa_count
     nh_count="$(jq -r 'length' <<<"$needs_human_list")"
+    aa_count="$(jq -r 'length' <<<"$auth_alerts")"
     printf 'AFK Factory Status: %s item(s) need human attention\n' "$nh_count"
     if (( nh_count > 0 )); then
       jq -r '.[] | "  [NEEDS HUMAN] \(.slug)/\(.id): stage=\(.stage) title=\(.title)"' <<<"$needs_human_list"
+    fi
+    if (( aa_count > 0 )); then
+      jq -r '.[] | "  [AUTH REQUIRED] pool=\(.pool) (\(.harnesses | join("+"))): \(.reason) -> run: \(.reauth_command)"' <<<"$auth_alerts"
     fi
   fi
   return 0
@@ -2093,7 +2169,7 @@ afk_cmd_factory() {
 
   local json_mode=false repo="" slug="" job_id="" issue_id="" title="Factory Task"
   local body_file="" role="" used_tokens="" window_tokens="200000" compacted=false roles_csv="all"
-  local stage_arg="" risk_arg="low" builder_family=""
+  local stage_arg="" risk_arg="low" builder_family="" round_arg="1" surfaces_arg="" diff_lines_arg="0"
   local check_updates=false dry_run_flag=false harness_arg="" sync_flag=false free_only=false
   local sync_pc_skills=false bg_flag=false
   local mcp_mode_arg="standalone" enable_mcp_csv="" enable_skills_csv="" litellm_url_arg=""
@@ -2123,6 +2199,9 @@ afk_cmd_factory() {
       --roles)           [[ $# -ge 2 ]] || { afk_warn "--roles requires a comma-separated list"; return 1; }; roles_csv="$2"; shift ;;
       --stage)           [[ $# -ge 2 ]] || { afk_warn "--stage requires a stage name"; return 1; }; stage_arg="$2"; shift ;;
       --risk)            [[ $# -ge 2 ]] || { afk_warn "--risk requires low|medium|high|critical"; return 1; }; risk_arg="$2"; shift ;;
+      --round)           [[ $# -ge 2 ]] || { afk_warn "--round requires an integer >= 1"; return 1; }; round_arg="$2"; shift ;;
+      --surfaces)        [[ $# -ge 2 ]] || { afk_warn "--surfaces requires a comma-separated list"; return 1; }; surfaces_arg="$2"; shift ;;
+      --diff-lines)      [[ $# -ge 2 ]] || { afk_warn "--diff-lines requires an integer"; return 1; }; diff_lines_arg="$2"; shift ;;
       --builder-family)  [[ $# -ge 2 ]] || { afk_warn "--builder-family requires a family name"; return 1; }; builder_family="$2"; shift ;;
       --harness)         [[ $# -ge 2 ]] || { afk_warn "--harness requires a harness name or all"; return 1; }; harness_arg="$2"; shift ;;
       --mcp-mode)        [[ $# -ge 2 ]] || { afk_warn "--mcp-mode requires litellm|standalone"; return 1; }; mcp_mode_arg="$2"; shift ;;
@@ -2245,16 +2324,23 @@ afk_cmd_factory() {
         printf '%s\n' "$p_out"
       else
         jq -r '
+          (if ((.auth_alerts // []) | length) > 0 then
+            "Auth & Sign-In Alerts:",
+            (.auth_alerts[] | "  [AUTH REQUIRED] pool=\(.pool) (\(.harnesses | join("+"))): \(.reason) -> run: \(.reauth_command)"),
+            ""
+          else empty end),
           "Installed Harnesses & Gateways:",
           "  - claude   (Anthropic Max OAuth): " + (if .harnesses.claude.installed then "HEALTHY (" + .harnesses.claude.binary + ")" else "UNAVAILABLE (" + (.harnesses.claude.health // "missing") + ")" end),
           "  - codex    (OpenAI Plus/Pro):     " + (if .harnesses.codex.installed then "HEALTHY (" + .harnesses.codex.binary + ")" else "UNAVAILABLE (" + (.harnesses.codex.health // "missing") + ")" end),
           "  - agy      (Antigravity):         " + (if .harnesses.agy.installed then "HEALTHY (" + .harnesses.agy.binary + ")" else "UNAVAILABLE (" + (.harnesses.agy.health // "missing") + ")" end),
+          "  - grok     (xAI Grok CLI):        " + (if .harnesses.grok.installed then "HEALTHY (" + .harnesses.grok.binary + ")" else "UNAVAILABLE (" + (.harnesses.grok.health // "missing") + ")" end),
           "  - opencode (Free + Bridged OAuth):" + (if .harnesses.opencode.installed then " HEALTHY (" + .harnesses.opencode.binary + ")" else " UNAVAILABLE (" + (.harnesses.opencode.health // "missing") + ")" end),
           "  - pi       (Multi-Auth CLI):      " + (if .harnesses.pi.installed then "HEALTHY (" + .harnesses.pi.binary + ")" else "UNAVAILABLE (" + (.harnesses.pi.health // "missing") + ")" end),
+          "  - devin    (Cognition Devin CLI): " + (if .harnesses.devin.installed then "HEALTHY (" + .harnesses.devin.binary + ")" else "UNAVAILABLE (" + (.harnesses.devin.health // "missing") + ")" end),
           "  - litellm  (Local AI Cluster GW): " + (if .harnesses.litellm_gateway.online then "ONLINE (" + (.harnesses.litellm_gateway.base_url // "") + ")" elif .harnesses.litellm_gateway.configured then "OFFLINE (" + (.harnesses.litellm_gateway.base_url // "") + ")" else "NOT_CONFIGURED (set AFK_LITELLM_BASE_URL or .router.litellm_base_url)" end),
           "",
           "Entitlement & Subscription Pools (Live Provider Quota, TTL Signals & Shared Accounts):",
-          (.pools | to_entries[] | "  - " + .key + " [" + .value.provider + " / " + .value.pool_tier + " / cost=" + .value.cost_class + "]: state=" + .value.state + " used=" + (.value.used_pct|tostring) + "% remaining=" + (.value.remaining_units_5h|tostring) + "/" + (.value.capacity_5h|tostring) + " (" + (.value.headroom_pct|tostring) + "% free, src=" + (.value.quota_source // "local") + (if .value.weekly_used_pct != null then ", weekly=" + (.value.weekly_used_pct|tostring) + "%" else "" end) + (if .value.resets_at != null then ", resets=" + (.value.resets_at | sub("\\.[0-9]+"; "")) else "" end) + (if .value.degraded_reason != null then ", reason=" + (.value.degraded_reason[0:56]) else "" end) + ", harnesses=" + ((.value.harnesses_feeding_pool // []) | join("+")) + ")")
+          (.pools | to_entries[] | "  - " + .key + " [" + .value.provider + " / " + .value.pool_tier + " / cost=" + .value.cost_class + "]: state=" + .value.state + " used=" + (.value.used_pct|tostring) + "% remaining=" + (.value.remaining_units_5h|tostring) + "/" + (.value.capacity_5h|tostring) + " (" + (.value.headroom_pct|tostring) + "% free, src=" + (.value.quota_source // "local") + (if .value.weekly_used_pct != null then ", weekly=" + (.value.weekly_used_pct|tostring) + "%" else "" end) + (if .value.fable_weekly_used_pct != null then ", fable_weekly=" + (.value.fable_weekly_used_pct|tostring) + "%" else "" end) + (if .value.resets_at != null then ", resets=" + (.value.resets_at | sub("\\.[0-9]+"; "")) else "" end) + (if .value.degraded_reason != null then ", reason=" + (.value.degraded_reason[0:56]) else "" end) + ", harnesses=" + ((.value.harnesses_feeding_pool // []) | join("+")) + ")")
         ' <<<"$p_out"
       fi
       return 0 ;;
@@ -2266,15 +2352,22 @@ afk_cmd_factory() {
       else
         jq -r '
           "Host Harness Lifecycle Inventory (os=\(.os), checked=\(.checked_at)):",
+          (if ((.auth_alerts // []) | length) > 0 then
+            (.auth_alerts[] | "  [AUTH ALERT] \(.harness): auth=\(.auth_state) (\(.reason // "sign-in required")) -> run: \(.reauth_command)")
+          else empty end),
           (.harnesses[] |
             if .present_on_disk then
               "  - \(.harness): " +
               (if .healthy then "HEALTHY" else "NEEDS_REPAIR (\(.health))" end) +
+              " | auth=" + (.auth_state // "unknown") +
               " | method=\(.install_method) | pkg=\(.package_name)" +
               " | version=\(.current_version // "unknown")" +
               (if .latest_version != null then " -> latest=\(.latest_version)" else "" end) +
               (if .update_available then " [UPDATE/REPAIR AVAILABLE]" else "" end) +
-              "\n      bin=\(.binary_path) -> \(.resolved_path)\n      update_cmd: \(.update_command)"
+              "\n      bin=\(.binary_path) -> \(.resolved_path)" +
+              "\n      effort_dial: " + (if .effort_dial.supports_effort then "\(.effort_dial.cli_flag) [\((.effort_dial.supported_efforts // []) | join(","))]" else "none" end) +
+              "\n      update_cmd: \(.update_command)" +
+              (if (.signed_in == false) and (.reauth_command // "") != "" then "\n      reauth_cmd: \(.reauth_command) (\(.auth_reason // "sign-in required"))" else "" end)
             else
               "  - \(.harness): NOT_INSTALLED"
             end
@@ -2319,8 +2412,11 @@ afk_cmd_factory() {
           "  Shared Pool & Account Bindings:",
           (.shared_pool_topology[] | "    * pool=\(.entitlement_pool) [cost=\(.cost_class)] <- harnesses=[\(.harnesses_feeding_pool | join(", "))] accounts=[\(.account_fingerprints | join(", "))]" + (if .shared_across_harnesses then " (SHARED ACROSS HARNESSES)" else "" end)),
           "",
+          "  Harness Effort Dials:",
+          ((.harness_effort_dials // {}) | to_entries[] | "    * \(.key): " + (if .value.supports_effort then "\(.value.cli_flag) [\((.value.supported_efforts // []) | join(","))]" else "none" end)),
+          "",
           "  Models (\( .models | length ) shown):",
-          (.models[] | "    - [\(.harness)] \(.model) | cost=\(.cost_class)" + (if .cost_class == "api-metered" then " ($\(.cost_per_1m_usd.input)/$\(.cost_per_1m_usd.output) per 1M)" elif .is_free then " ($0 FREE)" else "" end) + " | pool=\(.entitlement_pool) | ctx=\(.window_tokens) | coding=\(.benchmarks.coding_standard.score) | best_for=[\(.recommended_purposes | join(","))]")
+          (.models[] | "    - [\(.harness)] \(.model) | cost=\(.cost_class)" + (if .cost_class == "api-metered" then " ($\(.cost_per_1m_usd.input)/$\(.cost_per_1m_usd.output) per 1M)" elif .is_free then " ($0 FREE)" else "" end) + " | pool=\(.entitlement_pool) | ctx=\(.window_tokens) | efforts=[\((.supported_efforts // ["medium"]) | join(","))] | coding=\(.benchmarks.coding_standard.score) | best_for=[\(.recommended_purposes | join(","))]")
         ' <<<"$dm_out"
       fi
       return 0 ;;
@@ -2394,18 +2490,31 @@ afk_cmd_factory() {
     route-preview)
       if [[ -n "$stage_arg" ]]; then
         local rp_out
-        rp_out="$(afk_router_select_candidate "$repo" "$stage_arg" "$risk_arg" "$builder_family")"
+        rp_out="$(afk_router_select_candidate "$repo" "$stage_arg" "$risk_arg" "$builder_family" "$role" "$round_arg" "$surfaces_arg" "$diff_lines_arg")"
         if [[ "$json_mode" == "true" ]]; then
           printf '%s\n' "$rp_out"
         else
-          jq -r '"Stage [\(.stage)] (task_class=\(.task_class), risk=\(.risk)):\n  -> Harness/Launch: \(.harness) (\(.launch_class))\n  -> Model/Pool:     \(.model) [\(.canonical_model)] via pool \(.entitlement_pool) (\(.pool_remaining_5h)/\(.pool_capacity_5h) free, \(.pool_headroom_pct)%)\n  -> Benchmark:      \(.benchmark_name) = \(.benchmark_score) (effective=\(.effective_score))\n  -> Memory Mode:    \(.memory_mode)\n  -> Reason:         \(.reason)"' <<<"$rp_out"
+          jq -r '"Stage [\(.stage)] (task_class=\(.task_class), risk=\(.risk), role=\(.role // "-"), round=\(.round // 1)):\n  -> Harness/Launch: \(.harness) (\(.launch_class))\n  -> Model/Pool:     \(.model) [\(.canonical_model)] via pool \(.entitlement_pool) (\(.pool_remaining_5h)/\(.pool_capacity_5h) free, \(.pool_headroom_pct)%)\n  -> Effort Dial:    \(.effort) [supported: \((.supported_efforts // []) | join(","))] (escalated=\(.effort_escalated): \(.effort_reason))\n  -> Benchmark:      \(.benchmark_name) = \(.benchmark_score) (effective=\(.effective_score), synced=\(.benchmark_synced_at // "bundled"))\n  -> Memory Mode:    \(.memory_mode)\n  -> Reason:         \(.reason)"' <<<"$rp_out"
         fi
       else
-        local st_list=("intake" "spec" "ux" "build" "review-code")
+        local -a st_list=("intake" "spec" "ux" "build" "review-code")
+        if [[ ",$surfaces_arg," == *",security,"* ]]; then
+          st_list+=("review-security")
+        fi
         local all_routes="[]" b_fam="$builder_family"
-        local s r_item
+        local s s_role r_item
         for s in "${st_list[@]}"; do
-          r_item="$(afk_router_select_candidate "$repo" "$s" "$risk_arg" "$b_fam")"
+          s_role="$role"
+          if [[ -z "$s_role" ]]; then
+            case "$s" in
+              intake) s_role="pm" ;;
+              spec)   [[ "$risk_arg" == "high" || "$risk_arg" == "critical" ]] && s_role="architect" || s_role="pm" ;;
+              ux)     s_role="ux-designer" ;;
+              build)  s_role="dev" ;;
+              review-*) s_role="reviewer" ;;
+            esac
+          fi
+          r_item="$(afk_router_select_candidate "$repo" "$s" "$risk_arg" "$b_fam" "$s_role" "$round_arg" "$surfaces_arg" "$diff_lines_arg")"
           if [[ "$s" == "build" && -z "$b_fam" ]]; then
             b_fam="$(jq -r '.model_family // empty' <<<"$r_item")"
           fi
@@ -2414,7 +2523,7 @@ afk_cmd_factory() {
         if [[ "$json_mode" == "true" ]]; then
           printf '%s\n' "$all_routes"
         else
-          jq -r '.[] | "[\(.stage)] (\(.task_class), risk=\(.risk)) -> \(.harness)/\(.model) [\(.launch_class)] | pool=\(.entitlement_pool) (\(.pool_remaining_5h)/\(.pool_capacity_5h) free, \(.pool_headroom_pct)%) | score=\(.effective_score) (\(.benchmark_name)) | mem=\(.memory_mode)"' <<<"$all_routes"
+          jq -r '.[] | "[\(.stage)] (\(.task_class), risk=\(.risk), round=\(.round // 1)) -> \(.harness)/\(.model) [\(.launch_class), effort=\(.effort)] | pool=\(.entitlement_pool) (\(.pool_remaining_5h)/\(.pool_capacity_5h) free, \(.pool_headroom_pct)%) | score=\(.effective_score) (\(.benchmark_name)) | mem=\(.memory_mode)"' <<<"$all_routes"
         fi
       fi
       return 0 ;;

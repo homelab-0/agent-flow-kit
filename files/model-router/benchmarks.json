@@ -1,6 +1,6 @@
 {
-  "schema": "afk-benchmark-catalog/2",
-  "updated_at": "2026-11-10T22:30:00Z",
+  "schema": "afk-benchmark-catalog/3",
+  "updated_at": "2026-11-11T07:45:00Z",
   "sources": [
     {
       "id": "lmarena-agent",
@@ -59,12 +59,12 @@
       "description": "Google Antigravity (agy) subscription allowance pool"
     },
     "xai-grok": {
-      "provider": "xAI / OpenCode",
+      "provider": "xAI (Grok CLI / OpenCode)",
       "cost_class": "subscription",
       "pool_tier": "standard",
       "five_hour_session_capacity": 50,
       "seven_day_session_capacity": 500,
-      "description": "Grok / OpenCode subscription pool"
+      "description": "xAI Grok CLI (grok.com) & OpenCode subscription pool"
     },
     "opencode-free": {
       "provider": "OpenCode Free Tier",
@@ -85,6 +85,93 @@
   },
   "candidates": [
     {
+      "id": "claude-fable-native",
+      "harness": "claude",
+      "launch_class": "claude-native",
+      "entitlement_pool": "anthropic-max",
+      "scoped_quota": "fable",
+      "frontier_only": true,
+      "model": "claude-fable-5-1",
+      "canonical_model": "anthropic/claude-fable-5-1",
+      "models_dev_provider": "anthropic",
+      "models_dev_id": "claude-fable-5-1",
+      "arena_match": "Claude Fable",
+      "aa_slug_match": "claude-fable",
+      "model_family": "anthropic",
+      "effort": "xhigh",
+      "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
+      "window_tokens": 1000000,
+      "requires_gateway": false,
+      "benchmarks": {
+        "frontier_synthesis": { "score": 99.0, "benchmark": "Frontier Long-Horizon Synthesis & Multi-System Architecture" },
+        "architecture":       { "score": 98.2, "benchmark": "Frontier Architecture & PRD/Epic Synthesis" },
+        "coding_complex":     { "score": 98.5, "benchmark": "Frontier Multi-Subsystem Agentic Engineering" },
+        "coding_standard":    { "score": 92.0, "benchmark": "Overprovisioned for Standard Edits (Scoped Quota)" },
+        "coding_review":      { "score": 97.5, "benchmark": "Frontier Deep Adversarial Verification" },
+        "security":           { "score": 95.5, "benchmark": "Frontier Defensive Review (Public Guardrails)" },
+        "webdev":             { "score": 96.5, "benchmark": "LMArena WebDev Frontier" },
+        "research":           { "score": 96.8, "benchmark": "1M Context Deep Synthesis" }
+      }
+    },
+    {
+      "id": "claude-mythos-native",
+      "harness": "claude",
+      "launch_class": "claude-native",
+      "entitlement_pool": "anthropic-max",
+      "specialist_domain": "security",
+      "requires_entitlement": "mythos",
+      "model": "claude-mythos-5-2",
+      "canonical_model": "anthropic/claude-mythos-5-2",
+      "models_dev_provider": "anthropic",
+      "models_dev_id": "claude-mythos-5-2",
+      "arena_match": "Claude Mythos",
+      "aa_slug_match": "claude-mythos",
+      "model_family": "anthropic",
+      "effort": "high",
+      "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
+      "window_tokens": 1000000,
+      "requires_gateway": false,
+      "benchmarks": {
+        "security":           { "score": 99.4, "benchmark": "Anthropic Cyber Verification (Project Glasswing) Zero-Day & Vulnerability Audit" },
+        "frontier_synthesis": { "score": 98.0, "benchmark": "Frontier Security Architecture & Threat Modeling" },
+        "architecture":       { "score": 96.0, "benchmark": "Security & Trust-Boundary Architecture" },
+        "coding_complex":     { "score": 97.5, "benchmark": "Complex Exploit Remediation & Hardening" },
+        "coding_standard":    { "score": 90.0, "benchmark": "Reserved for Security-Critical Surfaces" },
+        "coding_review":      { "score": 97.2, "benchmark": "Deep Taint, Auth & Vulnerability Code Review" },
+        "webdev":             { "score": 90.0, "benchmark": "Reserved for Security Surfaces" },
+        "research":           { "score": 95.0, "benchmark": "CVE & Attack-Surface Reconnaissance" }
+      }
+    },
+    {
+      "id": "codex-daybreak-blue-native",
+      "harness": "codex",
+      "launch_class": "codex-native",
+      "entitlement_pool": "openai-plus",
+      "specialist_domain": "security",
+      "requires_entitlement": "daybreak-blue",
+      "model": "gpt-daybreak-blue-latest",
+      "canonical_model": "openai/gpt-daybreak-blue-latest",
+      "models_dev_provider": "openai",
+      "models_dev_id": "gpt-daybreak-blue-latest",
+      "arena_match": "Daybreak Blue",
+      "aa_slug_match": "daybreak-blue",
+      "model_family": "openai",
+      "effort": "high",
+      "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
+      "window_tokens": 1000000,
+      "requires_gateway": false,
+      "benchmarks": {
+        "security":           { "score": 98.0, "benchmark": "OpenAI Daybreak Blue Defender Tier (Low-Refusal Vulnerability & Patch Audit)" },
+        "frontier_synthesis": { "score": 95.2, "benchmark": "Defensive Threat Modeling & Incident Synthesis" },
+        "architecture":       { "score": 94.0, "benchmark": "Defensive System Hardening" },
+        "coding_complex":     { "score": 94.8, "benchmark": "Security Patch & Guardrail Engineering" },
+        "coding_standard":    { "score": 91.0, "benchmark": "Reserved for Security-Critical Surfaces" },
+        "coding_review":      { "score": 97.0, "benchmark": "Low-Refusal Defensive Diff & Auth Verification" },
+        "webdev":             { "score": 90.0, "benchmark": "Reserved for Security Surfaces" },
+        "research":           { "score": 93.5, "benchmark": "Incident Response & Vulnerability Triage" }
+      }
+    },
+    {
       "id": "claude-opus-native",
       "harness": "claude",
       "launch_class": "claude-native",
@@ -97,15 +184,18 @@
       "aa_slug_match": "claude-opus",
       "model_family": "anthropic",
       "effort": "high",
+      "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
       "window_tokens": 1000000,
       "requires_gateway": false,
       "benchmarks": {
-        "architecture":    { "score": 96.5, "benchmark": "LMArena Agent #1 + Reasoning" },
-        "coding_complex":  { "score": 97.0, "benchmark": "LMArena Agent #1 (0.200) + Task Outcome #1" },
-        "coding_standard": { "score": 92.0, "benchmark": "LMArena Agent + SWE-bench" },
-        "coding_review":   { "score": 95.0, "benchmark": "LMArena Agent + Adversarial Review" },
-        "webdev":          { "score": 96.8, "benchmark": "LMArena WebDev #1 (1818 Elo)" },
-        "research":        { "score": 93.0, "benchmark": "LMArena Text #3 (1513 Elo)" }
+        "frontier_synthesis": { "score": 97.0, "benchmark": "LMArena Agent #1 + Reasoning #3" },
+        "architecture":       { "score": 96.5, "benchmark": "LMArena Agent #1 + Reasoning (PM PRD/Epics & System Design)" },
+        "coding_complex":     { "score": 97.0, "benchmark": "LMArena Agent #1 (0.200) + Task Outcome #1" },
+        "coding_standard":    { "score": 92.0, "benchmark": "LMArena Agent + SWE-bench" },
+        "coding_review":      { "score": 95.0, "benchmark": "LMArena Agent + Adversarial Review" },
+        "security":           { "score": 94.5, "benchmark": "General Frontier Code Security Review" },
+        "webdev":             { "score": 96.8, "benchmark": "LMArena WebDev #1 (1818 Elo)" },
+        "research":           { "score": 93.0, "benchmark": "LMArena Text #3 (1513 Elo)" }
       }
     },
     {
@@ -113,6 +203,7 @@
       "harness": "claude",
       "launch_class": "claude-native",
       "entitlement_pool": "anthropic-max",
+      "tier": "standard",
       "model": "sonnet",
       "canonical_model": "anthropic/claude-sonnet-5-5",
       "models_dev_provider": "anthropic",
@@ -121,15 +212,18 @@
       "aa_slug_match": "claude-sonnet",
       "model_family": "anthropic",
       "effort": "medium",
+      "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
       "window_tokens": 1000000,
       "requires_gateway": false,
       "benchmarks": {
-        "architecture":    { "score": 90.5, "benchmark": "LMArena Agent #3 + Task Outcome #2" },
-        "coding_complex":  { "score": 92.5, "benchmark": "LMArena Agent #3 (0.160) + Task Outcome #2" },
-        "coding_standard": { "score": 95.0, "benchmark": "LMArena Agent #3 (Best Speed/Throughput)" },
-        "coding_review":   { "score": 90.0, "benchmark": "LMArena Agent + Code Review" },
-        "webdev":          { "score": 95.2, "benchmark": "LMArena WebDev #2 (1774 Elo)" },
-        "research":        { "score": 91.0, "benchmark": "LMArena Text + Fast Repo Scan" }
+        "frontier_synthesis": { "score": 88.0, "benchmark": "Mid-Tier Synthesis (Prefer Opus/Fable/Carbon for PM & Arch)" },
+        "architecture":       { "score": 90.5, "benchmark": "LMArena Agent #3 + Task Outcome #2" },
+        "coding_complex":     { "score": 92.5, "benchmark": "LMArena Agent #3 (0.160) + Task Outcome #2" },
+        "coding_standard":    { "score": 95.0, "benchmark": "LMArena Agent #3 (Best Speed/Throughput)" },
+        "coding_review":      { "score": 90.0, "benchmark": "LMArena Agent + Code Review" },
+        "security":           { "score": 88.5, "benchmark": "Standard Static Security Pass" },
+        "webdev":             { "score": 95.2, "benchmark": "LMArena WebDev #2 (1774 Elo)" },
+        "research":           { "score": 91.0, "benchmark": "LMArena Text + Fast Repo Scan" }
       }
     },
     {
@@ -145,15 +239,18 @@
       "aa_slug_match": "gpt-6-astra",
       "model_family": "openai",
       "effort": "high",
+      "supported_efforts": ["low", "medium", "high", "xhigh", "max", "ultra"],
       "window_tokens": 1050000,
       "requires_gateway": false,
       "benchmarks": {
-        "architecture":    { "score": 93.5, "benchmark": "LMArena Agent #5 + Architecture" },
-        "coding_complex":  { "score": 93.8, "benchmark": "LMArena Agent #5 (0.142) + SWE-bench" },
-        "coding_standard": { "score": 92.5, "benchmark": "LMArena Agent + Codex Scaffold" },
-        "coding_review":   { "score": 95.5, "benchmark": "LMArena Agent + Deep Diff Verification" },
-        "webdev":          { "score": 92.8, "benchmark": "LMArena WebDev #4" },
-        "research":        { "score": 90.5, "benchmark": "LMArena Search & Codebase Recon" }
+        "frontier_synthesis": { "score": 96.2, "benchmark": "OpenAI Frontier Deep Reasoning + Architecture" },
+        "architecture":       { "score": 93.5, "benchmark": "LMArena Agent #5 + Architecture" },
+        "coding_complex":     { "score": 93.8, "benchmark": "LMArena Agent #5 (0.142) + SWE-bench" },
+        "coding_standard":    { "score": 92.5, "benchmark": "LMArena Agent + Codex Scaffold" },
+        "coding_review":      { "score": 95.5, "benchmark": "LMArena Agent + Deep Diff Verification" },
+        "security":           { "score": 93.0, "benchmark": "General Frontier Diff Audit (Standard Guardrails)" },
+        "webdev":             { "score": 92.8, "benchmark": "LMArena WebDev #4" },
+        "research":           { "score": 90.5, "benchmark": "LMArena Search & Codebase Recon" }
       }
     },
     {
@@ -161,6 +258,7 @@
       "harness": "codex",
       "launch_class": "codex-native",
       "entitlement_pool": "openai-plus",
+      "tier": "standard",
       "model": "gpt-6.1-sol",
       "canonical_model": "openai/gpt-6.1-sol",
       "models_dev_provider": "openai",
@@ -169,15 +267,18 @@
       "aa_slug_match": "gpt-6.1-sol",
       "model_family": "openai",
       "effort": "medium",
+      "supported_efforts": ["low", "medium", "high", "xhigh", "max", "ultra"],
       "window_tokens": 1050000,
       "requires_gateway": false,
       "benchmarks": {
-        "architecture":    { "score": 90.0, "benchmark": "LMArena Agent #6" },
-        "coding_complex":  { "score": 91.0, "benchmark": "LMArena Agent #6 (0.125)" },
-        "coding_standard": { "score": 93.2, "benchmark": "LMArena Agent #6 (Fast Codex Loop)" },
-        "coding_review":   { "score": 93.0, "benchmark": "LMArena Agent + Code Review" },
-        "webdev":          { "score": 91.0, "benchmark": "LMArena WebDev #6" },
-        "research":        { "score": 91.5, "benchmark": "LMArena Search #8" }
+        "frontier_synthesis": { "score": 89.5, "benchmark": "LMArena Agent #6" },
+        "architecture":       { "score": 90.0, "benchmark": "LMArena Agent #6" },
+        "coding_complex":     { "score": 91.0, "benchmark": "LMArena Agent #6 (0.125)" },
+        "coding_standard":    { "score": 93.2, "benchmark": "LMArena Agent #6 (Fast Codex Loop)" },
+        "coding_review":      { "score": 93.0, "benchmark": "LMArena Agent + Code Review" },
+        "security":           { "score": 90.5, "benchmark": "General Code Security Check" },
+        "webdev":             { "score": 91.0, "benchmark": "LMArena WebDev #6" },
+        "research":           { "score": 91.5, "benchmark": "LMArena Search #8" }
       }
     },
     {
@@ -193,15 +294,45 @@
       "aa_slug_match": "gemini-4-carbon",
       "model_family": "google",
       "effort": "high",
+      "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
       "window_tokens": 1048576,
       "requires_gateway": false,
       "benchmarks": {
-        "architecture":    { "score": 94.2, "benchmark": "LMArena Text #1 (1538 Elo) + Agent #2" },
-        "coding_complex":  { "score": 94.8, "benchmark": "LMArena Agent #2 (0.166) + Task Outcome #3" },
-        "coding_standard": { "score": 93.8, "benchmark": "LMArena Agent #2 (Low Cost/Token)" },
-        "coding_review":   { "score": 93.5, "benchmark": "LMArena Agent #2 + 1M Context Review" },
-        "webdev":          { "score": 94.0, "benchmark": "LMArena WebDev #3" },
-        "research":        { "score": 97.0, "benchmark": "LMArena Text #1 (1538 Elo) + 1M Context" }
+        "frontier_synthesis": { "score": 96.4, "benchmark": "LMArena Text #1 (1538 Elo) + 1M Context Synthesis" },
+        "architecture":       { "score": 94.2, "benchmark": "LMArena Text #1 (1538 Elo) + Agent #2" },
+        "coding_complex":     { "score": 94.8, "benchmark": "LMArena Agent #2 (0.166) + Task Outcome #3" },
+        "coding_standard":    { "score": 93.8, "benchmark": "LMArena Agent #2 (Low Cost/Token)" },
+        "coding_review":      { "score": 93.5, "benchmark": "LMArena Agent #2 + 1M Context Review" },
+        "security":           { "score": 93.8, "benchmark": "1M Context Whole-Repo Security Audit" },
+        "webdev":             { "score": 94.0, "benchmark": "LMArena WebDev #3" },
+        "research":           { "score": 97.0, "benchmark": "LMArena Text #1 (1538 Elo) + 1M Context" }
+      }
+    },
+    {
+      "id": "grok-4.7-native",
+      "harness": "grok",
+      "launch_class": "grok-native",
+      "entitlement_pool": "xai-grok",
+      "model": "grok-4.7",
+      "canonical_model": "xai/grok-4.7",
+      "models_dev_provider": "xai",
+      "models_dev_id": "grok-4.7",
+      "arena_match": "Grok-4",
+      "aa_slug_match": "grok-4",
+      "model_family": "xai",
+      "effort": "high",
+      "supported_efforts": ["low", "medium", "high", "xhigh"],
+      "window_tokens": 500000,
+      "requires_gateway": false,
+      "benchmarks": {
+        "frontier_synthesis": { "score": 93.5, "benchmark": "xAI Frontier Reasoning (xhigh) + 500K Context" },
+        "architecture":       { "score": 93.0, "benchmark": "LMArena Reasoning + Agentic Planning" },
+        "coding_complex":     { "score": 93.2, "benchmark": "Grok 4.7 Build-Plan Agentic Eval" },
+        "coding_standard":    { "score": 92.8, "benchmark": "Grok 4.7 Native Build Loop" },
+        "coding_review":      { "score": 92.5, "benchmark": "Independent xAI Cross-Family Blind Review" },
+        "security":           { "score": 92.8, "benchmark": "Low-Refusal Security & Code Audit" },
+        "webdev":             { "score": 91.5, "benchmark": "LMArena WebDev" },
+        "research":           { "score": 94.5, "benchmark": "500K Context + Native Search Reconnaissance" }
       }
     },
     {
@@ -209,6 +340,7 @@
       "harness": "opencode",
       "launch_class": "opencode-native",
       "entitlement_pool": "xai-grok",
+      "is_bridged_oauth": true,
       "model": "xai/grok-4.5",
       "canonical_model": "xai/grok-4.5",
       "models_dev_provider": "xai",
@@ -217,15 +349,18 @@
       "aa_slug_match": "grok-4",
       "model_family": "xai",
       "effort": "medium",
+      "supported_efforts": ["low", "medium", "high"],
       "window_tokens": 500000,
       "requires_gateway": false,
       "benchmarks": {
-        "architecture":    { "score": 86.0, "benchmark": "Public Coding & Reasoning Aggregate" },
-        "coding_complex":  { "score": 87.0, "benchmark": "Public Agentic Coding Aggregate" },
-        "coding_standard": { "score": 89.5, "benchmark": "Fast Iteration Coding" },
-        "coding_review":   { "score": 88.0, "benchmark": "Independent Cross-Model Review" },
-        "webdev":          { "score": 87.5, "benchmark": "LMArena WebDev" },
-        "research":        { "score": 92.0, "benchmark": "500K Context Recon & Triage" }
+        "frontier_synthesis": { "score": 86.5, "benchmark": "Public Reasoning Aggregate" },
+        "architecture":       { "score": 86.0, "benchmark": "Public Coding & Reasoning Aggregate" },
+        "coding_complex":     { "score": 87.0, "benchmark": "Public Agentic Coding Aggregate" },
+        "coding_standard":    { "score": 89.5, "benchmark": "Fast Iteration Coding" },
+        "coding_review":      { "score": 88.0, "benchmark": "Independent Cross-Model Review" },
+        "security":           { "score": 87.5, "benchmark": "Cross-Model Security Pass" },
+        "webdev":             { "score": 87.5, "benchmark": "LMArena WebDev" },
+        "research":           { "score": 92.0, "benchmark": "500K Context Recon & Triage" }
       }
     },
     {
@@ -233,6 +368,7 @@
       "harness": "claude",
       "launch_class": "claude-gateway",
       "entitlement_pool": "litellm-local",
+      "tier": "standard",
       "model": "local-coding",
       "canonical_model": "local/qwen3.8-coder",
       "models_dev_provider": "alibaba",
@@ -241,15 +377,18 @@
       "aa_slug_match": "qwen3",
       "model_family": "local-cluster",
       "effort": "medium",
+      "supported_efforts": ["low", "medium", "high"],
       "window_tokens": 131072,
       "requires_gateway": true,
       "benchmarks": {
-        "architecture":    { "score": 82.0, "benchmark": "Open-Weights Agentic Eval" },
-        "coding_complex":  { "score": 84.0, "benchmark": "Open-Weights Coding Eval" },
-        "coding_standard": { "score": 89.0, "benchmark": "Open-Weights Coding + Zero Subscription Cost" },
-        "coding_review":   { "score": 85.0, "benchmark": "Open-Weights Code Review" },
-        "webdev":          { "score": 85.5, "benchmark": "LMArena WebDev (Open-Weights)" },
-        "research":        { "score": 91.5, "benchmark": "LMArena Search #1 (Qwen3.8) Local Triage" }
+        "frontier_synthesis": { "score": 81.0, "benchmark": "Open-Weights Synthesis Eval" },
+        "architecture":       { "score": 82.0, "benchmark": "Open-Weights Agentic Eval" },
+        "coding_complex":     { "score": 84.0, "benchmark": "Open-Weights Coding Eval" },
+        "coding_standard":    { "score": 89.0, "benchmark": "Open-Weights Coding + Zero Subscription Cost" },
+        "coding_review":      { "score": 85.0, "benchmark": "Open-Weights Code Review" },
+        "security":           { "score": 83.0, "benchmark": "Local Air-Gapped Static Security Scan" },
+        "webdev":             { "score": 85.5, "benchmark": "LMArena WebDev (Open-Weights)" },
+        "research":           { "score": 91.5, "benchmark": "LMArena Search #1 (Qwen3.8) Local Triage" }
       }
     }
   ]
