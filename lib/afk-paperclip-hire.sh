@@ -231,10 +231,123 @@ afk_pch_ensure_run_id() {
   return 0
 }
 
+# Standing project roles stay on the board as idle. Specialist roles are hired
+# for one stage and paused when that stage ends. Neither path terminates them:
+# a paused or terminated core agent disappears from the next assignment.
+afk_pch_role_is_core() { # <role>
+  case "${1:-}" in
+    pm|dev|reviewer|approver) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+afk_pch_keys_dir() {
+  printf '%s/paperclip/keys' "$AFK_STATE_DIR"
+}
+
+# Prints the per-agent bearer key when the file exists and is owner-only.
+# A group- or world-readable file is ignored so a loose key cannot be used.
+afk_pch_read_agent_key() { # <agent_id>
+  local id="${1:-}" f mode k
+  [[ "$id" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] || return 0
+  f="$(afk_pch_keys_dir)/${id}.key"
+  [[ -f "$f" && ! -L "$f" ]] || return 0
+  mode="$(stat -c '%a' -- "$f" 2>/dev/null || true)"
+  [[ "$mode" == "600" || "$mode" == "400" ]] || return 0
+  k="$(head -n 1 -- "$f" | tr -d '\r\n')"
+  [[ -n "$k" ]] || return 0
+  printf '%s' "$k"
+}
+
+afk_pch_agent_id() { # <slug> <role>
+  local ledger
+  ledger="$(afk_pch_load_ledger)"
+  jq -r --arg s "$1" --arg r "$2" '.projects[$s].agents[$r].agent_id // empty' <<<"$ledger" 2>/dev/null || true
+}
+
+# Host key reassigns the issue (CEO/manager checkout authority). When a
+# per-agent key exists it is used for that role's comments and documents so
+# Paperclip records the hired agent as the author.
+afk_pch_key_for_role() { # <slug> <role> <host_key>
+  local aid akey
+  aid="$(afk_pch_agent_id "$1" "$2")"
+  akey="$(afk_pch_read_agent_key "$aid")"
+  if [[ -n "$akey" ]]; then
+    printf '%s' "$akey"
+  else
+    printf '%s' "${3:-}"
+  fi
+}
+
+afk_pch_project_agent_ids_json() { # <slug>
+  local ledger
+  ledger="$(afk_pch_load_ledger)"
+  jq -c --arg s "$1" '
+    [.projects[$s].agents // {} | .[].agent_id // empty
+     | select(. != "" and (startswith("local-") | not))]
+  ' <<<"$ledger" 2>/dev/null || printf '[]'
+}
+
+afk_pch_role_for_agent_id() { # <slug> <agent_id>
+  local ledger aid="${2:-}"
+  [[ -n "$aid" ]] || return 0
+  ledger="$(afk_pch_load_ledger)"
+  jq -r --arg s "$1" --arg a "$aid" '
+    .projects[$s].agents // {} | to_entries[] | select(.value.agent_id == $a) | .key
+  ' <<<"$ledger" 2>/dev/null | head -n 1
+}
+
+# Markdown attribution used when comments still ride the host bearer key.
+# Paperclip sets authorAgentId from the key, so the header is the visible persona.
+afk_pch_persona_header() { # <slug> <role>
+  local slug="$1" role="$2" ledger persona aid
+  ledger="$(afk_pch_load_ledger)"
+  persona="$(jq -r --arg s "$slug" --arg r "$role" '.projects[$s].agents[$r].persona_name // empty' <<<"$ledger" 2>/dev/null)"
+  aid="$(jq -r --arg s "$slug" --arg r "$role" '.projects[$s].agents[$r].agent_id // empty' <<<"$ledger" 2>/dev/null)"
+  [[ -n "$persona" || -n "$aid" ]] || return 0
+  [[ -n "$persona" ]] || persona="$role"
+  if [[ "$aid" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+    printf '### [%s — %s %s](agent://%s)' "$persona" "$slug" "$role" "$aid"
+  else
+    printf '### %s — %s %s' "$persona" "$slug" "$role"
+  fi
+}
+
+afk_pch_comment_as_role() { # <api_url> <issue_id> <host_key> <run_id> <slug> <role> <body>
+  local api_url="$1" issue_id="$2" host_key="$3" run_id="$4" slug="$5" role="$6" body="$7"
+  local use_key header
+  [[ -n "$api_url" && -n "$host_key" && -n "$issue_id" && -n "$body" ]] || return 0
+  use_key="$(afk_pch_key_for_role "$slug" "$role" "$host_key")"
+  if [[ "$use_key" == "$host_key" ]]; then
+    header="$(afk_pch_persona_header "$slug" "$role" 2>/dev/null || true)"
+    if [[ -n "$header" ]]; then
+      body="$(printf '%s\n\n%s' "$header" "$body")"
+    fi
+  fi
+  afk_pc_comment "$api_url" "$issue_id" "$use_key" "$run_id" "$body"
+}
+
+# Leaves the delivering persona as assignee when an issue reaches done.
+# Reassignment uses the host key: only the CEO/manager holds checkout authority.
+afk_pch_finish_issue() { # <slug> <role> <issue_id> <api_url> <host_key> <run_id>
+  local slug="$1" role="$2" issue_id="${3:-}" api_url="${4:-}" key="${5:-}" run_id="${6:-}"
+  [[ -n "$api_url" && -n "$key" && -n "$issue_id" ]] || return 0
+  local aid patch
+  aid="$(afk_pch_agent_id "$slug" "$role")"
+  if [[ "$aid" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+    patch="$(jq -cn --arg a "$aid" '{status:"done", assigneeAgentId:$a}')"
+  else
+    patch='{"status":"done"}'
+  fi
+  afk_pc_curl PATCH "$api_url/api/issues/$issue_id" "$key" "$run_id" "$patch"
+}
+
 # afk_pch_assign_stage <slug> <role> <issue_id> <stage_summary> [<api_url>] [<key>] [<run_id>]
 # Updates the active role in the local hiring ledger and, when Paperclip API
-# credentials are supplied, ensures the issue is in_progress and posts a
-# concise stage handoff note attributed to <run_id>.
+# credentials are supplied, moves the Kanban assignee to that role's agent,
+# keeps the issue in_progress, and posts a stage note. Comments and later
+# document writes use the role key when one has been minted; otherwise the
+# host key is used and the note carries a persona header.
 afk_pch_assign_stage() {
   local slug="$1" role="$2" issue_id="${3:-}" summary="${4:-}" api_url="${5:-}" key="${6:-}" run_id="${7:-${PAPERCLIP_RUN_ID:-}}"
   local ledger
@@ -246,9 +359,16 @@ afk_pch_assign_stage() {
   afk_pch_save_ledger "$ledger"
 
   if [[ -n "$api_url" && -n "$key" && -n "$issue_id" ]]; then
-    afk_pc_curl PATCH "$api_url/api/issues/$issue_id" "$key" "$run_id" '{"status":"in_progress"}' >/dev/null 2>&1 || true
+    local aid patch
+    aid="$(jq -r --arg s "$slug" --arg r "$role" '.projects[$s].agents[$r].agent_id // empty' <<<"$ledger" 2>/dev/null)"
+    if [[ "$aid" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+      patch="$(jq -cn --arg a "$aid" '{status:"in_progress", assigneeAgentId:$a}')"
+    else
+      patch='{"status":"in_progress"}'
+    fi
+    afk_pc_curl PATCH "$api_url/api/issues/$issue_id" "$key" "$run_id" "$patch" >/dev/null 2>&1 || true
     if [[ -n "$summary" ]]; then
-      afk_pc_comment "$api_url" "$issue_id" "$key" "$run_id" "$summary" >/dev/null 2>&1 || true
+      afk_pch_comment_as_role "$api_url" "$issue_id" "$key" "$run_id" "$slug" "$role" "$summary" >/dev/null 2>&1 || true
     fi
   fi
 }
@@ -284,9 +404,9 @@ afk_pch_replace_agent_session() {
 }
 
 # afk_pch_retire_project_agents <slug> [<roles_csv_or_all>] [<api_url>] [<key>]
-# Retires/pauses project agents in Paperclip when work completes or specialist
-# roles are no longer needed. Attempts /terminate first; falls back to PATCH
-# status="paused" (or /pause) when using an agent key.
+# Releases project agents when work completes. Core roles (pm, dev, reviewer,
+# approver) stay idle so the board can assign them the next issue. Specialist
+# roles (analyst, architect, ux-designer) are paused. Agents are never terminated.
 afk_pch_retire_project_agents() {
   local slug="$1" target_roles="${2:-all}" api_url="${3:-}" key="${4:-}"
   local ledger
@@ -297,22 +417,24 @@ afk_pch_retire_project_agents() {
   else
     IFS=, read -r -a roles <<<"$target_roles"
   fi
-  local now r aid resp code new_state retired="[]"
+  local now r aid new_state retired="[]" patch
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   for r in "${roles[@]:-}"; do
     [[ -n "$r" ]] || continue
     aid="$(jq -r --arg s "$slug" --arg r "$r" '.projects[$s].agents[$r].agent_id // empty' <<<"$ledger" 2>/dev/null)"
     [[ -n "$aid" ]] || continue
-    new_state="paused"
+    if afk_pch_role_is_core "$r"; then
+      new_state="idle"
+    else
+      new_state="paused"
+    fi
     if [[ -n "$api_url" && -n "$key" && "$aid" != local-* ]]; then
-      resp="$(afk_pc_curl POST "$api_url/api/agents/$aid/terminate" "$key" "" '{}')"
+      local resp code
+      patch="$(jq -cn --arg st "$new_state" '{status:$st}')"
+      resp="$(afk_pc_curl PATCH "$api_url/api/agents/$aid" "$key" "" "$patch")"
       code="${resp%%$'\n'*}"
-      if [[ "$code" == 2?? ]]; then
-        new_state="terminated"
-      else
-        afk_pc_curl PATCH "$api_url/api/agents/$aid" "$key" "" '{"status":"paused"}' >/dev/null 2>&1 || \
-          afk_pc_curl POST "$api_url/api/agents/$aid/pause" "$key" "" '{}' >/dev/null 2>&1 || true
-        new_state="paused"
+      if [[ "$code" != 2?? && "$new_state" == "paused" ]]; then
+        afk_pc_curl POST "$api_url/api/agents/$aid/pause" "$key" "" '{}' >/dev/null 2>&1 || true
       fi
     fi
     ledger="$(jq -c --arg s "$slug" --arg r "$r" --arg st "$new_state" --arg now "$now" \
@@ -493,6 +615,7 @@ afk_pch_request_confirmation() {
     }')"
   fi
 
+  local accept_label="${12:-Approve & merge}" reject_label="${13:-Request changes}"
   local payload resp code body
   payload="$(jq -cn \
     --arg u "$board_user_id" \
@@ -501,6 +624,8 @@ afk_pch_request_confirmation() {
     --arg sum "${summary:0:2000}" \
     --arg pr "${prompt:0:2000}" \
     --arg det "${details_md:0:50000}" \
+    --arg acc "${accept_label:0:80}" \
+    --arg rej "${reject_label:0:80}" \
     --argjson tgt "$target_json" \
     '{
       kind: "request_confirmation",
@@ -511,8 +636,8 @@ afk_pch_request_confirmation() {
       payload: ({
         version: 1,
         prompt: $pr,
-        acceptLabel: "Approve & merge",
-        rejectLabel: "Request changes",
+        acceptLabel: $acc,
+        rejectLabel: $rej,
         rejectRequiresReason: true,
         rejectReasonLabel: "What needs to change?",
         detailsMarkdown: $det,
@@ -526,6 +651,82 @@ afk_pch_request_confirmation() {
   body="${resp#*$'\n'}"
   if [[ "$code" == 2?? ]]; then
     jq -c '(.interaction // .)' <<<"$body" 2>/dev/null || true
+  fi
+  return 0
+}
+
+# afk_pch_ask_user_questions <api_url> <key> <run_id> <issue_id> <board_user_id> <idem_key> <title> <questions_json>
+# Posts a Paperclip ask_user_questions card. <questions_json> is a JSON array of
+# {id, prompt, answerMode, required, options?}. Open questions use answerMode
+# "text" and carry no options. Prints the interaction object on success.
+afk_pch_ask_user_questions() {
+  local api_url="${1:-}" key="${2:-}" run_id="${3:-}" issue_id="${4:-}"
+  local board_user_id="${5:-}" idem_key="${6:-}" title="${7:-}" questions_json="${8:-[]}"
+  [[ -n "$api_url" && -n "$key" && -n "$issue_id" ]] && _afk_pch_is_uuid "$issue_id" || return 0
+  jq -e 'type == "array" and length > 0' <<<"$questions_json" >/dev/null 2>&1 || return 0
+
+  local payload resp code body
+  payload="$(jq -cn \
+    --arg u "$board_user_id" \
+    --arg idem "${idem_key:0:200}" \
+    --arg ttl "${title:0:200}" \
+    --argjson qs "$questions_json" \
+    '{
+      kind: "ask_user_questions",
+      resolverPolicy: "human_only",
+      continuationPolicy: "wake_assignee",
+      title: $ttl,
+      payload: {
+        version: 1,
+        questionSet: {
+          schema: "paperclip.question_set.v1",
+          questions: $qs
+        }
+      }
+    }
+    + (if $u != "" then {addresseeUserId: $u} else {} end)
+    + (if $idem != "" then {idempotencyKey: $idem} else {} end)')"
+  resp="$(afk_pc_curl POST "$api_url/api/issues/$issue_id/interactions" "$key" "$run_id" "$payload")"
+  code="${resp%%$'\n'*}"
+  body="${resp#*$'\n'}"
+  if [[ "$code" == 2?? ]]; then
+    jq -c '(.interaction // .)' <<<"$body" 2>/dev/null || true
+  fi
+  return 0
+}
+
+# afk_pch_create_child_issue <api_url> <key> <company_id> <parent_id> <project_id> <assignee_agent_id> <title> <description> <idem_key>
+# Opens one implementation issue under a confirmed PRD. Prints the created issue JSON.
+afk_pch_create_child_issue() {
+  local api_url="${1:-}" key="${2:-}" company_id="${3:-}" parent_id="${4:-}"
+  local project_id="${5:-}" assignee="${6:-}" title="${7:-}" description="${8:-}" idem_key="${9:-}"
+  [[ -n "$api_url" && -n "$key" && -n "$company_id" && -n "$parent_id" ]] || return 0
+  _afk_pch_is_uuid "$parent_id" || return 0
+  local v_proj="" v_agent=""
+  _afk_pch_is_uuid "$project_id" && v_proj="$project_id"
+  _afk_pch_is_uuid "$assignee" && v_agent="$assignee"
+  local payload resp code body
+  payload="$(jq -cn \
+    --arg t "${title:0:300}" \
+    --arg d "${description:0:8000}" \
+    --arg p "$parent_id" \
+    --arg prj "$v_proj" \
+    --arg a "$v_agent" \
+    --arg idem "${idem_key:0:200}" \
+    '{
+      title: $t,
+      description: $d,
+      status: "todo",
+      parentId: $p
+    }
+    + (if $prj != "" then {projectId: $prj} else {} end)
+    + (if $a != "" then {assigneeAgentId: $a} else {} end)
+    + (if $idem != "" then {idempotencyKey: $idem} else {} end)')"
+  resp="$(afk_pc_curl POST "$api_url/api/companies/$company_id/issues" "$key" "" "$payload")"
+  code="${resp%%$'\n'*}"
+  body="${resp#*$'\n'}"
+  if [[ "$code" == 2?? ]]; then
+    printf '%s\n' "$body"
   fi
   return 0
 }
