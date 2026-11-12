@@ -430,6 +430,11 @@ if [[ "$*" == *"openai/"* ]]; then
   printf '%s\n' '{"type":"error","error":{"data":{"message":"Token refresh failed: 401"}}}'
   exit 0
 fi
+if [[ "$*" == *"review-code"* ]]; then
+  printf '%s\n' '{"type":"text","part":{"type":"text","text":"VERDICT: PASS\n## Summary\n- Small low-risk review passed on a non-frontier model."}}'
+  printf '%s\n' '{"type":"step_finish","part":{"tokens":{"total":4200}}}'
+  exit 0
+fi
 printf '%s\n' '{"type":"text","part":{"type":"text","text":"VERDICT: ACCEPT\nRISK: low\nSURFACES: code\n## Summary\n- Handled by free OpenCode model."}}'
 printf '%s\n' '{"type":"step_finish","part":{"tokens":{"total":14200}}}'
 exit 0
@@ -1171,6 +1176,15 @@ assert_eq "High-risk spec uses claude/opus (effort=high) while critical-risk fro
   "$(jq -r '"\(.model):\(.effort):\(.task_class)"' <<<"$SPEC_HIGH")->$(jq -r '"\(.model):\(.effort):\(.task_class)"' <<<"$SPEC_CRIT")" \
   "opus:high:architecture->claude-fable-5-1:xhigh:frontier_synthesis"
 
+SMALL_SPEC="$(unset AFK_ROUTER_HARNESS_LIST; env "${GF_ENV_ARGS[@]}" bash "$AFK" factory route-preview --repo "$BMAD_REPO" --stage spec --risk low --diff-lines 13 --json)"
+SMALL_REVIEW="$(unset AFK_ROUTER_HARNESS_LIST; env "${GF_ENV_ARGS[@]}" bash "$AFK" factory route-preview --repo "$BMAD_REPO" --stage review-code --risk low --diff-lines 13 --builder-family anthropic --json)"
+assert_eq "A 13-line low-risk spec stays off frontier models" \
+  "$(jq -r '"\(.task_class):\(.effort):\(.model|test("astra|fable|mythos|daybreak|opus|gemini-4-carbon|gpt-6|grok-4[.]7$"))"' <<<"$SMALL_SPEC")" \
+  "coding_standard:medium:false"
+assert_eq "A 13-line low-risk review stays off frontier models" \
+  "$(jq -r '"\(.effort):\(.model|test("astra|fable|mythos|daybreak|opus|gemini-4-carbon|gpt-6|grok-4[.]7$"))"' <<<"$SMALL_REVIEW")" \
+  "medium:false"
+
 assert_eq "BMAD PM creating epics/PRD at medium risk routes to Opus 5.5 (effort=high) and never downgrades to Sonnet" \
   "$(jq -r '"\(.harness)/\(.canonical_model):\(.task_class):\(.effort)"' <<<"$BMAD_PM_EPICS")" \
   "claude/anthropic/claude-opus-5-5:architecture:high"
@@ -1275,7 +1289,7 @@ GROK_EXEC_RES="$(
   AFK_ROUTER_SIGNALS_FILE="$GF_TMP/grok-only-sig.json"
   AFK_FACTORY_LIVE_HARNESS=1
   printf 'Review diff\n' > "$GF_TMP/prompt.md"
-  afk_factory_invoke_stage_agent "$BMAD_REPO" "$BMAD_REPO" "$BMAD_REPO/.afk/jobs/job-clean" "reviewer" "review-code" "$GF_TMP/prompt.md" "$GF_TMP/grok-out.md"
+  afk_factory_invoke_stage_agent "$BMAD_REPO" "$BMAD_REPO" "$BMAD_REPO/.afk/jobs/job-clean" "reviewer" "review-code" "$GF_TMP/prompt.md" "$GF_TMP/grok-out.md" "grok"
   printf '{"used_tokens":%s}\n' "${AFK_LAST_STAGE_USED_TOKENS:-0}"
 )"
 assert_eq "Headless grok CLI runner passes --effort high and extracts .text + token usage cleanly" \
@@ -1606,9 +1620,9 @@ afk_pch_assign_stage "retireproj" "pm" "$P14_ISSUE" "Intake started." "https://p
 afk_pch_retire_project_agents "retireproj" "all" "https://paperclip.example" "test-key" >/dev/null
 unset AFK_CURL_BIN
 
-assert_eq "afk_pch_assign_stage patches the active role assigneeAgentId" \
-  "$(jq -sr --arg id "$P14_ISSUE" '[.[] | select(.method=="PATCH" and (.url|endswith($id))) | .body.assigneeAgentId] | first' "$P14_LOG")" \
-  "$P14_PM"
+assert_eq "afk_pch_assign_stage keeps the host checkout instead of moving the assignee" \
+  "$(jq -sr --arg id "$P14_ISSUE" '[.[] | select(.method=="PATCH" and (.url|endswith($id)) and .body.status=="in_progress") | .body.assigneeAgentId] | first' "$P14_LOG")" \
+  "null"
 assert_contains "Stage comment attributes the persona when the host key is used" \
   "$(jq -sr '[.[] | select(.method=="POST" and (.url|endswith("/comments"))) | .body.body] | first' "$P14_LOG")" \
   "### [John — retireproj pm](agent://$P14_PM)"
@@ -1797,9 +1811,9 @@ P14_ACCEPT="$(
   AFK_CURL_BIN="$P14_CURL_BIN/curl" \
   bash "$AFK" factory sync-reviews --repo "$P14_REPO" --slug persona --json
 )"
-assert_eq "Accepted PRD opens a dev child issue, leaves the PM as assignee, and still does not merge" \
+assert_eq "Accepted PRD opens a dev child issue, leaves the host checkout in place, and still does not merge" \
   "$(jq -r '.actions[0].action' <<<"$P14_ACCEPT"):$(jq -sr --arg iss "$CONSULT_ISSUE" '[.[] | select(.method=="POST" and (.url|endswith("/issues"))) | select(.body.parentId==$iss) | .body.assigneeAgentId] | last' "$P14_LOG"):$(jq -sr --arg iss "$CONSULT_ISSUE" '[.[] | select(.method=="PATCH" and (.url|endswith($iss)) and .body.status=="done") | .body.assigneeAgentId] | last' "$P14_LOG"):$(git -C "$P14_REPO" rev-parse HEAD):$(jq -sr '[.[] | select(.url|contains("/work-products"))] | length' "$P14_LOG")" \
-  "accepted_plan:${P14_DEV}:${P14_PM}:${P14_HEAD_BEFORE}:0"
+  "accepted_plan:${P14_DEV}:null:${P14_HEAD_BEFORE}:0"
 
 DEV_ISSUE="cccccccc-2222-4222-8222-222222222222"
 printf '[{"id":"%s","identifier":"HOM-501","title":"Add persona helper","description":"write persona_ok.go","status":"todo","assigneeAgentId":"%s"}]\n' \
@@ -1813,9 +1827,9 @@ P14_DEVRUN="$(
   AFK_CURL_BIN="$P14_CURL_BIN/curl" \
   bash "$AFK" factory poll --slug persona --json
 )"
-assert_eq "Poll claims a dev-assigned issue, merges it, and leaves that dev as the done assignee" \
+assert_eq "Poll claims a dev-assigned issue, merges it, and does not steal the checkout when it marks done" \
   "$(jq -r '"\(.dispatched_count):\(.dispatched[0].stage)"' <<<"$P14_DEVRUN"):$([[ -f "$P14_REPO/persona_ok.go" ]] && echo landed || echo missing):$(jq -sr --arg iss "$DEV_ISSUE" '[.[] | select(.method=="PATCH" and (.url|endswith($iss)) and .body.status=="done") | .body.assigneeAgentId] | last' "$P14_LOG")" \
-  "1:merged:landed:${P14_DEV}"
+  "1:merged:landed:null"
 assert_eq "Core project agents remain idle in the ledger after completion" \
   "$(jq -r '[.projects.persona.agents.pm.state, .projects.persona.agents.dev.state, .projects.persona.agents.reviewer.state, .projects.persona.agents.approver.state] | join(",")' "$AFK_STATE_DIR/paperclip/hired-agents.json"):$(jq -sr '[.[] | select(.url|contains("/terminate"))] | length' "$P14_LOG")" \
   "idle,idle,idle,idle:0"

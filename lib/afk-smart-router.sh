@@ -118,10 +118,21 @@ afk_router_stage_to_task_class() {
     return 0
   fi
 
-  # 3. BMAD PM / Architect synthesis & planning artifacts (PRD, Epics, Stories, Architecture, Spec)
+  # 3. Planning artifacts. A low-risk spec with a small diff is an ordinary
+  #    edit, not an architecture synthesis, so it does not take the frontier floor.
+  local diff_lines="${6:-0}"
+  [[ "$diff_lines" =~ ^[0-9]+$ ]] || diff_lines=0
   case "$stage" in
-    prd|epics|stories|product-brief|correct-course|spec|arch*)
+    prd|epics|stories|product-brief|correct-course|arch*)
       printf 'architecture\n'
+      return 0
+      ;;
+    spec)
+      if [[ "$risk" == "low" ]] && (( diff_lines < 80 )); then
+        printf 'coding_standard\n'
+      else
+        printf 'architecture\n'
+      fi
       return 0
       ;;
   esac
@@ -662,7 +673,7 @@ afk_router_select_candidate() {
   fi
 
   local task_class
-  task_class="$(afk_router_stage_to_task_class "$stage" "$risk" "$role" "$surfaces" "$round")"
+  task_class="$(afk_router_stage_to_task_class "$stage" "$risk" "$role" "$surfaces" "$round" "$diff_lines")"
 
   local default_mem="advisory"
   if [[ "$stage" == review* || "$stage" == "approve" ]]; then
@@ -762,6 +773,7 @@ afk_router_select_candidate() {
         elif ($tc == "security" or $tc == "architecture" or $tc == "coding_complex" or $rk == "high") then 3
         elif ($rl == "pm" or $rl == "architect" or $rl == "security") and ($st != "intake" or $rk != "low") then 3
         elif ($st | startswith("review")) and ($rk == "medium") then 3
+        elif ($rk == "low" and ($dl > 0) and ($dl < 80) and ($tc == "research" or $tc == "coding_standard" or $tc == "coding_review" or $tc == "webdev")) then 2
         elif ($rk == "low" and ($tc == "research" or $tc == "coding_standard")) then 2
         else effort_rank($cand_def // "medium") end
       ) as $base_r |
@@ -860,6 +872,16 @@ afk_router_select_candidate() {
       select($ent_ok == true) |
       select($scoped_quota_ok == true) |
       select($model_ok == true) |
+      # A low-risk change under 80 lines does not get a frontier model.
+      # Astra, Fable, Mythos, Opus, Gemini 4 Carbon, and Grok 4.7 stay
+      # reserved for high-risk, security, architecture, and large diffs.
+      select(
+        (
+          ($rk == "low") and ($dl > 0) and ($dl < 80) and
+          ($tc == "research" or $tc == "coding_standard" or $tc == "coding_review" or $tc == "webdev") and
+          ($c.model | test("astra|fable|mythos|daybreak|opus|gemini-4-carbon|gpt-6|(^|/)grok-4\\.7$"))
+        ) | not
+      ) |
       select($cclass != "api-metered" or $allow_api == true) |
       select($pool.state != "exhausted" and $pool.state != "offline" and $pool.state != "auth_required") |
       select((($c.requires_gateway // false) == false) or ($probe.harnesses.litellm_gateway.online == true)) |
