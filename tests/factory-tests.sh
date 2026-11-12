@@ -180,8 +180,10 @@ assert_contains "Paperclip agent-hires endpoint was called to hire project agent
   "$(cat "$CURL_LOG")" "POST https://paperclip.example/api/companies/4ffcc005-8076-4062-b72e-e4f2d899ecb0/agent-hires"
 assert_contains "Paperclip reset-session endpoint was called when builder crossed 80% context" \
   "$(cat "$CURL_LOG")" "/runtime-state/reset-session"
-assert_contains "Paperclip terminate endpoint was called to retire agents on completion" \
-  "$(cat "$CURL_LOG")" "/terminate"
+assert_eq "Clean completion leaves core agents idle instead of terminating them" \
+  "$(grep -c '/terminate' "$CURL_LOG" || true)" "0"
+assert_contains "Clean completion updates project agent status in Paperclip" \
+  "$(cat "$CURL_LOG")" "PATCH https://paperclip.example/api/agents/"
 assert_contains "Compiled build prompt includes discovered BMAD Amelia persona and replacement handoff checkpoint" \
   "$(cat "$BMAD_REPO/.afk/jobs/job-clean/.prompt-build-dev.md")" "Context Replacement Handoff Checkpoint (dev-gen-1.md)"
 assert_contains "Compiled build prompt injects discovered project-local Amelia SKILL.md" \
@@ -1492,6 +1494,331 @@ assert_eq "Ephemeral worktree exposes Paperclip MCPs (.mcp.json + opencode.json)
 assert_eq "Merged commit on main contains ONLY clean_feature.go with zero .mcp.json/opencode.json/.agents/skills pollution and cleaned info/exclude" \
   "$(jq -r '.stage' <<<"$WT_RUN_OUT"):${MERGED_FILES}:${LEFTOVER_EXCL}:$([[ -f "$WT_BRIDGE_REPO/.mcp.json" || -d "$WT_BRIDGE_REPO/.agents/skills/qa-acceptance" ]] && echo leaked || echo spotless)" \
   "merged:clean_feature.go:0:spotless"
+
+# ----------------------------------------------------------------------------
+# 14. Kanban assignee handoff, persona poll filter, consultation, idle core agents
+# ----------------------------------------------------------------------------
+head1 "14. Persona assignee handoff, direct-agent poll filter, and consultation mode"
+
+P14_PM="11111111-1111-4111-8111-111111111111"
+P14_DEV="22222222-2222-4222-8222-222222222222"
+P14_REV="33333333-3333-4333-8333-333333333333"
+P14_APP="44444444-4444-4444-8444-444444444444"
+P14_AN="55555555-5555-4555-8555-555555555555"
+P14_HOST="479f0f09-ee4a-4b31-902b-b662d906f41b"
+P14_ISSUE="66666666-6666-4666-8666-666666666666"
+P14_STATE="$TMPROOT/p14-state"
+P14_LOG="$P14_STATE/requests.jsonl"
+mkdir -p "$P14_STATE"
+: > "$P14_LOG"
+printf '[]\n' > "$P14_STATE/interactions.json"
+printf '[]\n' > "$P14_STATE/comments.json"
+printf '0\n' > "$P14_STATE/spent_cents"
+
+P14_CURL_BIN="$TMPROOT/p14-curl-bin"
+mkdir -p "$P14_CURL_BIN"
+cat > "$P14_CURL_BIN/curl" <<'PCCURL'
+#!/usr/bin/env bash
+method="GET" url="" data=""
+while (($#)); do
+  case "$1" in
+    -X) method="$2"; shift 2 ;;
+    --data|--data-binary|--data-raw|-d)
+      if [[ "${2:-}" == @* ]]; then
+        data="$(cat -- "${2#@}" 2>/dev/null || true)"
+      else
+        data="${2:-}"
+      fi
+      shift 2 ;;
+    http*://*) url="$1"; shift ;;
+    *) shift ;;
+  esac
+done
+jq -cn --arg m "$method" --arg u "$url" --arg d "$data" \
+  '{method:$m, url:$u, body:(try ($d | fromjson) catch $d)}' >> "$P14_LOG"
+
+case "$method $url" in
+  "GET "*"/api/agents/479f0f09-ee4a-4b31-902b-b662d906f41b")
+    spent="$(cat "$P14_STATE/spent_cents" 2>/dev/null || echo 0)"
+    printf '{"id":"479f0f09-ee4a-4b31-902b-b662d906f41b","status":"idle","budgetMonthlyCents":1000,"spentMonthlyCents":%s}200' "$spent" ;;
+  "GET "*"/api/companies/"*"/agents")
+    printf '[]200' ;;
+  "POST "*"/api/companies/"*"/agent-hires")
+    name="$(jq -r '.name // "agent"' <<<"$data" 2>/dev/null || printf 'agent')"
+    case "$name" in
+      *-dev) id="22222222-2222-4222-8222-222222222222" ;;
+      *-reviewer) id="33333333-3333-4333-8333-333333333333" ;;
+      *-approver) id="44444444-4444-4444-8444-444444444444" ;;
+      *-analyst|*-architect|*-ux-designer) id="55555555-5555-4555-8555-555555555555" ;;
+      *) id="11111111-1111-4111-8111-111111111111" ;;
+    esac
+    printf '{"agent":{"id":"%s","name":"%s","status":"active"}}201' "$id" "$name" ;;
+  "GET "*"/api/issues/"*"/active-run")
+    printf '{"id":"b1111111-2222-4333-8444-555555555555"}200' ;;
+  "GET "*"/api/issues/"*"/documents/"*)
+    printf '{"error":"not_found"}404' ;;
+  "PUT "*"/api/issues/"*"/documents/"*)
+    dkey="${url##*/}"
+    printf '{"id":"d1111111-2222-4333-8444-555555555555","key":"%s","latestRevisionId":"f1111111-2222-4333-8444-555555555555","latestRevisionNumber":1}200' "$dkey" ;;
+  "POST "*"/api/issues/"*"/interactions")
+    kind="$(jq -r '.kind // "request_confirmation"' <<<"$data" 2>/dev/null || printf 'request_confirmation')"
+    printf '{"interaction":{"id":"e1111111-2222-4333-8444-555555555555","kind":"%s"}}201' "$kind" ;;
+  "GET "*"/api/issues/"*"/interactions")
+    printf '%s200' "$(cat "$P14_STATE/interactions.json")" ;;
+  "GET "*"/api/issues/"*"/comments")
+    printf '%s200' "$(cat "$P14_STATE/comments.json")" ;;
+  "GET "*"/api/companies/"*"/issues?projectId="*)
+    printf '%s200' "$(cat "$P14_STATE/todo_issues.json")" ;;
+  "POST "*"/api/companies/"*"/issues")
+    printf '{"id":"c9999999-2222-4333-8444-555555555555","status":"todo"}201' ;;
+  "POST "*"/api/issues/"*"/checkout")
+    printf '{"ok":true}200' ;;
+  "POST "*"/api/companies/"*"/cost-events")
+    printf '{"id":"c1111111-2222-4333-8444-555555555555"}201' ;;
+  "POST "*"/api/issues/"*"/work-products")
+    printf '{"id":"e2222222-2222-4333-8444-555555555555","type":"commit"}201' ;;
+  *)
+    printf '{"ok":true}200' ;;
+esac
+PCCURL
+chmod +x "$P14_CURL_BIN/curl"
+
+export P14_LOG P14_STATE
+mkdir -p "$AFK_STATE_DIR/paperclip"
+cat > "$AFK_STATE_DIR/paperclip/hired-agents.json" <<JSON
+{
+  "schema": "afk-hired-agents/1",
+  "projects": {
+    "retireproj": {
+      "agents": {
+        "pm": {"agent_id":"$P14_PM","name":"retireproj-pm","role":"pm","persona_name":"John","title":"Product Manager","state":"active","generation":1},
+        "analyst": {"agent_id":"$P14_AN","name":"retireproj-analyst","role":"analyst","persona_name":"Mary","title":"Analyst","state":"active","generation":1}
+      }
+    }
+  }
+}
+JSON
+
+AFK_CURL_BIN="$P14_CURL_BIN/curl"
+# shellcheck disable=SC1091
+source "$KIT_ROOT/lib/afk-paperclip-hire.sh"
+afk_pch_assign_stage "retireproj" "pm" "$P14_ISSUE" "Intake started." "https://paperclip.example" "test-key" "run-14a" >/dev/null
+afk_pch_retire_project_agents "retireproj" "all" "https://paperclip.example" "test-key" >/dev/null
+unset AFK_CURL_BIN
+
+assert_eq "afk_pch_assign_stage patches the active role assigneeAgentId" \
+  "$(jq -sr --arg id "$P14_ISSUE" '[.[] | select(.method=="PATCH" and (.url|endswith($id))) | .body.assigneeAgentId] | first' "$P14_LOG")" \
+  "$P14_PM"
+assert_contains "Stage comment attributes the persona when the host key is used" \
+  "$(jq -sr '[.[] | select(.method=="POST" and (.url|endswith("/comments"))) | .body.body] | first' "$P14_LOG")" \
+  "### [John — retireproj pm](agent://$P14_PM)"
+assert_eq "Core agents go idle and specialists pause, with no terminate call" \
+  "$(jq -sr '[.[] | select(.method=="PATCH" and (.url|contains("/api/agents/"))) | .body.status] | sort | join(",")' "$P14_LOG"):$(jq -sr '[.[] | select(.url|contains("/terminate"))] | length' "$P14_LOG"):$(jq -r '.projects.retireproj.agents.pm.state + "," + .projects.retireproj.agents.analyst.state' "$AFK_STATE_DIR/paperclip/hired-agents.json")" \
+  "idle,paused:0:idle,paused"
+
+P14_REPO="$TMPROOT/repo-persona"
+mkdir -p "$P14_REPO/.agents/skills/bmad-agent-pm" \
+  "$P14_REPO/.agents/skills/bmad-agent-analyst" \
+  "$P14_REPO/.agents/skills/bmad-agent-architect" \
+  "$P14_REPO/.agents/skills/bmad-agent-ux-designer" \
+  "$P14_REPO/.agents/skills/bmad-agent-dev" \
+  "$P14_REPO/.agents/skills/bmad-review"
+for s in bmad-agent-pm bmad-agent-analyst bmad-agent-architect bmad-agent-ux-designer bmad-agent-dev bmad-review; do
+  printf '# %s skill\n' "$s" > "$P14_REPO/.agents/skills/$s/SKILL.md"
+done
+git -C "$P14_REPO" init -b main >/dev/null 2>&1
+git -C "$P14_REPO" config user.email "test@example.com"
+git -C "$P14_REPO" config user.name "AFK Test"
+printf 'package demo\n' > "$P14_REPO/app.go"
+git -C "$P14_REPO" add app.go
+git -C "$P14_REPO" commit -m "initial" >/dev/null 2>&1
+bash "$AFK" factory init --repo "$P14_REPO" >/dev/null
+
+cat > "$AFK_STATE_DIR/paperclip/hired-agents.json" <<JSON
+{
+  "schema": "afk-hired-agents/1",
+  "projects": {
+    "persona": {
+      "repo_path": "$P14_REPO",
+      "agents": {
+        "pm": {"agent_id":"$P14_PM","name":"persona-pm","role":"pm","persona_name":"John","title":"Product Manager","state":"idle","generation":1},
+        "dev": {"agent_id":"$P14_DEV","name":"persona-dev","role":"dev","persona_name":"Amelia","title":"Senior Software Engineer","state":"idle","generation":1},
+        "reviewer": {"agent_id":"$P14_REV","name":"persona-reviewer","role":"reviewer","persona_name":"Quinn","title":"Reviewer","state":"idle","generation":1},
+        "approver": {"agent_id":"$P14_APP","name":"persona-approver","role":"approver","persona_name":"Approver","title":"Approver","state":"idle","generation":1}
+      }
+    }
+  }
+}
+JSON
+
+cat > "$AFK_PAPERCLIP_CONFIG" <<JSON
+{
+  "schema": "afk-paperclip-config/2",
+  "api_url": "https://paperclip.example",
+  "company_id": "4ffcc005-8076-4062-b72e-e4f2d899ecb0",
+  "board_user_id": "emXp8Svi8ncWyL1EORTkRNQYjFjCdQon",
+  "host": {
+    "label": "ubuntu-devbox",
+    "agent_id": "$P14_HOST",
+    "key_ref": "op://develop/paperclip/KEY"
+  },
+  "projects": [
+    {
+      "paperclip_project_id": "7254d23d-3987-406d-a04f-9acf3854d6c1",
+      "slug": "persona",
+      "repo_path": "$P14_REPO",
+      "harness": "claude",
+      "max_active_issues": 5,
+      "merge": "pm",
+      "factory_enabled": true
+    }
+  ]
+}
+JSON
+chmod 600 "$AFK_PAPERCLIP_CONFIG"
+
+cat > "$P14_STATE/todo_issues.json" <<JSON
+[
+  {"id":"aaaaaaaa-1111-4111-8111-111111111111","identifier":"HOM-301","title":"Unassigned bug","description":"fix a bug","status":"todo","assigneeAgentId":null},
+  {"id":"aaaaaaaa-2222-4222-8222-222222222222","identifier":"HOM-302","title":"Host bug","description":"fix a bug","status":"todo","assigneeAgentId":"$P14_HOST"},
+  {"id":"aaaaaaaa-3333-4333-8333-333333333333","identifier":"HOM-303","title":"PM owned","description":"plan the work","status":"todo","assigneeAgentId":"$P14_PM"},
+  {"id":"aaaaaaaa-4444-4444-8444-444444444444","identifier":"HOM-304","title":"Dev owned","description":"write the helper","status":"todo","assigneeAgentId":"$P14_DEV"},
+  {"id":"aaaaaaaa-5555-4555-8555-555555555555","identifier":"HOM-305","title":"Someone else","description":"not our team","status":"todo","assigneeAgentId":"99999999-9999-4999-8999-999999999999"}
+]
+JSON
+
+P14_DRY="$(
+  P14_LOG="$P14_LOG" P14_STATE="$P14_STATE" \
+  OP_SERVICE_ACCOUNT_TOKEN=stub \
+  AFK_OP_BIN="$STUB_BIN/op" \
+  AFK_CURL_BIN="$P14_CURL_BIN/curl" \
+  bash "$AFK" factory poll --slug persona --dry-run --json
+)"
+assert_eq "Poll admits unassigned, host, pm, and dev issues and drops a stranger assignee" \
+  "$(jq -r '[.dispatched[].issue_id] | sort | join(",")' <<<"$P14_DRY")" \
+  "aaaaaaaa-1111-4111-8111-111111111111,aaaaaaaa-2222-4222-8222-222222222222,aaaaaaaa-3333-4333-8333-333333333333,aaaaaaaa-4444-4444-8444-444444444444"
+
+P14_RUNNER="$TMPROOT/p14-runner.sh"
+cat > "$P14_RUNNER" <<'SH'
+#!/usr/bin/env bash
+STAGE="$1"; OUT="$4"
+case "$STAGE" in
+  consult)
+    if [[ -s "$AFK_FACTORY_JOB_DIR/human-feedback.md" ]]; then
+      cat > "$OUT" <<'EOF'
+MODE: CONFIRM
+## Draft
+# PRD — Onboarding
+
+## Problem
+Operators need a clear onboarding path.
+
+## Confirmed direction
+Board answers are incorporated.
+
+## Acceptance
+1. No code is merged from this planning issue.
+EOF
+    else
+      cat > "$OUT" <<'EOF'
+MODE: QUESTIONS
+Q: audience|Who is the primary user for onboarding?|text|required
+## Draft
+# PRD — Onboarding
+
+## Problem
+The onboarding path is undefined.
+
+## Open point
+- Primary user is unconfirmed.
+EOF
+    fi
+    ;;
+  intake) printf 'VERDICT: ACCEPT\nRISK: low\nSURFACES: code\n## Summary\n- Ready.\n' > "$OUT" ;;
+  spec) printf '# Plan\n- Add persona_ok.go\n' > "$OUT" ;;
+  build)
+    printf 'package demo\nfunc Persona() bool { return true }\n' > "$AFK_FACTORY_WORKTREE/persona_ok.go"
+    printf '## Summary\n- Built.\n' > "$OUT"
+    ;;
+  review-code) printf 'VERDICT: PASS\n## Summary\n- Pass.\n' > "$OUT" ;;
+esac
+printf '{"used_tokens":1000,"input_tokens":800,"output_tokens":200,"window_tokens":200000,"compacted":false}\n'
+SH
+chmod +x "$P14_RUNNER"
+
+CONSULT_ISSUE="bbbbbbbb-1111-4111-8111-111111111111"
+printf '[{"id":"%s","identifier":"HOM-401","title":"Draft the PRD for onboarding","description":"Brainstorm the first-run path","status":"todo","assigneeAgentId":"%s"}]\n' \
+  "$CONSULT_ISSUE" "$P14_PM" > "$P14_STATE/todo_issues.json"
+: > "$P14_LOG"
+P14_HEAD_BEFORE="$(git -C "$P14_REPO" rev-parse HEAD)"
+jq -c '.projects[0].max_active_issues = 1' "$AFK_PAPERCLIP_CONFIG" > "$AFK_PAPERCLIP_CONFIG.tmp" && mv "$AFK_PAPERCLIP_CONFIG.tmp" "$AFK_PAPERCLIP_CONFIG"
+
+P14_CONSULT="$(
+  P14_LOG="$P14_LOG" P14_STATE="$P14_STATE" \
+  AFK_FACTORY_AGENT_RUNNER="$P14_RUNNER" \
+  OP_SERVICE_ACCOUNT_TOKEN=stub \
+  AFK_OP_BIN="$STUB_BIN/op" \
+  AFK_CURL_BIN="$P14_CURL_BIN/curl" \
+  bash "$AFK" factory poll --slug persona --json
+)"
+assert_eq "PM-assigned PRD enters consultation and does not merge code" \
+  "$(jq -r '"\(.dispatched_count):\(.dispatched[0].stage):\(.dispatched[0].decision)"' <<<"$P14_CONSULT"):$([[ -f "$P14_REPO/persona_ok.go" ]] && echo coded || echo no_code):$(git -C "$P14_REPO" rev-parse HEAD):$(jq -sr '[.[] | select(.url|contains("/work-products"))] | length' "$P14_LOG")" \
+  "1:needs-consultation:WAIT:no_code:${P14_HEAD_BEFORE}:0"
+assert_eq "Consultation posts ask_user_questions and upserts documents/prd" \
+  "$(jq -sr '[.[] | select(.method=="POST" and (.url|endswith("/interactions"))) | .body.kind] | join(",")' "$P14_LOG"):$(jq -sr '[.[] | select(.method=="PUT" and (.url|endswith("/documents/prd")))] | length' "$P14_LOG")" \
+  "ask_user_questions:1"
+assert_contains "Consultation comment is attributed to John" \
+  "$(jq -sr '[.[] | select(.method=="POST" and (.url|endswith("/comments"))) | .body.body] | join("\n")' "$P14_LOG")" \
+  "### [John — persona pm](agent://$P14_PM)"
+
+cat > "$P14_STATE/interactions.json" <<JSON
+[{"id":"e1111111-2222-4333-8444-555555555555","kind":"ask_user_questions","result":{"answers":[{"questionId":"audience","text":"Operators on the homelab"}]}}]
+JSON
+P14_RESUME="$(
+  P14_LOG="$P14_LOG" P14_STATE="$P14_STATE" \
+  AFK_FACTORY_AGENT_RUNNER="$P14_RUNNER" \
+  OP_SERVICE_ACCOUNT_TOKEN=stub \
+  AFK_OP_BIN="$STUB_BIN/op" \
+  AFK_CURL_BIN="$P14_CURL_BIN/curl" \
+  bash "$AFK" factory sync-reviews --repo "$P14_REPO" --slug persona --json
+)"
+assert_eq "Answered questions resume consultation into a PRD confirmation without merging" \
+  "$(jq -r '.actions[0].action + ":" + .actions[0].stage' <<<"$P14_RESUME"):$(jq -sr '[.[] | select(.method=="POST" and (.url|endswith("/interactions"))) | .body.kind] | join(",")' "$P14_LOG"):$(git -C "$P14_REPO" rev-parse HEAD)" \
+  "resumed_consultation:needs-consultation:ask_user_questions,request_confirmation:${P14_HEAD_BEFORE}"
+
+cat > "$P14_STATE/interactions.json" <<'JSON'
+[{"id":"e1111111-2222-4333-8444-555555555555","kind":"request_confirmation","result":{"outcome":"accepted"}}]
+JSON
+P14_ACCEPT="$(
+  P14_LOG="$P14_LOG" P14_STATE="$P14_STATE" \
+  AFK_FACTORY_AGENT_RUNNER="$P14_RUNNER" \
+  OP_SERVICE_ACCOUNT_TOKEN=stub \
+  AFK_OP_BIN="$STUB_BIN/op" \
+  AFK_CURL_BIN="$P14_CURL_BIN/curl" \
+  bash "$AFK" factory sync-reviews --repo "$P14_REPO" --slug persona --json
+)"
+assert_eq "Accepted PRD opens a dev child issue, leaves the PM as assignee, and still does not merge" \
+  "$(jq -r '.actions[0].action' <<<"$P14_ACCEPT"):$(jq -sr --arg iss "$CONSULT_ISSUE" '[.[] | select(.method=="POST" and (.url|endswith("/issues"))) | select(.body.parentId==$iss) | .body.assigneeAgentId] | last' "$P14_LOG"):$(jq -sr --arg iss "$CONSULT_ISSUE" '[.[] | select(.method=="PATCH" and (.url|endswith($iss)) and .body.status=="done") | .body.assigneeAgentId] | last' "$P14_LOG"):$(git -C "$P14_REPO" rev-parse HEAD):$(jq -sr '[.[] | select(.url|contains("/work-products"))] | length' "$P14_LOG")" \
+  "accepted_plan:${P14_DEV}:${P14_PM}:${P14_HEAD_BEFORE}:0"
+
+DEV_ISSUE="cccccccc-2222-4222-8222-222222222222"
+printf '[{"id":"%s","identifier":"HOM-501","title":"Add persona helper","description":"write persona_ok.go","status":"todo","assigneeAgentId":"%s"}]\n' \
+  "$DEV_ISSUE" "$P14_DEV" > "$P14_STATE/todo_issues.json"
+: > "$P14_LOG"
+P14_DEVRUN="$(
+  P14_LOG="$P14_LOG" P14_STATE="$P14_STATE" \
+  AFK_FACTORY_AGENT_RUNNER="$P14_RUNNER" \
+  OP_SERVICE_ACCOUNT_TOKEN=stub \
+  AFK_OP_BIN="$STUB_BIN/op" \
+  AFK_CURL_BIN="$P14_CURL_BIN/curl" \
+  bash "$AFK" factory poll --slug persona --json
+)"
+assert_eq "Poll claims a dev-assigned issue, merges it, and leaves that dev as the done assignee" \
+  "$(jq -r '"\(.dispatched_count):\(.dispatched[0].stage)"' <<<"$P14_DEVRUN"):$([[ -f "$P14_REPO/persona_ok.go" ]] && echo landed || echo missing):$(jq -sr --arg iss "$DEV_ISSUE" '[.[] | select(.method=="PATCH" and (.url|endswith($iss)) and .body.status=="done") | .body.assigneeAgentId] | last' "$P14_LOG")" \
+  "1:merged:landed:${P14_DEV}"
+assert_eq "Core project agents remain idle in the ledger after completion" \
+  "$(jq -r '[.projects.persona.agents.pm.state, .projects.persona.agents.dev.state, .projects.persona.agents.reviewer.state, .projects.persona.agents.approver.state] | join(",")' "$AFK_STATE_DIR/paperclip/hired-agents.json"):$(jq -sr '[.[] | select(.url|contains("/terminate"))] | length' "$P14_LOG")" \
+  "idle,idle,idle,idle:0"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

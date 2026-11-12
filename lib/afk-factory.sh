@@ -1154,6 +1154,12 @@ afk_factory_run_job() {
 
   local job_dir="$abs_repo/.afk/jobs/$job_id"
   mkdir -p "$job_dir/round-1"
+  local job_file="$job_dir/job.json"
+  if [[ -f "$job_file" ]] && jq -e '.mode == "consultation"' "$job_file" >/dev/null 2>&1; then
+    afk_factory_run_consultation "$abs_repo" "$slug" "$job_id" "$issue_id" "$title" "$body_file" "$json_mode" \
+      "$(jq -r '.consult_role // "pm"' "$job_file")"
+    return $?
+  fi
 
   # Load Paperclip connection settings if configured on this host
   local api_url="" company_id="" host_agent_id="" board_user_id="" project_id="" key="" harness="claude"
@@ -1199,7 +1205,6 @@ afk_factory_run_job() {
   fi
 
   # Initialize job.json if absent
-  local job_file="$job_dir/job.json"
   local now
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   if [[ ! -f "$job_file" ]]; then
@@ -1327,7 +1332,7 @@ EOF
   fi
   if [[ -s "$job_dir/spec.md" && -n "$api_url" && -n "$key" && -n "$issue_id" ]]; then
     run_id="$(afk_pch_ensure_run_id "$api_url" "$key" "$host_agent_id" "$issue_id")"
-    afk_pch_upsert_document "$api_url" "$key" "$run_id" "$issue_id" "plan" "Engineering Specification ($job_id)" "$job_dir/spec.md" "Generated engineering specification via ${slug}-${spec_role}" >/dev/null 2>&1 || true
+    afk_pch_upsert_document "$api_url" "$(afk_pch_key_for_role "$slug" "$spec_role" "$key")" "$run_id" "$issue_id" "plan" "Engineering Specification ($job_id)" "$job_dir/spec.md" "Generated engineering specification via ${slug}-${spec_role}" >/dev/null 2>&1 || true
   fi
 
   # Optional UX Design pass when UI surface is flagged
@@ -1336,7 +1341,7 @@ EOF
     afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "ux-designer" "ux" "$job_dir/spec.md" "$job_dir/ux-spec.md" "$issue_id" "$api_url" "$key" "" "$company_id" "$host_agent_id" "$project_id" "$run_id"
     if [[ -n "$api_url" && -n "$key" && -n "$issue_id" ]]; then
       run_id="$(afk_pch_ensure_run_id "$api_url" "$key" "$host_agent_id" "$issue_id")"
-      afk_pch_upsert_document "$api_url" "$key" "$run_id" "$issue_id" "ux-design" "UX Design Specification ($job_id)" "$job_dir/ux-spec.md" "Generated UX design specification via ${slug}-ux-designer" >/dev/null 2>&1 || true
+      afk_pch_upsert_document "$api_url" "$(afk_pch_key_for_role "$slug" "ux-designer" "$key")" "$run_id" "$issue_id" "ux-design" "UX Design Specification ($job_id)" "$job_dir/ux-spec.md" "Generated UX design specification via ${slug}-ux-designer" >/dev/null 2>&1 || true
     fi
   fi
 
@@ -1374,7 +1379,7 @@ EOF
       gate_passed=false
       _afk_factory_write_review_report "$job_dir" "$round"
       if [[ -n "$api_url" && -n "$key" && -n "$issue_id" ]]; then
-        afk_pch_upsert_document "$api_url" "$key" "$run_id" "$issue_id" "review-report" "Gate & Review Report (Round $round)" "$job_dir/review-report.md" "Round $round deterministic gate failed" >/dev/null 2>&1 || true
+        afk_pch_upsert_document "$api_url" "$(afk_pch_key_for_role "$slug" "reviewer" "$key")" "$run_id" "$issue_id" "review-report" "Gate & Review Report (Round $round)" "$job_dir/review-report.md" "Round $round deterministic gate failed" >/dev/null 2>&1 || true
       fi
       round=$((round + 1))
       continue
@@ -1399,7 +1404,7 @@ EOF
     _afk_factory_write_review_report "$job_dir" "$round"
     if [[ -n "$api_url" && -n "$key" && -n "$issue_id" ]]; then
       run_id="$(afk_pch_ensure_run_id "$api_url" "$key" "$host_agent_id" "$issue_id")"
-      afk_pch_upsert_document "$api_url" "$key" "$run_id" "$issue_id" "review-report" "Gate & Review Report (Round $round)" "$job_dir/review-report.md" "Round $round gate & independent review report" >/dev/null 2>&1 || true
+      afk_pch_upsert_document "$api_url" "$(afk_pch_key_for_role "$slug" "reviewer" "$key")" "$run_id" "$issue_id" "review-report" "Gate & Review Report (Round $round)" "$job_dir/review-report.md" "Round $round gate & independent review report" >/dev/null 2>&1 || true
     fi
 
     # Check if all reviewers in round_dir passed
@@ -1443,13 +1448,13 @@ EOF
       if [[ -n "$api_url" && -n "$key" && -n "$issue_id" ]]; then
         run_id="$(afk_pch_ensure_run_id "$api_url" "$key" "$host_agent_id" "$issue_id")"
         afk_pc_curl PATCH "$api_url/api/issues/$issue_id" "$key" "$run_id" '{"status":"in_progress"}' >/dev/null 2>&1 || true
-        afk_pch_upsert_document "$api_url" "$key" "$run_id" "$issue_id" "merge-decision" "Situational Merge Decision ($job_id)" "$job_dir/decision.md" "Auto-approved and merged commit ${merged_commit:0:8}" >/dev/null 2>&1 || true
+        afk_pch_upsert_document "$api_url" "$(afk_pch_key_for_role "$slug" "dev" "$key")" "$run_id" "$issue_id" "merge-decision" "Situational Merge Decision ($job_id)" "$job_dir/decision.md" "Auto-approved and merged commit ${merged_commit:0:8}" >/dev/null 2>&1 || true
         if [[ -n "$merged_commit" ]]; then
           afk_pch_register_commit_work_product "$api_url" "$key" "$run_id" "$issue_id" "$project_id" "$merged_commit" "$branch" "feat($job_id): $title" "Autonomous AFK Factory merge ($slug)" "merged" "approved" >/dev/null 2>&1 || true
         fi
         afk_pc_comment "$api_url" "$issue_id" "$key" "$run_id" \
           "$(printf '## AFK Factory — Auto-Approved & Merged\n\n%s' "$(cat "$job_dir/decision.md")")" >/dev/null 2>&1 || true
-        afk_pc_curl PATCH "$api_url/api/issues/$issue_id" "$key" "$run_id" '{"status":"done"}' >/dev/null 2>&1 || true
+        afk_pch_finish_issue "$slug" "dev" "$issue_id" "$api_url" "$key" "$run_id" >/dev/null 2>&1 || true
       fi
       # Job finished cleanly; retire all project agents in Paperclip
       afk_pch_retire_project_agents "$slug" "all" "$api_url" "$key" >/dev/null 2>&1 || true
@@ -1467,7 +1472,7 @@ EOF
       run_id="$(afk_pch_ensure_run_id "$api_url" "$key" "$host_agent_id" "$issue_id")"
       afk_pc_curl PATCH "$api_url/api/issues/$issue_id" "$key" "$run_id" '{"status":"in_progress"}' >/dev/null 2>&1 || true
       local dec_doc_json="" inter_json=""
-      dec_doc_json="$(afk_pch_upsert_document "$api_url" "$key" "$run_id" "$issue_id" "merge-decision" "Situational Merge Escalation ($job_id)" "$job_dir/decision.md" "Escalated to board for review (round $round)" 2>/dev/null || true)"
+      dec_doc_json="$(afk_pch_upsert_document "$api_url" "$(afk_pch_key_for_role "$slug" "approver" "$key")" "$run_id" "$issue_id" "merge-decision" "Situational Merge Escalation ($job_id)" "$job_dir/decision.md" "Escalated to board for review (round $round)" 2>/dev/null || true)"
       if [[ -n "$branch_head" ]]; then
         afk_pch_register_commit_work_product "$api_url" "$key" "$run_id" "$issue_id" "$project_id" "$branch_head" "$branch" "feat($job_id): $title" "Awaiting human board review on branch $branch" "ready_for_review" "needs_board_review" >/dev/null 2>&1 || true
       fi
@@ -1541,7 +1546,7 @@ afk_factory_watchdog() {
   local status_json
   status_json="$(afk_factory_status "$repo" "$slug" true)"
   local -a in_flight=()
-  mapfile -t in_flight < <(jq -c '.jobs[]? | select((.stage // "") | IN("merged","needs-human","needs-info","rejected") | not)' <<<"$status_json" 2>/dev/null)
+  mapfile -t in_flight < <(jq -c '.jobs[]? | select((.stage // "") | IN("merged","needs-human","needs-info","needs-consultation","consulted","rejected") | not)' <<<"$status_json" 2>/dev/null)
 
   local actions="[]" now_ep row j_repo j_slug j_id j_issue j_title j_stage j_dir hb_file cfg stale_sec max_nudges
   now_ep="$(date -u +%s)"
@@ -1694,7 +1699,7 @@ afk_factory_resume() {
   local status_json
   status_json="$(afk_factory_status "$repo" "$slug" true)"
   local -a in_flight=()
-  mapfile -t in_flight < <(jq -c '.jobs[]? | select((.stage // "") | IN("merged","needs-human","needs-info","rejected") | not)' <<<"$status_json" 2>/dev/null)
+  mapfile -t in_flight < <(jq -c '.jobs[]? | select((.stage // "") | IN("merged","needs-human","needs-info","needs-consultation","consulted","rejected") | not)' <<<"$status_json" 2>/dev/null)
 
   local resumed="[]" row j_repo j_slug j_id j_issue j_title res_out
   for row in "${in_flight[@]:-}"; do
@@ -1718,9 +1723,323 @@ afk_factory_resume() {
   return 0
 }
 
+# afk_factory_issue_wants_consultation <role> <title> <description>
+# Planning roles always consult. A code assignee still consults when the issue
+# itself asks for a PRD, spec, brainstorm, RFC, or requirements pass.
+afk_factory_issue_wants_consultation() {
+  local role="${1:-}" title="${2:-}" desc="${3:-}"
+  case "$role" in
+    pm|analyst|architect|ux-designer) return 0 ;;
+  esac
+  printf '%s\n%s\n' "$title" "$desc" | grep -Eqi '(^|[^[:alnum:]_])(PRD|Spec|Brainstorm|RFC|Requirements)([^[:alnum:]_]|$)'
+}
+
+# _afk_factory_consult_questions_json <consult_md>
+# Reads `Q: id|prompt|answerMode|required|optId:Label;optId:Label` lines.
+_afk_factory_consult_questions_json() {
+  local file="$1" line qid qprompt qmode qreq qopts questions='[]' req_bool opts_json oid olabel pair
+  [[ -f "$file" ]] || { printf '[]\n'; return 0; }
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" == Q:* ]] || continue
+    line="${line#Q:}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    qid="" qprompt="" qmode="" qreq="" qopts=""
+    IFS='|' read -r qid qprompt qmode qreq qopts <<< "$line"
+    [[ -n "$qid" && -n "$qprompt" ]] || continue
+    [[ "$qmode" == "text" || "$qmode" == "single_select" || "$qmode" == "multi_select" ]] || qmode="text"
+    if [[ "$qreq" == "optional" ]]; then req_bool=false; else req_bool=true; fi
+    opts_json='[]'
+    if [[ "$qmode" != "text" && -n "$qopts" ]]; then
+      local -a opairs=()
+      IFS=';' read -r -a opairs <<< "$qopts"
+      for pair in "${opairs[@]:-}"; do
+        [[ -n "$pair" && "$pair" == *:* ]] || continue
+        oid="${pair%%:*}"
+        olabel="${pair#*:}"
+        [[ -n "$oid" && -n "$olabel" ]] || continue
+        opts_json="$(jq -c --arg i "$oid" --arg l "$olabel" '. + [{id:$i, label:$l}]' <<<"$opts_json")"
+      done
+    fi
+    if [[ "$qmode" != "text" ]] && ! jq -e 'length >= 2' <<<"$opts_json" >/dev/null 2>&1; then
+      qmode="text"
+      opts_json='[]'
+    fi
+    questions="$(jq -c \
+      --arg id "$qid" --arg p "$qprompt" --arg m "$qmode" \
+      --argjson req "$req_bool" --argjson opts "$opts_json" \
+      '. + [{id:$id, prompt:$p, answerMode:$m, required:$req}
+        + (if $m == "text" then {} else {options:$opts, customAnswer:{enabled:true}} end)]' <<<"$questions")"
+  done < "$file"
+  if ! jq -e 'length > 0' <<<"$questions" >/dev/null 2>&1; then
+    questions='[{"id":"outcome","prompt":"What outcome should this PRD commit to?","answerMode":"text","required":true}]'
+  fi
+  printf '%s\n' "$questions"
+}
+
+_afk_factory_consult_mode() { # <file>
+  local mode
+  mode="$(sed -n 's/^MODE:[[:space:]]*//p' "${1:-}" 2>/dev/null | head -n 1 | tr -d '[:space:]')"
+  if [[ "$mode" == "CONFIRM" ]]; then
+    printf 'CONFIRM'
+  else
+    printf 'QUESTIONS'
+  fi
+}
+
+_afk_factory_consult_draft() { # <file> <title>
+  local file="$1" title="$2" draft
+  draft="$(awk 'BEGIN{p=0} /^## Draft[[:space:]]*$/{p=1; next} p{print}' "$file" 2>/dev/null || true)"
+  if [[ -z "${draft//[[:space:]]/}" ]]; then
+    draft="$(grep -v -E '^(MODE:|Q:)' "$file" 2>/dev/null || true)"
+  fi
+  if [[ -z "${draft//[[:space:]]/}" ]]; then
+    draft="# PRD — ${title}"$'\n\n'"## Problem"$'\n'"${title}"
+  fi
+  printf '%s\n' "$draft"
+}
+
+# afk_factory_run_consultation <repo> <slug> <job_id> <issue_id> <title> <body_file> <json_mode> [<role>]
+# Planning dialogue for a PM, analyst, architect, or UX issue. Writes documents/prd,
+# posts ask_user_questions or a PRD confirmation, and waits in_review. Never merges code.
+afk_factory_run_consultation() {
+  local repo="$1" slug="$2" job_id="$3" issue_id="${4:-}" title="${5:-Planning}"
+  local body_file="${6:-}" json_mode="${7:-false}" role="${8:-pm}"
+  local abs_repo
+  abs_repo="$(cd -P -- "$repo" 2>/dev/null && pwd -P)" || {
+    afk_warn "factory consultation: invalid repository path"
+    return 1
+  }
+  case "$role" in
+    pm|analyst|architect|ux-designer) ;;
+    *) role="pm" ;;
+  esac
+  [[ -n "$job_id" ]] || job_id="${issue_id:-consult-$(date -u +%Y%m%d%H%M%S)}"
+
+  local job_dir="$abs_repo/.afk/jobs/$job_id"
+  mkdir -p "$job_dir"
+  local job_file="$job_dir/job.json"
+  if [[ -n "$body_file" && -f "$body_file" && "$body_file" != "$job_dir/issue.md" ]]; then
+    cp "$body_file" "$job_dir/issue.md"
+  elif [[ ! -f "$job_dir/issue.md" ]]; then
+    printf '# %s\n\nIssue ID: %s\n' "$title" "${issue_id:-local}" > "$job_dir/issue.md"
+  fi
+
+  local api_url="" company_id="" host_agent_id="" board_user_id="" project_id="" key="" harness="claude"
+  local pc_cfg_path pc_cfg=""
+  pc_cfg_path="$(afk_pc_config_path)"
+  if [[ -f "$pc_cfg_path" ]]; then
+    pc_cfg="$(cat -- "$pc_cfg_path" 2>/dev/null || true)"
+    api_url="$(jq -r '.api_url // empty' <<<"$pc_cfg" 2>/dev/null)"
+    company_id="$(jq -r '.company_id // empty' <<<"$pc_cfg" 2>/dev/null)"
+    host_agent_id="$(jq -r '.host.agent_id // empty' <<<"$pc_cfg" 2>/dev/null)"
+    board_user_id="$(jq -r '.board_user_id // empty' <<<"$pc_cfg" 2>/dev/null)"
+    project_id="$(jq -r --arg s "$slug" '(.projects[]? | select(.slug == $s) | .paperclip_project_id) // empty' <<<"$pc_cfg" 2>/dev/null)"
+    harness="$(jq -r --arg s "$slug" '(.projects[]? | select(.slug == $s) | .harness) // "claude"' <<<"$pc_cfg" 2>/dev/null)"
+    local key_ref
+    key_ref="$(jq -r '.host.key_ref // empty' <<<"$pc_cfg" 2>/dev/null)"
+    if [[ -n "$key_ref" ]]; then
+      AFK_PC_CFG="$pc_cfg"
+      key="$(afk_pc_read_key "$key_ref" 2>/dev/null || true)"
+    fi
+  fi
+
+  local now
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  if [[ ! -f "$job_file" ]]; then
+    jq -cn \
+      --arg id "$job_id" --arg slug "$slug" --arg issue "$issue_id" --arg title "$title" \
+      --arg repo "$abs_repo" --arg role "$role" --arg now "$now" \
+      '{
+        schema: "afk-factory-job/1",
+        id: $id,
+        slug: $slug,
+        issue_id: (if $issue == "" then null else $issue end),
+        title: $title,
+        repo_path: $repo,
+        worktree_path: $repo,
+        branch: null,
+        stage: "consulting",
+        round: 1,
+        risk: "medium",
+        surfaces: ["planning"],
+        mode: "consultation",
+        consult_role: $role,
+        active_agent: $role,
+        hired_roles: [],
+        decision: null,
+        created_at: $now,
+        updated_at: $now
+      }' > "$job_file"
+  else
+    jq -c --arg role "$role" --arg now "$now" \
+      '.mode = "consultation" | .consult_role = $role | .stage = "consulting" | .active_agent = $role | .surfaces = ["planning"] | .updated_at = $now' \
+      "$job_file" > "$job_file.tmp" && mv "$job_file.tmp" "$job_file"
+  fi
+
+  local run_id=""
+  if [[ -n "$api_url" && -n "$key" && -n "$issue_id" ]]; then
+    run_id="$(afk_pch_ensure_run_id "$api_url" "$key" "$host_agent_id" "$issue_id")"
+  fi
+  afk_pch_ensure_project_team "$slug" "$abs_repo" "$harness" "$role" "$issue_id" "$api_url" "$key" "$company_id" "$host_agent_id" >/dev/null
+  afk_pch_assign_stage "$slug" "$role" "$issue_id" "AFK consultation started with \`${slug}-${role}\`." "$api_url" "$key" "$run_id"
+
+  local prompt_file="$job_dir/consult-input.md" output_file="$job_dir/consult.md"
+  {
+    printf '# Consultation\n\nRole: %s\n\n' "$role"
+    cat -- "$job_dir/issue.md" 2>/dev/null || true
+    if [[ -s "$job_dir/human-feedback.md" ]]; then
+      printf '\n\n# Board answers\n\n'
+      cat -- "$job_dir/human-feedback.md"
+    fi
+  } > "$prompt_file"
+  if [[ -s "$job_dir/human-feedback.md" ]]; then
+    rm -f "$output_file"
+  fi
+  if [[ ! -s "$output_file" ]]; then
+    afk_factory_invoke_stage_agent "$abs_repo" "$abs_repo" "$job_dir" "$role" "consult" "$prompt_file" "$output_file" "$harness" >/dev/null 2>&1 || true
+  fi
+  if [[ ! -s "$output_file" ]]; then
+    if [[ -s "$job_dir/human-feedback.md" ]]; then
+      cat > "$output_file" <<EOF
+MODE: CONFIRM
+## Draft
+# PRD — ${title}
+
+## Problem
+${title}
+
+## Confirmed direction
+$(cat -- "$job_dir/human-feedback.md")
+
+## Acceptance
+1. The board confirmed this PRD. Implementation is a separate issue.
+EOF
+    else
+      cat > "$output_file" <<EOF
+MODE: QUESTIONS
+Q: outcome|What outcome should this PRD commit to?|text|required
+## Draft
+# PRD — ${title}
+
+## Problem
+${title}
+
+## Open point
+- The outcome is not confirmed yet.
+EOF
+    fi
+  fi
+
+  local mode draft doc_json="" inter_json="" pending_id="" pending_kind="" stage_out="needs-consultation"
+  mode="$(_afk_factory_consult_mode "$output_file")"
+  draft="$(_afk_factory_consult_draft "$output_file" "$title")"
+  printf '%s\n' "$draft" > "$job_dir/prd.md"
+
+  local role_key="$key"
+  [[ -n "$key" ]] && role_key="$(afk_pch_key_for_role "$slug" "$role" "$key")"
+  if [[ -n "$api_url" && -n "$role_key" && -n "$issue_id" ]]; then
+    run_id="$(afk_pch_ensure_run_id "$api_url" "$key" "$host_agent_id" "$issue_id")"
+    doc_json="$(afk_pch_upsert_document "$api_url" "$role_key" "$run_id" "$issue_id" "prd" "PRD ($job_id)" "$job_dir/prd.md" "Consultation draft via ${slug}-${role}" 2>/dev/null || true)"
+    if [[ "$mode" == "CONFIRM" ]]; then
+      inter_json="$(afk_pch_request_confirmation "$api_url" "$role_key" "$run_id" "$issue_id" "$board_user_id" \
+        "afk-prd:${issue_id}:$(date -u +%Y%m%d%H%M%S)" \
+        "Accept PRD ($job_id)" \
+        "The PRD is ready for a decision." \
+        "Accept this PRD and open an implementation issue, or request changes?" \
+        "$draft" \
+        "$doc_json" \
+        "Accept PRD" "Request changes" 2>/dev/null || true)"
+      pending_kind="request_confirmation"
+      afk_pch_comment_as_role "$api_url" "$issue_id" "$key" "$run_id" "$slug" "$role" \
+        "PRD draft is in \`documents/prd\`. Confirm it, or send changes." >/dev/null 2>&1 || true
+    else
+      local questions qids
+      questions="$(_afk_factory_consult_questions_json "$output_file")"
+      qids="$(jq -r 'map(.id) | join(",")' <<<"$questions" 2>/dev/null || printf 'outcome')"
+      inter_json="$(afk_pch_ask_user_questions "$api_url" "$role_key" "$run_id" "$issue_id" "$board_user_id" \
+        "afk-questions:${issue_id}:${qids}" \
+        "Questions from ${slug}-${role}" \
+        "$questions" 2>/dev/null || true)"
+      pending_kind="ask_user_questions"
+      afk_pch_comment_as_role "$api_url" "$issue_id" "$key" "$run_id" "$slug" "$role" \
+        "I need a few answers before the PRD can be confirmed. The questions are on the issue card. A draft is in \`documents/prd\`." >/dev/null 2>&1 || true
+    fi
+    if [[ -n "$inter_json" ]]; then
+      pending_id="$(jq -r '.id // empty' <<<"$inter_json" 2>/dev/null || true)"
+    fi
+    local pbody
+    pbody="$(jq -cn --arg u "$board_user_id" '{status:"in_review", assigneeAgentId:null} + (if $u != "" then {assigneeUserId:$u} else {} end)')"
+    afk_pc_curl PATCH "$api_url/api/issues/$issue_id" "$key" "$run_id" "$pbody" >/dev/null 2>&1 || true
+  elif [[ "$mode" != "CONFIRM" ]]; then
+    pending_kind="ask_user_questions"
+  else
+    pending_kind="request_confirmation"
+  fi
+
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  jq -c \
+    --arg st "$stage_out" --arg role "$role" --arg pk "$pending_kind" --arg pid "$pending_id" --arg now "$now" \
+    '.stage = $st | .mode = "consultation" | .consult_role = $role | .decision = "WAIT"
+     | .active_agent = "human" | .pending_interaction_kind = (if $pk == "" then null else $pk end)
+     | .pending_interaction_id = (if $pid == "" then null else $pid end) | .updated_at = $now' \
+    "$job_file" > "$job_file.tmp" && mv "$job_file.tmp" "$job_file"
+
+  if [[ "$json_mode" == "true" ]]; then
+    cat "$job_file"
+  else
+    printf 'AFK Factory consultation %s (%s): stage=%s via %s\n' "$job_id" "$slug" "$stage_out" "$role"
+  fi
+  return 0
+}
+
+_afk_factory_dispatch_claimed_issue() { # repo slug job issue title body assignee description
+  local repo="$1" slug="$2" job_id="$3" issue_id="$4" title="$5" body_file="$6" assignee="${7:-}" desc="${8:-}"
+  local role=""
+  role="$(afk_pch_role_for_agent_id "$slug" "$assignee")"
+  if afk_factory_issue_wants_consultation "$role" "$title" "$desc"; then
+    case "$role" in
+      pm|analyst|architect|ux-designer) ;;
+      *) role="pm" ;;
+    esac
+    afk_factory_run_consultation "$repo" "$slug" "$job_id" "$issue_id" "$title" "$body_file" true "$role"
+  else
+    afk_factory_run_job "$repo" "$slug" "$job_id" "$issue_id" "$title" "$body_file" true
+  fi
+}
+
+_afk_factory_accept_consultation() { # api key company host board slug repo job issue title dir project
+  local api_url="$1" key="$2" company_id="$3" host_agent_id="$4" board_user_id="$5"
+  local slug="$6" repo="$7" job_id="$8" issue_id="$9" title="${10}" job_dir="${11}" project_id="${12}"
+  local harness="claude"
+  harness="$(jq -r --arg s "$slug" '(.projects[]? | select(.slug == $s) | .harness) // "claude"' "$(afk_pc_config_path)" 2>/dev/null || printf 'claude')"
+  afk_pch_ensure_project_team "$slug" "$repo" "$harness" "pm,dev" "$issue_id" "$api_url" "$key" "$company_id" "$host_agent_id" >/dev/null
+  local dev_id run_id created child_id now
+  dev_id="$(afk_pch_agent_id "$slug" "dev")"
+  created="$(afk_pch_create_child_issue "$api_url" "$key" "$company_id" "$issue_id" "$project_id" "$dev_id" \
+    "Implement: ${title}" \
+    "Execute the accepted PRD on parent ${issue_id}. The source document is documents/prd. Do not reopen planning unless the PRD itself is wrong." \
+    "afk-consult-child:${issue_id}:dev")"
+  child_id="$(jq -r '.id // empty' <<<"${created:-null}" 2>/dev/null || true)"
+  run_id="$(afk_pch_ensure_run_id "$api_url" "$key" "$host_agent_id" "$issue_id")"
+  afk_pch_comment_as_role "$api_url" "$issue_id" "$key" "$run_id" "$slug" "pm" \
+    "PRD accepted. Opened an implementation issue for \`${slug}-dev\`." >/dev/null 2>&1 || true
+  afk_pch_finish_issue "$slug" "pm" "$issue_id" "$api_url" "$key" "$run_id" >/dev/null 2>&1 || true
+  afk_pch_retire_project_agents "$slug" "all" "$api_url" "$key" >/dev/null 2>&1 || true
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  jq -c --arg now "$now" --arg cid "$child_id" \
+    '.stage = "consulted" | .decision = "ACCEPT" | .active_agent = null | .pending_interaction_id = null
+     | .child_issue_id = (if $cid == "" then null else $cid end) | .updated_at = $now' \
+    "$job_dir/job.json" > "$job_dir/job.json.tmp" && mv "$job_dir/job.json.tmp" "$job_dir/job.json"
+  jq -cn --arg s "$slug" --arg id "$job_id" --arg cid "$child_id" \
+    '{slug:$s, job_id:$id, action:"accepted_plan", child_issue_id:(if $cid == "" then null else $cid end)}'
+}
+
 # afk_factory_sync_reviews [<repo_path>] [<slug>] [<dry_run>] [<json_mode>]
-# Reconciles `needs-human` and `needs-info` Factory jobs against Paperclip's
-# structured `request_confirmation` interactions and board user comments:
+# Reconciles `needs-human`, `needs-info`, and `needs-consultation` Factory jobs
+# against Paperclip interactions and board comments:
+#   - Consultation acceptance opens an implementation issue and does not merge code.
+#   - Consultation answers resume the same planning persona.
+#   - Code-factory acceptance merges the git branch, registers the commit, marks done.
 #   - Accepted / Approved -> merges git branch, registers commit Work Product,
 #     updates `merge-decision` document, marks issue `done`, retires agents.
 #   - Rejected / Revision feedback -> writes `human-feedback.md`, increments
@@ -1733,13 +2052,14 @@ afk_factory_sync_reviews() {
   local -a waiting=()
   mapfile -t waiting < <(jq -c '.attention_required[]?' <<<"$status_json" 2>/dev/null)
 
-  local pc_cfg_path pc_cfg="" api_url="" company_id="" host_agent_id="" key=""
+  local pc_cfg_path pc_cfg="" api_url="" company_id="" host_agent_id="" board_user_id="" key=""
   pc_cfg_path="$(afk_pc_config_path)"
   if [[ -f "$pc_cfg_path" ]]; then
     pc_cfg="$(cat -- "$pc_cfg_path" 2>/dev/null || true)"
     api_url="$(jq -r '.api_url // empty' <<<"$pc_cfg" 2>/dev/null)"
     company_id="$(jq -r '.company_id // empty' <<<"$pc_cfg" 2>/dev/null)"
     host_agent_id="$(jq -r '.host.agent_id // empty' <<<"$pc_cfg" 2>/dev/null)"
+    board_user_id="$(jq -r '.board_user_id // empty' <<<"$pc_cfg" 2>/dev/null)"
     local key_ref
     key_ref="$(jq -r '.host.key_ref // empty' <<<"$pc_cfg" 2>/dev/null)"
     if [[ -n "$key_ref" ]]; then
@@ -1818,6 +2138,50 @@ afk_factory_sync_reviews() {
       ' <<<"$com_body" 2>/dev/null || true)"
     fi
 
+    local j_mode
+    j_mode="$(jq -r '.mode // "factory"' <<<"$row" 2>/dev/null || printf 'factory')"
+    if [[ "$j_mode" == "consultation" ]]; then
+      local c_kind="" c_answers="" c_feedback="" c_action="" c_out="" c_role=""
+      c_kind="$(jq -r '.kind // empty' <<<"$inter_obj" 2>/dev/null || true)"
+      c_answers="$(jq -r '[.result.answers[]? | (.text // .value // .answer // .label // empty)] | map(select(type == "string" and length > 0)) | join("\n")' <<<"$inter_obj" 2>/dev/null || true)"
+      if [[ "$c_kind" == "request_confirmation" && "$outcome" == "accepted" ]]; then
+        c_action="accept_plan"
+      elif [[ -n "$c_answers" ]]; then
+        c_action="resume"
+        c_feedback="$c_answers"
+      elif [[ "$outcome" == "rejected" ]]; then
+        c_action="resume"
+        c_feedback="${reason:-Board requested PRD changes.}"
+      elif [[ -n "$new_human_body" ]]; then
+        c_action="resume"
+        c_feedback="$new_human_body"
+      fi
+      if [[ -z "$c_action" ]]; then
+        continue
+      fi
+      if [[ "$dry_run" == "true" ]]; then
+        actions="$(jq -c --arg s "$j_slug" --arg id "$j_id" --arg a "would_${c_action}" \
+          '. + [{slug:$s, job_id:$id, action:$a}]' <<<"$actions")"
+        continue
+      fi
+      if [[ "$c_action" == "accept_plan" ]]; then
+        c_out="$(_afk_factory_accept_consultation "$api_url" "$key" "$company_id" "$host_agent_id" "$board_user_id" \
+          "$j_slug" "$j_repo" "$j_id" "$j_issue" "$j_title" "$j_dir" "$project_id")"
+      else
+        printf '%s\n' "$c_feedback" > "$j_dir/human-feedback.md"
+        rm -f "$j_dir/consult.md"
+        c_role="$(jq -r '.consult_role // "pm"' "$j_dir/job.json" 2>/dev/null || printf 'pm')"
+        afk_factory_run_consultation "$j_repo" "$j_slug" "$j_id" "$j_issue" "$j_title" "" true "$c_role" >/dev/null
+        c_out="$(jq -cn --arg s "$j_slug" --arg id "$j_id" --arg st "$(jq -r '.stage // "needs-consultation"' "$j_dir/job.json")" \
+          '{slug:$s, job_id:$id, action:"resumed_consultation", stage:$st}')"
+      fi
+      if [[ -n "$c_out" ]]; then
+        actions="$(jq -c --argjson item "$c_out" '. + [$item]' <<<"$actions")"
+        summary_lines="$(jq -c --arg m "$c_action $j_slug/$j_id" '. + [$m]' <<<"$summary_lines")"
+      fi
+      continue
+    fi
+
     local action_kind="" feedback_text=""
     if [[ "$outcome" == "accepted" ]]; then
       action_kind="approve"
@@ -1861,13 +2225,13 @@ afk_factory_sync_reviews() {
 - Landed commit: \`${merged_sha}\` (branch \`${j_branch}\`)
 EOF
         afk_pc_curl PATCH "$api_url/api/issues/$j_issue" "$key" "$run_id" '{"status":"in_progress"}' >/dev/null 2>&1 || true
-        afk_pch_upsert_document "$api_url" "$key" "$run_id" "$j_issue" "merge-decision" "Situational Merge Decision ($j_id)" "$j_dir/decision.md" "Human board approved; merged ${merged_sha:0:8}" >/dev/null 2>&1 || true
+        afk_pch_upsert_document "$api_url" "$(afk_pch_key_for_role "$j_slug" "dev" "$key")" "$run_id" "$j_issue" "merge-decision" "Situational Merge Decision ($j_id)" "$j_dir/decision.md" "Human board approved; merged ${merged_sha:0:8}" >/dev/null 2>&1 || true
         if [[ -n "$merged_sha" ]]; then
           afk_pch_register_commit_work_product "$api_url" "$key" "$run_id" "$j_issue" "$project_id" "$merged_sha" "$j_branch" "feat($j_id): $j_title" "Approved by human board and merged into $j_slug" "merged" "approved" >/dev/null 2>&1 || true
         fi
         afk_pc_comment "$api_url" "$j_issue" "$key" "$run_id" \
           "## AFK Factory — Human Approval Received & Merged\n\nLanded commit \`${merged_sha}\` from \`${j_branch}\`." >/dev/null 2>&1 || true
-        afk_pc_curl PATCH "$api_url/api/issues/$j_issue" "$key" "$run_id" '{"status":"done"}' >/dev/null 2>&1 || true
+        afk_pch_finish_issue "$j_slug" "dev" "$j_issue" "$api_url" "$key" "$run_id" >/dev/null 2>&1 || true
         afk_pch_retire_project_agents "$j_slug" "all" "$api_url" "$key" >/dev/null 2>&1 || true
         declare -F afk_tooling_cleanup_worktree >/dev/null 2>&1 && afk_tooling_cleanup_worktree "$j_repo" "$j_wt" "$j_dir"
 
@@ -1979,28 +2343,36 @@ afk_factory_poll_paperclip() {
         # Count active running jobs for this project
         local st_json active_cnt=0
         st_json="$(afk_factory_status "$p_repo" "$p_slug" true)"
-        active_cnt="$(jq -r '[.jobs[]? | select((.stage // "") | IN("merged","needs-human","needs-info","rejected") | not)] | length' <<<"$st_json" 2>/dev/null || printf '0')"
+        active_cnt="$(jq -r '[.jobs[]? | select((.stage // "") | IN("merged","needs-human","needs-info","needs-consultation","consulted","rejected") | not)] | length' <<<"$st_json" 2>/dev/null || printf '0')"
         (( active_cnt < p_max )) || continue
 
-        local l_resp l_code l_body
+        local l_resp l_code l_body proj_agent_ids
         l_resp="$(afk_pc_curl GET "$api_url/api/companies/$company_id/issues?projectId=$p_pid&status=todo" "$key" "")"
         l_code="${l_resp%%$'\n'*}"
         l_body="${l_resp#*$'\n'}"
         [[ "$l_code" == 2?? ]] || continue
+        proj_agent_ids="$(afk_pch_project_agent_ids_json "$p_slug")"
+        [[ -n "$proj_agent_ids" ]] || proj_agent_ids='[]'
 
         local -a cand_issues=()
-        mapfile -t cand_issues < <(jq -c --arg ha "$host_agent_id" '
+        mapfile -t cand_issues < <(jq -c --arg ha "$host_agent_id" --argjson ids "$proj_agent_ids" '
           (if type == "array" then . else (.issues // []) end)[]?
-          | select((.assigneeAgentId == null) or (.assigneeAgentId == "") or (.assigneeAgentId == $ha))
+          | select(
+              (.assigneeAgentId == null) or
+              (.assigneeAgentId == "") or
+              (.assigneeAgentId == $ha) or
+              (.assigneeAgentId as $a | $ids | index($a) != null)
+            )
         ' <<<"$l_body" 2>/dev/null)
 
-        local iss iss_id iss_ident iss_title iss_desc job_id
+        local iss iss_id iss_ident iss_title iss_desc iss_assignee job_id
         for iss in "${cand_issues[@]:-}"; do
           (( active_cnt < p_max )) || break
           iss_id="$(jq -r '.id // empty' <<<"$iss")"
           iss_ident="$(jq -r '.identifier // empty' <<<"$iss")"
           iss_title="$(jq -r '.title // "Factory Task"' <<<"$iss")"
           iss_desc="$(jq -r '.description // ""' <<<"$iss")"
+          iss_assignee="$(jq -r '.assigneeAgentId // empty' <<<"$iss")"
           [[ -n "$iss_id" ]] || continue
 
           # Skip if already tracked in .afk/jobs
@@ -2034,14 +2406,14 @@ afk_factory_poll_paperclip() {
           if [[ "$bg_mode" == "true" ]]; then
             (
               AFK_FACTORY_LIVE_HARNESS="${AFK_FACTORY_LIVE_HARNESS:-1}" \
-                afk_factory_run_job "$p_repo" "$p_slug" "$job_id" "$iss_id" "$iss_title" "$body_file" true >/dev/null 2>&1
+                _afk_factory_dispatch_claimed_issue "$p_repo" "$p_slug" "$job_id" "$iss_id" "$iss_title" "$body_file" "$iss_assignee" "$iss_desc" >/dev/null 2>&1
             ) &
             dispatched="$(jq -c --arg s "$p_slug" --arg j "$job_id" --arg i "$iss_id" \
               '. + [{slug:$s, job_id:$j, issue_id:$i, action:"dispatched_background"}]' <<<"$dispatched")"
             summary_lines="$(jq -c --arg m "claimed $p_slug/$job_id (background)" '. + [$m]' <<<"$summary_lines")"
           else
             local run_res f_st f_dec
-            run_res="$(AFK_FACTORY_LIVE_HARNESS="${AFK_FACTORY_LIVE_HARNESS:-1}" afk_factory_run_job "$p_repo" "$p_slug" "$job_id" "$iss_id" "$iss_title" "$body_file" true)"
+            run_res="$(AFK_FACTORY_LIVE_HARNESS="${AFK_FACTORY_LIVE_HARNESS:-1}" _afk_factory_dispatch_claimed_issue "$p_repo" "$p_slug" "$job_id" "$iss_id" "$iss_title" "$body_file" "$iss_assignee" "$iss_desc")"
             f_st="$(jq -r '.stage // "unknown"' <<<"$run_res" 2>/dev/null)"
             f_dec="$(jq -r '.decision // "null"' <<<"$run_res" 2>/dev/null)"
             dispatched="$(jq -c --arg s "$p_slug" --arg j "$job_id" --arg i "$iss_id" --arg st "$f_st" --arg d "$f_dec" \
@@ -2137,7 +2509,7 @@ afk_factory_status() {
       fi
       jobs_list="$(jq -c --argjson item "$j" '. + [$item]' <<<"$jobs_list")"
       st="$(jq -r '.stage // empty' <<<"$j")"
-      if [[ "$st" == "needs-human" || "$st" == "needs-info" ]]; then
+      if [[ "$st" == "needs-human" || "$st" == "needs-info" || "$st" == "needs-consultation" ]]; then
         needs_human_list="$(jq -c --argjson item "$j" '. + [$item]' <<<"$needs_human_list")"
       fi
     done
