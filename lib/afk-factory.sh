@@ -151,6 +151,19 @@ afk_factory_load_config() {
   fi
 }
 
+# The integration branch this task was cut from. Local main wins over
+# origin/main: a stale remote would count earlier local merges as this task's diff.
+_afk_factory_task_base_ref() {
+  local wt="$1" cand
+  for cand in main master origin/main origin/master; do
+    if git -C "$wt" rev-parse --verify "$cand" >/dev/null 2>&1; then
+      printf '%s' "$cand"
+      return 0
+    fi
+  done
+  printf 'HEAD~1'
+}
+
 # afk_factory_run_gate <base_repo> <worktree_dir> <round_dir>
 # Runs the deterministic check gate from <base_repo>/.afk/checks.sh inside
 # <worktree_dir> and checks for unauthorized edits to protected_paths in the
@@ -164,16 +177,8 @@ afk_factory_run_gate() {
   local rc=0 out=""
 
   # Verify the branch did not tamper with .afk/checks.sh or .afk/config.json itself.
-  local base_ref="HEAD~1"
-  if git -C "$wt" rev-parse --verify origin/master >/dev/null 2>&1; then
-    base_ref="origin/master"
-  elif git -C "$wt" rev-parse --verify origin/main >/dev/null 2>&1; then
-    base_ref="origin/main"
-  elif git -C "$wt" rev-parse --verify master >/dev/null 2>&1; then
-    base_ref="master"
-  elif git -C "$wt" rev-parse --verify main >/dev/null 2>&1; then
-    base_ref="main"
-  fi
+  local base_ref
+  base_ref="$(_afk_factory_task_base_ref "$wt")"
   local changed_files
   changed_files="$(git -C "$wt" diff --name-only "$base_ref"...HEAD 2>/dev/null || git -C "$wt" diff --name-only HEAD 2>/dev/null || true)"
 
@@ -282,13 +287,8 @@ afk_factory_evaluate_merge() {
   # 3. Inspect changed files, diff size, and protected paths
   local changed_files="" file_count=0 line_count=0
   if [[ -d "$wt/.git" || -f "$wt/.git" ]]; then
-    local base_ref="HEAD~1"
-    for cand in origin/master origin/main master main; do
-      if git -C "$wt" rev-parse --verify "$cand" >/dev/null 2>&1; then
-        base_ref="$cand"
-        break
-      fi
-    done
+    local base_ref
+    base_ref="$(_afk_factory_task_base_ref "$wt")"
     changed_files="$(git -C "$wt" diff --name-only "$base_ref"...HEAD 2>/dev/null || git -C "$wt" diff --name-only HEAD~1 2>/dev/null || true)"
     if [[ -n "$changed_files" ]]; then
       file_count="$(printf '%s\n' "$changed_files" | sed '/^$/d' | wc -l | tr -d ' ')"

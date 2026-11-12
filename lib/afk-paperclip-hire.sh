@@ -327,19 +327,13 @@ afk_pch_comment_as_role() { # <api_url> <issue_id> <host_key> <run_id> <slug> <r
   afk_pc_comment "$api_url" "$issue_id" "$use_key" "$run_id" "$body"
 }
 
-# Leaves the delivering persona as assignee when an issue reaches done.
-# Reassignment uses the host key: only the CEO/manager holds checkout authority.
+# Marks an issue done without changing assigneeAgentId. Paperclip cancels the
+# host heartbeat run when the assignee changes, and the host cannot wake the
+# project agent. The role is named in the comment, not by taking the checkout.
 afk_pch_finish_issue() { # <slug> <role> <issue_id> <api_url> <host_key> <run_id>
   local slug="$1" role="$2" issue_id="${3:-}" api_url="${4:-}" key="${5:-}" run_id="${6:-}"
   [[ -n "$api_url" && -n "$key" && -n "$issue_id" ]] || return 0
-  local aid patch
-  aid="$(afk_pch_agent_id "$slug" "$role")"
-  if [[ "$aid" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
-    patch="$(jq -cn --arg a "$aid" '{status:"done", assigneeAgentId:$a}')"
-  else
-    patch='{"status":"done"}'
-  fi
-  afk_pc_curl PATCH "$api_url/api/issues/$issue_id" "$key" "$run_id" "$patch"
+  afk_pc_curl PATCH "$api_url/api/issues/$issue_id" "$key" "$run_id" '{"status":"done"}'
 }
 
 # afk_pch_assign_stage <slug> <role> <issue_id> <stage_summary> [<api_url>] [<key>] [<run_id>]
@@ -359,14 +353,10 @@ afk_pch_assign_stage() {
   afk_pch_save_ledger "$ledger"
 
   if [[ -n "$api_url" && -n "$key" && -n "$issue_id" ]]; then
-    local aid patch
-    aid="$(jq -r --arg s "$slug" --arg r "$role" '.projects[$s].agents[$r].agent_id // empty' <<<"$ledger" 2>/dev/null)"
-    if [[ "$aid" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
-      patch="$(jq -cn --arg a "$aid" '{status:"in_progress", assigneeAgentId:$a}')"
-    else
-      patch='{"status":"in_progress"}'
-    fi
-    afk_pc_curl PATCH "$api_url/api/issues/$issue_id" "$key" "$run_id" "$patch" >/dev/null 2>&1 || true
+    # Keep the host checkout. Paperclip cancels a queued host run when
+    # assigneeAgentId moves to the project agent, and the host cannot wake
+    # that agent. The role is attributed in the comment instead.
+    afk_pc_curl PATCH "$api_url/api/issues/$issue_id" "$key" "$run_id" '{"status":"in_progress"}' >/dev/null 2>&1 || true
     if [[ -n "$summary" ]]; then
       afk_pch_comment_as_role "$api_url" "$issue_id" "$key" "$run_id" "$slug" "$role" "$summary" >/dev/null 2>&1 || true
     fi
