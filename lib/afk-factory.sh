@@ -2340,6 +2340,14 @@ afk_factory_poll_paperclip() {
         p_max="$(jq -r '.max_active_issues // 1' <<<"$prow")"
         [[ -n "$p_slug" && -n "$p_pid" && -d "$p_repo" ]] || continue
 
+        # One planning reply per project per pass, before any new build is claimed.
+        if declare -F afk_pc_pm_chat_scan_project >/dev/null 2>&1; then
+          local board_user_id
+          board_user_id="$(jq -r '.board_user_id // empty' <<<"$pc_cfg" 2>/dev/null)"
+          afk_pc_pm_chat_scan_project "$api_url" "$key" "$company_id" "$p_pid" \
+            "$host_agent_id" "$board_user_id" "$p_slug" "$p_repo" || true
+        fi
+
         # Count active running jobs for this project
         local st_json active_cnt=0
         st_json="$(afk_factory_status "$p_repo" "$p_slug" true)"

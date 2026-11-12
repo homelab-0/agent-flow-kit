@@ -2117,9 +2117,157 @@ afk_pc_record_reply() {
   return 0
 }
 
+# afk_pc_pm_skill_file <repo> -- the project's product-manager skill, if one is installed.
+afk_pc_pm_skill_file() {
+  local repo="${1:-}" f
+  [[ -n "$repo" && -d "$repo" ]] || return 1
+  for f in \
+    "$repo/.agents/skills/bmad-agent-pm/SKILL.md" \
+    "$repo/.agents/skills/bmad-pm/SKILL.md"
+  do
+    [[ -f "$f" ]] && { printf '%s' "$f"; return 0; }
+  done
+  return 1
+}
+
+# True when a factory job for this issue is still doing work. A planning
+# chat must not talk over that job.
+afk_pc_issue_in_active_factory_job() {
+  local repo="$1" issue="$2" f stage
+  [[ -d "$repo/.afk/jobs" ]] || return 1
+  for f in "$repo"/.afk/jobs/*/job.json; do
+    [[ -f "$f" ]] || continue
+    jq -e --arg i "$issue" '.issue_id == $i' "$f" >/dev/null 2>&1 || continue
+    stage="$(jq -r '.stage // ""' "$f" 2>/dev/null)"
+    case "$stage" in
+      merged|needs-human|needs-info|needs-consultation|consulted|rejected|"") ;;
+      *) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+afk_pc_pm_chat_marker() { # <issue_id> <comment_id>
+  printf '%s/paperclip/pm-chat/%s/%s' "$AFK_STATE_DIR" "$1" "$2"
+}
+
+# One headless PM reply. Uses AFK_PC_PM_RUNNER when set (prompt-file, out-file, skill-file).
+# Otherwise Claude Sonnet at medium effort, then Grok at medium effort.
+# Does not hire an agent and does not change the issue assignee.
+afk_pc_pm_chat_turn() { # <api> <key> <host_agent_id> <issue_id> <slug> <repo> <comment_id> <body>
+  local api="$1" key="$2" host="$3" issue="$4" slug="$5" repo="$6" cid="$7" body="$8"
+  [[ "${AFK_PC_PM_CHAT:-on}" != "off" ]] || return 0
+  [[ -n "$api" && -n "$key" && -n "$issue" && -n "$cid" && -n "$body" && -d "$repo" ]] || return 0
+  local skill
+  skill="$(afk_pc_pm_skill_file "$repo")" || return 0
+  local trimmed="$body"
+  trimmed="${trimmed#"${trimmed%%[![:space:]]*}"}"
+  trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+  [[ "$trimmed" =~ ^(approve|reject)\ [0-9a-f]{8}$ ]] && return 0
+  afk_pc_issue_in_active_factory_job "$repo" "$issue" && return 0
+  local marker
+  marker="$(afk_pc_pm_chat_marker "$issue" "$cid")"
+  [[ -f "$marker" ]] && return 0
+
+  local dir prompt out reply run=""
+  dir="$(dirname -- "$marker")"
+  mkdir -p "$dir" || return 0
+  prompt="$dir/$cid.prompt.md"
+  out="$dir/$cid.out.md"
+  {
+    printf '%s\n' "You are the product manager for the repository at $repo."
+    printf '%s\n' "Follow the skill below for how you speak and what you are willing to decide."
+    printf '%s\n' "The user wrote on a Paperclip issue. Reply in plain language, in the voice of that skill."
+    printf '%s\n' "Do not claim that you edited files, opened a branch, or started a build."
+    printf '%s\n' "If the user is scoping work, say what you would write down and what is still undecided."
+    printf '\n## Skill\n\n'
+    head -c 12000 -- "$skill"
+    printf '\n\n## Latest message\n\n%s\n' "$trimmed"
+  } > "$prompt"
+
+  if [[ -n "${AFK_PC_PM_RUNNER:-}" ]]; then
+    "$AFK_PC_PM_RUNNER" "$prompt" "$out" "$skill" || return 0
+  else
+    afk_pc_pm_chat_run_default "$prompt" "$out" || return 0
+  fi
+  [[ -s "$out" ]] || return 0
+  reply="$(head -c 6000 -- "$out")"
+  [[ -n "$reply" ]] || return 0
+
+  if declare -F afk_pch_ensure_run_id >/dev/null 2>&1 && [[ -n "$host" ]]; then
+    run="$(afk_pch_ensure_run_id "$api" "$key" "$host" "$issue" 2>/dev/null || true)"
+  fi
+  local posted=""
+  if declare -F afk_pch_comment_as_role >/dev/null 2>&1 && [[ -n "$slug" ]]; then
+    posted="$(afk_pch_comment_as_role "$api" "$issue" "$key" "$run" "$slug" "pm" "$reply" 2>/dev/null || true)"
+  else
+    posted="$(afk_pc_comment "$api" "$issue" "$key" "$run" "$reply" 2>/dev/null || true)"
+  fi
+  [[ "${posted%%$'\n'*}" == 2?? ]] || return 0
+  printf '%s\n' "$cid" > "$marker"
+  return 0
+}
+
+afk_pc_pm_chat_run_default() { # <prompt-file> <out-file>
+  local prompt="$1" out="$2" raw="" bin=""
+  local -a tmo=()
+  command -v timeout >/dev/null 2>&1 && tmo=(timeout 180)
+  if command -v claude >/dev/null 2>&1; then
+    raw="$("${tmo[@]}" claude -p "$(cat -- "$prompt")" --model sonnet --effort medium --output-format json </dev/null 2>/dev/null)" || return 1
+    jq -r '.result // empty' <<<"$raw" > "$out" 2>/dev/null || return 1
+  elif command -v grok >/dev/null 2>&1; then
+    raw="$("${tmo[@]}" grok --always-approve --output-format json -m grok-4.7 --effort medium -p "$(cat -- "$prompt")" </dev/null 2>/dev/null)" || return 1
+    jq -r '.text // .result // empty' <<<"$raw" > "$out" 2>/dev/null || return 1
+  else
+    return 1
+  fi
+  [[ -s "$out" ]]
+}
+
+# Look at issues assigned to the host. If the latest comment is from the
+# board user and it has not been answered, run one PM turn. One turn per call.
+afk_pc_pm_chat_scan_project() { # api key company project host board slug repo
+  local api="$1" key="$2" company="$3" project="$4" host="$5" board="$6" slug="$7" repo="$8"
+  [[ "${AFK_PC_PM_CHAT:-on}" == "off" ]] && return 0
+  afk_pc_pm_skill_file "$repo" >/dev/null || return 0
+  local resp body
+  resp="$(afk_pc_curl GET "$api/api/companies/$company/issues?projectId=$project" "$key" "")"
+  [[ "${resp%%$'\n'*}" == 2?? ]] || return 0
+  body="${resp#*$'\n'}"
+  local issue iid status assignee cresp cbody latest cid ctext rc
+  while IFS= read -r issue; do
+    [[ -n "$issue" ]] || continue
+    iid="$(jq -r '.id // empty' <<<"$issue")"
+    status="$(jq -r '.status // ""' <<<"$issue")"
+    assignee="$(jq -r '.assigneeAgentId // empty' <<<"$issue")"
+    [[ -n "$iid" && "$assignee" == "$host" ]] || continue
+    # Todo belongs to the factory. Backlog and in-review are the planning conversation.
+    case "$status" in backlog|in_review) ;; *) continue ;; esac
+    afk_pc_issue_in_active_factory_job "$repo" "$iid" && continue
+    cresp="$(afk_pc_curl GET "$api/api/issues/$iid/comments" "$key" "")"
+    [[ "${cresp%%$'\n'*}" == 2?? ]] || continue
+    cbody="${cresp#*$'\n'}"
+    latest="$(jq -c '
+      (if type=="array" then . elif (.comments|type)=="array" then .comments else [] end)
+      | map(select(type=="object")) | sort_by(.createdAt // "") | last // empty
+    ' <<<"$cbody" 2>/dev/null)"
+    [[ -n "$latest" ]] || continue
+    rc=0; afk_pc_is_josh_comment "$latest" "$board" || rc=$?
+    (( rc == 0 )) || continue
+    cid="$(jq -r '.id // empty' <<<"$latest")"
+    ctext="$(jq -r '.body // empty' <<<"$latest")"
+    [[ -n "$cid" && -n "$ctext" ]] || continue
+    [[ -f "$(afk_pc_pm_chat_marker "$iid" "$cid")" ]] && continue
+    afk_pc_pm_chat_turn "$api" "$key" "$host" "$iid" "$slug" "$repo" "$cid" "$ctext" || true
+    return 0
+  done < <(jq -c 'if type=="array" then .[] else (.issues // [])[] end' <<<"$body" 2>/dev/null)
+  return 0
+}
+
 # afk_pc_scan_comments -- Josh's comments newer than `since` on an issue this
 # host holds: a plan decision (PC-3b), or a human_commented notice and reply,
 # which may also record the latest question's question_reply.
+# A plain comment also gets one headless PM reply when the project has a PM skill.
 # Used by the blocked branch and the todo nudge (P6d); moves newest_since.
 afk_pc_scan_comments() {
   local comments_resp comments_body c ccreated rc cid2
@@ -2150,6 +2298,8 @@ afk_pc_scan_comments() {
         "$(jq -nc --arg cid "$cid2" --arg ca "$ccreated" --arg q "${qid:-}" \
           'if $q == "" then {comment_id:$cid, created_at:$ca, open_question_id:null} else {comment_id:$cid, created_at:$ca, open_question_id:$q} end')"
       afk_pc_reply "$slug" "$cid2" "$(jq -r '.body // empty' <<<"$c")"
+      afk_pc_pm_chat_turn "$api_url" "$key" "$agent_id" "$id" "$slug" "${repo_path:-}" "$cid2" \
+        "$(jq -r '.body // empty' <<<"$c")" || true
       actions="$(jq -c --arg t "human_commented: $identifier" '. + [$t]' <<<"$actions")"
     fi
     [[ -z "$newest_since" || "$ccreated" > "$newest_since" ]] && newest_since="$ccreated"
