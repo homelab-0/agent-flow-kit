@@ -101,5 +101,21 @@ assert_eq "The issue description is the opening question when there are no comme
   "$(jq -r 'select(.method=="POST") | .body.body' "$AFK_CHAT_LOG_DIR/requests.jsonl")" \
   "The export audience is still undecided. Tell me who reads it."
 
+# Messaging the host moves a backlog card to in_progress. That comment still gets a reply.
+ISSUE4="66666666-6666-4666-8666-666666666666"
+CID4="77777777-7777-4777-8777-777777777777"
+rm -rf "$AFK_STATE_DIR/paperclip/pm-chat"
+printf '[{"id":"%s","status":"in_progress","assigneeAgentId":"%s","title":"Follow up","description":"old"}]\n' \
+  "$ISSUE4" "$HOST" > "$AFK_CHAT_LOG_DIR/issues.json"
+printf '[{"id":"%s","createdAt":"2026-11-13T12:08:00Z","authorAgentId":null,"authorUserId":"%s","body":"Have we broken those into stories?"}]\n' \
+  "$CID4" "$BOARD" > "$AFK_CHAT_LOG_DIR/comments.json"
+: > "$AFK_CHAT_LOG_DIR/runner.log"
+: > "$AFK_CHAT_LOG_DIR/requests.jsonl"
+afk_pc_pm_chat_scan_project "https://paperclip.example" "test-key" "company" "project" \
+  "$HOST" "$BOARD" "spektacle" "$TMP/repo"
+assert_eq "A follow-up that moved the card to in progress still gets a PM reply" \
+  "$(jq -r 'select(.method=="POST") | .body.body' "$AFK_CHAT_LOG_DIR/requests.jsonl")" \
+  "The export audience is still undecided. Tell me who reads it."
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
