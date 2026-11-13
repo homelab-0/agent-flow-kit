@@ -872,14 +872,23 @@ afk_router_select_candidate() {
       select($ent_ok == true) |
       select($scoped_quota_ok == true) |
       select($model_ok == true) |
-      # A low-risk change under 80 lines does not get a frontier model.
-      # Astra, Fable, Mythos, Opus, Gemini 4 Carbon, and Grok 4.7 stay
-      # reserved for high-risk, security, architecture, and large diffs.
+      # Frontier models stay reserved for high-risk, security, architecture,
+      # and large diffs. A known small edit is one case. Intake of a new
+      # story is the other: the diff is still 0, and a low or medium risk
+      # guess must not start on Astra, Fable, Opus, Gemini 4 Carbon, or
+      # Grok 4.7. A zero-diff build is left alone so pool conservation can
+      # still fail over.
       select(
         (
-          ($rk == "low") and ($dl > 0) and ($dl < 80) and
-          ($tc == "research" or $tc == "coding_standard" or $tc == "coding_review" or $tc == "webdev") and
-          ($c.model | test("astra|fable|mythos|daybreak|opus|gemini-4-carbon|gpt-6|(^|/)grok-4\\.7$"))
+          ($c.model | test("astra|fable|mythos|daybreak|opus|gemini-4-carbon|gpt-6|(^|/)grok-4\\.7$")) and
+          (
+            (
+              ($rk == "low") and ($dl > 0) and ($dl < 80) and
+              ($tc == "research" or $tc == "coding_standard" or $tc == "coding_review" or $tc == "webdev")
+            ) or (
+              ($st == "intake") and ($rk == "low" or $rk == "medium")
+            )
+          )
         ) | not
       ) |
       select($cclass != "api-metered" or $allow_api == true) |

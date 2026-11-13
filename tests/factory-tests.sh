@@ -869,6 +869,9 @@ PC_ESC_OUT="$(
 assert_eq "Escalated job leaves CODEOWNERS unmerged on main, registers ready_for_review Work Product, and creates request_confirmation card" \
   "$([[ -f "$PC_REPO/CODEOWNERS" ]] && echo leaked || echo isolated):$(jq -r '.stage' <<<"$PC_ESC_OUT"):$(jq -r '.pending_interaction_id' <<<"$PC_ESC_OUT"):$(jq -sr '[.[] | select(.url | endswith("/interactions")) | .body.kind] | last' "$PC_REQ_LOG")" \
   "isolated:needs-human:e1111111-2222-4333-8444-555555555555:request_confirmation"
+assert_eq "Escalated job stays assigned to the host so the approval card can be posted" \
+  "$(jq -sr --arg id "22222222-2222-4333-8444-555555555555" '[.[] | select(.method=="PATCH" and (.url|endswith($id)) and .body.status=="in_review") | .body.assigneeAgentId] | last' "$PC_REQ_LOG")" \
+  "479f0f09-ee4a-4b31-902b-b662d906f41b"
 
 # Simulate human board clicking "Request changes" on the confirmation card
 cat > "$PC_STATE/interactions.json" <<'JSON'
@@ -957,6 +960,48 @@ POLL_OUT="$(
 assert_eq "Autonomous factory poll claims todo issue HOM-99 via atomic checkout, runs pipeline, and merges poller_ok.go onto main" \
   "$(jq -r '"\(.dispatched_count):\(.dispatched[0].job_id):\(.dispatched[0].stage)"' <<<"$POLL_OUT"):$([[ -f "$PC_REPO/poller_ok.go" ]] && echo landed || echo missing)" \
   "1:hom-99:merged:landed"
+
+assert_eq "Factory init records the build queue and the scope location" \
+  "$(jq -r '"\(.queue):\(.queue_label):\(.scope_paths[0])"' "$PC_REPO/.afk/config.json")" \
+  "todo:factory:_bmad-output"
+
+cat > "$PC_STATE/todo_issues.json" <<'JSON'
+[
+  {"id":"66666666-2222-4333-8444-666666666666","identifier":"HOM-198","title":"Waiting on another card","description":"blocked","status":"todo","assigneeAgentId":null,"blockedByIssueIds":["44444444-2222-4333-8444-555555555555"]},
+  {"id":"77777777-2222-4333-8444-777777777777","identifier":"HOM-197","title":"Marked blocked","description":"blocked","status":"blocked","assigneeAgentId":null},
+  {"id":"88888888-2222-4333-8444-888888888888","identifier":"HOM-199","title":"Clear to build","description":"ready","status":"todo","assigneeAgentId":null}
+]
+JSON
+BLOCK_POLL="$(
+  PC_REQ_LOG="$PC_REQ_LOG" PC_STATE="$PC_STATE" \
+  AFK_FACTORY_AGENT_RUNNER="$PC_RUNNER" \
+  OP_SERVICE_ACCOUNT_TOKEN=stub \
+  AFK_OP_BIN="$STUB_BIN/op" \
+  AFK_CURL_BIN="$PC_CURL_BIN/curl" \
+  bash "$AFK" factory poll --slug pcproj --dry-run --json
+)"
+assert_eq "Blocked status and Blocked-by stop a claim" \
+  "$(jq -r '[.dispatched[]?.job_id] | join(",")' <<<"$BLOCK_POLL")" \
+  "hom-199"
+
+jq '.queue = "label"' "$PC_REPO/.afk/config.json" > "$PC_REPO/.afk/config.json.tmp" && mv "$PC_REPO/.afk/config.json.tmp" "$PC_REPO/.afk/config.json"
+cat > "$PC_STATE/todo_issues.json" <<'JSON'
+[
+  {"id":"99999999-2222-4333-8444-999999999991","identifier":"HOM-200","title":"Plain todo","description":"not opted in","status":"todo","assigneeAgentId":null,"labels":["docs"]},
+  {"id":"99999999-2222-4333-8444-999999999992","identifier":"HOM-201","title":"Opted in","description":"build this","status":"todo","assigneeAgentId":null,"labels":[{"name":"factory"}]}
+]
+JSON
+LABEL_POLL="$(
+  PC_REQ_LOG="$PC_REQ_LOG" PC_STATE="$PC_STATE" \
+  AFK_FACTORY_AGENT_RUNNER="$PC_RUNNER" \
+  OP_SERVICE_ACCOUNT_TOKEN=stub \
+  AFK_OP_BIN="$STUB_BIN/op" \
+  AFK_CURL_BIN="$PC_CURL_BIN/curl" \
+  bash "$AFK" factory poll --slug pcproj --dry-run --json
+)"
+assert_eq "A label queue ignores a plain Todo and claims the factory label" \
+  "$(jq -r '[.dispatched[]?.job_id] | join(",")' <<<"$LABEL_POLL")" \
+  "hom-201"
 
 # ----------------------------------------------------------------------------
 # 11. Live Quota Accuracy: Anthropic OAuth 7d/5h Telemetry, Codex rate_limits,
@@ -1184,6 +1229,16 @@ assert_eq "A 13-line low-risk spec stays off frontier models" \
 assert_eq "A 13-line low-risk review stays off frontier models" \
   "$(jq -r '"\(.effort):\(.model|test("astra|fable|mythos|daybreak|opus|gemini-4-carbon|gpt-6|grok-4[.]7$"))"' <<<"$SMALL_REVIEW")" \
   "medium:false"
+
+INTAKE_NEW="$(unset AFK_ROUTER_HARNESS_LIST; env "${GF_ENV_ARGS[@]}" bash "$AFK" factory route-preview --repo "$BMAD_REPO" --stage intake --risk low --diff-lines 0 --json)"
+INTAKE_MED="$(unset AFK_ROUTER_HARNESS_LIST; env "${GF_ENV_ARGS[@]}" bash "$AFK" factory route-preview --repo "$BMAD_REPO" --stage intake --risk medium --diff-lines 0 --json)"
+DOC10="$(unset AFK_ROUTER_HARNESS_LIST; env "${GF_ENV_ARGS[@]}" bash "$AFK" factory route-preview --repo "$BMAD_REPO" --stage spec --risk low --diff-lines 10 --json)"
+assert_eq "A new story with no diff does not start intake on a frontier model" \
+  "$(jq -r '"\(.model|test("astra|fable|mythos|daybreak|opus|gemini-4-carbon|gpt-6|grok-4[.]7$"))"' <<<"$INTAKE_NEW"):$(jq -r '"\(.model|test("astra|fable|mythos|daybreak|opus|gemini-4-carbon|gpt-6|grok-4[.]7$"))"' <<<"$INTAKE_MED")" \
+  "false:false"
+assert_eq "A 10-line low-risk doc change stays off frontier models and does not escalate effort" \
+  "$(jq -r '"\(.task_class):\(.effort):\(.effort_escalated):\(.model|test("astra|fable|mythos|daybreak|opus|gemini-4-carbon|gpt-6|grok-4[.]7$"))"' <<<"$DOC10")" \
+  "coding_standard:medium:false:false"
 
 assert_eq "BMAD PM creating epics/PRD at medium risk routes to Opus 5.5 (effort=high) and never downgrades to Sonnet" \
   "$(jq -r '"\(.harness)/\(.canonical_model):\(.task_class):\(.effort)"' <<<"$BMAD_PM_EPICS")" \

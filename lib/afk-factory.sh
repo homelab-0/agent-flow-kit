@@ -42,6 +42,9 @@ afk_factory_default_config_json() {
   "schema": "afk-factory-config/1",
   "max_rounds": 2,
   "merge_policy": "situational",
+  "queue": "todo",
+  "queue_label": "factory",
+  "scope_paths": ["_bmad-output"],
   "diff_budget": {
     "max_lines": 800,
     "max_files": 25
@@ -149,6 +152,60 @@ afk_factory_load_config() {
   else
     afk_factory_default_config_json
   fi
+}
+
+# todo: every Todo issue can be built. label: only a Todo carrying queue_label.
+_afk_factory_queue_mode() { # <repo>
+  local cfg mode
+  cfg="$(afk_factory_load_config "$1")"
+  mode="$(jq -r '.queue // "todo"' <<<"$cfg" 2>/dev/null || printf 'todo')"
+  [[ "$mode" == "label" ]] || mode="todo"
+  printf '%s' "$mode"
+}
+
+_afk_factory_queue_label() { # <repo>
+  local cfg label
+  cfg="$(afk_factory_load_config "$1")"
+  label="$(jq -r '.queue_label // "factory"' <<<"$cfg" 2>/dev/null || printf 'factory')"
+  [[ -n "$label" && "$label" != "null" ]] || label="factory"
+  printf '%s' "$label"
+}
+
+# First configured scope directory that holds a sprint-status file.
+# Empty when this repo did not opt into that scope. Default is _bmad-output.
+_afk_factory_bmad_scope_path() { # <repo>
+  local repo="$1" cfg p
+  [[ -d "$repo" ]] || return 1
+  cfg="$(afk_factory_load_config "$repo")"
+  while IFS= read -r p; do
+    [[ -n "$p" && "$p" != "null" ]] || continue
+    [[ "$p" == /* || "$p" == *".."* ]] && continue
+    if [[ -f "$repo/$p/implementation-artifacts/sprint-status.yaml" ]]; then
+      printf '%s' "$p"
+      return 0
+    fi
+  done < <(jq -r '(.scope_paths // ["_bmad-output"])[]?' <<<"$cfg" 2>/dev/null)
+  return 1
+}
+
+# Keep the host assigned. Clearing the assignee cancels the run that has to
+# post the approval card, and the board then shows an ownerless In Review issue.
+_afk_factory_in_review_body() { # <host_agent_id>
+  jq -cn --arg a "${1:-}" '{status:"in_review"} + (if $a != "" then {assigneeAgentId:$a} else {} end)'
+}
+
+# Skip a consecutive copy of the same route event. A resumed stage that logs
+# the identical attempt again does not grow route-history twice.
+_afk_factory_append_route_event() { # <file> <json-line>
+  local file="$1" line="$2" key="" last=""
+  [[ -n "$file" && -n "$line" ]] || return 0
+  line="${line//$'\n'/}"
+  key="$(jq -c 'del(.ts)' <<<"$line" 2>/dev/null || true)"
+  if [[ -s "$file" && -n "$key" ]]; then
+    last="$(tail -n 1 -- "$file" | jq -c 'del(.ts)' 2>/dev/null || true)"
+    [[ "$key" == "$last" ]] && return 0
+  fi
+  printf '%s\n' "$line" >> "$file"
 }
 
 # The integration branch this task was cut from. Local main wins over
@@ -823,7 +880,7 @@ afk_factory_invoke_stage_agent() {
           r_bn="$(jq -r '.benchmark_name // "Public Leaderboard"' <<<"$route_json" 2>/dev/null || printf 'Public Leaderboard')"
           r_bs="$(jq -r '.benchmark_score // 0' <<<"$route_json" 2>/dev/null || printf '0')"
           r_es="$(jq -r '.effective_score // 0' <<<"$route_json" 2>/dev/null || printf '0')"
-          jq -cn \
+          _afk_factory_append_route_event "$job_dir/route-history.jsonl" "$(jq -cn \
             --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --arg st "$stage" \
             --arg rl "$role" \
@@ -842,7 +899,7 @@ afk_factory_invoke_stage_agent() {
             --argjson it "$in_tok" \
             --argjson ct "$cached_tok" \
             --argjson ot "$out_tok" \
-            '{ts:$ts, stage:$st, role:$rl, task_class:$tc, status:"ok", attempt:$att, harness:$h, model:$m, effort:$ef, entitlement_pool:$p, cost_class:$cc, benchmark_name:$bn, benchmark_score:$bs, effective_score:$es, used_tokens:($tok|tonumber? // 0), input_tokens:$it, cached_input_tokens:$ct, output_tokens:$ot, failover_from:(if $ff=="" then null else $ff end)}' >> "$job_dir/route-history.jsonl"
+            '{ts:$ts, stage:$st, role:$rl, task_class:$tc, status:"ok", attempt:$att, harness:$h, model:$m, effort:$ef, entitlement_pool:$p, cost_class:$cc, benchmark_name:$bn, benchmark_score:$bs, effective_score:$es, used_tokens:($tok|tonumber? // 0), input_tokens:$it, cached_input_tokens:$ct, output_tokens:$ot, failover_from:(if $ff=="" then null else $ff end)}')"
           return 0
         fi
         h_rc=1
@@ -850,7 +907,7 @@ afk_factory_invoke_stage_agent() {
       fi
 
       local fail_reason="${env_err_msg:-runtime_exit_$h_rc}"
-      jq -cn \
+      _afk_factory_append_route_event "$job_dir/route-history.jsonl" "$(jq -cn \
         --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         --arg st "$stage" \
         --arg rl "$role" \
@@ -860,7 +917,7 @@ afk_factory_invoke_stage_agent() {
         --arg m "$routed_model" \
         --arg p "$routed_pool" \
         --arg err "${fail_reason:0:160}" \
-        '{ts:$ts, stage:$st, role:$rl, status:"failed_attempt", attempt:$att, harness:$h, model:$m, effort:$ef, entitlement_pool:$p, error:$err}' >> "$job_dir/route-history.jsonl"
+        '{ts:$ts, stage:$st, role:$rl, status:"failed_attempt", attempt:$att, harness:$h, model:$m, effort:$ef, entitlement_pool:$p, error:$err}')"
 
       # Runtime failover: quarantine restricted model (403/model_not_found) OR mark degraded pool, then re-route!
       if (( attempt < max_attempts )) && [[ -z "$harness_override" && -n "$routed_pool" ]] && declare -F afk_router_mark_pool_degraded >/dev/null 2>&1; then
@@ -1297,7 +1354,7 @@ EOF
       afk_pc_comment "$api_url" "$issue_id" "$key" "$run_id" "## Needs Clarification\n\n$question" >/dev/null 2>&1 || true
       last_cid="$(_afk_factory_latest_comment_id "$api_url" "$key" "$issue_id")"
       local pbody
-      pbody="$(jq -cn --arg u "$board_user_id" '{status: "in_review", assigneeAgentId: null} + (if $u != "" then {assigneeUserId: $u} else {} end)')"
+      pbody="$(_afk_factory_in_review_body "$host_agent_id")"
       afk_pc_curl PATCH "$api_url/api/issues/$issue_id" "$key" "$run_id" "$pbody" >/dev/null 2>&1 || true
     fi
     jq -c --arg now "$now" --arg lcid "$last_cid" \
@@ -1490,7 +1547,7 @@ EOF
         pending_inter_id="$(jq -r '.id // empty' <<<"$inter_json" 2>/dev/null || true)"
       fi
       local pbody
-      pbody="$(jq -cn --arg u "$board_user_id" '{status: "in_review", assigneeAgentId: null} + (if $u != "" then {assigneeUserId: $u} else {} end)')"
+      pbody="$(_afk_factory_in_review_body "$host_agent_id")"
       afk_pc_curl PATCH "$api_url/api/issues/$issue_id" "$key" "$run_id" "$pbody" >/dev/null 2>&1 || true
     fi
   fi
@@ -1651,8 +1708,15 @@ EOF
           if [[ -n "$key" ]]; then
             run_id="$(afk_pch_ensure_run_id "$api_url" "$key" "$host_agent_id" "$j_issue")"
             afk_pc_comment "$api_url" "$j_issue" "$key" "$run_id" "$(cat "$j_dir/decision.md")" >/dev/null 2>&1 || true
+            afk_pch_request_confirmation "$api_url" "$key" "$run_id" "$j_issue" "$board_user_id" \
+              "afk-confirm:${j_issue}:watchdog" \
+              "Approve AFK Factory Merge ($j_id)" \
+              "Watchdog escalated job \`$j_id\` after repeated stalls." \
+              "Approve and merge, or request revisions?" \
+              "$(cat "$j_dir/decision.md")" \
+              "" >/dev/null 2>&1 || true
             local pbody
-            pbody="$(jq -cn --arg u "$board_user_id" '{status:"in_review", assigneeAgentId:null} + (if $u != "" then {assigneeUserId:$u} else {} end)')"
+            pbody="$(_afk_factory_in_review_body "$host_agent_id")"
             afk_pc_curl PATCH "$api_url/api/issues/$j_issue" "$key" "$run_id" "$pbody" >/dev/null 2>&1 || true
           fi
         fi
@@ -1968,7 +2032,7 @@ EOF
       pending_id="$(jq -r '.id // empty' <<<"$inter_json" 2>/dev/null || true)"
     fi
     local pbody
-    pbody="$(jq -cn --arg u "$board_user_id" '{status:"in_review", assigneeAgentId:null} + (if $u != "" then {assigneeUserId:$u} else {} end)')"
+    pbody="$(_afk_factory_in_review_body "$host_agent_id")"
     afk_pc_curl PATCH "$api_url/api/issues/$issue_id" "$key" "$run_id" "$pbody" >/dev/null 2>&1 || true
   elif [[ "$mode" != "CONFIRM" ]]; then
     pending_kind="ask_user_questions"
@@ -2345,9 +2409,11 @@ afk_factory_poll_paperclip() {
           _bmad_lib="$(dirname -- "${BASH_SOURCE[0]}")/afk-bmad-import.sh"
           [[ -f "$_bmad_lib" ]] && . "$_bmad_lib"
         fi
-        if declare -F afk_bmad_import_backlog >/dev/null 2>&1; then
+        local scope_rel=""
+        scope_rel="$(_afk_factory_bmad_scope_path "$p_repo" 2>/dev/null || true)"
+        if [[ -n "$scope_rel" ]] && declare -F afk_bmad_import_backlog >/dev/null 2>&1; then
           afk_bmad_import_backlog "$api_url" "$key" "$company_id" "$p_pid" \
-            "$p_slug" "$p_repo" 15 >/dev/null 2>&1 || true
+            "$p_slug" "$p_repo" 15 "$scope_rel" >/dev/null 2>&1 || true
         fi
 
         # One planning reply per project per pass, before any new build is claimed.
@@ -2364,17 +2430,30 @@ afk_factory_poll_paperclip() {
         active_cnt="$(jq -r '[.jobs[]? | select((.stage // "") | IN("merged","needs-human","needs-info","needs-consultation","consulted","rejected") | not)] | length' <<<"$st_json" 2>/dev/null || printf '0')"
         (( active_cnt < p_max )) || continue
 
-        local l_resp l_code l_body proj_agent_ids
+        local l_resp l_code l_body proj_agent_ids queue_mode queue_label
         l_resp="$(afk_pc_curl GET "$api_url/api/companies/$company_id/issues?projectId=$p_pid&status=todo" "$key" "")"
         l_code="${l_resp%%$'\n'*}"
         l_body="${l_resp#*$'\n'}"
         [[ "$l_code" == 2?? ]] || continue
         proj_agent_ids="$(afk_pch_project_agent_ids_json "$p_slug")"
         [[ -n "$proj_agent_ids" ]] || proj_agent_ids='[]'
+        queue_mode="$(_afk_factory_queue_mode "$p_repo")"
+        queue_label="$(_afk_factory_queue_label "$p_repo")"
 
         local -a cand_issues=()
-        mapfile -t cand_issues < <(jq -c --arg ha "$host_agent_id" --argjson ids "$proj_agent_ids" '
+        mapfile -t cand_issues < <(jq -c --arg ha "$host_agent_id" --argjson ids "$proj_agent_ids" --arg queue "$queue_mode" --arg qlabel "$queue_label" '
           (if type == "array" then . else (.issues // []) end)[]?
+          | select((.status // "todo") != "blocked")
+          | select((((.blockedByIssueIds // .blockedBy // []) | if type == "array" then length else 0 end) == 0))
+          | select(
+              if $queue == "label" then
+                ((.labels // []) | map(
+                  if type == "string" then .
+                  elif type == "object" then (.name // .slug // .label // "")
+                  else "" end
+                ) | index($qlabel) != null)
+              else true end
+            )
           | select(
               (.assigneeAgentId == null) or
               (.assigneeAgentId == "") or
@@ -2747,7 +2826,13 @@ afk_cmd_factory() {
       key_ref="$(jq -r '.host.key_ref // empty' <<<"$pc_cfg")"
       AFK_PC_CFG="$pc_cfg"
       key="$(afk_pc_read_key "$key_ref" 2>/dev/null || true)"
-      afk_bmad_import_backlog "$api_url" "$key" "$company_id" "$project_id" "$slug" "$repo" 0
+      local scope_rel
+      scope_rel="$(_afk_factory_bmad_scope_path "$repo" 2>/dev/null || true)"
+      if [[ -z "$scope_rel" ]]; then
+        printf '{"created":0,"skipped":0,"reason":"scope_paths"}\n'
+        return 0
+      fi
+      afk_bmad_import_backlog "$api_url" "$key" "$company_id" "$project_id" "$slug" "$repo" 0 "$scope_rel"
       return $? ;;
     pools)
       local p_out

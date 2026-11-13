@@ -137,5 +137,23 @@ afk_pc_pm_chat_scan_project "https://paperclip.example" "test-key" "company" "pr
 assert_eq "An @ mention on a done card routes to that agent skill" \
   "$(grep -c 'bmad-agent-dev/SKILL.md' "$AFK_CHAT_LOG_DIR/runner.log")" "1"
 
+# A second comment is the same conversation. The prompt carries the earlier one.
+ISSUE6="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+CID6A="cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+CID6B="dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+rm -rf "$AFK_STATE_DIR/paperclip/pm-chat"
+printf '[{"id":"%s","status":"backlog","assigneeAgentId":"%s","title":"Export"}]\n' \
+  "$ISSUE6" "$HOST" > "$AFK_CHAT_LOG_DIR/issues.json"
+printf '[{"id":"%s","createdAt":"2026-11-13T12:00:00Z","authorAgentId":null,"authorUserId":"%s","body":"The audience is operators."},{"id":"%s","createdAt":"2026-11-13T12:20:00Z","authorAgentId":null,"authorUserId":"%s","body":"What should we name the export?"}]\n' \
+  "$CID6A" "$BOARD" "$CID6B" "$BOARD" > "$AFK_CHAT_LOG_DIR/comments.json"
+: > "$AFK_CHAT_LOG_DIR/runner.log"
+: > "$AFK_CHAT_LOG_DIR/requests.jsonl"
+afk_pc_pm_chat_scan_project "https://paperclip.example" "test-key" "company" "project" \
+  "$HOST" "$BOARD" "spektacle" "$TMP/repo"
+PROMPT6="$AFK_STATE_DIR/paperclip/pm-chat/$ISSUE6/$CID6B.prompt.md"
+assert_eq "A second planning comment includes the earlier comment" \
+  "$(grep -c 'The audience is operators.' "$PROMPT6"):$(grep -c 'What should we name the export?' "$PROMPT6"):$(grep -c agent-hires "$AFK_CHAT_LOG_DIR/requests.jsonl")" \
+  "1:1:0"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

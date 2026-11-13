@@ -2216,21 +2216,41 @@ afk_pc_pm_chat_turn() { # <api> <key> <host_agent_id> <issue_id> <slug> <repo> <
   marker="$(afk_pc_pm_chat_marker "$issue" "$cid")"
   [[ -f "$marker" ]] && return 0
 
-  local dir prompt out reply run=""
+  local dir prompt out reply run="" thread="" cresp="" cbody=""
   dir="$(dirname -- "$marker")"
   mkdir -p "$dir" || return 0
   prompt="$dir/$cid.prompt.md"
   out="$dir/$cid.out.md"
+  # Same issue, same conversation. Pass earlier comments so this turn does
+  # not start over, and do not hire another agent to hold that history.
+  cresp="$(afk_pc_curl GET "$api/api/issues/$issue/comments" "$key" "" 2>/dev/null || true)"
+  if [[ "${cresp%%$'\n'*}" == 2?? ]]; then
+    cbody="${cresp#*$'\n'}"
+    thread="$(jq -r --arg cid "$cid" '
+      (if type=="array" then . elif (.comments|type)=="array" then .comments else [] end)
+      | map(select(type=="object" and ((.id // "") != $cid) and ((.body // "") != "")))
+      | sort_by(.createdAt // "")
+      | map("- " + ((.createdAt // "earlier")) + " " + ((.body // "") | gsub("\n"; " ")))
+      | join("\n")
+    ' <<<"$cbody" 2>/dev/null || true)"
+    if [[ -n "$thread" ]]; then
+      thread="$(printf '%s' "$thread" | tail -c 6000)"
+    fi
+  fi
   {
     printf '%s\n' "You are the ${role} for the repository at $repo."
     printf '%s\n' "Follow the skill below for how you speak and what you are willing to decide."
     printf '%s\n' "Answer only the question asked. Do not start a build or change the issue status."
     printf '%s\n' "The user wrote on a Paperclip issue. Reply in plain language, in the voice of that skill."
     printf '%s\n' "Do not claim that you edited files, opened a branch, or started a build."
+    printf '%s\n' "This is one conversation on one issue. Use the earlier messages. Do not start over."
     printf '%s\n' "If the user is scoping work, say what you would write down and what is still undecided."
     printf '%s\n' "If they ask what epics or stories exist, read _bmad-output in the repository and name only what those files contain."
     printf '\n## Skill\n\n'
     head -c 12000 -- "$skill"
+    if [[ -n "$thread" ]]; then
+      printf '\n\n## Earlier messages\n\n%s\n' "$thread"
+    fi
     printf '\n\n## Latest message\n\n%s\n' "$trimmed"
   } > "$prompt"
 
