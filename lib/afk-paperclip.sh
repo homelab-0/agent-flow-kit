@@ -2243,8 +2243,10 @@ afk_pc_pm_chat_scan_project() { # api key company project host board slug repo
     status="$(jq -r '.status // ""' <<<"$issue")"
     assignee="$(jq -r '.assigneeAgentId // empty' <<<"$issue")"
     [[ -n "$iid" && "$assignee" == "$host" ]] || continue
-    # Todo belongs to the factory. Backlog and in-review are the planning conversation.
-    case "$status" in backlog|in_review) ;; *) continue ;; esac
+    # Todo with no conversation belongs to the factory. Messaging the host
+    # moves a card to in_progress, so a planning reply has to listen there too.
+    # An actual factory job still suppresses the reply.
+    case "$status" in backlog|in_review|in_progress) ;; *) continue ;; esac
     afk_pc_issue_in_active_factory_job "$repo" "$iid" && continue
     cresp="$(afk_pc_curl GET "$api/api/issues/$iid/comments" "$key" "")"
     [[ "${cresp%%$'\n'*}" == 2?? ]] || continue
