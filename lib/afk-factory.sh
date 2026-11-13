@@ -45,6 +45,7 @@ afk_factory_default_config_json() {
   "queue": "todo",
   "queue_label": "factory",
   "scope_paths": ["_bmad-output"],
+  "land": "auto",
   "diff_budget": {
     "max_lines": 800,
     "max_files": 25
@@ -1093,12 +1094,165 @@ _afk_factory_write_review_report() {
   } > "$out_file"
 }
 
+# owner/name when origin points at GitHub. Empty otherwise.
+_afk_factory_github_repo() { # <repo>
+  local url
+  url="$(git -C "$1" remote get-url origin 2>/dev/null || true)"
+  url="${url%.git}"
+  if [[ "$url" =~ github.com[:/]([^/:]+)/([^/]+)$ ]]; then
+    printf '%s/%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+  fi
+}
+
+_afk_factory_stage_command() { # <repo> <role>
+  local repo="$1" role="$2" skill=""
+  if declare -F afk_roster_resolve_skill >/dev/null 2>&1; then
+    skill="$(afk_roster_resolve_skill "$repo" "$role" 2>/dev/null || true)"
+  fi
+  if [[ -z "$skill" || "$skill" == "builtin" ]]; then
+    printf 'builtin-%s' "$role"
+  else
+    basename -- "$(dirname -- "$skill")"
+  fi
+}
+
+# One row per stage so the card can show which command and model did the work.
+_afk_factory_note_stage() { # <job_dir> <repo> <stage> <role> <api> <key> <run> <issue> <host>
+  local job_dir="$1" repo="$2" stage="$3" role="$4" api="${5:-}" key="${6:-}" run="${7:-}" issue="${8:-}" host="${9:-}"
+  local model effort cmd line
+  model="${AFK_LAST_STAGE_HARNESS:-unknown}/${AFK_LAST_STAGE_MODEL:-unknown}"
+  effort="${AFK_LAST_STAGE_EFFORT:-medium}"
+  cmd="$(_afk_factory_stage_command "$repo" "$role")"
+  printf '%s\n' "$(jq -cn --arg st "$stage" --arg role "$role" --arg cmd "$cmd" --arg model "$model" --arg ef "$effort" \
+    '{stage:$st, role:$role, command:$cmd, model:$model, effort:$ef}')" >> "$job_dir/who.jsonl"
+  {
+    printf '%s\n' "# Who is working"
+    printf '\n'
+    if [[ -f "$job_dir/workspace.txt" ]]; then
+      cat -- "$job_dir/workspace.txt"
+      printf '\n'
+    fi
+    printf 'Worktree: %s\n' "$(jq -r '.worktree_path // "unset"' "$job_dir/job.json" 2>/dev/null || printf 'unset')"
+    printf '%s\n' "| Stage | Role | Command | Model | Effort |"
+    printf '%s\n' "| --- | --- | --- | --- | --- |"
+    jq -r '[.stage, .role, .command, .model, .effort] | "| " + join(" | ") + " |"' "$job_dir/who.jsonl"
+    printf '\n%s\n' "Review uses the review command in that table. A project with no project skills uses the built-in command of the same name."
+    printf '%s\n' "Monitor is the check-in on this card. Watchdog is the host agent. Neither is a project skill."
+  } > "$job_dir/who.md"
+  if [[ -n "$api" && -n "$key" && -n "$issue" ]]; then
+    local next notes
+    next="$(date -u -d '+20 minutes' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+    notes="$stage is $model ($effort), command $cmd"
+    afk_pc_curl PATCH "$api/api/issues/$issue" "$key" "$run" \
+      "$(jq -cn --arg t "$next" --arg n "${notes:0:500}" '{executionPolicy:{monitor:{nextCheckAt:$t, notes:$n, scheduledBy:"assignee", recoveryPolicy:"wake_owner"}}}')" >/dev/null 2>&1 || true
+    afk_pch_upsert_document "$api" "$key" "$run" "$issue" "who" "Who is working" "$job_dir/who.md" "$notes" >/dev/null 2>&1 || true
+    afk_pc_comment "$api" "$issue" "$key" "$run" "$(printf '%s · %s · %s · %s · %s' "$stage" "$role" "$cmd" "$model" "$effort")" >/dev/null 2>&1 || true
+  fi
+}
+
+# Watchdog dropdown = host. Workspace path is recorded. Project agents stay idle.
+_afk_factory_bind_issue_controls() { # <api> <key> <run> <issue> <host> <job_dir>
+  local api="$1" key="$2" run="$3" issue="$4" host="$5" job_dir="$6"
+  [[ -n "$api" && -n "$key" && -n "$issue" && -n "$host" ]] || return 0
+  afk_pc_curl PUT "$api/api/issues/$issue/watchdog" "$key" "$run" \
+    "$(jq -cn --arg a "$host" '{agentId:$a, instructions:"Resume the current stage. Do not redo intake or spec when those files already exist."}')" >/dev/null 2>&1 || true
+  local resp body name cwd
+  resp="$(afk_pc_curl GET "$api/api/issues/$issue" "$key" "" 2>/dev/null || true)"
+  if [[ "${resp%%$'\n'*}" == 2?? ]]; then
+    body="${resp#*$'\n'}"
+    name="$(jq -r '.currentExecutionWorkspace.name // empty' <<<"$body" 2>/dev/null || true)"
+    cwd="$(jq -r '.currentExecutionWorkspace.cwd // empty' <<<"$body" 2>/dev/null || true)"
+    if [[ -n "$name" || -n "$cwd" ]]; then
+      printf 'Workspace: %s\nPath: %s\n' "${name:-unset}" "${cwd:-unset}" > "$job_dir/workspace.txt"
+    fi
+  fi
+}
+
+_afk_factory_clear_execution_policy() { # <api> <key> <run> <issue>
+  [[ -n "${1:-}" && -n "${2:-}" && -n "${4:-}" ]] || return 0
+  afk_pc_curl PATCH "$1/api/issues/$4" "$2" "${3:-}" '{"executionPolicy":null}' >/dev/null 2>&1 || true
+}
+
+_afk_factory_set_approval_gate() { # <api> <key> <run> <issue> <host> <board_user>
+  local api="$1" key="$2" run="$3" issue="$4" host="$5" board="$6"
+  [[ -n "$api" && -n "$key" && -n "$issue" && -n "$host" && -n "$board" ]] || return 0
+  # Review participant stays the host. A paused project agent cannot advance
+  # the stage. The board user is the approver.
+  afk_pc_curl PATCH "$api/api/issues/$issue" "$key" "$run" \
+    "$(jq -cn --arg a "$host" --arg u "$board" '{
+      assigneeAgentId: $a,
+      executionPolicy: {
+        mode: "normal",
+        stages: [
+          {type: "review", approvalsNeeded: 1, participants: [{type: "agent", agentId: $a}]},
+          {type: "approval", approvalsNeeded: 1, participants: [{type: "user", userId: $u}]}
+        ]
+      }
+    }')" >/dev/null 2>&1 || true
+}
+
+# Push the branch and open a pull request. Prints the URL, or nothing.
+_afk_factory_ensure_pr() { # <abs_repo> <wt> <branch> <title> <job_id>
+  local abs_repo="$1" wt="$2" branch="$3" title="$4" job_id="$5"
+  local remote ghbin base list url
+  remote="$(_afk_factory_github_repo "$abs_repo")"
+  [[ -n "$remote" ]] || return 1
+  ghbin="${AFK_FACTORY_GH_BIN:-gh}"
+  command -v "$ghbin" >/dev/null 2>&1 || return 1
+  local land_mode
+  land_mode="$(jq -r '.land // "auto"' <<<"$(afk_factory_load_config "$abs_repo")" 2>/dev/null || printf 'auto')"
+  [[ "$land_mode" == "local" ]] && return 1
+  base="$(_afk_factory_task_base_ref "$wt")"
+  [[ -n "$base" ]] || base="main"
+  base="${base#origin/}"
+  if [[ "${AFK_FACTORY_SKIP_PUSH:-}" != "1" ]]; then
+    git -C "$wt" push -u origin "$branch" >/dev/null 2>&1 || return 1
+  fi
+  list="$("$ghbin" pr list --repo "$remote" --head "$branch" --json url,number 2>/dev/null || true)"
+  url="$(jq -r 'if type=="array" then (.[0].url // empty) else empty end' <<<"$list" 2>/dev/null || true)"
+  if [[ -z "$url" ]]; then
+    url="$("$ghbin" pr create --repo "$remote" --base "$base" --head "$branch" --title "$title" \
+      --body "$(printf 'Branch %s for %s.\n' "$branch" "$job_id")" 2>/dev/null || true)"
+    url="$(printf '%s\n' "$url" | grep -E '^https://' | head -n 1 || true)"
+  fi
+  [[ -n "$url" ]] || return 1
+  printf '%s' "$url"
+}
+
 # _afk_factory_land_branch <abs_repo> <wt_dir> <branch> <job_id> <title>
-# Merges <branch> into <abs_repo>'s checked-out base branch when <wt_dir> is an
-# isolated git worktree and <abs_repo> has no dirty tracked files.
-# Prints JSON: {ok: true|false, action: "merged"|"already_up_to_date"|"in_place"|"conflict", commit: "<sha>", reason?: "..."}
+# A GitHub origin opens a pull request and merges that. Any other checkout
+# merges the branch locally. Prints JSON.
 _afk_factory_land_branch() {
   local abs_repo="$1" wt_dir="$2" branch="$3" job_id="$4" title="$5"
+  local pr_url="" remote="" land_mode="auto"
+  remote="$(_afk_factory_github_repo "$abs_repo")"
+  land_mode="$(jq -r '.land // "auto"' <<<"$(afk_factory_load_config "$abs_repo")" 2>/dev/null || printf 'auto')"
+  if [[ -n "$remote" && "$land_mode" != "local" ]]; then
+  pr_url="$(_afk_factory_ensure_pr "$abs_repo" "$wt_dir" "$branch" "$title" "$job_id" 2>/dev/null || true)"
+  if [[ -z "$pr_url" ]]; then
+    jq -cn '{ok:false, action:"pr_failed", commit:"", reason:"GitHub remote is set and the pull request was not opened"}'
+    return 1
+  fi
+  if [[ -n "$pr_url" ]]; then
+    local ghbin remote
+    ghbin="${AFK_FACTORY_GH_BIN:-gh}"
+    remote="$(_afk_factory_github_repo "$abs_repo")"
+    if "$ghbin" pr merge --repo "$remote" --squash "$pr_url" >/dev/null 2>&1; then
+      local sha base
+      base="$(_afk_factory_task_base_ref "$abs_repo")"
+      base="${base#origin/}"
+      if [[ "${AFK_FACTORY_SKIP_PUSH:-}" != "1" ]]; then
+        git -C "$abs_repo" pull --ff-only "origin" "$base" >/dev/null 2>&1 || true
+      fi
+      sha="$(git -C "$abs_repo" rev-parse HEAD 2>/dev/null || true)"
+      [[ -d "$wt_dir" && "$wt_dir" != "$abs_repo" ]] && git -C "$abs_repo" worktree remove --force "$wt_dir" >/dev/null 2>&1 || true
+      jq -cn --arg c "$sha" --arg u "$pr_url" '{ok:true, action:"merged_pr", commit:$c, pr_url:$u}'
+      return 0
+    fi
+    jq -cn --arg u "$pr_url" '{ok:false, action:"pr_open", commit:"", pr_url:$u, reason:"Pull request is open and was not merged"}'
+    return 1
+  fi
+  fi
   if [[ ! -d "$abs_repo/.git" && ! -f "$abs_repo/.git" ]]; then
     printf '{"ok":true,"action":"non_git","commit":""}\n'
     return 0
@@ -1187,6 +1341,7 @@ afk_factory_run_stage_with_context_guard() {
       [[ -n "$saved_stage_tokens" ]] && AFK_STAGE_USED_TOKENS="$saved_stage_tokens"
     fi
   fi
+  _afk_factory_note_stage "$job_dir" "$repo" "$stage" "$role" "$api_url" "$key" "$run_id" "$issue_id" "$host_agent_id"
 }
 
 # afk_factory_run_job <repo_path> <slug> <job_id> <issue_id> <title> <body_file> <json_mode>
@@ -1299,6 +1454,7 @@ afk_factory_run_job() {
   local run_id=""
   if [[ -n "$api_url" && -n "$key" && -n "$issue_id" ]]; then
     run_id="$(afk_pch_ensure_run_id "$api_url" "$key" "$host_agent_id" "$issue_id")"
+    _afk_factory_bind_issue_controls "$api_url" "$key" "$run_id" "$issue_id" "$host_agent_id" "$job_dir"
   fi
   if [[ -n "$api_url" && -n "$key" && -n "$host_agent_id" ]] && declare -F afk_pch_check_budget >/dev/null 2>&1; then
     local b_chk b_state b_spent b_limit
@@ -1504,6 +1660,7 @@ EOF
       fi
       if [[ -n "$api_url" && -n "$key" && -n "$issue_id" ]]; then
         run_id="$(afk_pch_ensure_run_id "$api_url" "$key" "$host_agent_id" "$issue_id")"
+        _afk_factory_clear_execution_policy "$api_url" "$key" "$run_id" "$issue_id"
         afk_pc_curl PATCH "$api_url/api/issues/$issue_id" "$key" "$run_id" '{"status":"in_progress"}' >/dev/null 2>&1 || true
         afk_pch_upsert_document "$api_url" "$(afk_pch_key_for_role "$slug" "dev" "$key")" "$run_id" "$issue_id" "merge-decision" "Situational Merge Decision ($job_id)" "$job_dir/decision.md" "Auto-approved and merged commit ${merged_commit:0:8}" >/dev/null 2>&1 || true
         if [[ -n "$merged_commit" ]]; then
@@ -1525,6 +1682,11 @@ EOF
 
   if [[ "$decision" != "APPROVE" ]]; then
     final_stage="needs-human"
+    local open_url=""
+    open_url="$(_afk_factory_ensure_pr "$abs_repo" "$wt_dir" "$branch" "$title" "$job_id" 2>/dev/null || true)"
+    if [[ -n "$open_url" ]]; then
+      printf '\n- Pull request: %s\n' "$open_url" >> "$job_dir/decision.md"
+    fi
     if [[ -n "$api_url" && -n "$key" && -n "$issue_id" ]]; then
       run_id="$(afk_pch_ensure_run_id "$api_url" "$key" "$host_agent_id" "$issue_id")"
       afk_pc_curl PATCH "$api_url/api/issues/$issue_id" "$key" "$run_id" '{"status":"in_progress"}' >/dev/null 2>&1 || true
@@ -1549,6 +1711,7 @@ EOF
       local pbody
       pbody="$(_afk_factory_in_review_body "$host_agent_id")"
       afk_pc_curl PATCH "$api_url/api/issues/$issue_id" "$key" "$run_id" "$pbody" >/dev/null 2>&1 || true
+      _afk_factory_set_approval_gate "$api_url" "$key" "$run_id" "$issue_id" "$host_agent_id" "$board_user_id"
     fi
   fi
 
@@ -2278,6 +2441,7 @@ afk_factory_sync_reviews() {
 
     if [[ "$action_kind" == "approve" ]]; then
       local land_res land_ok merged_sha
+      _afk_factory_clear_execution_policy "$api_url" "$key" "$run_id" "$j_issue"
       land_res="$(_afk_factory_land_branch "$j_repo" "$j_wt" "$j_branch" "$j_id" "$j_title")" || true
       land_ok="$(jq -r '.ok // false' <<<"$land_res" 2>/dev/null || printf 'false')"
       if [[ "$land_ok" == "true" ]]; then
