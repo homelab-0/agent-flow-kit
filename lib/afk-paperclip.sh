@@ -2180,6 +2180,7 @@ afk_pc_pm_chat_turn() { # <api> <key> <host_agent_id> <issue_id> <slug> <repo> <
     printf '%s\n' "The user wrote on a Paperclip issue. Reply in plain language, in the voice of that skill."
     printf '%s\n' "Do not claim that you edited files, opened a branch, or started a build."
     printf '%s\n' "If the user is scoping work, say what you would write down and what is still undecided."
+    printf '%s\n' "If they ask what epics or stories exist, read _bmad-output in the repository and name only what those files contain."
     printf '\n## Skill\n\n'
     head -c 12000 -- "$skill"
     printf '\n\n## Latest message\n\n%s\n' "$trimmed"
@@ -2188,7 +2189,7 @@ afk_pc_pm_chat_turn() { # <api> <key> <host_agent_id> <issue_id> <slug> <repo> <
   if [[ -n "${AFK_PC_PM_RUNNER:-}" ]]; then
     "$AFK_PC_PM_RUNNER" "$prompt" "$out" "$skill" || return 0
   else
-    afk_pc_pm_chat_run_default "$prompt" "$out" || return 0
+    afk_pc_pm_chat_run_default "$prompt" "$out" "$repo" || return 0
   fi
   [[ -s "$out" ]] || return 0
   reply="$(head -c 6000 -- "$out")"
@@ -2208,12 +2209,13 @@ afk_pc_pm_chat_turn() { # <api> <key> <host_agent_id> <issue_id> <slug> <repo> <
   return 0
 }
 
-afk_pc_pm_chat_run_default() { # <prompt-file> <out-file>
-  local prompt="$1" out="$2" raw="" bin=""
-  local -a tmo=()
+afk_pc_pm_chat_run_default() { # <prompt-file> <out-file> <repo>
+  local prompt="$1" out="$2" repo="${3:-}" raw=""
+  local -a tmo=() dirarg=()
   command -v timeout >/dev/null 2>&1 && tmo=(timeout 180)
+  [[ -d "$repo" ]] && dirarg=(--add-dir "$repo")
   if command -v claude >/dev/null 2>&1; then
-    raw="$("${tmo[@]}" claude -p "$(cat -- "$prompt")" --model sonnet --effort medium --output-format json </dev/null 2>/dev/null)" || return 1
+    raw="$("${tmo[@]}" claude -p "$(cat -- "$prompt")" --model sonnet --effort medium --output-format json "${dirarg[@]}" </dev/null 2>/dev/null)" || return 1
     jq -r '.result // empty' <<<"$raw" > "$out" 2>/dev/null || return 1
   elif command -v grok >/dev/null 2>&1; then
     raw="$("${tmo[@]}" grok --always-approve --output-format json -m grok-4.7 --effort medium -p "$(cat -- "$prompt")" </dev/null 2>/dev/null)" || return 1
@@ -2251,11 +2253,18 @@ afk_pc_pm_chat_scan_project() { # api key company project host board slug repo
       (if type=="array" then . elif (.comments|type)=="array" then .comments else [] end)
       | map(select(type=="object")) | sort_by(.createdAt // "") | last // empty
     ' <<<"$cbody" 2>/dev/null)"
-    [[ -n "$latest" ]] || continue
-    rc=0; afk_pc_is_josh_comment "$latest" "$board" || rc=$?
-    (( rc == 0 )) || continue
-    cid="$(jq -r '.id // empty' <<<"$latest")"
-    ctext="$(jq -r '.body // empty' <<<"$latest")"
+    if [[ -z "$latest" || "$latest" == "null" ]]; then
+      # Creating a task stores the question as the description, not a comment.
+      ctext="$(jq -r '.description // .title // empty' <<<"$issue")"
+      ctext="${ctext//&#x20;/ }"
+      cid="opening-${iid}"
+      [[ -n "$ctext" ]] || continue
+    else
+      rc=0; afk_pc_is_josh_comment "$latest" "$board" || rc=$?
+      (( rc == 0 )) || continue
+      cid="$(jq -r '.id // empty' <<<"$latest")"
+      ctext="$(jq -r '.body // empty' <<<"$latest")"
+    fi
     [[ -n "$cid" && -n "$ctext" ]] || continue
     [[ -f "$(afk_pc_pm_chat_marker "$iid" "$cid")" ]] && continue
     afk_pc_pm_chat_turn "$api" "$key" "$host" "$iid" "$slug" "$repo" "$cid" "$ctext" || true
