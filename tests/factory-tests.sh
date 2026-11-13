@@ -842,9 +842,15 @@ assert_eq "job.json records exact merged_commit matching base repo HEAD" \
   "$(jq -r '.merged_commit' <<<"$PC_MERGE_OUT")" \
   "$(git -C "$PC_REPO" rev-parse HEAD)"
 
-assert_eq "Paperclip Issue Documents upserted for plan, review-report, and merge-decision" \
+assert_eq "Paperclip Issue Documents upserted for plan, review-report, merge-decision, and who is working" \
   "$(jq -sr '[.[] | select(.method == "PUT" and (.url | contains("/documents/"))) | (.url | split("/") | last)] | sort | unique | join(",")' "$PC_REQ_LOG")" \
-  "merge-decision,plan,review-report"
+  "merge-decision,plan,review-report,who"
+assert_contains "The working record names the intake stage" \
+  "$(cat "$PC_REPO/.afk/jobs/job-pc-merge/who.md")" \
+  "| intake |"
+assert_eq "The card watchdog is the host agent and a running stage sets the monitor" \
+  "$(jq -sr '[.[] | select(.method=="PUT" and (.url|endswith("/watchdog")))] | length' "$PC_REQ_LOG"):$(jq -sr '[.[] | select(.method=="PATCH" and (.body.executionPolicy.monitor.nextCheckAt != null))] | length > 0' "$PC_REQ_LOG")" \
+  "1:true"
 
 assert_eq "Paperclip cost-events posted for all 4 stages with host agentId and positive token counts" \
   "$(jq -sr '[.[] | select(.method == "POST" and (.url | endswith("/cost-events"))) | select(.body.agentId == "479f0f09-ee4a-4b31-902b-b662d906f41b" and .body.inputTokens == 4000 and .body.outputTokens == 1000)] | length' "$PC_REQ_LOG")" \
@@ -1002,6 +1008,56 @@ LABEL_POLL="$(
 assert_eq "A label queue ignores a plain Todo and claims the factory label" \
   "$(jq -r '[.dispatched[]?.job_id] | join(",")' <<<"$LABEL_POLL")" \
   "hom-201"
+
+# A GitHub origin lands by opening a pull request and merging that request.
+PR_REPO="$TMPROOT/repo-pr-land"
+PR_LOG="$TMPROOT/gh-pr.log"
+mkdir -p "$PR_REPO" "$(dirname "$PR_LOG")"
+git -C "$PR_REPO" init -b main >/dev/null 2>&1
+git -C "$PR_REPO" config user.email "test@example.com"
+git -C "$PR_REPO" config user.name "AFK Test"
+printf 'base\n' > "$PR_REPO/README.md"
+git -C "$PR_REPO" add README.md
+git -C "$PR_REPO" commit -m "base" >/dev/null 2>&1
+git -C "$PR_REPO" checkout -b factory/job-pr >/dev/null 2>&1
+printf 'from pr\n' > "$PR_REPO/from-pr.txt"
+git -C "$PR_REPO" add from-pr.txt
+git -C "$PR_REPO" commit -m "branch work" >/dev/null 2>&1
+git -C "$PR_REPO" checkout main >/dev/null 2>&1
+git -C "$PR_REPO" remote add origin https://github.com/example/demo.git
+: > "$PR_LOG"
+cat > "$TMPROOT/fake-gh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$PR_LOG"
+if [[ "$1" == "pr" && "$2" == "list" ]]; then printf '[]\n'; exit 0; fi
+if [[ "$1" == "pr" && "$2" == "create" ]]; then printf 'https://github.com/example/demo/pull/7\n'; exit 0; fi
+if [[ "$1" == "pr" && "$2" == "merge" ]]; then
+  git -C "$PR_REPO" merge --no-ff factory/job-pr -m "merge pr" >/dev/null 2>&1
+  exit 0
+fi
+exit 1
+SH
+chmod +x "$TMPROOT/fake-gh"
+PR_LAND="$(
+  PR_LOG="$PR_LOG" PR_REPO="$PR_REPO" \
+  AFK_FACTORY_GH_BIN="$TMPROOT/fake-gh" \
+  AFK_FACTORY_SKIP_PUSH=1 \
+  bash -c '
+    # shellcheck disable=SC1091
+    . "'"$KIT_ROOT"'/lib/afk-common.sh"
+    . "'"$KIT_ROOT"'/lib/afk-paperclip.sh"
+    . "'"$KIT_ROOT"'/lib/afk-roster.sh"
+    . "'"$KIT_ROOT"'/lib/afk-paperclip-hire.sh"
+    . "'"$KIT_ROOT"'/lib/afk-harnesses.sh"
+    . "'"$KIT_ROOT"'/lib/afk-tooling.sh"
+    . "'"$KIT_ROOT"'/lib/afk-smart-router.sh"
+    . "'"$KIT_ROOT"'/lib/afk-factory.sh"
+    _afk_factory_land_branch "$PR_REPO" "$PR_REPO-missing" "factory/job-pr" "job-pr" "Land by pull request"
+  '
+)"
+assert_eq "A GitHub repo opens a pull request and merges that instead of merging locally" \
+  "$(jq -r '.action + ":" + .pr_url' <<<"$PR_LAND"):$([[ -f "$PR_REPO/from-pr.txt" ]] && echo landed || echo missing):$(grep -c 'pr create' "$PR_LOG"):$(grep -c 'pr merge' "$PR_LOG"):$(git -C "$PR_REPO" log --oneline | grep -c 'Merge branch' || true)" \
+  "merged_pr:https://github.com/example/demo/pull/7:landed:1:1:0"
 
 # ----------------------------------------------------------------------------
 # 11. Live Quota Accuracy: Anthropic OAuth 7d/5h Telemetry, Codex rate_limits,
