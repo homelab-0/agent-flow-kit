@@ -2340,6 +2340,16 @@ afk_factory_poll_paperclip() {
         p_max="$(jq -r '.max_active_issues // 1' <<<"$prow")"
         [[ -n "$p_slug" && -n "$p_pid" && -d "$p_repo" ]] || continue
 
+        if ! declare -F afk_bmad_import_backlog >/dev/null 2>&1; then
+          local _bmad_lib
+          _bmad_lib="$(dirname -- "${BASH_SOURCE[0]}")/afk-bmad-import.sh"
+          [[ -f "$_bmad_lib" ]] && . "$_bmad_lib"
+        fi
+        if declare -F afk_bmad_import_backlog >/dev/null 2>&1; then
+          afk_bmad_import_backlog "$api_url" "$key" "$company_id" "$p_pid" \
+            "$p_slug" "$p_repo" 15 >/dev/null 2>&1 || true
+        fi
+
         # One planning reply per project per pass, before any new build is claimed.
         if declare -F afk_pc_pm_chat_scan_project >/dev/null 2>&1; then
           local board_user_id
@@ -2715,6 +2725,29 @@ afk_cmd_factory() {
       return $? ;;
     poll)
       afk_factory_poll_paperclip "$slug" "$dry_run_flag" "$bg_flag" "$json_mode"
+      return $? ;;
+    import-backlog)
+      if [[ -z "$repo" || -z "$slug" ]]; then
+        afk_warn "factory import-backlog requires --repo <path> and --slug <slug>"
+        return 1
+      fi
+      if ! declare -F afk_bmad_import_backlog >/dev/null 2>&1; then
+        local _bmad_lib
+        _bmad_lib="$(dirname -- "${BASH_SOURCE[0]}")/afk-bmad-import.sh"
+        [[ -f "$_bmad_lib" ]] && . "$_bmad_lib"
+      fi
+      local pc_cfg_path pc_cfg api_url company_id project_id key
+      pc_cfg_path="$(afk_pc_config_path)"
+      [[ -f "$pc_cfg_path" ]] || { afk_warn "factory import-backlog: no Paperclip config"; return 1; }
+      pc_cfg="$(cat -- "$pc_cfg_path")"
+      api_url="$(jq -r '.api_url // empty' <<<"$pc_cfg")"
+      company_id="$(jq -r '.company_id // empty' <<<"$pc_cfg")"
+      project_id="$(jq -r --arg s "$slug" '(.projects[]? | select(.slug == $s) | .paperclip_project_id) // empty' <<<"$pc_cfg")"
+      local key_ref
+      key_ref="$(jq -r '.host.key_ref // empty' <<<"$pc_cfg")"
+      AFK_PC_CFG="$pc_cfg"
+      key="$(afk_pc_read_key "$key_ref" 2>/dev/null || true)"
+      afk_bmad_import_backlog "$api_url" "$key" "$company_id" "$project_id" "$slug" "$repo" 0
       return $? ;;
     pools)
       local p_out
