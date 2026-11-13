@@ -88,5 +88,18 @@ afk_pc_pm_chat_scan_project "https://paperclip.example" "test-key" "company" "pr
 assert_eq "A running factory job does not get a planning reply" \
   "$(wc -c < "$AFK_CHAT_LOG_DIR/runner.log" | tr -d ' ')" "0"
 
+# A backlog issue with only a description, and no comments, is the opening question.
+ISSUE3="55555555-5555-4555-8555-555555555555"
+printf '[{"id":"%s","status":"backlog","assigneeAgentId":"%s","title":"What is scoped?","description":"What epics exist?"}]\n' \
+  "$ISSUE3" "$HOST" > "$AFK_CHAT_LOG_DIR/issues.json"
+printf '[]\n' > "$AFK_CHAT_LOG_DIR/comments.json"
+: > "$AFK_CHAT_LOG_DIR/runner.log"
+: > "$AFK_CHAT_LOG_DIR/requests.jsonl"
+afk_pc_pm_chat_scan_project "https://paperclip.example" "test-key" "company" "project" \
+  "$HOST" "$BOARD" "spektacle" "$TMP/repo"
+assert_eq "The issue description is the opening question when there are no comments" \
+  "$(jq -r 'select(.method=="POST") | .body.body' "$AFK_CHAT_LOG_DIR/requests.jsonl")" \
+  "The export audience is still undecided. Tell me who reads it."
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
