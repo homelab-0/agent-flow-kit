@@ -65,7 +65,7 @@ export AFK_PC_PM_RUNNER="$TMP/runner.sh"
 afk_pc_pm_chat_scan_project "https://paperclip.example" "test-key" "company" "project" \
   "$HOST" "$BOARD" "spektacle" "$TMP/repo"
 assert_eq "A board comment gets one PM reply" \
-  "$(jq -r 'select(.method=="POST") | .body.body' "$AFK_CHAT_LOG_DIR/requests.jsonl")" \
+  "$(jq -r 'select(.method=="POST" and (.url|endswith("/comments"))) | .body.body' "$AFK_CHAT_LOG_DIR/requests.jsonl")" \
   "The export audience is still undecided. Tell me who reads it."
 assert_eq "The runner saw the project PM skill" \
   "$(grep -c 'bmad-agent-pm/SKILL.md' "$AFK_CHAT_LOG_DIR/runner.log")" "1"
@@ -98,7 +98,7 @@ printf '[]\n' > "$AFK_CHAT_LOG_DIR/comments.json"
 afk_pc_pm_chat_scan_project "https://paperclip.example" "test-key" "company" "project" \
   "$HOST" "$BOARD" "spektacle" "$TMP/repo"
 assert_eq "The issue description is the opening question when there are no comments" \
-  "$(jq -r 'select(.method=="POST") | .body.body' "$AFK_CHAT_LOG_DIR/requests.jsonl")" \
+  "$(jq -r 'select(.method=="POST" and (.url|endswith("/comments"))) | .body.body' "$AFK_CHAT_LOG_DIR/requests.jsonl")" \
   "The export audience is still undecided. Tell me who reads it."
 
 # Messaging the host moves a backlog card to in_progress. That comment still gets a reply.
@@ -114,8 +114,28 @@ printf '[{"id":"%s","createdAt":"2026-11-13T12:08:00Z","authorAgentId":null,"aut
 afk_pc_pm_chat_scan_project "https://paperclip.example" "test-key" "company" "project" \
   "$HOST" "$BOARD" "spektacle" "$TMP/repo"
 assert_eq "A follow-up that moved the card to in progress still gets a PM reply" \
-  "$(jq -r 'select(.method=="POST") | .body.body' "$AFK_CHAT_LOG_DIR/requests.jsonl")" \
+  "$(jq -r 'select(.method=="POST" and (.url|endswith("/comments"))) | .body.body' "$AFK_CHAT_LOG_DIR/requests.jsonl")" \
   "The export audience is still undecided. Tell me who reads it."
+
+# @spektacle-dev on a Done card routes to the dev skill, not the PM skill.
+mkdir -p "$TMP/repo/.agents/skills/bmad-agent-dev" "$AFK_STATE_DIR/paperclip"
+printf '# Dev\nAnswer as the developer. Do not start a build.\n' > "$TMP/repo/.agents/skills/bmad-agent-dev/SKILL.md"
+DEV_ID="88888888-8888-4888-8888-888888888888"
+cat > "$AFK_STATE_DIR/paperclip/hired-agents.json" <<JSON
+{"schema":"afk-hired-agents/1","projects":{"spektacle":{"agents":{"dev":{"agent_id":"$DEV_ID","name":"spektacle-dev","role":"dev","persona_name":"Amelia"}}}}}
+JSON
+ISSUE5="99999999-9999-4999-8999-999999999999"
+CID5="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+printf '[{"id":"%s","status":"done","assigneeAgentId":"%s","title":"Done card","description":"old"}]\n' \
+  "$ISSUE5" "$HOST" > "$AFK_CHAT_LOG_DIR/issues.json"
+printf '[{"id":"%s","createdAt":"2026-11-13T12:10:00Z","authorAgentId":null,"authorUserId":"%s","body":"@spektacle-dev what does the check script reject?"}]\n' \
+  "$CID5" "$BOARD" > "$AFK_CHAT_LOG_DIR/comments.json"
+: > "$AFK_CHAT_LOG_DIR/runner.log"
+: > "$AFK_CHAT_LOG_DIR/requests.jsonl"
+afk_pc_pm_chat_scan_project "https://paperclip.example" "test-key" "company" "project" \
+  "$HOST" "$BOARD" "spektacle" "$TMP/repo"
+assert_eq "An @ mention on a done card routes to that agent skill" \
+  "$(grep -c 'bmad-agent-dev/SKILL.md' "$AFK_CHAT_LOG_DIR/runner.log")" "1"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
