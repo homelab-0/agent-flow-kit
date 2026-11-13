@@ -80,5 +80,12 @@ jq '[.[] | {id, description}]' "$AFK_IMPORT_LOG.issues" > "$AFK_IMPORT_LOG.issue
 out2="$(afk_bmad_import_backlog "https://paperclip.example" "k" "co" "proj" "spektacle" "$TMP/repo" 0)"
 assert_eq "A second import creates nothing new" "$(jq -r '.created' <<<"$out2")" "0"
 
+mkdir -p "$TMP/other/notes/scoped/planning-artifacts" "$TMP/other/notes/scoped/implementation-artifacts"
+cp "$TMP/repo/_bmad-output/planning-artifacts/epics.md" "$TMP/other/notes/scoped/planning-artifacts/epics.md"
+cp "$TMP/repo/_bmad-output/implementation-artifacts/sprint-status.yaml" "$TMP/other/notes/scoped/implementation-artifacts/sprint-status.yaml"
+assert_eq "A configured scope path is read, and the default path is not assumed" \
+  "$(afk_bmad_import_plan "$TMP/other" "notes/scoped" | jq -r 'length'):$(afk_bmad_import_plan "$TMP/other" | jq -r 'length')" \
+  "5:0"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
