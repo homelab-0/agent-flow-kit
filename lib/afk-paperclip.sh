@@ -2151,20 +2151,67 @@ afk_pc_pm_chat_marker() { # <issue_id> <comment_id>
   printf '%s/paperclip/pm-chat/%s/%s' "$AFK_STATE_DIR" "$1" "$2"
 }
 
+# @-mentions are context only in Paperclip. Map one project agent mention to a role.
+# AFK - ubuntu-dev, Jarvis, and the board user do not select a persona.
+afk_pc_comment_mention_role() { # <slug> <body>
+  local slug="$1" body="$2" ledger="" role="" id="" lib=""
+  [[ -n "$slug" && -n "$body" ]] || return 1
+  if ! declare -F afk_pch_load_ledger >/dev/null 2>&1; then
+    lib="$(dirname -- "${BASH_SOURCE[0]}")/afk-paperclip-hire.sh"
+    [[ -f "$lib" ]] && . "$lib"
+  fi
+  declare -F afk_pch_load_ledger >/dev/null 2>&1 || return 1
+  ledger="$(afk_pch_load_ledger 2>/dev/null || true)"
+  [[ -n "$ledger" ]] || return 1
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    role="$(jq -r --arg s "$slug" --arg id "$id" '
+      .projects[$s].agents // {} | to_entries[] | select(.value.agent_id == $id) | .key
+    ' <<<"$ledger" 2>/dev/null | head -n 1)"
+    [[ -n "$role" ]] && { printf '%s' "$role"; return 0; }
+  done < <(grep -oE 'agent://[0-9a-fA-F-]{36}' <<<"$body" | sed 's|agent://||' || true)
+  for role in pm dev reviewer approver analyst architect ux-designer; do
+    if grep -qiE "@${slug}-${role}([^[:alnum:]_-]|$)" <<<"$body"; then
+      printf '%s' "$role"
+      return 0
+    fi
+  done
+  return 1
+}
+
+afk_pc_role_skill_file() { # <repo> <role>
+  local repo="$1" role="$2" p="" lib=""
+  if ! declare -F afk_roster_resolve_skill >/dev/null 2>&1; then
+    lib="$(dirname -- "${BASH_SOURCE[0]}")/afk-roster.sh"
+    [[ -f "$lib" ]] && . "$lib"
+  fi
+  if declare -F afk_roster_resolve_skill >/dev/null 2>&1; then
+    p="$(afk_roster_resolve_skill "$repo" "$role" 2>/dev/null || true)"
+    [[ -n "$p" && "$p" != "builtin" && -f "$p" ]] && { printf '%s' "$p"; return 0; }
+  fi
+  [[ "$role" == "pm" ]] && afk_pc_pm_skill_file "$repo"
+}
+
 # One headless PM reply. Uses AFK_PC_PM_RUNNER when set (prompt-file, out-file, skill-file).
 # Otherwise Claude Sonnet at medium effort, then Grok at medium effort.
 # Does not hire an agent and does not change the issue assignee.
-afk_pc_pm_chat_turn() { # <api> <key> <host_agent_id> <issue_id> <slug> <repo> <comment_id> <body>
-  local api="$1" key="$2" host="$3" issue="$4" slug="$5" repo="$6" cid="$7" body="$8"
+afk_pc_pm_chat_turn() { # <api> <key> <host_agent_id> <issue_id> <slug> <repo> <comment_id> <body> [role]
+  local api="$1" key="$2" host="$3" issue="$4" slug="$5" repo="$6" cid="$7" body="$8" role="${9:-}"
   [[ "${AFK_PC_PM_CHAT:-on}" != "off" ]] || return 0
   [[ -n "$api" && -n "$key" && -n "$issue" && -n "$cid" && -n "$body" && -d "$repo" ]] || return 0
-  local skill
-  skill="$(afk_pc_pm_skill_file "$repo")" || return 0
-  local trimmed="$body"
+  local trimmed="$body" mentioned=""
   trimmed="${trimmed#"${trimmed%%[![:space:]]*}"}"
   trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
   [[ "$trimmed" =~ ^(approve|reject)\ [0-9a-f]{8}$ ]] && return 0
-  afk_pc_issue_in_active_factory_job "$repo" "$issue" && return 0
+  mentioned="$(afk_pc_comment_mention_role "$slug" "$trimmed" || true)"
+  [[ -n "$mentioned" ]] && role="$mentioned"
+  [[ -n "$role" ]] || role="pm"
+  # An explicit @ is a one-off question and is answered even during a build.
+  if [[ -z "$mentioned" ]]; then
+    afk_pc_issue_in_active_factory_job "$repo" "$issue" && return 0
+  fi
+  local skill
+  skill="$(afk_pc_role_skill_file "$repo" "$role")" || return 0
   local marker
   marker="$(afk_pc_pm_chat_marker "$issue" "$cid")"
   [[ -f "$marker" ]] && return 0
@@ -2175,8 +2222,9 @@ afk_pc_pm_chat_turn() { # <api> <key> <host_agent_id> <issue_id> <slug> <repo> <
   prompt="$dir/$cid.prompt.md"
   out="$dir/$cid.out.md"
   {
-    printf '%s\n' "You are the product manager for the repository at $repo."
+    printf '%s\n' "You are the ${role} for the repository at $repo."
     printf '%s\n' "Follow the skill below for how you speak and what you are willing to decide."
+    printf '%s\n' "Answer only the question asked. Do not start a build or change the issue status."
     printf '%s\n' "The user wrote on a Paperclip issue. Reply in plain language, in the voice of that skill."
     printf '%s\n' "Do not claim that you edited files, opened a branch, or started a build."
     printf '%s\n' "If the user is scoping work, say what you would write down and what is still undecided."
@@ -2200,7 +2248,7 @@ afk_pc_pm_chat_turn() { # <api> <key> <host_agent_id> <issue_id> <slug> <repo> <
   fi
   local posted=""
   if declare -F afk_pch_comment_as_role >/dev/null 2>&1 && [[ -n "$slug" ]]; then
-    posted="$(afk_pch_comment_as_role "$api" "$issue" "$key" "$run" "$slug" "pm" "$reply" 2>/dev/null || true)"
+    posted="$(afk_pch_comment_as_role "$api" "$issue" "$key" "$run" "$slug" "$role" "$reply" 2>/dev/null || true)"
   else
     posted="$(afk_pc_comment "$api" "$issue" "$key" "$run" "$reply" 2>/dev/null || true)"
   fi
@@ -2243,11 +2291,6 @@ afk_pc_pm_chat_scan_project() { # api key company project host board slug repo
     status="$(jq -r '.status // ""' <<<"$issue")"
     assignee="$(jq -r '.assigneeAgentId // empty' <<<"$issue")"
     [[ -n "$iid" && "$assignee" == "$host" ]] || continue
-    # Todo with no conversation belongs to the factory. Messaging the host
-    # moves a card to in_progress, so a planning reply has to listen there too.
-    # An actual factory job still suppresses the reply.
-    case "$status" in backlog|in_review|in_progress) ;; *) continue ;; esac
-    afk_pc_issue_in_active_factory_job "$repo" "$iid" && continue
     cresp="$(afk_pc_curl GET "$api/api/issues/$iid/comments" "$key" "")"
     [[ "${cresp%%$'\n'*}" == 2?? ]] || continue
     cbody="${cresp#*$'\n'}"
@@ -2269,6 +2312,11 @@ afk_pc_pm_chat_scan_project() { # api key company project host board slug repo
     fi
     [[ -n "$cid" && -n "$ctext" ]] || continue
     [[ -f "$(afk_pc_pm_chat_marker "$iid" "$cid")" ]] && continue
+    # No @-mention: only the planning columns. An @ of a project agent is a
+    # one-off question and is answered in any column.
+    if ! afk_pc_comment_mention_role "$slug" "$ctext" >/dev/null; then
+      case "$status" in backlog|in_review|in_progress) ;; *) continue ;; esac
+    fi
     afk_pc_pm_chat_turn "$api" "$key" "$host" "$iid" "$slug" "$repo" "$cid" "$ctext" || true
     return 0
   done < <(jq -c 'if type=="array" then .[] else (.issues // [])[] end' <<<"$body" 2>/dev/null)
