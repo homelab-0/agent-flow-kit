@@ -7,14 +7,17 @@ if [[ -n "${AFK_BMAD_IMPORT_SOURCED:-}" ]]; then
 fi
 AFK_BMAD_IMPORT_SOURCED=1
 
-afk_bmad_import_plan() { # <repo>  prints a JSON array of epic then story rows
-  local repo="$1"
-  python3 - "$repo" <<'PY'
+afk_bmad_import_plan() { # <repo> [scope_rel]  prints a JSON array of epic then story rows
+  local repo="$1" scope="${2:-_bmad-output}"
+  [[ "$scope" == /* || "$scope" == *".."* ]] && scope="_bmad-output"
+  python3 - "$repo" "$scope" <<'PY'
 import json, re, sys
 from pathlib import Path
 repo = Path(sys.argv[1])
-status = repo / "_bmad-output/implementation-artifacts/sprint-status.yaml"
-epics_md = repo / "_bmad-output/planning-artifacts/epics.md"
+scope = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] else "_bmad-output"
+root = repo / scope
+status = root / "implementation-artifacts/sprint-status.yaml"
+epics_md = root / "planning-artifacts/epics.md"
 if not status.is_file():
     print("[]")
     raise SystemExit(0)
@@ -71,13 +74,15 @@ print(json.dumps(out))
 PY
 }
 
-# afk_bmad_import_backlog <api> <key> <company> <project> <slug> <repo> [limit]
-# limit 0 means import every missing card. Prints a JSON summary.
+# afk_bmad_import_backlog <api> <key> <company> <project> <slug> <repo> [limit] [scope_rel]
+# limit 0 means import every missing card. scope_rel defaults to _bmad-output.
+# Prints a JSON summary.
 afk_bmad_import_backlog() {
-  local api="${1:-}" key="${2:-}" company="${3:-}" project="${4:-}" slug="${5:-}" repo="${6:-}" limit="${7:-20}"
+  local api="${1:-}" key="${2:-}" company="${3:-}" project="${4:-}" slug="${5:-}" repo="${6:-}" limit="${7:-20}" scope="${8:-_bmad-output}"
   [[ -n "$api" && -n "$key" && -n "$company" && -n "$project" && -d "$repo" ]] || return 0
+  [[ -n "$scope" ]] || scope="_bmad-output"
   local plan existing resp body
-  plan="$(afk_bmad_import_plan "$repo")"
+  plan="$(afk_bmad_import_plan "$repo" "$scope")"
   [[ "$(jq -r 'length' <<<"$plan" 2>/dev/null || echo 0)" -gt 0 ]] || {
     printf '{"created":0,"skipped":0}\n'
     return 0
