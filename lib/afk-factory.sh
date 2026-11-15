@@ -612,8 +612,11 @@ EOF
   fi
   # The commit the checks are about to judge. The approver refuses evidence
   # for any other commit, and a check that commits its own changes fails.
-  local gated_head
+  local gated_head gated_ref
   gated_head="$(git -C "$wt" rev-parse HEAD 2>/dev/null || true)"
+  gated_ref="$(git -C "$wt" symbolic-ref --quiet HEAD 2>/dev/null || true)"
+  AFK_LAST_GATED_HEAD=""
+  AFK_LAST_GATED_ROUND_DIR=""
 
   # A check that waits on input or never returns must not hold the job open.
   local gate_tmo cfg_gate
@@ -627,8 +630,18 @@ EOF
     gate_cmd=(gtimeout -k 30 "$gate_tmo" bash "$run_script")
   fi
 
+  # An uncommitted script runs from the base checkout's working copy, which an
+  # agent can reach by its absolute path. It must be the script the job
+  # started with.
+  local want_digest=""
+  if [[ "$run_script" == "$checks_script" && -f "$checks_script" ]]; then
+    want_digest="$(jq -r '.checks_script_sha256 // empty' "$job_dir/job.json" 2>/dev/null || true)"
+  fi
   if [[ "$extract_failed" == true ]]; then
     out="The committed .afk/checks.sh could not be read from ${base_ref}, so no checks ran."
+    rc=1
+  elif [[ -n "$want_digest" && "$(_afk_factory_file_digest "$checks_script")" != "$want_digest" ]]; then
+    out="The base checkout's .afk/checks.sh changed after this job started, so it was not run. Commit the check script to stop this."
     rc=1
   elif [[ -f "$run_script" ]]; then
     out="$(cd "$wt" && "${gate_cmd[@]}" 2>&1 </dev/null)" || rc=$?
@@ -640,17 +653,26 @@ EOF
     rc=0
   fi
   [[ -n "$tmp_script" ]] && rm -f -- "$tmp_script"
-  if (( rc == 0 )) && [[ -n "$gated_head" ]]; then
+  if [[ -n "$gated_head" ]]; then
     if [[ "$(git -C "$wt" rev-parse HEAD 2>/dev/null || true)" != "$gated_head" ]] \
+       || [[ "$(git -C "$wt" symbolic-ref --quiet HEAD 2>/dev/null || true)" != "$gated_ref" ]] \
        || [[ -n "$(git -C "$wt" status --porcelain --untracked-files=no -- . ':!.afk' 2>/dev/null || true)" ]]; then
       out="${out}"$'\n'"The checks changed the branch while they ran, so their result does not describe the commit they started on. The branch was put back to that commit."
       rc=1
       # What the checks committed or changed is not the builder's work and is
       # not reviewed; leaving it would carry it into the next round's merge.
-      git -C "$wt" reset -q --hard "$gated_head" >/dev/null 2>&1 || true
+      if [[ -n "$gated_ref" ]]; then
+        git -C "$wt" checkout -q -f -B "${gated_ref#refs/heads/}" "$gated_head" >/dev/null 2>&1 || true
+      else
+        git -C "$wt" reset -q --hard "$gated_head" >/dev/null 2>&1 || true
+      fi
     fi
   fi
   printf '%s\n' "$gated_head" > "$round_dir/checks.sha" 2>/dev/null || true
+  # Kept in the runner too: agents can write to the job directory, so the
+  # file alone is not trusted by the approver run that follows.
+  AFK_LAST_GATED_HEAD="$gated_head"
+  AFK_LAST_GATED_ROUND_DIR="$round_dir"
 
   if (( rc == 0 )); then
     cat > "$checks_out" <<EOF
@@ -751,7 +773,7 @@ afk_factory_evaluate_merge() {
 
   # The checks and the reviews must be evidence about the commit being merged.
   # An agent that commits after the gate ran would otherwise ship ungated code.
-  if [[ ( -d "$wt/.git" || -f "$wt/.git" ) && ! -s "$round_dir/checks.sha" ]]; then
+  if [[ -d "$wt/.git" || -f "$wt/.git" ]] && [[ -z "$(head -n 1 "$round_dir/checks.sha" 2>/dev/null | tr -d '[:space:]')" ]]; then
     reasons="$(jq -c '. + ["No record of which commit the checks ran on"]' <<<"$reasons")"
   fi
   if [[ -s "$round_dir/checks.sha" && ( -d "$wt/.git" || -f "$wt/.git" ) ]]; then
@@ -1139,7 +1161,7 @@ afk_factory_invoke_stage_agent() {
   # Every agent run is bounded. Without timeout or gtimeout an agent could run
   # on after its runner is presumed gone, while another runner starts in the
   # same worktree; so no live stage starts on such a host.
-  if [[ "${AFK_FACTORY_OFFLINE_SYNTH:-0}" != "1" ]] \
+  if [[ -n "${AFK_FACTORY_AGENT_RUNNER:-}" || "${AFK_FACTORY_LIVE_HARNESS:-0}" == "1" || "${AFK_FACTORY_OFFLINE_SYNTH:-0}" != "1" ]] \
      && ! command -v timeout >/dev/null 2>&1 && ! command -v gtimeout >/dev/null 2>&1; then
     AFK_LAST_STAGE_FAILURE="no_timeout_binary"
     return 1
@@ -1925,6 +1947,18 @@ _afk_factory_land_branch() {
     local ghbin head_sha job_dir base pr_doc pr_state merge_sha pr_num reason
     ghbin="${AFK_FACTORY_GH_BIN:-gh}"
     job_dir="$abs_repo/.afk/jobs/$job_id"
+    # Merge exactly the commit the checks ran on and the reviews read. Checked
+    # before anything is pushed or waited on.
+    head_sha="$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)"
+    # With the worktree gone, the branch tip in the base repository is what
+    # GitHub has for the pull request.
+    [[ -n "$head_sha" ]] || head_sha="$(git -C "$abs_repo" rev-parse --verify --quiet "refs/heads/$branch" 2>/dev/null || true)"
+    local approved_sha=""
+    approved_sha="$(_afk_factory_checked_commit "$job_dir")"
+    if [[ -z "$approved_sha" || "$approved_sha" != "$head_sha" ]]; then
+      jq -cn '{ok:false, action:"head_moved", commit:"", reason:"The branch is not at the commit the checks ran on; nothing was merged"}'
+      return 1
+    fi
     pr_url="$(_afk_factory_ensure_pr "$abs_repo" "$wt_dir" "$branch" "$title" "$job_id" 2>/dev/null || true)"
     if [[ -z "$pr_url" ]]; then
       jq -cn '{ok:false, action:"pr_failed", commit:"", reason:"GitHub remote is set and the pull request was not opened"}'
@@ -1937,20 +1971,9 @@ _afk_factory_land_branch() {
         jq -cn --arg u "$pr_url" --arg r "${reason:-Pull request checks did not pass}" '{ok:false, action:"checks_not_green", commit:"", pr_url:$u, reason:$r}'
         return 1
       fi
-      # Merge exactly the commit the checks ran on and the reviews read, under
-      # a subject and body written here. The default squash message strings
-      # the branch's commit messages together, trailers included.
-      head_sha="$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)"
-      # With the worktree gone, the branch tip in the base repository is what
-      # GitHub has for the pull request.
-      [[ -n "$head_sha" ]] || head_sha="$(git -C "$abs_repo" rev-parse --verify --quiet "refs/heads/$branch" 2>/dev/null || true)"
-      local approved_sha="" cur_round
-      cur_round="$(jq -r '.round // 1' "$job_dir/job.json" 2>/dev/null || printf '1')"
-      approved_sha="$(head -n 1 "$job_dir/round-$cur_round/checks.sha" 2>/dev/null | tr -d '[:space:]')"
-      if [[ -z "$approved_sha" || "$approved_sha" != "$head_sha" ]]; then
-        jq -cn --arg u "$pr_url" '{ok:false, action:"head_moved", commit:"", pr_url:$u, reason:"The branch is not at the commit the checks ran on; nothing was merged"}'
-        return 1
-      fi
+      # Squash under a subject and body written here, pinned to the checked
+      # commit. The default squash message strings the branch's commit
+      # messages together, trailers included.
       pr_num="${pr_url##*/}"
       local -a merge_args=(pr merge --repo "$remote" --squash --subject "$title (#$pr_num)" --body "")
       [[ -n "$head_sha" ]] && merge_args+=(--match-head-commit "$head_sha")
@@ -2028,7 +2051,15 @@ _afk_factory_land_branch() {
     jq -cn '{ok:false, action:"dirty_base", commit:"", reason:"Base repository checkout has uncommitted tracked modifications"}'
     return 1
   fi
-  if git -C "$abs_repo" merge --no-ff "$branch" -m "Merge branch '$branch' ($job_id): $title" >/dev/null 2>&1; then
+  # Merge the commit the checks ran on, and only while the branch is still
+  # there: a branch moved since is not what was checked and reviewed.
+  local checked_sha
+  checked_sha="$(_afk_factory_checked_commit "$abs_repo/.afk/jobs/$job_id")"
+  if [[ -z "$checked_sha" || "$checked_sha" != "$(git -C "$abs_repo" rev-parse "$branch" 2>/dev/null || true)" ]]; then
+    jq -cn '{ok:false, action:"head_moved", commit:"", reason:"The branch is not at the commit the checks ran on; nothing was merged"}'
+    return 1
+  fi
+  if git -C "$abs_repo" merge --no-ff "$checked_sha" -m "Merge branch '$branch' ($job_id): $title" >/dev/null 2>&1; then
     local merged_sha
     merged_sha="$(git -C "$abs_repo" rev-parse HEAD 2>/dev/null || true)"
     [[ -d "$wt_dir" ]] && git -C "$abs_repo" worktree remove --force "$wt_dir" >/dev/null 2>&1 || true
@@ -2378,6 +2409,7 @@ _afk_factory_run_job_locked() {
       --arg br "$branch" \
       --arg bsha "$base_sha" \
       --arg bbr "$base_branch" \
+      --arg csum "$(_afk_factory_file_digest "$abs_repo/.afk/checks.sh")" \
       --arg now "$now" \
       '{
         schema: "afk-factory-job/1",
@@ -2390,6 +2422,7 @@ _afk_factory_run_job_locked() {
         branch: $br,
         base_sha: (if $bsha == "" then null else $bsha end),
         base_branch: (if $bbr == "" then null else $bbr end),
+        checks_script_sha256: (if $csum == "" then null else $csum end),
         stage: "intake",
         round: 1,
         risk: "low",
@@ -2709,6 +2742,11 @@ EOF
   jq -c '.stage = "approve" | .active_agent = "approver"' "$job_file" > "$job_file.tmp" && _afk_factory_commit_tmp "$job_file"
   local merge_eval decision final_stage merged_commit="" pending_inter_id="" last_cid="" branch_head=""
   branch_head="$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || git -C "$abs_repo" rev-parse HEAD 2>/dev/null || true)"
+  # The checked commit as this runner saw it, not as an agent may have
+  # rewritten it in the job directory since.
+  if [[ -n "${AFK_LAST_GATED_HEAD:-}" && "${AFK_LAST_GATED_ROUND_DIR:-}" == "$job_dir/round-$round" ]]; then
+    printf '%s\n' "$AFK_LAST_GATED_HEAD" > "$job_dir/round-$round/checks.sha" 2>/dev/null || true
+  fi
   merge_eval="$(afk_factory_evaluate_merge "$abs_repo" "$job_dir" "$wt_dir")"
   decision="$(jq -r '.decision // empty' <<<"$merge_eval" 2>/dev/null || true)"
   [[ "$decision" == "APPROVE" || "$decision" == "ESCALATE" ]] || decision="ESCALATE"
@@ -3552,11 +3590,27 @@ _afk_factory_new_board_comment() {
   ' <<<"$com_body" 2>/dev/null || true
 }
 
-# _afk_factory_approval_invalid <job_dir> <worktree>
+# _afk_factory_file_digest <file> -> hex digest, or nothing when unreadable
+_afk_factory_file_digest() {
+  [[ -f "$1" ]] || return 0
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum < "$1" 2>/dev/null | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then shasum -a 256 < "$1" 2>/dev/null | cut -d' ' -f1
+  fi
+}
+
+# _afk_factory_checked_commit <job_dir>
+# The commit the current round's checks ran on, or nothing.
+_afk_factory_checked_commit() {
+  local jd="$1" r
+  r="$(jq -r '.round // 1' "$jd/job.json" 2>/dev/null || printf '1')"
+  head -n 1 "$jd/round-$r/checks.sha" 2>/dev/null | tr -d '[:space:]'
+}
+
+# _afk_factory_approval_invalid <job_dir> <worktree> [<repo> <branch>]
 # Prints why an approved job may not be merged now and returns 0; returns 1
 # when it may. Called under the job lock, from the job file as it is then.
 _afk_factory_approval_invalid() {
-  local j_dir="$1" wt="$2" doc stage kind gate round sha head
+  local j_dir="$1" wt="$2" a_repo="${3:-}" a_branch="${4:-}" doc stage kind gate round sha head
   doc="$(cat "$j_dir/job.json" 2>/dev/null || true)"
   stage="$(jq -r '.stage // empty' <<<"$doc" 2>/dev/null || true)"
   kind="$(jq -r '.escalation_kind // empty' <<<"$doc" 2>/dev/null || true)"
@@ -3570,6 +3624,14 @@ _afk_factory_approval_invalid() {
   fi
   if [[ "$gate" != "PASS" ]] || ! head -n 5 "$j_dir/round-$round/checks.md" 2>/dev/null | grep -q '^VERDICT: PASS'; then
     printf 'the checks for this round did not pass'; return 0
+  fi
+  if [[ -n "$a_repo" && -n "$a_branch" && ! -e "$wt" ]]; then
+    # The worktree is gone; the branch in the base repository is what lands.
+    sha="$(head -n 1 "$j_dir/round-$round/checks.sha" 2>/dev/null | tr -d '[:space:]')"
+    head="$(git -C "$a_repo" rev-parse --verify --quiet "refs/heads/$a_branch" 2>/dev/null || true)"
+    if [[ -z "$sha" || "$sha" != "$head" ]]; then
+      printf 'the branch has moved since the checks ran'; return 0
+    fi
   fi
   if [[ -d "$wt/.git" || -f "$wt/.git" ]]; then
     sha="$(head -n 1 "$j_dir/round-$round/checks.sha" 2>/dev/null | tr -d '[:space:]')"
@@ -3811,16 +3873,22 @@ afk_factory_sync_reviews() {
         actions="$(jq -c --arg s "$j_slug" --arg id "$j_id" '. + [{slug:$s, job_id:$id, action:"approve_deferred_job_busy"}]' <<<"$actions")"
         continue
       fi
-      _afk_factory_touch_heartbeat "$j_dir" "landing" "" "running"
-      _afk_factory_beat_start "$j_dir" "landing" ""
-      _afk_factory_clear_execution_policy "$api_url" "$key" "$run_id" "$j_issue"
       # The row was read before the lock. Read the job again under it: another
       # runner may have moved it on, or the branch may have moved since the
       # checks ran.
+      if [[ "$(jq -r '.stage // empty' "$j_dir/job.json" 2>/dev/null || true)" != "needs-human" ]]; then
+        # Someone else already acted on this job. Nothing to say on the issue.
+        _afk_factory_job_unlock "$j_dir"
+        actions="$(jq -c --arg s "$j_slug" --arg id "$j_id" '. + [{slug:$s, job_id:$id, action:"approve_skipped_job_moved_on"}]' <<<"$actions")"
+        continue
+      fi
       local still_bad=""
-      if still_bad="$(_afk_factory_approval_invalid "$j_dir" "$j_wt")"; then
+      _afk_factory_touch_heartbeat "$j_dir" "landing" "" "running"
+      _afk_factory_beat_start "$j_dir" "landing" ""
+      if still_bad="$(_afk_factory_approval_invalid "$j_dir" "$j_wt" "$j_repo" "$j_branch")"; then
         land_res="$(jq -cn --arg r "$still_bad" '{ok:false, action:"stale_approval", commit:"", reason:$r}')"
       else
+        _afk_factory_clear_execution_policy "$api_url" "$key" "$run_id" "$j_issue"
         land_res="$(_afk_factory_land_branch "$j_repo" "$j_wt" "$j_branch" "$j_id" "$j_title")" || true
       fi
       _afk_factory_beat_stop

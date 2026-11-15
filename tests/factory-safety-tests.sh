@@ -58,6 +58,10 @@ review() { # <mode>
     none)      : ;;
     fail)      exit 1 ;;
     pass-then-fail) printf 'VERDICT: PASS\n## Summary\n- Fine.\n' > "$OUT"; exit 1 ;;
+    forge)     # Commit after the checks, then rewrite the record of what was checked.
+               printf 'late\n' >> "$WT/late.txt"; git -C "$WT" add late.txt; git -C "$WT" commit -q -m late
+               for f in "$JOB"/round-*/checks.sha; do git -C "$WT" rev-parse HEAD > "$f"; done
+               printf 'VERDICT: PASS\n## Summary\n- Fine.\n' > "$OUT" ;;
   esac
 }
 case "$STAGE" in
@@ -86,6 +90,8 @@ case "$STAGE" in
                  jq '.diff_stats = {lines: 1, files: 1, changed_paths: ["README.md"]}' "$JOB/job.json" > "$JOB/job.json.x" && mv "$JOB/job.json.x" "$JOB/job.json" ;;
       slow)      printf 'slow\n' >> "$WT/$FEATURE"; sleep "${R_SLEEP:-6}" ;;
       other-branch) git -C "$WT" checkout -q -b side-branch; printf 'side\n' >> "$WT/$FEATURE" ;;
+      tamper-checks) printf 'feature\n' >> "$WT/$FEATURE"
+                 printf '#!/usr/bin/env bash\nexit 0\n' > "$AFK_FACTORY_REPO/.afk/checks.sh" ;;
     esac
     printf '## Summary\n- Built.\n' > "$OUT" ;;
   review-code)     review "${R_REVIEW:-pass}" ;;
@@ -739,6 +745,26 @@ assert_eq "With no record of the commit the checks ran on, nothing is merged" \
 L="$(LAND_MOVE_AFTER_CHECKS=1 land "$PASSING")"
 assert_eq "A commit pushed after the checks ran is not merged" \
   "$(field "$L" '"\(.ok):\(.action)"'):$(grep -c 'pr merge' "$TMPROOT/gh.log")" "false:head_moved:0"
+
+UR="$(new_repo checks-tamper)"
+printf '#!/usr/bin/env bash\necho "always red"; exit 1\n' > "$UR/.afk/checks.sh"
+git -C "$UR" rm -q --cached .afk/checks.sh; git -C "$UR" commit -q -m "checks kept out of git"
+O="$(run_job "$UR" checks-tamper R_BUILD=tamper-checks)"
+assert_eq "A builder that rewrites an uncommitted check script in the base checkout does not get the rewritten script run" \
+  "$(field "$O" '.stage')" "needs-human"
+assert_contains "The checks record says the script changed after the job started" \
+  "$(cat "$UR/.afk/jobs/checks-tamper/round-1/checks.md" 2>/dev/null)" "changed after this job started"
+
+FR="$(new_repo review-forge)"
+O="$(run_job "$FR" review-forge R_REVIEW=forge)"
+assert_eq "A reviewer that commits and rewrites the checked-commit record does not get its commit merged" \
+  "$(field "$O" '.stage'):$(git -C "$FR" log --oneline | grep -c ' late$')" "needs-human:0"
+assert_contains "The reason says the branch moved after the checks" "$(reasons "$O")" "Branch moved after the checks ran"
+
+L="$(LAND_ORIGIN=https://gitlab.example.invalid/demo.git LAND_MOVE_AFTER_CHECKS=1 land "$PASSING")"
+assert_eq "A local merge also refuses a branch that moved after the checks" "$(field "$L" '"\(.ok):\(.action)"')" "false:head_moved"
+L="$(LAND_ORIGIN=https://gitlab.example.invalid/demo.git land "$PASSING")"
+assert_eq "A local merge of the checked commit goes ahead" "$(field "$L" '"\(.ok):\(.action)"')" "true:merged"
 
 VR="$(new_repo review-passfail)"
 O="$(run_job "$VR" review-passfail R_REVIEW=pass-then-fail)"
