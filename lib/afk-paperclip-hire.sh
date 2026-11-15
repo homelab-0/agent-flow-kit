@@ -264,10 +264,12 @@ afk_pch_hire_role() {
           } + (if $issue != "" then {sourceIssueId: $issue} else {} end)')"
         # Claim the hire before sending it. Two jobs of one project reach this
         # point together; the second sees the claim and does not post.
-        local claimed=false
+        local claimed=false other_claim=false
         if afk_pch_lock_ledger; then
           _afk_pch_ledger_set_aside_if_bad
-          if [[ -z "$(_afk_pch_live_pending "$(afk_pch_load_ledger)" "$slug" "$role")" ]]; then
+          if [[ -n "$(_afk_pch_live_pending "$(afk_pch_load_ledger)" "$slug" "$role")" ]]; then
+            other_claim=true
+          else
             afk_pch_save_ledger "$(jq -c --arg s "$slug" --arg r "$role" --arg n "$agent_name" --arg now "$now" '
               .projects[$s].agents[$r] = ((.projects[$s].agents[$r] // {name: $n, role: $r, agent_id: ("local-" + $s + "-" + $r), state: "active_local"})
                 + {status: "pending", pending_since: $now})' <<<"$(afk_pch_load_ledger)")" && claimed=true
@@ -278,7 +280,10 @@ afk_pch_hire_role() {
         [[ "$claimed" == true ]] && resp="$(afk_pc_curl POST "$api_url/api/companies/$company_id/agent-hires" "$key" "" "$hire_body")"
         code="${resp%%$'\n'*}"
         body="${resp#*$'\n'}"
-        [[ "$claimed" == true ]] || pending_since="$now"
+        # Recorded as pending only when another job's live claim was seen. A
+        # claim that could not be written means nothing was sent, and the
+        # next pass tries again.
+        [[ "$other_claim" == true ]] && pending_since="$now"
         if [[ "$code" == 2?? ]]; then
           hired_id="$(jq -r '.agent.id // .id // empty' <<<"$body" 2>/dev/null)"
           if [[ -n "$hired_id" ]]; then
@@ -546,9 +551,12 @@ afk_pch_assign_stage() {
     # that agent. The role is attributed in the comment instead.
     local resp
     resp="$(afk_pc_curl PATCH "$api_url/api/issues/$issue_id" "$key" "$run_id" '{"status":"in_progress"}' 2>/dev/null)"
-    # The stage note is still posted, but a rejected status change is reported.
-    # 2 means Paperclip did not take it: the board cannot see the stage.
-    [[ "${resp%%$'\n'*}" == 2?? ]] || rc=2
+    # 2 means Paperclip did not take it: the board cannot see the stage, and
+    # the stage will not start. Its note is not posted either, or every retry
+    # would announce a stage that never ran.
+    if [[ "${resp%%$'\n'*}" != 2?? ]]; then
+      return 2
+    fi
     if [[ -n "$summary" ]]; then
       afk_pch_comment_as_role "$api_url" "$issue_id" "$key" "$run_id" "$slug" "$role" "$summary" >/dev/null 2>&1 || true
     fi
