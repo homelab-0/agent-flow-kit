@@ -387,7 +387,10 @@ afk_roster_record_and_check_context() {
   # An empty or damaged file starts over. Keeping its text would make the
   # update below fail on every later call.
   if [[ -f "$ledger_file" ]]; then
-    ledger="$(cat "$ledger_file" 2>/dev/null)" || ledger=""
+    # A file that cannot be read at all is not replaced: that would erase
+    # every role's generation and replacement count. Only a file that reads
+    # back damaged starts over.
+    ledger="$(cat "$ledger_file" 2>/dev/null)" || return 1
     jq -e '(.agents | type) == "object"' <<<"$ledger" >/dev/null 2>&1 || ledger="$empty_ledger"
   fi
   local eval_json status ppm dec
@@ -481,6 +484,9 @@ EOF
       rm -f "$tmp"
     fi
   fi
+  # A decision that was not recorded is not acted on: replacing an agent
+  # whose generation was never saved would repeat the replacement next time.
+  [[ "$saved" == true ]] || action="unrecorded"
   jq -cn \
     --arg r "$role" \
     --arg st "$status" \

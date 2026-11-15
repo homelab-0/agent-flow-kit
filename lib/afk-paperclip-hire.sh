@@ -554,8 +554,10 @@ afk_pch_assign_stage() {
     # 2 means Paperclip did not take it: the board cannot see the stage, and
     # the stage will not start. Its note is not posted either, or every retry
     # would announce a stage that never ran.
+    # 3: no answer at all (Paperclip unreachable). 2: an answer that refused.
     if [[ "${resp%%$'\n'*}" != 2?? ]]; then
-      return 2
+      [[ "${resp%%$'\n'*}" =~ ^[1-5][0-9][0-9]$ ]] && return 2
+      return 3
     fi
     if [[ -n "$summary" ]]; then
       afk_pch_comment_as_role "$api_url" "$issue_id" "$key" "$run_id" "$slug" "$role" "$summary" >/dev/null 2>&1 || true

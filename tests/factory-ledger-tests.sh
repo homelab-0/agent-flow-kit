@@ -418,5 +418,24 @@ OLD_PENDING='{"schema":"afk-hired-agents/1","projects":{"p":{"agents":{"pm":{"ag
 assert_eq "A pending hire expires after six hours; a recent one still counts" \
   "[$(_afk_pch_live_pending "$OLD_PENDING" p pm)]:$([[ -n "$(_afk_pch_live_pending "$OLD_PENDING" p dev)" ]] && printf live || printf gone)" "[]:live"
 
+CTXJ="$TMPROOT/ctx-unreadable"; mkdir -p "$CTXJ"
+printf '{"schema":"afk-context-ledger/1","agents":{"dev":{"generation":3,"replacements":2}}}\n' > "$CTXJ/context-ledger.json"
+chmod 000 "$CTXJ/context-ledger.json"
+if [[ "$(id -u)" != 0 ]]; then
+  afk_roster_record_and_check_context "$CTXJ" dev 10 200000 false "$TMPROOT" >/dev/null 2>&1; CRC=$?
+  chmod 600 "$CTXJ/context-ledger.json"
+  assert_eq "A context ledger that cannot be read is left as it is, and the call fails" \
+    "$CRC:$(jq -r '.agents.dev.generation' "$CTXJ/context-ledger.json")" "1:3"
+else
+  chmod 600 "$CTXJ/context-ledger.json"; ok "A context ledger that cannot be read is left as it is (skipped as root)"
+fi
+CTXR="$TMPROOT/ctx-ro"; mkdir -p "$CTXR"; chmod 500 "$CTXR"
+if [[ "$(id -u)" != 0 ]]; then
+  CR="$(afk_roster_record_and_check_context "$CTXR" dev 190000 200000 false "$TMPROOT" 2>/dev/null)"
+  assert_eq "A replacement decision that could not be saved is reported as unrecorded, so nothing acts on it" \
+    "$(jq -r '.action' <<<"$CR")" "unrecorded"
+fi
+chmod 700 "$CTXR"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
