@@ -418,6 +418,11 @@ OLD_PENDING='{"schema":"afk-hired-agents/1","projects":{"p":{"agents":{"pm":{"ag
 assert_eq "A pending hire expires after six hours; a recent one still counts" \
   "[$(_afk_pch_live_pending "$OLD_PENDING" p pm)]:$([[ -n "$(_afk_pch_live_pending "$OLD_PENDING" p dev)" ]] && printf live || printf gone)" "[]:live"
 
+reset_state
+printf '%s' '{"error":"bad gateway"}502' > "$STUB_STATE/issue-patch"
+afk_pch_assign_stage gw pm "$ISSUE" "" "$API" "$KEY" "run-1" >/dev/null 2>&1; GRC=$?
+assert_eq "A 502 from a proxy in front of Paperclip counts as an outage (3), not a refusal (2)" "$GRC" "3"
+
 CTXJ="$TMPROOT/ctx-unreadable"; mkdir -p "$CTXJ"
 printf '{"schema":"afk-context-ledger/1","agents":{"dev":{"generation":3,"replacements":2}}}\n' > "$CTXJ/context-ledger.json"
 chmod 000 "$CTXJ/context-ledger.json"

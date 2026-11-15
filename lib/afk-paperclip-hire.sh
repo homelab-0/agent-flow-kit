@@ -556,7 +556,10 @@ afk_pch_assign_stage() {
     # would announce a stage that never ran.
     # 3: no answer at all (Paperclip unreachable). 2: an answer that refused.
     if [[ "${resp%%$'\n'*}" != 2?? ]]; then
-      [[ "${resp%%$'\n'*}" =~ ^[1-5][0-9][0-9]$ ]] && return 2
+      # A 5xx or 429 from Paperclip or a proxy in front of it is an outage,
+      # not a refusal: it must not count toward the wait limit.
+      [[ "${resp%%$'\n'*}" =~ ^(5[0-9][0-9]|429)$ ]] && return 3
+      [[ "${resp%%$'\n'*}" =~ ^[1-4][0-9][0-9]$ ]] && return 2
       return 3
     fi
     if [[ -n "$summary" ]]; then
