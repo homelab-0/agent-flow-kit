@@ -408,7 +408,8 @@ case "$1 $2" in
       if [[ -f "$GH_STATE/checks-$n.json" ]]; then cat "$GH_STATE/checks-$n.json"; else cat "$GH_STATE/checks.json"; fi
     elif [[ -f "$GH_STATE/merged" ]]; then printf '{"state":"MERGED","mergeCommit":{"oid":"abc123def456"}}\n'
     else printf '{"state":"OPEN","mergeCommit":null}\n'; fi ;;
-  "pr merge")  [[ -f "$GH_STATE/refuse-merge" ]] && exit 1; : > "$GH_STATE/merged" ;;
+  "pr merge")  [[ -f "$GH_STATE/hang-merge" ]] && sleep 60
+               [[ -f "$GH_STATE/refuse-merge" ]] && exit 1; : > "$GH_STATE/merged" ;;
   *) exit 1 ;;
 esac
 SH
@@ -870,6 +871,11 @@ jq '.checks = "none"' "$RNC/.afk/config.json" > "$RNC/.afk/config.json.x" && mv 
 git -C "$RNC" commit -q -am "declare no checks"
 O="$(run_job "$RNC" no-checks-declared)"
 assert_eq "A project that declares it has no checks can still merge" "$(field "$O" '.stage')" "merged"
+
+T0=$SECONDS
+L="$(AFK_FACTORY_NET_TIMEOUT_SEC=2 land "$PASSING" ': > "$TMPROOT/gh-state/hang-merge"')"
+assert_eq "A merge call that hangs is cut off, reported as not merged, and does not hold the job" \
+  "$(field "$L" '"\(.ok):\(.action)"'):$(( SECONDS - T0 < 40 ))" "false:pr_open:1"
 
 AL_STATE="$TMPROOT/alive-state"; mkdir -p "$AL_STATE/paperclip"
 AL0="$(AFK_STATE_DIR="$AL_STATE" bash "$AFK" factory alive --json 2>/dev/null; printf ':%s' "$?")"

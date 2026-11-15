@@ -1843,6 +1843,17 @@ _afk_factory_set_approval_gate() { # <api> <key> <run> <issue> <host> <board_use
 # A pull request already open for the branch is reused. One already merged is
 # returned too, so a job restarted after its merge finds the merge and does
 # not open a second pull request.
+# _afk_factory_net <cmd...>: a network call made while landing, bounded so a
+# connection that hangs cannot keep the job (and the host's sign of life)
+# going for ever. AFK_FACTORY_NET_TIMEOUT_SEC, default 120.
+_afk_factory_net() {
+  local t="${AFK_FACTORY_NET_TIMEOUT_SEC:-120}"
+  [[ "$t" =~ ^[0-9]+$ && "$t" -gt 0 ]] || t=120
+  if command -v timeout >/dev/null 2>&1; then timeout -k 10 "$t" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then gtimeout -k 10 "$t" "$@"
+  else "$@"; fi
+}
+
 _afk_factory_ensure_pr() { # <abs_repo> <wt> <branch> <title> <job_id>
   local abs_repo="$1" wt="$2" branch="$3" title="$4" job_id="$5"
   local remote ghbin base list url job_dir
@@ -1856,7 +1867,7 @@ _afk_factory_ensure_pr() { # <abs_repo> <wt> <branch> <title> <job_id>
   job_dir="$abs_repo/.afk/jobs/$job_id"
   base="$(_afk_factory_job_base_branch "$job_dir" "$wt")"
   [[ -n "$base" ]] || base="main"
-  list="$("$ghbin" pr list --repo "$remote" --head "$branch" --state all --json url,number,state,headRefOid 2>/dev/null || true)"
+  list="$(_afk_factory_net "$ghbin" pr list --repo "$remote" --head "$branch" --state all --json url,number,state,headRefOid 2>/dev/null || true)"
   # A merged pull request counts as this job's merge only when it merged the
   # commit the worktree holds now. One merged by hand before a later round
   # does not carry that round's commits.
@@ -1868,11 +1879,11 @@ _afk_factory_ensure_pr() { # <abs_repo> <wt> <branch> <title> <job_id>
     return 0
   fi
   if [[ "${AFK_FACTORY_SKIP_PUSH:-}" != "1" ]]; then
-    git -C "$wt" push -u origin "$branch" >/dev/null 2>&1 || return 1
+    _afk_factory_net git -C "$wt" push -u origin "$branch" >/dev/null 2>&1 || return 1
   fi
   url="$(jq -r 'if type=="array" then ([.[] | select((.state // "OPEN") == "OPEN")][0].url // empty) else empty end' <<<"$list" 2>/dev/null || true)"
   if [[ -z "$url" ]]; then
-    url="$("$ghbin" pr create --repo "$remote" --base "$base" --head "$branch" --title "$title" \
+    url="$(_afk_factory_net "$ghbin" pr create --repo "$remote" --base "$base" --head "$branch" --title "$title" \
       --body "$(printf 'Branch %s for %s.\n' "$branch" "$job_id")" 2>/dev/null || true)"
     url="$(printf '%s\n' "$url" | grep -E '^https://' | head -n 1 || true)"
   fi
@@ -1884,7 +1895,7 @@ _afk_factory_ensure_pr() { # <abs_repo> <wt> <branch> <title> <job_id>
 # Reads the pull request's check runs and commit statuses.
 _afk_factory_pr_checks_state() {
   local ghbin="$1" remote="$2" url="$3" doc
-  doc="$("$ghbin" pr view --repo "$remote" "$url" --json statusCheckRollup 2>/dev/null)" || { printf 'unknown'; return 0; }
+  doc="$(_afk_factory_net "$ghbin" pr view --repo "$remote" "$url" --json statusCheckRollup 2>/dev/null)" || { printf 'unknown'; return 0; }
   jq -r '
     if (type != "object") then "unknown"
     else
@@ -1976,7 +1987,7 @@ _afk_factory_land_branch() {
       jq -cn '{ok:false, action:"pr_failed", commit:"", reason:"GitHub remote is set and the pull request was not opened"}'
       return 1
     fi
-    pr_doc="$("$ghbin" pr view --repo "$remote" "$pr_url" --json state,mergeCommit 2>/dev/null || true)"
+    pr_doc="$(_afk_factory_net "$ghbin" pr view --repo "$remote" "$pr_url" --json state,mergeCommit 2>/dev/null || true)"
     pr_state="$(jq -r '.state // empty' <<<"$pr_doc" 2>/dev/null || true)"
     if [[ "$pr_state" != "MERGED" ]]; then
       if ! reason="$(_afk_factory_wait_pr_checks "$abs_repo" "$ghbin" "$remote" "$pr_url")"; then
@@ -1989,18 +2000,18 @@ _afk_factory_land_branch() {
       pr_num="${pr_url##*/}"
       local -a merge_args=(pr merge --repo "$remote" --squash --subject "$title (#$pr_num)" --body "")
       [[ -n "$head_sha" ]] && merge_args+=(--match-head-commit "$head_sha")
-      if ! "$ghbin" "${merge_args[@]}" "$pr_url" >/dev/null 2>&1; then
+      if ! _afk_factory_net "$ghbin" "${merge_args[@]}" "$pr_url" >/dev/null 2>&1; then
         jq -cn --arg u "$pr_url" '{ok:false, action:"pr_open", commit:"", pr_url:$u, reason:"Pull request is open and was not merged"}'
         return 1
       fi
-      pr_doc="$("$ghbin" pr view --repo "$remote" "$pr_url" --json state,mergeCommit 2>/dev/null || true)"
+      pr_doc="$(_afk_factory_net "$ghbin" pr view --repo "$remote" "$pr_url" --json state,mergeCommit 2>/dev/null || true)"
     fi
     # The merge commit GitHub made, not whatever the local checkout holds.
     merge_sha="$(jq -r '.mergeCommit.oid // empty' <<<"$pr_doc" 2>/dev/null || true)"
     base="$(_afk_factory_job_base_branch "$job_dir" "$abs_repo")"
     local pull_note=""
     if [[ "${AFK_FACTORY_SKIP_PUSH:-}" != "1" ]]; then
-      git -C "$abs_repo" pull --ff-only "origin" "$base" >/dev/null 2>&1 || pull_note="the local checkout could not be fast-forwarded to it"
+      _afk_factory_net git -C "$abs_repo" pull --ff-only "origin" "$base" >/dev/null 2>&1 || pull_note="the local checkout could not be fast-forwarded to it"
     fi
     [[ -n "$merge_sha" ]] || merge_sha="$(git -C "$abs_repo" rev-parse HEAD 2>/dev/null || true)"
     [[ -d "$wt_dir" && "$wt_dir" != "$abs_repo" ]] && git -C "$abs_repo" worktree remove --force "$wt_dir" >/dev/null 2>&1 || true

@@ -165,7 +165,11 @@ A failed attempt marks the pool: a day for a sign-in failure, an hour for a rate
 
 ### Liveness
 
-`agent-flow-kit factory alive [--stale-seconds N] [--json]` exits 0 while the host has shown a sign of life in the last N seconds (default 1800, or `AFK_FACTORY_ALIVE_MAX_SEC`), and 1 otherwise. Every poll pass touches `~/.local/state/agent-flow-kit/paperclip/alive` when it starts and ends, and a running job touches it with each heartbeat. A pass that hangs stops touching it, and a long job keeps it fresh. Use it as the liveness probe on a host where nothing else watches the scheduler.
+`agent-flow-kit factory alive [--stale-seconds N] [--json]` exits 0 while the host has shown a sign of life in the last N seconds (default 1800, or `AFK_FACTORY_ALIVE_MAX_SEC`), and 1 otherwise. Every poll pass touches `$AFK_STATE_DIR/paperclip/alive` when it starts and ends, and a running job touches it with each heartbeat. The state directory defaults to `~/.local/state/agent-flow-kit` and follows `XDG_STATE_HOME`. Run the probe with the same `HOME`, `XDG_STATE_HOME` and `AFK_STATE_DIR` as the poller, or it reads another file.
+
+Every agent run, the checks, and each `git` and `gh` call while landing have a time limit (`AFK_FACTORY_NET_TIMEOUT_SEC`, default 120, for the landing calls). A job therefore cannot keep the file fresh for ever, and a pass that hangs stops touching it.
+
+The file exists only after the first pass on a configured host. Give the probe an initial delay of at least one poll interval. On a host whose Paperclip config is missing or refused, the probe fails until the host is configured.
 
 ## Known limits
 
