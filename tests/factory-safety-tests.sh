@@ -57,6 +57,7 @@ review() { # <mode>
     ambiguous) printf 'VERDICT: PASS or CHANGES_REQUESTED\n## Summary\n- Unsure.\n' > "$OUT" ;;
     none)      : ;;
     fail)      exit 1 ;;
+    pass-then-fail) printf 'VERDICT: PASS\n## Summary\n- Fine.\n' > "$OUT"; exit 1 ;;
   esac
 }
 case "$STAGE" in
@@ -68,6 +69,7 @@ case "$STAGE" in
       reject)  printf 'VERDICT: REJECT.\n## Summary\n- Out of scope.\n' > "$OUT" ;;
       none)    : ;;
       fail)    exit 1 ;;
+      hang)    sleep 60 ;;
     esac ;;
   spec)
     [[ "${R_SPEC:-ok}" == fail ]] && exit 1
@@ -411,6 +413,10 @@ land() { # <checks-json> [setup...] -> land result JSON
   printf 'y\n' > "$repo-wt/b"; git -C "$repo-wt" add b; git -C "$repo-wt" commit -q -m work
   printf '%s\n' "$checks" > "$TMPROOT/gh-state/checks.json"
   local s; for s in "$@"; do eval "$s"; done
+  # The checks ran on the branch as committed; landing merges only that commit.
+  mkdir -p "$repo/.afk/jobs/j1/round-1"
+  [[ -n "${LAND_NO_SHA:-}" ]] || git -C "$repo-wt" rev-parse HEAD > "$repo/.afk/jobs/j1/round-1/checks.sha"
+  [[ -z "${LAND_MOVE_AFTER_CHECKS:-}" ]] || { printf 'z\n' > "$repo-wt/c"; git -C "$repo-wt" add c; git -C "$repo-wt" commit -q -m later; }
   # land runs in a command substitution; hand the reviewed commit out by file.
   git -C "$repo-wt" rev-parse HEAD > "$TMPROOT/land-head"
   GH_LOG="$TMPROOT/gh.log" GH_STATE="$TMPROOT/gh-state" AFK_FACTORY_GH_BIN="$GH" AFK_FACTORY_SKIP_PUSH=1 \
@@ -703,6 +709,104 @@ MC2="$(bash -c "$LIBS"'; _afk_factory_project_merge_policy anything')"
 rm -f "$AFK_PAPERCLIP_CONFIG"
 assert_eq "A malformed config row does not hide the projects after it, an odd merge value means a person merges, and an unreadable config means a person merges" \
   "$MC|$MC2" "human human |human"
+
+# ============================================================================
+head1 "7f. Fifth review: evidence belongs to the exact commit that merges"
+# ============================================================================
+GR="$(new_repo gate-commits)"
+cat > "$GR/.afk/checks.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'sneak\n' > sneaked.txt; git add sneaked.txt; git commit -q -m "checks commit"
+exit 0
+SH
+git -C "$GR" add .afk/checks.sh; git -C "$GR" commit -q -m "checks that commit"
+O="$(run_job "$GR" gate-commits)"
+assert_eq "Checks that commit to the branch while they run fail every round, their commit is undone, and nothing merges" \
+  "$(field "$O" '.stage'):$(git -C "$GR-factory/gate-commits" log --oneline 2>/dev/null | grep -c 'checks commit')" "needs-human:0"
+assert_contains "The checks record says the branch changed under them" \
+  "$(cat "$GR/.afk/jobs/gate-commits/round-1/checks.md" 2>/dev/null)" "changed the branch while they ran"
+
+ER="$(new_repo gate-empty)"
+: > "$ER/.afk/checks.sh"; git -C "$ER" add .afk/checks.sh; git -C "$ER" commit -q -m "empty checks"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$ER/.afk/checks.sh"
+O="$(run_job "$ER" gate-empty)"
+assert_eq "A committed check script that cannot be read fails the checks; the working copy is not run in its place" \
+  "$(field "$O" '.stage'):$(head -n 1 "$ER/.afk/jobs/gate-empty/round-1/checks.md" 2>/dev/null)" "needs-human:VERDICT: FAIL"
+
+L="$(LAND_NO_SHA=1 land "$PASSING")"
+assert_eq "With no record of the commit the checks ran on, nothing is merged" \
+  "$(field "$L" '"\(.ok):\(.action)"'):$(grep -c 'pr merge' "$TMPROOT/gh.log")" "false:head_moved:0"
+L="$(LAND_MOVE_AFTER_CHECKS=1 land "$PASSING")"
+assert_eq "A commit pushed after the checks ran is not merged" \
+  "$(field "$L" '"\(.ok):\(.action)"'):$(grep -c 'pr merge' "$TMPROOT/gh.log")" "false:head_moved:0"
+
+VR="$(new_repo review-passfail)"
+O="$(run_job "$VR" review-passfail R_REVIEW=pass-then-fail)"
+assert_eq "A review that writes a pass and then fails leaves no verdict, and nothing merges" \
+  "$(field "$O" '.stage')" "needs-human"
+assert_contains "The reason names the review as missing" "$(reasons "$O")" "review-code returned MISSING"
+
+HR="$(new_repo runner-hang)"
+T0=$SECONDS
+O="$(run_job "$HR" runner-hang R_INTAKE=hang AFK_STAGE_TIMEOUT_SEC=2)"
+assert_eq "A custom agent runner that hangs is stopped at the stage limit and the job goes to a person" \
+  "$(field "$O" '.stage'):$(( SECONDS - T0 < 45 ))" "needs-human:1"
+
+SR="$(new_repo stale-output)"
+STALE="$(bash -c "$LIBS"'
+  repo="$1"; jd="$repo/.afk/jobs/stale"; mkdir -p "$jd"
+  printf "{\"id\":\"stale\",\"stage\":\"intake\",\"round\":1}\n" > "$jd/job.json"
+  printf "# Request\n" > "$jd/issue.md"
+  printf "VERDICT: ACCEPT\nRISK: low\n" > "$jd/intake.md"
+  R_INTAKE=none AFK_FACTORY_AGENT_RUNNER="$2" afk_factory_invoke_stage_agent "$repo" "$repo" "$jd" pm intake "$jd/issue.md" "$jd/intake.md" >/dev/null 2>&1
+  [[ -e "$jd/intake.md" ]] && printf kept || printf gone
+' _ "$SR" "$RUNNER")"
+assert_eq "An output left by an earlier attempt does not pass for a runner that wrote nothing" "$STALE" "gone"
+
+WR="$(new_repo wt-foreign)"
+mkdir -p "$WR-factory/wt-foreign"; git -C "$WR-factory/wt-foreign" init -q -b main
+O="$(run_job "$WR" wt-foreign)"
+assert_eq "A directory at the job's worktree path that is some other git repository is refused; no agent runs" \
+  "$(field "$O" '.stage'):$(calls)" "needs-human:"
+WR2="$(new_repo wt-link)"
+mkdir -p "$WR2-factory"; ln -s "$WR2" "$WR2-factory/wt-link"
+O="$(run_job "$WR2" wt-link)"
+assert_eq "A worktree path that leads back to the base checkout is refused; no agent runs" \
+  "$(field "$O" '.stage'):$(calls)" "needs-human:"
+
+NT="$(mktemp -d "$TMPROOT/notimeout.XXXXXX")"
+for t in bash jq git cat mkdir rm dirname basename date head tr grep sed awk wc mktemp printf env sha256sum stat; do
+  b="$(command -v "$t" 2>/dev/null)" && [[ "$b" == /* ]] && ln -sf "$b" "$NT/$t"
+done
+NTO="$(PATH="$NT" bash -c "$LIBS"'
+  jd="$1/nt-job"; mkdir -p "$jd"; printf "{\"id\":\"nt\",\"round\":1}\n" > "$jd/job.json"; printf "x\n" > "$jd/p.md"
+  afk_factory_invoke_stage_agent "$1" "$1" "$jd" pm intake "$jd/p.md" "$jd/out.md" >/dev/null 2>&1; rc=$?
+  printf "%s:%s" "$rc" "$AFK_LAST_STAGE_FAILURE"
+' _ "$TMPROOT")"
+assert_eq "With no timeout command on the host, no agent stage starts" "$NTO" "1:no_timeout_binary"
+
+AV="$(bash -c "$LIBS"'
+  r="$1/approve-check"; rm -rf "$r"; mkdir -p "$r"; git -C "$r" init -q -b main
+  git -C "$r" config user.name T; git -C "$r" config user.email t@example.invalid
+  printf "a\n" > "$r/a"; git -C "$r" add a; git -C "$r" commit -q -m one
+  jd="$r/.afk/jobs/j"; mkdir -p "$jd/round-1"
+  printf "VERDICT: PASS\n" > "$jd/round-1/checks.md"
+  git -C "$r" rev-parse HEAD > "$jd/round-1/checks.sha"
+  put() { printf "%s\n" "$1" > "$jd/job.json"; }
+  out=""
+  put "{\"stage\":\"needs-human\",\"round\":1,\"escalation_kind\":\"merge\",\"merge_evaluation\":{\"gate_verdict\":\"PASS\"}}"
+  _afk_factory_approval_invalid "$jd" "$r" >/dev/null && out+="bad," || out+="ok,"
+  put "{\"stage\":\"merged\",\"round\":1,\"merge_evaluation\":{\"gate_verdict\":\"PASS\"}}"
+  _afk_factory_approval_invalid "$jd" "$r" >/dev/null && out+="refused," || out+="allowed,"
+  put "{\"stage\":\"needs-human\",\"round\":1,\"merge_evaluation\":{\"gate_verdict\":\"FAIL\"}}"
+  _afk_factory_approval_invalid "$jd" "$r" >/dev/null && out+="refused," || out+="allowed,"
+  put "{\"stage\":\"needs-human\",\"round\":1,\"merge_evaluation\":{\"gate_verdict\":\"PASS\"}}"
+  printf "b\n" > "$r/a"; git -C "$r" commit -q -am two
+  _afk_factory_approval_invalid "$jd" "$r" >/dev/null && out+="refused" || out+="allowed"
+  printf "%s" "$out"
+' _ "$TMPROOT")"
+assert_eq "An approval is acted on only while the job still waits on that merge, its checks passed, and the branch is where they ran" \
+  "$AV" "ok,refused,refused,refused"
 
 # ============================================================================
 head1 "8. Limits that keep a stage from failing every agent in turn"

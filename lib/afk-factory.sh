@@ -598,14 +598,22 @@ EOF
   # path, and that edit never shows in the branch diff checked above.
   # The copy sits in the worktree's own .afk directory, so a script that
   # finds the repository from its own location finds the worktree.
-  local run_script="$checks_script" tmp_script=""
+  local run_script="$checks_script" tmp_script="" extract_failed=false
   if git -C "$base_repo" cat-file -e "${base_ref}:.afk/checks.sh" 2>/dev/null; then
     mkdir -p "$wt/.afk" 2>/dev/null || true
     tmp_script="$(mktemp "$wt/.afk/.base-checks.XXXXXX" 2>/dev/null || true)"
     if [[ -n "$tmp_script" ]] && git -C "$base_repo" show "${base_ref}:.afk/checks.sh" > "$tmp_script" 2>/dev/null && [[ -s "$tmp_script" ]]; then
       run_script="$tmp_script"
+    else
+      # The committed script could not be read out. Falling back to the
+      # working copy would run a script nobody reviewed.
+      extract_failed=true
     fi
   fi
+  # The commit the checks are about to judge. The approver refuses evidence
+  # for any other commit, and a check that commits its own changes fails.
+  local gated_head
+  gated_head="$(git -C "$wt" rev-parse HEAD 2>/dev/null || true)"
 
   # A check that waits on input or never returns must not hold the job open.
   local gate_tmo cfg_gate
@@ -619,7 +627,10 @@ EOF
     gate_cmd=(gtimeout -k 30 "$gate_tmo" bash "$run_script")
   fi
 
-  if [[ -f "$run_script" ]]; then
+  if [[ "$extract_failed" == true ]]; then
+    out="The committed .afk/checks.sh could not be read from ${base_ref}, so no checks ran."
+    rc=1
+  elif [[ -f "$run_script" ]]; then
     out="$(cd "$wt" && "${gate_cmd[@]}" 2>&1 </dev/null)" || rc=$?
     if (( rc == 124 || rc == 137 )); then
       out="${out}"$'\n'"Deterministic check gate did not finish within ${gate_tmo}s and was stopped."
@@ -629,9 +640,17 @@ EOF
     rc=0
   fi
   [[ -n "$tmp_script" ]] && rm -f -- "$tmp_script"
-  # The commit the checks ran against. The approver refuses evidence for any
-  # other commit.
-  git -C "$wt" rev-parse HEAD > "$round_dir/checks.sha" 2>/dev/null || true
+  if (( rc == 0 )) && [[ -n "$gated_head" ]]; then
+    if [[ "$(git -C "$wt" rev-parse HEAD 2>/dev/null || true)" != "$gated_head" ]] \
+       || [[ -n "$(git -C "$wt" status --porcelain --untracked-files=no -- . ':!.afk' 2>/dev/null || true)" ]]; then
+      out="${out}"$'\n'"The checks changed the branch while they ran, so their result does not describe the commit they started on. The branch was put back to that commit."
+      rc=1
+      # What the checks committed or changed is not the builder's work and is
+      # not reviewed; leaving it would carry it into the next round's merge.
+      git -C "$wt" reset -q --hard "$gated_head" >/dev/null 2>&1 || true
+    fi
+  fi
+  printf '%s\n' "$gated_head" > "$round_dir/checks.sha" 2>/dev/null || true
 
   if (( rc == 0 )); then
     cat > "$checks_out" <<EOF
@@ -732,6 +751,9 @@ afk_factory_evaluate_merge() {
 
   # The checks and the reviews must be evidence about the commit being merged.
   # An agent that commits after the gate ran would otherwise ship ungated code.
+  if [[ ( -d "$wt/.git" || -f "$wt/.git" ) && ! -s "$round_dir/checks.sha" ]]; then
+    reasons="$(jq -c '. + ["No record of which commit the checks ran on"]' <<<"$reasons")"
+  fi
   if [[ -s "$round_dir/checks.sha" && ( -d "$wt/.git" || -f "$wt/.git" ) ]]; then
     local gated_sha head_sha
     gated_sha="$(head -n 1 "$round_dir/checks.sha" 2>/dev/null | tr -d '[:space:]')"
@@ -1114,9 +1136,27 @@ afk_factory_invoke_stage_agent() {
   AFK_LAST_STAGE_COST_CLASS="$(jq -r '.cost_class // "subscription"' <<<"$route_json" 2>/dev/null || printf 'subscription')"
   AFK_LAST_STAGE_COST_CENTS=0
 
+  # Every agent run is bounded. Without timeout or gtimeout an agent could run
+  # on after its runner is presumed gone, while another runner starts in the
+  # same worktree; so no live stage starts on such a host.
+  if [[ "${AFK_FACTORY_OFFLINE_SYNTH:-0}" != "1" ]] \
+     && ! command -v timeout >/dev/null 2>&1 && ! command -v gtimeout >/dev/null 2>&1; then
+    AFK_LAST_STAGE_FAILURE="no_timeout_binary"
+    return 1
+  fi
   local runner="${AFK_FACTORY_AGENT_RUNNER:-}"
   if [[ -n "$runner" && -x "$runner" ]]; then
-    local runner_out="" runner_rc=0
+    local runner_out="" runner_rc=0 r_tmo
+    # An output left by an earlier, interrupted attempt must not pass for
+    # this one's.
+    rm -f -- "$output_file"
+    # A custom runner is bounded like any stage: a hung one with a fresh
+    # heartbeat would otherwise never be recovered.
+    r_tmo="${AFK_STAGE_TIMEOUT_SEC:-$(jq -r '.watchdog.stage_timeout_sec // 900' <<<"$(afk_factory_load_config "$repo")" 2>/dev/null || printf '900')}"
+    [[ "$r_tmo" =~ ^[0-9]+$ && "$r_tmo" -gt 0 ]] || r_tmo=900
+    local -a r_cmd=()
+    if command -v timeout >/dev/null 2>&1; then r_cmd=(timeout -k 20 "$r_tmo")
+    else r_cmd=(gtimeout -k 20 "$r_tmo"); fi
     runner_out="$(
       AFK_FACTORY_REPO="$repo" \
       AFK_FACTORY_WORKTREE="$wt" \
@@ -1131,7 +1171,7 @@ afk_factory_invoke_stage_agent() {
       AFK_FACTORY_PROMPT_FILE="$prompt_file" \
       AFK_FACTORY_COMPILED_PROMPT="$compiled_prompt" \
       AFK_FACTORY_OUTPUT_FILE="$output_file" \
-        "$runner" "$stage" "$role" "$prompt_file" "$output_file" 2>/dev/null
+        "${r_cmd[@]}" "$runner" "$stage" "$role" "$prompt_file" "$output_file" 2>/dev/null
     )" || runner_rc=$?
     if [[ -n "$runner_out" ]] && jq -e '.used_tokens or .input_tokens' <<<"$runner_out" >/dev/null 2>&1; then
       AFK_LAST_STAGE_USED_TOKENS="$(jq -r '.used_tokens // ((.input_tokens // 0) + (.output_tokens // 0)) // empty' <<<"$runner_out")"
@@ -1897,10 +1937,20 @@ _afk_factory_land_branch() {
         jq -cn --arg u "$pr_url" --arg r "${reason:-Pull request checks did not pass}" '{ok:false, action:"checks_not_green", commit:"", pr_url:$u, reason:$r}'
         return 1
       fi
-      # Merge exactly the commit that was checked and reviewed, under a
-      # subject and body written here. The default squash message strings the
-      # branch's commit messages together, trailers included.
+      # Merge exactly the commit the checks ran on and the reviews read, under
+      # a subject and body written here. The default squash message strings
+      # the branch's commit messages together, trailers included.
       head_sha="$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)"
+      # With the worktree gone, the branch tip in the base repository is what
+      # GitHub has for the pull request.
+      [[ -n "$head_sha" ]] || head_sha="$(git -C "$abs_repo" rev-parse --verify --quiet "refs/heads/$branch" 2>/dev/null || true)"
+      local approved_sha="" cur_round
+      cur_round="$(jq -r '.round // 1' "$job_dir/job.json" 2>/dev/null || printf '1')"
+      approved_sha="$(head -n 1 "$job_dir/round-$cur_round/checks.sha" 2>/dev/null | tr -d '[:space:]')"
+      if [[ -z "$approved_sha" || "$approved_sha" != "$head_sha" ]]; then
+        jq -cn --arg u "$pr_url" '{ok:false, action:"head_moved", commit:"", pr_url:$u, reason:"The branch is not at the commit the checks ran on; nothing was merged"}'
+        return 1
+      fi
       pr_num="${pr_url##*/}"
       local -a merge_args=(pr merge --repo "$remote" --squash --subject "$title (#$pr_num)" --body "")
       [[ -n "$head_sha" ]] && merge_args+=(--match-head-commit "$head_sha")
@@ -2021,6 +2071,11 @@ afk_factory_run_stage_with_context_guard() {
   _afk_factory_beat_stop
   rm -f "$job_dir/watchdog-nudge.md"
   _afk_factory_touch_heartbeat "$job_dir" "$stage" "$role" "running"
+  # A review that failed or ran out of time leaves no verdict behind, even if
+  # it wrote one before it stopped.
+  if (( stage_rc != 0 )) && [[ "$stage" == review* ]]; then
+    rm -f -- "$output_file"
+  fi
   # A stage that wrote nothing has failed whatever its exit status says.
   if (( stage_rc == 0 )) && [[ ! -s "$output_file" ]]; then
     stage_rc=1
@@ -2287,6 +2342,23 @@ _afk_factory_run_job_locked() {
       fi
     elif ! git -C "$wt_dir" rev-parse --git-dir >/dev/null 2>&1; then
       wt_error="$wt_dir exists and is not a git worktree"
+    else
+      # It must be this repository's registered worktree for this job's
+      # branch, and not the base checkout reached through a link.
+      local wt_real reg="" repo_real l_path="" l_line
+      wt_real="$(cd -P -- "$wt_dir" 2>/dev/null && pwd -P || true)"
+      repo_real="$(cd -P -- "$abs_repo" 2>/dev/null && pwd -P || printf '%s' "$abs_repo")"
+      while IFS= read -r l_line; do
+        case "$l_line" in
+          "worktree "*) l_path="$(cd -P -- "${l_line#worktree }" 2>/dev/null && pwd -P || printf '%s' "${l_line#worktree }")" ;;
+          "branch "*) [[ -n "$wt_real" && "$l_path" == "$wt_real" ]] && reg="${l_line#branch }" ;;
+        esac
+      done < <(git -C "$abs_repo" worktree list --porcelain 2>/dev/null)
+      if [[ -z "$wt_real" || "$wt_real" == "$repo_real" ]]; then
+        wt_error="$wt_dir resolves to the base checkout"
+      elif [[ "$reg" != "refs/heads/$branch" ]]; then
+        wt_error="$wt_dir is not this repository's worktree for $branch"
+      fi
     fi
   else
     wt_dir="$abs_repo"
@@ -3169,8 +3241,9 @@ afk_factory_run_consultation() {
   fi
   c_dir="$c_abs/.afk/jobs/$c_job"
   mkdir -p "$c_dir" || return 1
-  c_owner="$(jq -r '.pid // empty' "$c_dir/.run.lock/owner.json" 2>/dev/null || true)"
-  if [[ -z "$c_owner" || "$c_owner" != "$BASHPID" ]]; then
+  c_owner="$(jq -r '.token // empty' "$c_dir/.run.lock/owner.json" 2>/dev/null || true)"
+  # Already held by this caller only when the token is the one it took.
+  if [[ -z "$c_owner" || "$c_owner" != "${AFK_FACTORY_LOCK_TOKEN:-}" ]]; then
     if ! _afk_factory_job_lock "$c_dir"; then
       if [[ "$c_json" == "true" ]]; then
         if jq -e 'type == "object"' "$c_dir/job.json" >/dev/null 2>&1; then
@@ -3479,6 +3552,38 @@ _afk_factory_new_board_comment() {
   ' <<<"$com_body" 2>/dev/null || true
 }
 
+# _afk_factory_approval_invalid <job_dir> <worktree>
+# Prints why an approved job may not be merged now and returns 0; returns 1
+# when it may. Called under the job lock, from the job file as it is then.
+_afk_factory_approval_invalid() {
+  local j_dir="$1" wt="$2" doc stage kind gate round sha head
+  doc="$(cat "$j_dir/job.json" 2>/dev/null || true)"
+  stage="$(jq -r '.stage // empty' <<<"$doc" 2>/dev/null || true)"
+  kind="$(jq -r '.escalation_kind // empty' <<<"$doc" 2>/dev/null || true)"
+  gate="$(jq -r '.merge_evaluation.gate_verdict // empty' <<<"$doc" 2>/dev/null || true)"
+  round="$(jq -r '.round // 1' <<<"$doc" 2>/dev/null || printf '1')"
+  if [[ "$stage" != "needs-human" ]]; then
+    printf 'the job is no longer waiting for a decision (it is at %s)' "${stage:-an unreadable stage}"; return 0
+  fi
+  if [[ -n "$kind" && "$kind" != "merge" ]]; then
+    printf 'the job is not waiting on a merge decision'; return 0
+  fi
+  if [[ "$gate" != "PASS" ]] || ! head -n 5 "$j_dir/round-$round/checks.md" 2>/dev/null | grep -q '^VERDICT: PASS'; then
+    printf 'the checks for this round did not pass'; return 0
+  fi
+  if [[ -d "$wt/.git" || -f "$wt/.git" ]]; then
+    sha="$(head -n 1 "$j_dir/round-$round/checks.sha" 2>/dev/null | tr -d '[:space:]')"
+    head="$(git -C "$wt" rev-parse HEAD 2>/dev/null || true)"
+    if [[ -z "$sha" || "$sha" != "$head" ]]; then
+      printf 'the branch has moved since the checks ran'; return 0
+    fi
+    if [[ -n "$(git -C "$wt" status --porcelain --untracked-files=no -- . ':!.afk' 2>/dev/null || true)" ]]; then
+      printf 'the worktree has uncommitted changes'; return 0
+    fi
+  fi
+  return 1
+}
+
 # afk_factory_sync_reviews [<repo_path>] [<slug>] [<dry_run>] [<json_mode>]
 # Reconciles `needs-human`, `needs-info`, and `needs-consultation` Factory jobs
 # against Paperclip interactions and board comments:
@@ -3709,7 +3814,15 @@ afk_factory_sync_reviews() {
       _afk_factory_touch_heartbeat "$j_dir" "landing" "" "running"
       _afk_factory_beat_start "$j_dir" "landing" ""
       _afk_factory_clear_execution_policy "$api_url" "$key" "$run_id" "$j_issue"
-      land_res="$(_afk_factory_land_branch "$j_repo" "$j_wt" "$j_branch" "$j_id" "$j_title")" || true
+      # The row was read before the lock. Read the job again under it: another
+      # runner may have moved it on, or the branch may have moved since the
+      # checks ran.
+      local still_bad=""
+      if still_bad="$(_afk_factory_approval_invalid "$j_dir" "$j_wt")"; then
+        land_res="$(jq -cn --arg r "$still_bad" '{ok:false, action:"stale_approval", commit:"", reason:$r}')"
+      else
+        land_res="$(_afk_factory_land_branch "$j_repo" "$j_wt" "$j_branch" "$j_id" "$j_title")" || true
+      fi
       _afk_factory_beat_stop
       land_ok="$(jq -r '.ok // false' <<<"$land_res" 2>/dev/null || printf 'false')"
       if [[ "$land_ok" == "true" ]]; then

@@ -1082,6 +1082,9 @@ fi
 exit 1
 SH
 chmod +x "$TMPROOT/fake-gh"
+# The checks ran on the branch tip; landing merges only that commit.
+mkdir -p "$PR_REPO/.afk/jobs/job-pr/round-1"
+git -C "$PR_REPO" rev-parse factory/job-pr > "$PR_REPO/.afk/jobs/job-pr/round-1/checks.sha"
 PR_LAND="$(
   PR_LOG="$PR_LOG" PR_REPO="$PR_REPO" \
   AFK_FACTORY_GH_BIN="$TMPROOT/fake-gh" \
