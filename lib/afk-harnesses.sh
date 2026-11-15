@@ -1010,7 +1010,7 @@ afk_harness_sync_models() {
           (.canonical_model | ascii_downcase | endswith("/" + $lid)) or
           (($lid | test("claude-mythos")) and (.canonical_model == "anthropic/claude-mythos-5-2")) or
           (($lid | test("daybreak-blue")) and (.canonical_model == "openai/gpt-daybreak-blue-latest")) or
-          (($lid | test("claude-fable")) and (.canonical_model == "anthropic/claude-fable-5-1")) or
+          (($lid | test("claude-fable")) and (.canonical_model | test("^anthropic/claude-fable-"))) or
           (($lid | test("gpt-6\\.1-sol")) and (.canonical_model == "openai/gpt-6.1-sol")) or
           (($lid | test("gpt-6-astra")) and (.canonical_model == "openai/gpt-6-astra")) or
           (($lid | test("claude-opus-5-5")) and (.canonical_model == "anthropic/claude-opus-5-5")) or

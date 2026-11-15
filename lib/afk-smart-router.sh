@@ -57,45 +57,165 @@ afk_router_catalog_path() {
     printf '%s\n' "$repo_cat"
     return 0
   fi
-  printf '%s\n' "/home/devbox/repos/jlengelbrecht/agent-flow-kit/files/model-router/benchmarks.json"
+  # No catalog anywhere. Name the user path so the caller's error says where
+  # one is expected; a caller must check the file exists before reading it.
+  printf '%s\n' "$user_cat"
+  return 1
 }
 
 afk_router_signals_path() {
   printf '%s\n' "${AFK_ROUTER_SIGNALS_FILE:-$HOME/.config/afk/pool-signals.json}"
 }
 
+# _afk_router_write_json <dest>   (JSON on stdin)
+# Writes through a uniquely named temp file in the destination directory and
+# renames it into place. `$$` is the same in every background subshell of one
+# poll pass, so a `.tmp.$$` name is shared by concurrent jobs; mktemp is not.
+# Empty or invalid JSON never replaces the destination and leaves no temp file.
+# The file keeps the mode it had; a new one gets <mode> (default 644). mktemp
+# alone would make every rewritten file owner-only.
+_afk_router_write_json() {
+  local dest="$1" mode="${2:-644}" tmp cur_mode=""
+  mkdir -p "$(dirname -- "$dest")" 2>/dev/null || return 1
+  tmp="$(mktemp "${dest}.tmp.XXXXXX" 2>/dev/null)" || return 1
+  if [[ -e "$dest" ]]; then
+    cur_mode="$(stat -c %a "$dest" 2>/dev/null || stat -f %Lp "$dest" 2>/dev/null || true)"
+    [[ "$cur_mode" =~ ^[0-7]{3,4}$ ]] && mode="$cur_mode"
+  fi
+  if cat > "$tmp" 2>/dev/null && [[ -s "$tmp" ]] && jq -e . "$tmp" >/dev/null 2>&1 \
+     && chmod "$mode" "$tmp" 2>/dev/null && mv -f -- "$tmp" "$dest" 2>/dev/null; then
+    return 0
+  fi
+  rm -f -- "$tmp"
+  return 1
+}
+
+# _afk_router_lock <lockdir> [<wait_tenths>] [<stale_sec>]
+# A short mkdir lock for the read-modify-write of a small state file. Writers
+# hold it for milliseconds, so a lock older than <stale_sec> (default 10)
+# belongs to a killed writer. Taking over is itself serialized: two waiters
+# that both judge the same lock stale must not both remove it, or the slower
+# one removes the faster one's fresh lock. The wait (default 30s) is longer
+# than the stale age, so a waiter always outlives a dead holder.
+AFK_ROUTER_LOCK_TOKEN=""
+_afk_router_lock_mtime() {
+  local mt
+  mt="$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || true)"
+  [[ "$mt" =~ ^[0-9]+$ ]] && printf '%s' "$mt"
+}
+_afk_router_lock() {
+  local lockdir="$1" tries="${2:-300}" stale="${3:-10}" i=0 now mt token
+  token="$BASHPID.$RANDOM$RANDOM"
+  while ! mkdir "$lockdir" 2>/dev/null; do
+    # mkdir also fails on a read-only or missing parent. Only an existing
+    # lock is worth waiting for.
+    [[ -d "$lockdir" ]] || { i=$(( i + 10 )); (( i < tries )) || return 1; sleep 0.1; continue; }
+    now="$(date -u +%s)"
+    mt="$(_afk_router_lock_mtime "$lockdir")"
+    # A lock with no readable time, or one dated in the future, is judged by
+    # its age from now on: neither may hold the file for good.
+    if [[ -n "$mt" ]] && { (( now - mt >= stale )) || (( mt > now + 60 )); }; then
+      if mkdir "$lockdir.reap" 2>/dev/null; then
+        mt="$(_afk_router_lock_mtime "$lockdir")"
+        if [[ -n "$mt" ]] && { (( now - mt >= stale )) || (( mt > now + 60 )); }; then
+          rm -rf -- "$lockdir" 2>/dev/null || true
+        fi
+        rmdir "$lockdir.reap" 2>/dev/null || true
+        continue
+      fi
+      # Another waiter is taking over; a reap lock left by a killed waiter is
+      # cleared once it is stale itself.
+      mt="$(_afk_router_lock_mtime "$lockdir.reap")"
+      [[ -n "$mt" ]] && (( now - mt >= stale )) && rmdir "$lockdir.reap" 2>/dev/null
+    fi
+    i=$(( i + 1 ))
+    (( i < tries )) || return 1
+    sleep 0.1
+  done
+  printf '%s\n' "$token" > "$lockdir/owner" 2>/dev/null || true
+  AFK_ROUTER_LOCK_TOKEN="$token"
+  return 0
+}
+# Releases the lock only for the writer that holds it.
+_afk_router_unlock() {
+  local held=""
+  held="$(cat -- "$1/owner" 2>/dev/null || true)"
+  if [[ -z "$held" || "$held" == "${AFK_ROUTER_LOCK_TOKEN:-}" ]]; then
+    rm -f -- "$1/owner" 2>/dev/null
+    rmdir "$1" 2>/dev/null || true
+  fi
+  AFK_ROUTER_LOCK_TOKEN=""
+}
+
 # Portable file mtime epoch (Linux GNU stat -c %Y and macOS BSD stat -f %m)
 _afk_router_file_mtime() {
-  local f="$1"
+  local f="$1" mt
   [[ -f "$f" ]] || { printf '0\n'; return 0; }
-  stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || printf '0\n'
+  mt="$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || printf '0')"
+  [[ "$mt" =~ ^[0-9]+$ ]] || mt=0
+  printf '%s\n' "$mt"
 }
 
 # afk_router_ensure_fresh_benchmarks [<ttl_sec>]
-# Ensures public benchmark facts are gathered/refreshed prior to live dispatch
-# whenever ~/.config/afk/benchmarks.json is missing, older than TTL (default 24h),
-# or on an older schema. Skipped automatically in hermetic test modes.
+# Refreshes ~/.config/afk/benchmarks.json before live dispatch when it is
+# missing, on an older schema, or older than the TTL (default 24h). Skipped in
+# hermetic test modes.
+#
+# A sync that fails, or finds no leaderboard feed reachable, leaves the catalog
+# as it was, so its age alone would trigger another sync on every route. An
+# attempt marker throttles retries (default 15 minutes) and keeps the jobs of
+# one poll pass from all syncing at once.
+# shellcheck disable=SC2120  # the TTL argument is for callers outside this file
 afk_router_ensure_fresh_benchmarks() {
   local ttl="${1:-${AFK_BENCHMARK_TTL_SEC:-86400}}"
   if [[ -n "${AFK_ROUTER_BENCHMARKS_FILE:-}" || -n "${AFK_ROUTER_HARNESS_LIST:-}" || -n "${AFK_FACTORY_AGENT_RUNNER:-}" || -n "${AFK_CURL_BIN:-}" || "${AFK_SKIP_BENCHMARK_AUTOSYNC:-0}" == "1" ]]; then
     return 0
   fi
+  [[ "$ttl" =~ ^[0-9]+$ ]] || ttl=86400
+  local retry="${AFK_BENCHMARK_RETRY_SEC:-900}"
+  [[ "$retry" =~ ^[0-9]+$ ]] || retry=900
   local user_cat="$HOME/.config/afk/benchmarks.json"
-  local now_ep mtime schema=""
+  local marker="${user_cat}.sync-attempt"
+  local now_ep mtime schema="" attempt_at measured=0 age
   now_ep="$(date -u +%s)"
   mtime="$(_afk_router_file_mtime "$user_cat")"
   if [[ -f "$user_cat" ]]; then
     schema="$(jq -r '.schema // ""' "$user_cat" 2>/dev/null || true)"
+    measured="$(jq -r '.sync_receipt.live_scores // 0' "$user_cat" 2>/dev/null || printf '0')"
+    [[ "$measured" =~ ^[0-9]+$ ]] || measured=0
   fi
-  if [[ ! -f "$user_cat" || "$schema" != "afk-benchmark-catalog/3" || $(( now_ep - mtime )) -ge ttl ]]; then
-    afk_router_sync_benchmarks "$user_cat" >/dev/null 2>&1 || true
+  # A file dated in the future (a volume restored from a skewed clock) is
+  # treated as stale, not as fresh until the clock catches up.
+  age=$(( now_ep - mtime ))
+  # A catalog with no measured score (the first sync found no board) is
+  # retried on the retry spacing, not left for a full day.
+  if [[ -f "$user_cat" && "$schema" == "afk-benchmark-catalog/3" ]] && (( measured > 0 && age >= 0 && age < ttl )); then
+    return 0
   fi
+  attempt_at="$(_afk_router_file_mtime "$marker")"
+  age=$(( now_ep - attempt_at ))
+  if (( age >= 0 && age < retry )); then
+    return 0
+  fi
+  mkdir -p "$(dirname -- "$marker")" 2>/dev/null || return 0
+  # One job syncs; the others of the same poll pass carry on with the catalog
+  # they have.
+  mkdir "$marker.lock" 2>/dev/null || {
+    local lmt; lmt="$(_afk_router_lock_mtime "$marker.lock")"
+    [[ -n "$lmt" ]] && (( now_ep - lmt > 300 )) && rmdir "$marker.lock" 2>/dev/null
+    return 0
+  }
+  : > "$marker" 2>/dev/null
+  afk_router_sync_benchmarks "$user_cat" >/dev/null 2>&1 || true
+  rmdir "$marker.lock" 2>/dev/null || true
+  return 0
 }
 
 # afk_router_stage_to_task_class <stage> <risk> [<role>] [<surfaces>] [<round>]
 afk_router_stage_to_task_class() {
   local stage="$1" risk="${2:-low}" role="${3:-}" surfaces="${4:-}" round="${5:-1}"
-  local norm_surf=",$(printf '%s' "$surfaces" | tr '[:upper:]' '[:lower:]' | tr -d ' '), "
+  local norm_surf
+  norm_surf=",$(printf '%s' "$surfaces" | tr '[:upper:]' '[:lower:]' | tr -d ' '), "
   norm_surf="${norm_surf% }"
 
   # 1. Explicit security stages, roles, or security-flagged surfaces
@@ -160,14 +280,45 @@ afk_router_stage_to_task_class() {
   esac
 }
 
+# Which harness binaries answer `--version`, remembered for a few minutes.
+# Every route decision used to start all seven CLIs to ask, several seconds
+# each time, and a job makes a route decision per stage and per retry.
+_afk_router_bin_cache_path() {
+  printf '%s\n' "${AFK_ROUTER_BIN_CACHE_FILE:-$HOME/.config/afk/harness-bin-cache.json}"
+}
 _afk_router_verify_binary() {
-  local name="$1" cand=""
+  local name="$1" cand="" cache ttl="${AFK_ROUTER_BIN_CACHE_SEC:-300}" now hit="" cur="{}" fail_ttl="${AFK_ROUTER_BIN_FAIL_CACHE_SEC:-30}"
   if declare -F _afk_harness_locate_bin >/dev/null 2>&1; then
     cand="$(_afk_harness_locate_bin "$name" || true)"
   else
     cand="$(command -v "$name" 2>/dev/null || true)"
   fi
-  if [[ -n "$cand" ]] && "$cand" --version >/dev/null 2>&1; then
+  [[ -n "$cand" ]] || { printf ''; return 0; }
+  [[ "$ttl" =~ ^[0-9]+$ ]] || ttl=300
+  cache="$(_afk_router_bin_cache_path)"
+  now="$(date -u +%s)"
+  if (( ttl > 0 )) && [[ -f "$cache" ]]; then
+    # Keyed by path and the binary's mtime: an updated or replaced CLI is
+    # checked again at once.
+    # A failure is remembered only briefly: a CLI caught mid-update must not
+    # drop out of routing for the full cache time.
+    [[ "$fail_ttl" =~ ^[0-9]+$ ]] || fail_ttl=30
+    hit="$(jq -r --arg p "$cand" --argjson now "$now" --argjson ttl "$ttl" --argjson fttl "$fail_ttl" --arg mt "$(_afk_router_file_mtime "$cand")" \
+      '(.[$p] // null) | if . != null and (.mtime == $mt) and (($now - (.at // 0)) < (if .ok then $ttl else $fttl end)) then (.ok | tostring) else empty end' "$cache" 2>/dev/null || true)"
+  fi
+  if [[ -z "$hit" ]]; then
+    if "$cand" --version >/dev/null 2>&1 </dev/null; then hit=true; else hit=false; fi
+    # Locked so concurrent jobs add to the cache instead of replacing it. A
+    # lock that cannot be had is not worth waiting for: the cache is skipped.
+    if (( ttl > 0 )) && _afk_router_lock "$cache.lock" 20; then
+      [[ -f "$cache" ]] && cur="$(cat -- "$cache" 2>/dev/null || printf '{}')"
+      jq -e 'type == "object"' <<<"$cur" >/dev/null 2>&1 || cur="{}"
+      jq -c --arg p "$cand" --argjson now "$now" --arg mt "$(_afk_router_file_mtime "$cand")" --argjson ok "$hit" \
+        '.[$p] = {ok: $ok, at: $now, mtime: $mt}' <<<"$cur" 2>/dev/null | _afk_router_write_json "$cache" 2>/dev/null || true
+      _afk_router_unlock "$cache.lock"
+    fi
+  fi
+  if [[ "$hit" == true ]]; then
     printf '%s' "$cand"
     return 0
   fi
@@ -273,10 +424,19 @@ afk_router_mark_pool_degraded() {
     ttl_sec=3600
     used_val=100
   fi
+  # Read under the lock: several jobs run at once and each rewrites the whole
+  # file, so an unlocked read would drop a peer's mark.
+  local locked=false rc=0
+  _afk_router_lock "${sig_file}.lock" && locked=true
+  cur="{}"
+  [[ -f "$sig_file" ]] && cur="$(cat -- "$sig_file" 2>/dev/null || printf '{}')"
+  jq -e 'type == "object"' <<<"$cur" >/dev/null 2>&1 || cur="{}"
   jq --arg pid "$pool_id" --arg r "$reason" --arg k "$kind" --arg ts "$now" \
     --argjson ep "$now_ep" --argjson ttl "$ttl_sec" --argjson u "$used_val" \
     '.pools[$pid] = ((.pools[$pid] // {}) + {used_pct: $u, degraded_reason: $r, degraded_kind: $k, updated_at: $ts, updated_epoch: $ep, ttl_sec: $ttl})' \
-    <<<"$cur" > "${sig_file}.tmp.$$" && mv "${sig_file}.tmp.$$" "$sig_file"
+    <<<"$cur" | _afk_router_write_json "$sig_file" || rc=$?
+  [[ "$locked" == true ]] && _afk_router_unlock "${sig_file}.lock"
+  return "$rc"
 }
 
 # afk_router_mark_model_unavailable <model_id> [<reason>]
@@ -292,9 +452,16 @@ afk_router_mark_model_unavailable() {
   local now now_ep
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   now_ep="$(date -u +%s)"
+  local locked=false rc=0
+  _afk_router_lock "${sig_file}.lock" && locked=true
+  cur="{}"
+  [[ -f "$sig_file" ]] && cur="$(cat -- "$sig_file" 2>/dev/null || printf '{}')"
+  jq -e 'type == "object"' <<<"$cur" >/dev/null 2>&1 || cur="{}"
   jq --arg mid "$model_id" --arg r "$reason" --arg ts "$now" --argjson ep "$now_ep" \
     '.unavailable_models[$mid] = {reason: $r, updated_at: $ts, updated_epoch: $ep, ttl_sec: 3600}' \
-    <<<"$cur" > "${sig_file}.tmp.$$" && mv "${sig_file}.tmp.$$" "$sig_file"
+    <<<"$cur" | _afk_router_write_json "$sig_file" || rc=$?
+  [[ "$locked" == true ]] && _afk_router_unlock "${sig_file}.lock"
+  return "$rc"
 }
 
 _afk_router_count_recent_activity() {
@@ -372,8 +539,9 @@ _afk_router_probe_claude_quota() {
     now_ep="$(date -u +%s)"
     mkdir -p "$(dirname -- "$cache_file")"
     [[ -f "$cache_file" ]] && cur_cache="$(cat -- "$cache_file" 2>/dev/null || printf '{}')"
+    jq -e 'type == "object"' <<<"$cur_cache" >/dev/null 2>&1 || cur_cache="{}"
     (umask 077 && jq -cn --argjson cur "$cur_cache" --argjson d "$parsed" --argjson ep "$now_ep" \
-      '$cur + {claude: {fetched_epoch: $ep, data: $d}}' > "${cache_file}.tmp.$$" && mv "${cache_file}.tmp.$$" "$cache_file") 2>/dev/null || true
+      '$cur + {claude: {fetched_epoch: $ep, data: $d}}' | _afk_router_write_json "$cache_file" 600) 2>/dev/null || true
   fi
   [[ -n "$parsed" ]] || parsed="{}"
   printf '%s\n' "$parsed"
@@ -450,7 +618,9 @@ afk_router_probe_pools() {
   fi
 
   local cat_file sig_file
-  cat_file="$(afk_router_catalog_path)"
+  cat_file="$(afk_router_catalog_path)" || true
+  # With no catalog the pools still resolve from their built-in defaults.
+  [[ -f "$cat_file" ]] || cat_file=/dev/null
   sig_file="$(afk_router_signals_path)"
 
   local harnesses_json bindings_json="[]"
@@ -492,6 +662,11 @@ afk_router_probe_pools() {
   if [[ -f "$sig_file" ]]; then
     sig_json="$(cat -- "$sig_file" 2>/dev/null || printf '{}')"
   fi
+  # A truncated or hand-edited signals file must not take routing down.
+  jq -e 'type == "object"' <<<"$sig_json" >/dev/null 2>&1 || sig_json="{}"
+  jq -e 'type == "object"' <<<"$claude_q" >/dev/null 2>&1 || claude_q="{}"
+  jq -e 'type == "object"' <<<"$codex_q" >/dev/null 2>&1 || codex_q="{}"
+  jq -e 'type == "array"' <<<"$bindings_json" >/dev/null 2>&1 || bindings_json="[]"
 
   local now_ep openai_auth_mtime=0 claude_auth_mtime=0 grok_auth_mtime=0 m1=0 m2=0
   now_ep="$(date -u +%s)"
@@ -686,6 +861,11 @@ afk_router_select_candidate() {
   litellm_url="${AFK_LITELLM_BASE_URL:-$(jq -r '.router.litellm_base_url // empty' <<<"$cfg" 2>/dev/null)}"
   allow_metered="${AFK_ROUTER_ALLOW_METERED_API:-$(jq -r '.router.allow_metered_api // false' <<<"$cfg" 2>/dev/null)}"
   prefer_free="${AFK_ROUTER_PREFER_FREE:-$(jq -r '.router.prefer_free_for_low_risk // false' <<<"$cfg" 2>/dev/null)}"
+  # A review is what an unattended merge rests on. Free and local models are
+  # kept off it unless the project opts in.
+  local allow_free_rev
+  allow_free_rev="${AFK_ROUTER_ALLOW_FREE_REVIEWERS:-$(jq -r '.router.allow_free_reviewers // false' <<<"$cfg" 2>/dev/null)}"
+  [[ "$allow_free_rev" == "true" || "$allow_free_rev" == "1" ]] && allow_free_rev="true" || allow_free_rev="false"
   sec_models_csv="${AFK_SECURITY_MODELS:-$(jq -r '(.router.security_models // []) | join(",")' <<<"$cfg" 2>/dev/null)}"
   if [[ -z "$sec_models_csv" && -f "$HOME/.config/afk/router.json" ]]; then
     sec_models_csv="$(jq -r '(.security_models // []) | join(",")' "$HOME/.config/afk/router.json" 2>/dev/null || true)"
@@ -694,8 +874,14 @@ afk_router_select_candidate() {
   [[ "$prefer_free" == "true" || "$prefer_free" == "1" ]] && prefer_free="true" || prefer_free="false"
 
   local cat_file probe_json disc_file tmp_disc
-  cat_file="$(afk_router_catalog_path)"
+  cat_file="$(afk_router_catalog_path)" || true
+  [[ -f "$cat_file" ]] || cat_file=/dev/null
   probe_json="$(afk_router_probe_pools "$repo")"
+  # No usable probe means no harness is known to be installed. Route to the
+  # explicit fallback below; an empty answer would be silently replaced by
+  # the caller's own default.
+  jq -e '(.pools | type) == "object" and (.harnesses | type) == "object"' <<<"$probe_json" >/dev/null 2>&1 \
+    || probe_json='{"schema":"afk-router-pools/3","harnesses":{},"auth_alerts":[],"unavailable_models":{},"pools":{},"probe_failed":true}'
   disc_file="$(afk_harness_discovered_models_path)"
   tmp_disc="$(mktemp "${TMPDIR:-/tmp}/afk-disc-ref.XXXXXX")"
   if [[ -n "${AFK_DISCOVERED_MODELS_FILE:-}" && -f "${AFK_DISCOVERED_MODELS_FILE}" ]]; then
@@ -724,6 +910,9 @@ afk_router_select_candidate() {
     --arg sec_csv "$sec_models_csv" \
     --argjson allow_api "$allow_metered" \
     --argjson pref_free "$prefer_free" \
+    --argjson allow_free_rev "$allow_free_rev" \
+    --argjson now_ep "$(date -u +%s)" \
+    --argjson carry_s "$(c="${AFK_BENCHMARK_CARRY_SEC:-1209600}"; [[ "$c" =~ ^[0-9]+$ ]] && printf '%s' "$c" || printf '1209600')" \
     '
     # Determine which restricted security specialist models are entitled/enabled
     (("," + ($sec_csv | ascii_downcase | gsub(" "; "")) + ",")) as $sec_norm |
@@ -872,6 +1061,15 @@ afk_router_select_candidate() {
       select($ent_ok == true) |
       select($scoped_quota_ok == true) |
       select($model_ok == true) |
+      # Reviewer floor: no free or local model reviews work that may merge
+      # unattended. A small diff kept the larger models out, and the
+      # cross-family bonus then put a free model with an estimated score on
+      # the review the merge rested on.
+      select(
+        ((($tc == "coding_review") or ($st | startswith("review")) or ($st == "approve")) | not)
+        or $allow_free_rev
+        or ((($c.is_free // false) != true) and ($cclass != "free"))
+      ) |
       # Frontier models stay reserved for high-risk, security, architecture,
       # and large diffs. A known small edit is one case. Intake of a new
       # story is the other: the diff is still 0, and a low or medium risk
@@ -928,6 +1126,14 @@ afk_router_select_candidate() {
 
       ($base_score + $pool_adj + $headroom_bonus + $capacity_bonus + $bridge_adj + $frontier_adj + $security_adj + $role_floor_adj + $cross_family_bonus + $local_bonus + $free_bonus) as $eff_score |
       resolve_effort($c.effort; $c.supported_efforts) as $ef |
+      # A measurement older than the carry window is reported as stale: the
+      # catalog is left alone while no board answers, so its age is checked
+      # here.
+      (($c.benchmarks[$tc] // {}) as $be
+       | ($be.basis // "estimate") as $bb
+       | if ($be.score // null) == null then "estimate"
+         elif ($bb == "measured" or $bb == "capped") and (($now_ep - ($be.synced_epoch // 0)) > $carry_s) then "stale"
+         else $bb end) as $basis |
 
       {
         stage: $st,
@@ -958,6 +1164,12 @@ afk_router_select_candidate() {
         pool_headroom_pct: $pool.headroom_pct,
         benchmark_name: $b_name,
         benchmark_score: $base_score,
+        # measured: this sync or a recent one read it off a public board.
+        # capped: the board is reachable and does not list the model.
+        # estimate: a fixed figure from the catalog, never measured.
+        benchmark_basis: $basis,
+        benchmark_live: ($basis == "measured" and (($c.benchmarks[$tc].live // false) == true)),
+        benchmark_synced_at: ($c.benchmarks[$tc].synced_at // null),
         effective_score: (($eff_score * 100 | round) / 100),
         cross_family_review: (((($tc == "coding_review") or ($st | startswith("review"))) and $bf != "" and $c.model_family != $bf)),
         memory_mode: $mm,
@@ -998,185 +1210,343 @@ afk_router_select_candidate() {
       pool_headroom_pct: 100,
       benchmark_name: "Fallback Default",
       benchmark_score: 85.0,
+      benchmark_basis: "estimate",
+      benchmark_live: false,
+      benchmark_synced_at: null,
       effective_score: 85.0,
       memory_mode: $mm,
       router_source: "fallback-default",
+      # Nothing passed the eligibility gates. The state that decided it is
+      # recorded so the failure can be read from the route file alone.
+      no_eligible_candidate: true,
+      candidates_considered: ($cands | length),
+      installed_harnesses: ([ ($probe.harnesses // {}) | to_entries[] | select(.key != "litellm_gateway" and (.value.installed // false) == true) | .key ]),
+      pool_states: (($probe.pools // {}) | map_values(.state)),
       litellm_base_url: (if $lurl == "" then null else $lurl end),
-      auth_alerts: $probe.auth_alerts,
+      auth_alerts: ($probe.auth_alerts // []),
       reason: "Fallback route (no eligible candidate matched)"
     }')"
   rm -f "$tmp_disc"
   printf '%s\n' "$result_json"
 }
 
+# _afk_router_fetch_feed <name> <url> <dest> [<header>]
+# Fetches one public feed into <dest>. With AFK_BENCHMARK_FEED_DIR set, the
+# feed is read from <dir>/<name>.json instead and nothing touches the network:
+# a missing file there is an unreachable feed. Returns 0 only when <dest> holds
+# non-empty JSON.
+_afk_router_fetch_feed() {
+  local name="$1" url="$2" dest="$3" header="${4:-}"
+  : > "$dest"
+  if [[ -n "${AFK_BENCHMARK_FEED_DIR:-}" ]]; then
+    [[ -f "$AFK_BENCHMARK_FEED_DIR/$name.json" ]] || return 1
+    cp -- "$AFK_BENCHMARK_FEED_DIR/$name.json" "$dest" 2>/dev/null || return 1
+  else
+    local -a hdr=()
+    [[ -n "$header" ]] && hdr=(-H "$header")
+    curl -sS --connect-timeout 3 --max-time 8 ${hdr[@]+"${hdr[@]}"} "$url" > "$dest" 2>/dev/null || { : > "$dest"; return 1; }
+  fi
+  [[ -s "$dest" ]] && jq -e . "$dest" >/dev/null 2>&1
+}
+
 # afk_router_sync_benchmarks [<out_file>]
-# Pulls live public benchmark rankings and model capabilities from 6 public feeds
-# and writes normalized 0-100 task-class scores atomically to ~/.config/afk/benchmarks.json.
+# Refreshes the benchmark catalog from the public feeds and writes it
+# atomically. Prints a receipt (schema afk-benchmark-sync/3).
+#
+# Scores that can be measured come from the LMArena leaderboards (agent,
+# webdev, text); context windows come from models.dev. Every other score in the
+# catalog is a fixed estimate from files/model-router/benchmarks.json. Each
+# measured entry is marked `live: true` with its rank, raw value and sync time,
+# so a route can say whether it rests on a measurement or an estimate.
+#
+# A leaderboard lists one row per model and effort level ("Claude Opus 5.5
+# (Max)"). A candidate's `arena_match` names the model without the effort
+# suffix and is compared whole, ignoring case and punctuation; the best-ranked
+# row wins. A partial name never matches, so "Grok 4.5" cannot take the score
+# of "Grok 4.7".
+#
+# When a feed is unreachable, the scores it supplied last time are kept for up
+# to AFK_BENCHMARK_CARRY_SEC (default 14 days) and then fall back to the fixed
+# estimates. When no leaderboard feed is reachable at all, an existing catalog
+# is left exactly as it is.
+#
+# Exit status: 0 synced from at least one leaderboard feed; 3 no leaderboard
+# feed was reachable; 1 the catalog could not be read or written.
 afk_router_sync_benchmarks() {
   local out_file="${1:-$HOME/.config/afk/benchmarks.json}"
   local base_file
   base_file="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/files/model-router/benchmarks.json"
   [[ -f "$base_file" ]] || base_file="$HOME/.agents/skills/model-router/benchmarks.json"
+  if ! jq -e '(.candidates | type) == "array"' "$base_file" >/dev/null 2>&1; then
+    jq -cn --arg out "$out_file" --arg b "$base_file" \
+      '{schema:"afk-benchmark-sync/3", result:"error", reason:("base catalog missing or unreadable: " + $b), catalog_path:$out}'
+    return 1
+  fi
 
-  mkdir -p "$(dirname -- "$out_file")"
-  local today sync_tmp
+  mkdir -p "$(dirname -- "$out_file")" 2>/dev/null || true
+  local today now_ep sync_tmp carry="${AFK_BENCHMARK_CARRY_SEC:-1209600}"
+  [[ "$carry" =~ ^[0-9]+$ ]] || carry=1209600
   today="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  sync_tmp="$(mktemp -d)"
+  now_ep="$(date -u +%s)"
+  sync_tmp="$(mktemp -d "${TMPDIR:-/tmp}/afk-bench-sync.XXXXXX")" || return 1
 
-  printf '[]' > "$sync_tmp/agent.json"
-  printf '[]' > "$sync_tmp/webdev.json"
-  printf '[]' > "$sync_tmp/text.json"
-  printf '[]' > "$sync_tmp/swebench.json"
+  local st_agent="offline" st_webdev="offline" st_text="offline" st_mdev="offline" st_aa="no_key"
+  local lm="https://datasets-server.huggingface.co/rows?dataset=lmarena-ai%2Fleaderboard-dataset&split=latest&offset=0&length=100&config="
+  # Rows are reduced to {model_name, rank, value, date}. A row without a
+  # numeric rank is dropped here, so the scoring below never does arithmetic
+  # on a string.
+  local rows_filter='[.rows[]?.row | select((.rank | type) == "number") | select(((.category // "overall") | ascii_downcase) == "overall") | {model_name: (.model_name // ""), rank, value: (.score // .rating // null), date: (.leaderboard_publish_date // null)}]'
+  local feed
+  for feed in agent webdev text; do
+    printf '[]' > "$sync_tmp/$feed.json"
+    if _afk_router_fetch_feed "lmarena-$feed" "${lm}${feed}" "$sync_tmp/raw.json" \
+       && jq -c "$rows_filter" "$sync_tmp/raw.json" > "$sync_tmp/rows.json" 2>/dev/null \
+       && jq -e 'length > 0' "$sync_tmp/rows.json" >/dev/null 2>&1; then
+      mv -f -- "$sync_tmp/rows.json" "$sync_tmp/$feed.json"
+      case "$feed" in
+        agent)  st_agent="live_synced ($(jq -r '.[0].date // "latest"' "$sync_tmp/$feed.json"))" ;;
+        webdev) st_webdev="live_synced ($(jq -r '.[0].date // "latest"' "$sync_tmp/$feed.json"))" ;;
+        text)   st_text="live_synced ($(jq -r '.[0].date // "latest"' "$sync_tmp/$feed.json"))" ;;
+      esac
+    fi
+  done
+
   printf '{}' > "$sync_tmp/mdev.json"
-  printf '[]' > "$sync_tmp/aa.json"
-
-  local st_agent="offline" st_webdev="offline" st_text="offline" st_swe="offline" st_mdev="offline" st_aa="no_key"
-
-  local raw
-  raw="$(curl -sS --connect-timeout 3 --max-time 8 "https://datasets-server.huggingface.co/rows?dataset=lmarena-ai%2Fleaderboard-dataset&config=agent&split=latest&offset=0&length=50" 2>/dev/null || true)"
-  if [[ -n "$raw" ]] && jq -e '.rows | length > 0' <<<"$raw" >/dev/null 2>&1; then
-    jq -c '[.rows[].row | {model_name, rank, score, date: .leaderboard_publish_date}]' <<<"$raw" > "$sync_tmp/agent.json"
-    st_agent="live_synced ($(jq -r '.[0].date // "latest"' "$sync_tmp/agent.json"))"
-  fi
-
-  raw="$(curl -sS --connect-timeout 3 --max-time 8 "https://datasets-server.huggingface.co/rows?dataset=lmarena-ai%2Fleaderboard-dataset&config=webdev&split=latest&offset=0&length=50" 2>/dev/null || true)"
-  if [[ -n "$raw" ]] && jq -e '.rows | length > 0' <<<"$raw" >/dev/null 2>&1; then
-    jq -c '[.rows[].row | {model_name, rank, rating, date: .leaderboard_publish_date}]' <<<"$raw" > "$sync_tmp/webdev.json"
-    st_webdev="live_synced ($(jq -r '.[0].date // "latest"' "$sync_tmp/webdev.json"))"
-  fi
-
-  raw="$(curl -sS --connect-timeout 3 --max-time 8 "https://datasets-server.huggingface.co/rows?dataset=lmarena-ai%2Fleaderboard-dataset&config=text&split=latest&offset=0&length=50" 2>/dev/null || true)"
-  if [[ -n "$raw" ]] && jq -e '.rows | length > 0' <<<"$raw" >/dev/null 2>&1; then
-    jq -c '[.rows[].row | {model_name, rank, rating}]' <<<"$raw" > "$sync_tmp/text.json"
-    st_text="live_synced"
-  fi
-
-  raw="$(curl -sS --connect-timeout 3 --max-time 8 "https://raw.githubusercontent.com/SWE-bench/swe-bench.github.io/master/data/leaderboards.json" 2>/dev/null || true)"
-  if [[ -n "$raw" ]] && jq -e '.leaderboards' <<<"$raw" >/dev/null 2>&1; then
-    jq -c '[.leaderboards[] | select(.name=="Verified") | .results[] | {name, resolved}] | .[0:50]' <<<"$raw" > "$sync_tmp/swebench.json" 2>/dev/null || true
-    st_swe="live_synced"
-  fi
-
-  raw="$(curl -sS --connect-timeout 3 --max-time 8 "https://models.dev/api.json" 2>/dev/null || true)"
-  if [[ -n "$raw" ]] && jq -e 'type == "object"' <<<"$raw" >/dev/null 2>&1; then
-    jq -c 'with_entries(.value = (.value.models // {} | with_entries(.value = (.value.limit.context // null))))' <<<"$raw" > "$sync_tmp/mdev.json" 2>/dev/null || true
+  if _afk_router_fetch_feed "models-dev" "https://models.dev/api.json" "$sync_tmp/raw.json" \
+     && jq -c 'if type == "object" then with_entries(.value = ((.value.models // {}) | with_entries(.value = (.value.limit.context // null)))) else error("not an object") end' \
+          "$sync_tmp/raw.json" > "$sync_tmp/rows.json" 2>/dev/null; then
+    mv -f -- "$sync_tmp/rows.json" "$sync_tmp/mdev.json"
     st_mdev="live_synced"
   fi
 
+  printf '[]' > "$sync_tmp/aa.json"
   local aa_key="${ARTIFICIAL_ANALYSIS_API_KEY:-${AA_API_KEY:-}}"
-  if [[ -n "$aa_key" ]]; then
-    raw="$(curl -sS --connect-timeout 3 --max-time 8 -H "x-api-key: $aa_key" "https://artificialanalysis.ai/api/v2/data/llms/models" 2>/dev/null || true)"
-    if [[ -n "$raw" ]] && jq -e '.data' <<<"$raw" >/dev/null 2>&1; then
-      jq -c '[.data[] | {slug, name, coding: .evaluations.artificial_analysis_coding_index, intelligence: .evaluations.artificial_analysis_intelligence_index}]' <<<"$raw" > "$sync_tmp/aa.json"
+  if [[ -n "$aa_key" || ( -n "${AFK_BENCHMARK_FEED_DIR:-}" && -f "${AFK_BENCHMARK_FEED_DIR}/artificial-analysis.json" ) ]]; then
+    if _afk_router_fetch_feed "artificial-analysis" "https://artificialanalysis.ai/api/v2/data/llms/models" "$sync_tmp/raw.json" "x-api-key: $aa_key" \
+       && jq -c '[.data[] | {slug: (.slug // ""), name, coding: .evaluations.artificial_analysis_coding_index} | select((.coding | type) == "number")]' \
+            "$sync_tmp/raw.json" > "$sync_tmp/rows.json" 2>/dev/null; then
+      mv -f -- "$sync_tmp/rows.json" "$sync_tmp/aa.json"
       st_aa="live_synced"
     else
       st_aa="error"
     fi
   fi
+  aa_key=""
 
-  local tmp_out="${out_file}.tmp.$$"
-  jq \
-    --arg ts "$today" \
-    --arg sa "$st_agent" \
-    --arg sw "$st_webdev" \
-    --arg stx "$st_text" \
-    --arg ss "$st_swe" \
-    --arg sm "$st_mdev" \
-    --arg saa "$st_aa" \
-    --slurpfile agf "$sync_tmp/agent.json" \
-    --slurpfile wdf "$sync_tmp/webdev.json" \
-    --slurpfile txf "$sync_tmp/text.json" \
-    --slurpfile swf "$sync_tmp/swebench.json" \
-    --slurpfile mdf "$sync_tmp/mdev.json" \
-    --slurpfile aaf "$sync_tmp/aa.json" \
-    '
-    ($agf[0] // []) as $ag |
-    ($wdf[0] // []) as $wd |
-    ($txf[0] // []) as $tx |
-    ($swf[0] // []) as $swb |
-    ($mdf[0] // {}) as $md |
-    ($aaf[0] // []) as $aa |
-    .updated_at = $ts |
-    .sync_receipt = {
-      synced_at: $ts,
-      lmarena_agent: $sa,
-      lmarena_webdev: $sw,
-      lmarena_text: $stx,
-      swe_bench_official: $ss,
-      swe_bench_entries: ($swb | length),
-      models_dev: $sm,
-      artificial_analysis: $saa
-    } |
-    .candidates |= map(
-      . as $c |
-      (($md[$c.models_dev_provider // ""][$c.models_dev_id // ""]) // $c.window_tokens) as $live_win |
-      .window_tokens = $live_win |
+  # The previous catalog supplies the scores to keep when a feed is down.
+  printf '{}' > "$sync_tmp/prev.json"
+  local have_prev=false
+  if [[ -f "$out_file" ]] && jq -e '.schema == "afk-benchmark-catalog/3" and ((.candidates | type) == "array")' "$out_file" >/dev/null 2>&1; then
+    cp -- "$out_file" "$sync_tmp/prev.json" && have_prev=true
+  fi
 
-      ([ $ag[]? | select((.model_name // "") | contains($c.arena_match // "__none__")) ][0]) as $ag_hit |
-      (if $ag_hit != null and ($ag_hit.rank != null) then
-        ((98.0 - (($ag_hit.rank - 1) * 0.9)) | if . < 80 then 80 else (. * 10 | round / 10) end)
-       else null end) as $ag_score |
+  local any_board=false
+  [[ "$st_agent" == live_synced* || "$st_webdev" == live_synced* || "$st_text" == live_synced* ]] && any_board=true
 
-      ([ $wd[]? | select((.model_name // "") | contains($c.arena_match // "__none__")) ][0]) as $wd_hit |
-      (if $wd_hit != null and ($wd_hit.rank != null) then
-        ((97.5 - (($wd_hit.rank - 1) * 0.9)) | if . < 80 then 80 else (. * 10 | round / 10) end)
-       else null end) as $wd_score |
+  local result="synced" rc=0
+  if [[ "$any_board" == false && "$have_prev" == true ]]; then
+    # Nothing measured this time. Rewriting the catalog would replace the last
+    # measured scores with estimates and make it look fresh for a day.
+    result="feeds_unavailable"; rc=3
+  else
+    [[ "$any_board" == true ]] || { result="feeds_unavailable"; rc=3; }
+    if ! jq \
+      --arg ts "$today" \
+      --argjson now "$now_ep" \
+      --argjson carry "$carry" \
+      --arg sa "$st_agent" --arg sw "$st_webdev" --arg stx "$st_text" --arg sm "$st_mdev" --arg saa "$st_aa" \
+      --slurpfile agf "$sync_tmp/agent.json" \
+      --slurpfile wdf "$sync_tmp/webdev.json" \
+      --slurpfile txf "$sync_tmp/text.json" \
+      --slurpfile mdf "$sync_tmp/mdev.json" \
+      --slurpfile aaf "$sync_tmp/aa.json" \
+      --slurpfile prevf "$sync_tmp/prev.json" \
+      '
+      ($agf[0] // []) as $ag | ($wdf[0] // []) as $wd | ($txf[0] // []) as $tx |
+      ($mdf[0] // {}) as $md | ($prevf[0] // {}) as $prev |
+      # Artificial Analysis publishes an index on its own scale. Only its
+      # ordering is used, so it blends with the leaderboard rank scores.
+      (($aaf[0] // []) | sort_by(-.coding)) as $aa |
+      ($sa | startswith("live_synced")) as $ag_live |
+      ($sw | startswith("live_synced")) as $wd_live |
+      ($stx | startswith("live_synced")) as $tx_live |
+      ($sm == "live_synced") as $md_live |
 
-      ([ $tx[]? | select((.model_name // "") | contains($c.arena_match // "__none__")) ][0]) as $tx_hit |
-      (if $tx_hit != null and ($tx_hit.rank != null) then
-        ((97.5 - (($tx_hit.rank - 1) * 0.9)) | if . < 80 then 80 else (. * 10 | round / 10) end)
-       else null end) as $tx_score |
+      # Only an effort suffix is dropped: "(Max)", "(xHigh)", "(High, thinking)".
+      # A dated or harness-specific variant stays a separate model.
+      def norm: ascii_downcase | sub("\\s*\\((low|medium|high|xhigh|max|thinking)(,[^)]*)?\\)\\s*$"; "") | gsub("[^a-z0-9.]+"; " ") | sub("^ +"; "") | sub(" +$"; "");
+      def best($rows; $m):
+        if (($m // "") | norm) == "" then null
+        else (($m | norm) as $want | [ $rows[] | select((.model_name | norm) == $want) ] | sort_by(.rank) | .[0] // null) end;
+      def rank_score($top; $rank):
+        ($top - (($rank - 1) * 0.9)) | if . < 80 then 80 else ((. * 10 | round) / 10) end;
+      def r1: (. * 10 | round) / 10;
+      .updated_at = $ts |
+      .candidates |= map(
+        . as $c |
+        # Defined here, where $c is the candidate being scored.
+        def measured($feed; $hit; $score; $label):
+          {score: $score, benchmark: $label, live: true, basis: "measured", feed: $feed, rank: $hit.rank, value: $hit.value,
+           match: ($c.arena_match // ""), synced_at: $ts, synced_epoch: $now};
+        # A score set by an earlier sync from a reachable board, for the same
+        # leaderboard name, still inside the carry window. A candidate whose name
+        # changed (a model upgrade under the same id) does not inherit the
+        # score of the model it replaced.
+        def carried($entry):
+          if $entry != null and (($entry.basis // "estimate") != "estimate")
+             and (($entry.match // "") == ($c.arena_match // ""))
+             and (($now - ($entry.synced_epoch // 0)) <= $carry) and (($entry.synced_epoch // 0) <= $now + 60)
+          then $entry else null end;
+        def estimate($entry):
+          if $entry == null then null
+          else ($entry | del(.feed, .rank, .value, .match, .synced_at, .synced_epoch, .text_score, .text_synced_epoch) + {live: false, basis: "estimate"}) end;
+        # A model a reachable board does not list ranks below every model it
+        # does list. Its fixed estimate is held to the score of the next rank
+        # down, so an unranked model cannot outscore a ranked one on a guess.
+        def unlisted($entry; $feed; $top; $rows; $board):
+          if $entry == null then null
+          else
+            rank_score($top; ($rows | length) + 1) as $cap |
+            if (($entry.score // 0) > $cap) then
+              ($entry | del(.rank, .value, .text_score, .text_synced_epoch) + {score: $cap, live: false, basis: "capped", feed: $feed, match: ($c.arena_match // ""),
+                benchmark: ((.benchmark // "Estimate") + " (not listed on " + $board + ")"), synced_at: $ts, synced_epoch: $now})
+            else estimate($entry) end
+          end;
+        ([ ($prev.candidates // [])[] | select(.id == $c.id) ][0] // null) as $pc |
+        (($c.specialist_domain // "") == "") as $general |
+        ($general and (($c.frontier_only // false) == false)) as $agent_ok |
 
-      ([ $aa[]? | select((.slug // "") | contains($c.aa_slug_match // "__none__")) | select(.coding != null) ][0]) as $aa_hit |
+        .window_tokens = (
+          ($md[$c.models_dev_provider // ""][$c.models_dev_id // ""])
+          // (if $md_live then null else $pc.window_tokens end)
+          // $c.window_tokens
+        ) |
 
-      if $ag_score != null and (($c.specialist_domain // "") == "") and (($c.frontier_only // false) == false) then
-        .benchmarks.coding_complex = {
-          score: (if $aa_hit != null then (($ag_score * 0.6 + $aa_hit.coding * 0.4) * 10 | round / 10) else $ag_score end),
-          benchmark: ("LMArena Agent #" + ($ag_hit.rank|tostring) + " (" + ($ag_hit.date // "live") + ")")
-        } |
-        .benchmarks.architecture = {
-          score: (((($ag_score * 0.6) + (($tx_score // $ag_score) * 0.4)) * 10) | round / 10),
-          benchmark: ("LMArena Agent #" + ($ag_hit.rank|tostring) + " + Reasoning")
-        }
-      else . end |
-      if $wd_score != null and (($c.specialist_domain // "") == "") then
-        .benchmarks.webdev = {
-          score: $wd_score,
-          benchmark: ("LMArena WebDev #" + ($wd_hit.rank|tostring) + (if $wd_hit.rating != null then " (" + ($wd_hit.rating|round|tostring) + " Elo)" else "" end))
-        }
-      else . end |
-      if $tx_score != null and (($c.specialist_domain // "") == "") then
-        .benchmarks.research = {
-          score: $tx_score,
-          benchmark: ("LMArena Reasoning #" + ($tx_hit.rank|tostring) + (if $tx_hit.rating != null then " (" + ($tx_hit.rating|round|tostring) + " Elo)" else "" end))
-        }
-      else . end
-    )
-    ' "$base_file" > "$tmp_out" && mv "$tmp_out" "$out_file"
-  rm -rf "$sync_tmp"
+        best($ag; $c.arena_match) as $ag_hit |
+        best($wd; $c.arena_match) as $wd_hit |
+        best($tx; $c.arena_match) as $tx_hit |
+        (if $ag_hit != null then rank_score(98.0; $ag_hit.rank) else null end) as $ag_score |
+        (if $wd_hit != null then rank_score(97.5; $wd_hit.rank) else null end) as $wd_score |
+        (if $tx_hit != null then rank_score(97.5; $tx_hit.rank) else null end) as $tx_score |
+        # Artificial Analysis is used only for a candidate that names its exact
+        # slug there (`aa_slug`). A partial match would take the rank of another model.
+        (if (($c.aa_slug // "") == "") then null
+         else ([ $aa | to_entries[] | select((.value.slug | ascii_downcase) == ($c.aa_slug | ascii_downcase)) | .key ][0] // null) end) as $aa_idx |
+        (if $aa_idx != null then rank_score(98.0; $aa_idx + 1) else null end) as $aa_score |
+
+        (if $agent_ok then
+          (if $ag_live then
+            (if $ag_score != null then
+              .benchmarks.coding_complex = measured("lmarena_agent"; $ag_hit;
+                (if $aa_score != null then (($ag_score * 0.6 + $aa_score * 0.4) | r1) else $ag_score end);
+                ("LMArena Agent #" + ($ag_hit.rank | tostring) + " (" + ($ag_hit.date // "live") + ")"))
+              |
+              # The reasoning half comes from the text board: this sync, else
+              # the value an earlier sync measured, by the time of that measurement,
+              # not the time the agent half was last refreshed.
+              (carried($pc.benchmarks.architecture // null)) as $parch |
+              (if $tx_live then $tx_score
+               elif ($parch != null and ($parch.text_score != null) and (($now - ($parch.text_synced_epoch // 0)) <= $carry)) then $parch.text_score
+               else null end) as $txs |
+              (if $tx_live then $now elif $txs != null then $parch.text_synced_epoch else null end) as $txs_ep |
+              .benchmarks.architecture = (measured("lmarena_agent"; $ag_hit;
+                ((($ag_score * 0.6) + (($txs // $ag_score) * 0.4)) | r1);
+                ("LMArena Agent #" + ($ag_hit.rank | tostring) + (if $txs != null then " + Reasoning" else "" end)))
+                + {text_score: $txs, text_synced_epoch: $txs_ep})
+            else
+              .benchmarks.coding_complex = unlisted($c.benchmarks.coding_complex; "lmarena_agent"; 98.0; $ag; "LMArena Agent") |
+              .benchmarks.architecture = unlisted($c.benchmarks.architecture; "lmarena_agent"; 98.0; $ag; "LMArena Agent")
+            end)
+          else
+            .benchmarks.coding_complex = (carried($pc.benchmarks.coding_complex // null) // estimate($c.benchmarks.coding_complex)) |
+            .benchmarks.architecture = (carried($pc.benchmarks.architecture // null) // estimate($c.benchmarks.architecture))
+          end)
+        else . end) |
+
+        (if $general then
+          (if $wd_live then
+            .benchmarks.webdev = (if $wd_score != null then
+                measured("lmarena_webdev"; $wd_hit; $wd_score;
+                  ("LMArena WebDev #" + ($wd_hit.rank | tostring) + (if ($wd_hit.value | type) == "number" then " (" + ($wd_hit.value | round | tostring) + " Elo)" else "" end)))
+              else unlisted($c.benchmarks.webdev; "lmarena_webdev"; 97.5; $wd; "LMArena WebDev") end)
+          else
+            .benchmarks.webdev = (carried($pc.benchmarks.webdev // null) // estimate($c.benchmarks.webdev))
+          end) |
+          (if $tx_live then
+            .benchmarks.research = (if $tx_score != null then
+                measured("lmarena_text"; $tx_hit; $tx_score;
+                  ("LMArena Reasoning #" + ($tx_hit.rank | tostring) + (if ($tx_hit.value | type) == "number" then " (" + ($tx_hit.value | round | tostring) + " Elo)" else "" end)))
+              else unlisted($c.benchmarks.research; "lmarena_text"; 97.5; $tx; "LMArena Reasoning") end)
+          else
+            .benchmarks.research = (carried($pc.benchmarks.research // null) // estimate($c.benchmarks.research))
+          end)
+        else . end) |
+        .benchmarks |= with_entries(select(.value != null))
+      ) |
+      . as $doc |
+      .sync_receipt = {
+        synced_at: $ts,
+        lmarena_agent: $sa,
+        lmarena_webdev: $sw,
+        lmarena_text: $stx,
+        swe_bench_official: "not_scored",
+        swe_bench_entries: 0,
+        models_dev: $sm,
+        artificial_analysis: $saa,
+        live_scores: ([ $doc.candidates[].benchmarks[] | select((.live // false) == true) ] | length),
+        estimated_scores: ([ $doc.candidates[].benchmarks[] | select((.live // false) != true) ] | length),
+        capped_scores: ([ $doc.candidates[].benchmarks[] | select((.basis // "") == "capped") ] | length),
+        # A general candidate a reachable agent board does not list by that
+        # name. Either the model is not ranked or its arena_match is wrong.
+        unmatched: (if $ag_live then [ $doc.candidates[] | select(((.specialist_domain // "") == "") and ((.frontier_only // false) == false)) | select((.benchmarks.coding_complex.live // false) != true) | .id ] else [] end)
+      }
+      ' "$base_file" 2>/dev/null | _afk_router_write_json "$out_file"; then
+      rm -rf -- "$sync_tmp"
+      jq -cn --arg out "$out_file" --arg ts "$today" \
+        '{schema:"afk-benchmark-sync/3", result:"error", reason:"the refreshed catalog could not be built or written; the previous catalog is unchanged", catalog_path:$out, synced_at:$ts}'
+      return 1
+    fi
+  fi
+  rm -rf -- "$sync_tmp"
+
+  local count=0 live=0 unmatched="[]"
+  if [[ -f "$out_file" ]]; then
+    count="$(jq '.candidates | length' "$out_file" 2>/dev/null || printf '0')"
+    live="$(jq '[.candidates[].benchmarks[] | select((.live // false) == true)] | length' "$out_file" 2>/dev/null || printf '0')"
+    unmatched="$(jq -c '.sync_receipt.unmatched // []' "$out_file" 2>/dev/null || printf '[]')"
+  fi
+  [[ "$count" =~ ^[0-9]+$ ]] || count=0
+  [[ "$live" =~ ^[0-9]+$ ]] || live=0
+  jq -e 'type == "array"' <<<"$unmatched" >/dev/null 2>&1 || unmatched="[]"
 
   jq -cn \
     --arg out "$out_file" \
     --arg ts "$today" \
+    --arg res "$result" \
     --arg sa "$st_agent" \
     --arg sw "$st_webdev" \
     --arg stx "$st_text" \
-    --arg ss "$st_swe" \
     --arg sm "$st_mdev" \
     --arg saa "$st_aa" \
-    --argjson count "$(jq '.candidates | length' "$out_file")" \
+    --argjson count "$count" \
+    --argjson live "$live" \
+    --argjson um "$unmatched" \
     '{
       schema: "afk-benchmark-sync/3",
+      result: $res,
       catalog_path: $out,
       synced_at: $ts,
       candidates_count: $count,
+      live_scores: $live,
+      unmatched: $um,
       feeds: {
         lmarena_agent: $sa,
         lmarena_webdev: $sw,
         lmarena_text: $stx,
-        swe_bench_official: $ss,
+        swe_bench_official: "not_scored",
         models_dev: $sm,
         artificial_analysis: $saa
       }
     }'
+  return "$rc"
 }

@@ -1273,9 +1273,9 @@ SPEC_HIGH="$(unset AFK_ROUTER_HARNESS_LIST; env "${GF_ENV_ARGS[@]}" bash "$AFK" 
 SPEC_CRIT="$(unset AFK_ROUTER_HARNESS_LIST; env "${GF_ENV_ARGS[@]}" bash "$AFK" factory route-preview --repo "$BMAD_REPO" --stage spec --risk critical --json)"
 BMAD_PM_EPICS="$(unset AFK_ROUTER_HARNESS_LIST; env "${GF_ENV_ARGS[@]}" bash "$AFK" factory route-preview --repo "$BMAD_REPO" --stage epics --role pm --risk medium --json)"
 
-assert_eq "High-risk spec uses claude/opus (effort=high) while critical-risk frontier_synthesis unlocks claude/claude-fable-5-1 (effort=xhigh)" \
+assert_eq "High-risk spec uses claude/opus (effort=high) while critical-risk frontier_synthesis unlocks claude/claude-fable-5-2 (effort=xhigh)" \
   "$(jq -r '"\(.model):\(.effort):\(.task_class)"' <<<"$SPEC_HIGH")->$(jq -r '"\(.model):\(.effort):\(.task_class)"' <<<"$SPEC_CRIT")" \
-  "opus:high:architecture->claude-fable-5-1:xhigh:frontier_synthesis"
+  "opus:high:architecture->claude-fable-5-2:xhigh:frontier_synthesis"
 
 SMALL_SPEC="$(unset AFK_ROUTER_HARNESS_LIST; env "${GF_ENV_ARGS[@]}" bash "$AFK" factory route-preview --repo "$BMAD_REPO" --stage spec --risk low --diff-lines 13 --json)"
 SMALL_REVIEW="$(unset AFK_ROUTER_HARNESS_LIST; env "${GF_ENV_ARGS[@]}" bash "$AFK" factory route-preview --repo "$BMAD_REPO" --stage review-code --risk low --diff-lines 13 --builder-family anthropic --json)"
