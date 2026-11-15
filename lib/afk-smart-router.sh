@@ -205,6 +205,14 @@ afk_router_ensure_fresh_benchmarks() {
     [[ -n "$lmt" ]] && (( now_ep - lmt > 300 )) && rmdir "$marker.lock" 2>/dev/null
     return 0
   }
+  # Another job may have finished a sync between the check above and taking
+  # the lock; look again before starting another.
+  attempt_at="$(_afk_router_file_mtime "$marker")"
+  age=$(( now_ep - attempt_at ))
+  if (( age >= 0 && age < retry )); then
+    rmdir "$marker.lock" 2>/dev/null || true
+    return 0
+  fi
   : > "$marker" 2>/dev/null
   afk_router_sync_benchmarks "$user_cat" >/dev/null 2>&1 || true
   rmdir "$marker.lock" 2>/dev/null || true
@@ -1068,7 +1076,7 @@ afk_router_select_candidate() {
       select(
         ((($tc == "coding_review") or ($st | startswith("review")) or ($st == "approve")) | not)
         or $allow_free_rev
-        or ((($c.is_free // false) != true) and ($cclass != "free"))
+        or ((($c.is_free // false) != true) and ($cclass != "free") and (($c.requires_gateway // false) != true))
       ) |
       # Frontier models stay reserved for high-risk, security, architecture,
       # and large diffs. A known small edit is one case. Intake of a new
@@ -1398,7 +1406,7 @@ afk_router_sync_benchmarks() {
            # is taken to be for the same model once.
            and ((($entry | has("match")) | not) or (($entry.match // "") == ($c.arena_match // "")))
              and (($now - ($entry.synced_epoch // 0)) <= $carry) and (($entry.synced_epoch // 0) <= $now + 60)
-          then $entry else null end;
+          then ($entry + {match: ($entry.match // ($c.arena_match // ""))}) else null end;
         def estimate($entry):
           if $entry == null then null
           else ($entry | del(.feed, .rank, .value, .match, .synced_at, .synced_epoch, .text_score, .text_synced_epoch) + {live: false, basis: "estimate"}) end;
@@ -1408,7 +1416,9 @@ afk_router_sync_benchmarks() {
         def unlisted($entry; $feed; $top; $rows; $board):
           if $entry == null then null
           else
-            rank_score($top; ($rows | length) + 1) as $cap |
+            # From the last rank on the board, not the row count: a board that
+          # skips ranks would otherwise cap an unlisted model above a listed one.
+          rank_score($top; (([$rows[].rank] | max) // 0) + 1) as $cap |
             if (($entry.score // 0) > $cap) then
               ($entry | del(.rank, .value, .text_score, .text_synced_epoch) + {score: $cap, live: false, basis: "capped", feed: $feed, match: ($c.arena_match // ""),
                 benchmark: ((.benchmark // "Estimate") + " (not listed on " + $board + ")"), synced_at: $ts, synced_epoch: $now})
@@ -1461,7 +1471,15 @@ afk_router_sync_benchmarks() {
             end)
           else
             .benchmarks.coding_complex = (carried($pc.benchmarks.coding_complex // null) // estimate($c.benchmarks.coding_complex)) |
-            .benchmarks.architecture = (carried($pc.benchmarks.architecture // null) // estimate($c.benchmarks.architecture))
+            # Carried whole only while its reasoning half is still in its own
+            # window; otherwise it falls back to the agent half alone.
+            (carried($pc.benchmarks.architecture // null)) as $ca |
+            .benchmarks.architecture = (
+              if $ca == null then estimate($c.benchmarks.architecture)
+              elif ($ca.text_score != null) and (($now - ($ca.text_synced_epoch // 0)) > $carry) and ($ca.rank != null)
+                then ($ca + {score: rank_score(98.0; $ca.rank), text_score: null, text_synced_epoch: null,
+                             benchmark: ("LMArena Agent #" + ($ca.rank | tostring))})
+              else $ca end)
           end)
         else . end) |
 

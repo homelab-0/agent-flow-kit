@@ -337,6 +337,32 @@ AFK_BENCHMARK_FEED_DIR="$PARTIAL" afk_router_sync_benchmarks "$OLDC" >/dev/null
 assert_eq "A measured score written before names were recorded is still carried while its feed is down" \
   "$(bench "$OLDC" agy-carbon-native research basis)" "measured"
 
+assert_eq "A legacy measurement accepted once is stamped with the current name, so the exception does not repeat" \
+  "$(bench "$OLDC" agy-carbon-native research match)" "Gemini 4 Carbon"
+
+GAP="$TMPROOT/feeds-gap"; mkdir -p "$GAP"
+make_board score '[{"rank":1,"model_name":"Claude Opus 5.5 (Max)"},{"rank":17,"model_name":"Grok 4.7 (xHigh)"}]' | \
+  jq '.rows |= map(select(.row.model_name | test("Opus|Grok")))' > "$GAP/lmarena-agent.json"
+GOUT="$TMPROOT/gap/benchmarks.json"; mkdir -p "$TMPROOT/gap"
+AFK_BENCHMARK_FEED_DIR="$GAP" afk_router_sync_benchmarks "$GOUT" >/dev/null
+assert_eq "On a board that skips ranks, an unlisted model is held at rank 18, below the listed rank 17 (83.6), not at the row count" \
+  "$(bench "$GOUT" codex-astra-native coding_complex score):$(bench "$GOUT" codex-astra-native coding_complex basis)" "82.7:capped"
+
+TEXP="$TMPROOT/text-expire/benchmarks.json"; mkdir -p "$TMPROOT/text-expire"
+AFK_BENCHMARK_FEED_DIR="$FEEDS" afk_router_sync_benchmarks "$TEXP" >/dev/null
+jq '(.candidates[].benchmarks.architecture | select(. != null and .text_synced_epoch != null) | .text_synced_epoch) |= (. - 5000000)' "$TEXP" > "$TEXP.x" && mv "$TEXP.x" "$TEXP"
+WD_ONLY="$TMPROOT/feeds-webdev-only"; mkdir -p "$WD_ONLY"; cp "$FEEDS/lmarena-webdev.json" "$WD_ONLY/"
+AFK_BENCHMARK_FEED_DIR="$WD_ONLY" afk_router_sync_benchmarks "$TEXP" >/dev/null
+assert_eq "With the agent board down, an architecture score whose reasoning half has expired is carried on its agent half alone" \
+  "$(bench "$TEXP" claude-opus-native architecture text_score):$(bench "$TEXP" claude-opus-native architecture score)" "null:97.1"
+
+LOCAL_CAT="$TMPROOT/local-reviewer.json"
+jq '(.candidates[] | select(.id == "litellm-local-coding") | .benchmarks.coding_review.score) = 99.9 | .entitlement_pools["litellm-local"].cost_class = "subscription"' "$OUT" > "$LOCAL_CAT"
+R_LOCAL="$(AFK_ROUTER_LITELLM_ASSUME_ONLINE=1 AFK_LITELLM_BASE_URL=http://gateway.invalid AFK_ROUTER_BENCHMARKS_FILE="$LOCAL_CAT" AFK_ROUTER_HARNESS_LIST="claude" AFK_ROUTER_SIGNALS_FILE="$TMPROOT/signals-empty.json" \
+  afk_router_select_candidate "$ROUTE_REPO" review-code low openai reviewer 1 code 200)"
+assert_eq "A model behind the local gateway never reviews, even if its pool is not marked free" \
+  "$(jq -r '.model != "local-coding"' <<<"$R_LOCAL")" "true"
+
 chmod 644 "$OUT"; AFK_BENCHMARK_FEED_DIR="$FEEDS" afk_router_sync_benchmarks "$OUT" >/dev/null
 assert_eq "Rewriting the catalog keeps its file mode" "$(stat -c %a "$OUT" 2>/dev/null || stat -f %Lp "$OUT")" "644"
 
