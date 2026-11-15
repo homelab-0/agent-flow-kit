@@ -18,7 +18,7 @@ probe() (
   # shellcheck source=/dev/null
   source "$DISPATCH"
   # Called indirectly by the sourced dispatcher's selector.
-  # shellcheck disable=SC2329
+  # shellcheck disable=SC2317,SC2329
   orca_json() {
     printf '%s\n' "$*" >>"$TMP/calls"
     case "$*" in
