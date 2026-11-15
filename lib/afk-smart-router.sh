@@ -1394,7 +1394,9 @@ afk_router_sync_benchmarks() {
         # score of the model it replaced.
         def carried($entry):
           if $entry != null and (($entry.basis // "estimate") != "estimate")
-             and (($entry.match // "") == ($c.arena_match // ""))
+             # An entry written before names were recorded has no `match`, and
+           # is taken to be for the same model once.
+           and ((($entry | has("match")) | not) or (($entry.match // "") == ($c.arena_match // "")))
              and (($now - ($entry.synced_epoch // 0)) <= $carry) and (($entry.synced_epoch // 0) <= $now + 60)
           then $entry else null end;
         def estimate($entry):

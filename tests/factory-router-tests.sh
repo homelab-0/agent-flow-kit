@@ -330,6 +330,13 @@ AFK_BENCHMARK_FEED_DIR="$PARTIAL" afk_router_sync_benchmarks "$RENAMED" >/dev/nu
 assert_eq "A score measured for a model of a different name is not carried to the candidate that replaced it" \
   "$(bench "$RENAMED" agy-carbon-native research basis)" "estimate"
 
+OLDC="$TMPROOT/old-carry/benchmarks.json"; mkdir -p "$TMPROOT/old-carry"
+AFK_BENCHMARK_FEED_DIR="$FEEDS" afk_router_sync_benchmarks "$OLDC" >/dev/null
+jq '(.candidates[].benchmarks[] | select(.match != null)) |= del(.match)' "$OLDC" > "$OLDC.x" && mv "$OLDC.x" "$OLDC"
+AFK_BENCHMARK_FEED_DIR="$PARTIAL" afk_router_sync_benchmarks "$OLDC" >/dev/null
+assert_eq "A measured score written before names were recorded is still carried while its feed is down" \
+  "$(bench "$OLDC" agy-carbon-native research basis)" "measured"
+
 chmod 644 "$OUT"; AFK_BENCHMARK_FEED_DIR="$FEEDS" afk_router_sync_benchmarks "$OUT" >/dev/null
 assert_eq "Rewriting the catalog keeps its file mode" "$(stat -c %a "$OUT" 2>/dev/null || stat -f %Lp "$OUT")" "644"
 
