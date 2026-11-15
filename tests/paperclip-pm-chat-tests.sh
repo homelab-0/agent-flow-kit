@@ -155,5 +155,31 @@ assert_eq "A second planning comment includes the earlier comment" \
   "$(grep -c 'The audience is operators.' "$PROMPT6"):$(grep -c 'What should we name the export?' "$PROMPT6"):$(grep -c agent-hires "$AFK_CHAT_LOG_DIR/requests.jsonl")" \
   "1:1:0"
 
+# The default runner, with a stub claude: where it runs and what it may use.
+STUB="$TMP/stub-claude"; mkdir -p "$STUB"
+cat > "$STUB/claude" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$PWD" > "$AFK_CHAT_LOG_DIR/claude.cwd"
+printf '%s\n' "$@" > "$AFK_CHAT_LOG_DIR/claude.args"
+if [[ -n "${STUB_CLAUDE_ERROR:-}" ]]; then
+  printf '{"is_error":true,"result":"Credit balance is too low"}\n'
+else
+  printf '{"is_error":false,"result":"A planning answer."}\n'
+fi
+SH
+chmod +x "$STUB/claude"
+printf 'prompt\n' > "$TMP/p.md"
+PATH="$STUB:$PATH" afk_pc_pm_chat_run_default "$TMP/p.md" "$TMP/out.md" "$TMP/repo"; RC=$?
+ARGS="$(tr '\n' ' ' < "$AFK_CHAT_LOG_DIR/claude.args")"
+assert_eq "The default planning reply runs inside the project checkout and returns its answer" \
+  "$RC:$(cat "$AFK_CHAT_LOG_DIR/claude.cwd"):$(cat "$TMP/out.md")" "0:$TMP/repo:A planning answer."
+assert_eq "It runs restricted: read-only tools, no MCP servers, nobody to grant permissions, no saved session" \
+  "$(for f in '--restricted' '--tools Read,Grep,Glob' '--strict-mcp-config' '--permission-prompts none' '--no-session-persistence'; do [[ "$ARGS" == *"$f"* ]] && printf y || printf n; done)" "yyyyy"
+rm -f "$TMP/out.md"
+STUB_CLAUDE_ERROR=1 PATH="$STUB:$PATH" afk_pc_pm_chat_run_default "$TMP/p.md" "$TMP/out.md" "$TMP/repo"; RC=$?
+assert_eq "An error result is never written out as a reply" "$RC:$([[ -s "$TMP/out.md" ]] && printf written || printf none)" "1:none"
+assert_eq "Without a project checkout no model is run" \
+  "$(PATH="$STUB:$PATH" afk_pc_pm_chat_run_default "$TMP/p.md" "$TMP/out2.md" "$TMP/no-such-repo"; printf '%s' "$?")" "1"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
