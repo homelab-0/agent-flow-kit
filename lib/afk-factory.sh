@@ -641,7 +641,7 @@ EOF
     out="The committed .afk/checks.sh could not be read from ${base_ref}, so no checks ran."
     rc=1
   elif [[ -n "$want_digest" && "$(_afk_factory_file_digest "$checks_script")" != "$want_digest" ]]; then
-    out="The base checkout's .afk/checks.sh changed after this job started, so it was not run. Commit the check script to stop this."
+    out="The base checkout's .afk/checks.sh changed after this job started, so it was not run. If the change was made by a person, reply on the issue with instructions for another round and that round uses the script as it is then. Committing .afk/checks.sh avoids this for new jobs."
     rc=1
   elif [[ -f "$run_script" ]]; then
     out="$(cd "$wt" && "${gate_cmd[@]}" 2>&1 </dev/null)" || rc=$?
@@ -3855,7 +3855,7 @@ afk_factory_sync_reviews() {
       if [[ "$action_kind" == "clarify" ]]; then
         note="To merge, reply with just \`approve\`. Anything else is passed to the agent as instructions for another round."
       else
-        note="Not merged: this change did not pass its checks (\`.afk/checks.sh\`). Reply with instructions for another round, or fix the checks and reply \`approve\` once they pass."
+        note="Not merged: this change did not pass its checks (\`.afk/checks.sh\`). Reply with instructions for another round; the checks run again on that round, so if the checks themselves were wrong, fix them first and then reply."
       fi
       afk_pc_comment "$api_url" "$j_issue" "$key" "$run_id" "$note" >/dev/null 2>&1 || true
       newest_cid="$(_afk_factory_latest_comment_id "$api_url" "$key" "$j_issue")"
@@ -3962,6 +3962,13 @@ EOF
 $feedback_text
 EOF
       local next_round=$(( j_round + 1 ))
+      # The board asking for another round is a person acting: the check
+      # script as it stands now, which they may have just fixed, is the one
+      # the next round is judged by.
+      local cur_digest
+      cur_digest="$(_afk_factory_file_digest "$j_repo/.afk/checks.sh")"
+      jq -c --arg d "$cur_digest" '.checks_script_sha256 = (if $d == "" then null else $d end)' \
+        "$j_dir/job.json" > "$j_dir/job.json.tmp" && _afk_factory_commit_tmp "$j_dir/job.json"
       if [[ "$j_stage" == "needs-info" ]]; then
         rm -f "$j_dir/intake.md"
         jq -c --arg now "$now_iso" --arg lcid "$newest_cid" \
