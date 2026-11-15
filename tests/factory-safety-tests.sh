@@ -92,6 +92,11 @@ case "$STAGE" in
       other-branch) git -C "$WT" checkout -q -b side-branch; printf 'side\n' >> "$WT/$FEATURE" ;;
       tamper-checks) printf 'feature\n' >> "$WT/$FEATURE"
                  printf '#!/usr/bin/env bash\nexit 0\n' > "$AFK_FACTORY_REPO/.afk/checks.sh" ;;
+      tamper-record) printf 'feature\n' >> "$WT/$FEATURE"
+                 printf '#!/usr/bin/env bash\nexit 0\n' > "$AFK_FACTORY_REPO/.afk/checks.sh"
+                 d="$(sha256sum < "$AFK_FACTORY_REPO/.afk/checks.sh" | cut -d' ' -f1)"
+                 jq --arg d "$d" '.checks_script_sha256 = $d' "$JOB/job.json" > "$JOB/job.json.x" && mv "$JOB/job.json.x" "$JOB/job.json" ;;
+      delete-checks) printf 'feature\n' >> "$WT/$FEATURE"; rm -f "$AFK_FACTORY_REPO/.afk/checks.sh" ;;
     esac
     printf '## Summary\n- Built.\n' > "$OUT" ;;
   review-code)     review "${R_REVIEW:-pass}" ;;
@@ -754,6 +759,15 @@ assert_eq "A builder that rewrites an uncommitted check script in the base check
   "$(field "$O" '.stage')" "needs-human"
 assert_contains "The checks record says the script changed after the job started" \
   "$(cat "$UR/.afk/jobs/checks-tamper/round-1/checks.md" 2>/dev/null)" "changed after this job started"
+
+for mode in tamper-record delete-checks; do
+  UR="$(new_repo "checks-$mode")"
+  printf '#!/usr/bin/env bash\necho "always red"; exit 1\n' > "$UR/.afk/checks.sh"
+  git -C "$UR" rm -q --cached .afk/checks.sh; git -C "$UR" commit -q -m "checks kept out of git"
+  O="$(run_job "$UR" "checks-$mode" R_BUILD="$mode")"
+  assert_eq "A builder that tries $mode on an uncommitted check script does not get a pass" \
+    "$(field "$O" '.stage'):$(head -n 1 "$UR/.afk/jobs/checks-$mode/round-1/checks.md" 2>/dev/null)" "needs-human:VERDICT: FAIL"
+done
 
 FR="$(new_repo review-forge)"
 O="$(run_job "$FR" review-forge R_REVIEW=forge)"

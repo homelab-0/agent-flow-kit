@@ -633,14 +633,16 @@ EOF
   # An uncommitted script runs from the base checkout's working copy, which an
   # agent can reach by its absolute path. It must be the script the job
   # started with.
-  local want_digest=""
-  if [[ "$run_script" == "$checks_script" && -f "$checks_script" ]]; then
-    want_digest="$(jq -r '.checks_script_sha256 // empty' "$job_dir/job.json" 2>/dev/null || true)"
+  local want_digest="" have_digest=""
+  if [[ "$run_script" == "$checks_script" ]]; then
+    want_digest="$(_afk_factory_get_checks_digest "$job_dir")"
+    have_digest="$(_afk_factory_file_digest "$checks_script")"
+    [[ -n "$have_digest" ]] || have_digest="none"
   fi
   if [[ "$extract_failed" == true ]]; then
     out="The committed .afk/checks.sh could not be read from ${base_ref}, so no checks ran."
     rc=1
-  elif [[ -n "$want_digest" && "$(_afk_factory_file_digest "$checks_script")" != "$want_digest" ]]; then
+  elif [[ -n "$want_digest" && "$have_digest" != "$want_digest" ]]; then
     out="The base checkout's .afk/checks.sh changed after this job started, so it was not run. If the change was made by a person, reply on the issue with instructions for another round and that round uses the script as it is then. Committing .afk/checks.sh avoids this for new jobs."
     rc=1
   elif [[ -f "$run_script" ]]; then
@@ -2135,6 +2137,7 @@ afk_factory_run_stage_with_context_guard() {
       _afk_factory_beat_start "$job_dir" "$stage" "$role"
       afk_factory_invoke_stage_agent "$repo" "$wt" "$job_dir" "$role" "$stage" "$ckpt_file" "$output_file" "$harness" || stage_rc=$?
       _afk_factory_beat_stop
+      (( stage_rc != 0 )) && [[ "$stage" == review* ]] && rm -f -- "$output_file"
       (( stage_rc == 0 )) && [[ ! -s "$output_file" ]] && stage_rc=1
       _afk_factory_report_stage_telemetry "$slug" "$job_dir" "$stage" "$role" "$issue_id" "$api_url" "$key" "$company_id" "$host_agent_id" "$project_id" "$run_id" "$ctx_new_gen"
       [[ -n "$saved_stage_tokens" ]] && AFK_STAGE_USED_TOKENS="$saved_stage_tokens"
@@ -2433,6 +2436,7 @@ _afk_factory_run_job_locked() {
         created_at: $now,
         updated_at: $now
       }' > "$job_file.tmp" && _afk_factory_commit_tmp "$job_file"
+    _afk_factory_set_checks_digest "$job_dir" "$(_afk_factory_file_digest "$abs_repo/.afk/checks.sh")"
   fi
   if [[ ! -f "$job_file" ]]; then
     afk_warn "factory run: could not write $job_file"
@@ -3606,6 +3610,30 @@ _afk_factory_file_digest() {
   fi
 }
 
+# Where the runner keeps the digest of a job's uncommitted check script, out
+# of the job directory that agents can write. Memory first, then this file.
+_afk_factory_checks_digest_file() { # <job_dir>
+  local key
+  key="$(printf '%s' "$1" | { sha256sum 2>/dev/null || shasum -a 256 2>/dev/null; } | cut -d' ' -f1)"
+  printf '%s/factory/check-digests/%s' "${AFK_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/agent-flow-kit}" "${key:-unknown}"
+}
+_afk_factory_set_checks_digest() { # <job_dir> <digest>
+  local f
+  f="$(_afk_factory_checks_digest_file "$1")"
+  mkdir -p "$(dirname -- "$f")" 2>/dev/null || true
+  printf '%s\n' "${2:-none}" > "$f" 2>/dev/null || true
+  AFK_JOB_CHECKS_DIGEST_DIR="$1"
+  AFK_JOB_CHECKS_DIGEST="${2:-none}"
+}
+# Prints the recorded digest, "none" when the job started with no script, or
+# nothing when no record exists (a job from before records were kept).
+_afk_factory_get_checks_digest() { # <job_dir>
+  if [[ -n "${AFK_JOB_CHECKS_DIGEST:-}" && "${AFK_JOB_CHECKS_DIGEST_DIR:-}" == "$1" ]]; then
+    printf '%s' "$AFK_JOB_CHECKS_DIGEST"; return 0
+  fi
+  head -n 1 "$(_afk_factory_checks_digest_file "$1")" 2>/dev/null | tr -d '[:space:]'
+}
+
 # _afk_factory_checked_commit <job_dir>
 # The commit the current round's checks ran on, or nothing.
 _afk_factory_checked_commit() {
@@ -3884,7 +3912,11 @@ afk_factory_sync_reviews() {
       # The row was read before the lock. Read the job again under it: another
       # runner may have moved it on, or the branch may have moved since the
       # checks ran.
-      if [[ "$(jq -r '.stage // empty' "$j_dir/job.json" 2>/dev/null || true)" != "needs-human" ]]; then
+      # The approval was given on a card for one round. A job that went through
+      # another round since, and is waiting again, is waiting on a new card.
+      if [[ "$(jq -r '.stage // empty' "$j_dir/job.json" 2>/dev/null || true)" != "needs-human" ]] \
+         || [[ "$(jq -r '.round // 1 | tostring' "$j_dir/job.json" 2>/dev/null || true)" != "${j_round:-1}" ]] \
+         || [[ "$(jq -r '.pending_interaction_id // empty' "$j_dir/job.json" 2>/dev/null || true)" != "$j_piid" ]]; then
         # Someone else already acted on this job. Nothing to say on the issue.
         _afk_factory_job_unlock "$j_dir"
         actions="$(jq -c --arg s "$j_slug" --arg id "$j_id" '. + [{slug:$s, job_id:$id, action:"approve_skipped_job_moved_on"}]' <<<"$actions")"
@@ -3975,6 +4007,7 @@ EOF
       # the next round is judged by.
       local cur_digest
       cur_digest="$(_afk_factory_file_digest "$j_repo/.afk/checks.sh")"
+      _afk_factory_set_checks_digest "$j_dir" "$cur_digest"
       jq -c --arg d "$cur_digest" '.checks_script_sha256 = (if $d == "" then null else $d end)' \
         "$j_dir/job.json" > "$j_dir/job.json.tmp" && _afk_factory_commit_tmp "$j_dir/job.json"
       if [[ "$j_stage" == "needs-info" ]]; then
