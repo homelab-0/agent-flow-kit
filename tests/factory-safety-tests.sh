@@ -761,6 +761,17 @@ assert_eq "A reviewer that commits and rewrites the checked-commit record does n
   "$(field "$O" '.stage'):$(git -C "$FR" log --oneline | grep -c ' late$')" "needs-human:0"
 assert_contains "The reason says the branch moved after the checks" "$(reasons "$O")" "Branch moved after the checks ran"
 
+# A job resumed at review by a new runner: the record is taken before the
+# reviewers start, so one that commits and rewrites it is still caught.
+RR="$(new_repo resume-review)"
+run_job "$RR" resume-review R_REVIEW=none >/dev/null
+RJ="$RR/.afk/jobs/resume-review"
+jq '.resume_at = "review" | .stage = "review" | .round = 1' "$RJ/job.json" > "$RJ/j.x" && mv "$RJ/j.x" "$RJ/job.json"
+rm -f "$RJ"/round-1/review-*.md
+O="$(run_job "$RR" resume-review R_REVIEW=forge)"
+assert_eq "A job resumed at review by a new runner does not merge a reviewer's commit with a rewritten record" \
+  "$(field "$O" '.stage'):$(calls):$(git -C "$RR" log --oneline | grep -c ' late$')" "needs-human:review-code:0"
+
 L="$(LAND_ORIGIN=https://gitlab.example.invalid/demo.git LAND_MOVE_AFTER_CHECKS=1 land "$PASSING")"
 assert_eq "A local merge also refuses a branch that moved after the checks" "$(field "$L" '"\(.ok):\(.action)"')" "false:head_moved"
 L="$(LAND_ORIGIN=https://gitlab.example.invalid/demo.git land "$PASSING")"

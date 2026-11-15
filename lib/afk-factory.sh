@@ -2622,6 +2622,10 @@ EOF
        && [[ -n "$(cat "$round_dir/checks.sha" 2>/dev/null)" ]] \
        && [[ "$(cat "$round_dir/checks.sha" 2>/dev/null)" == "$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null)" ]]; then
       skip_to_review=true
+      # No agent has run since these checks; their record is taken now, before
+      # the reviewers start, so a reviewer that rewrites it is undone.
+      AFK_LAST_GATED_HEAD="$(head -n 1 "$round_dir/checks.sha" 2>/dev/null | tr -d '[:space:]')"
+      AFK_LAST_GATED_ROUND_DIR="$round_dir"
     fi
     if [[ "$skip_to_review" != true ]]; then
       jq -c --argjson r "$round" '.stage = "build" | .round = $r | .active_agent = "dev"' "$job_file" > "$job_file.tmp" && _afk_factory_commit_tmp "$job_file"
@@ -3023,6 +3027,10 @@ afk_factory_watchdog() {
       fi
       rmdir "$j_dir/.run.lock.reap" 2>/dev/null
     fi
+    # The runner that held the job is gone. A heartbeat write it or its beat
+    # loop was stopped in the middle of left a temp file; clear them. A write
+    # still in flight only loses its rename.
+    rm -f -- "$j_dir"/heartbeat.json.tmp.* 2>/dev/null || true
 
     # The recovery count lives in the job record, keyed by the stage that
     # stalled. A rerun moves through earlier stages first, so a count kept
