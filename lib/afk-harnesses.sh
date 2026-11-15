@@ -281,6 +281,54 @@ afk_harness_classify_origin() {
     }'
 }
 
+# _afk_harness_update_argv <name> <install_method> <package_name> <install_prefix> <bin_path>
+# Fills the array AFK_HARNESS_UPDATE_ARGV with the update command for one
+# harness, one word per element, or leaves it empty when there is nothing safe
+# to run. `update_command` above is the same command as a display string and
+# must stay in step with this. The string is never executed: it embeds a path
+# and a package name taken from the filesystem, and a shell would run any
+# `$(...)` found in them.
+_afk_harness_update_argv() {
+  local name="$1" method="$2" pkg="$3" prefix="$4" bin_path="$5"
+  AFK_HARNESS_UPDATE_ARGV=()
+  # A package name parsed out of a path becomes an argument of a package
+  # manager; one that could be read as an option is refused.
+  [[ "$pkg" =~ ^(@[A-Za-z0-9._-]+/)?[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
+  case "$method" in
+    homebrew) AFK_HARNESS_UPDATE_ARGV=(brew upgrade "$pkg") ;;
+    bun)      AFK_HARNESS_UPDATE_ARGV=(bun add -g "${pkg}@latest") ;;
+    pnpm)     AFK_HARNESS_UPDATE_ARGV=(pnpm add -g "${pkg}@latest") ;;
+    npm)
+      if [[ -n "$prefix" && "$prefix" != "/usr" && "$prefix" != "/usr/local" ]]; then
+        AFK_HARNESS_UPDATE_ARGV=(npm install -g --prefix "$prefix" "${pkg}@latest")
+      else
+        AFK_HARNESS_UPDATE_ARGV=(npm install -g "${pkg}@latest")
+      fi
+      ;;
+    uv)       AFK_HARNESS_UPDATE_ARGV=(uv tool upgrade "$pkg") ;;
+    pipx)     AFK_HARNESS_UPDATE_ARGV=(pipx upgrade "$pkg") ;;
+    cargo)    AFK_HARNESS_UPDATE_ARGV=(cargo install "$pkg") ;;
+    self-managed)
+      [[ -n "$bin_path" ]] || return 1
+      case "$name" in
+        opencode) AFK_HARNESS_UPDATE_ARGV=("$bin_path" upgrade) ;;
+        codex)    AFK_HARNESS_UPDATE_ARGV=("$bin_path" --upgrade) ;;
+        *)        AFK_HARNESS_UPDATE_ARGV=("$bin_path" update) ;;
+      esac
+      ;;
+    *) return 1 ;;
+  esac
+  return 0
+}
+
+# The harnesses this kit manages; the only names an update may target.
+_afk_harness_is_known() {
+  case "$1" in
+    claude|codex|opencode|agy|grok|pi|devin) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # Extract clean semantic version string from `--version` output or package.json
 _afk_harness_extract_semver() {
   grep -Eo '[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9._-]+)?' 2>/dev/null | head -n 1 || true
@@ -349,7 +397,12 @@ afk_harness_inspect_auth_one() {
     agy)
       pool_id="antigravity-pool"
       cred_file="$HOME/.gemini/antigravity-cli"
-      if [[ -d "$cred_file" || -n "${AFK_HARNESS_BIN_DIR_OVERRIDE:-}" ]]; then
+      # Where the binary is looked up says nothing about being signed in, so
+      # AFK_HARNESS_BIN_DIR_OVERRIDE plays no part here. Nothing in this kit
+      # knows the name of agy's token file, so the check is only that agy has
+      # written something into its state directory: an empty or missing
+      # directory is an install that never logged in.
+      if [[ -d "$cred_file" && -n "$(ls -A -- "$cred_file" 2>/dev/null)" ]]; then
         signed_in=true
       fi
       ;;
@@ -572,17 +625,52 @@ afk_harness_inspect_all() {
 # afk_harness_update <target_harness|all> [<dry_run:true|false>]
 # Updates one or all installed harnesses via their detected install method,
 # then automatically refreshes the live harness model catalog + public benchmarks.
+# <target_harness> is a known harness name or a comma-separated list of them.
+# AFK_HARNESS_UPDATES=off refuses every update, for hosts whose harness
+# versions are pinned in the image.
 afk_harness_update() {
   local target="${1:-all}" dry_run="${2:-false}"
+  [[ "$dry_run" == "true" ]] || dry_run=false
+  local refused="" updates_switch
+  updates_switch="$(printf '%s' "${AFK_HARNESS_UPDATES:-on}" | tr '[:upper:]' '[:lower:]')"
+  case "$updates_switch" in
+    off|0|false|no|disabled)
+      refused="HARNESS_UPDATES_DISABLED"
+      printf 'afk_harness_update: refused, AFK_HARNESS_UPDATES=%s turns harness updates off on this host (the harness versions are pinned); nothing was inspected or run\n' "${AFK_HARNESS_UPDATES}" >&2
+      ;;
+  esac
+
   local -a names=()
-  if [[ "$target" == "all" ]]; then
-    names=(claude codex agy grok opencode pi devin)
-  else
-    IFS=, read -r -a names <<<"$target"
+  local h
+  if [[ -z "$refused" ]]; then
+    if [[ "$target" == "all" ]]; then
+      names=(claude codex agy grok opencode pi devin)
+    else
+      IFS=, read -r -a names <<<"$target"
+      # The whole request is refused when any name is not a harness. Looking
+      # an arbitrary name up on disk and running its "update" is how
+      # `--harness npm` ended up running `npm install -g npm@latest`.
+      for h in "${names[@]:-}"; do
+        [[ -n "$h" ]] || continue
+        if ! _afk_harness_is_known "$h"; then
+          refused="UNKNOWN_HARNESS"
+          printf 'afk_harness_update: refused, "%s" is not a harness this kit manages (claude, codex, opencode, agy, grok, pi, devin, or all); nothing was run\n' "$h" >&2
+          break
+        fi
+      done
+    fi
+  fi
+  if [[ -n "$refused" ]]; then
+    jq -cn \
+      --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      --arg err "$refused" \
+      --argjson dry "$dry_run" \
+      '{schema: "afk-harness-update/1", updated_at: $ts, dry_run: $dry, results: [], model_catalog_refresh: null, error: $err}'
+    return 1
   fi
 
-  local results="[]" updated_any=false h info present cmd before_ver after_ver rc out status_str
-  for h in "${names[@]}"; do
+  local results="[]" updated_any=false info present cmd before_ver after_ver rc out status_str
+  for h in "${names[@]:-}"; do
     [[ -n "$h" ]] || continue
     info="$(afk_harness_inspect_one "$h" true)"
     present="$(jq -r '.present_on_disk' <<<"$info")"
@@ -598,8 +686,20 @@ afk_harness_update() {
       continue
     fi
 
+    # Run the command as a list of words, never as a string through a shell.
     rc=0
-    out="$(bash -c "$cmd" 2>&1)" || rc=$?
+    out=""
+    if _afk_harness_update_argv "$h" \
+         "$(jq -r '.install_method // empty' <<<"$info")" \
+         "$(jq -r '.package_name // empty' <<<"$info")" \
+         "$(jq -r '.install_prefix // empty' <<<"$info")" \
+         "$(jq -r '.binary_path // empty' <<<"$info")" \
+       && (( ${#AFK_HARNESS_UPDATE_ARGV[@]} > 0 )); then
+      out="$("${AFK_HARNESS_UPDATE_ARGV[@]}" 2>&1)" || rc=$?
+    else
+      rc=126
+      out="refused: no safe update command for this install (method or package name not recognised)"
+    fi
     local post_info post_ok
     post_info="$(afk_harness_inspect_one "$h" false)"
     after_ver="$(jq -r '.current_version // "unknown"' <<<"$post_info")"
@@ -628,8 +728,10 @@ afk_harness_update() {
       afk_router_sync_benchmarks >/dev/null 2>&1 || true
     fi
     local ms
-    ms="$(afk_harness_sync_models)"
+    ms="$(afk_harness_sync_models)" || ms=""
     model_sync_summary="$(jq -c '{total_models: .summary.total_models, free_models: .summary.free_models, subscription_models: .summary.subscription_models}' <<<"$ms" 2>/dev/null || printf 'null')"
+    # A catalog refresh that failed prints nothing; report that as null.
+    [[ -n "$model_sync_summary" ]] || model_sync_summary=null
   fi
 
   jq -cn \
@@ -651,10 +753,10 @@ afk_harness_probe_account_bindings() {
   local opencode_auth="${AFK_OPENCODE_AUTH_FILE:-$HOME/.local/share/opencode/auth.json}"
   local pi_auth="${AFK_PI_AUTH_FILE:-$HOME/.pi/agent/auth.json}"
   local claude_creds="${AFK_CLAUDE_CREDS_FILE:-$HOME/.claude/.credentials.json}"
-  local grok_auth="${AFK_GROK_AUTH_FILE:-}"
-  if [[ -z "$grok_auth" && -z "${AFK_OPENCODE_AUTH_FILE:-}" && -z "${AFK_HARNESS_BIN_DIR_OVERRIDE:-}" ]]; then
-    grok_auth="$HOME/.grok/auth.json"
-  fi
+  # Only Grok's own variable moves this file. It used to be skipped whenever
+  # the OpenCode auth file or the binary directory was overridden, which hid a
+  # signed-in Grok on every host that sets AFK_HARNESS_BIN_DIR_OVERRIDE.
+  local grok_auth="${AFK_GROK_AUTH_FILE:-$HOME/.grok/auth.json}"
 
   local bindings="[]"
 
@@ -677,20 +779,34 @@ afk_harness_probe_account_bindings() {
   # 2. Codex native OpenAI OAuth
   local openai_acct_fp=""
   if [[ -f "$codex_auth" ]]; then
-    local raw_cid c_mode
+    local raw_cid c_mode c_metered
     c_mode="$(jq -r '.auth_mode // "oauth"' "$codex_auth" 2>/dev/null || printf 'oauth')"
+    # Codex writes auth_mode "apikey" or "chatgpt" ("api" is accepted too).
+    # Older files have no auth_mode: a key with no OAuth tokens is a key login.
+    c_metered="$(jq -r '
+      ((.auth_mode // "") | tostring | ascii_downcase) as $m
+      | ((.OPENAI_API_KEY // "") != "") as $has_key
+      | ((.tokens.access_token // .tokens.refresh_token // .tokens.id_token // "") != "") as $has_oauth
+      | if ($m == "apikey" or $m == "api" or $m == "api_key" or $m == "api-key") or ($has_key and ($has_oauth | not))
+        then "true" else "false" end
+    ' "$codex_auth" 2>/dev/null || printf 'false')"
+    [[ "$c_metered" == "true" ]] || c_metered=false
+    [[ -n "$c_mode" ]] || c_mode="oauth"
+    if [[ "$c_metered" == "true" && "$c_mode" == "oauth" ]]; then
+      c_mode="apikey"
+    fi
     raw_cid="$(jq -r '(.tokens.account_id // .account_id // empty)' "$codex_auth" 2>/dev/null || true)"
     if [[ -n "$raw_cid" ]]; then
       openai_acct_fp="openai-acct:$(_afk_harness_hash12 "$raw_cid")"
     else
       openai_acct_fp="openai-oauth:primary"
     fi
-    bindings="$(jq -c --arg m "$c_mode" --arg fp "$openai_acct_fp" '. + [{
+    bindings="$(jq -c --arg m "$c_mode" --arg fp "$openai_acct_fp" --argjson metered "$c_metered" '. + [{
       harness: "codex",
       provider: "openai",
       auth_type: $m,
-      cost_class: (if $m == "api" then "api-metered" else "subscription" end),
-      entitlement_pool: (if $m == "api" then "api-metered" else "openai-plus" end),
+      cost_class: (if $metered then "api-metered" else "subscription" end),
+      entitlement_pool: (if $metered then "api-metered" else "openai-plus" end),
       account_fingerprint: $fp
     }]' <<<"$bindings")"
   fi
@@ -781,7 +897,9 @@ afk_harness_probe_account_bindings() {
               fi
               ;;
             *)
-              pool="xai-grok"
+              # An OAuth login this table does not know (github-copilot, say)
+              # gets a pool of its own; it must not count against Grok's quota.
+              pool="${prov}-oauth"
               fp="${prov}-oauth:shared"
               ;;
           esac
@@ -837,7 +955,7 @@ afk_harness_probe_account_bindings() {
             [[ -n "$pfp" ]] || pfp="${xai_acct_fp:-xai-oauth:primary}"
             ;;
           *)
-            ppool="xai-grok"
+            ppool="${pprov}-oauth"
             pfp="${pprov}-oauth:shared"
             ;;
         esac
@@ -926,10 +1044,11 @@ afk_harness_sync_models() {
   fi
 
   # 3. Discover live Grok CLI models + per-model reasoning_efforts (`~/.grok/models_cache.json` or `grok models`)
-  local grok_cache="${AFK_GROK_MODELS_FIXTURE:-${AFK_GROK_MODELS_CACHE:-}}"
-  if [[ -z "$grok_cache" && -z "${AFK_OPENCODE_MODELS_FIXTURE:-}" && -z "${AFK_HARNESS_BIN_DIR_OVERRIDE:-}" ]]; then
-    grok_cache="$HOME/.grok/models_cache.json"
-  fi
+  # Only Grok's own variables decide where its models come from. The OpenCode
+  # fixture and AFK_HARNESS_BIN_DIR_OVERRIDE used to switch this step off,
+  # which dropped every Grok model from the catalog on a host that only meant
+  # to say where its binaries live.
+  local grok_cache="${AFK_GROK_MODELS_FIXTURE:-${AFK_GROK_MODELS_CACHE:-$HOME/.grok/models_cache.json}}"
   if [[ -n "$grok_cache" && -f "$grok_cache" ]]; then
     jq -c '
       def erank($e): if $e=="low" then 1 elif $e=="medium" then 2 elif $e=="high" then 3 elif $e=="xhigh" then 4 else 5 end;
@@ -949,7 +1068,9 @@ afk_harness_sync_models() {
           }
       ]
     ' "$grok_cache" > "$tmp_grok" 2>/dev/null || printf '[]' > "$tmp_grok"
-  elif [[ -z "${AFK_OPENCODE_MODELS_FIXTURE:-}" && -z "${AFK_HARNESS_BIN_DIR_OVERRIDE:-}" ]]; then
+  elif [[ -z "${AFK_GROK_MODELS_FIXTURE:-}" ]]; then
+    # No cache file: ask the CLI, unless a test pinned the fixture variable
+    # (even to a file that does not exist) to keep this step offline.
     local grok_bin=""
     grok_bin="$(_afk_harness_locate_bin grok || true)"
     if [[ -n "$grok_bin" ]] && "$grok_bin" --version >/dev/null 2>&1; then
@@ -958,10 +1079,7 @@ afk_harness_sync_models() {
   fi
 
   # 4. Discover live Codex models + per-model supported_reasoning_levels (`~/.codex/models_cache.json`)
-  local codex_cache="${AFK_CODEX_MODELS_FIXTURE:-${AFK_CODEX_MODELS_CACHE:-}}"
-  if [[ -z "$codex_cache" && -z "${AFK_OPENCODE_MODELS_FIXTURE:-}" && -z "${AFK_HARNESS_BIN_DIR_OVERRIDE:-}" ]]; then
-    codex_cache="$HOME/.codex/models_cache.json"
-  fi
+  local codex_cache="${AFK_CODEX_MODELS_FIXTURE:-${AFK_CODEX_MODELS_CACHE:-$HOME/.codex/models_cache.json}}"
   if [[ -n "$codex_cache" && -f "$codex_cache" ]]; then
     jq -c '
       def erank($e): if $e=="low" then 1 elif $e=="medium" then 2 elif $e=="high" then 3 elif $e=="xhigh" then 4 else 5 end;
@@ -981,6 +1099,15 @@ afk_harness_sync_models() {
   local harnesses_info
   harnesses_info="$(afk_harness_inspect_all false)"
 
+  # mktemp, not `.tmp.$$`: concurrent jobs are subshells of one process and
+  # share `$$`, so they would write the same temp file.
+  local tmp_dest="" jq_rc=0
+  tmp_dest="$(mktemp "${dest}.XXXXXX" 2>/dev/null)" || {
+    rm -f "$tmp_oc" "$tmp_agy" "$tmp_grok" "$tmp_codex"
+    printf 'afk_harness_sync_models: cannot create a temp file next to %s\n' "$dest" >&2
+    return 1
+  }
+
   jq -n \
     --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --slurpfile cat "$cat_path" \
@@ -991,6 +1118,9 @@ afk_harness_sync_models() {
     --argjson bind "$bindings" \
     --argjson hinfo "$harnesses_info" \
     '
+    # One model entry without a usable id used to fail the whole catalog.
+    def has_id: (type == "object") and ((.id | type) == "string") and (.id != "");
+
     def infer_family($prov; $id):
       ($id | ascii_downcase) as $lid |
       if ($lid | test("claude|fable|mythos")) or $prov == "anthropic" then "anthropic"
@@ -1010,7 +1140,7 @@ afk_harness_sync_models() {
           (.canonical_model | ascii_downcase | endswith("/" + $lid)) or
           (($lid | test("claude-mythos")) and (.canonical_model == "anthropic/claude-mythos-5-2")) or
           (($lid | test("daybreak-blue")) and (.canonical_model == "openai/gpt-daybreak-blue-latest")) or
-          (($lid | test("claude-fable")) and (.canonical_model == "anthropic/claude-fable-5-1")) or
+          (($lid | test("claude-fable")) and (.canonical_model | test("^anthropic/claude-fable-"))) or
           (($lid | test("gpt-6\\.1-sol")) and (.canonical_model == "openai/gpt-6.1-sol")) or
           (($lid | test("gpt-6-astra")) and (.canonical_model == "openai/gpt-6-astra")) or
           (($lid | test("claude-opus-5-5")) and (.canonical_model == "anthropic/claude-opus-5-5")) or
@@ -1070,19 +1200,30 @@ afk_harness_sync_models() {
     # 1. OpenCode discovered entries
     ([
       $oc[0][]? |
+      select(has_id) |
       select((.status // "active") == "active") |
       . as $m |
       ($m.providerID // "opencode") as $prov |
+      # Free means the listing states a price of zero for input and output.
+      # A missing price is unknown, not free.
+      ($m.cost | if type == "object" then . else {} end) as $cost |
+      ((($cost.input | type) == "number") and (($cost.output | type) == "number")
+        and $cost.input == 0 and $cost.output == 0) as $zero_cost |
       ([ $bind[] | select(.harness == "opencode" and .provider == $prov) ][0] // {
-        auth_type: (if (($m.cost.input // 0) == 0 and ($m.cost.output // 0) == 0) then "free-tier" else "api" end),
-        cost_class: (if (($m.cost.input // 0) == 0 and ($m.cost.output // 0) == 0) then "free" else "api-metered" end),
-        entitlement_pool: (if (($m.cost.input // 0) == 0 and ($m.cost.output // 0) == 0) then "opencode-free" else "api-metered" end),
+        auth_type: (if $zero_cost then "free-tier" else "api" end),
+        cost_class: (if $zero_cost then "free" else "api-metered" end),
+        entitlement_pool: (if $zero_cost then "opencode-free" else "api-metered" end),
         account_fingerprint: "opencode:unauthenticated"
       }) as $b |
+      # The binding only decides subscription. Its own cost_class is not used
+      # as the fallback: provider "opencode" always has the free-tier binding,
+      # which made every priced model under it "free".
       (if $b.cost_class == "subscription" then "subscription"
-       elif (($m.cost.input // 0) == 0 and ($m.cost.output // 0) == 0) then "free"
-       else $b.cost_class end) as $cclass |
-      (if $cclass == "free" then "opencode-free" else $b.entitlement_pool end) as $pool |
+       elif $zero_cost then "free"
+       else "api-metered" end) as $cclass |
+      (if $cclass == "free" then "opencode-free"
+       elif $cclass == "subscription" then $b.entitlement_pool
+       else "api-metered" end) as $pool |
       infer_family($prov; $m.id) as $fam |
       ($m.capabilities.reasoning // false) as $reas |
       ($m.capabilities.toolcall // false) as $tc |
@@ -1098,12 +1239,12 @@ afk_harness_sync_models() {
         canonical_model: ($fam + "/" + $m.id),
         display_name: ($m.name // ($prov + "/" + $m.id)),
         model_family: $fam,
-        auth_type: $b.auth_type,
+        auth_type: (if $cclass == "api-metered" and $b.auth_type == "free-tier" then "api" else $b.auth_type end),
         cost_class: $cclass,
         is_free: ($cclass == "free"),
         cost_per_1m_usd: {
-          input: ($m.cost.input // 0),
-          output: ($m.cost.output // 0)
+          input: ($cost.input // 0),
+          output: ($cost.output // 0)
         },
         entitlement_pool: $pool,
         account_fingerprint: $b.account_fingerprint,
@@ -1122,9 +1263,10 @@ afk_harness_sync_models() {
     ]) as $oc_models |
 
     # 2. Antigravity (`agy models`) discovered entries (computing exact supported_efforts per base model)
-    (($agy[0] // []) | map({base: (.id | sub("-(high|medium|low)$"; "")), eff: (if (.id | test("-(high|medium|low)$")) then (.id | capture("-(?<e>high|medium|low)$").e) else "medium" end)})) as $agy_eff_pairs |
+    (($agy[0] // []) | map(select(has_id)) | map({base: (.id | sub("-(high|medium|low)$"; "")), eff: (if (.id | test("-(high|medium|low)$")) then (.id | capture("-(?<e>high|medium|low)$").e) else "medium" end)})) as $agy_eff_pairs |
     ([
       $agy[0][]? |
+      select(has_id) |
       select((.id | endswith("-low") or endswith("-medium")) | not) |
       . as $am |
       ($am.id | sub("-(high|medium|low)$"; "")) as $base_id |
@@ -1160,6 +1302,7 @@ afk_harness_sync_models() {
     (([ $bind[] | select(.harness == "grok") ][0]) // null) as $grok_bind |
     ([
       $grk[0][]? |
+      select(has_id) |
       . as $gm |
       score_discovered($gm.id; "xai"; "subscription"; true; true; true; ($gm.context_window // 500000)) as $ev |
       {
@@ -1191,6 +1334,7 @@ afk_harness_sync_models() {
     (([ $bind[] | select(.harness == "codex") ][0]) // null) as $codex_bind |
     ([
       $cdx[0][]? |
+      select(has_id) |
       select((.id | test("^codex-auto-review$|^gpt-reserve$")) | not) |
       . as $cm |
       score_discovered($cm.id; "openai"; ($codex_bind.cost_class // "subscription"); true; true; true; ($cm.context_window // 1000000)) as $ev |
@@ -1261,8 +1405,23 @@ afk_harness_sync_models() {
       },
       models: $all_discovered
     }
-    ' > "${dest}.tmp.$$" && mv "${dest}.tmp.$$" "$dest"
+    ' > "$tmp_dest" || jq_rc=$?
 
   rm -f "$tmp_oc" "$tmp_agy" "$tmp_grok" "$tmp_codex"
+  # A failed build must not look like a fresh catalog: the previous file is
+  # kept, the temp file is removed and the caller gets a non-zero status
+  # instead of the old catalog printed as if it were new.
+  if (( jq_rc != 0 )) || ! jq -e 'type == "object"' "$tmp_dest" >/dev/null 2>&1; then
+    rm -f -- "$tmp_dest"
+    printf 'afk_harness_sync_models: building the model catalog failed; %s was left as it was\n' "$dest" >&2
+    return 1
+  fi
+  # mktemp made the file 0600; it holds no secrets, so give it the mode a
+  # plain redirect would have.
+  chmod "$(printf '%o' $(( 0666 & ~$(umask) )))" "$tmp_dest" 2>/dev/null || true
+  if ! mv -f -- "$tmp_dest" "$dest"; then
+    rm -f -- "$tmp_dest"
+    return 1
+  fi
   cat -- "$dest"
 }
