@@ -448,7 +448,7 @@ agent-flow-kit — lifecycle entry point
   agent-flow-kit factory <subcommand> [options]
       Autonomous multi-harness Software Factory orchestrator & Paperclip native
       execution plane:
-        init | roster | run | poll | sync-reviews | resume | watchdog | status
+        init | roster | run | poll | alive | sync-reviews | resume | watchdog | status
         pools | harnesses | update-harnesses | models | route-preview | sync-benchmarks
         tooling [--sync-paperclip-skills] | tooling-sync | tooling-publish-paperclip | tooling-register-mcp | tooling-register-skill
         evaluate-merge | context-check | retire

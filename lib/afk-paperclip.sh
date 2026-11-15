@@ -2487,6 +2487,8 @@ afk_cmd_paperclip_poll() { # <json_mode>
     afk_warn "PAPERCLIP_LOCK_STALE: reaped a poll lock left by a dead pass"
   fi
   printf '%s %s\n' "$$" "$(date +%s)" >"$lockdir/owner" 2>/dev/null || true
+  # The pass has started: the host's sign of life for `factory alive`.
+  touch "$pc_dir/alive" 2>/dev/null || true
   # Chain the entry point's own EXIT handler rather than replacing it.
   # %q-quote the path: a bare single-quote wrap breaks if the state dir
   # itself ever contains a single quote.
@@ -3261,6 +3263,7 @@ afk_cmd_paperclip_poll() { # <json_mode>
     )
     printf 'paperclip-poll: %s\n' "$overall"
   fi
+  touch "$pc_dir/alive" 2>/dev/null || true
   [[ "$any_agent_ok" == true && "$overall" != PAPERCLIP_STORAGE_ERROR ]] || return 1
   return 0
 }

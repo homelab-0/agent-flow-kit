@@ -256,7 +256,12 @@ SC_LIFECYCLE=("$KIT_ROOT/bin/agent-flow-kit" "$KIT_ROOT/lib/afk-common.sh" "$KIT
               "$KIT_ROOT/tests/paperclip-claim-review-tests.sh" "$KIT_ROOT/tests/paperclip-pm-review-tests.sh" \
               "$KIT_ROOT/tests/paperclip-readiness-tests.sh" \
               "$KIT_ROOT/lib/afk-roster.sh" "$KIT_ROOT/lib/afk-paperclip-hire.sh" \
-              "$KIT_ROOT/lib/afk-factory.sh" "$KIT_ROOT/tests/factory-tests.sh")
+              "$KIT_ROOT/lib/afk-factory.sh" "$KIT_ROOT/tests/factory-tests.sh" \
+              "$KIT_ROOT/lib/afk-smart-router.sh" "$KIT_ROOT/lib/afk-harnesses.sh" \
+              "$KIT_ROOT/lib/afk-tooling.sh" "$KIT_ROOT/lib/afk-bmad-import.sh" \
+              "$KIT_ROOT/tests/factory-router-tests.sh" "$KIT_ROOT/tests/factory-safety-tests.sh" \
+              "$KIT_ROOT/tests/factory-ledger-tests.sh" "$KIT_ROOT/tests/factory-tooling-tests.sh" \
+              "$KIT_ROOT/tests/bmad-import-tests.sh" "$KIT_ROOT/tests/paperclip-pm-chat-tests.sh")
 
 if (( ${#SC_CMD[@]} > 0 )); then
   ok "shellcheck runs here: ${SC_CMD[0]} ${SC_VERSION:-(version not reported)}"
@@ -3959,6 +3964,21 @@ run_gate "Orca worktree discovery gate" "$KIT_ROOT/tests/orca-worktree-discovery
 head1 "35. AFK Software Factory gate — tests/factory-tests.sh"
 # ===========================================================================
 run_gate "afk software factory gate" "$KIT_ROOT/tests/factory-tests.sh"
+
+# ===========================================================================
+head1 "36. AFK Software Factory routing, safety, backlog import and PM chat gates"
+# ===========================================================================
+# Benchmark sync and benchmark-driven routing, from fixture feeds. No network.
+run_gate "factory router gate" "$KIT_ROOT/tests/factory-router-tests.sh"
+# Fail-closed behaviour of the job runner: stage failures, missing reviews,
+# merge approval, restart and concurrency. Stub harnesses, temp repos.
+run_gate "factory safety gate" "$KIT_ROOT/tests/factory-safety-tests.sh"
+# The hired-agents and context ledgers under concurrent jobs and bad input.
+run_gate "factory ledger gate" "$KIT_ROOT/tests/factory-ledger-tests.sh"
+# The tool registry, worktree materialisation and harness discovery/update.
+run_gate "factory tooling gate" "$KIT_ROOT/tests/factory-tooling-tests.sh"
+run_gate "factory backlog import gate" "$KIT_ROOT/tests/bmad-import-tests.sh"
+run_gate "paperclip PM chat gate" "$KIT_ROOT/tests/paperclip-pm-chat-tests.sh"
 
 # ===========================================================================
 # AC-2: total wall time, with a BUDGET warning (never a failure) over 720s.
