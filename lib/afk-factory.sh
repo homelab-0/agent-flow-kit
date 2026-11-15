@@ -146,13 +146,22 @@ AL
 }
 
 # afk_factory_load_config <repo_path>
+# The repo's .afk/config.json laid over the built-in defaults, so a key the
+# file leaves out keeps its default. Without that, a config that omits
+# `protected_paths` protects nothing. A missing, empty or invalid file yields
+# the defaults alone.
 afk_factory_load_config() {
-  local repo="$1"
-  if [[ -f "$repo/.afk/config.json" ]]; then
-    cat "$repo/.afk/config.json" 2>/dev/null || afk_factory_default_config_json
-  else
-    afk_factory_default_config_json
+  local repo="$1" defaults merged
+  defaults="$(afk_factory_default_config_json)"
+  if [[ -s "$repo/.afk/config.json" ]]; then
+    merged="$(jq -c -s 'if (.[1] | type) == "object" then .[0] * .[1] else .[0] end' \
+      <(printf '%s' "$defaults") "$repo/.afk/config.json" 2>/dev/null)" || merged=""
+    if [[ -n "$merged" ]]; then
+      printf '%s\n' "$merged"
+      return 0
+    fi
   fi
+  printf '%s\n' "$defaults"
 }
 
 # todo: every Todo issue can be built. label: only a Todo carrying queue_label.
@@ -209,8 +218,311 @@ _afk_factory_append_route_event() { # <file> <json-line>
   printf '%s\n' "$line" >> "$file"
 }
 
+# _afk_factory_commit_tmp <file>
+# Renames <file>.tmp over <file> only when it holds a JSON object. A jq that
+# failed on bad input leaves an empty temp file and still lets `&&` continue
+# past a plain `mv`; that is how a job file gets blanked.
+_afk_factory_commit_tmp() {
+  local f="$1" t="$1.tmp"
+  if [[ -s "$t" ]] && jq -e 'type == "object"' "$t" >/dev/null 2>&1; then
+    mv -f -- "$t" "$f"
+    return $?
+  fi
+  rm -f -- "$t"
+  return 1
+}
+
+# The boot and start time of a process, so a PID the kernel handed out again
+# is not mistaken for the runner that recorded it. A restarted container
+# starts numbering PIDs from the bottom, which makes reuse the normal case.
+_afk_factory_boot_id() {
+  if declare -F afk_boot_identity >/dev/null 2>&1; then
+    afk_boot_identity 2>/dev/null || true
+  elif [[ -r /proc/sys/kernel/random/boot_id ]]; then
+    cat /proc/sys/kernel/random/boot_id 2>/dev/null || true
+  fi
+}
+_afk_factory_proc_start() { # <pid> ; rc 0 printed, 1 cannot tell, 2 no such process
+  local pid="$1" out rc
+  if declare -F afk_process_start_identity >/dev/null 2>&1; then
+    out="$(afk_process_start_identity "$pid" 2>/dev/null)"; rc=$?
+    [[ $rc -eq 0 ]] && printf '%s' "$out"
+    return "$rc"
+  fi
+  kill -0 "$pid" 2>/dev/null || return 2
+  return 1
+}
+
+# The name of this host as a lock owner sees it. Two pods can share one
+# volume during a rollout; a PID is only meaningful on the host that wrote it.
+_afk_factory_host_id() {
+  local h
+  h="$(uname -n 2>/dev/null || hostname 2>/dev/null || true)"
+  printf '%s' "${h:-unknown-host}"
+}
+
+# _afk_factory_runner_record <pid> -> JSON naming <pid> as a job's runner.
+# The caller passes its own $BASHPID: inside $(...) this function would see
+# the short-lived command-substitution shell instead.
+_afk_factory_runner_record() {
+  local pid="${1:-$BASHPID}" start="" boot=""
+  start="$(_afk_factory_proc_start "$pid" 2>/dev/null || true)"
+  boot="$(_afk_factory_boot_id)"
+  jq -cn --argjson pid "$pid" --arg start "$start" --arg boot "$boot" --arg host "$(_afk_factory_host_id)" \
+    --arg token "$BASHPID.$RANDOM$RANDOM" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{pid: $pid, start: $start, boot: $boot, host: $host, token: $token, at: $at}'
+}
+
+# _afk_factory_runner_alive <owner.json>
+#   0 the recorded runner is running, or that cannot be ruled out
+#   1 it is provably gone
+# A runner recorded by another host is never judged by a local PID: it counts
+# as alive here, and only its heartbeat going stale lets it be replaced.
+_afk_factory_runner_alive() {
+  local rec="$1" stale_arg="${2:-}" pid start boot host now_boot cur rc
+  if [[ ! -s "$rec" ]]; then
+    # The lock exists and its record does not yet: a runner between the two
+    # writes. Give it a moment before calling the lock abandoned.
+    local d now mt
+    d="$(dirname -- "$rec")"
+    [[ -d "$d" ]] || return 1
+    now="$(date -u +%s)"
+    mt="$(stat -c %Y "$d" 2>/dev/null || stat -f %m "$d" 2>/dev/null || printf '0')"
+    [[ "$mt" =~ ^[0-9]+$ ]] || mt="$now"
+    (( now - mt < 30 )) && return 0
+    return 1
+  fi
+  pid="$(jq -r '.pid // empty' "$rec" 2>/dev/null || true)"
+  start="$(jq -r '.start // empty' "$rec" 2>/dev/null || true)"
+  boot="$(jq -r '.boot // empty' "$rec" 2>/dev/null || true)"
+  host="$(jq -r '.host // empty' "$rec" 2>/dev/null || true)"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  if [[ -n "$host" && "$host" != "$(_afk_factory_host_id)" ]]; then
+    # Another host's PID cannot be checked from here. Its runner counts as
+    # alive while the job's heartbeat is fresh, and as gone once it is
+    # older than the stall threshold. Without that, a lock left by a pod
+    # that was replaced would hold its job for good.
+    # The last sign of life is the newest of the job's heartbeat, the lock
+    # directory's time and the record's own time: a lock taken a moment ago
+    # on a job whose heartbeat is old from an earlier wait is alive.
+    local hb beat stale now ldmt at_ep sign
+    case "$rec" in
+      */.run.lock/owner.json) hb="$(dirname -- "$(dirname -- "$rec")")/heartbeat.json" ;;
+      *) hb="$rec" ;;
+    esac
+    stale="${stale_arg:-${AFK_WATCHDOG_STALE_SEC:-900}}"
+    [[ "$stale" =~ ^[0-9]+$ ]] || stale=900
+    now="$(date -u +%s)"
+    beat="$(jq -r '.last_beat_epoch // 0' "$hb" 2>/dev/null || printf '0')"
+    [[ "$beat" =~ ^[0-9]+$ ]] || beat=0
+    ldmt="$(stat -c %Y "$(dirname -- "$rec")" 2>/dev/null || stat -f %m "$(dirname -- "$rec")" 2>/dev/null || printf '0')"
+    [[ "$ldmt" =~ ^[0-9]+$ ]] || ldmt=0
+    at_ep="$(jq -r '(.at // "") | if . == "" then 0 else (try fromdateiso8601 catch 0) end' "$rec" 2>/dev/null || printf '0')"
+    [[ "$at_ep" =~ ^[0-9]+$ ]] || at_ep=0
+    sign="$beat"
+    (( ldmt > sign )) && sign="$ldmt"
+    (( at_ep > sign )) && sign="$at_ep"
+    (( now - sign < stale )) && return 0
+    return 1
+  fi
+  now_boot="$(_afk_factory_boot_id)"
+  if [[ -n "$boot" && -n "$now_boot" && "$boot" != "$now_boot" ]]; then
+    return 1
+  fi
+  cur="$(_afk_factory_proc_start "$pid" 2>/dev/null)"; rc=$?
+  case "$rc" in
+    0) [[ -z "$start" || "$cur" == "$start" ]] && return 0; return 1 ;;
+    2) return 1 ;;
+    *) kill -0 "$pid" 2>/dev/null && return 0; return 1 ;;
+  esac
+}
+
+# _afk_factory_runner_killable <owner.json> -> 0 when the recorded runner is a
+# process on this host whose start time matches the record. Anything less
+# (another host, a record with no start time, a PID now used by another
+# process) is never signalled.
+_afk_factory_runner_killable() {
+  local rec="$1" pid start host cur
+  [[ -s "$rec" ]] || return 1
+  pid="$(jq -r '.pid // empty' "$rec" 2>/dev/null || true)"
+  start="$(jq -r '.start // empty' "$rec" 2>/dev/null || true)"
+  host="$(jq -r '.host // empty' "$rec" 2>/dev/null || true)"
+  [[ "$pid" =~ ^[0-9]+$ && -n "$start" ]] || return 1
+  [[ -z "$host" || "$host" == "$(_afk_factory_host_id)" ]] || return 1
+  cur="$(_afk_factory_proc_start "$pid" 2>/dev/null)" || return 1
+  [[ "$cur" == "$start" ]]
+}
+
+# _afk_factory_lock_steal <lock> -> 0 this caller removed the lock.
+# Moving the directory aside is atomic, so of several callers that judged the
+# same lock dead only one gets it; the rest find nothing to move and retry.
+# Removing it in place let a slower caller delete a faster one's fresh lock.
+_afk_factory_lock_steal() {
+  local lock="$1" dead
+  dead="$lock.dead.$BASHPID.$RANDOM"
+  mv -- "$lock" "$dead" 2>/dev/null || return 1
+  rm -rf -- "$dead" 2>/dev/null || true
+  return 0
+}
+
+# _afk_factory_job_lock <job_dir> -> 0 this shell now runs the job, 1 another
+# live runner does. One job must never be driven by two runners: the poll
+# pass, the watchdog, review sync and `factory resume` can all reach the same
+# job, and two of them would build, push and merge twice.
+_afk_factory_job_lock() {
+  local lock="$1/.run.lock" rec token me="$BASHPID" stale repo
+  rec="$(_afk_factory_runner_record "$me")"
+  # The stall threshold the project configured, so every caller judges a
+  # foreign runner the same way the watchdog does.
+  repo="$(cd -P -- "$1/../../.." 2>/dev/null && pwd -P || true)"
+  stale="${AFK_WATCHDOG_STALE_SEC:-$(jq -r '.watchdog.stale_seconds // 900' "$repo/.afk/config.json" 2>/dev/null || printf '900')}"
+  [[ "$stale" =~ ^[0-9]+$ ]] || stale=900
+  if ! mkdir "$lock" 2>/dev/null; then
+    _afk_factory_runner_alive "$lock/owner.json" "$stale" && return 1
+    # Taking over a dead lock is done by one caller at a time, and that
+    # caller writes its record before letting the next one look. Otherwise a
+    # second caller that also judged the old lock dead removes the first
+    # caller's fresh one.
+    if ! mkdir "$lock.reap" 2>/dev/null; then
+      local rmt now
+      now="$(date -u +%s)"
+      rmt="$(stat -c %Y "$lock.reap" 2>/dev/null || stat -f %m "$lock.reap" 2>/dev/null || printf '%s' "$now")"
+      [[ "$rmt" =~ ^[0-9]+$ ]] && (( now - rmt > 30 )) && rmdir "$lock.reap" 2>/dev/null
+      return 1
+    fi
+    if _afk_factory_runner_alive "$lock/owner.json" "$stale" || ! _afk_factory_lock_steal "$lock" || ! mkdir "$lock" 2>/dev/null; then
+      rmdir "$lock.reap" 2>/dev/null
+      return 1
+    fi
+    printf '%s\n' "$rec" > "$lock/owner.json" 2>/dev/null || true
+    rmdir "$lock.reap" 2>/dev/null
+  else
+    printf '%s\n' "$rec" > "$lock/owner.json" 2>/dev/null || true
+  fi
+  # Confirm the record on disk is ours: a lock taken in the same instant by
+  # another caller that also passed the checks above shows its own token.
+  token="$(jq -r '.token' <<<"$rec" 2>/dev/null)"
+  [[ "$(jq -r '.token // empty' "$lock/owner.json" 2>/dev/null)" == "$token" ]] || return 1
+  AFK_FACTORY_LOCK_TOKEN="$token"
+  return 0
+}
+_afk_factory_job_unlock() { # <job_dir>
+  local lock="$1/.run.lock" held
+  held="$(jq -r '.token // empty' "$lock/owner.json" 2>/dev/null || true)"
+  # Only the runner that holds the lock releases it.
+  [[ -z "$held" || "$held" == "${AFK_FACTORY_LOCK_TOKEN:-}" ]] || return 0
+  rm -rf -- "$lock" 2>/dev/null || true
+}
+
+# The children of a process, from pgrep when it exists and from ps otherwise.
+_afk_factory_children() {
+  if command -v pgrep >/dev/null 2>&1; then
+    pgrep -P "$1" 2>/dev/null || true
+  else
+    ps -A -o pid= -o ppid= 2>/dev/null | awk -v p="$1" '$2 == p {print $1}'
+  fi
+}
+
+# _afk_factory_kill_tree <pid>
+# Ends a runner and everything it started. Killing the runner alone leaves its
+# agent CLI editing the worktree while a replacement starts in the same place.
+# Never signals this shell or any process it descends from.
+_afk_factory_kill_tree() {
+  local root="$1" kid p
+  [[ "$root" =~ ^[0-9]+$ ]] || return 0
+  local -a mine=() all=() queue=()
+  p="$BASHPID"
+  while [[ "$p" =~ ^[0-9]+$ ]] && (( p > 1 )); do
+    mine+=("$p")
+    p="$(ps -o ppid= -p "$p" 2>/dev/null | tr -d '[:space:]')"
+  done
+  mine+=("$$")
+  for p in "${mine[@]}"; do [[ "$p" == "$root" ]] && return 0; done
+  all=("$root"); queue=("$root")
+  while (( ${#queue[@]} > 0 )); do
+    local cur="${queue[0]}"; queue=("${queue[@]:1}")
+    while IFS= read -r kid; do
+      [[ "$kid" =~ ^[0-9]+$ ]] || continue
+      local skip=false
+      for p in "${mine[@]}"; do [[ "$p" == "$kid" ]] && skip=true; done
+      [[ "$skip" == true ]] && continue
+      all+=("$kid"); queue+=("$kid")
+    done < <(_afk_factory_children "$cur")
+  done
+  kill -TERM "${all[@]}" 2>/dev/null || true
+  sleep 2
+  kill -KILL "${all[@]}" 2>/dev/null || true
+}
+
+# _afk_factory_strict_verdict <file> [<lines>]
+# The verdict a stage output states on its `VERDICT:` line, or nothing.
+# The verdict is the first word after the label. Text after it is allowed
+# ("VERDICT: PASS — two notes below"), but a line naming a second verdict is
+# not a verdict at all: "VERDICT: PASS or CHANGES_REQUESTED" is not a PASS.
+_afk_factory_strict_verdict() {
+  local file="$1" lines="${2:-8}" line first rest known="PASS CHANGES_REQUESTED ACCEPT REJECT NEEDS-INFO" k
+  [[ -f "$file" ]] || return 0
+  line="$(head -n "$lines" -- "$file" 2>/dev/null \
+    | sed -n 's/^[[:space:]*`#>_-]*VERDICT:[[:space:]*`_]*//p' | head -n 1 \
+    | tr '[:lower:]' '[:upper:]' | tr -d '*`\r')"
+  [[ -n "$line" ]] || return 0
+  first="$(printf '%s' "$line" | sed 's/^\([A-Z_-]*\).*/\1/')"
+  rest="${line#"$first"}"
+  # Punctuation becomes spaces so each word of the remainder stands alone.
+  rest=" $(printf '%s' "$rest" | tr -c 'A-Z_-' ' ') "
+  case " $known " in
+    *" $first "*) ;;
+    *) return 0 ;;
+  esac
+  for k in $known; do
+    [[ "$rest" == *" $k "* ]] && return 0
+  done
+  printf '%s' "$first"
+}
+
+# _afk_factory_project_merge_policy <slug> [<repo>]
+# The merge authority Josh set for the project in the Paperclip config:
+# `pm` lets a clean change merge unattended, `human` (the default once a
+# project is listed) never does. The project is found by slug and by
+# checkout, and when they name different entries the stricter answer wins:
+# running a job without --slug must not escape the project's setting.
+# Empty when neither names a listed project.
+_afk_factory_project_merge_policy() {
+  local slug="$1" repo="${2:-}" path abs="" row r_slug r_path r_merge r_abs found=false strict=""
+  path="$(afk_pc_config_path 2>/dev/null || true)"
+  [[ -n "$path" && -f "$path" ]] || return 0
+  [[ -n "$repo" ]] && abs="$(cd -P -- "$repo" 2>/dev/null && pwd -P || true)"
+  # A config that cannot be read whole means a person merges: a malformed
+  # row must not hide the projects after it and let a change merge.
+  local rows
+  if ! rows="$(jq -r '.projects[]? | objects
+      | [((.slug // "") | tostring), ((.repo_path // "") | tostring),
+         ((.merge // "") | if type == "string" and . != "" then . else "human" end)]
+      | join("\u001f")' "$path" 2>/dev/null)"; then
+    printf 'human'
+    return 0
+  fi
+  # Each configured checkout is resolved the same way as the job's, so a
+  # path written through a symlink still names the same project.
+  # \x1f, not a tab: read collapses repeated tabs, which shifted an empty
+  # field's neighbour into its place and turned "human" into nothing.
+  while IFS=$'\x1f' read -r r_slug r_path r_merge; do
+    [[ -n "$r_slug$r_path" ]] || continue
+    [[ -n "$r_merge" ]] || r_merge="human"
+    r_abs=""
+    [[ -n "$r_path" ]] && r_abs="$(cd -P -- "$r_path" 2>/dev/null && pwd -P || printf '%s' "${r_path%/}")"
+    if { [[ -n "$slug" && "$r_slug" == "$slug" ]]; } || { [[ -n "$abs" && -n "$r_abs" && "$r_abs" == "$abs" ]]; }; then
+      found=true
+      [[ "$r_merge" == "pm" ]] || strict="${strict:-$r_merge}"
+    fi
+  done < <(printf '%s\n' "$rows")
+  [[ "$found" == true ]] || return 0
+  printf '%s' "${strict:-pm}"
+}
+
 # The integration branch this task was cut from. Local main wins over
 # origin/main: a stale remote would count earlier local merges as this task's diff.
+# Used only for a job that recorded no base of its own.
 _afk_factory_task_base_ref() {
   local wt="$1" cand
   for cand in main master origin/main origin/master; do
@@ -220,6 +532,34 @@ _afk_factory_task_base_ref() {
     fi
   done
   printf 'HEAD~1'
+}
+
+# _afk_factory_job_base <job_dir> <worktree>
+# The commit this job's branch was cut from, recorded when the worktree was
+# created. Guessing "main, else master, else the previous commit" measures the
+# wrong diff on a repo whose working branch is neither: the budget and the
+# protected-path check then see one commit, or another branch's history.
+_afk_factory_job_base() {
+  local job_dir="$1" wt="$2" sha=""
+  if [[ -f "$job_dir/job.json" ]]; then
+    sha="$(jq -r '.base_sha // empty' "$job_dir/job.json" 2>/dev/null || true)"
+  fi
+  if [[ -n "$sha" ]] && git -C "$wt" cat-file -e "${sha}^{commit}" 2>/dev/null; then
+    printf '%s' "$sha"
+    return 0
+  fi
+  _afk_factory_task_base_ref "$wt"
+}
+_afk_factory_job_base_branch() { # <job_dir> <worktree>
+  local job_dir="$1" wt="$2" br=""
+  if [[ -f "$job_dir/job.json" ]]; then
+    br="$(jq -r '.base_branch // empty' "$job_dir/job.json" 2>/dev/null || true)"
+  fi
+  if [[ -z "$br" ]]; then
+    br="$(_afk_factory_task_base_ref "$wt")"
+    [[ "$br" == "HEAD~1" ]] && br="main"
+  fi
+  printf '%s' "${br#origin/}"
 }
 
 # afk_factory_run_gate <base_repo> <worktree_dir> <round_dir>
@@ -235,10 +575,13 @@ afk_factory_run_gate() {
   local rc=0 out=""
 
   # Verify the branch did not tamper with .afk/checks.sh or .afk/config.json itself.
-  local base_ref
-  base_ref="$(_afk_factory_task_base_ref "$wt")"
+  # --no-renames: with rename detection a moved file is listed under its new
+  # name only, and `git mv .afk/checks.sh elsewhere` would go unseen.
+  local base_ref job_dir
+  job_dir="$(dirname -- "$round_dir")"
+  base_ref="$(_afk_factory_job_base "$job_dir" "$wt")"
   local changed_files
-  changed_files="$(git -C "$wt" diff --name-only "$base_ref"...HEAD 2>/dev/null || git -C "$wt" diff --name-only HEAD 2>/dev/null || true)"
+  changed_files="$(git -C "$wt" diff --no-renames --name-only "$base_ref"...HEAD 2>/dev/null || git -C "$wt" diff --no-renames --name-only HEAD 2>/dev/null || true)"
 
   if printf '%s\n' "$changed_files" | grep -qE '^\.afk/(checks\.sh|config\.json)$'; then
     cat > "$checks_out" <<EOF
@@ -250,14 +593,88 @@ EOF
     return 1
   fi
 
-  if [[ -x "$checks_script" ]]; then
-    out="$(cd "$wt" && bash "$checks_script" 2>&1)" || rc=$?
-  elif [[ -f "$checks_script" ]]; then
-    out="$(cd "$wt" && bash "$checks_script" 2>&1)" || rc=$?
+  # Run the checks as committed on the base, when they are committed. The base
+  # checkout's working copy can be written by an agent through its absolute
+  # path, and that edit never shows in the branch diff checked above.
+  # The copy sits in the worktree's own .afk directory, so a script that
+  # finds the repository from its own location finds the worktree.
+  local run_script="$checks_script" tmp_script="" extract_failed=false
+  if git -C "$base_repo" cat-file -e "${base_ref}:.afk/checks.sh" 2>/dev/null; then
+    mkdir -p "$wt/.afk" 2>/dev/null || true
+    tmp_script="$(mktemp "$wt/.afk/.base-checks.XXXXXX" 2>/dev/null || true)"
+    if [[ -n "$tmp_script" ]] && git -C "$base_repo" show "${base_ref}:.afk/checks.sh" > "$tmp_script" 2>/dev/null && [[ -s "$tmp_script" ]]; then
+      run_script="$tmp_script"
+    else
+      # The committed script could not be read out. Falling back to the
+      # working copy would run a script nobody reviewed.
+      extract_failed=true
+    fi
+  fi
+  # The commit the checks are about to judge. The approver refuses evidence
+  # for any other commit, and a check that commits its own changes fails.
+  local gated_head gated_ref
+  gated_head="$(git -C "$wt" rev-parse HEAD 2>/dev/null || true)"
+  gated_ref="$(git -C "$wt" symbolic-ref --quiet HEAD 2>/dev/null || true)"
+  AFK_LAST_GATED_HEAD=""
+  AFK_LAST_GATED_ROUND_DIR=""
+
+  # A check that waits on input or never returns must not hold the job open.
+  local gate_tmo cfg_gate
+  cfg_gate="$(afk_factory_load_config "$base_repo")"
+  gate_tmo="${AFK_GATE_TIMEOUT_SEC:-$(jq -r '.gate_timeout_sec // 3600' <<<"$cfg_gate" 2>/dev/null || printf '3600')}"
+  [[ "$gate_tmo" =~ ^[0-9]+$ && "$gate_tmo" -gt 0 ]] || gate_tmo=3600
+  local -a gate_cmd=(bash "$run_script")
+  if command -v timeout >/dev/null 2>&1; then
+    gate_cmd=(timeout -k 30 "$gate_tmo" bash "$run_script")
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gate_cmd=(gtimeout -k 30 "$gate_tmo" bash "$run_script")
+  fi
+
+  # An uncommitted script runs from the base checkout's working copy, which an
+  # agent can reach by its absolute path. It must be the script the job
+  # started with.
+  local want_digest="" have_digest=""
+  if [[ "$run_script" == "$checks_script" ]]; then
+    want_digest="$(_afk_factory_get_checks_digest "$job_dir")"
+    have_digest="$(_afk_factory_file_digest "$checks_script")"
+    [[ -n "$have_digest" ]] || have_digest="none"
+  fi
+  if [[ "$extract_failed" == true ]]; then
+    out="The committed .afk/checks.sh could not be read from ${base_ref}, so no checks ran."
+    rc=1
+  elif [[ -n "$want_digest" && "$have_digest" != "$want_digest" ]]; then
+    out="The base checkout's .afk/checks.sh changed after this job started, so it was not run. If the change was made by a person, reply on the issue with instructions for another round and that round uses the script as it is then. Committing .afk/checks.sh avoids this for new jobs."
+    rc=1
+  elif [[ -f "$run_script" ]]; then
+    out="$(cd "$wt" && "${gate_cmd[@]}" 2>&1 </dev/null)" || rc=$?
+    if (( rc == 124 || rc == 137 )); then
+      out="${out}"$'\n'"Deterministic check gate did not finish within ${gate_tmo}s and was stopped."
+    fi
   else
     out="No .afk/checks.sh found; default gate pass."
     rc=0
   fi
+  [[ -n "$tmp_script" ]] && rm -f -- "$tmp_script"
+  if [[ -n "$gated_head" ]]; then
+    if [[ "$(git -C "$wt" rev-parse HEAD 2>/dev/null || true)" != "$gated_head" ]] \
+       || [[ "$(git -C "$wt" symbolic-ref --quiet HEAD 2>/dev/null || true)" != "$gated_ref" ]] \
+       || [[ -n "$(git -C "$wt" status --porcelain --untracked-files=no -- . ':!.afk' 2>/dev/null || true)" ]]; then
+      out="${out}"$'\n'"The checks changed the branch while they ran, so their result does not describe the commit they started on. The branch was put back to that commit."
+      rc=1
+      # What the checks committed or changed is not the builder's work and is
+      # not reviewed; leaving it would carry it into the next round's merge.
+      if [[ -n "$gated_ref" ]]; then
+        git -C "$wt" checkout -q -f -B "${gated_ref#refs/heads/}" "$gated_head" >/dev/null 2>&1 || true
+      else
+        git -C "$wt" reset -q --hard "$gated_head" >/dev/null 2>&1 || true
+      fi
+    fi
+  fi
+  printf '%s\n' "$gated_head" > "$round_dir/checks.sha" 2>/dev/null || true
+  # Kept in the runner too: agents can write to the job directory, so the
+  # file alone is not trusted by the approver run that follows.
+  AFK_LAST_GATED_HEAD="$gated_head"
+  AFK_LAST_GATED_ROUND_DIR="$round_dir"
 
   if (( rc == 0 )); then
     cat > "$checks_out" <<EOF
@@ -328,39 +745,92 @@ afk_factory_evaluate_merge() {
   fi
 
   # 2. Check all reviewer verdicts in round_dir
-  local review_count=0 review_failures=0 rf rv
-  for rf in "$round_dir"/review-*.md; do
-    [[ -f "$rf" ]] || continue
+  # The round names the reviews it required. A review that timed out leaves no
+  # file, and counting only the files present would let the change merge on
+  # the reviews that happened to finish.
+  local review_count=0 review_failures=0 rf rv lens
+  local -a lenses=()
+  if [[ -s "$round_dir/expected-reviews" ]]; then
+    mapfile -t lenses < <(sed '/^[[:space:]]*$/d' "$round_dir/expected-reviews" 2>/dev/null)
+  else
+    for rf in "$round_dir"/review-*.md; do
+      [[ -f "$rf" ]] || continue
+      lenses+=("$(basename "$rf" .md)")
+    done
+  fi
+  for lens in "${lenses[@]:-}"; do
+    [[ -n "$lens" ]] || continue
+    rf="$round_dir/$lens.md"
     review_count=$((review_count + 1))
-    rv="$(head -n 8 "$rf" | sed -n 's/^[[:space:]*]*VERDICT:[*[:space:]]*//p' | head -n 1 | awk '{print $1}')"
+    rv=""
+    [[ -s "$rf" ]] && rv="$(_afk_factory_strict_verdict "$rf")"
     if [[ "$rv" != "PASS" ]]; then
       review_failures=$((review_failures + 1))
-      reasons="$(jq -c --arg r "Reviewer $(basename "$rf" .md) returned ${rv:-MISSING}" '. + [$r]' <<<"$reasons")"
+      reasons="$(jq -c --arg r "Reviewer $lens returned ${rv:-MISSING}" '. + [$r]' <<<"$reasons")"
     fi
   done
   if (( review_count == 0 )); then
     reasons="$(jq -c '. + ["No independent review evidence found in current round"]' <<<"$reasons")"
   fi
 
-  # 3. Inspect changed files, diff size, and protected paths
-  local changed_files="" file_count=0 line_count=0
-  if [[ -d "$wt/.git" || -f "$wt/.git" ]]; then
-    local base_ref
-    base_ref="$(_afk_factory_task_base_ref "$wt")"
-    changed_files="$(git -C "$wt" diff --name-only "$base_ref"...HEAD 2>/dev/null || git -C "$wt" diff --name-only HEAD~1 2>/dev/null || true)"
-    if [[ -n "$changed_files" ]]; then
-      file_count="$(printf '%s\n' "$changed_files" | sed '/^$/d' | wc -l | tr -d ' ')"
-      line_count="$(git -C "$wt" diff --numstat "$base_ref"...HEAD 2>/dev/null | awk '{s += $1 + $2} END {print s+0}')"
+  # The checks and the reviews must be evidence about the commit being merged.
+  # An agent that commits after the gate ran would otherwise ship ungated code.
+  if [[ -d "$wt/.git" || -f "$wt/.git" ]] && [[ -z "$(head -n 1 "$round_dir/checks.sha" 2>/dev/null | tr -d '[:space:]')" ]]; then
+    reasons="$(jq -c '. + ["No record of which commit the checks ran on"]' <<<"$reasons")"
+  fi
+  if [[ -s "$round_dir/checks.sha" && ( -d "$wt/.git" || -f "$wt/.git" ) ]]; then
+    local gated_sha head_sha
+    gated_sha="$(head -n 1 "$round_dir/checks.sha" 2>/dev/null | tr -d '[:space:]')"
+    head_sha="$(git -C "$wt" rev-parse HEAD 2>/dev/null || true)"
+    if [[ -n "$gated_sha" && -n "$head_sha" && "$gated_sha" != "$head_sha" ]]; then
+      reasons="$(jq -c --arg r "Branch moved after the checks ran (checked ${gated_sha:0:8}, now ${head_sha:0:8})" '. + [$r]' <<<"$reasons")"
     fi
   fi
-  # Allow job.json to supply diff stats in hermetic tests when worktree has 1 commit
-  local job_lines job_files job_paths
-  job_lines="$(jq -r '.diff_stats.lines // empty' <<<"$job" 2>/dev/null)"
-  job_files="$(jq -r '.diff_stats.files // empty' <<<"$job" 2>/dev/null)"
-  job_paths="$(jq -r '.diff_stats.changed_paths // [] | .[]' <<<"$job" 2>/dev/null)"
-  [[ "$job_lines" =~ ^[0-9]+$ ]] && line_count="$job_lines"
-  [[ "$job_files" =~ ^[0-9]+$ ]] && file_count="$job_files"
-  [[ -n "$job_paths" ]] && changed_files="$job_paths"
+
+  # 3. Inspect changed files, diff size, and protected paths
+  local changed_files="" file_count=0 line_count=0 is_git=false dirty=""
+  if [[ -d "$wt/.git" || -f "$wt/.git" ]]; then
+    is_git=true
+    local base_ref
+    base_ref="$(_afk_factory_job_base "$job_dir" "$wt")"
+    # --no-renames lists both sides of a move, so a protected file renamed
+    # out of its path still shows under the protected name.
+    changed_files="$(git -C "$wt" diff --no-renames --name-only "$base_ref"...HEAD 2>/dev/null || git -C "$wt" diff --no-renames --name-only HEAD~1 2>/dev/null || true)"
+    if [[ -n "$changed_files" ]]; then
+      file_count="$(printf '%s\n' "$changed_files" | sed '/^$/d' | wc -l | tr -d ' ')"
+      # numstat prints "-" for a binary file; count it as one changed line so
+      # a binary-only change is not measured as empty.
+      line_count="$(git -C "$wt" diff --no-renames --numstat "$base_ref"...HEAD 2>/dev/null | awk '{a = ($1 == "-") ? 1 : $1; d = ($2 == "-") ? 0 : $2; s += a + d} END {print s+0}')"
+    fi
+    # Tracked changes only: a check script that leaves a report file behind is
+    # not uncommitted work. A build that could not commit is caught after the
+    # build.
+    dirty="$(git -C "$wt" status --porcelain --untracked-files=no -- . ':!.afk' 2>/dev/null | head -n 5 || true)"
+  fi
+  # Tests can state diff figures in job.json instead of building a large diff.
+  # Outside a test run the measured diff is the only source: job.json sits in
+  # a directory every agent can write, and a trusted figure there would let a
+  # builder declare its own change small.
+  if [[ "${AFK_FACTORY_TEST_DIFF_STATS:-0}" == "1" ]]; then
+    local job_lines job_files job_paths
+    job_lines="$(jq -r '.diff_stats.lines // empty' <<<"$job" 2>/dev/null)"
+    job_files="$(jq -r '.diff_stats.files // empty' <<<"$job" 2>/dev/null)"
+    job_paths="$(jq -r '.diff_stats.changed_paths // [] | .[]' <<<"$job" 2>/dev/null)"
+    [[ "$job_lines" =~ ^[0-9]+$ ]] && line_count="$job_lines"
+    [[ "$job_files" =~ ^[0-9]+$ ]] && file_count="$job_files"
+    [[ -n "$job_paths" ]] && changed_files="$job_paths"
+  fi
+  [[ "$line_count" =~ ^[0-9]+$ ]] || line_count=0
+  [[ "$file_count" =~ ^[0-9]+$ ]] || file_count=0
+
+  # Nothing to merge is not a pass. A build that could not commit, or wrote
+  # its work somewhere else, leaves the branch where it started.
+  if [[ "$is_git" == true && "$file_count" -eq 0 ]]; then
+    reasons="$(jq -c '. + ["Branch has no committed changes to merge"]' <<<"$reasons")"
+  fi
+  if [[ -n "$dirty" ]]; then
+    reasons="$(jq -c '. + ["Worktree has uncommitted changes the checks and reviews did not cover"]' <<<"$reasons")"
+  fi
 
   if (( line_count > max_lines )); then
     reasons="$(jq -c --arg r "Diff size ($line_count lines) exceeds budget ($max_lines lines)" '. + [$r]' <<<"$reasons")"
@@ -372,21 +842,33 @@ afk_factory_evaluate_merge() {
   # Protected paths check
   local -a prot_patterns=()
   mapfile -t prot_patterns < <(jq -r '.protected_paths[]? // empty' <<<"$cfg" 2>/dev/null)
-  local pat f
-  for f in $changed_files; do
+  # One path per line: a path with a space is one path, not three words, and
+  # the comparison ignores case so `Migrations/` is still `migrations/`.
+  local pat f f_lc pat_lc
+  while IFS= read -r f; do
     [[ -n "$f" ]] || continue
+    f_lc="$(printf '%s' "$f" | tr '[:upper:]' '[:lower:]')"
     for pat in "${prot_patterns[@]:-}"; do
       [[ -n "$pat" ]] || continue
-      if [[ "$f" == *"$pat"* ]]; then
+      pat_lc="$(printf '%s' "$pat" | tr '[:upper:]' '[:lower:]')"
+      if [[ "$f_lc" == *"$pat_lc"* ]]; then
         reasons="$(jq -c --arg r "Protected path touched: $f (matches '$pat')" '. + [$r]' <<<"$reasons")"
         break
       fi
     done
-  done
+  done <<<"$changed_files"
 
   # 4. Check explicit policy / high-risk architectural escalation
   if [[ "$merge_policy" == "human" ]]; then
     reasons="$(jq -c '. + ["Project merge_policy is pinned to human approval"]' <<<"$reasons")"
+  fi
+  # The per-project merge authority in the Paperclip config is the standing
+  # control over who may merge. A project listed there without `merge: pm`
+  # is never merged unattended.
+  local proj_merge
+  proj_merge="$(_afk_factory_project_merge_policy "$(jq -r '.slug // empty' <<<"$job" 2>/dev/null)" "$repo")"
+  if [[ -n "$proj_merge" && "$proj_merge" != "pm" ]]; then
+    reasons="$(jq -c --arg r "Project merge authority is '$proj_merge': a person merges this project" '. + [$r]' <<<"$reasons")"
   fi
   if [[ "$risk" == "critical" ]]; then
     reasons="$(jq -c '. + ["Job risk is rated critical"]' <<<"$reasons")"
@@ -558,7 +1040,13 @@ afk_factory_build_stage_prompt() {
         ;;
       review*)
         printf -- '- Do NOT modify repository source files during `%s`.\n' "$stage"
-        printf -- '- Inspect the full branch diff against main (`git log origin/main..HEAD --stat` and `git diff origin/main...HEAD`), and compare against `%s/spec.md` and the current round `checks.md`.\n' "$job_dir"
+        # Name the commit this job branched from. "origin/main" does not exist
+        # in a repo whose branch is master or that has no remote, and the
+        # reviewer then picks its own, different, diff to review.
+        local rv_base
+        rv_base="$(jq -r '.base_sha // empty' "$job_dir/job.json" 2>/dev/null || true)"
+        [[ -n "$rv_base" ]] || rv_base="origin/main"
+        printf -- '- Inspect the full branch diff against the commit this work branched from (`git log %s..HEAD --stat` and `git diff %s...HEAD`), and compare against `%s/spec.md` and the current round `checks.md`.\n' "$rv_base" "$rv_base" "$job_dir"
         printf -- '- Begin `%s` with this exact plain-text first line (no bolding, no icons): `VERDICT: PASS` or `VERDICT: CHANGES_REQUESTED`.\n' "$output_file"
         printf -- '- Follow with `## Summary` and any concrete findings.\n'
         ;;
@@ -672,9 +1160,27 @@ afk_factory_invoke_stage_agent() {
   AFK_LAST_STAGE_COST_CLASS="$(jq -r '.cost_class // "subscription"' <<<"$route_json" 2>/dev/null || printf 'subscription')"
   AFK_LAST_STAGE_COST_CENTS=0
 
+  # Every agent run is bounded. Without timeout or gtimeout an agent could run
+  # on after its runner is presumed gone, while another runner starts in the
+  # same worktree; so no live stage starts on such a host.
+  if [[ -n "${AFK_FACTORY_AGENT_RUNNER:-}" || "${AFK_FACTORY_LIVE_HARNESS:-0}" == "1" || "${AFK_FACTORY_OFFLINE_SYNTH:-0}" != "1" ]] \
+     && ! command -v timeout >/dev/null 2>&1 && ! command -v gtimeout >/dev/null 2>&1; then
+    AFK_LAST_STAGE_FAILURE="no_timeout_binary"
+    return 1
+  fi
   local runner="${AFK_FACTORY_AGENT_RUNNER:-}"
   if [[ -n "$runner" && -x "$runner" ]]; then
-    local runner_out="" runner_rc=0
+    local runner_out="" runner_rc=0 r_tmo
+    # An output left by an earlier, interrupted attempt must not pass for
+    # this one's.
+    rm -f -- "$output_file"
+    # A custom runner is bounded like any stage: a hung one with a fresh
+    # heartbeat would otherwise never be recovered.
+    r_tmo="${AFK_STAGE_TIMEOUT_SEC:-$(jq -r '.watchdog.stage_timeout_sec // 900' <<<"$(afk_factory_load_config "$repo")" 2>/dev/null || printf '900')}"
+    [[ "$r_tmo" =~ ^[0-9]+$ && "$r_tmo" -gt 0 ]] || r_tmo=900
+    local -a r_cmd=()
+    if command -v timeout >/dev/null 2>&1; then r_cmd=(timeout -k 20 "$r_tmo")
+    else r_cmd=(gtimeout -k 20 "$r_tmo"); fi
     runner_out="$(
       AFK_FACTORY_REPO="$repo" \
       AFK_FACTORY_WORKTREE="$wt" \
@@ -689,7 +1195,7 @@ afk_factory_invoke_stage_agent() {
       AFK_FACTORY_PROMPT_FILE="$prompt_file" \
       AFK_FACTORY_COMPILED_PROMPT="$compiled_prompt" \
       AFK_FACTORY_OUTPUT_FILE="$output_file" \
-        "$runner" "$stage" "$role" "$prompt_file" "$output_file" 2>/dev/null
+        "${r_cmd[@]}" "$runner" "$stage" "$role" "$prompt_file" "$output_file" 2>/dev/null
     )" || runner_rc=$?
     if [[ -n "$runner_out" ]] && jq -e '.used_tokens or .input_tokens' <<<"$runner_out" >/dev/null 2>&1; then
       AFK_LAST_STAGE_USED_TOKENS="$(jq -r '.used_tokens // ((.input_tokens // 0) + (.output_tokens // 0)) // empty' <<<"$runner_out")"
@@ -706,7 +1212,10 @@ afk_factory_invoke_stage_agent() {
     return "$runner_rc"
   fi
 
-  if [[ "${AFK_FACTORY_LIVE_HARNESS:-0}" == "1" ]]; then
+  # A stage runs a real agent unless a test asks for canned output by name.
+  # The canned outputs below include `VERDICT: PASS` reviews, so reaching them
+  # by default let any caller that forgot a flag approve work nobody reviewed.
+  if [[ "${AFK_FACTORY_LIVE_HARNESS:-0}" == "1" || "${AFK_FACTORY_OFFLINE_SYNTH:-0}" != "1" ]]; then
     local attempt=1 max_attempts=3 failover_from=""
     while (( attempt <= max_attempts )); do
       local env_file="$job_dir/.result-${stage}-${role}.json"
@@ -722,7 +1231,14 @@ afk_factory_invoke_stage_agent() {
         mcp_cfg="$repo/.mcp.json"
       fi
       local bin_exec="" stage_cfg stage_tmo
-      bin_exec="$(_afk_harness_locate_bin "$harness" 2>/dev/null || command -v "$harness" 2>/dev/null || true)"
+      # With the bin-directory override set (a pinned image), the CLI comes
+      # from there or not at all: falling back to PATH could start a
+      # different, unpinned binary.
+      if [[ -n "${AFK_HARNESS_BIN_DIR_OVERRIDE:-}" ]]; then
+        bin_exec="$(_afk_harness_locate_bin "$harness" 2>/dev/null || true)"
+      else
+        bin_exec="$(_afk_harness_locate_bin "$harness" 2>/dev/null || command -v "$harness" 2>/dev/null || true)"
+      fi
       stage_cfg="$(afk_factory_load_config "$repo")"
       if [[ "$routed_cost" == "free" ]]; then
         stage_tmo="${AFK_FREE_MODEL_TIMEOUT_SEC:-$(jq -r '.watchdog.free_stage_timeout_sec // 120' <<<"$stage_cfg" 2>/dev/null || printf '120')}"
@@ -730,8 +1246,13 @@ afk_factory_invoke_stage_agent() {
         stage_tmo="${AFK_STAGE_TIMEOUT_SEC:-$(jq -r '.watchdog.stage_timeout_sec // 900' <<<"$stage_cfg" 2>/dev/null || printf '900')}"
       fi
       [[ "$stage_tmo" =~ ^[0-9]+$ && "$stage_tmo" -gt 0 ]] || stage_tmo=900
+      # -k: a CLI that ignores TERM is killed 20s later instead of running on.
       local -a tmo_cmd=()
-      command -v timeout >/dev/null 2>&1 && tmo_cmd=(timeout "$stage_tmo")
+      if command -v timeout >/dev/null 2>&1; then
+        tmo_cmd=(timeout -k 20 "$stage_tmo")
+      elif command -v gtimeout >/dev/null 2>&1; then
+        tmo_cmd=(gtimeout -k 20 "$stage_tmo")
+      fi
 
       case "$harness" in
         claude)
@@ -745,7 +1266,7 @@ afk_factory_invoke_stage_agent() {
               local -a cl_mcp_args=() cl_eff_args=()
               [[ -n "$mcp_cfg" ]] && cl_mcp_args=(--mcp-config "$mcp_cfg")
               [[ -n "$routed_effort" ]] && cl_eff_args=(--effort "$routed_effort")
-              "${tmo_cmd[@]}" "$bin_exec" -p "$(cat -- "$compiled_prompt")" --model "$routed_model" "${cl_eff_args[@]}" "${cl_mcp_args[@]}" --add-dir "$job_dir" --dangerously-skip-permissions --output-format json < /dev/null > "$env_file" 2>/dev/null
+              "${tmo_cmd[@]}" "$bin_exec" -p "$(_afk_factory_prompt_text "$compiled_prompt")" --model "$routed_model" "${cl_eff_args[@]}" "${cl_mcp_args[@]}" --add-dir "$job_dir" --dangerously-skip-permissions --output-format json < /dev/null > "$env_file" 2>/dev/null
             ) || h_rc=$?
           else
             h_rc=127
@@ -761,7 +1282,7 @@ afk_factory_invoke_stage_agent() {
               fi
               local -a cx_eff_args=()
               [[ -n "$routed_effort" ]] && cx_eff_args=(-c "model_reasoning_effort=\"$routed_effort\"")
-              "${tmo_cmd[@]}" "$bin_exec" exec --dangerously-bypass-approvals-and-sandbox --json -o "$output_file" -m "$routed_model" "${cx_eff_args[@]}" -- "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
+              "${tmo_cmd[@]}" "$bin_exec" exec --dangerously-bypass-approvals-and-sandbox --json -o "$output_file.last-message" -m "$routed_model" "${cx_eff_args[@]}" -- "$(_afk_factory_prompt_text "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
             ) || h_rc=$?
           else
             h_rc=127
@@ -783,7 +1304,7 @@ afk_factory_invoke_stage_agent() {
               local -a agy_mod_args=()
               [[ -n "$agy_model" ]] && agy_mod_args+=(--model "$agy_model")
               [[ -n "$routed_effort" ]] && agy_mod_args+=(--effort "$routed_effort")
-              "${tmo_cmd[@]}" "$bin_exec" --dangerously-skip-permissions "${agy_mod_args[@]}" --add-dir "$job_dir" --output-format json -p "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
+              "${tmo_cmd[@]}" "$bin_exec" --dangerously-skip-permissions "${agy_mod_args[@]}" --add-dir "$job_dir" --output-format json -p "$(_afk_factory_prompt_text "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
             ) || h_rc=$?
           else
             h_rc=127
@@ -796,7 +1317,7 @@ afk_factory_invoke_stage_agent() {
               [[ -n "$hs_disabled" ]] && export HINDSIGHT_DISABLED="true"
               local -a gr_eff_args=()
               [[ -n "$routed_effort" ]] && gr_eff_args=(--effort "$routed_effort")
-              "${tmo_cmd[@]}" "$bin_exec" --always-approve --output-format json -m "$routed_model" "${gr_eff_args[@]}" -p "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
+              "${tmo_cmd[@]}" "$bin_exec" --always-approve --output-format json -m "$routed_model" "${gr_eff_args[@]}" -p "$(_afk_factory_prompt_text "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
             ) || h_rc=$?
           else
             h_rc=127
@@ -810,7 +1331,7 @@ afk_factory_invoke_stage_agent() {
               if [[ "$routed_launch" == *-gateway && -n "$litellm_url" ]]; then
                 export OPENAI_BASE_URL="$litellm_url"
               fi
-              "${tmo_cmd[@]}" "$bin_exec" run --pure --auto --format json -m "$routed_model" -- "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
+              "${tmo_cmd[@]}" "$bin_exec" run --pure --auto --format json -m "$routed_model" -- "$(_afk_factory_prompt_text "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
             ) || h_rc=$?
           else
             h_rc=127
@@ -821,16 +1342,29 @@ afk_factory_invoke_stage_agent() {
             (
               cd "$wt" || exit 1
               [[ -n "$hs_disabled" ]] && export HINDSIGHT_DISABLED="true"
-              "${tmo_cmd[@]}" "$bin_exec" -p --mode json --model "$routed_model" "$(cat -- "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
+              "${tmo_cmd[@]}" "$bin_exec" -p --mode json --model "$routed_model" "$(_afk_factory_prompt_text "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
             ) || h_rc=$?
           else
             h_rc=127
           fi
           ;;
+        *)
+          # A route naming a harness this runner cannot launch is a failure,
+          # not a stage that quietly produced nothing.
+          h_rc=127
+          ;;
       esac
 
+      # Codex writes its closing message to a side file. Use it as the stage
+      # output only when the agent did not write the artifact itself; writing
+      # it over the artifact replaced a full intake with "Done, wrote intake.md".
+      if [[ -f "$output_file.last-message" ]]; then
+        [[ ! -s "$output_file" && -s "$output_file.last-message" ]] && cp -- "$output_file.last-message" "$output_file" 2>/dev/null
+        rm -f -- "$output_file.last-message"
+      fi
+
       local env_err_msg=""
-      if (( h_rc == 124 )); then
+      if (( h_rc == 124 || h_rc == 137 )); then
         env_err_msg="stage_timeout_${stage_tmo}s"
       elif [[ -s "$env_file" ]] && jq -se 'any(.[]; (.is_error == true) or (.type == "error") or (.type == "turn.failed"))' "$env_file" >/dev/null 2>&1; then
         env_err_msg="$(jq -sr '[ .[] | (.error.data.message // .error.message // (if .is_error == true then .result else empty end) // .message // empty) ] | map(select(length > 0)) | first // "json_runtime_error"' "$env_file" 2>/dev/null || printf 'json_runtime_error')"
@@ -906,8 +1440,14 @@ afk_factory_invoke_stage_agent() {
         h_rc=1
         env_err_msg="empty_stage_output"
       fi
+      # Exit 0 with nothing written at all is still a failed attempt.
+      if (( h_rc == 0 )); then
+        h_rc=1
+        env_err_msg="${env_err_msg:-empty_stage_output}"
+      fi
 
       local fail_reason="${env_err_msg:-runtime_exit_$h_rc}"
+      AFK_LAST_STAGE_FAILURE="$fail_reason"
       _afk_factory_append_route_event "$job_dir/route-history.jsonl" "$(jq -cn \
         --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         --arg st "$stage" \
@@ -947,7 +1487,7 @@ afk_factory_invoke_stage_agent() {
     done
   fi
 
-  # Default autonomous local execution if output_file does not already exist
+  # Canned stage outputs for offline tests (AFK_FACTORY_OFFLINE_SYNTH=1 only).
   if [[ -s "$output_file" ]]; then
     return 0
   fi
@@ -986,6 +1526,11 @@ EOF
       local sha="HEAD"
       if git -C "$wt" rev-parse --short HEAD >/dev/null 2>&1; then
         sha="$(git -C "$wt" rev-parse --short HEAD)"
+        # A canned build still has to change something: a branch with no
+        # change on it is never approved for merge.
+        if [[ "$wt" != "$repo" ]]; then
+          printf 'Canned build for %s at %s.\n' "$(basename -- "$job_dir")" "$sha" >> "$wt/AFK_SYNTH_BUILD.md"
+        fi
       fi
       cat > "$output_file" <<EOF
 ## Summary
@@ -1005,37 +1550,118 @@ EOF
   return 0
 }
 
-# _afk_factory_touch_heartbeat <job_dir> <stage> <role> <state:running|idle|done>
-# Writes deterministic liveness/heartbeat metadata so `factory watchdog` can distinguish
-# an actively working stage from a crashed runner or silent/stalled process.
+# _afk_factory_prompt_text <file>
+# The compiled prompt as one string for a CLI argument. The kernel refuses a
+# single argument over 128 KB, and the refusal looks like any other launch
+# failure, so a long pasted log would fail every harness in turn. The prompt
+# is cut to fit and says so.
+_afk_factory_prompt_text() {
+  local file="$1" max="${AFK_FACTORY_PROMPT_MAX_BYTES:-110000}" size
+  [[ "$max" =~ ^[0-9]+$ && "$max" -gt 1000 ]] || max=110000
+  size="$(wc -c < "$file" 2>/dev/null | tr -d '[:space:]')"
+  [[ "$size" =~ ^[0-9]+$ ]] || size=0
+  if (( size <= max )); then
+    cat -- "$file"
+    return 0
+  fi
+  head -c "$max" -- "$file"
+  printf '\n\n[The prompt was cut here at %s bytes of %s. Read the files named above for the rest.]\n' "$max" "$size"
+}
+
+# _afk_factory_touch_heartbeat <job_dir> <stage> <role> <state:running|idle|done> [<runner_pid>]
+# Records that the job's runner is alive and where it is. The watchdog reads
+# it to tell a working stage from a crashed or silent one. The runner is
+# named by PID plus start time and boot: a PID alone is reused after a
+# restart. A recovery count is kept while the job stays in one stage and
+# cleared when it moves on, so three interruptions spread over a long job are
+# not counted as three failures of one stage.
 _afk_factory_touch_heartbeat() {
-  local job_dir="$1" stage="$2" role="${3:-}" state="${4:-running}"
+  local job_dir="$1" stage="$2" role="${3:-}" state="${4:-running}" runner="${5:-}"
   local hb_file="$job_dir/heartbeat.json" cur="{}"
   [[ -f "$hb_file" ]] && cur="$(cat -- "$hb_file" 2>/dev/null || printf '{}')"
-  local now_iso now_ep nudges pid_val="null"
+  jq -e 'type == "object"' <<<"$cur" >/dev/null 2>&1 || cur="{}"
+  local now_iso now_ep nudges prev_stage pid_val="null" start="" boot=""
   now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   now_ep="$(date -u +%s)"
   nudges="$(jq -r '.nudge_count // 0' <<<"$cur" 2>/dev/null || printf '0')"
-  [[ "$state" == "running" ]] && pid_val="$$"
-  jq -cn \
+  [[ "$nudges" =~ ^[0-9]+$ ]] || nudges=0
+  prev_stage="$(jq -r '.stage // empty' <<<"$cur" 2>/dev/null || true)"
+  [[ -n "$prev_stage" && "$prev_stage" != "$stage" ]] && nudges=0
+  if [[ "$state" == "running" ]]; then
+    # $BASHPID, not $$: in a background job $$ is the poll process.
+    pid_val="${runner:-$BASHPID}"
+    [[ "$pid_val" =~ ^[0-9]+$ ]] || pid_val="$BASHPID"
+    start="$(_afk_factory_proc_start "$pid_val" 2>/dev/null || true)"
+    boot="$(_afk_factory_boot_id)"
+  fi
+  local tmp
+  tmp="$(mktemp "${hb_file}.tmp.XXXXXX" 2>/dev/null)" || return 0
+  if jq -cn \
     --arg st "$stage" \
     --arg rl "$role" \
     --arg s "$state" \
     --arg iso "$now_iso" \
     --argjson ep "$now_ep" \
     --argjson pid "$pid_val" \
+    --arg start "$start" \
+    --arg boot "$boot" \
     --argjson nc "$nudges" \
     '{
       schema: "afk-factory-heartbeat/1",
       pid: $pid,
+      start: (if $start == "" then null else $start end),
+      boot: (if $boot == "" then null else $boot end),
       state: $s,
       stage: $st,
       role: $rl,
       last_beat_at: $iso,
       last_beat_epoch: $ep,
       nudge_count: $nc
-    }' > "${hb_file}.tmp.$$" && mv "${hb_file}.tmp.$$" "$hb_file"
+    }' > "$tmp" 2>/dev/null && [[ -s "$tmp" ]]; then
+    mv -f -- "$tmp" "$hb_file"
+  else
+    rm -f -- "$tmp"
+  fi
 }
+
+# _afk_factory_beat_start <job_dir> <stage> <role> / _afk_factory_beat_stop
+# Keeps the heartbeat fresh while a stage or the check gate runs. Without it
+# the heartbeat is written only when a stage starts and ends, so any stage
+# longer than the stall threshold looks stalled and gets killed mid-work.
+AFK_FACTORY_BEAT_PID=""
+AFK_FACTORY_BEAT_DIR=""
+_afk_factory_beat_start() {
+  local job_dir="$1" stage="$2" role="${3:-}" parent="$BASHPID" every="${AFK_FACTORY_BEAT_SEC:-60}"
+  [[ "$every" =~ ^[0-9]+$ && "$every" -gt 0 ]] || every=60
+  _afk_factory_beat_stop
+  # Without timeout or gtimeout nothing bounds a stage, and the watchdog's
+  # stall check is the only limit left. A fresh heartbeat would disable it.
+  # Landing is bounded by its own check wait, so it beats regardless.
+  if [[ "$stage" != "landing" ]]; then
+    command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1 || return 0
+  fi
+  AFK_FACTORY_BEAT_DIR="$job_dir"
+  (
+    while sleep "$every"; do
+      # Stop with the runner: a beat that outlived it would hide a crash.
+      kill -0 "$parent" 2>/dev/null || exit 0
+      _afk_factory_touch_heartbeat "$job_dir" "$stage" "$role" "running" "$parent"
+    done
+  ) </dev/null >/dev/null 2>&1 &
+  AFK_FACTORY_BEAT_PID=$!
+}
+_afk_factory_beat_stop() {
+  if [[ -n "${AFK_FACTORY_BEAT_PID:-}" ]]; then
+    pkill -P "$AFK_FACTORY_BEAT_PID" 2>/dev/null || true
+    kill "$AFK_FACTORY_BEAT_PID" 2>/dev/null || true
+    wait "$AFK_FACTORY_BEAT_PID" 2>/dev/null || true
+    # A beat stopped mid-write leaves its temp file.
+    [[ -n "$AFK_FACTORY_BEAT_DIR" ]] && rm -f -- "$AFK_FACTORY_BEAT_DIR"/heartbeat.json.tmp.* 2>/dev/null
+  fi
+  AFK_FACTORY_BEAT_PID=""
+  AFK_FACTORY_BEAT_DIR=""
+}
+
 
 # _afk_factory_report_stage_telemetry <slug> <job_dir> <stage> <role> <issue_id> <api_url> <key> <company_id> <host_agent_id> <project_id> <run_id> [<gen>]
 _afk_factory_report_stage_telemetry() {
@@ -1095,13 +1721,25 @@ _afk_factory_write_review_report() {
 }
 
 # owner/name when origin points at GitHub. Empty otherwise.
+# Accepts the https, scp-style and ssh:// forms, with or without a port, a
+# trailing slash or ".git", and the ssh.github.com alias. The host must be
+# github.com itself: "notgithub.com" is not GitHub.
 _afk_factory_github_repo() { # <repo>
   local url
   url="$(git -C "$1" remote get-url origin 2>/dev/null || true)"
+  url="${url%/}"
   url="${url%.git}"
-  if [[ "$url" =~ github.com[:/]([^/:]+)/([^/]+)$ ]]; then
-    printf '%s/%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+  if [[ "$url" =~ (^|[@/])(ssh\.)?github\.com(:[0-9]+)?[:/]([^/:]+)/([^/]+)$ ]]; then
+    printf '%s/%s' "${BASH_REMATCH[4]}" "${BASH_REMATCH[5]}"
   fi
+}
+# 0 when origin names GitHub in a form the parser above could not read. The
+# caller must stop there; treating the repo as "not GitHub" would merge the
+# branch into the local checkout and report it merged.
+_afk_factory_github_unparsed() { # <repo>
+  local url
+  url="$(git -C "$1" remote get-url origin 2>/dev/null || true)"
+  [[ "$url" =~ (^|[@/.])github\.com([:/]|$) ]] && [[ -z "$(_afk_factory_github_repo "$1")" ]]
 }
 
 _afk_factory_stage_command() { # <repo> <role>
@@ -1192,9 +1830,12 @@ _afk_factory_set_approval_gate() { # <api> <key> <run> <issue> <host> <board_use
 }
 
 # Push the branch and open a pull request. Prints the URL, or nothing.
+# A pull request already open for the branch is reused. One already merged is
+# returned too, so a job restarted after its merge finds the merge and does
+# not open a second pull request.
 _afk_factory_ensure_pr() { # <abs_repo> <wt> <branch> <title> <job_id>
   local abs_repo="$1" wt="$2" branch="$3" title="$4" job_id="$5"
-  local remote ghbin base list url
+  local remote ghbin base list url job_dir
   remote="$(_afk_factory_github_repo "$abs_repo")"
   [[ -n "$remote" ]] || return 1
   ghbin="${AFK_FACTORY_GH_BIN:-gh}"
@@ -1202,14 +1843,24 @@ _afk_factory_ensure_pr() { # <abs_repo> <wt> <branch> <title> <job_id>
   local land_mode
   land_mode="$(jq -r '.land // "auto"' <<<"$(afk_factory_load_config "$abs_repo")" 2>/dev/null || printf 'auto')"
   [[ "$land_mode" == "local" ]] && return 1
-  base="$(_afk_factory_task_base_ref "$wt")"
+  job_dir="$abs_repo/.afk/jobs/$job_id"
+  base="$(_afk_factory_job_base_branch "$job_dir" "$wt")"
   [[ -n "$base" ]] || base="main"
-  base="${base#origin/}"
+  list="$("$ghbin" pr list --repo "$remote" --head "$branch" --state all --json url,number,state,headRefOid 2>/dev/null || true)"
+  # A merged pull request counts as this job's merge only when it merged the
+  # commit the worktree holds now. One merged by hand before a later round
+  # does not carry that round's commits.
+  local wt_head
+  wt_head="$(git -C "$wt" rev-parse HEAD 2>/dev/null || true)"
+  url="$(jq -r --arg h "$wt_head" 'if type=="array" then ([.[] | select((.state // "OPEN") == "MERGED" and ((.headRefOid // "") == $h))][0].url // empty) else empty end' <<<"$list" 2>/dev/null || true)"
+  if [[ -n "$url" ]]; then
+    printf '%s' "$url"
+    return 0
+  fi
   if [[ "${AFK_FACTORY_SKIP_PUSH:-}" != "1" ]]; then
     git -C "$wt" push -u origin "$branch" >/dev/null 2>&1 || return 1
   fi
-  list="$("$ghbin" pr list --repo "$remote" --head "$branch" --json url,number 2>/dev/null || true)"
-  url="$(jq -r 'if type=="array" then (.[0].url // empty) else empty end' <<<"$list" 2>/dev/null || true)"
+  url="$(jq -r 'if type=="array" then ([.[] | select((.state // "OPEN") == "OPEN")][0].url // empty) else empty end' <<<"$list" 2>/dev/null || true)"
   if [[ -z "$url" ]]; then
     url="$("$ghbin" pr create --repo "$remote" --base "$base" --head "$branch" --title "$title" \
       --body "$(printf 'Branch %s for %s.\n' "$branch" "$job_id")" 2>/dev/null || true)"
@@ -1219,62 +1870,180 @@ _afk_factory_ensure_pr() { # <abs_repo> <wt> <branch> <title> <job_id>
   printf '%s' "$url"
 }
 
+# _afk_factory_pr_checks_state <ghbin> <remote> <pr_url> -> pass | fail | pending | none | unknown
+# Reads the pull request's check runs and commit statuses.
+_afk_factory_pr_checks_state() {
+  local ghbin="$1" remote="$2" url="$3" doc
+  doc="$("$ghbin" pr view --repo "$remote" "$url" --json statusCheckRollup 2>/dev/null)" || { printf 'unknown'; return 0; }
+  jq -r '
+    if (type != "object") then "unknown"
+    else
+      [ (.statusCheckRollup // [])[]
+        | if (.status // null) != null or (.conclusion // null) != null then
+            (if ((.status // "") | ascii_upcase) != "COMPLETED" then "pending"
+             elif ((.conclusion // "") | ascii_upcase) as $c | ($c == "SUCCESS" or $c == "NEUTRAL" or $c == "SKIPPED") then "pass"
+             else "fail" end)
+          else
+            ((.state // "") | ascii_upcase) as $st
+            | (if $st == "SUCCESS" then "pass" elif ($st == "PENDING" or $st == "EXPECTED" or $st == "") then "pending" else "fail" end)
+          end ]
+      | if length == 0 then "none" elif any(. == "fail") then "fail" elif any(. == "pending") then "pending" else "pass" end
+    end' <<<"$doc" 2>/dev/null || printf 'unknown'
+}
+
+# _afk_factory_wait_pr_checks <abs_repo> <ghbin> <remote> <pr_url>
+# Waits for the pull request's checks before a merge. Prints nothing and
+# returns 0 when they passed or the repository has none; otherwise prints the
+# reason and returns 1. Merging the moment the pull request opens ships the
+# change before CI has reported, and on a repository with required checks the
+# merge is simply refused every time.
+_afk_factory_wait_pr_checks() {
+  local abs_repo="$1" ghbin="$2" remote="$3" url="$4" cfg mode tmo every settle state waited=0 seen_any=false
+  cfg="$(afk_factory_load_config "$abs_repo")"
+  mode="$(jq -r '.land_checks // "wait"' <<<"$cfg" 2>/dev/null || printf 'wait')"
+  [[ "$mode" == "skip" ]] && return 0
+  tmo="${AFK_FACTORY_CHECKS_TIMEOUT_SEC:-$(jq -r '.land_checks_timeout_sec // 1200' <<<"$cfg" 2>/dev/null || printf '1200')}"
+  every="${AFK_FACTORY_CHECKS_POLL_SEC:-20}"
+  # Checks appear a little after the pull request does. An empty list this
+  # early does not yet mean the repository has no checks.
+  settle="${AFK_FACTORY_CHECKS_SETTLE_SEC:-30}"
+  [[ "$tmo" =~ ^[0-9]+$ ]] || tmo=1200
+  [[ "$every" =~ ^[0-9]+$ && "$every" -gt 0 ]] || every=20
+  [[ "$settle" =~ ^[0-9]+$ ]] || settle=30
+  while :; do
+    state="$(_afk_factory_pr_checks_state "$ghbin" "$remote" "$url")"
+    case "$state" in
+      pass) return 0 ;;
+      fail) printf 'Pull request checks failed'; return 1 ;;
+      unknown) printf 'Pull request checks could not be read'; return 1 ;;
+      none)
+        if [[ "$seen_any" == false ]] && (( waited >= settle )); then
+          return 0
+        fi
+        ;;
+      pending) seen_any=true ;;
+    esac
+    if (( waited >= tmo )); then
+      printf 'Pull request checks were still running after %ss' "$tmo"
+      return 1
+    fi
+    sleep "$every"
+    waited=$(( waited + every ))
+  done
+}
+
 # _afk_factory_land_branch <abs_repo> <wt_dir> <branch> <job_id> <title>
 # A GitHub origin opens a pull request and merges that. Any other checkout
-# merges the branch locally. Prints JSON.
+# merges the branch locally. Prints JSON. `ok:true` means the change is on the
+# base branch; a branch with nothing on it is never reported as landed.
 _afk_factory_land_branch() {
   local abs_repo="$1" wt_dir="$2" branch="$3" job_id="$4" title="$5"
   local pr_url="" remote="" land_mode="auto"
   remote="$(_afk_factory_github_repo "$abs_repo")"
   land_mode="$(jq -r '.land // "auto"' <<<"$(afk_factory_load_config "$abs_repo")" 2>/dev/null || printf 'auto')"
+  if [[ -z "$remote" && "$land_mode" != "local" ]] && _afk_factory_github_unparsed "$abs_repo"; then
+    jq -cn '{ok:false, action:"remote_unreadable", commit:"", reason:"origin looks like GitHub but its owner and repository could not be read; nothing was merged"}'
+    return 1
+  fi
   if [[ -n "$remote" && "$land_mode" != "local" ]]; then
-  pr_url="$(_afk_factory_ensure_pr "$abs_repo" "$wt_dir" "$branch" "$title" "$job_id" 2>/dev/null || true)"
-  if [[ -z "$pr_url" ]]; then
-    jq -cn '{ok:false, action:"pr_failed", commit:"", reason:"GitHub remote is set and the pull request was not opened"}'
-    return 1
-  fi
-  if [[ -n "$pr_url" ]]; then
-    local ghbin remote
+    local ghbin head_sha job_dir base pr_doc pr_state merge_sha pr_num reason
     ghbin="${AFK_FACTORY_GH_BIN:-gh}"
-    remote="$(_afk_factory_github_repo "$abs_repo")"
-    if "$ghbin" pr merge --repo "$remote" --squash "$pr_url" >/dev/null 2>&1; then
-      local sha base
-      base="$(_afk_factory_task_base_ref "$abs_repo")"
-      base="${base#origin/}"
-      if [[ "${AFK_FACTORY_SKIP_PUSH:-}" != "1" ]]; then
-        git -C "$abs_repo" pull --ff-only "origin" "$base" >/dev/null 2>&1 || true
-      fi
-      sha="$(git -C "$abs_repo" rev-parse HEAD 2>/dev/null || true)"
-      [[ -d "$wt_dir" && "$wt_dir" != "$abs_repo" ]] && git -C "$abs_repo" worktree remove --force "$wt_dir" >/dev/null 2>&1 || true
-      jq -cn --arg c "$sha" --arg u "$pr_url" '{ok:true, action:"merged_pr", commit:$c, pr_url:$u}'
-      return 0
+    job_dir="$abs_repo/.afk/jobs/$job_id"
+    # Merge exactly the commit the checks ran on and the reviews read. Checked
+    # before anything is pushed or waited on.
+    head_sha="$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)"
+    # With the worktree gone, the branch tip in the base repository is what
+    # GitHub has for the pull request.
+    [[ -n "$head_sha" ]] || head_sha="$(git -C "$abs_repo" rev-parse --verify --quiet "refs/heads/$branch" 2>/dev/null || true)"
+    local approved_sha=""
+    approved_sha="$(_afk_factory_checked_commit "$job_dir")"
+    if [[ -z "$approved_sha" || "$approved_sha" != "$head_sha" ]]; then
+      jq -cn '{ok:false, action:"head_moved", commit:"", reason:"The branch is not at the commit the checks ran on; nothing was merged"}'
+      return 1
     fi
-    jq -cn --arg u "$pr_url" '{ok:false, action:"pr_open", commit:"", pr_url:$u, reason:"Pull request is open and was not merged"}'
-    return 1
-  fi
+    pr_url="$(_afk_factory_ensure_pr "$abs_repo" "$wt_dir" "$branch" "$title" "$job_id" 2>/dev/null || true)"
+    if [[ -z "$pr_url" ]]; then
+      jq -cn '{ok:false, action:"pr_failed", commit:"", reason:"GitHub remote is set and the pull request was not opened"}'
+      return 1
+    fi
+    pr_doc="$("$ghbin" pr view --repo "$remote" "$pr_url" --json state,mergeCommit 2>/dev/null || true)"
+    pr_state="$(jq -r '.state // empty' <<<"$pr_doc" 2>/dev/null || true)"
+    if [[ "$pr_state" != "MERGED" ]]; then
+      if ! reason="$(_afk_factory_wait_pr_checks "$abs_repo" "$ghbin" "$remote" "$pr_url")"; then
+        jq -cn --arg u "$pr_url" --arg r "${reason:-Pull request checks did not pass}" '{ok:false, action:"checks_not_green", commit:"", pr_url:$u, reason:$r}'
+        return 1
+      fi
+      # Squash under a subject and body written here, pinned to the checked
+      # commit. The default squash message strings the branch's commit
+      # messages together, trailers included.
+      pr_num="${pr_url##*/}"
+      local -a merge_args=(pr merge --repo "$remote" --squash --subject "$title (#$pr_num)" --body "")
+      [[ -n "$head_sha" ]] && merge_args+=(--match-head-commit "$head_sha")
+      if ! "$ghbin" "${merge_args[@]}" "$pr_url" >/dev/null 2>&1; then
+        jq -cn --arg u "$pr_url" '{ok:false, action:"pr_open", commit:"", pr_url:$u, reason:"Pull request is open and was not merged"}'
+        return 1
+      fi
+      pr_doc="$("$ghbin" pr view --repo "$remote" "$pr_url" --json state,mergeCommit 2>/dev/null || true)"
+    fi
+    # The merge commit GitHub made, not whatever the local checkout holds.
+    merge_sha="$(jq -r '.mergeCommit.oid // empty' <<<"$pr_doc" 2>/dev/null || true)"
+    base="$(_afk_factory_job_base_branch "$job_dir" "$abs_repo")"
+    local pull_note=""
+    if [[ "${AFK_FACTORY_SKIP_PUSH:-}" != "1" ]]; then
+      git -C "$abs_repo" pull --ff-only "origin" "$base" >/dev/null 2>&1 || pull_note="the local checkout could not be fast-forwarded to it"
+    fi
+    [[ -n "$merge_sha" ]] || merge_sha="$(git -C "$abs_repo" rev-parse HEAD 2>/dev/null || true)"
+    [[ -d "$wt_dir" && "$wt_dir" != "$abs_repo" ]] && git -C "$abs_repo" worktree remove --force "$wt_dir" >/dev/null 2>&1 || true
+    jq -cn --arg c "$merge_sha" --arg u "$pr_url" --arg n "$pull_note" \
+      '{ok:true, action:"merged_pr", commit:$c, pr_url:$u} + (if $n == "" then {} else {note:$n} end)'
+    return 0
   fi
   if [[ ! -d "$abs_repo/.git" && ! -f "$abs_repo/.git" ]]; then
     printf '{"ok":true,"action":"non_git","commit":""}\n'
     return 0
   fi
   if [[ "$wt_dir" == "$abs_repo" ]]; then
-    local sha
-    sha="$(git -C "$abs_repo" rev-parse HEAD 2>/dev/null || true)"
-    jq -cn --arg c "$sha" '{ok:true, action:"in_place", commit:$c}'
-    return 0
+    jq -cn '{ok:false, action:"in_place", commit:"", reason:"The job ran in the base checkout, so there is no branch to merge"}'
+    return 1
   fi
   if ! git -C "$abs_repo" rev-parse --verify "$branch" >/dev/null 2>&1; then
-    local sha
-    sha="$(git -C "$abs_repo" rev-parse HEAD 2>/dev/null || true)"
-    jq -cn --arg c "$sha" '{ok:true, action:"already_up_to_date", commit:$c}'
-    return 0
+    jq -cn --arg b "$branch" '{ok:false, action:"branch_missing", commit:"", reason:("Branch " + $b + " does not exist; nothing was merged")}'
+    return 1
   fi
-  local ahead=0
-  ahead="$(git -C "$abs_repo" rev-list --count "HEAD..$branch" 2>/dev/null || printf '0')"
+  # The worktree must be on the job's branch. Work committed to another
+  # branch was checked and reviewed there, and merging this one would land
+  # nothing while the worktree holding the work is removed.
+  if [[ -d "$wt_dir" ]]; then
+    local wt_head br_head
+    wt_head="$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)"
+    br_head="$(git -C "$abs_repo" rev-parse "$branch" 2>/dev/null || true)"
+    if [[ -n "$wt_head" && -n "$br_head" && "$wt_head" != "$br_head" ]]; then
+      jq -cn --arg b "$branch" '{ok:false, action:"branch_mismatch", commit:"", reason:("The worktree is not on " + $b + "; the reviewed work is on another branch and was not merged")}'
+      return 1
+    fi
+  fi
+  local ahead=""
+  ahead="$(git -C "$abs_repo" rev-list --count "HEAD..$branch" 2>/dev/null || true)"
+  if [[ ! "$ahead" =~ ^[0-9]+$ ]]; then
+    jq -cn --arg b "$branch" '{ok:false, action:"unreadable", commit:"", reason:("Could not compare " + $b + " with the base checkout")}'
+    return 1
+  fi
   if (( ahead == 0 )); then
+    # Already contained in the base: only true when an earlier run of this
+    # job merged it. A branch still at the commit it was cut from has nothing
+    # on it, and is never reported as landed.
+    local base_sha_j br_sha
+    base_sha_j="$(jq -r '.base_sha // empty' "$abs_repo/.afk/jobs/$job_id/job.json" 2>/dev/null || true)"
+    br_sha="$(git -C "$abs_repo" rev-parse "$branch" 2>/dev/null || true)"
+    if [[ -n "$base_sha_j" && "$br_sha" == "$base_sha_j" ]]; then
+      jq -cn --arg b "$branch" '{ok:false, action:"nothing_to_merge", commit:"", reason:("Branch " + $b + " has no commits beyond the one it was cut from")}'
+      return 1
+    fi
     local sha
     sha="$(git -C "$abs_repo" rev-parse HEAD 2>/dev/null || true)"
-    [[ -d "$wt_dir" ]] && git -C "$abs_repo" worktree remove --force "$wt_dir" >/dev/null 2>&1 || true
+    if [[ -d "$wt_dir" ]] && [[ -z "$(git -C "$wt_dir" status --porcelain -- . ':!.afk' 2>/dev/null || true)" ]]; then
+      git -C "$abs_repo" worktree remove --force "$wt_dir" >/dev/null 2>&1 || true
+    fi
     jq -cn --arg c "$sha" '{ok:true, action:"already_up_to_date", commit:$c}'
     return 0
   fi
@@ -1284,7 +2053,15 @@ _afk_factory_land_branch() {
     jq -cn '{ok:false, action:"dirty_base", commit:"", reason:"Base repository checkout has uncommitted tracked modifications"}'
     return 1
   fi
-  if git -C "$abs_repo" merge --no-ff "$branch" -m "Merge branch '$branch' ($job_id): $title" >/dev/null 2>&1; then
+  # Merge the commit the checks ran on, and only while the branch is still
+  # there: a branch moved since is not what was checked and reviewed.
+  local checked_sha
+  checked_sha="$(_afk_factory_checked_commit "$abs_repo/.afk/jobs/$job_id")"
+  if [[ -z "$checked_sha" || "$checked_sha" != "$(git -C "$abs_repo" rev-parse "$branch" 2>/dev/null || true)" ]]; then
+    jq -cn '{ok:false, action:"head_moved", commit:"", reason:"The branch is not at the commit the checks ran on; nothing was merged"}'
+    return 1
+  fi
+  if git -C "$abs_repo" merge --no-ff "$checked_sha" -m "Merge branch '$branch' ($job_id): $title" >/dev/null 2>&1; then
     local merged_sha
     merged_sha="$(git -C "$abs_repo" rev-parse HEAD 2>/dev/null || true)"
     [[ -d "$wt_dir" ]] && git -C "$abs_repo" worktree remove --force "$wt_dir" >/dev/null 2>&1 || true
@@ -1319,10 +2096,24 @@ afk_factory_run_stage_with_context_guard() {
   local prompt_file="$7" output_file="$8" issue_id="$9" api_url="${10:-}" key="${11:-}" harness="${12:-}"
   local company_id="${13:-}" host_agent_id="${14:-}" project_id="${15:-}" run_id="${16:-}"
 
+  local stage_rc=0
+  AFK_LAST_STAGE_FAILURE=""
   _afk_factory_touch_heartbeat "$job_dir" "$stage" "$role" "running"
-  afk_factory_invoke_stage_agent "$repo" "$wt" "$job_dir" "$role" "$stage" "$prompt_file" "$output_file" "$harness"
+  _afk_factory_beat_start "$job_dir" "$stage" "$role"
+  afk_factory_invoke_stage_agent "$repo" "$wt" "$job_dir" "$role" "$stage" "$prompt_file" "$output_file" "$harness" || stage_rc=$?
+  _afk_factory_beat_stop
   rm -f "$job_dir/watchdog-nudge.md"
   _afk_factory_touch_heartbeat "$job_dir" "$stage" "$role" "running"
+  # A review that failed or ran out of time leaves no verdict behind, even if
+  # it wrote one before it stopped.
+  if (( stage_rc != 0 )) && [[ "$stage" == review* ]]; then
+    rm -f -- "$output_file"
+  fi
+  # A stage that wrote nothing has failed whatever its exit status says.
+  if (( stage_rc == 0 )) && [[ ! -s "$output_file" ]]; then
+    stage_rc=1
+    AFK_LAST_STAGE_FAILURE="${AFK_LAST_STAGE_FAILURE:-empty_stage_output}"
+  fi
   _afk_factory_report_stage_telemetry "$slug" "$job_dir" "$stage" "$role" "$issue_id" "$api_url" "$key" "$company_id" "$host_agent_id" "$project_id" "$run_id" "1"
 
   if [[ -n "${AFK_LAST_STAGE_USED_TOKENS:-}" ]]; then
@@ -1333,15 +2124,27 @@ afk_factory_run_stage_with_context_guard() {
       ctx_new_gen="$(jq -r '.active_generation' <<<"$ctx_res")"
       ckpt_file="$job_dir/checkpoints/${role}-gen-$((ctx_new_gen - 1)).md"
       afk_pch_replace_agent_session "$slug" "$role" "$ctx_new_gen" "$issue_id" "context usage crossed 80% threshold during $stage" "$api_url" "$key" "$run_id"
+    fi
+    # Each stage is one bounded run, so by the time usage is known the stage
+    # is over. A stage that finished keeps its output; re-running it here
+    # deleted a completed review and asked a fresh agent for a new verdict.
+    # Only a stage that failed is handed to the replacement.
+    if [[ "$ctx_act" == "replaced" ]] && (( stage_rc != 0 )); then
       # Clear token override before re-running replacement generation so it doesn't loop infinitely on a static env var
       local saved_stage_tokens="${AFK_STAGE_USED_TOKENS:-}"
       unset AFK_STAGE_USED_TOKENS
-      afk_factory_invoke_stage_agent "$repo" "$wt" "$job_dir" "$role" "$stage" "$ckpt_file" "$output_file" "$harness"
+      stage_rc=0
+      _afk_factory_beat_start "$job_dir" "$stage" "$role"
+      afk_factory_invoke_stage_agent "$repo" "$wt" "$job_dir" "$role" "$stage" "$ckpt_file" "$output_file" "$harness" || stage_rc=$?
+      _afk_factory_beat_stop
+      (( stage_rc != 0 )) && [[ "$stage" == review* ]] && rm -f -- "$output_file"
+      (( stage_rc == 0 )) && [[ ! -s "$output_file" ]] && stage_rc=1
       _afk_factory_report_stage_telemetry "$slug" "$job_dir" "$stage" "$role" "$issue_id" "$api_url" "$key" "$company_id" "$host_agent_id" "$project_id" "$run_id" "$ctx_new_gen"
       [[ -n "$saved_stage_tokens" ]] && AFK_STAGE_USED_TOKENS="$saved_stage_tokens"
     fi
   fi
   _afk_factory_note_stage "$job_dir" "$repo" "$stage" "$role" "$api_url" "$key" "$run_id" "$issue_id" "$host_agent_id"
+  return "$stage_rc"
 }
 
 # afk_factory_run_job <repo_path> <slug> <job_id> <issue_id> <title> <body_file> <json_mode>
@@ -1351,7 +2154,153 @@ afk_factory_run_stage_with_context_guard() {
 #   3. Monitors context window usage after every agent turn & replaces agents that cross 80%.
 #   4. Auto-merges clean PRs or escalates to Paperclip when human attention is needed.
 #   5. Retires specialist/idle agents when complete.
+# _afk_factory_announce <slug> <role> <issue> <summary> <api> <key> <run>
+# Shows the stage on the Paperclip issue before its agent starts. A stage the
+# board cannot see does not start: the job keeps its place and waits, and the
+# next pass tries again. Without Paperclip configured there is nothing to show.
+# Reads and writes the job runner's job_file.
+_afk_factory_announce() {
+  local rc=0
+  afk_pch_assign_stage "$@" || rc=$?
+  if (( rc == 2 || rc == 3 )); then
+    local waits max="${AFK_FACTORY_PAPERCLIP_WAIT_MAX:-15}"
+    [[ "$max" =~ ^[0-9]+$ ]] || max=15
+    # Only a refusal Paperclip actually answered (rc 2) counts toward the
+    # limit. During an outage (rc 3) the job waits without a count: stopping
+    # it then would post a notice nobody can see and strand it.
+    if (( rc == 2 )); then
+      waits="$(jq -r '(.blocked_count // 0) + 1' "$job_file" 2>/dev/null || printf '1')"
+    else
+      waits="$(jq -r '.blocked_count // 0' "$job_file" 2>/dev/null || printf '0')"
+    fi
+    jq -c --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg st "$2" --argjson n "$waits" \
+      '.blocked_reason = "paperclip_unreachable" | .blocked_role = $st | .blocked_at = $now | .blocked_count = $n' \
+      "$job_file" > "$job_file.tmp" && _afk_factory_commit_tmp "$job_file"
+    if (( waits > max )); then
+      # A refusal that never clears is not an outage. Stop the job for a
+      # person instead of retrying for ever.
+      jq -c 'del(.blocked_reason, .blocked_role, .blocked_at, .blocked_count)' "$job_file" > "$job_file.tmp" && _afk_factory_commit_tmp "$job_file"
+      _afk_factory_fail_job "Paperclip refused to show the $2 stage on the issue $((waits - 1)) times in a row, so the stage was never started" "stage_failure" >/dev/null
+      return 1
+    fi
+    afk_warn "factory: Paperclip did not accept the stage change for ${3:-the issue}; the stage waits for the next pass"
+    return 1
+  fi
+  if jq -e '.blocked_reason != null or .blocked_count != null' "$job_file" >/dev/null 2>&1; then
+    jq -c 'del(.blocked_reason, .blocked_role, .blocked_at, .blocked_count)' "$job_file" > "$job_file.tmp" && _afk_factory_commit_tmp "$job_file"
+  fi
+  return 0
+}
+
+# _afk_factory_fail_job <reason> [<kind>]
+# Stops the job for a person, with the reason, and merges nothing. Called from
+# inside the job runner and reads its locals (job_dir, job_file, job_id, slug,
+# json_mode and the Paperclip connection). `kind` records why the job stopped,
+# so a later "approve" on the issue is read as "carry on", never as "merge".
+_afk_factory_fail_job() {
+  local reason="$1" kind="${2:-stage_failure}" now_f last_cid_f=""
+  now_f="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  cat > "$job_dir/decision.md" <<EOF
+DECISION: ESCALATE
+## Summary
+- $reason
+- Nothing was merged.
+- Reply on the issue to have the factory try again; anything you write is passed to the agent as instructions.
+EOF
+  if [[ -n "${api_url:-}" && -n "${key:-}" && -n "${issue_id:-}" ]]; then
+    run_id="$(afk_pch_ensure_run_id "$api_url" "$key" "${host_agent_id:-}" "$issue_id")"
+    afk_pc_comment "$api_url" "$issue_id" "$key" "$run_id" \
+      "$(printf '## AFK Factory — Stopped, Needs a Person\n\n%s' "$(cat "$job_dir/decision.md")")" >/dev/null 2>&1 || true
+    # Everything up to this comment has been seen. Without the marker the next
+    # review sync would take the newest old comment as a fresh instruction.
+    last_cid_f="$(_afk_factory_latest_comment_id "$api_url" "$key" "$issue_id")"
+    afk_pc_curl PATCH "$api_url/api/issues/$issue_id" "$key" "$run_id" "$(_afk_factory_in_review_body "${host_agent_id:-}")" >/dev/null 2>&1 || true
+  fi
+  jq -c --arg now "$now_f" --arg r "$reason" --arg k "$kind" --arg lcid "$last_cid_f" \
+    '.stage = "needs-human" | .decision = "ESCALATE" | .active_agent = "human" | .escalation_kind = $k
+     | .pending_interaction_id = null
+     | .last_seen_comment_id = (if $lcid == "" then (.last_seen_comment_id // null) else $lcid end)
+     | .updated_at = $now | .merge_evaluation = {decision:"ESCALATE", reasons:[$r]}' \
+    "$job_file" > "$job_file.tmp" && _afk_factory_commit_tmp "$job_file"
+  _afk_factory_touch_heartbeat "$job_dir" "needs-human" "" "done"
+  if [[ "${json_mode:-false}" == "true" ]]; then
+    cat "$job_file"
+  else
+    printf 'AFK Factory job %s (%s): stage=needs-human decision=ESCALATE (%s)\n' "$job_id" "$slug" "$reason"
+  fi
+}
+
+# afk_factory_run_job <repo> <slug> <job_id> [<issue_id>] [<title>] [<body_file>] [<json_mode>]
+# Runs one job, or continues it from the stage files already on disk.
+#
+# Exactly one runner drives a job at a time. The poll pass, the watchdog,
+# review sync and `factory resume` can all reach the same job; the lock taken
+# here is what stops two of them building, pushing and merging it twice. A
+# job that already merged or was rejected is never run again.
 afk_factory_run_job() {
+  local repo="$1" slug="$2" job_id="$3" issue_id="${4:-}" json_mode="${7:-false}"
+  local abs_repo
+  abs_repo="$(cd -P -- "$repo" 2>/dev/null && pwd -P)" || {
+    afk_warn "factory run: invalid repository path"
+    return 1
+  }
+  [[ -n "$job_id" ]] || job_id="${issue_id:-job-$(date -u +%Y%m%d%H%M%S)}"
+  # The id becomes a directory name and a branch name.
+  if [[ ! "$job_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ || "$job_id" == *..* ]]; then
+    afk_warn "factory run: a job id may hold only letters, digits, '.', '_' and '-'"
+    return 1
+  fi
+  local job_dir="$abs_repo/.afk/jobs/$job_id"
+  local job_file="$job_dir/job.json"
+  mkdir -p "$job_dir" || return 1
+
+  if ! _afk_factory_job_lock "$job_dir"; then
+    if [[ "$json_mode" == "true" ]]; then
+      if jq -e 'type == "object"' "$job_file" >/dev/null 2>&1; then
+        jq -c '. + {already_running: true}' "$job_file"
+      else
+        jq -cn --arg id "$job_id" '{id: $id, stage: "running", already_running: true}'
+      fi
+    else
+      printf 'AFK Factory job %s: already running\n' "$job_id"
+    fi
+    return 0
+  fi
+
+  # Show a sign of life at once: another host judges a foreign lock by it.
+  _afk_factory_touch_heartbeat "$job_dir" "$(jq -r '.stage // "intake"' "$job_file" 2>/dev/null || printf 'intake')" "" "running"
+
+  # A job file cut off mid-write is set aside. The stage files on disk carry
+  # the job's progress, so it continues from them with a fresh record.
+  if [[ -e "$job_file" ]] && ! jq -e 'type == "object"' "$job_file" >/dev/null 2>&1; then
+    mv -f -- "$job_file" "$job_file.corrupt.$(date -u +%Y%m%dT%H%M%SZ)" 2>/dev/null || rm -f -- "$job_file"
+  fi
+  if [[ -f "$job_file" ]]; then
+    local done_stage
+    done_stage="$(jq -r '.stage // empty' "$job_file" 2>/dev/null || true)"
+    if [[ "$done_stage" == "merged" || "$done_stage" == "rejected" ]]; then
+      _afk_factory_job_unlock "$job_dir"
+      if [[ "$json_mode" == "true" ]]; then
+        cat "$job_file"
+      else
+        printf 'AFK Factory job %s (%s): already %s\n' "$job_id" "$slug" "$done_stage"
+      fi
+      return 0
+    fi
+  fi
+
+  # Real agents unless a test asked for canned output or supplied a runner.
+  if [[ "${AFK_FACTORY_OFFLINE_SYNTH:-0}" != "1" && -z "${AFK_FACTORY_AGENT_RUNNER:-}" ]]; then
+    local -x AFK_FACTORY_LIVE_HARNESS=1
+  fi
+  local run_rc=0
+  _afk_factory_run_job_locked "$abs_repo" "$slug" "$job_id" "${@:4}" || run_rc=$?
+  _afk_factory_beat_stop
+  _afk_factory_job_unlock "$job_dir"
+  return "$run_rc"
+}
+
+_afk_factory_run_job_locked() {
   local repo="$1" slug="$2" job_id="$3" issue_id="${4:-}" title="${5:-Factory Task}"
   local body_file="${6:-}" json_mode="${7:-false}"
 
@@ -1405,15 +2354,48 @@ afk_factory_run_job() {
     printf '# %s\n\nIssue ID: %s\n' "$title" "${issue_id:-local}" > "$job_dir/issue.md"
   fi
 
-  # Ensure isolated worktree (or use repo when worktree creation is skipped in lightweight tests)
-  local wt_root wt_dir branch="factory/$job_id"
+  # Every job in a git repository gets its own worktree. If one cannot be
+  # made the job stops: running in the base checkout instead would let an
+  # agent with permission prompts off edit the branch everything else is cut
+  # from. A directory that is not a git repository has nothing to isolate.
+  local wt_root wt_dir branch="factory/$job_id" is_git_repo=false wt_error=""
+  local base_sha="" base_branch=""
   wt_root="$(dirname -- "$abs_repo")/$(basename -- "$abs_repo")-factory"
   wt_dir="$wt_root/$job_id"
-  if [[ ! -d "$wt_dir" ]]; then
-    mkdir -p "$wt_root"
-    if ! git -C "$abs_repo" worktree add -B "$branch" "$wt_dir" HEAD >/dev/null 2>&1; then
-      wt_dir="$abs_repo"
+  git -C "$abs_repo" rev-parse --git-dir >/dev/null 2>&1 && is_git_repo=true
+  if [[ "$is_git_repo" == true ]]; then
+    if [[ ! -d "$wt_dir" ]]; then
+      mkdir -p "$wt_root"
+      git -C "$abs_repo" worktree prune >/dev/null 2>&1 || true
+      # The commit the branch starts from is the diff base for the budget, the
+      # protected-path check and the pull request.
+      base_sha="$(git -C "$abs_repo" rev-parse HEAD 2>/dev/null || true)"
+      base_branch="$(git -C "$abs_repo" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+      if ! git -C "$abs_repo" worktree add -B "$branch" "$wt_dir" HEAD >/dev/null 2>&1; then
+        wt_error="Could not create an isolated worktree at $wt_dir"
+      fi
+    elif ! git -C "$wt_dir" rev-parse --git-dir >/dev/null 2>&1; then
+      wt_error="$wt_dir exists and is not a git worktree"
+    else
+      # It must be this repository's registered worktree for this job's
+      # branch, and not the base checkout reached through a link.
+      local wt_real reg="" repo_real l_path="" l_line
+      wt_real="$(cd -P -- "$wt_dir" 2>/dev/null && pwd -P || true)"
+      repo_real="$(cd -P -- "$abs_repo" 2>/dev/null && pwd -P || printf '%s' "$abs_repo")"
+      while IFS= read -r l_line; do
+        case "$l_line" in
+          "worktree "*) l_path="$(cd -P -- "${l_line#worktree }" 2>/dev/null && pwd -P || printf '%s' "${l_line#worktree }")" ;;
+          "branch "*) [[ -n "$wt_real" && "$l_path" == "$wt_real" ]] && reg="${l_line#branch }" ;;
+        esac
+      done < <(git -C "$abs_repo" worktree list --porcelain 2>/dev/null)
+      if [[ -z "$wt_real" || "$wt_real" == "$repo_real" ]]; then
+        wt_error="$wt_dir resolves to the base checkout"
+      elif [[ "$reg" != "refs/heads/$branch" ]]; then
+        wt_error="$wt_dir is not this repository's worktree for $branch"
+      fi
     fi
+  else
+    wt_dir="$abs_repo"
   fi
 
   # Initialize job.json if absent
@@ -1428,6 +2410,9 @@ afk_factory_run_job() {
       --arg repo "$abs_repo" \
       --arg wt "$wt_dir" \
       --arg br "$branch" \
+      --arg bsha "$base_sha" \
+      --arg bbr "$base_branch" \
+      --arg csum "$(_afk_factory_file_digest "$abs_repo/.afk/checks.sh")" \
       --arg now "$now" \
       '{
         schema: "afk-factory-job/1",
@@ -1438,6 +2423,9 @@ afk_factory_run_job() {
         repo_path: $repo,
         worktree_path: $wt,
         branch: $br,
+        base_sha: (if $bsha == "" then null else $bsha end),
+        base_branch: (if $bbr == "" then null else $bbr end),
+        checks_script_sha256: (if $csum == "" then null else $csum end),
         stage: "intake",
         round: 1,
         risk: "low",
@@ -1447,14 +2435,24 @@ afk_factory_run_job() {
         decision: null,
         created_at: $now,
         updated_at: $now
-      }' > "$job_file"
+      }' > "$job_file.tmp" && _afk_factory_commit_tmp "$job_file"
+    _afk_factory_set_checks_digest "$job_dir" "$(_afk_factory_file_digest "$abs_repo/.afk/checks.sh")"
   fi
+  if [[ ! -f "$job_file" ]]; then
+    afk_warn "factory run: could not write $job_file"
+    return 1
+  fi
+  _afk_factory_touch_heartbeat "$job_dir" "$(jq -r '.stage // "intake"' "$job_file" 2>/dev/null || printf 'intake')" "" "running"
 
   # Step 1: Pre-flight Paperclip budget check + hire core team (pm, dev, reviewer, approver) & resolve run_id
   local run_id=""
   if [[ -n "$api_url" && -n "$key" && -n "$issue_id" ]]; then
     run_id="$(afk_pch_ensure_run_id "$api_url" "$key" "$host_agent_id" "$issue_id")"
     _afk_factory_bind_issue_controls "$api_url" "$key" "$run_id" "$issue_id" "$host_agent_id" "$job_dir"
+  fi
+  if [[ -n "$wt_error" ]]; then
+    _afk_factory_fail_job "$wt_error. No agent was started." "no_worktree"
+    return 0
   fi
   if [[ -n "$api_url" && -n "$key" && -n "$host_agent_id" ]] && declare -F afk_pch_check_budget >/dev/null 2>&1; then
     local b_chk b_state b_spent b_limit
@@ -1469,12 +2467,18 @@ DECISION: ESCALATE
 - Paperclip monthly agent budget hard-stop reached (${b_spent}c / ${b_limit}c).
 - Pausing autonomous execution until board increases budget or approves continuation.
 EOF
-      jq -c --arg now "$now" --arg r "Paperclip monthly budget hard-stop (${b_spent}c/${b_limit}c)" \
-        '.stage = "needs-human" | .decision = "ESCALATE" | .active_agent = "human" | .updated_at = $now | .merge_evaluation = {decision:"ESCALATE", reasons:[$r]}' \
-        "$job_file" > "$job_file.tmp" && mv "$job_file.tmp" "$job_file"
+      local b_lcid=""
       if [[ -n "$issue_id" ]]; then
         afk_pc_comment "$api_url" "$issue_id" "$key" "$run_id" "$(cat "$job_dir/decision.md")" >/dev/null 2>&1 || true
+        b_lcid="$(_afk_factory_latest_comment_id "$api_url" "$key" "$issue_id")"
       fi
+      # escalation_kind: an approval of a budget stop means "continue", and
+      # must never be taken as approval to merge a branch nobody built.
+      jq -c --arg now "$now" --arg r "Paperclip monthly budget hard-stop (${b_spent}c/${b_limit}c)" --arg lcid "$b_lcid" \
+        '.stage = "needs-human" | .decision = "ESCALATE" | .active_agent = "human" | .escalation_kind = "budget"
+         | .last_seen_comment_id = (if $lcid == "" then (.last_seen_comment_id // null) else $lcid end)
+         | .updated_at = $now | .merge_evaluation = {decision:"ESCALATE", reasons:[$r]}' \
+        "$job_file" > "$job_file.tmp" && _afk_factory_commit_tmp "$job_file"
       [[ "$json_mode" == "true" ]] && cat "$job_file" || printf 'AFK Factory job %s (%s): budget hard_stop\n' "$job_id" "$slug"
       return 0
     fi
@@ -1487,21 +2491,39 @@ EOF
   fi
 
   # Step 2: Intake (PM — John in BMAD) — skip if already completed on disk (resume-safe)
+  local stage_rc=0
   if [[ ! -s "$job_dir/intake.md" ]]; then
-    afk_pch_assign_stage "$slug" "pm" "$issue_id" "AFK Factory started intake with project PM (\`${slug}-pm\`)." "$api_url" "$key" "$run_id"
-    afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "pm" "intake" "$job_dir/issue.md" "$job_dir/intake.md" "$issue_id" "$api_url" "$key" "" "$company_id" "$host_agent_id" "$project_id" "$run_id"
+    _afk_factory_announce "$slug" "pm" "$issue_id" "AFK Factory started intake with project PM (\`${slug}-pm\`)." "$api_url" "$key" "$run_id" || { _afk_factory_touch_heartbeat "$job_dir" "waiting" "" "done"; [[ "$json_mode" == "true" ]] && cat "$job_file"; return 0; }
+    afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "pm" "intake" "$job_dir/issue.md" "$job_dir/intake.md" "$issue_id" "$api_url" "$key" "" "$company_id" "$host_agent_id" "$project_id" "$run_id" || stage_rc=$?
+    if (( stage_rc != 0 )) || [[ ! -s "$job_dir/intake.md" ]]; then
+      rm -f "$job_dir/intake.md"
+      _afk_factory_fail_job "Intake did not complete (${AFK_LAST_STAGE_FAILURE:-no output}), so the request was never assessed" "stage_failure"
+      return 0
+    fi
   fi
 
+  # Read the intake as written by a model: bold markers, backticks, capitals
+  # and a trailing full stop are all common. An intake that cannot be read
+  # stops the job; it is not taken as "accept, low risk, code only".
   local intake_verdict risk surfaces_line
-  intake_verdict="$(head -n 10 "$job_dir/intake.md" 2>/dev/null | sed -n 's/^[[:space:]*]*VERDICT:[*[:space:]]*//p' | head -n 1 | awk '{print $1}')"
-  risk="$(sed -n 's/^[[:space:]*]*RISK:[*[:space:]]*//p' "$job_dir/intake.md" 2>/dev/null | head -n 1 | awk '{print tolower($1)}')"
-  surfaces_line="$(sed -n 's/^[[:space:]*]*SURFACES:[*[:space:]]*//p' "$job_dir/intake.md" 2>/dev/null | head -n 1 | tr -d ' `*')"
-  [[ -n "$intake_verdict" ]] || intake_verdict="ACCEPT"
-  [[ "$risk" =~ ^(low|medium|high|critical)$ ]] || risk="low"
+  intake_verdict="$(_afk_factory_strict_verdict "$job_dir/intake.md" 10)"
+  risk="$(sed -n 's/^[[:space:]*`#>_-]*RISK:[[:space:]]*//p' "$job_dir/intake.md" 2>/dev/null | head -n 1 | tr '[:upper:]' '[:lower:]' | sed 's/^[^a-z]*\([a-z]*\).*/\1/')"
+  surfaces_line="$(sed -n 's/^[[:space:]*`#>_-]*SURFACES:[[:space:]]*//p' "$job_dir/intake.md" 2>/dev/null | head -n 1 | tr '[:upper:]' '[:lower:]' | tr -d ' `*' | sed 's/[.;]*$//')"
+  case "$intake_verdict" in
+    ACCEPT|NEEDS-INFO|REJECT) ;;
+    *)
+      mv -f "$job_dir/intake.md" "$job_dir/intake.unreadable.md" 2>/dev/null || rm -f "$job_dir/intake.md"
+      _afk_factory_fail_job "Intake gave no verdict the factory could read (expected ACCEPT, NEEDS-INFO or REJECT)" "stage_failure"
+      return 0
+      ;;
+  esac
+  # An unreadable risk is treated as high: the heavier path costs a review,
+  # the lighter one skips it.
+  [[ "$risk" =~ ^(low|medium|high|critical)$ ]] || risk="high"
   [[ -n "$surfaces_line" ]] || surfaces_line="code"
   jq -c --arg r "$risk" --arg s "$surfaces_line" \
     '.risk = $r | .surfaces = ($s | split(",") | map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) | map(select(length > 0)))' \
-    "$job_file" > "$job_file.tmp" && mv "$job_file.tmp" "$job_file"
+    "$job_file" > "$job_file.tmp" && _afk_factory_commit_tmp "$job_file"
 
   if [[ "$intake_verdict" == "NEEDS-INFO" ]]; then
     local question last_cid=""
@@ -1515,11 +2537,18 @@ EOF
     fi
     jq -c --arg now "$now" --arg lcid "$last_cid" \
       '.stage = "needs-info" | .active_agent = "human" | .last_seen_comment_id = (if $lcid == "" then null else $lcid end) | .updated_at = $now' \
-      "$job_file" > "$job_file.tmp" && mv "$job_file.tmp" "$job_file"
+      "$job_file" > "$job_file.tmp" && _afk_factory_commit_tmp "$job_file"
     cat "$job_file"
     return 0
   elif [[ "$intake_verdict" == "REJECT" ]]; then
-    jq -c --arg now "$now" '.stage = "rejected" | .active_agent = null | .updated_at = $now' "$job_file" > "$job_file.tmp" && mv "$job_file.tmp" "$job_file"
+    # Tell the board why and hand the issue back; a rejection recorded only
+    # on this host leaves the issue in progress under the factory for good.
+    if [[ -n "$api_url" && -n "$key" && -n "$issue_id" ]]; then
+      afk_pc_comment "$api_url" "$issue_id" "$key" "$run_id" \
+        "$(printf '## AFK Factory — Request Declined at Intake\n\n%s' "$(cat "$job_dir/intake.md")")" >/dev/null 2>&1 || true
+      afk_pc_curl PATCH "$api_url/api/issues/$issue_id" "$key" "$run_id" "$(_afk_factory_in_review_body "$host_agent_id")" >/dev/null 2>&1 || true
+    fi
+    jq -c --arg now "$now" '.stage = "rejected" | .active_agent = null | .updated_at = $now' "$job_file" > "$job_file.tmp" && _afk_factory_commit_tmp "$job_file"
     declare -F afk_tooling_cleanup_worktree >/dev/null 2>&1 && afk_tooling_cleanup_worktree "$abs_repo" "$wt_dir" "$job_dir"
     afk_pch_retire_project_agents "$slug" "all" "$api_url" "$key" >/dev/null
     cat "$job_file"
@@ -1540,8 +2569,14 @@ EOF
     spec_role="architect"
   fi
   if [[ ! -s "$job_dir/spec.md" ]]; then
-    afk_pch_assign_stage "$slug" "$spec_role" "$issue_id" "" "$api_url" "$key" "$run_id"
-    afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "$spec_role" "spec" "$job_dir/issue.md" "$job_dir/spec.md" "$issue_id" "$api_url" "$key" "" "$company_id" "$host_agent_id" "$project_id" "$run_id"
+    _afk_factory_announce "$slug" "$spec_role" "$issue_id" "" "$api_url" "$key" "$run_id" || { _afk_factory_touch_heartbeat "$job_dir" "waiting" "" "done"; [[ "$json_mode" == "true" ]] && cat "$job_file"; return 0; }
+    stage_rc=0
+    afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "$spec_role" "spec" "$job_dir/issue.md" "$job_dir/spec.md" "$issue_id" "$api_url" "$key" "" "$company_id" "$host_agent_id" "$project_id" "$run_id" || stage_rc=$?
+    if (( stage_rc != 0 )) || [[ ! -s "$job_dir/spec.md" ]]; then
+      rm -f "$job_dir/spec.md"
+      _afk_factory_fail_job "The specification stage did not complete (${AFK_LAST_STAGE_FAILURE:-no output}); nothing was built" "stage_failure"
+      return 0
+    fi
   fi
   if [[ -s "$job_dir/spec.md" && -n "$api_url" && -n "$key" && -n "$issue_id" ]]; then
     run_id="$(afk_pch_ensure_run_id "$api_url" "$key" "$host_agent_id" "$issue_id")"
@@ -1550,8 +2585,14 @@ EOF
 
   # Optional UX Design pass when UI surface is flagged
   if [[ ",$surfaces_line," == *",ui,"* || ",$surfaces_line," == *",ux,"* ]] && [[ ! -s "$job_dir/ux-spec.md" ]]; then
-    afk_pch_assign_stage "$slug" "ux-designer" "$issue_id" "" "$api_url" "$key" "$run_id"
-    afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "ux-designer" "ux" "$job_dir/spec.md" "$job_dir/ux-spec.md" "$issue_id" "$api_url" "$key" "" "$company_id" "$host_agent_id" "$project_id" "$run_id"
+    _afk_factory_announce "$slug" "ux-designer" "$issue_id" "" "$api_url" "$key" "$run_id" || { _afk_factory_touch_heartbeat "$job_dir" "waiting" "" "done"; [[ "$json_mode" == "true" ]] && cat "$job_file"; return 0; }
+    stage_rc=0
+    afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "ux-designer" "ux" "$job_dir/spec.md" "$job_dir/ux-spec.md" "$issue_id" "$api_url" "$key" "" "$company_id" "$host_agent_id" "$project_id" "$run_id" || stage_rc=$?
+    if (( stage_rc != 0 )) || [[ ! -s "$job_dir/ux-spec.md" ]]; then
+      rm -f "$job_dir/ux-spec.md"
+      _afk_factory_fail_job "The UX design stage did not complete (${AFK_LAST_STAGE_FAILURE:-no output}); nothing was built" "stage_failure"
+      return 0
+    fi
     if [[ -n "$api_url" && -n "$key" && -n "$issue_id" ]]; then
       run_id="$(afk_pch_ensure_run_id "$api_url" "$key" "$host_agent_id" "$issue_id")"
       afk_pch_upsert_document "$api_url" "$(afk_pch_key_for_role "$slug" "ux-designer" "$key")" "$run_id" "$issue_id" "ux-design" "UX Design Specification ($job_id)" "$job_dir/ux-spec.md" "Generated UX design specification via ${slug}-ux-designer" >/dev/null 2>&1 || true
@@ -1575,43 +2616,91 @@ EOF
   while (( round <= max_rounds )); do
     local round_dir="$job_dir/round-$round"
     mkdir -p "$round_dir"
-    jq -c --argjson r "$round" '.stage = "build" | .round = $r | .active_agent = "dev"' "$job_file" > "$job_file.tmp" && mv "$job_file.tmp" "$job_file"
-    afk_pch_assign_stage "$slug" "dev" "$issue_id" "AFK Factory build round ${round} started with \`${slug}-dev\`." "$api_url" "$key" "$run_id"
-    afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "dev" "build" "$job_dir/spec.md" "$job_dir/build.md" "$issue_id" "$api_url" "$key" "" "$company_id" "$host_agent_id" "$project_id" "$run_id"
-    rm -f "$job_dir/human-feedback.md"
-    declare -F afk_tooling_unstage_ephemeral >/dev/null 2>&1 && afk_tooling_unstage_ephemeral "$wt_dir" "$job_dir"
-    if [[ "$wt_dir" != "$abs_repo" ]] && [[ -n "$(git -C "$wt_dir" status --porcelain 2>/dev/null || true)" ]]; then
-      git -C "$wt_dir" add -A -- . ':!.afk' >/dev/null 2>&1 || git -C "$wt_dir" add -A >/dev/null 2>&1 || true
-      declare -F afk_tooling_unstage_ephemeral >/dev/null 2>&1 && afk_tooling_unstage_ephemeral "$wt_dir" "$job_dir"
-      git -C "$wt_dir" commit -m "feat($job_id): $title" >/dev/null 2>&1 || true
+    # A job stopped only because Paperclip refused the review announcement
+    # resumes at the review, when the checks passed on the commit still at
+    # the head. Rebuilding would throw away a checked build.
+    local skip_to_review=false
+    if [[ "$(jq -r '.resume_at // empty' "$job_file" 2>/dev/null)" == "review" ]] \
+       && [[ "$(jq -r '.round // 0 | tostring' "$job_file" 2>/dev/null)" == "$round" ]] \
+       && head -n 5 "$round_dir/checks.md" 2>/dev/null | grep -q '^VERDICT: PASS' \
+       && [[ -n "$(cat "$round_dir/checks.sha" 2>/dev/null)" ]] \
+       && [[ "$(cat "$round_dir/checks.sha" 2>/dev/null)" == "$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null)" ]]; then
+      skip_to_review=true
+      # No agent has run since these checks; their record is taken now, before
+      # the reviewers start, so a reviewer that rewrites it is undone.
+      AFK_LAST_GATED_HEAD="$(head -n 1 "$round_dir/checks.sha" 2>/dev/null | tr -d '[:space:]')"
+      AFK_LAST_GATED_ROUND_DIR="$round_dir"
     fi
+    if [[ "$skip_to_review" != true ]]; then
+      jq -c --argjson r "$round" '.stage = "build" | .round = $r | .active_agent = "dev"' "$job_file" > "$job_file.tmp" && _afk_factory_commit_tmp "$job_file"
+      _afk_factory_announce "$slug" "dev" "$issue_id" "AFK Factory build round ${round} started with \`${slug}-dev\`." "$api_url" "$key" "$run_id" || { _afk_factory_touch_heartbeat "$job_dir" "waiting" "" "done"; [[ "$json_mode" == "true" ]] && cat "$job_file"; return 0; }
 
-    # Deterministic Gate (.afk/checks.sh)
-    jq -c '.stage = "gate"' "$job_file" > "$job_file.tmp" && mv "$job_file.tmp" "$job_file"
-    if ! afk_factory_run_gate "$abs_repo" "$wt_dir" "$round_dir"; then
-      gate_passed=false
-      _afk_factory_write_review_report "$job_dir" "$round"
-      if [[ -n "$api_url" && -n "$key" && -n "$issue_id" ]]; then
-        afk_pch_upsert_document "$api_url" "$(afk_pch_key_for_role "$slug" "reviewer" "$key")" "$run_id" "$issue_id" "review-report" "Gate & Review Report (Round $round)" "$job_dir/review-report.md" "Round $round deterministic gate failed" >/dev/null 2>&1 || true
+      # The reviews this round must produce, written before any of them runs.
+      # The approver checks each one; a review that never finished is a missing
+      # verdict, not a review that can be left out.
+      {
+        printf 'review-code\n'
+        [[ ",$surfaces_line," == *",security,"* ]] && printf 'review-security\n'
+        [[ ",$surfaces_line," == *",ui,"* || ",$surfaces_line," == *",ux,"* ]] && printf 'review-ux\n'
+        [[ ",$surfaces_line," == *",architecture,"* || "$risk" == "high" || "$risk" == "critical" ]] && printf 'review-arch\n'
+      } > "$round_dir/expected-reviews"
+
+      stage_rc=0
+      afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "dev" "build" "$job_dir/spec.md" "$job_dir/build.md" "$issue_id" "$api_url" "$key" "" "$company_id" "$host_agent_id" "$project_id" "$run_id" || stage_rc=$?
+      if (( stage_rc != 0 )); then
+        # The person's instructions stay on disk for the retry.
+        _afk_factory_fail_job "The build did not complete in round ${round} (${AFK_LAST_STAGE_FAILURE:-no output}). Any partial work is on branch $branch and was not checked or reviewed" "stage_failure"
+        return 0
       fi
-      round=$((round + 1))
-      continue
+      rm -f "$job_dir/human-feedback.md"
+      declare -F afk_tooling_unstage_ephemeral >/dev/null 2>&1 && afk_tooling_unstage_ephemeral "$wt_dir" "$job_dir"
+      if [[ "$wt_dir" != "$abs_repo" ]] && [[ -n "$(git -C "$wt_dir" status --porcelain 2>/dev/null || true)" ]]; then
+        git -C "$wt_dir" add -A -- . ':!.afk' >/dev/null 2>&1 || git -C "$wt_dir" add -A >/dev/null 2>&1 || true
+        declare -F afk_tooling_unstage_ephemeral >/dev/null 2>&1 && afk_tooling_unstage_ephemeral "$wt_dir" "$job_dir"
+        local commit_err=""
+        commit_err="$(git -C "$wt_dir" commit -m "feat($job_id): $title" 2>&1 >/dev/null)" || true
+        # A refused commit (a hook, no git identity) leaves the work in the
+        # tree only. Checks and reviews would pass on it, the branch would
+        # show no change, and the job would end "merged" with the work deleted.
+        if [[ -n "$(git -C "$wt_dir" status --porcelain -- . ':!.afk' 2>/dev/null || true)" ]]; then
+          _afk_factory_fail_job "The build could not be committed in round ${round} ($(printf '%s' "${commit_err:-git commit failed}" | head -n 1 | cut -c1-200)). The work is uncommitted in $wt_dir" "stage_failure"
+          return 0
+        fi
+      fi
+
+      # Deterministic Gate (.afk/checks.sh)
+      jq -c '.stage = "gate"' "$job_file" > "$job_file.tmp" && _afk_factory_commit_tmp "$job_file"
+      _afk_factory_touch_heartbeat "$job_dir" "gate" "" "running"
+      _afk_factory_beat_start "$job_dir" "gate" ""
+      local gate_rc=0
+      afk_factory_run_gate "$abs_repo" "$wt_dir" "$round_dir" || gate_rc=$?
+      _afk_factory_beat_stop
+      if (( gate_rc != 0 )); then
+        gate_passed=false
+        _afk_factory_write_review_report "$job_dir" "$round"
+        if [[ -n "$api_url" && -n "$key" && -n "$issue_id" ]]; then
+          afk_pch_upsert_document "$api_url" "$(afk_pch_key_for_role "$slug" "reviewer" "$key")" "$run_id" "$issue_id" "review-report" "Gate & Review Report (Round $round)" "$job_dir/review-report.md" "Round $round deterministic gate failed" >/dev/null 2>&1 || true
+        fi
+        round=$((round + 1))
+        continue
+      fi
     fi
     gate_passed=true
 
     # Independent Review Stage
-    jq -c '.stage = "review" | .active_agent = "reviewer"' "$job_file" > "$job_file.tmp" && mv "$job_file.tmp" "$job_file"
-    afk_pch_assign_stage "$slug" "reviewer" "$issue_id" "AFK Factory independent review started with \`${slug}-reviewer\`." "$api_url" "$key" "$run_id"
-    afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "reviewer" "review-code" "$job_dir/build.md" "$round_dir/review-code.md" "$issue_id" "$api_url" "$key" "" "$company_id" "$host_agent_id" "$project_id" "$run_id"
+    jq -c --argjson r "$round" '.stage = "review" | .round = $r | .active_agent = "reviewer" | .resume_at = "review"' "$job_file" > "$job_file.tmp" && _afk_factory_commit_tmp "$job_file"
+    _afk_factory_announce "$slug" "reviewer" "$issue_id" "AFK Factory independent review started with \`${slug}-reviewer\`." "$api_url" "$key" "$run_id" || { _afk_factory_touch_heartbeat "$job_dir" "waiting" "" "done"; [[ "$json_mode" == "true" ]] && cat "$job_file"; return 0; }
+    jq -c 'del(.resume_at)' "$job_file" > "$job_file.tmp" && _afk_factory_commit_tmp "$job_file"
+    afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "reviewer" "review-code" "$job_dir/build.md" "$round_dir/review-code.md" "$issue_id" "$api_url" "$key" "" "$company_id" "$host_agent_id" "$project_id" "$run_id" || true
 
     if [[ ",$surfaces_line," == *",security,"* ]]; then
-      afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "reviewer" "review-security" "$job_dir/build.md" "$round_dir/review-security.md" "$issue_id" "$api_url" "$key" "" "$company_id" "$host_agent_id" "$project_id" "$run_id"
+      afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "reviewer" "review-security" "$job_dir/build.md" "$round_dir/review-security.md" "$issue_id" "$api_url" "$key" "" "$company_id" "$host_agent_id" "$project_id" "$run_id" || true
     fi
     if [[ ",$surfaces_line," == *",ui,"* || ",$surfaces_line," == *",ux,"* ]]; then
-      afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "ux-designer" "review-ux" "$job_dir/build.md" "$round_dir/review-ux.md" "$issue_id" "$api_url" "$key" "" "$company_id" "$host_agent_id" "$project_id" "$run_id"
+      afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "ux-designer" "review-ux" "$job_dir/build.md" "$round_dir/review-ux.md" "$issue_id" "$api_url" "$key" "" "$company_id" "$host_agent_id" "$project_id" "$run_id" || true
     fi
     if [[ ",$surfaces_line," == *",architecture,"* || "$risk" == "high" || "$risk" == "critical" ]]; then
-      afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "architect" "review-arch" "$job_dir/build.md" "$round_dir/review-arch.md" "$issue_id" "$api_url" "$key" "" "$company_id" "$host_agent_id" "$project_id" "$run_id"
+      afk_factory_run_stage_with_context_guard "$slug" "$abs_repo" "$wt_dir" "$job_dir" "architect" "review-arch" "$job_dir/build.md" "$round_dir/review-arch.md" "$issue_id" "$api_url" "$key" "" "$company_id" "$host_agent_id" "$project_id" "$run_id" || true
     fi
 
     _afk_factory_write_review_report "$job_dir" "$round"
@@ -1620,16 +2709,26 @@ EOF
       afk_pch_upsert_document "$api_url" "$(afk_pch_key_for_role "$slug" "reviewer" "$key")" "$run_id" "$issue_id" "review-report" "Gate & Review Report (Round $round)" "$job_dir/review-report.md" "Round $round gate & independent review report" >/dev/null 2>&1 || true
     fi
 
-    # Check if all reviewers in round_dir passed
-    local any_changes=false rf r_verdict
-    for rf in "$round_dir"/review-*.md; do
-      [[ -f "$rf" ]] || continue
-      r_verdict="$(head -n 8 "$rf" | sed -n 's/^[[:space:]*]*VERDICT:[*[:space:]]*//p' | head -n 1 | awk '{print $1}')"
+    # Check every review the round required.
+    local any_changes=false review_missing=false lens r_verdict
+    while IFS= read -r lens; do
+      [[ -n "$lens" ]] || continue
+      if [[ ! -s "$round_dir/$lens.md" ]]; then
+        review_missing=true
+        continue
+      fi
+      r_verdict="$(_afk_factory_strict_verdict "$round_dir/$lens.md")"
       if [[ "$r_verdict" != "PASS" ]]; then
         any_changes=true
       fi
-    done
+    done < "$round_dir/expected-reviews"
 
+    # A reviewer that produced nothing is not asking for changes. Building
+    # again would not help; stop and let the approver report what is missing.
+    if [[ "$review_missing" == "true" ]]; then
+      reviews_passed=false
+      break
+    fi
     if [[ "$any_changes" == "false" ]]; then
       reviews_passed=true
       break
@@ -1637,24 +2736,48 @@ EOF
     reviews_passed=false
     round=$((round + 1))
   done
+  # A loop that used up its rounds leaves `round` one past the last round run;
+  # the approver must judge the last round that exists.
+  if (( round > max_rounds )); then
+    round="$max_rounds"
+  fi
+  jq -c --argjson r "$round" '.round = $r' "$job_file" > "$job_file.tmp" && _afk_factory_commit_tmp "$job_file"
 
   # Retire specialist on-demand agents now that spec/ux/review completed
   afk_pch_retire_project_agents "$slug" "analyst,architect,ux-designer" "$api_url" "$key" >/dev/null 2>&1 || true
 
   # Step 5: Situational Merge Approver & Real Git Branch Landing
-  jq -c '.stage = "approve" | .active_agent = "approver"' "$job_file" > "$job_file.tmp" && mv "$job_file.tmp" "$job_file"
+  jq -c '.stage = "approve" | .active_agent = "approver"' "$job_file" > "$job_file.tmp" && _afk_factory_commit_tmp "$job_file"
   local merge_eval decision final_stage merged_commit="" pending_inter_id="" last_cid="" branch_head=""
   branch_head="$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || git -C "$abs_repo" rev-parse HEAD 2>/dev/null || true)"
+  # The checked commit as this runner saw it, not as an agent may have
+  # rewritten it in the job directory since.
+  if [[ -n "${AFK_LAST_GATED_HEAD:-}" && "${AFK_LAST_GATED_ROUND_DIR:-}" == "$job_dir/round-$round" ]]; then
+    printf '%s\n' "$AFK_LAST_GATED_HEAD" > "$job_dir/round-$round/checks.sha" 2>/dev/null || true
+  fi
   merge_eval="$(afk_factory_evaluate_merge "$abs_repo" "$job_dir" "$wt_dir")"
-  decision="$(jq -r '.decision' <<<"$merge_eval")"
+  decision="$(jq -r '.decision // empty' <<<"$merge_eval" 2>/dev/null || true)"
+  [[ "$decision" == "APPROVE" || "$decision" == "ESCALATE" ]] || decision="ESCALATE"
 
   if [[ "$decision" == "APPROVE" ]]; then
     local land_res land_ok land_reason
+    # Waiting for pull request checks can take longer than the stall
+    # threshold; keep the heartbeat fresh so the watchdog leaves it alone.
+    _afk_factory_touch_heartbeat "$job_dir" "landing" "" "running"
+    _afk_factory_beat_start "$job_dir" "landing" ""
     land_res="$(_afk_factory_land_branch "$abs_repo" "$wt_dir" "$branch" "$job_id" "$title")" || true
+    _afk_factory_beat_stop
     land_ok="$(jq -r '.ok // false' <<<"$land_res" 2>/dev/null || printf 'false')"
     if [[ "$land_ok" == "true" ]]; then
       merged_commit="$(jq -r '.commit // empty' <<<"$land_res" 2>/dev/null || printf '%s' "$branch_head")"
       final_stage="merged"
+      # Record the merge before anything else. The Paperclip calls below take
+      # time and can fail; a restart in that window used to find the job
+      # still "approve", rebuild it and merge a second time.
+      jq -c --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sha "$merged_commit" \
+        '.stage = "merged" | .decision = "APPROVE" | .active_agent = null | .updated_at = $now
+         | .merged_commit = (if $sha == "" then (.merged_commit // null) else $sha end)' \
+        "$job_file" > "$job_file.tmp" && _afk_factory_commit_tmp "$job_file"
       if [[ -n "$merged_commit" ]]; then
         printf '\n- Landed commit: `%s` (branch `%s`)\n' "$merged_commit" "$branch" >> "$job_dir/decision.md"
       fi
@@ -1699,7 +2822,7 @@ EOF
         "$(printf '## AFK Factory — Human Approval Requested\n\n%s' "$(cat "$job_dir/decision.md")")" >/dev/null 2>&1 || true
       last_cid="$(_afk_factory_latest_comment_id "$api_url" "$key" "$issue_id")"
       inter_json="$(afk_pch_request_confirmation "$api_url" "$key" "$run_id" "$issue_id" "$board_user_id" \
-        "afk-confirm:${issue_id}:r${round}" \
+        "afk-confirm:${issue_id}:r${round}:${branch_head:0:12}" \
         "Approve AFK Factory Merge ($job_id)" \
         "Branch \`$branch\` requires human board review before landing." \
         "Approve and merge branch \`$branch\` into \`$slug\`, or request revisions?" \
@@ -1716,7 +2839,16 @@ EOF
   fi
 
   local surfaces_arr
-  surfaces_arr="$(printf '%s' "$surfaces_line" | jq -Rc 'split(",")')"
+  surfaces_arr="$(printf '%s' "$surfaces_line" | jq -Rc 'split(",")' 2>/dev/null || printf '["code"]')"
+  # One empty argument would fail the whole write and leave the job looking
+  # unfinished, to be picked up and run again.
+  jq -e 'type == "array"' <<<"$surfaces_arr" >/dev/null 2>&1 || surfaces_arr='["code"]'
+  jq -e 'type == "array"' <<<"$hired_json" >/dev/null 2>&1 || hired_json='[]'
+  jq -e 'type == "object"' <<<"$merge_eval" >/dev/null 2>&1 \
+    || merge_eval='{"decision":"ESCALATE","reasons":["The merge evaluation could not be read"]}'
+  if [[ "$final_stage" != "merged" && "$(jq -r '.decision // empty' <<<"$merge_eval")" == "APPROVE" ]]; then
+    decision="ESCALATE"
+  fi
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   jq -c \
     --arg st "$final_stage" \
@@ -1738,8 +2870,9 @@ EOF
      | .pending_interaction_id = (if $piid == "" then null else $piid end)
      | .last_seen_comment_id = (if $lcid == "" then (.last_seen_comment_id // null) else $lcid end)
      | .merge_evaluation = $meval
+     | .escalation_kind = (if $st == "needs-human" then "merge" else null end)
      | .active_agent = (if $st == "needs-human" then "human" else null end)
-     | .updated_at = $now' "$job_file" > "$job_file.tmp" && mv "$job_file.tmp" "$job_file"
+     | .updated_at = $now' "$job_file" > "$job_file.tmp" && _afk_factory_commit_tmp "$job_file"
   if [[ "$final_stage" == "merged" ]] && declare -F afk_tooling_cleanup_worktree >/dev/null 2>&1; then
     afk_tooling_cleanup_worktree "$abs_repo" "$wt_dir" "$job_dir"
   fi
@@ -1764,7 +2897,7 @@ EOF
 afk_factory_watchdog() {
   local repo="${1:-}" slug="${2:-}" stale_arg="${3:-}" dry_run="${4:-false}" json_mode="${5:-false}"
   local status_json
-  status_json="$(afk_factory_status "$repo" "$slug" true)"
+  status_json="$(afk_factory_status "$repo" "$slug" true enabled)"
   local -a in_flight=()
   mapfile -t in_flight < <(jq -c '.jobs[]? | select((.stage // "") | IN("merged","needs-human","needs-info","needs-consultation","consulted","rejected") | not)' <<<"$status_json" 2>/dev/null)
 
@@ -1792,27 +2925,69 @@ afk_factory_watchdog() {
     local hb="{}" pid="" beat_ep=0 nudges=0 age=0 stall_reason=""
     if [[ -f "$hb_file" ]]; then
       hb="$(cat -- "$hb_file" 2>/dev/null || printf '{}')"
+      jq -e 'type == "object"' <<<"$hb" >/dev/null 2>&1 || hb="{}"
       pid="$(jq -r '.pid // empty' <<<"$hb" 2>/dev/null)"
       beat_ep="$(jq -r '.last_beat_epoch // 0' <<<"$hb" 2>/dev/null || printf '0')"
       nudges="$(jq -r '.nudge_count // 0' <<<"$hb" 2>/dev/null || printf '0')"
-    else
-      # Fallback if job.json was created without heartbeat.json
+    fi
+    [[ "$nudges" =~ ^[0-9]+$ ]] || nudges=0
+    if [[ ! "$beat_ep" =~ ^[0-9]+$ || "$beat_ep" -eq 0 ]]; then
+      # No heartbeat yet: age the job from its record.
       beat_ep="$(stat -c %Y "$j_dir/job.json" 2>/dev/null || stat -f %m "$j_dir/job.json" 2>/dev/null || printf '%s' "$now_ep")"
     fi
     age=$(( now_ep - beat_ep ))
 
-    if [[ -n "$pid" && "$pid" != "null" ]]; then
-      if ! kill -0 "$pid" 2>/dev/null; then
-        stall_reason="dead_runner (pid $pid exited while job in stage=$j_stage)"
-      elif (( age >= stale_sec )); then
-        stall_reason="stalled_stage (stage=$j_stage silent for ${age}s >= ${stale_sec}s, pid=$pid)"
+    # Who is running the job, if anyone. The run lock names the runner by PID,
+    # start time and boot, so a PID reused after a restart does not pass for
+    # it. A job from before the lock existed is judged by its heartbeat, which
+    # carries the same fields.
+    local runner_alive=false runner_pid="" grace=120 seen_token=""
+    seen_token="$(jq -r '.token // empty' "$j_dir/.run.lock/owner.json" 2>/dev/null || true)"
+    if [[ -d "$j_dir/.run.lock" ]]; then
+      if _afk_factory_runner_alive "$j_dir/.run.lock/owner.json" "$stale_sec"; then
+        runner_alive=true
+        runner_pid="$(jq -r '.pid // empty' "$j_dir/.run.lock/owner.json" 2>/dev/null || true)"
       fi
-    else
-      if (( age >= stale_sec )); then
-        stall_reason="orphaned_job (stage=$j_stage idle for ${age}s >= ${stale_sec}s)"
+    elif [[ -n "$pid" && "$pid" != "null" ]] && _afk_factory_runner_alive "$hb_file" "$stale_sec"; then
+      runner_alive=true
+      runner_pid="$pid"
+    fi
+
+    # A job waiting for Paperclip to accept its stage change has no runner on
+    # purpose. It is retried on the next pass and is not a stall.
+    local j_blocked
+    j_blocked="$(jq -r '.blocked_reason // empty' "$j_dir/job.json" 2>/dev/null || true)"
+
+    # A runner on another host that counts as alive has, by that test, shown
+    # a sign of life within the threshold. Judging it again by the heartbeat
+    # alone would take over a lock it took a moment ago.
+    local runner_foreign=false o_host
+    o_host="$(jq -r '.host // empty' "$j_dir/.run.lock/owner.json" 2>/dev/null || true)"
+    [[ -n "$o_host" && "$o_host" != "$(_afk_factory_host_id)" ]] && runner_foreign=true
+    if [[ "$runner_alive" == true ]]; then
+      if [[ "$runner_foreign" != true ]] && (( age >= stale_sec )); then
+        stall_reason="stalled_stage (stage=$j_stage silent for ${age}s >= ${stale_sec}s, pid=${runner_pid:-unknown})"
+      fi
+    elif [[ "$j_blocked" == "paperclip_unreachable" ]]; then
+      if [[ "$dry_run" == "true" ]]; then
+        actions="$(jq -c --arg s "$j_slug" --arg id "$j_id" --arg st "$j_stage" \
+          '. + [{slug:$s, job_id:$id, stage:$st, action:"would_retry_paperclip_wait"}]' <<<"$actions")"
+      elif (( age >= grace )); then
+        local w_out
+        w_out="$(afk_factory_run_job "$j_repo" "$j_slug" "$j_id" "$j_issue" "$j_title" "" true)"
+        actions="$(jq -c --arg s "$j_slug" --arg id "$j_id" --arg st "$(jq -r '.stage // "unknown"' <<<"$w_out" 2>/dev/null)" \
+          '. + [{slug:$s, job_id:$id, stage:$st, action:"retried_paperclip_wait"}]' <<<"$actions")"
       else
-        stall_reason="dead_runner (no active pid in stage=$j_stage)"
+        actions="$(jq -c --arg s "$j_slug" --arg id "$j_id" --arg st "$j_stage" \
+          '. + [{slug:$s, job_id:$id, stage:$st, action:"waiting_on_paperclip"}]' <<<"$actions")"
       fi
+      continue
+    elif [[ -d "$j_dir/.run.lock" ]]; then
+      stall_reason="dead_runner (the runner of stage=$j_stage is gone)"
+    elif (( age >= grace )); then
+      # No lock at all: a runner that has not taken it yet, or one that died
+      # before this version. Two poll intervals settle which.
+      stall_reason="dead_runner (no runner for stage=$j_stage after ${age}s)"
     fi
 
     if [[ -z "$stall_reason" ]]; then
@@ -1827,22 +3002,77 @@ afk_factory_watchdog() {
       continue
     fi
 
-    # Terminate hung runner PID if still alive
-    if [[ -n "$pid" && "$pid" != "null" ]] && kill -0 "$pid" 2>/dev/null; then
-      kill -TERM "$pid" 2>/dev/null || true
-      sleep 1
-      kill -KILL "$pid" 2>/dev/null || true
+    # End a hung runner and everything it started before another takes over,
+    # but only a process that provably is that runner. A runner on another
+    # host, or one recorded without a start time, is not signalled; its lock
+    # is taken over once the heartbeat has gone stale.
+    if [[ "$runner_alive" == true ]]; then
+      if [[ -d "$j_dir/.run.lock" ]] && _afk_factory_runner_killable "$j_dir/.run.lock/owner.json"; then
+        _afk_factory_kill_tree "$runner_pid"
+      elif [[ ! -d "$j_dir/.run.lock" ]] && _afk_factory_runner_killable "$hb_file"; then
+        _afk_factory_kill_tree "$runner_pid"
+      fi
     fi
+    # Take over only the lock that was judged above, and only one watchdog at
+    # a time: another one may have replaced it with a live lock since.
+    if [[ -d "$j_dir/.run.lock" ]]; then
+      # A reap directory left by a watchdog that was killed mid-takeover is
+      # cleared once it is 30 seconds old.
+      if [[ -d "$j_dir/.run.lock.reap" ]]; then
+        local rpm
+        rpm="$(stat -c %Y "$j_dir/.run.lock.reap" 2>/dev/null || stat -f %m "$j_dir/.run.lock.reap" 2>/dev/null || printf '%s' "$now_ep")"
+        [[ "$rpm" =~ ^[0-9]+$ ]] && (( now_ep - rpm > 30 )) && rmdir "$j_dir/.run.lock.reap" 2>/dev/null
+      fi
+      mkdir "$j_dir/.run.lock.reap" 2>/dev/null || continue
+      if [[ "$(jq -r '.token // empty' "$j_dir/.run.lock/owner.json" 2>/dev/null || true)" != "$seen_token" ]] \
+         || ! _afk_factory_lock_steal "$j_dir/.run.lock"; then
+        rmdir "$j_dir/.run.lock.reap" 2>/dev/null
+        continue
+      fi
+      rmdir "$j_dir/.run.lock.reap" 2>/dev/null
+    fi
+    # The runner that held the job is gone. A heartbeat write it or its beat
+    # loop was stopped in the middle of left a temp file; clear them. A write
+    # still in flight only loses its rename.
+    rm -f -- "$j_dir"/heartbeat.json.tmp.* 2>/dev/null || true
 
-    nudges=$(( nudges + 1 ))
-    local now_iso
+    # The recovery count lives in the job record, keyed by the stage that
+    # stalled. A rerun moves through earlier stages first, so a count kept
+    # with the heartbeat was cleared before the same stage could stall again,
+    # and a job that kept dying was rebuilt for ever.
+    # Keyed by stage and round: stalls in three different build rounds are
+    # three single stalls, not one stage failing three times.
+    local rec_stage rec_round rec_count j_round
+    rec_stage="$(jq -r '.recovery.stage // empty' "$j_dir/job.json" 2>/dev/null || true)"
+    rec_round="$(jq -r '.recovery.round // empty | tostring' "$j_dir/job.json" 2>/dev/null || true)"
+    rec_count="$(jq -r '.recovery.count // 0' "$j_dir/job.json" 2>/dev/null || printf '0')"
+    j_round="$(jq -r '.round // 1 | tostring' "$j_dir/job.json" 2>/dev/null || printf '1')"
+    [[ "$rec_count" =~ ^[0-9]+$ ]] || rec_count=0
+    if [[ "$rec_stage" == "$j_stage" && "$rec_round" == "$j_round" ]]; then
+      nudges=$(( rec_count + 1 ))
+    elif ! jq -e 'has("recovery")' "$j_dir/job.json" >/dev/null 2>&1 \
+         && [[ "$(jq -r '.stage // empty' <<<"$hb" 2>/dev/null)" == "$j_stage" ]]; then
+      # A job from before the count moved to the job record carries it in
+      # its heartbeat; an upgrade must not reset a job that is mid-recovery.
+      # A job the board told to retry has `.recovery: null` and starts over.
+      nudges=$(( nudges + 1 ))
+    else
+      nudges=1
+    fi
+    jq -c --arg st "$j_stage" --argjson nc "$nudges" --argjson rd "${j_round:-1}" '.recovery = {stage: $st, round: $rd, count: $nc}' \
+      "$j_dir/job.json" > "$j_dir/job.json.tmp" && _afk_factory_commit_tmp "$j_dir/job.json"
+    local now_iso hb_tmp
     now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    jq -cn \
-      --arg st "$j_stage" \
-      --arg iso "$now_iso" \
-      --argjson ep "$now_ep" \
-      --argjson nc "$nudges" \
-      '{schema:"afk-factory-heartbeat/1", pid:null, state:"recovering", stage:$st, role:"", last_beat_at:$iso, last_beat_epoch:$ep, nudge_count:$nc}' > "${hb_file}.tmp.$$" && mv "${hb_file}.tmp.$$" "$hb_file"
+    hb_tmp="$(mktemp "${hb_file}.tmp.XXXXXX" 2>/dev/null || true)"
+    if [[ -n "$hb_tmp" ]]; then
+      jq -cn \
+        --arg st "$j_stage" \
+        --arg iso "$now_iso" \
+        --argjson ep "$now_ep" \
+        --argjson nc "$nudges" \
+        '{schema:"afk-factory-heartbeat/1", pid:null, state:"recovering", stage:$st, role:"", last_beat_at:$iso, last_beat_epoch:$ep, nudge_count:$nc}' > "$hb_tmp" \
+        && mv -f -- "$hb_tmp" "$hb_file" || rm -f -- "$hb_tmp"
+    fi
 
     if (( nudges > max_nudges )); then
       cat > "$j_dir/decision.md" <<EOF
@@ -1852,9 +3082,12 @@ DECISION: ESCALATE
 - Watchdog detected repeated stall/interruption on job \`$j_id\` (\`$stall_reason\`).
 - Exceeded \`max_nudges=$max_nudges\` (${nudges} attempts); escalating for human inspection.
 EOF
+      # escalation_kind "stall": approving this card means "try again". It
+      # must not merge a branch that never finished its checks or reviews.
       jq -c --arg now "$now_iso" --arg r "Watchdog stall cap exceeded ($nudges/$max_nudges): $stall_reason" \
-        '.stage = "needs-human" | .decision = "ESCALATE" | .active_agent = "human" | .updated_at = $now | .merge_evaluation = {decision:"ESCALATE", reasons:[$r]}' \
-        "$j_dir/job.json" > "$j_dir/job.json.tmp" && mv "$j_dir/job.json.tmp" "$j_dir/job.json"
+        '.stage = "needs-human" | .decision = "ESCALATE" | .active_agent = "human" | .escalation_kind = "stall"
+         | .pending_interaction_id = null | .updated_at = $now | .merge_evaluation = {decision:"ESCALATE", reasons:[$r]}' \
+        "$j_dir/job.json" > "$j_dir/job.json.tmp" && _afk_factory_commit_tmp "$j_dir/job.json"
 
       # Notify Paperclip if linked to an issue
       local pc_cfg_path pc_cfg api_url host_agent_id board_user_id key_ref key="" run_id=""
@@ -1871,13 +3104,22 @@ EOF
           if [[ -n "$key" ]]; then
             run_id="$(afk_pch_ensure_run_id "$api_url" "$key" "$host_agent_id" "$j_issue")"
             afk_pc_comment "$api_url" "$j_issue" "$key" "$run_id" "$(cat "$j_dir/decision.md")" >/dev/null 2>&1 || true
-            afk_pch_request_confirmation "$api_url" "$key" "$run_id" "$j_issue" "$board_user_id" \
-              "afk-confirm:${j_issue}:watchdog" \
-              "Approve AFK Factory Merge ($j_id)" \
-              "Watchdog escalated job \`$j_id\` after repeated stalls." \
-              "Approve and merge, or request revisions?" \
+            local wd_lcid wd_inter wd_piid=""
+            wd_lcid="$(_afk_factory_latest_comment_id "$api_url" "$key" "$j_issue")"
+            wd_inter="$(afk_pch_request_confirmation "$api_url" "$key" "$run_id" "$j_issue" "$board_user_id" \
+              "afk-confirm:${j_issue}:watchdog:${now_ep}" \
+              "Resume AFK Factory job ($j_id)?" \
+              "The job \`$j_id\` stalled repeatedly and was stopped." \
+              "Accept to let the factory try again, or reject with instructions." \
               "$(cat "$j_dir/decision.md")" \
-              "" >/dev/null 2>&1 || true
+              "" 2>/dev/null || true)"
+            [[ -n "$wd_inter" ]] && wd_piid="$(jq -r '.id // empty' <<<"$wd_inter" 2>/dev/null || true)"
+            # Mark what has been seen, so the next sync does not take an old
+            # comment for a new instruction.
+            jq -c --arg lcid "$wd_lcid" --arg piid "$wd_piid" \
+              '.last_seen_comment_id = (if $lcid == "" then (.last_seen_comment_id // null) else $lcid end)
+               | .pending_interaction_id = (if $piid == "" then null else $piid end)' \
+              "$j_dir/job.json" > "$j_dir/job.json.tmp" && _afk_factory_commit_tmp "$j_dir/job.json"
             local pbody
             pbody="$(_afk_factory_in_review_body "$host_agent_id")"
             afk_pc_curl PATCH "$api_url/api/issues/$j_issue" "$key" "$run_id" "$pbody" >/dev/null 2>&1 || true
@@ -1897,11 +3139,11 @@ EOF
     jq -cn --arg ts "$now_iso" --arg st "$j_stage" --arg r "$stall_reason" --argjson nc "$nudges" \
       '{ts:$ts, stage:$st, status:"watchdog_nudge", nudge_count:$nc, reason:$r}' >> "$j_dir/route-history.jsonl"
 
-    local res_out new_st new_dec _wd_live="${AFK_FACTORY_LIVE_HARNESS:-0}"
-    if [[ -n "$j_issue" && -z "${AFK_FACTORY_AGENT_RUNNER:-}" && -z "${AFK_CURL_BIN:-}" ]]; then
-      _wd_live="1"
-    fi
-    res_out="$(AFK_FACTORY_LIVE_HARNESS="$_wd_live" afk_factory_run_job "$j_repo" "$j_slug" "$j_id" "$j_issue" "$j_title" "" true)"
+    # run_job decides how stages execute: real agents unless a test asked
+    # otherwise. The guess that used to sit here could never come out "live",
+    # so every recovery reviewed the work with a canned PASS.
+    local res_out new_st new_dec
+    res_out="$(afk_factory_run_job "$j_repo" "$j_slug" "$j_id" "$j_issue" "$j_title" "" true)"
     new_st="$(jq -r '.stage // "unknown"' <<<"$res_out" 2>/dev/null)"
     new_dec="$(jq -r '.decision // "null"' <<<"$res_out" 2>/dev/null)"
     actions="$(jq -c --arg s "$j_slug" --arg id "$j_id" --arg st "$new_st" --arg dec "$new_dec" --arg r "$stall_reason" --argjson nc "$nudges" \
@@ -1924,7 +3166,7 @@ EOF
 afk_factory_resume() {
   local repo="${1:-}" slug="${2:-}" json_mode="${3:-false}"
   local status_json
-  status_json="$(afk_factory_status "$repo" "$slug" true)"
+  status_json="$(afk_factory_status "$repo" "$slug" true enabled)"
   local -a in_flight=()
   mapfile -t in_flight < <(jq -c '.jobs[]? | select((.stage // "") | IN("merged","needs-human","needs-info","needs-consultation","consulted","rejected") | not)' <<<"$status_json" 2>/dev/null)
 
@@ -1937,7 +3179,12 @@ afk_factory_resume() {
     j_issue="$(jq -r '.issue_id // empty' <<<"$row")"
     j_title="$(jq -r '.title // "Factory Task"' <<<"$row")"
     [[ -n "$j_repo" && -n "$j_id" ]] || continue
+    # A job another runner already holds answers "already_running" and is
+    # left alone.
     res_out="$(afk_factory_run_job "$j_repo" "$j_slug" "$j_id" "$j_issue" "$j_title" "" true)"
+    jq -e 'type == "object"' <<<"$res_out" >/dev/null 2>&1 \
+      || res_out="$(jq -cn --arg s "$j_slug" --arg id "$j_id" '{slug:$s, id:$id, stage:"unknown", decision:null}')"
+    jq -e '.already_running == true' <<<"$res_out" >/dev/null 2>&1 && continue
     resumed="$(jq -c --argjson item "$res_out" '. + [$item]' <<<"$resumed")"
   done
 
@@ -2028,7 +3275,50 @@ _afk_factory_consult_draft() { # <file> <title>
 # afk_factory_run_consultation <repo> <slug> <job_id> <issue_id> <title> <body_file> <json_mode> [<role>]
 # Planning dialogue for a PM, analyst, architect, or UX issue. Writes documents/prd,
 # posts ask_user_questions or a PRD confirmation, and waits in_review. Never merges code.
+# A planning job is one runner at a time too. Called on its own (a claimed
+# planning issue, a board reply) it takes the job lock; called from the job
+# runner it runs under the lock that runner already holds.
 afk_factory_run_consultation() {
+  local c_repo="$1" c_job="$3" c_issue="${4:-}" c_json="${7:-false}" c_abs c_dir c_owner c_rc=0 c_own=false
+  c_abs="$(cd -P -- "$c_repo" 2>/dev/null && pwd -P)" || {
+    afk_warn "factory consultation: invalid repository path"
+    return 1
+  }
+  [[ -n "$c_job" ]] || c_job="${c_issue:-consult-$(date -u +%Y%m%d%H%M%S)}"
+  if [[ ! "$c_job" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ || "$c_job" == *..* ]]; then
+    afk_warn "factory consultation: a job id may hold only letters, digits, '.', '_' and '-'"
+    return 1
+  fi
+  c_dir="$c_abs/.afk/jobs/$c_job"
+  mkdir -p "$c_dir" || return 1
+  c_owner="$(jq -r '.token // empty' "$c_dir/.run.lock/owner.json" 2>/dev/null || true)"
+  # Already held by this caller only when the token is the one it took.
+  if [[ -z "$c_owner" || "$c_owner" != "${AFK_FACTORY_LOCK_TOKEN:-}" ]]; then
+    if ! _afk_factory_job_lock "$c_dir"; then
+      if [[ "$c_json" == "true" ]]; then
+        if jq -e 'type == "object"' "$c_dir/job.json" >/dev/null 2>&1; then
+          jq -c '. + {already_running: true}' "$c_dir/job.json"
+        else
+          jq -cn --arg id "$c_job" '{id: $id, stage: "running", already_running: true}'
+        fi
+      fi
+      return 0
+    fi
+    c_own=true
+  fi
+  if [[ "${AFK_FACTORY_OFFLINE_SYNTH:-0}" != "1" && -z "${AFK_FACTORY_AGENT_RUNNER:-}" ]]; then
+    local -x AFK_FACTORY_LIVE_HARNESS=1
+  fi
+  _afk_factory_touch_heartbeat "$c_dir" "consultation" "${8:-pm}" "running"
+  _afk_factory_beat_start "$c_dir" "consultation" "${8:-pm}"
+  _afk_factory_run_consultation_locked "$c_abs" "$2" "$c_job" "${@:4}" || c_rc=$?
+  _afk_factory_beat_stop
+  _afk_factory_touch_heartbeat "$c_dir" "$(jq -r '.stage // "consultation"' "$c_dir/job.json" 2>/dev/null || printf 'consultation')" "" "done"
+  [[ "$c_own" == true ]] && _afk_factory_job_unlock "$c_dir"
+  return "$c_rc"
+}
+
+_afk_factory_run_consultation_locked() {
   local repo="$1" slug="$2" job_id="$3" issue_id="${4:-}" title="${5:-Planning}"
   local body_file="${6:-}" json_mode="${7:-false}" role="${8:-pm}"
   local abs_repo
@@ -2100,7 +3390,7 @@ afk_factory_run_consultation() {
   else
     jq -c --arg role "$role" --arg now "$now" \
       '.mode = "consultation" | .consult_role = $role | .stage = "consulting" | .active_agent = $role | .surfaces = ["planning"] | .updated_at = $now' \
-      "$job_file" > "$job_file.tmp" && mv "$job_file.tmp" "$job_file"
+      "$job_file" > "$job_file.tmp" && _afk_factory_commit_tmp "$job_file"
   fi
 
   local run_id=""
@@ -2108,7 +3398,10 @@ afk_factory_run_consultation() {
     run_id="$(afk_pch_ensure_run_id "$api_url" "$key" "$host_agent_id" "$issue_id")"
   fi
   afk_pch_ensure_project_team "$slug" "$abs_repo" "$harness" "$role" "$issue_id" "$api_url" "$key" "$company_id" "$host_agent_id" >/dev/null
-  afk_pch_assign_stage "$slug" "$role" "$issue_id" "AFK consultation started with \`${slug}-${role}\`." "$api_url" "$key" "$run_id"
+  _afk_factory_announce "$slug" "$role" "$issue_id" "AFK consultation started with \`${slug}-${role}\`." "$api_url" "$key" "$run_id" || {
+    [[ "$json_mode" == "true" ]] && cat "$job_file"
+    return 0
+  }
 
   local prompt_file="$job_dir/consult-input.md" output_file="$job_dir/consult.md"
   {
@@ -2209,7 +3502,7 @@ EOF
     '.stage = $st | .mode = "consultation" | .consult_role = $role | .decision = "WAIT"
      | .active_agent = "human" | .pending_interaction_kind = (if $pk == "" then null else $pk end)
      | .pending_interaction_id = (if $pid == "" then null else $pid end) | .updated_at = $now' \
-    "$job_file" > "$job_file.tmp" && mv "$job_file.tmp" "$job_file"
+    "$job_file" > "$job_file.tmp" && _afk_factory_commit_tmp "$job_file"
 
   if [[ "$json_mode" == "true" ]]; then
     cat "$job_file"
@@ -2256,9 +3549,137 @@ _afk_factory_accept_consultation() { # api key company host board slug repo job 
   jq -c --arg now "$now" --arg cid "$child_id" \
     '.stage = "consulted" | .decision = "ACCEPT" | .active_agent = null | .pending_interaction_id = null
      | .child_issue_id = (if $cid == "" then null else $cid end) | .updated_at = $now' \
-    "$job_dir/job.json" > "$job_dir/job.json.tmp" && mv "$job_dir/job.json.tmp" "$job_dir/job.json"
+    "$job_dir/job.json" > "$job_dir/job.json.tmp" && _afk_factory_commit_tmp "$job_dir/job.json"
   jq -cn --arg s "$slug" --arg id "$job_id" --arg cid "$child_id" \
     '{slug:$s, job_id:$id, action:"accepted_plan", child_issue_id:(if $cid == "" then null else $cid end)}'
+}
+
+# _afk_factory_comment_is_approval <body>
+# 0 when the comment is an approval and nothing else. "Merge conflicts with
+# main, please rebase" and "Approve once the test is fixed" begin with the
+# same words and mean the opposite, so a leading word is not enough.
+_afk_factory_comment_is_approval() {
+  local norm
+  # Markdown emphasis (not strikethrough or a quote), a thumbs-up or check
+  # mark, and a closing "!" or "."
+  # do not change what the word says. Anything else does: "merge?" is a
+  # question and "approve 👎" is not an approval, so any other character left
+  # over means this is not a clean approval.
+  norm="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | tr -d '\r' \
+    | sed -e 's/👍//g; s/✅//g; s/✔️//g; s/✔//g' -e 's/[*_`]//g' \
+    | tr -s '[:space:]' ' ' | sed 's/^ //; s/[ !.]*$//')"
+  [[ "$norm" =~ ^(approve|approved|lgtm|merge|ship\ it)$ ]]
+}
+
+# _afk_factory_comment_is_near_approval <body>
+# 0 for a short comment that begins with an approval word and is not a clean
+# approval: "Approved, thanks", "approve 👍", "**approve**". Such a comment gets
+# a question back instead of being merged or sent to the builder.
+_afk_factory_comment_is_near_approval() {
+  local words first
+  words="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9\n' ' ' | tr -s ' \n' ' ' | sed 's/^ //; s/ $//')"
+  first="${words%% *}"
+  [[ "$first" =~ ^(approve|approved|lgtm|merge|ship)$ ]] || return 1
+  (( $(wc -w <<<"$words") <= 4 ))
+}
+
+# _afk_factory_new_board_comment <comments-json> <last_seen_comment_id> <board_user_id>
+# The newest comment after the last one seen that the board user wrote, or
+# nothing. Only the board user's comments steer a job: any other person or
+# agent able to comment on the issue could otherwise approve a merge or hand
+# the builder instructions. With no board user configured, nobody qualifies.
+_afk_factory_new_board_comment() {
+  local com_body="$1" lcid="${2:-}" board="${3:-}"
+  [[ -n "$board" ]] || return 0
+  jq -r --arg lcid "$lcid" --arg board "$board" '
+    (if type == "array" then . else (.comments // []) end) as $all
+    | (if $lcid == "" then $all
+       else ([$all | to_entries[] | select(.value.id == $lcid) | .key] | last // -1) as $idx
+            | if $idx >= 0 then $all[($idx + 1):] else $all end
+       end)
+    | map(select((.authorAgentId // null) == null and (.authorUserId // "") == $board))
+    | last.body // empty
+  ' <<<"$com_body" 2>/dev/null || true
+}
+
+# _afk_factory_file_digest <file> -> hex digest, or nothing when unreadable
+_afk_factory_file_digest() {
+  [[ -f "$1" ]] || return 0
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum < "$1" 2>/dev/null | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then shasum -a 256 < "$1" 2>/dev/null | cut -d' ' -f1
+  fi
+}
+
+# Where the runner keeps the digest of a job's uncommitted check script, out
+# of the job directory that agents can write. Memory first, then this file.
+_afk_factory_checks_digest_file() { # <job_dir>
+  local key
+  key="$(printf '%s' "$1" | { sha256sum 2>/dev/null || shasum -a 256 2>/dev/null; } | cut -d' ' -f1)"
+  printf '%s/factory/check-digests/%s' "${AFK_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/agent-flow-kit}" "${key:-unknown}"
+}
+_afk_factory_set_checks_digest() { # <job_dir> <digest>
+  local f
+  f="$(_afk_factory_checks_digest_file "$1")"
+  mkdir -p "$(dirname -- "$f")" 2>/dev/null || true
+  printf '%s\n' "${2:-none}" > "$f" 2>/dev/null || true
+  AFK_JOB_CHECKS_DIGEST_DIR="$1"
+  AFK_JOB_CHECKS_DIGEST="${2:-none}"
+}
+# Prints the recorded digest, "none" when the job started with no script, or
+# nothing when no record exists (a job from before records were kept).
+_afk_factory_get_checks_digest() { # <job_dir>
+  if [[ -n "${AFK_JOB_CHECKS_DIGEST:-}" && "${AFK_JOB_CHECKS_DIGEST_DIR:-}" == "$1" ]]; then
+    printf '%s' "$AFK_JOB_CHECKS_DIGEST"; return 0
+  fi
+  head -n 1 "$(_afk_factory_checks_digest_file "$1")" 2>/dev/null | tr -d '[:space:]'
+}
+
+# _afk_factory_checked_commit <job_dir>
+# The commit the current round's checks ran on, or nothing.
+_afk_factory_checked_commit() {
+  local jd="$1" r
+  r="$(jq -r '.round // 1' "$jd/job.json" 2>/dev/null || printf '1')"
+  head -n 1 "$jd/round-$r/checks.sha" 2>/dev/null | tr -d '[:space:]'
+}
+
+# _afk_factory_approval_invalid <job_dir> <worktree> [<repo> <branch>]
+# Prints why an approved job may not be merged now and returns 0; returns 1
+# when it may. Called under the job lock, from the job file as it is then.
+_afk_factory_approval_invalid() {
+  local j_dir="$1" wt="$2" a_repo="${3:-}" a_branch="${4:-}" doc stage kind gate round sha head
+  doc="$(cat "$j_dir/job.json" 2>/dev/null || true)"
+  stage="$(jq -r '.stage // empty' <<<"$doc" 2>/dev/null || true)"
+  kind="$(jq -r '.escalation_kind // empty' <<<"$doc" 2>/dev/null || true)"
+  gate="$(jq -r '.merge_evaluation.gate_verdict // empty' <<<"$doc" 2>/dev/null || true)"
+  round="$(jq -r '.round // 1' <<<"$doc" 2>/dev/null || printf '1')"
+  if [[ "$stage" != "needs-human" ]]; then
+    printf 'the job is no longer waiting for a decision (it is at %s)' "${stage:-an unreadable stage}"; return 0
+  fi
+  if [[ -n "$kind" && "$kind" != "merge" ]]; then
+    printf 'the job is not waiting on a merge decision'; return 0
+  fi
+  if [[ "$gate" != "PASS" ]] || ! head -n 5 "$j_dir/round-$round/checks.md" 2>/dev/null | grep -q '^VERDICT: PASS'; then
+    printf 'the checks for this round did not pass'; return 0
+  fi
+  if [[ -n "$a_repo" && -n "$a_branch" && ! -e "$wt" ]]; then
+    # The worktree is gone; the branch in the base repository is what lands.
+    sha="$(head -n 1 "$j_dir/round-$round/checks.sha" 2>/dev/null | tr -d '[:space:]')"
+    head="$(git -C "$a_repo" rev-parse --verify --quiet "refs/heads/$a_branch" 2>/dev/null || true)"
+    if [[ -z "$sha" || "$sha" != "$head" ]]; then
+      printf 'the branch has moved since the checks ran'; return 0
+    fi
+  fi
+  if [[ -d "$wt/.git" || -f "$wt/.git" ]]; then
+    sha="$(head -n 1 "$j_dir/round-$round/checks.sha" 2>/dev/null | tr -d '[:space:]')"
+    head="$(git -C "$wt" rev-parse HEAD 2>/dev/null || true)"
+    if [[ -z "$sha" || "$sha" != "$head" ]]; then
+      printf 'the branch has moved since the checks ran'; return 0
+    fi
+    if [[ -n "$(git -C "$wt" status --porcelain --untracked-files=no -- . ':!.afk' 2>/dev/null || true)" ]]; then
+      printf 'the worktree has uncommitted changes'; return 0
+    fi
+  fi
+  return 1
 }
 
 # afk_factory_sync_reviews [<repo_path>] [<slug>] [<dry_run>] [<json_mode>]
@@ -2275,7 +3696,7 @@ _afk_factory_accept_consultation() { # api key company host board slug repo job 
 afk_factory_sync_reviews() {
   local repo="${1:-}" slug="${2:-}" dry_run="${3:-false}" json_mode="${4:-false}"
   local status_json
-  status_json="$(afk_factory_status "$repo" "$slug" true)"
+  status_json="$(afk_factory_status "$repo" "$slug" true enabled)"
   local -a waiting=()
   mapfile -t waiting < <(jq -c '.attention_required[]?' <<<"$status_json" 2>/dev/null)
 
@@ -2337,8 +3758,9 @@ afk_factory_sync_reviews() {
     if [[ "$int_code" == 2?? ]]; then
       inter_obj="$(jq -c --arg pid "$j_piid" '
         (if type == "array" then . else (.interactions // []) end) as $arr
-        | if $pid != "" then ([$arr[] | select(.id == $pid)][0] // {})
-          else ([$arr[] | select(.kind == "request_confirmation")] | last // {}) end
+        # Only the card this job is waiting on. Falling back to the newest
+        # confirmation on the issue acts on a card from an earlier round.
+        | if $pid != "" then ([$arr[] | select(.id == $pid)][0] // {}) else {} end
       ' <<<"$int_body" 2>/dev/null || printf '{}')"
       outcome="$(jq -r '.result.outcome // empty' <<<"$inter_obj" 2>/dev/null || true)"
       reason="$(jq -r '.result.reason // empty' <<<"$inter_obj" 2>/dev/null || true)"
@@ -2349,20 +3771,13 @@ afk_factory_sync_reviews() {
     if [[ "$com_code" == 2?? ]]; then
       newest_cid="$(jq -r '(if type == "array" then . else (.comments // []) end) | last.id // empty' <<<"$com_body" 2>/dev/null || true)"
       if [[ -n "$sup_cid" ]]; then
-        sup_body="$(jq -r --arg cid "$sup_cid" '
+        sup_body="$(jq -r --arg cid "$sup_cid" --arg board "$board_user_id" '
           (if type == "array" then . else (.comments // []) end)
-          | map(select(.id == $cid)) | first.body // empty
+          | map(select(.id == $cid and (.authorAgentId // null) == null and $board != "" and (.authorUserId // "") == $board))
+          | first.body // empty
         ' <<<"$com_body" 2>/dev/null || true)"
       fi
-      new_human_body="$(jq -r --arg lcid "$j_lcid" '
-        (if type == "array" then . else (.comments // []) end) as $all
-        | (if $lcid == "" then $all
-           else ([$all | to_entries[] | select(.value.id == $lcid) | .key] | last // -1) as $idx
-                | if $idx >= 0 then $all[($idx + 1):] else $all end
-           end)
-        | map(select((.authorUserId // "") != "" and (.authorAgentId // "") == ""))
-        | last.body // empty
-      ' <<<"$com_body" 2>/dev/null || true)"
+      new_human_body="$(_afk_factory_new_board_comment "$com_body" "$j_lcid" "$board_user_id")"
     fi
 
     local j_mode
@@ -2399,6 +3814,15 @@ afk_factory_sync_reviews() {
         rm -f "$j_dir/consult.md"
         c_role="$(jq -r '.consult_role // "pm"' "$j_dir/job.json" 2>/dev/null || printf 'pm')"
         afk_factory_run_consultation "$j_repo" "$j_slug" "$j_id" "$j_issue" "$j_title" "" true "$c_role" >/dev/null
+        # Mark the comments read. Without it the same reply is "new" on every
+        # pass and the consultation is re-run, with a fresh card, every 90s.
+        local c_lcid
+        c_lcid="$(_afk_factory_latest_comment_id "$api_url" "$key" "$j_issue")"
+        [[ -n "$c_lcid" ]] || c_lcid="$newest_cid"
+        if [[ -n "$c_lcid" ]]; then
+          jq -c --arg lcid "$c_lcid" '.last_seen_comment_id = $lcid' \
+            "$j_dir/job.json" > "$j_dir/job.json.tmp" && _afk_factory_commit_tmp "$j_dir/job.json"
+        fi
         c_out="$(jq -cn --arg s "$j_slug" --arg id "$j_id" --arg st "$(jq -r '.stage // "needs-consultation"' "$j_dir/job.json")" \
           '{slug:$s, job_id:$id, action:"resumed_consultation", stage:$st}')"
       fi
@@ -2418,8 +3842,12 @@ afk_factory_sync_reviews() {
     elif [[ "$outcome" == "superseded_by_comment" || -n "$new_human_body" ]]; then
       local cand_body="${sup_body:-$new_human_body}"
       if [[ -n "$cand_body" ]]; then
-        if [[ "$j_stage" == "needs-human" ]] && printf '%s\n' "$cand_body" | head -n 1 | grep -iqE '^[[:space:]]*(approve|approved|lgtm|merge|ship it)([[:space:]!.,:—-]|$)'; then
+        if [[ "$j_stage" == "needs-human" ]] && _afk_factory_comment_is_approval "$cand_body"; then
           action_kind="approve"
+        elif [[ "$j_stage" == "needs-human" ]] && _afk_factory_comment_is_near_approval "$cand_body"; then
+          # "Approved, thanks" reads like an approval and is not one. Asking
+          # costs a comment; guessing either way costs a merge or a rebuild.
+          action_kind="clarify"
         else
           action_kind="revise"
           feedback_text="$cand_body"
@@ -2428,6 +3856,25 @@ afk_factory_sync_reviews() {
     fi
 
     [[ -n "$action_kind" ]] || continue
+
+    # What the job is waiting on decides what an approval means. Only a job
+    # that finished its checks and reviews and is waiting on the merge itself
+    # is merged by one. A job stopped for budget, a stall or a failed stage
+    # has no checked work to merge; approving it lets it carry on.
+    local j_kind j_gate
+    j_kind="$(jq -r '.escalation_kind // empty' <<<"$row" 2>/dev/null || true)"
+    j_gate="$(jq -r '.merge_evaluation.gate_verdict // empty' <<<"$row" 2>/dev/null || true)"
+    if [[ "$action_kind" == "approve" ]]; then
+      if [[ -n "$j_kind" && "$j_kind" != "merge" ]]; then
+        action_kind="revise"
+        feedback_text="The board approved continuing. Carry on from where the job stopped."
+      elif [[ "$j_gate" != "PASS" ]]; then
+        # The change is waiting on a merge decision and its checks did not
+        # pass. Approval does not merge failing checks, and rebuilding on an
+        # approval only produces the same card again.
+        action_kind="checks_failed"
+      fi
+    fi
 
     if [[ "$dry_run" == "true" ]]; then
       actions="$(jq -c --arg s "$j_slug" --arg id "$j_id" --arg a "would_${action_kind}" \
@@ -2439,13 +3886,60 @@ afk_factory_sync_reviews() {
     now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     run_id="$(afk_pch_ensure_run_id "$api_url" "$key" "$host_agent_id" "$j_issue")"
 
+    if [[ "$action_kind" == "clarify" || "$action_kind" == "checks_failed" ]]; then
+      local note
+      if [[ "$action_kind" == "clarify" ]]; then
+        note="To merge, reply with just \`approve\`. Anything else is passed to the agent as instructions for another round."
+      else
+        note="Not merged: this change did not pass its checks (\`.afk/checks.sh\`). Reply with instructions for another round; the checks run again on that round, so if the checks themselves were wrong, fix them first and then reply."
+      fi
+      afk_pc_comment "$api_url" "$j_issue" "$key" "$run_id" "$note" >/dev/null 2>&1 || true
+      newest_cid="$(_afk_factory_latest_comment_id "$api_url" "$key" "$j_issue")"
+      jq -c --arg lcid "$newest_cid" --arg now "$now_iso" \
+        '.last_seen_comment_id = (if $lcid == "" then .last_seen_comment_id else $lcid end) | .pending_interaction_id = (if .pending_interaction_id == null then null else ("answered:" + .pending_interaction_id) end) | .updated_at = $now' \
+        "$j_dir/job.json" > "$j_dir/job.json.tmp" && _afk_factory_commit_tmp "$j_dir/job.json"
+      actions="$(jq -c --arg s "$j_slug" --arg id "$j_id" --arg a "$action_kind" '. + [{slug:$s, job_id:$id, action:$a}]' <<<"$actions")"
+      continue
+    fi
+
     if [[ "$action_kind" == "approve" ]]; then
       local land_res land_ok merged_sha
-      _afk_factory_clear_execution_policy "$api_url" "$key" "$run_id" "$j_issue"
-      land_res="$(_afk_factory_land_branch "$j_repo" "$j_wt" "$j_branch" "$j_id" "$j_title")" || true
+      # Landing is a runner action like any other: one at a time per job.
+      if ! _afk_factory_job_lock "$j_dir"; then
+        actions="$(jq -c --arg s "$j_slug" --arg id "$j_id" '. + [{slug:$s, job_id:$id, action:"approve_deferred_job_busy"}]' <<<"$actions")"
+        continue
+      fi
+      # The row was read before the lock. Read the job again under it: another
+      # runner may have moved it on, or the branch may have moved since the
+      # checks ran.
+      # The approval was given on a card for one round. A job that went through
+      # another round since, and is waiting again, is waiting on a new card.
+      if [[ "$(jq -r '.stage // empty' "$j_dir/job.json" 2>/dev/null || true)" != "needs-human" ]] \
+         || [[ "$(jq -r '.round // 1 | tostring' "$j_dir/job.json" 2>/dev/null || true)" != "${j_round:-1}" ]] \
+         || [[ "$(jq -r '.pending_interaction_id // empty' "$j_dir/job.json" 2>/dev/null || true)" != "$j_piid" ]]; then
+        # Someone else already acted on this job. Nothing to say on the issue.
+        _afk_factory_job_unlock "$j_dir"
+        actions="$(jq -c --arg s "$j_slug" --arg id "$j_id" '. + [{slug:$s, job_id:$id, action:"approve_skipped_job_moved_on"}]' <<<"$actions")"
+        continue
+      fi
+      local still_bad=""
+      _afk_factory_touch_heartbeat "$j_dir" "landing" "" "running"
+      _afk_factory_beat_start "$j_dir" "landing" ""
+      if still_bad="$(_afk_factory_approval_invalid "$j_dir" "$j_wt" "$j_repo" "$j_branch")"; then
+        land_res="$(jq -cn --arg r "$still_bad" '{ok:false, action:"stale_approval", commit:"", reason:$r}')"
+      else
+        _afk_factory_clear_execution_policy "$api_url" "$key" "$run_id" "$j_issue"
+        land_res="$(_afk_factory_land_branch "$j_repo" "$j_wt" "$j_branch" "$j_id" "$j_title")" || true
+      fi
+      _afk_factory_beat_stop
       land_ok="$(jq -r '.ok // false' <<<"$land_res" 2>/dev/null || printf 'false')"
       if [[ "$land_ok" == "true" ]]; then
         merged_sha="$(jq -r '.commit // empty' <<<"$land_res" 2>/dev/null || true)"
+        # Record the merge before the Paperclip calls: a restart between the
+        # two must not find the job still waiting and land it again.
+        jq -c --arg now "$now_iso" --arg sha "$merged_sha" \
+          '.stage = "merged" | .decision = "APPROVE" | .merged_commit = $sha | .active_agent = null | .pending_interaction_id = null | .updated_at = $now' \
+          "$j_dir/job.json" > "$j_dir/job.json.tmp" && _afk_factory_commit_tmp "$j_dir/job.json"
         cat >> "$j_dir/decision.md" <<EOF
 
 ## Human Board Resolution ($now_iso)
@@ -2465,36 +3959,73 @@ EOF
 
         jq -c --arg now "$now_iso" --arg sha "$merged_sha" --arg lcid "$newest_cid" \
           '.stage = "merged" | .decision = "APPROVE" | .merged_commit = $sha | .active_agent = null | .pending_interaction_id = null | .last_seen_comment_id = (if $lcid == "" then .last_seen_comment_id else $lcid end) | .updated_at = $now' \
-          "$j_dir/job.json" > "$j_dir/job.json.tmp" && mv "$j_dir/job.json.tmp" "$j_dir/job.json"
+          "$j_dir/job.json" > "$j_dir/job.json.tmp" && _afk_factory_commit_tmp "$j_dir/job.json"
         actions="$(jq -c --arg s "$j_slug" --arg id "$j_id" --arg sha "$merged_sha" \
           '. + [{slug:$s, job_id:$id, action:"approved_and_merged", merged_commit:$sha}]' <<<"$actions")"
         summary_lines="$(jq -c --arg m "merged $j_slug/$j_id (${merged_sha:0:8})" '. + [$m]' <<<"$summary_lines")"
+      else
+        # The approval was given and the merge did not happen. Say why, once,
+        # and put up a fresh card: the accepted one would otherwise be acted
+        # on again every pass, silently.
+        local land_why new_card new_piid=""
+        land_why="$(jq -r '.reason // "the merge failed"' <<<"$land_res" 2>/dev/null || printf 'the merge failed')"
+        afk_pc_comment "$api_url" "$j_issue" "$key" "$run_id" \
+          "$(printf '## AFK Factory — Approved, Not Merged\n\nThe approval was received, and the merge did not go through: %s.\n\nNothing was merged. Accept the new card to try again once that is resolved, or reply with instructions.' "$land_why")" >/dev/null 2>&1 || true
+        newest_cid="$(_afk_factory_latest_comment_id "$api_url" "$key" "$j_issue")"
+        new_card="$(afk_pch_request_confirmation "$api_url" "$key" "$run_id" "$j_issue" "$board_user_id" \
+          "afk-confirm:${j_issue}:retry:$(date -u +%s)" \
+          "Retry AFK Factory Merge ($j_id)" \
+          "The merge of \`$j_branch\` did not go through: $land_why." \
+          "Try the merge again, or request revisions?" \
+          "$(cat "$j_dir/decision.md" 2>/dev/null || true)" \
+          "" 2>/dev/null || true)"
+        [[ -n "$new_card" ]] && new_piid="$(jq -r '.id // empty' <<<"$new_card" 2>/dev/null || true)"
+        # With no new card the old one stays consumed: record a marker id so
+        # this pass's accepted card is not read again.
+        [[ -n "$new_piid" ]] || new_piid="none:$(date -u +%s)"
+        jq -c --arg now "$now_iso" --arg why "$land_why" --arg piid "$new_piid" --arg lcid "$newest_cid" \
+          '.pending_interaction_id = $piid | .last_land_error = $why
+           | .last_seen_comment_id = (if $lcid == "" then .last_seen_comment_id else $lcid end) | .updated_at = $now' \
+          "$j_dir/job.json" > "$j_dir/job.json.tmp" && _afk_factory_commit_tmp "$j_dir/job.json"
+        afk_pc_curl PATCH "$api_url/api/issues/$j_issue" "$key" "$run_id" "$(_afk_factory_in_review_body "$host_agent_id")" >/dev/null 2>&1 || true
+        actions="$(jq -c --arg s "$j_slug" --arg id "$j_id" --arg r "$land_why" \
+          '. + [{slug:$s, job_id:$id, action:"approved_not_merged", reason:$r}]' <<<"$actions")"
+        summary_lines="$(jq -c --arg m "approved, not merged $j_slug/$j_id: $land_why" '. + [$m]' <<<"$summary_lines")"
       fi
+      _afk_factory_touch_heartbeat "$j_dir" "$(jq -r '.stage // "needs-human"' "$j_dir/job.json" 2>/dev/null)" "" "done"
+      _afk_factory_job_unlock "$j_dir"
     elif [[ "$action_kind" == "revise" ]]; then
-      cat > "$j_dir/human-feedback.md" <<EOF
+      # Appended: instructions from an earlier reply that a failed build never
+      # used must not be lost when the board replies again.
+      cat >> "$j_dir/human-feedback.md" <<EOF
 - Human board feedback recorded at $now_iso:
 $feedback_text
 EOF
       local next_round=$(( j_round + 1 ))
+      # The board asking for another round is a person acting: the check
+      # script as it stands now, which they may have just fixed, is the one
+      # the next round is judged by.
+      local cur_digest
+      cur_digest="$(_afk_factory_file_digest "$j_repo/.afk/checks.sh")"
+      _afk_factory_set_checks_digest "$j_dir" "$cur_digest"
+      jq -c --arg d "$cur_digest" '.checks_script_sha256 = (if $d == "" then null else $d end)' \
+        "$j_dir/job.json" > "$j_dir/job.json.tmp" && _afk_factory_commit_tmp "$j_dir/job.json"
       if [[ "$j_stage" == "needs-info" ]]; then
         rm -f "$j_dir/intake.md"
         jq -c --arg now "$now_iso" --arg lcid "$newest_cid" \
-          '.stage = "intake" | .active_agent = "pm" | .pending_interaction_id = null | .last_seen_comment_id = (if $lcid == "" then .last_seen_comment_id else $lcid end) | .updated_at = $now' \
-          "$j_dir/job.json" > "$j_dir/job.json.tmp" && mv "$j_dir/job.json.tmp" "$j_dir/job.json"
+          '.stage = "intake" | .active_agent = "pm" | .recovery = null | .pending_interaction_id = null | .last_seen_comment_id = (if $lcid == "" then .last_seen_comment_id else $lcid end) | .updated_at = $now' \
+          "$j_dir/job.json" > "$j_dir/job.json.tmp" && _afk_factory_commit_tmp "$j_dir/job.json"
       else
         jq -c --arg now "$now_iso" --arg lcid "$newest_cid" --argjson nr "$next_round" \
-          '.stage = "build" | .round = $nr | .max_rounds_override = $nr | .active_agent = "dev" | .pending_interaction_id = null | .last_seen_comment_id = (if $lcid == "" then .last_seen_comment_id else $lcid end) | .updated_at = $now' \
-          "$j_dir/job.json" > "$j_dir/job.json.tmp" && mv "$j_dir/job.json.tmp" "$j_dir/job.json"
+          '.stage = "build" | .round = $nr | .max_rounds_override = $nr | .active_agent = "dev" | .escalation_kind = null | .recovery = null | .pending_interaction_id = null | .last_seen_comment_id = (if $lcid == "" then .last_seen_comment_id else $lcid end) | .updated_at = $now' \
+          "$j_dir/job.json" > "$j_dir/job.json.tmp" && _afk_factory_commit_tmp "$j_dir/job.json"
       fi
       local claim_patch
       claim_patch="$(jq -cn --arg a "$host_agent_id" '{status:"in_progress", assigneeUserId:null} + (if $a != "" then {assigneeAgentId:$a} else {} end)')"
       afk_pc_curl PATCH "$api_url/api/issues/$j_issue" "$key" "$run_id" "$claim_patch" >/dev/null 2>&1 || true
 
-      local rerun_out new_st new_dec _sr_live="${AFK_FACTORY_LIVE_HARNESS:-0}"
-      if [[ -n "$j_issue" && -z "${AFK_FACTORY_AGENT_RUNNER:-}" && -z "${AFK_CURL_BIN:-}" ]]; then
-        _sr_live="1"
-      fi
-      rerun_out="$(AFK_FACTORY_LIVE_HARNESS="$_sr_live" afk_factory_run_job "$j_repo" "$j_slug" "$j_id" "$j_issue" "$j_title" "" true)"
+      local rerun_out new_st new_dec
+      rerun_out="$(afk_factory_run_job "$j_repo" "$j_slug" "$j_id" "$j_issue" "$j_title" "" true)"
       new_st="$(jq -r '.stage // "unknown"' <<<"$rerun_out" 2>/dev/null)"
       new_dec="$(jq -r '.decision // "null"' <<<"$rerun_out" 2>/dev/null)"
       actions="$(jq -c --arg s "$j_slug" --arg id "$j_id" --arg st "$new_st" --arg dec "$new_dec" \
@@ -2549,7 +4080,9 @@ afk_factory_poll_paperclip() {
     local b_chk b_ok="true"
     if declare -F afk_pch_check_budget >/dev/null 2>&1 && [[ -n "$host_agent_id" ]]; then
       b_chk="$(afk_pch_check_budget "$api_url" "$key" "$host_agent_id")"
-      b_ok="$(jq -r '.ok // true' <<<"$b_chk" 2>/dev/null || printf 'true')"
+      # `.ok // true` is true when .ok is false: `//` replaces false as well
+      # as null, so the budget stop never closed this gate.
+      b_ok="$(jq -r 'if (type == "object") and (.ok == false or .state == "hard_stop") then "false" else "true" end' <<<"$b_chk" 2>/dev/null || printf 'true')"
     fi
 
     if [[ "$b_ok" == "true" ]]; then
@@ -2571,17 +4104,18 @@ afk_factory_poll_paperclip() {
         if ! declare -F afk_bmad_import_backlog >/dev/null 2>&1; then
           local _bmad_lib
           _bmad_lib="$(dirname -- "${BASH_SOURCE[0]}")/afk-bmad-import.sh"
+          # shellcheck source=/dev/null
           [[ -f "$_bmad_lib" ]] && . "$_bmad_lib"
         fi
         local scope_rel=""
         scope_rel="$(_afk_factory_bmad_scope_path "$p_repo" 2>/dev/null || true)"
-        if [[ -n "$scope_rel" ]] && declare -F afk_bmad_import_backlog >/dev/null 2>&1; then
+        if [[ "$dry_run" != "true" && -n "$scope_rel" ]] && declare -F afk_bmad_import_backlog >/dev/null 2>&1; then
           afk_bmad_import_backlog "$api_url" "$key" "$company_id" "$p_pid" \
             "$p_slug" "$p_repo" 15 "$scope_rel" >/dev/null 2>&1 || true
         fi
 
         # One planning reply per project per pass, before any new build is claimed.
-        if declare -F afk_pc_pm_chat_scan_project >/dev/null 2>&1; then
+        if [[ "$dry_run" != "true" ]] && declare -F afk_pc_pm_chat_scan_project >/dev/null 2>&1; then
           local board_user_id
           board_user_id="$(jq -r '.board_user_id // empty' <<<"$pc_cfg" 2>/dev/null)"
           afk_pc_pm_chat_scan_project "$api_url" "$key" "$company_id" "$p_pid" \
@@ -2592,6 +4126,10 @@ afk_factory_poll_paperclip() {
         local st_json active_cnt=0
         st_json="$(afk_factory_status "$p_repo" "$p_slug" true)"
         active_cnt="$(jq -r '[.jobs[]? | select((.stage // "") | IN("merged","needs-human","needs-info","needs-consultation","consulted","rejected") | not)] | length' <<<"$st_json" 2>/dev/null || printf '0')"
+        # An unreadable status must not read as "nothing running": that
+        # would lift the cap on concurrent jobs.
+        [[ "$active_cnt" =~ ^[0-9]+$ ]] || continue
+        [[ "$p_max" =~ ^[0-9]+$ ]] || p_max=1
         (( active_cnt < p_max )) || continue
 
         local l_resp l_code l_body proj_agent_ids queue_mode queue_label
@@ -2725,8 +4263,13 @@ afk_factory_poll_paperclip() {
 }
 # Summarizes active jobs, hired agents, context usage, and items needing human
 # attention across projects.
+# afk_factory_status [<repo>] [<slug>] [<json_mode>] [<scope>]
+# scope "enabled": only projects with the factory switched on, and no scan of
+# neighbouring directories. The watchdog, review sync and resume act on what
+# this returns; with the wider default they kept re-running and merging jobs
+# on a project whose factory had been turned off to stop it.
 afk_factory_status() {
-  local repo="${1:-}" slug="${2:-}" json_mode="${3:-false}"
+  local repo="${1:-}" slug="${2:-}" json_mode="${3:-false}" scope="${4:-all}"
   local -a repos=()
   if [[ -n "$repo" && -d "$repo" ]]; then
     repos+=("$(cd -P -- "$repo" && pwd -P)")
@@ -2736,12 +4279,14 @@ afk_factory_status() {
     if [[ -f "$pc_cfg_path" ]]; then
       if [[ -n "$slug" ]]; then
         mapfile -t repos < <(jq -r --arg s "$slug" '.projects[]? | select(.slug == $s) | .repo_path // empty' "$pc_cfg_path" 2>/dev/null)
+      elif [[ "$scope" == "enabled" ]]; then
+        mapfile -t repos < <(jq -r '(.factory_enabled == true) as $all | .projects[]? | select($all or (.factory_enabled == true)) | .repo_path // empty' "$pc_cfg_path" 2>/dev/null)
       else
         mapfile -t repos < <(jq -r '.projects[]?.repo_path // empty' "$pc_cfg_path" 2>/dev/null)
       fi
     fi
     # Also discover sibling repositories with .afk/ initialized on this host
-    if [[ -z "$slug" ]]; then
+    if [[ -z "$slug" && "$scope" != "enabled" ]]; then
       local scan_root="${AFK_REPOS_ROOT:-$(dirname -- "${AFK_KIT_ROOT:-$PWD}")}" cand_repo cand_abs seen
       for cand_repo in "$scan_root"/*; do
         [[ -d "$cand_repo/.afk" ]] || continue
@@ -2762,6 +4307,8 @@ afk_factory_status() {
     for jf in "$r"/.afk/jobs/*/job.json; do
       [[ -f "$jf" ]] || continue
       j="$(cat "$jf" 2>/dev/null)" || continue
+      # One truncated job file must not blank the status of every project.
+      jq -e 'type == "object"' <<<"$j" >/dev/null 2>&1 || continue
       local jdir ctx_file
       jdir="$(dirname -- "$jf")"
       ctx_file="$jdir/context-ledger.json"
@@ -2778,6 +4325,7 @@ afk_factory_status() {
 
   local hired_ledger auth_alerts="[]"
   hired_ledger="$(afk_pch_load_ledger)"
+  jq -e 'type == "object"' <<<"$hired_ledger" >/dev/null 2>&1 || hired_ledger='{"projects":{}}'
   if declare -F afk_router_probe_pools >/dev/null 2>&1; then
     local st_pools
     st_pools="$(afk_router_probe_pools "$repo" 2>/dev/null || printf '{}')"
@@ -2839,7 +4387,11 @@ afk_cmd_factory() {
       --background)            bg_flag=true ;;
       --free-only)             free_only=true ;;
       --stale-seconds)   [[ $# -ge 2 ]] || { afk_warn "--stale-seconds requires an integer"; return 1; }; stale_sec_arg="$2"; shift ;;
-      --repo)            [[ $# -ge 2 ]] || { afk_warn "--repo requires a path"; return 1; }; repo="$2"; shift ;;
+      --repo)            [[ $# -ge 2 ]] || { afk_warn "--repo requires a path"; return 1; }
+                         # A mistyped path used to fall through to "all projects", so
+                         # `factory resume --repo /typo` resumed every job on the host.
+                         [[ -d "$2" ]] || { afk_warn "--repo: not a directory: $(afk_safe_diagnostic "$2")"; return 1; }
+                         repo="$2"; shift ;;
       --slug)            [[ $# -ge 2 ]] || { afk_warn "--slug requires a value"; return 1; }; slug="$2"; shift ;;
       --job)             [[ $# -ge 2 ]] || { afk_warn "--job requires an id"; return 1; }; job_id="$2"; shift ;;
       --issue)           [[ $# -ge 2 ]] || { afk_warn "--issue requires an id"; return 1; }; issue_id="$2"; shift ;;
@@ -2932,7 +4484,8 @@ afk_cmd_factory() {
         return 1
       fi
       local cc_out act new_gen
-      cc_out="$(afk_roster_record_and_check_context "$repo/.afk/jobs/$job_id" "$role" "$used_tokens" "$window_tokens" "$compacted" "$repo")"
+      cc_out="$(afk_roster_record_and_check_context "$repo/.afk/jobs/$job_id" "$role" "$used_tokens" "$window_tokens" "$compacted" "$repo")" \
+        || { afk_warn "factory context-check: the context ledger could not be read or saved"; return 1; }
       act="$(jq -r '.action' <<<"$cc_out")"
       if [[ "$act" == "replaced" && -n "$slug" ]]; then
         new_gen="$(jq -r '.active_generation' <<<"$cc_out")"
@@ -2977,6 +4530,7 @@ afk_cmd_factory() {
       if ! declare -F afk_bmad_import_backlog >/dev/null 2>&1; then
         local _bmad_lib
         _bmad_lib="$(dirname -- "${BASH_SOURCE[0]}")/afk-bmad-import.sh"
+        # shellcheck source=/dev/null
         [[ -f "$_bmad_lib" ]] && . "$_bmad_lib"
       fi
       local pc_cfg_path pc_cfg api_url company_id project_id key

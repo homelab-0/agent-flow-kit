@@ -28,16 +28,31 @@ AFK_PCT_UNIT="afk-paperclip-poll"
 afk_pcs_start_pm() {
   local enabled created_by lookup state
   local factory_mode
-  factory_mode="$(jq -r --arg s "${slug:-}" '(.factory_enabled // false) or ((.projects[]? | select(.slug == $s) | .factory_enabled) // false)' <<<"$AFK_PC_CFG" 2>/dev/null)"
+  # Only a real boolean true switches the factory on. `"false" or ...` is true
+  # in jq, so a quoted "false" used to enable it.
+  factory_mode="$(jq -r --arg s "${slug:-}" '((.factory_enabled == true) or (([.projects[]? | select(.slug == $s)][0].factory_enabled) == true))' <<<"$AFK_PC_CFG" 2>/dev/null)"
   if [[ "$factory_mode" == true ]] && declare -F afk_factory_run_job >/dev/null 2>&1; then
-    local f_title f_job_id="${identifier:-$id}" f_job_file f_stage
-    f_job_file="$repo_path/.afk/jobs/$f_job_id/job.json"
-    f_stage="$(jq -r '.stage // empty' "$f_job_file" 2>/dev/null || true)"
-    if [[ "$f_stage" =~ ^(merged|needs-human|needs-info|rejected)$ ]]; then
-      return 0
-    fi
+    # The factory's own poll claims and tracks its jobs under a lower-cased
+    # id. Use the same id here, and leave alone any issue that already has a
+    # job in any stage: starting another gave one issue two jobs, two
+    # worktrees and two branches.
+    local f_title f_job_id f_jf f_known=false
+    f_job_id="$(printf '%s' "${identifier:-$id}" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-')"
+    f_job_id="${f_job_id%-}"
+    [[ -n "$f_job_id" ]] || return 0
+    for f_jf in "$repo_path"/.afk/jobs/*/job.json; do
+      [[ -f "$f_jf" ]] || continue
+      if [[ "$(jq -r '.issue_id // empty' "$f_jf" 2>/dev/null || true)" == "$id" ]]; then
+        f_known=true
+        break
+      fi
+    done
+    [[ "$f_known" == false && -e "$repo_path/.afk/jobs/$f_job_id/job.json" ]] && f_known=true
+    [[ "$f_known" == true ]] && return 0
     f_title="$(jq -r '.title // "Paperclip Issue"' <<<"$detail" 2>/dev/null)"
-    afk_factory_run_job "$repo_path" "$slug" "$f_job_id" "$id" "$f_title" "" false >/dev/null 2>&1 || true
+    # In a subshell: the job runner replaces AFK_PC_CFG with the raw file, and
+    # the rest of this poll pass needs the validated copy it loaded.
+    ( afk_factory_run_job "$repo_path" "$slug" "$f_job_id" "$id" "$f_title" "" false >/dev/null 2>&1 ) || true
     actions="$(jq -c --arg t "factory started: $f_job_id" '. + [$t]' <<<"$actions")"
     return 0
   fi
