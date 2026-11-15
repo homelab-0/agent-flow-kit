@@ -257,7 +257,12 @@ afk_roster_discover() {
 # Core roles (pm, dev, reviewer, approver) are always included; specialist roles
 # (analyst, architect, ux-designer) are hired dynamically when needed.
 afk_roster_roles_for_job() {
-  local risk="${1:-low}" surfaces=",${2:-code},"
+  local risk="${1:-low}" surfaces="${2:-code}"
+  # The surfaces come from the intake agent's free text ("code, UI,
+  # `Security`"). Fold case and drop spaces and markdown marks so they match.
+  risk="${risk,,}"
+  surfaces="${surfaces,,}"
+  surfaces=",${surfaces//[[:space:]\`*]/},"
   local -a roles=(pm dev reviewer approver)
   if [[ "$surfaces" == *",research,"* || "$surfaces" == *",discovery,"* ]]; then
     roles+=(analyst)
@@ -341,7 +346,11 @@ EOF
 afk_roster_context_eval() {
   local used="${1:-0}" window="${2:-$AFK_ROSTER_DEFAULT_WINDOW}" compacted="${3:-false}"
   [[ "$used" =~ ^[0-9]+$ ]] || used=0
-  [[ "$window" =~ ^[0-9]+$ && "$window" -gt 0 ]] || window="$AFK_ROSTER_DEFAULT_WINDOW"
+  [[ "$window" =~ ^[0-9]+$ ]] || window=0
+  # Force base 10: bash reads a leading zero as octal and stops on "08".
+  used=$((10#$used))
+  window=$((10#$window))
+  (( window > 0 )) || window="$AFK_ROSTER_DEFAULT_WINDOW"
   local ppm=$(( (used * 1000000) / window ))
   local status="OK"
   if [[ "$compacted" == "true" ]] || (( ppm >= AFK_ROSTER_REPLACE_PPM )); then
@@ -373,15 +382,27 @@ afk_roster_record_and_check_context() {
   local compacted="${5:-false}" wt="${6:-}"
   [[ -d "$job_dir" ]] || mkdir -p "$job_dir"
   local ledger_file="$job_dir/context-ledger.json"
-  local ledger='{"schema":"afk-context-ledger/1","agents":{}}'
+  local empty_ledger='{"schema":"afk-context-ledger/1","agents":{}}'
+  local ledger="$empty_ledger"
+  # An empty or damaged file starts over. Keeping its text would make the
+  # update below fail on every later call.
   if [[ -f "$ledger_file" ]]; then
-    ledger="$(cat "$ledger_file" 2>/dev/null)" || ledger='{"schema":"afk-context-ledger/1","agents":{}}'
+    # A file that cannot be read at all is not replaced: that would erase
+    # every role's generation and replacement count. Only a file that reads
+    # back damaged starts over.
+    ledger="$(cat "$ledger_file" 2>/dev/null)" || return 1
+    jq -e '(.agents | type) == "object"' <<<"$ledger" >/dev/null 2>&1 || ledger="$empty_ledger"
   fi
   local eval_json status ppm dec
   eval_json="$(afk_roster_context_eval "$used" "$window" "$compacted")"
+  [[ -n "$eval_json" ]] || return 1
   status="$(jq -r '.status' <<<"$eval_json")"
   ppm="$(jq -r '.ratio_ppm' <<<"$eval_json")"
   dec="$(jq -r '.ratio_decimal' <<<"$eval_json")"
+  # Record the numbers that were evaluated. The raw arguments may be text
+  # ("150k") or a zero window, and jq rejects the first as --argjson.
+  used="$(jq -r '.used_tokens' <<<"$eval_json")"
+  window="$(jq -r '.window_tokens' <<<"$eval_json")"
 
   local gen replacements
   gen="$(jq -r --arg r "$role" '.agents[$r].generation // 1' <<<"$ledger" 2>/dev/null)"
@@ -427,7 +448,8 @@ EOF
 
   local now
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  ledger="$(jq -c \
+  local new_ledger tmp saved=false
+  new_ledger="$(jq -c \
     --arg r "$role" \
     --arg st "$status" \
     --arg act "$action" \
@@ -451,9 +473,20 @@ EOF
       ratio_decimal: $dec,
       checkpoint_file: (if $cp == "" then null else $cp end),
       updated_at: $now
-    }' <<<"$ledger")"
+    }' <<<"$ledger")" || new_ledger=""
 
-  printf '%s\n' "$ledger" > "$ledger_file.tmp.$$" && mv "$ledger_file.tmp.$$" "$ledger_file"
+  # A failed update keeps the file on disk. The temp name comes from mktemp
+  # because stages forked from one process share $$.
+  if [[ -n "$new_ledger" ]] && tmp="$(mktemp "${ledger_file}.tmp.XXXXXX")"; then
+    if printf '%s\n' "$new_ledger" > "$tmp" && mv -f "$tmp" "$ledger_file"; then
+      saved=true
+    else
+      rm -f "$tmp"
+    fi
+  fi
+  # A decision that was not recorded is not acted on: replacing an agent
+  # whose generation was never saved would repeat the replacement next time.
+  [[ "$saved" == true ]] || action="unrecorded"
   jq -cn \
     --arg r "$role" \
     --arg st "$status" \
@@ -478,5 +511,6 @@ EOF
       ratio_ppm: $p,
       ratio_decimal: $dec,
       checkpoint_file: (if $cp == "" then null else $cp end)
-    }'
+    }' || return 1
+  [[ "$saved" == true ]]
 }
