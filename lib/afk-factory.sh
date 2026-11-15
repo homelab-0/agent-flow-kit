@@ -1839,10 +1839,6 @@ _afk_factory_set_approval_gate() { # <api> <key> <run> <issue> <host> <board_use
     }')" >/dev/null 2>&1 || true
 }
 
-# Push the branch and open a pull request. Prints the URL, or nothing.
-# A pull request already open for the branch is reused. One already merged is
-# returned too, so a job restarted after its merge finds the merge and does
-# not open a second pull request.
 # _afk_factory_net <cmd...>: a network call made while landing, bounded so a
 # connection that hangs cannot keep the job (and the host's sign of life)
 # going for ever. AFK_FACTORY_NET_TIMEOUT_SEC, default 120.
@@ -1854,6 +1850,10 @@ _afk_factory_net() {
   else "$@"; fi
 }
 
+# Push the branch and open a pull request. Prints the URL, or nothing.
+# A pull request already open for the branch is reused. One already merged is
+# returned too, so a job restarted after its merge finds the merge and does
+# not open a second pull request.
 _afk_factory_ensure_pr() { # <abs_repo> <wt> <branch> <title> <job_id>
   local abs_repo="$1" wt="$2" branch="$3" title="$4" job_id="$5"
   local remote ghbin base list url job_dir
