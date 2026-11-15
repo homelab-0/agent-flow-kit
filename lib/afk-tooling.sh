@@ -48,39 +48,202 @@ afk_tooling_paperclip_skills_dir() {
   printf '%s\n' "${HOME:-/tmp}/.config/afk/paperclip-skills"
 }
 
-afk_tooling_load_registry() {
+# Permission bits a new file gets under the current umask (e.g. 644).
+_afk_tooling_default_mode() {
+  printf '%o\n' $(( 0666 & ~$(umask) ))
+}
+
+# _afk_tooling_write_json <dest> <content> [private] [<tmp_dir>]
+# Replaces <dest> with <content> only when <content> is a JSON object. The
+# temp name comes from mktemp because every job is a background subshell of
+# one poll process, so `$$` is the same in all of them and a `.tmp.$$` name
+# is shared. mktemp creates the file 0600; `private` keeps it that way for
+# files that can hold MCP headers or env (bearer tokens).
+# <tmp_dir> puts the temp file there instead of next to <dest>. Files written
+# into a job worktree use the job directory: a temp left in the worktree by a
+# kill is not covered by any ignore rule, and `git add -A` would commit it
+# with its tokens.
+_afk_tooling_write_json() {
+  local dest="$1" content="$2" mode="${3:-}" tmp_dir="${4:-}" tmp
+  jq -e 'type == "object"' <<<"$content" >/dev/null 2>&1 || return 1
+  if [[ -n "$tmp_dir" ]]; then
+    tmp="$(mktemp "${tmp_dir}/$(basename -- "$dest").XXXXXX" 2>/dev/null)" || return 1
+  else
+    tmp="$(mktemp "${dest}.XXXXXX" 2>/dev/null)" || return 1
+  fi
+  if ! printf '%s\n' "$content" > "$tmp"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+  if [[ "$mode" != "private" ]] && ! chmod "$(_afk_tooling_default_mode)" "$tmp"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+  if ! mv -f -- "$tmp" "$dest"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+  return 0
+}
+
+# _afk_tooling_lock <lock_dir> / _afk_tooling_unlock <lock_dir>
+# Serializes a read-modify-write between concurrent jobs. mkdir is atomic and,
+# unlike flock, exists on macOS. A holder that died leaves the directory
+# behind, so one older than AFK_TOOLING_LOCK_STALE_SEC (default 60), or dated
+# in the future, is taken over. The wait is bounded by
+# AFK_TOOLING_LOCK_WAIT_SEC (default 90, longer than the stale age so a dead
+# holder delays a job instead of failing it).
+#
+# The holder writes an owner token into the lock, and unlock removes the lock
+# only while that token is still its own: a holder that ran past the stale age
+# and lost the lock must not release the lock of the job that took it over.
+# Lock and unlock must run in the same shell, because the token is kept in
+# this map; every caller in this file does that.
+declare -gA _AFK_TOOLING_LOCK_TOKENS=()
+
+# _afk_tooling_lock_is_stale <dir> <stale_sec>
+_afk_tooling_lock_is_stale() {
+  local mtime now
+  mtime="$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || printf '0')"
+  now="$(date +%s)"
+  [[ "$mtime" =~ ^[0-9]+$ ]] || return 1
+  (( mtime > 0 )) || return 1
+  # A future mtime (clock step, copied directory) would otherwise make every
+  # caller wait out the full bound until the clock catches up.
+  (( now - mtime > $2 || mtime > now + 1 ))
+}
+
+# _afk_tooling_lock_reap <lock_dir> <stale_sec>
+# Removes a stale lock. Only one waiter at a time may judge and remove it,
+# and it looks again once it is alone: without that, a waiter that saw the
+# stale lock could remove the fresh lock another waiter had just taken in its
+# place, and both would be inside at once.
+_afk_tooling_lock_reap() {
+  local lock="$1" stale="$2" reap="$1.reap" rc=1
+  if ! mkdir -- "$reap" 2>/dev/null; then
+    # A waiter killed inside this section leaves the directory behind.
+    if [[ -d "$reap" ]] && _afk_tooling_lock_is_stale "$reap" "$stale"; then
+      rmdir -- "$reap" 2>/dev/null || true
+    fi
+    return 1
+  fi
+  if [[ -d "$lock" ]] && _afk_tooling_lock_is_stale "$lock" "$stale"; then
+    rm -f -- "$lock/owner"
+    rmdir -- "$lock" 2>/dev/null && rc=0
+  fi
+  rmdir -- "$reap" 2>/dev/null || true
+  return "$rc"
+}
+
+_afk_tooling_lock() {
+  local lock="$1" stale="${AFK_TOOLING_LOCK_STALE_SEC:-60}" wait_sec="${AFK_TOOLING_LOCK_WAIT_SEC:-90}"
+  local tries=0 max_tries missing=0 token
+  [[ "$stale" =~ ^[0-9]+$ ]] || stale=60
+  [[ "$wait_sec" =~ ^[0-9]+$ ]] || wait_sec=90
+  max_tries=$(( wait_sec * 10 ))
+  # Jobs are subshells of one process, so $$ is shared; $BASHPID is not.
+  token="${BASHPID:-$$}.${RANDOM}${RANDOM}"
+  while ! mkdir -- "$lock" 2>/dev/null; do
+    (( tries >= max_tries )) && return 1
+    tries=$(( tries + 1 ))
+    if [[ ! -d "$lock" ]]; then
+      # Either it was released between the two checks, or the parent
+      # directory cannot hold a lock at all; do not spin on the latter.
+      missing=$(( missing + 1 ))
+      (( missing > 20 )) && return 1
+      continue
+    fi
+    missing=0
+    if _afk_tooling_lock_is_stale "$lock" "$stale" && _afk_tooling_lock_reap "$lock" "$stale"; then
+      continue
+    fi
+    sleep 0.1
+  done
+  if ! printf '%s\n' "$token" > "$lock/owner" 2>/dev/null; then
+    rm -f -- "$lock/owner"
+    rmdir -- "$lock" 2>/dev/null || true
+    return 1
+  fi
+  _AFK_TOOLING_LOCK_TOKENS[$lock]="$token"
+  return 0
+}
+
+_afk_tooling_unlock() {
+  local lock="$1" mine owner
+  mine="${_AFK_TOOLING_LOCK_TOKENS[$lock]:-}"
+  _AFK_TOOLING_LOCK_TOKENS[$lock]=""
+  [[ -n "$mine" ]] || return 0
+  owner="$(cat -- "$lock/owner" 2>/dev/null || true)"
+  # Taken over as stale: the lock there now belongs to another job.
+  [[ "$owner" == "$mine" ]] || return 0
+  rm -f -- "$lock/owner"
+  rmdir -- "$lock" 2>/dev/null || true
+}
+
+_afk_tooling_registry_lock() {
   local reg_file
   reg_file="$(afk_tooling_registry_path)"
-  if [[ -f "$reg_file" ]]; then
-    cat -- "$reg_file"
-  else
-    jq -cn '{
-      schema: "afk-tooling-registry/1",
-      default_mcp_mode: "standalone",
-      litellm_mcp_url: null,
-      mcp_servers: {},
-      skills: {},
-      paperclip_central: null
-    }'
+  mkdir -p "$(dirname -- "$reg_file")"
+  if ! _afk_tooling_lock "${reg_file}.afk-lock"; then
+    printf 'afk-tooling: could not lock %s; registry left unchanged\n' "$reg_file" >&2
+    return 1
   fi
 }
 
+_afk_tooling_registry_unlock() {
+  _afk_tooling_unlock "$(afk_tooling_registry_path).afk-lock"
+}
+
+_afk_tooling_default_registry() {
+  jq -cn '{
+    schema: "afk-tooling-registry/1",
+    default_mcp_mode: "standalone",
+    litellm_mcp_url: null,
+    mcp_servers: {},
+    skills: {},
+    paperclip_central: null
+  }'
+}
+
+afk_tooling_load_registry() {
+  local reg_file content
+  reg_file="$(afk_tooling_registry_path)"
+  if [[ -f "$reg_file" ]]; then
+    content="$(cat -- "$reg_file" 2>/dev/null || true)"
+    if jq -es 'length == 1 and (.[0] | type == "object")' <<<"$content" >/dev/null 2>&1; then
+      printf '%s\n' "$content"
+      return 0
+    fi
+    # An empty or damaged file must not switch tooling off for good: every
+    # caller feeds this to `jq --argjson`, which fails on anything else.
+    printf 'afk-tooling: %s is not a JSON object; using an empty registry\n' "$reg_file" >&2
+  fi
+  _afk_tooling_default_registry
+}
+
+# afk_tooling_save_registry <content>
+# Returns non-zero, leaving the file as it was, unless <content> is a JSON
+# object. Callers that read, change and save hold _afk_tooling_registry_lock.
 afk_tooling_save_registry() {
   local content="$1"
   local reg_file
   reg_file="$(afk_tooling_registry_path)"
   mkdir -p "$(dirname -- "$reg_file")"
-  printf '%s\n' "$content" > "${reg_file}.tmp.$$" && mv "${reg_file}.tmp.$$" "$reg_file"
+  if ! _afk_tooling_write_json "$reg_file" "$content" private; then
+    printf 'afk-tooling: refused to save %s: content is not a JSON object or the write failed\n' "$reg_file" >&2
+    return 1
+  fi
 }
 
 # afk_tooling_register_mcp <name> <transport:stdio|http|sse> <target_cmd_or_url> [<args_csv>] [<description>]
 afk_tooling_register_mcp() {
   local name="$1" transport="${2:-stdio}" target="$3" args_csv="${4:-}" desc="${5:-}"
-  local reg args_json="[]"
-  reg="$(afk_tooling_load_registry)"
+  local reg args_json="[]" save_rc=0
   if [[ -n "$args_csv" ]]; then
     args_json="$(printf '%s' "$args_csv" | jq -Rc 'split(",") | map(select(length > 0))')"
   fi
+  _afk_tooling_registry_lock || return 1
+  reg="$(afk_tooling_load_registry)"
   reg="$(jq -c \
     --arg n "$name" \
     --arg tr "$transport" \
@@ -95,7 +258,9 @@ afk_tooling_register_mcp() {
         {name: $n, transport: $tr, url: $tg, description: $d, source: "local", updated_at: $ts}
       end
     )' <<<"$reg")"
-  afk_tooling_save_registry "$reg"
+  afk_tooling_save_registry "$reg" || save_rc=1
+  _afk_tooling_registry_unlock
+  (( save_rc == 0 )) || return 1
   jq -c --arg n "$name" '.mcp_servers[$n]' <<<"$reg"
 }
 
@@ -110,7 +275,8 @@ afk_tooling_register_skill() {
   if [[ -z "$desc" && -f "$abs_src/SKILL.md" ]]; then
     desc="$(sed -n 's/^description:[[:space:]]*//p' "$abs_src/SKILL.md" 2>/dev/null | head -n 1 | tr -d '"' || true)"
   fi
-  local reg
+  local reg save_rc=0
+  _afk_tooling_registry_lock || return 1
   reg="$(afk_tooling_load_registry)"
   reg="$(jq -c \
     --arg n "$name" \
@@ -119,7 +285,9 @@ afk_tooling_register_skill() {
     --arg st "$src_tag" \
     --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     '.skills[$n] = {name: $n, path: $p, description: $d, source: $st, updated_at: $ts}' <<<"$reg")"
-  afk_tooling_save_registry "$reg"
+  afk_tooling_save_registry "$reg" || save_rc=1
+  _afk_tooling_registry_unlock
+  (( save_rc == 0 )) || return 1
   jq -c --arg n "$name" '.skills[$n]' <<<"$reg"
 }
 
@@ -172,6 +340,41 @@ _afk_tooling_scan_mcp_file() {
   esac
 }
 
+# _afk_tooling_project_cfg <abs_repo>
+# Prints the repo's .afk/config.json, or {} when there is none. An empty or
+# unparseable file also prints {} but returns 1 so the caller can warn:
+# passed on as it is, it makes `jq --argjson` fail and the job silently runs
+# with no tooling at all.
+_afk_tooling_project_cfg() {
+  local abs_repo="${1:-}" content
+  if [[ -z "$abs_repo" || ! -f "$abs_repo/.afk/config.json" ]]; then
+    printf '{}\n'
+    return 0
+  fi
+  content="$(cat -- "$abs_repo/.afk/config.json" 2>/dev/null || true)"
+  if jq -es 'length == 1 and (.[0] | type == "object")' <<<"$content" >/dev/null 2>&1; then
+    printf '%s\n' "$content"
+    return 0
+  fi
+  printf '{}\n'
+  return 1
+}
+
+# _afk_tooling_url_origin <url>
+# Prints scheme://host[:port] only. Server URLs can carry a token in the
+# path, query string or userinfo, so logs never get the full URL.
+_afk_tooling_url_origin() {
+  local url="$1" scheme="" rest
+  rest="$url"
+  if [[ "$url" == *"://"* ]]; then
+    scheme="${url%%://*}://"
+    rest="${url#*://}"
+  fi
+  rest="${rest%%[/?#]*}"
+  rest="${rest##*@}"
+  printf '%s%s\n' "$scheme" "$rest"
+}
+
 # _afk_tooling_resolve_effective <repo_path> [<cli_mode>] [<cli_mcp_csv>] [<cli_skills_csv>] [<cli_litellm_url>] [<slug>]
 # Resolves effective {config_source, mcp_mode, litellm_mcp_url, enabled_mcp, enabled_skills, paperclip_central}
 # using strict 3-tier precedence:
@@ -180,9 +383,8 @@ _afk_tooling_resolve_effective() {
   local abs_repo="${1:-}" cli_mode="${2:-}" cli_mcp="${3:-}" cli_skills="${4:-}" cli_lurl="${5:-}" slug="${6:-}"
   local reg proj_cfg="{}"
   reg="$(afk_tooling_load_registry)"
-  if [[ -n "$abs_repo" && -f "$abs_repo/.afk/config.json" ]]; then
-    proj_cfg="$(cat -- "$abs_repo/.afk/config.json" 2>/dev/null || printf '{}')"
-  fi
+  proj_cfg="$(_afk_tooling_project_cfg "$abs_repo")" \
+    || printf 'afk-tooling: ignoring %s/.afk/config.json: it is not a JSON object\n' "$abs_repo" >&2
 
   local cli_mcp_arr="null" cli_skills_arr="null"
   if [[ -n "$cli_mcp" ]]; then
@@ -465,6 +667,11 @@ afk_tooling_discover() {
     }'
 }
 
+# The result every failed sync prints: same keys as a success, ok:false.
+_afk_tooling_sync_fail() {
+  jq -cn --arg e "$1" '{schema:"afk-paperclip-skills-sync/1", ok:false, error:$e, synced_count:0, skipped_bundled_count:0, synced_skills:[]}'
+}
+
 # afk_tooling_sync_paperclip_skills [<api_url>] [<key>] [<company_id>] [<host_agent_id>]
 # Pulls the Paperclip Company Skills Store (`GET /api/companies/{companyId}/skills`
 # and `/files?path=...`, Paperclip v2026.1106.0+) plus agent `desiredSkills` into AFK:
@@ -477,7 +684,7 @@ afk_tooling_sync_paperclip_skills() {
   local api_url="${1:-}" key="${2:-}" company_id="${3:-}" host_agent_id="${4:-}"
   declare -F afk_pc_curl >/dev/null 2>&1 || . "$(dirname -- "${BASH_SOURCE[0]}")/afk-paperclip.sh"
 
-  local pc_cfg=""
+  local pc_cfg="" save_rc=0
   if [[ -z "$api_url" || -z "$company_id" || -z "$key" || -z "$host_agent_id" ]]; then
     local pc_cfg_path key_ref
     pc_cfg_path="$(afk_pc_config_path)"
@@ -489,6 +696,7 @@ afk_tooling_sync_paperclip_skills() {
       if [[ -z "$key" ]]; then
         key_ref="$(jq -r '.host.key_ref // empty' <<<"$pc_cfg" 2>/dev/null)"
         if [[ -n "$key_ref" ]]; then
+          # shellcheck disable=SC2034 # read by afk_pc_read_key (lib/afk-paperclip.sh)
           AFK_PC_CFG="$pc_cfg"
           key="$(afk_pc_read_key "$key_ref" 2>/dev/null || true)"
         fi
@@ -508,30 +716,42 @@ afk_tooling_sync_paperclip_skills() {
     ha_resp="$(afk_pc_curl GET "$api_url/api/agents/$host_agent_id/skills" "$key" "")"
     ha_code="${ha_resp%%$'\n'*}"
     ha_body="${ha_resp#*$'\n'}"
-    if [[ "$ha_code" == 2?? ]]; then
-      host_desired_refs="$(jq -c '
-        (
-          [ (.desiredSkills // [])[] | tostring, (tostring | split("/") | last) ]
-          + [ (.desiredSkillEntries // [])[] | (.slug // empty), (.key // empty), (.id // empty) ]
-        ) | map(select(length > 0)) | unique
-      ' <<<"$ha_body" 2>/dev/null || printf '[]')"
-      host_desired_slugs="$(jq -c '
-        (
-          [ (.desiredSkills // [])[] | tostring | split("/") | last ]
-          + [ (.desiredSkillEntries // [])[] | (.slug // empty) ]
-        ) | map(select(length > 0)) | unique
-      ' <<<"$ha_body" 2>/dev/null || printf '[]')"
+    # A failed lookup is not "nothing attached". Carrying on would delete the
+    # bundled skills this agent wants and save the empty answer as the new
+    # snapshot, so stop here and keep the previous one.
+    if [[ "$ha_code" != 2?? ]] || ! jq -e 'type == "object"' <<<"$ha_body" >/dev/null 2>&1; then
+      _afk_tooling_sync_fail "AGENT_SKILLS_HTTP_${ha_code:-000}"
+      return 1
     fi
+    host_desired_refs="$(jq -c '
+      (
+        [ (.desiredSkills // [])[] | tostring, (tostring | split("/") | last) ]
+        + [ (.desiredSkillEntries // [])[] | (.slug // empty), (.key // empty), (.id // empty) ]
+      ) | map(select(length > 0)) | unique
+    ' <<<"$ha_body" 2>/dev/null || printf '[]')"
+    host_desired_slugs="$(jq -c '
+      (
+        [ (.desiredSkills // [])[] | tostring | split("/") | last ]
+        + [ (.desiredSkillEntries // [])[] | (.slug // empty) ]
+      ) | map(select(length > 0)) | unique
+    ' <<<"$ha_body" 2>/dev/null || printf '[]')"
   fi
 
   if declare -F afk_pch_load_ledger >/dev/null 2>&1; then
     local ledger_json
     ledger_json="$(afk_pch_load_ledger 2>/dev/null || printf '{}')"
     local -a hired_pairs=()
+    # The ledger keeps each agent's lifecycle in `state` (`status` only marks
+    # a hire waiting for approval). Idle agents keep their skills; paused and
+    # terminated ones do not run. A `local-*` id is a placeholder for an agent
+    # Paperclip never created, so there is nothing to ask about.
     mapfile -t hired_pairs < <(jq -r '
       (.projects // {}) | to_entries[] as $p
       | ($p.value.agents // {}) | to_entries[]
-      | select((.value.status // "") == "active" and (.value.agent_id // "") != "")
+      | select(((.value.state // "") == "active" or (.value.state // "") == "idle")
+               and ((.value.agent_id // "") | type == "string")
+               and (.value.agent_id // "") != ""
+               and ((.value.agent_id // "") | startswith("local-") | not))
       | "\($p.key)|\(.value.agent_id)"
     ' <<<"$ledger_json" 2>/dev/null || true)
     local hp p_slug p_aid pa_resp pa_code pa_body p_slugs p_refs
@@ -539,15 +759,22 @@ afk_tooling_sync_paperclip_skills() {
       [[ -n "$hp" ]] || continue
       p_slug="${hp%%|*}"
       p_aid="${hp#*|}"
+      [[ "$p_aid" =~ ^[A-Za-z0-9_-]+$ ]] || continue
       pa_resp="$(afk_pc_curl GET "$api_url/api/agents/$p_aid/skills" "$key" "")"
       pa_code="${pa_resp%%$'\n'*}"
       pa_body="${pa_resp#*$'\n'}"
-      if [[ "$pa_code" == 2?? ]]; then
-        p_slugs="$(jq -c '([ (.desiredSkills // [])[] | tostring | split("/") | last ] + [ (.desiredSkillEntries // [])[] | (.slug // empty) ]) | map(select(length > 0)) | unique' <<<"$pa_body" 2>/dev/null || printf '[]')"
-        p_refs="$(jq -c '([ (.desiredSkills // [])[] | tostring, (tostring | split("/") | last) ] + [ (.desiredSkillEntries // [])[] | (.slug // empty), (.key // empty), (.id // empty) ]) | map(select(length > 0)) | unique' <<<"$pa_body" 2>/dev/null || printf '[]')"
-        agent_desired_map="$(jq -c --arg s "$p_slug" --argjson sl "$p_slugs" '.[$s] = (((.[$s] // []) + $sl) | unique)' <<<"$agent_desired_map")"
-        all_desired_refs="$(jq -c --argjson r "$p_refs" '(. + $r) | unique' <<<"$all_desired_refs")"
+      # An agent Paperclip no longer knows has no skills to sync; that is an
+      # answer, not a failed lookup.
+      [[ "$pa_code" == "404" ]] && continue
+      # Same rule as the host agent above: an unanswered lookup aborts.
+      if [[ "$pa_code" != 2?? ]] || ! jq -e 'type == "object"' <<<"$pa_body" >/dev/null 2>&1; then
+        _afk_tooling_sync_fail "AGENT_SKILLS_HTTP_${pa_code:-000}"
+        return 1
       fi
+      p_slugs="$(jq -c '([ (.desiredSkills // [])[] | tostring | split("/") | last ] + [ (.desiredSkillEntries // [])[] | (.slug // empty) ]) | map(select(length > 0)) | unique' <<<"$pa_body" 2>/dev/null || printf '[]')"
+      p_refs="$(jq -c '([ (.desiredSkills // [])[] | tostring, (tostring | split("/") | last) ] + [ (.desiredSkillEntries // [])[] | (.slug // empty), (.key // empty), (.id // empty) ]) | map(select(length > 0)) | unique' <<<"$pa_body" 2>/dev/null || printf '[]')"
+      agent_desired_map="$(jq -c --arg s "$p_slug" --argjson sl "$p_slugs" '.[$s] = (((.[$s] // []) + $sl) | unique)' <<<"$agent_desired_map")"
+      all_desired_refs="$(jq -c --argjson r "$p_refs" '(. + $r) | unique' <<<"$all_desired_refs")"
     done
   fi
   all_desired_refs="$(jq -c --argjson hr "$host_desired_refs" '(. + $hr) | unique' <<<"$all_desired_refs")"
@@ -562,13 +789,27 @@ afk_tooling_sync_paperclip_skills() {
     return 1
   fi
 
-  local dest_root
+  local dest_root dest_real stage
   dest_root="$(afk_tooling_paperclip_skills_dir)"
   mkdir -p "$dest_root"
+  dest_real="$(cd -P -- "$dest_root" 2>/dev/null && pwd -P)" || dest_real="$dest_root"
+  # Staging directories left by a sync that was killed. A running sync's own
+  # is minutes old at most, so only old ones are removed.
+  find "$dest_root" -mindepth 1 -maxdepth 1 -type d -name '.staging.*' -mmin +60 -exec rm -rf {} + 2>/dev/null || true
+  # Every skill is fetched into a staging directory, and the store and the
+  # registry change only once all fetches are in and every bundle parsed. A
+  # sync that stops part way therefore leaves both as they were, and a file
+  # removed upstream cannot linger in the store and fail later syncs.
+  if ! stage="$(mktemp -d "$dest_root/.staging.XXXXXX" 2>/dev/null)"; then
+    _afk_tooling_sync_fail "SKILLS_STORE_UNWRITABLE"
+    return 1
+  fi
 
   local synced="[]" skipped_bundled=0 central_source="" central_mode="" central_lurl="" central_mcp="[]" central_skills="[]"
-  local row sid sslug skey sdesc is_bundled is_desired fpath enc_path f_resp f_code f_body f_content sdir
+  local bundle_servers="{}" skill_entries="{}" entry_ts
+  local row sid sslug skey sdesc is_bundled is_desired fpath enc_path f_resp f_code f_body f_content sdir live_dir
   local -a rows=()
+  entry_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   mapfile -t rows < <(jq -c '.[] | select((.slug // "") != "")' <<<"$body" 2>/dev/null)
 
   for row in "${rows[@]:-}"; do
@@ -577,7 +818,10 @@ afk_tooling_sync_paperclip_skills() {
     sslug="$(jq -r '.slug // empty' <<<"$row")"
     skey="$(jq -r '.key // empty' <<<"$row")"
     sdesc="$(jq -r '.description // ""' <<<"$row")"
-    [[ "$sslug" =~ ^[a-zA-Z0-9._-]+$ && -n "$sid" ]] || continue
+    # The slug becomes a directory name under the skills store. No leading
+    # dot: `.` and `..` would write this row's files into the store itself or
+    # its parent, where the registry lives.
+    [[ "$sslug" =~ ^[a-zA-Z0-9_-][a-zA-Z0-9._-]*$ && -n "$sid" ]] || continue
 
     is_bundled="$(jq -r '
       if (((.folderPath // "") | startswith("bundled/"))
@@ -589,14 +833,18 @@ afk_tooling_sync_paperclip_skills() {
       if any(.[]; . == $id or . == $sl or . == $ky) then "true" else "false" end
     ' <<<"$all_desired_refs")"
 
+    # Its store directory goes with the prune at the end, like any skill
+    # that was not synced.
     if [[ "$is_bundled" == "true" && "$is_desired" != "true" ]]; then
-      rm -rf "${dest_root:?}/$sslug" 2>/dev/null || true
       skipped_bundled=$((skipped_bundled + 1))
       continue
     fi
 
-    sdir="$dest_root/$sslug"
-    mkdir -p "$sdir"
+    sdir="$stage/$sslug"
+    live_dir="$dest_root/$sslug"
+    # Skill files can carry MCP headers or env from Studio (bearer tokens),
+    # so everything in the store is written owner-only.
+    ( umask 077; mkdir -p "$sdir" )
 
     local -a fpaths=()
     mapfile -t fpaths < <(jq -r '(.fileInventory // [{path:"SKILL.md"}])[]?.path // empty' <<<"$row" 2>/dev/null)
@@ -615,18 +863,30 @@ afk_tooling_sync_paperclip_skills() {
       f_resp="$(afk_pc_curl GET "$api_url/api/companies/$company_id/skills/$sid/files?path=$enc_path" "$key" "")"
       f_code="${f_resp%%$'\n'*}"
       f_body="${f_resp#*$'\n'}"
+      f_content=""
       if [[ "$f_code" == 2?? ]]; then
         f_content="$(jq -r '.content // empty' <<<"$f_body" 2>/dev/null || true)"
-        if [[ -n "$f_content" ]]; then
-          mkdir -p "$(dirname -- "$sdir/$fpath")"
-          printf '%s\n' "$f_content" > "$sdir/$fpath"
+      fi
+      if [[ -n "$f_content" ]]; then
+        if ! ( umask 077; mkdir -p "$(dirname -- "$sdir/$fpath")" && printf '%s\n' "$f_content" > "$sdir/$fpath" ); then
+          rm -rf -- "$stage"
+          _afk_tooling_sync_fail "SKILLS_STORE_UNWRITABLE"
+          return 1
         fi
+      elif [[ "$f_code" != "404" && -f "$live_dir/$fpath" ]]; then
+        # A file that could not be fetched this time keeps its previous copy;
+        # a 404 means it is gone upstream, so it is not carried over.
+        ( umask 077; mkdir -p "$(dirname -- "$sdir/$fpath")" && cp -- "$live_dir/$fpath" "$sdir/$fpath" ) 2>/dev/null || true
       fi
     done
 
     if [[ -f "$sdir/SKILL.md" ]]; then
-      afk_tooling_register_skill "$sslug" "$sdir" "$sdesc" "paperclip" >/dev/null 2>&1 || true
-      synced="$(jq -c --arg s "$sslug" --arg id "$sid" --arg p "$sdir" '. + [{slug:$s, skill_id:$id, path:$p}]' <<<"$synced")"
+      if [[ -z "$sdesc" ]]; then
+        sdesc="$(sed -n 's/^description:[[:space:]]*//p' "$sdir/SKILL.md" 2>/dev/null | head -n 1 | tr -d '"' || true)"
+      fi
+      skill_entries="$(jq -c --arg n "$sslug" --arg p "$dest_real/$sslug" --arg d "$sdesc" --arg ts "$entry_ts" \
+        '.[$n] = {name: $n, path: $p, description: $d, source: "paperclip", updated_at: $ts}' <<<"$skill_entries")"
+      synced="$(jq -c --arg s "$sslug" --arg id "$sid" --arg p "$live_dir" '. + [{slug:$s, skill_id:$id, path:$p}]' <<<"$synced")"
     fi
 
     # Extract Central MCP / Tooling bundle if skill ships mcp.json, .mcp.json, or tooling.json
@@ -634,9 +894,8 @@ afk_tooling_sync_paperclip_skills() {
     for cfg_cand in "$sdir/mcp.json" "$sdir/.mcp.json" "$sdir/tooling.json"; do
       [[ -f "$cfg_cand" ]] || continue
       if jq -e 'type == "object"' "$cfg_cand" >/dev/null 2>&1; then
-        local reg now_iso parsed_bundle
+        local now_iso parsed_bundle
         now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        reg="$(afk_tooling_load_registry)"
         parsed_bundle="$(jq -cn \
           --slurpfile b "$cfg_cand" \
           --arg ts "$now_iso" \
@@ -701,9 +960,17 @@ afk_tooling_sync_paperclip_skills() {
               enabled_mcp: $det_emcp,
               enabled_skills: $det_eskills
             }
-          ')"
-        reg="$(jq -c --argjson pb "$parsed_bundle" '.mcp_servers = ((.mcp_servers // {}) + $pb.servers)' <<<"$reg")"
-        afk_tooling_save_registry "$reg"
+          ' 2>/dev/null || true)"
+        # The filter fails on shapes it does not know (a server given as a
+        # string, say) and then prints nothing. Saving that would empty the
+        # registry, so the sync stops before anything is applied.
+        if ! jq -e '(.servers | type == "object") and (.enabled_mcp | type == "array") and (.enabled_skills | type == "array")' <<<"$parsed_bundle" >/dev/null 2>&1; then
+          printf 'afk-tooling: %s of Studio skill %s is not a usable tooling bundle (each MCP server must be an object); sync aborted, the skills store and the registry were not changed\n' "$(basename -- "$cfg_cand")" "$sslug" >&2
+          rm -rf -- "$stage"
+          _afk_tooling_sync_fail "INVALID_TOOLING_BUNDLE"
+          return 1
+        fi
+        bundle_servers="$(jq -c --argjson pb "$parsed_bundle" '. + $pb.servers' <<<"$bundle_servers")"
 
         if [[ -z "$central_source" || "$sslug" == "afk-fleet-tooling" ]]; then
           central_source="$sslug"
@@ -717,17 +984,21 @@ afk_tooling_sync_paperclip_skills() {
     done
   done
 
-  # 3. Prune stale Paperclip-managed skills deleted/detached upstream & persist snapshot
-  local reg now_iso now_ep stale_dir stale_name
-  for stale_dir in "$dest_root"/*; do
-    [[ -d "$stale_dir" ]] || continue
-    stale_name="$(basename -- "$stale_dir")"
-    if ! jq -e --arg s "$stale_name" 'any(.[]; .slug == $s)' <<<"$synced" >/dev/null 2>&1; then
-      rm -rf "${dest_root:?}/$stale_name" 2>/dev/null || true
-    fi
-  done
+  # 3. Apply: one registry save, then the store. Both happen under the
+  # registry lock so two syncs never swap the same skill directory at once.
+  # The save comes first so a save that fails leaves the store untouched, and
+  # the prune comes last so a saved registry never points at a directory that
+  # was just deleted.
+  local reg now_iso now_ep stale_dir stale_name s_slug store_rc=0
+  local -a synced_slugs=()
   now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   now_ep="$(date -u +%s)"
+  if ! _afk_tooling_registry_lock; then
+    rm -rf -- "$stage"
+    _afk_tooling_sync_fail "REGISTRY_LOCK_TIMEOUT"
+    return 1
+  fi
+  save_rc=0
   reg="$(afk_tooling_load_registry)"
   reg="$(jq -c \
     --arg ts "$now_iso" \
@@ -742,8 +1013,12 @@ afk_tooling_sync_paperclip_skills() {
     --argjson esk "$central_skills" \
     --argjson dsk "$host_desired_slugs" \
     --argjson adsk "$agent_desired_map" \
+    --argjson bsrv "$bundle_servers" \
+    --argjson sent "$skill_entries" \
     '
-    .skills |= with_entries(
+    .mcp_servers = ((.mcp_servers // {}) + $bsrv)
+    | .skills = ((.skills // {}) + $sent)
+    | .skills |= with_entries(
       . as $e
       | select(
           ((($e.value.source // "") != "paperclip") and ((($e.value.path // "") | startswith($root)) | not))
@@ -762,7 +1037,40 @@ afk_tooling_sync_paperclip_skills() {
       desired_skills: $dsk,
       agent_desired_skills: $adsk
     }' <<<"$reg")"
-  afk_tooling_save_registry "$reg"
+  afk_tooling_save_registry "$reg" || save_rc=1
+  if (( save_rc != 0 )); then
+    _afk_tooling_registry_unlock
+    rm -rf -- "$stage"
+    printf 'afk-tooling: could not save the registry; sync aborted, the skills store and the registry were not changed\n' >&2
+    _afk_tooling_sync_fail "REGISTRY_SAVE_FAILED"
+    return 1
+  fi
+  mapfile -t synced_slugs < <(jq -r '.[].slug' <<<"$synced" 2>/dev/null)
+  for s_slug in "${synced_slugs[@]:-}"; do
+    [[ -n "$s_slug" && -d "$stage/$s_slug" ]] || continue
+    # Never move the new copy while the old one is still in place: mv would
+    # put it inside the old directory instead of replacing it.
+    if [[ -e "$dest_root/$s_slug" || -L "$dest_root/$s_slug" ]] \
+       && ! mv -- "$dest_root/$s_slug" "$stage/.old.$s_slug" 2>/dev/null; then
+      store_rc=1
+      continue
+    fi
+    mv -- "$stage/$s_slug" "$dest_root/$s_slug" 2>/dev/null || store_rc=1
+  done
+  for stale_dir in "$dest_root"/*; do
+    [[ -d "$stale_dir" ]] || continue
+    stale_name="$(basename -- "$stale_dir")"
+    if ! jq -e --arg s "$stale_name" 'any(.[]; .slug == $s)' <<<"$synced" >/dev/null 2>&1; then
+      rm -rf "${dest_root:?}/$stale_name" 2>/dev/null || true
+    fi
+  done
+  _afk_tooling_registry_unlock
+  rm -rf -- "$stage"
+  if (( store_rc != 0 )); then
+    printf 'afk-tooling: the registry was saved, but some skills in %s could not be replaced\n' "$dest_root" >&2
+    _afk_tooling_sync_fail "SKILLS_STORE_UPDATE_FAILED"
+    return 1
+  fi
 
   jq -cn \
     --arg cid "$company_id" \
@@ -783,25 +1091,70 @@ afk_tooling_sync_paperclip_skills() {
     }'
 }
 
-# afk_tooling_ensure_paperclip_synced [<ttl_sec>]
-# Silent TTL auto-sync helper: no-op in standalone mode (when Paperclip is not configured)
+# Where the last automatic sync attempt is recorded: a small file next to the
+# registry, so recording a failure never rewrites the registry itself.
+_afk_tooling_sync_status_path() {
+  printf '%s.sync-status.json\n' "$(afk_tooling_registry_path)"
+}
+
+# _afk_tooling_note_job_warning <job_dir> <line>: appends <line> to the job's
+# tooling-warnings.log once.
+_afk_tooling_note_job_warning() {
+  [[ -n "$1" && -d "$1" ]] || return 0
+  grep -qxF -- "$2" "$1/tooling-warnings.log" 2>/dev/null || printf '%s\n' "$2" >> "$1/tooling-warnings.log"
+}
+
+# afk_tooling_ensure_paperclip_synced [<ttl_sec>] [<job_dir>]
+# TTL auto-sync helper: no-op in standalone mode (when Paperclip is not configured)
 # or when `.paperclip_central` was synced within <ttl_sec> (default 300s).
+# A failed attempt is recorded (last_attempt_epoch, last_error) and not retried
+# for AFK_TOOLING_RETRY_SEC (default 300), so a broken Studio does not cost
+# every job a full sync. With <job_dir>, the failure is written to that job's
+# tooling-warnings.log, because the job then runs on the previous snapshot.
+# shellcheck disable=SC2120 # both arguments are optional; the factory passes neither
 afk_tooling_ensure_paperclip_synced() {
-  local ttl="${1:-${AFK_PAPERCLIP_TOOLING_TTL_SEC:-300}}"
+  local ttl="${1:-${AFK_PAPERCLIP_TOOLING_TTL_SEC:-300}}" job_dir="${2:-}"
+  local retry="${AFK_TOOLING_RETRY_SEC:-300}"
+  [[ "$ttl" =~ ^[0-9]+$ ]] || ttl=300
+  [[ "$retry" =~ ^[0-9]+$ ]] || retry=300
   [[ -z "${AFK_TOOLING_HERMETIC:-}" ]] || return 0
   declare -F afk_pc_config_path >/dev/null 2>&1 || . "$(dirname -- "${BASH_SOURCE[0]}")/afk-paperclip.sh"
   local pc_cfg_path
   pc_cfg_path="$(afk_pc_config_path)"
   [[ -f "$pc_cfg_path" ]] || return 0
 
-  local reg last_ep now_ep
+  local reg last_ep now_ep status_file status="{}" last_try last_err
   reg="$(afk_tooling_load_registry)"
   last_ep="$(jq -r '.paperclip_central.synced_epoch // 0' <<<"$reg" 2>/dev/null || printf '0')"
   now_ep="$(date -u +%s)"
   if [[ "$last_ep" =~ ^[0-9]+$ ]] && (( last_ep > 0 && (now_ep - last_ep) < ttl )); then
     return 0
   fi
-  afk_tooling_sync_paperclip_skills >/dev/null 2>&1 || true
+
+  status_file="$(_afk_tooling_sync_status_path)"
+  if [[ -f "$status_file" ]]; then
+    status="$(jq -c 'if type == "object" then . else {} end' "$status_file" 2>/dev/null || printf '{}')"
+  fi
+  last_try="$(jq -r '.last_attempt_epoch // 0 | tostring' <<<"$status" 2>/dev/null || printf '0')"
+  last_err="$(jq -r '.last_error // empty' <<<"$status" 2>/dev/null || true)"
+  if [[ -n "$last_err" && "$last_try" =~ ^[0-9]+$ ]] && (( last_try <= now_ep && now_ep - last_try < retry )); then
+    _afk_tooling_note_job_warning "$job_dir" "Paperclip tooling sync failed recently ($last_err); this job uses the previous tooling snapshot"
+    return 0
+  fi
+
+  local out err_code err_text err="" sync_rc=0
+  out="$(afk_tooling_sync_paperclip_skills 2>&1)" || sync_rc=$?
+  if (( sync_rc != 0 )); then
+    err_code="$(printf '%s\n' "$out" | jq -rR 'fromjson? | objects | .error // empty' 2>/dev/null | tail -n 1)"
+    err_text="$(printf '%s\n' "$out" | grep -v '^{' | head -n 1)"
+    err="${err_code:-SYNC_FAILED}${err_text:+: $err_text}"
+    err="${err:0:300}"
+    _afk_tooling_note_job_warning "$job_dir" "Paperclip tooling sync failed ($err); this job uses the previous tooling snapshot"
+  fi
+  mkdir -p "$(dirname -- "$status_file")" 2>/dev/null || true
+  _afk_tooling_write_json "$status_file" \
+    "$(jq -cn --argjson ep "$now_ep" --arg e "$err" '{last_attempt_epoch: $ep, last_error: (if $e == "" then null else $e end)}')" \
+    private || true
   return 0
 }
 
@@ -826,10 +1179,18 @@ afk_tooling_sync_project() {
   fi
 
   local reg eff cfg_file="$abs_repo/.afk/config.json" cfg="{}"
+  # An empty config counts as {}. One that has content but does not parse is
+  # the user's to fix: rewriting it below would discard whatever is in it.
+  if ! cfg="$(_afk_tooling_project_cfg "$abs_repo")" && grep -q '[^[:space:]]' "$cfg_file" 2>/dev/null; then
+    printf 'afk_tooling_sync_project: %s is not a JSON object; fix or remove it (nothing was changed)\n' "$cfg_file" >&2
+    return 1
+  fi
   eff="$(_afk_tooling_resolve_effective "$abs_repo" "$cli_mode" "$mcp_csv" "$skills_csv" "$litellm_arg" "$slug")"
   reg="$(afk_tooling_load_registry)"
-  mkdir -p "$abs_repo/.afk"
-  [[ -f "$cfg_file" ]] && cfg="$(cat -- "$cfg_file" 2>/dev/null || printf '{}')"
+  if ! jq -e 'type == "object"' <<<"$eff" >/dev/null 2>&1; then
+    printf 'afk_tooling_sync_project: could not resolve the tooling configuration for %s (nothing was changed)\n' "$abs_repo" >&2
+    return 1
+  fi
 
   local config_source mcp_mode litellm_url mcp_arr skills_arr
   config_source="$(jq -r '.config_source' <<<"$eff")"
@@ -853,19 +1214,36 @@ afk_tooling_sync_project() {
       enabled_mcp: $em,
       enabled_skills: $es
     })' <<<"$cfg")"
-  printf '%s\n' "$cfg" > "${cfg_file}.tmp.$$" && mv "${cfg_file}.tmp.$$" "$cfg_file"
 
-  # Render <repo>/.mcp.json when at least one MCP server is enabled
-  local mcp_len synced_mcp="[]"
+  # Render <repo>/.mcp.json when at least one MCP server is enabled. Both
+  # documents are built and checked before either file is written: an existing
+  # .mcp.json that does not parse (a `//` comment is enough) makes the render
+  # print nothing, and redirecting that into the file used to truncate it.
+  local mcp_len synced_mcp="[]" mcp_out=""
   mcp_len="$(jq -r 'length' <<<"$mcp_arr")"
   if (( mcp_len > 0 )); then
     local mcp_doc="{}" rendered
     if [[ -f "$abs_repo/.mcp.json" ]]; then
       mcp_doc="$(cat -- "$abs_repo/.mcp.json" 2>/dev/null || printf '{}')"
     fi
-    rendered="$(_afk_tooling_render_mcp_doc "$mcp_doc" "$mcp_mode" "$litellm_url" "$mcp_arr" "$reg")"
-    jq '.doc' <<<"$rendered" > "$abs_repo/.mcp.json"
+    rendered="$(_afk_tooling_render_mcp_doc "$mcp_doc" "$mcp_mode" "$litellm_url" "$mcp_arr" "$reg" 2>/dev/null || true)"
+    if ! jq -e '(.doc | type == "object") and (.synced_mcp | type == "array")' <<<"$rendered" >/dev/null 2>&1; then
+      printf 'afk_tooling_sync_project: could not merge MCP servers into %s (is it valid JSON?); the file was left untouched\n' "$abs_repo/.mcp.json" >&2
+      return 1
+    fi
+    mcp_out="$(jq '.doc' <<<"$rendered")"
     synced_mcp="$(jq -c '.synced_mcp' <<<"$rendered")"
+  fi
+
+  mkdir -p "$abs_repo/.afk"
+  if ! _afk_tooling_write_json "$cfg_file" "$cfg"; then
+    printf 'afk_tooling_sync_project: could not write %s\n' "$cfg_file" >&2
+    return 1
+  fi
+  # .mcp.json carries the registry's MCP headers and env, so it stays 0600.
+  if [[ -n "$mcp_out" ]] && ! _afk_tooling_write_json "$abs_repo/.mcp.json" "$mcp_out" private; then
+    printf 'afk_tooling_sync_project: could not write %s; the file was left untouched\n' "$abs_repo/.mcp.json" >&2
+    return 1
   fi
 
   # Provision enabled central skills into <repo>/.agents/skills/<skill> (preserving repo BMAD skills)
@@ -874,10 +1252,14 @@ afk_tooling_sync_project() {
   mapfile -t s_list < <(jq -r '.[]' <<<"$skills_arr" 2>/dev/null || true)
   for s_name in "${s_list[@]:-}"; do
     [[ -n "$s_name" && "$s_name" != bmad-* ]] || continue
+    # Only a directory this function created (it carries the marker) is ever
+    # replaced. Anything else there is the user's own skill, whether or not
+    # git tracks it, and is left alone.
     if [[ -d "$abs_repo/.agents/skills/$s_name" && ! -f "$abs_repo/.agents/skills/$s_name/.afk-managed-skill" ]]; then
-      if [[ -d "$abs_repo/.git" || -f "$abs_repo/.git" ]] && git -C "$abs_repo" ls-files --error-unmatch ".agents/skills/$s_name/SKILL.md" >/dev/null 2>&1; then
-        continue
-      fi
+      # Said out loud: a copy an older kit made has no marker either, and it
+      # would otherwise go stale with no sign of why.
+      printf 'afk_tooling_sync_project: left %s alone: it has no .afk-managed-skill marker, so it is treated as your own skill (delete it to let the kit manage it)\n' "$abs_repo/.agents/skills/$s_name" >&2
+      continue
     fi
     s_src="$(jq -r --arg n "$s_name" '.skills[$n].path // empty' <<<"$reg" 2>/dev/null)"
     if [[ -n "$s_src" && -d "$s_src" ]]; then
@@ -907,6 +1289,67 @@ afk_tooling_sync_project() {
     }'
 }
 
+# _afk_tooling_exclude_rewrite <excl_file> <job_id> <eph_file> <add_block:true|false>
+# Drops this job's block from the shared `info/exclude` and, when asked,
+# appends a fresh one built from <eph_file>. Every worktree of a repo shares
+# this one file and several jobs edit it at once, so the whole rewrite runs
+# under a lock and lands through a temp file.
+#
+# A block is only removed whole when its END marker is there. If the END is
+# missing (a job died mid-write, someone edited the file) the lines after the
+# BEGIN may be the user's own: skipping stops at the next marker of any job
+# or at end of file, and only lines this job is known to have written (the
+# paths in <eph_file>) are dropped.
+_afk_tooling_exclude_rewrite() {
+  local excl_file="$1" job_id="$2" eph_file="$3" add_block="${4:-false}"
+  local lock="${excl_file}.afk-lock" tmp rel_p rc=0
+  _afk_tooling_lock "$lock" || return 1
+  if [[ "$add_block" != "true" ]] && ! grep -qF "AFK-EPHEMERAL:$job_id" "$excl_file" 2>/dev/null; then
+    _afk_tooling_unlock "$lock"
+    return 0
+  fi
+  if ! tmp="$(mktemp "${excl_file}.XXXXXX" 2>/dev/null)"; then
+    _afk_tooling_unlock "$lock"
+    return 1
+  fi
+  if [[ -f "$excl_file" ]]; then
+    AFK_EXCL_BEGIN="# BEGIN AFK-EPHEMERAL:$job_id" AFK_EXCL_END="# END AFK-EPHEMERAL:$job_id" AFK_EXCL_EPH="$eph_file" awk '
+      BEGIN {
+        b = ENVIRON["AFK_EXCL_BEGIN"]; e = ENVIRON["AFK_EXCL_END"]; f = ENVIRON["AFK_EXCL_EPH"]
+        if (f != "") { while ((getline line < f) > 0) { if (line != "") own["/" line] = 1 } }
+      }
+      function keep_foreign(   i) {
+        for (i = 1; i <= n; i++) { if (!(buf[i] in own)) print buf[i] }
+        n = 0
+      }
+      skip && $0 == e { skip = 0; n = 0; next }
+      skip && /^# (BEGIN|END) AFK-EPHEMERAL:/ { keep_foreign(); skip = 0 }
+      $0 == b { skip = 1; n = 0; next }
+      $0 == e { next }
+      skip { buf[++n] = $0; next }
+      { print }
+      END { if (skip) keep_foreign() }
+    ' "$excl_file" > "$tmp" || rc=1
+  fi
+  if (( rc == 0 )) && [[ "$add_block" == "true" ]]; then
+    {
+      printf '# BEGIN AFK-EPHEMERAL:%s\n' "$job_id"
+      while IFS= read -r rel_p; do
+        [[ -n "$rel_p" ]] && printf '/%s\n' "$rel_p"
+      done < "$eph_file"
+      printf '# END AFK-EPHEMERAL:%s\n' "$job_id"
+    } >> "$tmp" || rc=1
+  fi
+  if (( rc == 0 )); then
+    # mktemp made the file 0600; give it the mode a plain redirect would.
+    chmod "$(_afk_tooling_default_mode)" "$tmp" 2>/dev/null || true
+    mv -f -- "$tmp" "$excl_file" || rc=1
+  fi
+  (( rc == 0 )) || rm -f -- "$tmp"
+  _afk_tooling_unlock "$lock"
+  return "$rc"
+}
+
 # afk_tooling_prepare_worktree <repo_path> <wt_dir> <job_dir> [<slug>]
 # Auto-bridges Paperclip central MCPs + desiredSkills (or standalone tooling) into an
 # ephemeral Factory job worktree while excluding all newly created files from Git so
@@ -915,12 +1358,23 @@ afk_tooling_prepare_worktree() {
   local repo="$1" wt_dir="$2" job_dir="$3" slug="${4:-}"
   [[ -d "$wt_dir" && -d "$job_dir" ]] || return 0
 
-  afk_tooling_ensure_paperclip_synced
+  afk_tooling_ensure_paperclip_synced "" "$job_dir"
 
-  local abs_repo eff reg mcp_mode litellm_url mcp_arr skills_arr
+  local abs_repo eff reg mcp_mode litellm_url mcp_arr skills_arr warn_line
   abs_repo="$(cd -P -- "$repo" 2>/dev/null && pwd -P)" || abs_repo="$repo"
-  eff="$(_afk_tooling_resolve_effective "$abs_repo" "" "" "" "" "$slug")"
+  # The job still gets its central tooling when the project config is empty
+  # or broken, but the operator has to be able to see that it was ignored.
+  if ! _afk_tooling_project_cfg "$abs_repo" >/dev/null; then
+    warn_line="ignored $abs_repo/.afk/config.json: it is not a JSON object, so its tooling overrides do not apply"
+    grep -qxF "$warn_line" "$job_dir/tooling-warnings.log" 2>/dev/null \
+      || printf '%s\n' "$warn_line" >> "$job_dir/tooling-warnings.log"
+  fi
+  eff="$(_afk_tooling_resolve_effective "$abs_repo" "" "" "" "" "$slug" 2>/dev/null)"
   reg="$(afk_tooling_load_registry)"
+  if ! jq -e 'type == "object"' <<<"$eff" >/dev/null 2>&1; then
+    printf 'could not resolve the tooling configuration; no MCP servers or skills were provided to this job\n' >> "$job_dir/tooling-warnings.log"
+    return 0
+  fi
   mcp_mode="$(jq -r '.mcp_mode' <<<"$eff")"
   litellm_url="$(jq -r '.litellm_mcp_url // empty' <<<"$eff")"
   mcp_arr="$(jq -c '.enabled_mcp // []' <<<"$eff")"
@@ -953,12 +1407,14 @@ afk_tooling_prepare_worktree() {
             s_url="${hp#*|}"
             if ! curl -sS -o /dev/null --connect-timeout 2 --max-time 3 "$s_url" >/dev/null 2>&1; then
               mcp_doc_str="$(jq --arg k "$s_key" 'del(.mcpServers[$k])' <<<"$mcp_doc_str")"
-              printf 'skipped unreachable HTTP MCP server %s (%s)\n' "$s_key" "$s_url" >> "$job_dir/tooling-warnings.log"
+              printf 'skipped unreachable HTTP MCP server %s (%s)\n' "$s_key" "$(_afk_tooling_url_origin "$s_url")" >> "$job_dir/tooling-warnings.log"
             fi
           done
         fi
-        if (( $(jq -r '(.mcpServers // {}) | length' <<<"$mcp_doc_str") > 0 )); then
-          printf '%s\n' "$mcp_doc_str" > "$wt_dir/.mcp.json"
+        # Both files can carry MCP headers and env from Studio (bearer
+        # tokens), so they are written 0600 whatever the umask is.
+        if (( $(jq -r '(.mcpServers // {}) | length' <<<"$mcp_doc_str") > 0 )) \
+           && _afk_tooling_write_json "$wt_dir/.mcp.json" "$mcp_doc_str" private "$job_dir"; then
           grep -qxF ".mcp.json" "$eph_file" 2>/dev/null || printf '.mcp.json\n' >> "$eph_file"
 
           # Also materialize opencode.json for OpenCode harness if not already present/tracked
@@ -967,8 +1423,9 @@ afk_tooling_prepare_worktree() {
             oc_tracked=true
           fi
           if [[ "$oc_tracked" == "false" ]] && { [[ ! -f "$wt_dir/opencode.json" ]] || grep -qxF "opencode.json" "$eph_file" 2>/dev/null; }; then
-            _afk_tooling_render_opencode_doc "{}" "$mcp_doc_str" > "$wt_dir/opencode.json"
-            grep -qxF "opencode.json" "$eph_file" 2>/dev/null || printf 'opencode.json\n' >> "$eph_file"
+            if _afk_tooling_write_json "$wt_dir/opencode.json" "$(_afk_tooling_render_opencode_doc "{}" "$mcp_doc_str")" private "$job_dir"; then
+              grep -qxF "opencode.json" "$eph_file" 2>/dev/null || printf 'opencode.json\n' >> "$eph_file"
+            fi
           fi
         fi
       fi
@@ -1003,21 +1460,8 @@ afk_tooling_prepare_worktree() {
     if [[ -n "$common_git" ]]; then
       mkdir -p "$common_git/info"
       excl_file="$common_git/info/exclude"
-      touch "$excl_file"
-      if [[ -f "$excl_file" ]]; then
-        awk -v b="# BEGIN AFK-EPHEMERAL:$job_id" -v e="# END AFK-EPHEMERAL:$job_id" '
-          $0 == b {skip=1; next}
-          $0 == e {skip=0; next}
-          !skip {print}
-        ' "$excl_file" > "${excl_file}.tmp.$$" && mv "${excl_file}.tmp.$$" "$excl_file"
-      fi
-      {
-        printf '# BEGIN AFK-EPHEMERAL:%s\n' "$job_id"
-        while IFS= read -r rel_p; do
-          [[ -n "$rel_p" ]] && printf '/%s\n' "$rel_p"
-        done < "$eph_file"
-        printf '# END AFK-EPHEMERAL:%s\n' "$job_id"
-      } >> "$excl_file"
+      _afk_tooling_exclude_rewrite "$excl_file" "$job_id" "$eph_file" true \
+        || printf 'could not update %s; the materialized tooling files may show up as untracked\n' "$excl_file" >> "$job_dir/tooling-warnings.log"
     fi
   fi
   return 0
@@ -1040,13 +1484,36 @@ afk_tooling_unstage_ephemeral() {
 }
 
 # afk_tooling_cleanup_worktree <repo_path> <wt_dir> <job_dir>
-# Removes the job-scoped `# BEGIN AFK-EPHEMERAL:<job_id>` block from git `info/exclude`,
-# and removes untracked ephemeral files if running in-place (`wt_dir == repo_path`).
+# Removes the untracked ephemeral files this job materialized in <wt_dir>, then the
+# job-scoped `# BEGIN AFK-EPHEMERAL:<job_id>` block from git `info/exclude`.
 afk_tooling_cleanup_worktree() {
   local repo="$1" wt_dir="$2" job_dir="$3"
   local eph_file="$job_dir/.ephemeral-tooling-paths"
   local job_id
   job_id="$(basename -- "$job_dir")"
+
+  # The files go first, in every worktree and not only when the job ran in
+  # the base checkout: once the ignore block is gone a leftover .mcp.json is
+  # an ordinary untracked file and the next `git add -A` there stages it.
+  local clean_rc=0
+  if [[ -s "$eph_file" && -d "$wt_dir" ]]; then
+    local rel_p
+    while IFS= read -r rel_p; do
+      [[ -n "$rel_p" ]] || continue
+      # The list is written by prepare_worktree, but it is read back from
+      # disk and fed to rm -rf. Only the names prepare_worktree writes are
+      # accepted, nothing is removed through a symlink, and nothing git
+      # tracks is removed.
+      if ! _afk_tooling_ephemeral_path_ok "$wt_dir" "$rel_p"; then
+        printf 'afk-tooling: not removing %s listed in %s: it is not a path this kit materializes\n' "$rel_p" "$eph_file" >&2
+        continue
+      fi
+      if git -C "$wt_dir" ls-files --error-unmatch -- "$rel_p" >/dev/null 2>&1; then
+        continue
+      fi
+      rm -rf "${wt_dir:?}/$rel_p" || clean_rc=1
+    done < "$eph_file"
+  fi
 
   if [[ -d "$repo/.git" || -f "$repo/.git" ]]; then
     local common_git excl_file
@@ -1054,30 +1521,45 @@ afk_tooling_cleanup_worktree() {
     [[ -n "$common_git" && "$common_git" != /* ]] && common_git="$repo/$common_git"
     excl_file="$common_git/info/exclude"
     if [[ -n "$common_git" && -f "$excl_file" ]]; then
-      awk -v b="# BEGIN AFK-EPHEMERAL:$job_id" -v e="# END AFK-EPHEMERAL:$job_id" '
-        $0 == b {skip=1; next}
-        $0 == e {skip=0; next}
-        !skip {print}
-      ' "$excl_file" > "${excl_file}.tmp.$$" && mv "${excl_file}.tmp.$$" "$excl_file"
+      _afk_tooling_exclude_rewrite "$excl_file" "$job_id" "$eph_file" false || clean_rc=1
     fi
   fi
-
-  if [[ -s "$eph_file" && "$wt_dir" == "$repo" ]]; then
-    local rel_p
-    while IFS= read -r rel_p; do
-      [[ -n "$rel_p" ]] || continue
-      rm -rf "${wt_dir:?}/$rel_p"
-    done < "$eph_file"
+  # The list has been acted on; a second cleanup must not act on it again.
+  # It is kept when something failed, because a retry needs it, and the
+  # exclude rewrite above uses it to recognise this job's lines.
+  if (( clean_rc == 0 )) && [[ -s "$eph_file" ]]; then
+    : > "$eph_file" 2>/dev/null || true
   fi
   return 0
 }
 
-# afk_tooling_publish_paperclip [<mcp_mode>] [<litellm_url>] [<mcp_csv>] [<skills_csv>] [<skill_slug>]
+# _afk_tooling_ephemeral_path_ok <wt_dir> <rel_path>
+# True for the paths prepare_worktree materializes (.mcp.json, opencode.json,
+# .agents/skills/<name>) when no part of the path inside <wt_dir> is a
+# symlink.
+_afk_tooling_ephemeral_path_ok() {
+  local wt="$1" rel="$2" seg
+  case "$rel" in
+    .mcp.json|opencode.json)
+      [[ ! -L "$wt/$rel" ]] ;;
+    .agents/skills/*)
+      seg="${rel#.agents/skills/}"
+      [[ -n "$seg" && "$seg" != */* && "$seg" != "." && "$seg" != ".." ]] || return 1
+      [[ ! -L "$wt/.agents" && ! -L "$wt/.agents/skills" && ! -L "$wt/$rel" ]] ;;
+    *)
+      return 1 ;;
+  esac
+}
+
+# afk_tooling_publish_paperclip [<mcp_mode>] [<litellm_url>] [<mcp_csv>] [<skills_csv>] [<skill_slug>] [<force:true|false>]
 # Publishes or updates the editable `afk-fleet-tooling` Studio bundle (`SKILL.md` + `mcp.json`)
 # directly inside Paperclip's **Skills -> My Skills** Studio, attaches it to the AFK host agent,
 # and synchronizes the local AFK registry immediately.
+# Refuses to publish when there is nothing to publish, unless <force> is true or
+# AFK_TOOLING_PUBLISH_FORCE=1.
 afk_tooling_publish_paperclip() {
   local cli_mode="${1:-}" cli_lurl="${2:-}" cli_mcp="${3:-}" cli_skills="${4:-}" skill_slug="${5:-afk-fleet-tooling}"
+  local force="${6:-${AFK_TOOLING_PUBLISH_FORCE:-}}"
   declare -F afk_pc_curl >/dev/null 2>&1 || . "$(dirname -- "${BASH_SOURCE[0]}")/afk-paperclip.sh"
 
   local pc_cfg_path pc_cfg="" api_url="" company_id="" host_agent_id="" key="" key_ref=""
@@ -1089,6 +1571,7 @@ afk_tooling_publish_paperclip() {
     host_agent_id="$(jq -r '.host.agent_id // empty' <<<"$pc_cfg" 2>/dev/null)"
     key_ref="$(jq -r '.host.key_ref // empty' <<<"$pc_cfg" 2>/dev/null)"
     if [[ -n "$key_ref" ]]; then
+      # shellcheck disable=SC2034 # read by afk_pc_read_key (lib/afk-paperclip.sh)
       AFK_PC_CFG="$pc_cfg"
       key="$(afk_pc_read_key "$key_ref" 2>/dev/null || true)"
     fi
@@ -1102,6 +1585,11 @@ afk_tooling_publish_paperclip() {
   local reg eff mcp_mode litellm_url mcp_arr skills_arr mcp_servers_doc
   reg="$(afk_tooling_load_registry)"
   eff="$(_afk_tooling_resolve_effective "" "$cli_mode" "$cli_mcp" "$cli_skills" "$cli_lurl" "")"
+  if ! jq -e 'type == "object"' <<<"$eff" >/dev/null 2>&1; then
+    printf 'afk_tooling_publish_paperclip: could not resolve the local tooling configuration; nothing was published\n' >&2
+    jq -cn '{schema:"afk-paperclip-tooling-publish/1", ok:false, error:"LOCAL_CONFIG_UNRESOLVED"}'
+    return 1
+  fi
   mcp_mode="$(jq -r '.mcp_mode' <<<"$eff")"
   litellm_url="$(jq -r '.litellm_mcp_url // empty' <<<"$eff")"
   mcp_arr="$(jq -c '.enabled_mcp // []' <<<"$eff")"
@@ -1120,6 +1608,18 @@ afk_tooling_publish_paperclip() {
         )
       } ] | from_entries
   ' <<<"$reg")"
+
+  # Publishing replaces the Studio mcp.json that every host syncs from; it is
+  # not merged with what is there. A host that has never synced or registered
+  # anything would replace the fleet's configuration with an empty one, so
+  # that takes an explicit force.
+  if [[ "$force" != "1" && "$force" != "true" ]] \
+     && ! jq -en --argjson m "$mcp_arr" --argjson s "$skills_arr" --argjson d "$mcp_servers_doc" \
+          '(($m | length) + ($s | length) + ($d | length)) > 0' >/dev/null 2>&1; then
+    printf 'afk_tooling_publish_paperclip: the local registry has nothing to publish (no enabled MCP servers, no server definitions, no skills), and publishing would overwrite the Studio mcp.json with an empty one. Sync first (afk factory tooling --sync-paperclip-skills), or set AFK_TOOLING_PUBLISH_FORCE=1 to publish the empty configuration anyway.\n' >&2
+    jq -cn '{schema:"afk-paperclip-tooling-publish/1", ok:false, error:"EMPTY_LOCAL_REGISTRY"}'
+    return 1
+  fi
 
   local mcp_json_pretty skill_md
   mcp_json_pretty="$(jq -n \
