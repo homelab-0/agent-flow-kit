@@ -11,7 +11,8 @@ set -uo pipefail
 KIT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 AFK="$KIT_ROOT/bin/agent-flow-kit"
 TMPROOT="$(mktemp -d)"
-trap 'rm -rf "$TMPROOT"' EXIT
+# AFK_TEST_KEEP_TMP=1 keeps the scratch tree for inspecting a failure.
+trap '[[ "${AFK_TEST_KEEP_TMP:-0}" == "1" ]] && printf "kept: %s\n" "$TMPROOT" || rm -rf "$TMPROOT"' EXIT
 
 PASS=0 FAIL=0
 ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; PASS=$((PASS+1)); }
@@ -29,6 +30,18 @@ export HOME="$TMPROOT/home"
 export AFK_STATE_DIR="$HOME/.local/state/agent-flow-kit"
 export AFK_PAPERCLIP_CONFIG="$HOME/.config/agent-flow-kit/paperclip.json"
 mkdir -p "$HOME/.config/agent-flow-kit" "$AFK_STATE_DIR"
+
+# Stages write canned output here unless a test supplies a runner or a stub
+# harness. Outside a test the factory never does that: it launches a real
+# agent, and a stage with no agent fails.
+export AFK_FACTORY_OFFLINE_SYNTH=1
+# job.json may state diff figures for the budget tests.
+export AFK_FACTORY_TEST_DIFF_STATS=1
+# Pull request checks: no settle delay, one-second polling.
+export AFK_FACTORY_CHECKS_SETTLE_SEC=0
+export AFK_FACTORY_CHECKS_POLL_SEC=1
+# Never refresh benchmarks from the network during a test.
+export AFK_SKIP_BENCHMARK_AUTOSYNC=1
 
 # ============================================================================
 head1 "1. Per-project agent roster discovery (BMAD vs Factory Default)"
@@ -184,8 +197,11 @@ assert_eq "Clean completion leaves core agents idle instead of terminating them"
   "$(grep -c '/terminate' "$CURL_LOG" || true)" "0"
 assert_contains "Clean completion updates project agent status in Paperclip" \
   "$(cat "$CURL_LOG")" "PATCH https://paperclip.example/api/agents/"
-assert_contains "Compiled build prompt includes discovered BMAD Amelia persona and replacement handoff checkpoint" \
-  "$(cat "$BMAD_REPO/.afk/jobs/job-clean/.prompt-build-dev.md")" "Context Replacement Handoff Checkpoint (dev-gen-1.md)"
+# The build had already finished when its usage was read, so it is not run
+# again: the checkpoint waits for the builder's next turn.
+assert_eq "A builder that crossed 80% context leaves a handoff checkpoint for its next turn, and its finished build is kept" \
+  "$([[ -s "$BMAD_REPO/.afk/jobs/job-clean/checkpoints/dev-gen-1.md" ]] && printf ckpt || printf no-ckpt):$([[ -s "$BMAD_REPO/.afk/jobs/job-clean/build.md" ]] && printf build-kept || printf build-lost)" \
+  "ckpt:build-kept"
 assert_contains "Compiled build prompt injects discovered project-local Amelia SKILL.md" \
   "$(cat "$BMAD_REPO/.afk/jobs/job-clean/.prompt-build-dev.md")" "# bmad-agent-dev skill"
 
@@ -351,6 +367,7 @@ MODELS_OUT="$(
   AFK_PI_AUTH_FILE="$MOCK_AUTH_DIR/pi-auth.json" \
   AFK_OPENCODE_MODELS_FIXTURE="$MOCK_AUTH_DIR/opencode-models.txt" \
   AFK_AGY_MODELS_FIXTURE="$MOCK_AUTH_DIR/agy-models.txt" \
+  AFK_GROK_MODELS_FIXTURE="$MOCK_AUTH_DIR/no-grok-models.txt" \
   AFK_DISCOVERED_MODELS_FILE="$DISC_FILE" \
   bash "$AFK" factory models --sync --json
 )"
@@ -435,6 +452,10 @@ if [[ "$*" == *"review-code"* ]]; then
   printf '%s\n' '{"type":"step_finish","part":{"tokens":{"total":4200}}}'
   exit 0
 fi
+# A build has to change the worktree: a branch with nothing on it is not merged.
+if [[ "$*" == *"Target output path:"*"/build.md"* ]]; then
+  printf 'free model change\n' >> free_model_change.txt
+fi
 printf '%s\n' '{"type":"text","part":{"type":"text","text":"VERDICT: ACCEPT\nRISK: low\nSURFACES: code\n## Summary\n- Handled by free OpenCode model."}}'
 printf '%s\n' '{"type":"step_finish","part":{"tokens":{"total":14200}}}'
 exit 0
@@ -457,10 +478,20 @@ if [[ "$PROMPT_TEXT" == *"Target output path:"*"/spec.md"* ]]; then
   printf '%s\n' '{"result":"# Spec\n- Add widget helper.","usage":{"input_tokens":5000,"output_tokens":300}}'
   exit 0
 fi
+# An intake states its verdict. One that does not is refused, not assumed
+# to be "accept, low risk".
+if [[ "$PROMPT_TEXT" == *"Target output path:"*"/intake.md"* ]]; then
+  printf '%s\n' '{"result":"VERDICT: ACCEPT\nRISK: low\nSURFACES: code\n## Summary\n- Ready to build.","usage":{"input_tokens":3000,"output_tokens":120}}'
+  exit 0
+fi
 if [[ "$PROMPT_TEXT" == *"Prior Round 1 Reviewer Feedback"* ]]; then
+  printf 'round 2 fix\n' >> widget_helper.txt
   printf '%s\n' '{"result":"## Summary\n- Fixed Round 1 reviewer finding cleanly.","usage":{"input_tokens":8000,"output_tokens":400}}'
   exit 0
 fi
+# Over 80 changed lines, so the review is routed as a full review and not as
+# a small edit kept off the larger models.
+seq 1 100 >> widget_helper.txt
 printf '%s\n' '{"result":"## Summary\n- Initial Round 1 implementation.","usage":{"input_tokens":6000,"output_tokens":350}}'
 exit 0
 SH
@@ -533,8 +564,10 @@ case "$STAGE" in
   spec)   printf '# Spec\n- Build feature cleanly.\n' > "$OUT" ;;
   build)
     if grep -q "Prior Round 1 Reviewer Feedback" "$AFK_FACTORY_COMPILED_PROMPT"; then
+      printf 'edge-case guard\n' >> "$AFK_FACTORY_WORKTREE/edge_case.txt"
       printf '## Summary\n- Addressed Round 1 finding.\n' > "$OUT"
     else
+      printf 'initial draft\n' >> "$AFK_FACTORY_WORKTREE/edge_case.txt"
       printf '## Summary\n- Initial draft.\n' > "$OUT"
     fi
     ;;
@@ -1031,8 +1064,19 @@ cat > "$TMPROOT/fake-gh" <<'SH'
 printf '%s\n' "$*" >> "$PR_LOG"
 if [[ "$1" == "pr" && "$2" == "list" ]]; then printf '[]\n'; exit 0; fi
 if [[ "$1" == "pr" && "$2" == "create" ]]; then printf 'https://github.com/example/demo/pull/7\n'; exit 0; fi
+if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  if [[ "$*" == *statusCheckRollup* ]]; then
+    printf '{"statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]}\n'
+  elif [[ -f "$PR_LOG.merged" ]]; then
+    printf '{"state":"MERGED","mergeCommit":{"oid":"%s"}}\n' "$(git -C "$PR_REPO" rev-parse HEAD)"
+  else
+    printf '{"state":"OPEN","mergeCommit":null}\n'
+  fi
+  exit 0
+fi
 if [[ "$1" == "pr" && "$2" == "merge" ]]; then
   git -C "$PR_REPO" merge --no-ff factory/job-pr -m "merge pr" >/dev/null 2>&1
+  : > "$PR_LOG.merged"
   exit 0
 fi
 exit 1
@@ -1547,7 +1591,7 @@ PUB_OUT="$(
   BRIDGE_REQ_LOG="$BRIDGE_REQ_LOG" \
   BRIDGE_STATE_SKILLS="$BRIDGE_TMP/empty-skills.json" \
   AFK_PAPERCLIP_CONFIG="$BRIDGE_TMP/paperclip.json" \
-  AFK_PAPERCLIP_SKILLS_DIR="$BRIDGE_TMP/skills-store" \
+  AFK_PAPERCLIP_SKILLS_DIR="$BRIDGE_TMP/pub-skills-store" \
   AFK_TOOLING_REGISTRY_FILE="$BRIDGE_TMP/pub-tooling.json" \
   OP_SERVICE_ACCOUNT_TOKEN=stub \
   AFK_OP_BIN="$STUB_BIN/op" \
