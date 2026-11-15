@@ -206,7 +206,8 @@ afk_router_ensure_fresh_benchmarks() {
     return 0
   }
   # Another job may have finished a sync between the check above and taking
-  # the lock; look again before starting another.
+  # the lock; look again, with the time now, before starting another.
+  now_ep="$(date -u +%s)"
   attempt_at="$(_afk_router_file_mtime "$marker")"
   age=$(( now_ep - attempt_at ))
   if (( age >= 0 && age < retry )); then
