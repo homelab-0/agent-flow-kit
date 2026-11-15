@@ -860,6 +860,29 @@ assert_eq "An approval is acted on only while the job still waits on that merge,
   "$AV" "ok,refused,refused,refused"
 
 # ============================================================================
+head1 "7g. A project with no checks, and the host liveness probe"
+# ============================================================================
+RNC="$(new_repo r-nochecks)"
+git -C "$RNC" rm -q .afk/checks.sh && git -C "$RNC" commit -q -m "no checks"
+O="$(run_job "$RNC" no-checks)"
+assert_contains "A project with no check script does not merge unattended" "$(reasons "$O")" "no .afk/checks.sh"
+jq '.checks = "none"' "$RNC/.afk/config.json" > "$RNC/.afk/config.json.x" && mv "$RNC/.afk/config.json.x" "$RNC/.afk/config.json"
+git -C "$RNC" commit -q -am "declare no checks"
+O="$(run_job "$RNC" no-checks-declared)"
+assert_eq "A project that declares it has no checks can still merge" "$(field "$O" '.stage')" "merged"
+
+AL_STATE="$TMPROOT/alive-state"; mkdir -p "$AL_STATE/paperclip"
+AL0="$(AFK_STATE_DIR="$AL_STATE" bash "$AFK" factory alive --json 2>/dev/null; printf ':%s' "$?")"
+touch "$AL_STATE/paperclip/alive"
+AL1="$(AFK_STATE_DIR="$AL_STATE" bash "$AFK" factory alive --json 2>/dev/null; printf ':%s' "$?")"
+touch -d '2 hours ago' "$AL_STATE/paperclip/alive" 2>/dev/null
+AL2="$(AFK_STATE_DIR="$AL_STATE" bash "$AFK" factory alive --stale-seconds 600 --json 2>/dev/null; printf ':%s' "$?")"
+assert_eq "factory alive fails with no sign of life, passes when fresh, and fails once older than the limit" \
+  "$(jq -r .alive <<<"${AL0%:*}")${AL0##*:}:$(jq -r .alive <<<"${AL1%:*}")${AL1##*:}:$(jq -r .alive <<<"${AL2%:*}")${AL2##*:}" "false1:true0:false1"
+assert_eq "A running job keeps the host's sign of life fresh" \
+  "$(bash -c "$LIBS"'; mkdir -p "$1/paperclip" "$1/job"; rm -f "$1/paperclip/alive"; AFK_STATE_DIR="$1" _afk_factory_touch_heartbeat "$1/job" build dev running; [[ -f "$1/paperclip/alive" ]] && printf touched || printf missing' _ "$TMPROOT/alive-job")" "touched"
+
+# ============================================================================
 head1 "8. Limits that keep a stage from failing every agent in turn"
 # ============================================================================
 CAP="$(bash -c '

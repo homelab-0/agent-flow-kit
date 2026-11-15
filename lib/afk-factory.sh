@@ -858,6 +858,13 @@ afk_factory_evaluate_merge() {
     done
   done <<<"$changed_files"
 
+  # A project with no check script passes the gate by default, so nothing
+  # deterministic stood behind the change. It goes to a person unless the
+  # project says plainly that it has no checks.
+  if [[ ! -f "$repo/.afk/checks.sh" ]] && [[ "$(jq -r '.checks // empty' <<<"$cfg" 2>/dev/null)" != "none" ]]; then
+    reasons="$(jq -c '. + ["The project has no .afk/checks.sh, so no checks ran; add one (or set \"checks\": \"none\" in .afk/config.json)"]' <<<"$reasons")"
+  fi
+
   # 4. Check explicit policy / high-risk architectural escalation
   if [[ "$merge_policy" == "human" ]]; then
     reasons="$(jq -c '. + ["Project merge_policy is pinned to human approval"]' <<<"$reasons")"
@@ -1594,6 +1601,9 @@ _afk_factory_touch_heartbeat() {
     start="$(_afk_factory_proc_start "$pid_val" 2>/dev/null || true)"
     boot="$(_afk_factory_boot_id)"
   fi
+  # The host-wide sign of life a liveness probe reads: any running job or
+  # poll pass keeps it fresh (see `factory alive`).
+  [[ -n "${AFK_STATE_DIR:-}" && -d "$AFK_STATE_DIR/paperclip" ]] && touch "$AFK_STATE_DIR/paperclip/alive" 2>/dev/null
   local tmp
   tmp="$(mktemp "${hb_file}.tmp.XXXXXX" 2>/dev/null)" || return 0
   if jq -cn \
@@ -4513,6 +4523,27 @@ afk_cmd_factory() {
     resume)
       afk_factory_resume "$repo" "$slug" "$json_mode"
       return $? ;;
+    alive)
+      # For a liveness probe: 0 while a poll pass or a job has shown a sign of
+      # life within the limit (default 30 minutes), 1 otherwise. A pass that
+      # hangs stops touching the file; a long job keeps touching it.
+      local al_file al_max al_now al_mt al_age al_ok=false
+      al_file="${AFK_STATE_DIR:-$HOME/.local/state/agent-flow-kit}/paperclip/alive"
+      al_max="${stale_sec_arg:-${AFK_FACTORY_ALIVE_MAX_SEC:-1800}}"
+      [[ "$al_max" =~ ^[0-9]+$ ]] || al_max=1800
+      al_now="$(date -u +%s)"
+      al_mt="$(stat -c %Y "$al_file" 2>/dev/null || stat -f %m "$al_file" 2>/dev/null || printf '0')"
+      [[ "$al_mt" =~ ^[0-9]+$ ]] || al_mt=0
+      al_age=$(( al_now - al_mt ))
+      (( al_mt > 0 && al_age >= 0 && al_age < al_max )) && al_ok=true
+      if [[ "$json_mode" == "true" ]]; then
+        jq -cn --argjson ok "$al_ok" --argjson age "$al_age" --argjson max "$al_max" --arg f "$al_file" --argjson seen "$al_mt" \
+          '{alive: $ok, age_sec: (if $seen == 0 then null else $age end), max_age_sec: $max, file: $f}'
+      else
+        printf 'AFK Factory alive=%s (last sign of life %ss ago, limit %ss)\n' "$al_ok" "$( (( al_mt > 0 )) && printf '%s' "$al_age" || printf 'never')" "$al_max"
+      fi
+      [[ "$al_ok" == true ]]
+      return $? ;;
     watchdog)
       afk_factory_watchdog "$repo" "$slug" "$stale_sec_arg" "$dry_run_flag" "$json_mode"
       return $? ;;
@@ -4789,7 +4820,7 @@ afk_cmd_factory() {
       afk_factory_status "$repo" "$slug" "$json_mode"
       return $? ;;
     *)
-      afk_warn "factory: unknown subcommand '$(afk_safe_diagnostic "$subcmd")' (expected: roster, init, run, poll, sync-reviews, resume, watchdog, pools, harnesses, update-harnesses, models, tooling, tooling-sync, tooling-publish-paperclip, tooling-register-mcp, tooling-register-skill, route-preview, sync-benchmarks, status, context-check, evaluate-merge, retire)"
+      afk_warn "factory: unknown subcommand '$(afk_safe_diagnostic "$subcmd")' (expected: roster, init, run, poll, alive, sync-reviews, resume, watchdog, pools, harnesses, update-harnesses, models, tooling, tooling-sync, tooling-publish-paperclip, tooling-register-mcp, tooling-register-skill, route-preview, sync-benchmarks, status, context-check, evaluate-merge, retire)"
       return 1 ;;
   esac
 }
