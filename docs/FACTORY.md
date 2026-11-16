@@ -90,6 +90,8 @@ Per project:
 | `max_active_issues` | how many jobs run at once |
 | `harness` | the agent CLI recorded for the project's hired agents |
 
+At the top level, `host.github_token_ref` names the GitHub token the factory pushes, opens pull requests and merges with: `op://...` for 1Password, or `file:/absolute/path` for a file only its owner can read. Use a bot account's fine-grained token limited to the factory's repositories (Contents and Pull requests read and write, Metadata read). The origin must be https. Without it the factory uses the host's own `gh` login. If it is set and cannot be read, nothing is pushed. Agent stages never get a GitHub token from the factory's environment.
+
 ### Project config: `<repo>/.afk/config.json`
 
 `agent-flow-kit factory init --repo <path>` writes it with the defaults, along with `.afk/checks.sh`. Commit both. A tracked check script is run as committed on the base, and if it cannot be read out the checks fail. An untracked one runs from the base checkout, but only while it still matches the copy the job started with; when the board asks for another round, the script as it is then is taken. A key the file leaves out keeps its default.
@@ -174,7 +176,7 @@ The file exists only after the first pass on a configured host. Give the probe a
 
 ## Known limits
 
-- Every stage runs as the same user with the same credentials as the poller. Scope the GitHub token and the secrets on the host accordingly.
+- Every stage runs as the same user as the poller. Agents get no GitHub token through their environment, but they can read anything that user can, including a `gh` login stored on the host and the file `host.github_token_ref` names. Give the host only the bot token, not a personal login.
 - A runner on another host cannot be signalled. Its lock is taken over after `watchdog.stale_seconds` without a heartbeat, so an agent it left behind can overlap the new runner by up to the stage limit minus that window. Set `stale_seconds` above `stage_timeout_sec` to rule that out.
 - A job that resumes at review after its runner died has no in-memory record of the checked commit and trusts the file in the job directory.
 - A repository with no `.afk/checks.sh` passes the checks stage, so its changes go to a person unless it declares `"checks": "none"`.
