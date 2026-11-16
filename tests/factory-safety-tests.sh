@@ -907,6 +907,38 @@ L="$(land "$PASSING")"
 assert_eq "With no token configured, landing uses the host's own gh login as before" \
   "$(field "$L" '.action'):$(sort -u "$TMPROOT/gh.log.env" | tr '\n' ' ')" "merged_pr:token=none "
 
+chmod 600 "$TOKF"
+L="$(AFK_PAPERCLIP_CONFIG="$TOKCFG" LAND_ORIGIN=git@github.com:example/demo.git land "$PASSING")"
+assert_eq "With a factory token set, an ssh origin is refused before any GitHub call, since the push would use this host's key" \
+  "$(field "$L" '"\(.ok):\(.action)"'):$(wc -l < "$TMPROOT/gh.log" | tr -d ' '):$(field "$L" '.reason' | grep -c https)" "false:pr_failed:0:1"
+
+PU="$(AFK_PAPERCLIP_CONFIG="$TOKCFG" bash -c "$LIBS"'
+  r="$1/pushurl"; rm -rf "$r"; git init -q "$r"; git -C "$r" remote add origin https://github.com/example/demo.git
+  git -C "$r" config remote.origin.pushurl git@github.com:example/demo.git
+  _afk_factory_resolve_identity "$r" && printf allowed || printf refused' _ "$TMPROOT")"
+assert_eq "An https origin whose pushes go over ssh (pushurl) is refused too" "$PU" "refused"
+
+# The pull request a needs-human escalation opens goes through the same identity.
+EPR="$TMPROOT/esc-pr"; rm -rf "$EPR" "$EPR-wt"; mkdir -p "$EPR"; git -C "$EPR" init -q -b main
+git -C "$EPR" config user.name T; git -C "$EPR" config user.email t@example.invalid
+printf 'x\n' > "$EPR/a"; git -C "$EPR" add a; git -C "$EPR" commit -q -m init
+git -C "$EPR" remote add origin https://github.com/example/demo.git
+git -C "$EPR" worktree add -q -B factory/esc "$EPR-wt" HEAD
+esc_pr() { : > "$TMPROOT/gh.log"; : > "$TMPROOT/gh.log.env"; mkdir -p "$TMPROOT/gh-state"
+  AFK_PAPERCLIP_CONFIG="$TOKCFG" GH_LOG="$TMPROOT/gh.log" GH_STATE="$TMPROOT/gh-state" AFK_FACTORY_GH_BIN="$GH" AFK_FACTORY_SKIP_PUSH=1 \
+    bash -c "$LIBS"'; _afk_factory_ensure_pr "$1" "$1-wt" factory/esc "Esc" esc >/dev/null; printf "%s" "$?"' _ "$EPR"; }
+chmod 644 "$TOKF"; E1="$(esc_pr):$(wc -l < "$TMPROOT/gh.log" | tr -d ' ')"
+chmod 600 "$TOKF"; E2="$(esc_pr):$(sort -u "$TMPROOT/gh.log.env" | tr '\n' ' ')"
+assert_eq "The pull request opened for a needs-human escalation uses the factory token, and opens nothing when that token cannot be read" \
+  "$E1|$E2" "1:0|0:token=bot-token-123 "
+
+GC="$(AFK_PAPERCLIP_CONFIG="$TOKCFG" bash -c "$LIBS"'
+  AFK_FACTORY_LANDING_GH_TOKEN=t0k
+  _afk_factory_net git -C "$1" config --get-all credential.helper | tail -n 1 | tr -d "\n"; printf "|"
+  _afk_factory_net git -C "$1" config --get-all credential.https://github.com.helper | tail -n 1' _ "$EPR")"
+assert_eq "With the factory token, git sees every inherited credential helper cleared and gh as the github.com helper" \
+  "$GC" "|!gh auth git-credential"
+
 TR="$(new_repo token-env)"
 O="$(run_job "$TR" token-env GH_TOKEN=leak-me GITHUB_TOKEN=leak-me-too)"
 assert_eq "Agent stages never see a GitHub token, even when the factory's environment has one" \
