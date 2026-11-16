@@ -369,16 +369,14 @@
       "launch_class": "claude-gateway",
       "entitlement_pool": "litellm-local",
       "tier": "standard",
-      "model": "local-coding",
-      "canonical_model": "local/qwen3.8-coder",
-      "models_dev_provider": "alibaba",
-      "models_dev_id": "qwen3-coder-plus",
-      "arena_match": "Qwen3.8-27B",
+      "model": "qwen36-27b",
+      "canonical_model": "local/qwen3.6-27b",
+      "arena_match": "Qwen3.6-27B",
       "aa_slug_match": "qwen3",
       "model_family": "local-cluster",
       "effort": "medium",
       "supported_efforts": ["low", "medium", "high"],
-      "window_tokens": 131072,
+      "window_tokens": 65536,
       "requires_gateway": true,
       "benchmarks": {
         "frontier_synthesis": { "score": 81.0, "benchmark": "Open-Weights Synthesis Eval" },
@@ -387,8 +385,8 @@
         "coding_standard":    { "score": 89.0, "benchmark": "Open-Weights Coding + Zero Subscription Cost" },
         "coding_review":      { "score": 85.0, "benchmark": "Open-Weights Code Review" },
         "security":           { "score": 83.0, "benchmark": "Local Air-Gapped Static Security Scan" },
-        "webdev":             { "score": 85.5, "benchmark": "LMArena WebDev (Open-Weights)" },
-        "research":           { "score": 91.5, "benchmark": "LMArena Search #1 (Qwen3.8) Local Triage" }
+        "webdev":             { "score": 85.5, "benchmark": "Open-Weights WebDev (estimate)" },
+        "research":           { "score": 91.5, "benchmark": "Open-Weights Local Triage (estimate)" }
       }
     }
   ]
