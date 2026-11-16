@@ -49,6 +49,7 @@ cat > "$RUNNER" <<'SH'
 STAGE="$1"; OUT="$4"; WT="${AFK_FACTORY_WORKTREE:-.}"; JOB="${AFK_FACTORY_JOB_DIR:-.}"
 FEATURE="feature-$(basename "$JOB").txt"
 printf '%s\n' "$STAGE" >> "$CALLS"
+[[ -z "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ]] || printf 'token-seen-by-%s\n' "$STAGE" >> "$CALLS"
 usage() { printf '{"used_tokens":%s,"window_tokens":200000,"compacted":false}\n' "${R_TOKENS:-1000}"; }
 review() { # <mode>
   case "$1" in
@@ -399,6 +400,7 @@ GH="$TMPROOT/fake-gh"
 cat > "$GH" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$GH_LOG"
+printf 'token=%s\n' "${GH_TOKEN:-none}" >> "$GH_LOG.env"
 case "$1 $2" in
   "pr list")   cat "$GH_STATE/list.json" 2>/dev/null || printf '[]\n' ;;
   "pr create") printf 'https://github.com/example/demo/pull/7\n' ;;
@@ -416,7 +418,7 @@ SH
 chmod +x "$GH"
 land() { # <checks-json> [setup...] -> land result JSON
   local repo="$TMPROOT/r-gh-$RANDOM" checks="$1"; shift
-  mkdir -p "$repo" "$TMPROOT/gh-state"; rm -rf "$TMPROOT/gh-state"/*; : > "$TMPROOT/gh.log"
+  mkdir -p "$repo" "$TMPROOT/gh-state"; rm -rf "$TMPROOT/gh-state"/*; : > "$TMPROOT/gh.log"; : > "$TMPROOT/gh.log.env"
   git -C "$repo" init -q -b main
   git -C "$repo" config user.name T; git -C "$repo" config user.email t@example.invalid
   printf 'x\n' > "$repo/a"; git -C "$repo" add a; git -C "$repo" commit -q -m init
@@ -887,6 +889,28 @@ assert_eq "factory alive fails with no sign of life, passes when fresh, and fail
   "$(jq -r .alive <<<"${AL0%:*}")${AL0##*:}:$(jq -r .alive <<<"${AL1%:*}")${AL1##*:}:$(jq -r .alive <<<"${AL2%:*}")${AL2##*:}" "false1:true0:false1"
 assert_eq "A running job keeps the host's sign of life fresh" \
   "$(bash -c "$LIBS"'; mkdir -p "$1/paperclip" "$1/job"; rm -f "$1/paperclip/alive"; AFK_STATE_DIR="$1" _afk_factory_touch_heartbeat "$1/job" build dev running; [[ -f "$1/paperclip/alive" ]] && printf touched || printf missing' _ "$TMPROOT/alive-job")" "touched"
+
+# ============================================================================
+head1 "7h. The factory's own GitHub identity"
+# ============================================================================
+TOKCFG="$TMPROOT/token-config.json"; TOKF="$TMPROOT/bot-token"
+printf 'bot-token-123\n' > "$TOKF"; chmod 600 "$TOKF"
+jq -n --arg r "file:$TOKF" '{schema:"afk-paperclip-config/2", host:{github_token_ref:$r}, projects:[]}' > "$TOKCFG"
+L="$(AFK_PAPERCLIP_CONFIG="$TOKCFG" land "$PASSING")"
+assert_eq "With a token configured, every GitHub call while landing uses it, and the change merges" \
+  "$(field "$L" '.action'):$(sort -u "$TMPROOT/gh.log.env" | tr '\n' ' ')" "merged_pr:token=bot-token-123 "
+chmod 644 "$TOKF"
+L="$(AFK_PAPERCLIP_CONFIG="$TOKCFG" land "$PASSING")"
+assert_eq "A configured token that cannot be read safely stops the landing before any GitHub call; the host login is not used instead" \
+  "$(field "$L" '"\(.ok):\(.action)"'):$(wc -l < "$TMPROOT/gh.log" | tr -d ' ')" "false:pr_failed:0"
+L="$(land "$PASSING")"
+assert_eq "With no token configured, landing uses the host's own gh login as before" \
+  "$(field "$L" '.action'):$(sort -u "$TMPROOT/gh.log.env" | tr '\n' ' ')" "merged_pr:token=none "
+
+TR="$(new_repo token-env)"
+O="$(run_job "$TR" token-env GH_TOKEN=leak-me GITHUB_TOKEN=leak-me-too)"
+assert_eq "Agent stages never see a GitHub token, even when the factory's environment has one" \
+  "$(field "$O" '.stage'):$(grep -c 'token-seen-by' "$CALLS")" "merged:0"
 
 # ============================================================================
 head1 "8. Limits that keep a stage from failing every agent in turn"
