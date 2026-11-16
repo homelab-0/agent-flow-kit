@@ -1185,9 +1185,9 @@ afk_factory_invoke_stage_agent() {
     # heartbeat would otherwise never be recovered.
     r_tmo="${AFK_STAGE_TIMEOUT_SEC:-$(jq -r '.watchdog.stage_timeout_sec // 900' <<<"$(afk_factory_load_config "$repo")" 2>/dev/null || printf '900')}"
     [[ "$r_tmo" =~ ^[0-9]+$ && "$r_tmo" -gt 0 ]] || r_tmo=900
-    local -a r_cmd=()
-    if command -v timeout >/dev/null 2>&1; then r_cmd=(timeout -k 20 "$r_tmo")
-    else r_cmd=(gtimeout -k 20 "$r_tmo"); fi
+    local -a r_cmd=(env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN -u AFK_FACTORY_LANDING_GH_TOKEN)
+    if command -v timeout >/dev/null 2>&1; then r_cmd+=(timeout -k 20 "$r_tmo")
+    else r_cmd+=(gtimeout -k 20 "$r_tmo"); fi
     runner_out="$(
       AFK_FACTORY_REPO="$repo" \
       AFK_FACTORY_WORKTREE="$wt" \
@@ -1254,11 +1254,13 @@ afk_factory_invoke_stage_agent() {
       fi
       [[ "$stage_tmo" =~ ^[0-9]+$ && "$stage_tmo" -gt 0 ]] || stage_tmo=900
       # -k: a CLI that ignores TERM is killed 20s later instead of running on.
-      local -a tmo_cmd=()
+      # Agents never get a GitHub token from the factory's environment; the
+      # factory pushes and merges itself.
+      local -a tmo_cmd=(env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN -u AFK_FACTORY_LANDING_GH_TOKEN)
       if command -v timeout >/dev/null 2>&1; then
-        tmo_cmd=(timeout -k 20 "$stage_tmo")
+        tmo_cmd+=(timeout -k 20 "$stage_tmo")
       elif command -v gtimeout >/dev/null 2>&1; then
-        tmo_cmd=(gtimeout -k 20 "$stage_tmo")
+        tmo_cmd+=(gtimeout -k 20 "$stage_tmo")
       fi
 
       case "$harness" in
@@ -1843,11 +1845,74 @@ _afk_factory_set_approval_gate() { # <api> <key> <run> <issue> <host> <board_use
 # connection that hangs cannot keep the job (and the host's sign of life)
 # going for ever. AFK_FACTORY_NET_TIMEOUT_SEC, default 120.
 _afk_factory_net() {
+  local -; set +x
   local t="${AFK_FACTORY_NET_TIMEOUT_SEC:-120}"
   [[ "$t" =~ ^[0-9]+$ && "$t" -gt 0 ]] || t=120
-  if command -v timeout >/dev/null 2>&1; then timeout -k 10 "$t" "$@"
-  elif command -v gtimeout >/dev/null 2>&1; then gtimeout -k 10 "$t" "$@"
-  else "$@"; fi
+  local -a pre=()
+  if command -v timeout >/dev/null 2>&1; then pre=(timeout -k 10 "$t")
+  elif command -v gtimeout >/dev/null 2>&1; then pre=(gtimeout -k 10 "$t"); fi
+  # The factory's own GitHub identity, when the host configures one: gh reads
+  # GH_TOKEN, and git is pointed at gh for github.com credentials with every
+  # other helper cleared, so neither falls back to the login on this host.
+  # Passed as assignments, so the token is in the environment of the call and
+  # never on a command line another process can read.
+  if [[ -n "${AFK_FACTORY_LANDING_GH_TOKEN:-}" ]]; then
+    GH_TOKEN="$AFK_FACTORY_LANDING_GH_TOKEN" GITHUB_TOKEN="$AFK_FACTORY_LANDING_GH_TOKEN" \
+    GIT_CONFIG_COUNT=2 \
+    GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0='' \
+    GIT_CONFIG_KEY_1=credential.https://github.com.helper GIT_CONFIG_VALUE_1='!gh auth git-credential' \
+      ${pre[@]+"${pre[@]}"} "$@"
+  else
+    ${pre[@]+"${pre[@]}"} "$@"
+  fi
+}
+
+# _afk_factory_resolve_identity <abs_repo> [print-reason]
+# Sets AFK_FACTORY_LANDING_GH_TOKEN in the caller's scope when the host names a
+# factory token. Returns 1, nothing pushed, when the token is set and cannot
+# be read, or when origin is not https (an ssh push would use the host key).
+_afk_factory_resolve_identity() {
+  local -; set +x
+  [[ -n "${AFK_FACTORY_LANDING_GH_TOKEN:-}" ]] && return 0
+  local tok="" rc=0 origin
+  tok="$(_afk_factory_github_token)" || rc=$?
+  if (( rc == 1 )); then return 0; fi
+  if (( rc != 0 )); then
+    [[ "${2:-}" == print-reason ]] && printf 'The factory GitHub token named in the Paperclip config (host.github_token_ref) could not be read; nothing was pushed'
+    return 1
+  fi
+  # The URL a push goes to, after pushurl and pushInsteadOf, not the fetch URL.
+  origin="$(git -C "$1" remote get-url --push origin 2>/dev/null || true)"
+  if [[ "$origin" != https://* ]]; then
+    [[ "${2:-}" == print-reason ]] && printf 'The factory has its own GitHub token, and origin is not an https URL, so a push would use this host'"'"'s own key; nothing was pushed'
+    return 1
+  fi
+  AFK_FACTORY_LANDING_GH_TOKEN="$tok"
+}
+
+# _afk_factory_github_token: the token the factory lands with, from the
+# Paperclip config's host.github_token_ref (`op://...` or `file:/abs/path`).
+# Prints it and returns 0; returns 1 when none is configured (the host's own gh
+# login is used), 2 when one is configured and cannot be read.
+_afk_factory_github_token() {
+  local -; set +x
+  local cfg ref tok="" f meta
+  cfg="$(afk_pc_config_path 2>/dev/null || true)"
+  ref="$(jq -r '.host.github_token_ref // empty' "$cfg" 2>/dev/null || true)"
+  [[ -n "$ref" ]] || return 1
+  case "$ref" in
+    file:/*)
+      f="${ref#file:}"
+      meta="$(stat -L -c '%a %u' -- "$f" 2>/dev/null || stat -L -f '%Lp %u' -- "$f" 2>/dev/null || true)"
+      # Readable by its owner only, and owned by the user running the factory.
+      if [[ "$meta" =~ ^([0-7]+)\ ([0-9]+)$ ]] && ! (( 8#${BASH_REMATCH[1]} & 8#077 )) && [[ "${BASH_REMATCH[2]}" == "$(id -u)" ]]; then
+        tok="$(head -n 1 -- "$f" 2>/dev/null | tr -d '[:space:]')"
+      fi ;;
+    op://*)
+      tok="$(afk_pc_read_key "$ref" 2>/dev/null | head -n 1 | tr -d '[:space:]')" ;;
+  esac
+  [[ -n "$tok" ]] || return 2
+  printf '%s' "$tok"
 }
 
 # Push the branch and open a pull request. Prints the URL, or nothing.
@@ -1855,10 +1920,15 @@ _afk_factory_net() {
 # returned too, so a job restarted after its merge finds the merge and does
 # not open a second pull request.
 _afk_factory_ensure_pr() { # <abs_repo> <wt> <branch> <title> <job_id>
+  local -; set +x
   local abs_repo="$1" wt="$2" branch="$3" title="$4" job_id="$5"
   local remote ghbin base list url job_dir
   remote="$(_afk_factory_github_repo "$abs_repo")"
   [[ -n "$remote" ]] || return 1
+  # The factory identity, for this call and everything it calls. Inherited
+  # from the landing when it already resolved one; never exported.
+  local +x AFK_FACTORY_LANDING_GH_TOKEN="${AFK_FACTORY_LANDING_GH_TOKEN:-}"
+  _afk_factory_resolve_identity "$abs_repo" || return 1
   ghbin="${AFK_FACTORY_GH_BIN:-gh}"
   command -v "$ghbin" >/dev/null 2>&1 || return 1
   local land_mode
@@ -1968,6 +2038,14 @@ _afk_factory_land_branch() {
   fi
   if [[ -n "$remote" && "$land_mode" != "local" ]]; then
     local ghbin head_sha job_dir base pr_doc pr_state merge_sha pr_num reason
+    # Dynamically scoped: seen by every call made from here, gone on return,
+    # never exported.
+    local +x AFK_FACTORY_LANDING_GH_TOKEN=""
+    # Called directly, not in $( ): it sets the token in this scope.
+    if ! _afk_factory_resolve_identity "$abs_repo"; then
+      jq -cn --arg r "$(_afk_factory_resolve_identity "$abs_repo" print-reason)" '{ok:false, action:"pr_failed", commit:"", reason:$r}'
+      return 1
+    fi
     ghbin="${AFK_FACTORY_GH_BIN:-gh}"
     job_dir="$abs_repo/.afk/jobs/$job_id"
     # Merge exactly the commit the checks ran on and the reviews read. Checked
