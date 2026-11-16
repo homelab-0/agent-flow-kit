@@ -146,7 +146,8 @@ A candidate is left out when its CLI is missing, its pool is exhausted or signed
 - A model is matched by its whole leaderboard name, ignoring the effort suffix, and takes its best-ranked row.
 - A model a reachable board does not list is held below the last rank on it.
 - When a feed is unreachable, the scores it gave last time are kept for 14 days. When no board answers, the catalog is left as it is.
-- Only complex coding, architecture, web and research scores are measured. Standard coding, review, security and frontier scores are fixed estimates.
+- Complex coding, review, architecture, web and research scores are measured; a review takes the same agent-board score as a complex build, because an unattended merge rests on it. Standard coding, security and frontier scores are fixed estimates, so cheap and local models stay in play for low-risk builds.
+- A model behind the gateway (`AFK_LITELLM_BASE_URL`) is a candidate only while the gateway lists its exact model id.
 
 Every route records which it used: `benchmark_basis` is `measured`, `capped`, `estimate`, or `stale` for a measurement older than the carry window. `agent-flow-kit factory route-preview` shows the route a stage would take, and the sync receipt lists candidates the agent board did not match.
 
