@@ -105,9 +105,18 @@ assert_eq "Grok 4.5 is not on the board: it does not borrow Grok 4.7's row and i
   "$(bench "$OUT" opencode-grok-native coding_complex score):$(bench "$OUT" opencode-grok-native coding_complex basis):$(bench "$OUT" opencode-grok-native coding_complex live)" \
   "80:capped:false"
 
-assert_eq "The local 27B model is scored from its own row (#43), not from the larger Qwen3.8-Max (#32)" \
-  "$(bench "$OUT" litellm-local-coding coding_complex rank):$(bench "$OUT" litellm-local-coding coding_complex score)" \
-  "43:80"
+assert_eq "The local model (Qwen3.6 27B) is not on the board: it takes no other Qwen row (3.8-27B is #43) and its estimate is capped below the last rank" \
+  "$(bench "$OUT" litellm-local-coding coding_complex rank):$(bench "$OUT" litellm-local-coding coding_complex score):$(bench "$OUT" litellm-local-coding coding_complex basis)" \
+  "null:80:capped"
+
+assert_eq "Review scores come from the measured agent board, like complex builds, not from a fixed estimate" \
+  "$(bench "$OUT" claude-opus-native coding_review score):$(bench "$OUT" claude-opus-native coding_review basis):$(bench "$OUT" claude-opus-native coding_complex score)" \
+  "$(bench "$OUT" claude-opus-native coding_complex score):measured:$(bench "$OUT" claude-opus-native coding_complex score)"
+assert_eq "A model the agent board does not list has its review estimate capped like its build estimate" \
+  "$(bench "$OUT" opencode-grok-native coding_review basis):$(bench "$OUT" opencode-grok-native coding_review score)" \
+  "capped:80"
+assert_eq "Standard coding stays a fixed estimate" \
+  "$(bench "$OUT" claude-opus-native coding_standard live):$(bench "$OUT" claude-opus-native coding_standard rank)" "null:null"
 
 assert_eq "A frontier-reserved model keeps its fixed coding score but takes a measured webdev score for its own version (Fable 5.2 #1, not Fable 5.1 #7)" \
   "$(bench "$OUT" claude-fable-native coding_complex score):$(bench "$OUT" claude-fable-native coding_complex basis):$(bench "$OUT" claude-fable-native webdev rank):$(bench "$OUT" claude-fable-native webdev score)" \
@@ -127,7 +136,7 @@ assert_eq "Classes no feed measures stay fixed estimates and are not marked live
 
 assert_eq "The receipt names the candidates a reachable board did not list, and counts measured scores" \
   "$(jq -c '.unmatched' <<<"$REC"):$(jq -r '.live_scores > 0' <<<"$REC"):$(jq -r '.feeds.swe_bench_official' <<<"$REC")" \
-  '["opencode-grok-native"]:true:not_scored'
+  '["opencode-grok-native","litellm-local-coding"]:true:not_scored'
 
 assert_eq "A row whose rank is not a number is dropped without failing the sync" \
   "$(bench "$OUT" codex-astra-native coding_complex rank)" "6"
@@ -361,7 +370,17 @@ jq '(.candidates[] | select(.id == "litellm-local-coding") | .benchmarks.coding_
 R_LOCAL="$(AFK_ROUTER_LITELLM_ASSUME_ONLINE=1 AFK_LITELLM_BASE_URL=http://gateway.invalid AFK_ROUTER_BENCHMARKS_FILE="$LOCAL_CAT" AFK_ROUTER_HARNESS_LIST="claude" AFK_ROUTER_SIGNALS_FILE="$TMPROOT/signals-empty.json" \
   afk_router_select_candidate "$ROUTE_REPO" review-code low openai reviewer 1 code 200)"
 assert_eq "A model behind the local gateway never reviews, even if its pool is not marked free" \
-  "$(jq -r '.model != "local-coding"' <<<"$R_LOCAL")" "true"
+  "$(jq -r '.model != "qwen36-27b"' <<<"$R_LOCAL")" "true"
+
+# The same catalog, with the local model made the clear winner for a low-risk
+# build: it is chosen while the gateway serves it and skipped when it does not.
+jq '(.candidates[] | select(.id == "litellm-local-coding") | .benchmarks.coding_standard.score) = 99.9' "$LOCAL_CAT" > "$LOCAL_CAT.b"
+R_ON="$(AFK_ROUTER_LITELLM_ASSUME_ONLINE=1 AFK_LITELLM_BASE_URL=http://gateway.invalid AFK_ROUTER_BENCHMARKS_FILE="$LOCAL_CAT.b" AFK_ROUTER_HARNESS_LIST="claude" AFK_ROUTER_SIGNALS_FILE="$TMPROOT/signals-empty.json" \
+  afk_router_select_candidate "$ROUTE_REPO" build low "" dev 1 code 40)"
+R_OFF="$(AFK_ROUTER_LITELLM_ASSUME_ONLINE=1 AFK_ROUTER_LITELLM_MODELS='["some-other-model"]' AFK_LITELLM_BASE_URL=http://gateway.invalid AFK_ROUTER_BENCHMARKS_FILE="$LOCAL_CAT.b" AFK_ROUTER_HARNESS_LIST="claude" AFK_ROUTER_SIGNALS_FILE="$TMPROOT/signals-empty.json" \
+  afk_router_select_candidate "$ROUTE_REPO" build low "" dev 1 code 40)"
+assert_eq "A gateway model is routed to only while the gateway lists it" \
+  "$(jq -r .model <<<"$R_ON"):$(jq -r '.model != "qwen36-27b"' <<<"$R_OFF")" "qwen36-27b:true"
 
 chmod 644 "$OUT"; AFK_BENCHMARK_FEED_DIR="$FEEDS" afk_router_sync_benchmarks "$OUT" >/dev/null
 assert_eq "Rewriting the catalog keeps its file mode" "$(stat -c %a "$OUT" 2>/dev/null || stat -f %Lp "$OUT")" "644"
