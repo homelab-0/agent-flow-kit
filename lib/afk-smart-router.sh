@@ -368,7 +368,7 @@ afk_router_discover_harnesses() {
   if [[ -n "$litellm_url" ]]; then
     if [[ "${AFK_ROUTER_LITELLM_ASSUME_ONLINE:-0}" == "1" ]]; then
       litellm_online=true
-      litellm_models='["local-coding","qwen3.8-coder"]'
+      litellm_models="${AFK_ROUTER_LITELLM_MODELS:-[\"qwen36-27b\"]}"
     else
       local m_resp
       m_resp="$(curl -sS --connect-timeout 1 --max-time 2 "$litellm_url/v1/models" 2>/dev/null || true)"
@@ -1100,7 +1100,11 @@ afk_router_select_candidate() {
       ) |
       select($cclass != "api-metered" or $allow_api == true) |
       select($pool.state != "exhausted" and $pool.state != "offline" and $pool.state != "auth_required") |
-      select((($c.requires_gateway // false) == false) or ($probe.harnesses.litellm_gateway.online == true)) |
+      # A gateway model is a candidate only while the gateway is up and lists
+      # that model; routing to a name it does not serve fails every attempt.
+      select((($c.requires_gateway // false) == false)
+             or (($probe.harnesses.litellm_gateway.online == true)
+                 and ((($probe.harnesses.litellm_gateway.models // []) | index($c.model)) != null))) |
 
       # Pool conservation adjustment:
       (if ($pool.state == "warning" and ($rk == "low" or $rk == "medium")) then -15.0 else 0.0 end) as $pool_adj |
@@ -1431,7 +1435,10 @@ afk_router_sync_benchmarks() {
 
         .window_tokens = (
           ($md[$c.models_dev_provider // ""][$c.models_dev_id // ""])
-          // (if $md_live then null else $pc.window_tokens end)
+          # Carried from the last sync only for a model models.dev describes;
+          # otherwise the figure in the catalog is the truth (a window an
+          # earlier catalog had for a different model must not come back).
+          // (if $md_live or (($c.models_dev_id // "") == "") then null else $pc.window_tokens end)
           // $c.window_tokens
         ) |
 
@@ -1454,6 +1461,12 @@ afk_router_sync_benchmarks() {
                 (if $aa_score != null then (($ag_score * 0.6 + $aa_score * 0.4) | r1) else $ag_score end);
                 ("LMArena Agent #" + ($ag_hit.rank | tostring) + " (" + ($ag_hit.date // "live") + ")"))
               |
+              # A review is what an unattended merge rests on, so the reviewer
+              # is chosen on the same measured agent ranking as complex builds,
+              # not on a hand-written estimate.
+              .benchmarks.coding_review = measured("lmarena_agent"; $ag_hit; .benchmarks.coding_complex.score;
+                ("LMArena Agent #" + ($ag_hit.rank | tostring) + " (review)"))
+              |
               # The reasoning half comes from the text board: this sync, else
               # the value an earlier sync measured, by the time of that measurement,
               # not the time the agent half was last refreshed.
@@ -1468,10 +1481,12 @@ afk_router_sync_benchmarks() {
                 + {text_score: $txs, text_synced_epoch: $txs_ep})
             else
               .benchmarks.coding_complex = unlisted($c.benchmarks.coding_complex; "lmarena_agent"; 98.0; $ag; "LMArena Agent") |
+              .benchmarks.coding_review = unlisted($c.benchmarks.coding_review; "lmarena_agent"; 98.0; $ag; "LMArena Agent") |
               .benchmarks.architecture = unlisted($c.benchmarks.architecture; "lmarena_agent"; 98.0; $ag; "LMArena Agent")
             end)
           else
             .benchmarks.coding_complex = (carried($pc.benchmarks.coding_complex // null) // estimate($c.benchmarks.coding_complex)) |
+            .benchmarks.coding_review = (carried($pc.benchmarks.coding_review // null) // estimate($c.benchmarks.coding_review)) |
             # Carried whole only while its reasoning half is still in its own
             # window; otherwise it falls back to the agent half alone.
             (carried($pc.benchmarks.architecture // null)) as $ca |
