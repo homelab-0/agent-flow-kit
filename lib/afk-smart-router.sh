@@ -1435,7 +1435,10 @@ afk_router_sync_benchmarks() {
 
         .window_tokens = (
           ($md[$c.models_dev_provider // ""][$c.models_dev_id // ""])
-          // (if $md_live then null else $pc.window_tokens end)
+          # Carried from the last sync only for a model models.dev describes;
+          # otherwise the figure in the catalog is the truth (a window an
+          # earlier catalog had for a different model must not come back).
+          // (if $md_live or (($c.models_dev_id // "") == "") then null else $pc.window_tokens end)
           // $c.window_tokens
         ) |
 

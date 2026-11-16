@@ -110,8 +110,22 @@ assert_eq "The local model (Qwen3.6 27B) is not on the board: it takes no other 
   "null:80:capped"
 
 assert_eq "Review scores come from the measured agent board, like complex builds, not from a fixed estimate" \
-  "$(bench "$OUT" claude-opus-native coding_review score):$(bench "$OUT" claude-opus-native coding_review basis):$(bench "$OUT" claude-opus-native coding_complex score)" \
-  "$(bench "$OUT" claude-opus-native coding_complex score):measured:$(bench "$OUT" claude-opus-native coding_complex score)"
+  "$(bench "$OUT" claude-opus-native coding_review score):$(bench "$OUT" claude-opus-native coding_review basis):$(bench "$OUT" claude-opus-native coding_review rank)" \
+  "$(bench "$OUT" claude-opus-native coding_complex score):measured:$(bench "$OUT" claude-opus-native coding_complex rank)"
+[[ "$(bench "$OUT" claude-opus-native coding_review score)" != "$(jq -r '.candidates[] | select(.id == "claude-opus-native") | .benchmarks.coding_review.score | tostring' "$KIT_ROOT/files/model-router/benchmarks.json")" ]] \
+  && ok "The measured review score differs from the bundled estimate (the fixture board moved it)" \
+  || bad "The measured review score differs from the bundled estimate (the fixture board moved it)" "still the estimate"
+
+RCARRY="$TMPROOT/review-carry/benchmarks.json"; mkdir -p "$TMPROOT/review-carry"
+AFK_BENCHMARK_FEED_DIR="$FEEDS" afk_router_sync_benchmarks "$RCARRY" >/dev/null
+RC_SCORE="$(bench "$RCARRY" claude-opus-native coding_review score)"
+# The previous catalog also claims the old 131K window for the local model.
+jq '(.candidates[] | select(.id == "litellm-local-coding") | .window_tokens) = 131072' "$RCARRY" > "$RCARRY.x" && mv "$RCARRY.x" "$RCARRY"
+WD_ONLY2="$TMPROOT/feeds-webdev-only-2"; mkdir -p "$WD_ONLY2"; cp "$FEEDS/lmarena-webdev.json" "$WD_ONLY2/"
+AFK_BENCHMARK_FEED_DIR="$WD_ONLY2" afk_router_sync_benchmarks "$RCARRY" >/dev/null
+assert_eq "With the agent board and models.dev down, the measured review score is carried, and the local model keeps its own 64K window, not one an earlier catalog had" \
+  "$(bench "$RCARRY" claude-opus-native coding_review score):$(bench "$RCARRY" claude-opus-native coding_review basis):$(jq -r '.candidates[] | select(.id == "litellm-local-coding") | .window_tokens' "$RCARRY")" \
+  "$RC_SCORE:measured:65536"
 assert_eq "A model the agent board does not list has its review estimate capped like its build estimate" \
   "$(bench "$OUT" opencode-grok-native coding_review basis):$(bench "$OUT" opencode-grok-native coding_review score)" \
   "capped:80"
