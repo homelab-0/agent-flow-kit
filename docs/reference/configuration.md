@@ -235,6 +235,7 @@ installed_at = 2026-11-26T12:00:00Z
 | `AFK_LITELLM_BASE_URL` | the model gateway's base URL |
 | `AFK_GATEWAY_KEY` | the gateway's key |
 | `AFK_GATEWAY_KEY_ENV` | the name of another variable that holds the gateway key |
+| `AFK_KEEP_SECRETS` | `1`/`true`: leave the gateway key variables in the environment of the CLIs AFK starts (they are removed by default) |
 | `AFK_ROUTER_PREFER_FREE` | `1`/`true`: as `prefer_free_for_low_risk` |
 | `AFK_ROUTER_ALLOW_FREE_REVIEWERS` | `1`/`true`: as `allow_free_reviewers` |
 | `AFK_ROUTER_ALLOW_METERED_API` | `1`/`true`: as `allow_metered_api` |
@@ -271,7 +272,8 @@ installed_at = 2026-11-26T12:00:00Z
 
 | Variable | Meaning |
 |---|---|
-| `AFK_STATE_DIR` | where the separate Claude config for gateway routes lives (default `~/.local/state/agent-flow-kit`) |
+| `AFK_STATE_DIR` | where the separate Claude config for gateway routes lives, and the empty directory npm is run from (default `~/.local/state/agent-flow-kit`) |
+| `AFK_RELEASE_COOLDOWN_DAYS` | how many days a new release waits before `afk harness add` and `update` install it as latest (default 3, `0` for no wait) |
 | `NO_COLOR`, `TERM=dumb`, `AFK_MOTION=off` | no animation (and no colour for `NO_COLOR`) |
 | `XDG_CONFIG_HOME` | the base for `afk/config.toml` and `afk/state/runs` |
 | `XDG_STATE_HOME` | the base for `afk/` runtime state |

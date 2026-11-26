@@ -228,3 +228,113 @@ func TestRemoveHint(t *testing.T) {
 		}
 	}
 }
+
+// npmTimes answers npm view for a package whose latest is 2.2.0, a day
+// old, after 2.1.9 (ten days old) and a newer nightly.
+func npmTimes(integrity map[string]string) func([]string) ([]byte, int) {
+	return func(argv []string) ([]byte, int) {
+		ver := argv[2][strings.LastIndex(argv[2], "@")+1:]
+		if ver == "latest" {
+			ver = "2.2.0"
+		}
+		h := integrity[ver]
+		if h == "" {
+			h = "sha512-" + ver
+		}
+		return []byte(`{"version":"` + ver + `","dist.integrity":"` + h + `","time":{"created":"2025-01-01T00:00:00.000Z",` +
+			`"2.1.8":"2026-11-01T12:00:00.000Z","2.1.9":"2026-11-16T12:00:00.000Z","2.1.10-nightly.1":"2026-11-17T12:00:00.000Z","2.2.0":"2026-11-25T12:00:00.000Z"}}`), 0
+	}
+}
+
+func TestNewReleasesWaitBeforeInstall(t *testing.T) {
+	f := newFake(t, nil)
+	f.answer["npm view"] = npmTimes(nil)
+	o := f.ops()
+	// latest is a day old: the newest release past the wait is planned,
+	// and the plan says why and how to get latest anyway.
+	code, out, errs := hrun(t, o, "add", "gemini", "--dry-run")
+	if code != 0 || !strings.Contains(out, "npm install -g @google/gemini-cli@2.1.9\n") || !strings.Contains(out, "latest is 2.2.0, published 24 hours ago") ||
+		!strings.Contains(out, "--version 2.2.0") || !strings.Contains(out, "AFK_RELEASE_COOLDOWN_DAYS=0") {
+		t.Fatalf("add: %d %s %s", code, out, errs)
+	}
+	// Asked for by version: installed, with a note.
+	if code, out, _ := hrun(t, o, "add", "gemini", "--version", "2.2.0", "--dry-run"); code != 0 || !strings.Contains(out, "@google/gemini-cli@2.2.0\n") || !strings.Contains(out, "you asked for it by version") {
+		t.Fatalf("--version: %d %s", code, out)
+	}
+	// The wait turned off, or shorter than the release's age.
+	for _, days := range []string{"0", "1"} {
+		o.env.Getenv = func(k string) string {
+			if k == "AFK_RELEASE_COOLDOWN_DAYS" {
+				return days
+			}
+			return ""
+		}
+		if code, out, _ := hrun(t, o, "add", "gemini", "--dry-run"); code != 0 || !strings.Contains(out, "@google/gemini-cli@2.2.0\n") || strings.Contains(out, "waits") {
+			t.Fatalf("cooldown %s: %d %s", days, code, out)
+		}
+	}
+}
+
+func TestUpdateNeverGoesBackwards(t *testing.T) {
+	// claude 2.1.332 is installed and recorded; the registry's latest is
+	// a day old and the newest settled release is older than what's here.
+	f := newFake(t, map[string]string{"claude": "--permission-mode"})
+	f.answer["npm view"] = npmTimes(nil)
+	o := f.ops()
+	l := &config.Lock{Installs: []config.Install{{Name: "claude", Kind: "harness", Version: "2.1.332", Source: "npm:@anthropic-ai/claude-code@2.1.332", Integrity: "sha512-BBBB", Harnesses: []string{"claude"}}}}
+	if err := config.WriteLock(o.lock, l); err != nil {
+		t.Fatal(err)
+	}
+	code, _, errs := hrun(t, o, "update", "claude", "-y")
+	if code != 1 || installed(f) || !strings.Contains(errs, "nothing newer is ready") || !strings.Contains(errs, "latest is 2.2.0") {
+		t.Fatalf("update: %d %s %v", code, errs, f.ran)
+	}
+}
+
+// With no release past the wait, latest is planned; it still must not go
+// below what is installed (the stub reports 2.1.332).
+func TestUpdateNeverInstallsOlderThanInstalled(t *testing.T) {
+	f := newFake(t, map[string]string{"claude": "--permission-mode"})
+	f.answer["npm view"] = func([]string) ([]byte, int) {
+		return []byte(`{"version":"2.0.0","dist.integrity":"sha512-CCCC","time":{"2.0.0":"2026-11-26T00:00:00.000Z"}}`), 0
+	}
+	o := f.ops()
+	l := &config.Lock{Installs: []config.Install{{Name: "claude", Kind: "harness", Version: "2.1.332", Source: "npm:@anthropic-ai/claude-code@2.1.332", Integrity: "sha512-BBBB", Harnesses: []string{"claude"}}}}
+	if err := config.WriteLock(o.lock, l); err != nil {
+		t.Fatal(err)
+	}
+	code, _, errs := hrun(t, o, "update", "claude", "-y")
+	if code != 1 || installed(f) || !strings.Contains(errs, "nothing to update") {
+		t.Fatalf("update: %d %s %v", code, errs, f.ran)
+	}
+}
+
+func TestChangedRegistryHashIsRefused(t *testing.T) {
+	f := newFake(t, map[string]string{"claude": "--permission-mode"})
+	f.answer["npm view"] = npmView("2.1.332")
+	o := f.ops()
+	l := &config.Lock{Installs: []config.Install{{Name: "claude", Kind: "harness", Version: "2.1.332", Source: "npm:@anthropic-ai/claude-code@2.1.332", Integrity: "sha512-BBBB", Harnesses: []string{"claude"}}}}
+	if err := config.WriteLock(o.lock, l); err != nil {
+		t.Fatal(err)
+	}
+	// npmView answers sha512-AAAA for the version afk.lock has as BBBB.
+	code, _, errs := hrun(t, o, "update", "claude", "-y")
+	if code != 1 || installed(f) || !strings.Contains(errs, "is not the one AFK installed") || !strings.Contains(errs, "sha512-BBBB") {
+		t.Fatalf("update: %d %s", code, errs)
+	}
+}
+
+func TestNpmRunsInItsOwnDirectory(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("AFK_STATE_DIR", "")
+	d := npmDir(home)
+	if !strings.HasPrefix(d, home) || d == home {
+		t.Fatalf("npmDir = %s", d)
+	}
+	if fi, err := os.Stat(d); err != nil || fi.Mode().Perm() != 0o700 {
+		t.Fatalf("npm directory: %v %v", fi, err)
+	}
+	if es, _ := os.ReadDir(d); len(es) != 0 {
+		t.Fatalf("not empty: %v", es)
+	}
+}
