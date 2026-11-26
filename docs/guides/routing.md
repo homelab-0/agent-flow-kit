@@ -91,7 +91,13 @@ When the exact level isn't supported, AFK takes the nearest one, the higher one 
 
 ## When nothing qualifies
 
-If no model passes the rules, AFK says the router found no usable model for the task and exits with code 4, rather than starting something that would fail.
+If no model passes the rules, AFK says the router found no usable model for the task and exits with code 4, rather than starting something that would fail or showing made-up numbers. The message names each plan that was set aside and why, for example:
+
+```text
+afk: the router found no usable model for this task on claude; anthropic-max is exhausted (100% used, runtime_signal:quota): a run failed with "429 Too Many Requests"; if that was wrong, run: afk pools clear anthropic-max. To use a set-aside plan anyway, pin it with --harness and --model
+```
+
+A pool waiting for a sign-in gets the sign-in command instead. Pinning a route with `--harness` and `--model` skips the router, so you can still use a plan AFK thinks is spent.
 
 ## Project settings
 

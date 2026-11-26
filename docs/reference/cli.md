@@ -10,10 +10,11 @@ afk harness doctor|login|add|update|remove <name>   check, sign in, install
 afk bench sync [--json]            refresh the benchmark catalog now
 afk config get|set|edit|path|migrate   your settings (config.toml)
 afk trust add|list|remove [dir]    where yolo may run
+afk pools clear [pool...]          forget recorded pool failures
 afk --help
 ```
 
-A prompt that starts with the word `harness`, `bench`, `config` or `trust` needs `--` before it.
+A prompt that starts with the word `harness`, `bench`, `config`, `trust` or `pools` needs `--` before it.
 
 ## Options
 
@@ -51,6 +52,10 @@ Options that take a value also accept `--option=value`.
 ## `afk trust`
 
 `afk trust add <dir>`, `afk trust list` and `afk trust remove <dir>`, each with `--json`; `add` and `remove` take `--dry-run`. See [yolo stays deliberate](../guides/permissions.md#yolo-stays-deliberate).
+
+## `afk pools clear`
+
+`afk pools clear [<pool>...]` forgets the recorded failures for the named pools, so routing uses them again at once. With no pool named it clears every pool mark and every model mark. Takes `--dry-run` and `--json` (`{"cleared": [...], "dry_run": ..., "signals": "<path>"}`; models are listed as `model:<id>`). See [failure signals](../guides/pools.md#failure-signals).
 
 ## `afk config`
 

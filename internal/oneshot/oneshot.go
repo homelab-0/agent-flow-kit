@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/jlengelbrecht/agent-flow-kit/internal/engine"
+	"github.com/jlengelbrecht/agent-flow-kit/internal/failsig"
 )
 
 // MaxAttempts is how many routes one run tries.
@@ -34,21 +35,16 @@ const (
 )
 
 var (
-	modelRE = regexp.MustCompile(`(model_not_found|does\s+not\s+have\s+access|not\s+authorized\s+for\s+model|unknown\s+model)`)
-	poolRE  = regexp.MustCompile(`(401|unauthorized|not\s+logged\s+in|please\s+log\s?in|429|rate[\s_]limit|quota|usage\s+limit|credit\s+balance|exhausted|overloaded|529)`)
-	// CLI wording such as "usage limit reached" is a quota event the
-	// router would not otherwise recognise as one.
-	quotaWordsRE = regexp.MustCompile(`(usage\s+limit|credit\s+balance)`)
-	quotaRE      = regexp.MustCompile(`(429|rate_limit|rate\s+limit|quota)`)
+	modelRE = regexp.MustCompile(`\b(model_not_found|does\s+not\s+have\s+access|not\s+authorized\s+for\s+model|unknown\s+model)\b`)
 )
 
-// Classify reads a failure's text (afk_cli_failure_kind).
+// Classify reads a failure's text (afk_cli_failure_kind). Pass error text
+// only: an answer that talks about HTTP 429 says nothing about the pool.
 func Classify(text string) Kind {
-	t := strings.ToLower(text)
 	switch {
-	case modelRE.MatchString(t):
+	case modelRE.MatchString(strings.ToLower(text)):
 		return KindModel
-	case poolRE.MatchString(t):
+	case failsig.Pool(text):
 		return KindPool
 	}
 	return KindOther
@@ -58,8 +54,7 @@ func Classify(text string) Kind {
 // spent plan gets a "quota: " prefix, so the router keeps the pool aside
 // for the quota TTL rather than the transient one.
 func PoolReason(why string) string {
-	lw := strings.ToLower(why)
-	if quotaWordsRE.MatchString(lw) && !quotaRE.MatchString(lw) {
+	if failsig.NeedsQuotaPrefix(why) {
 		return "quota: " + why
 	}
 	return why
@@ -307,7 +302,10 @@ func Do(ctx context.Context, req Request, d Deps) Result {
 			rc = 1
 		}
 		why := reason(out, text, ok)
-		kind := Classify(why)
+		// Classify, and record, only the error text: the answer may talk
+		// about status codes and would set the wrong kind of mark.
+		errText := strings.TrimSpace(errorText(out, text, ok))
+		kind := Classify(errText)
 		pool := route.EntitlementPool
 		if pool == "" && attempt == 1 {
 			pool = req.FirstPool
@@ -318,10 +316,10 @@ func Do(ctx context.Context, req Request, d Deps) Result {
 			}
 			switch kind {
 			case KindModel:
-				d.Mark(kind, pool, route.Model, cut(why, 160))
+				d.Mark(kind, pool, route.Model, cut(errText, 160))
 			case KindPool:
 				if pool != "" {
-					d.Mark(kind, pool, route.Model, cut(PoolReason(why), 160))
+					d.Mark(kind, pool, route.Model, cut(PoolReason(errText), 160))
 				}
 			}
 		}
@@ -429,6 +427,23 @@ func reason(out Output, text string, ok bool) string {
 	}
 	why := strings.ReplaceAll(strings.Join(parts, "\n"), "\x1b", "")
 	return cut(why, 600)
+}
+
+// errorText is the part of a failure that may be classified: the launch
+// error, the error document's message, stderr, and stdout that isn't JSON
+// (a CLI printing its own error). An answer the CLI delivered in JSON or an
+// answer file, before exiting non-zero, is left out: it is the model's own
+// text and may discuss rate limits or quotas as a topic.
+func errorText(out Output, text string, ok bool) string {
+	parts := []string{out.LaunchError}
+	if out.LaunchError == "" {
+		_, parsed := decodeAll(out.Stdout)
+		if !ok || (!parsed && len(out.Answer) == 0) {
+			parts = append(parts, cut(text, 500))
+		}
+	}
+	parts = append(parts, cut(string(out.Stderr), 1500))
+	return strings.Join(parts, "\n")
 }
 
 // cut shortens s to at most n bytes without splitting a character.

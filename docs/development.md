@@ -29,6 +29,10 @@ CGO_ENABLED=0 go build -o /tmp/afk ./cmd/afk
 
 Tests run offline and never start a real agent CLI or contact a provider: CLIs are shell stubs in temporary directories, and network calls go to `httptest` servers.
 
+CI (`.github/workflows/ci.yml`) runs `gofmt`, `go vet` and `go test` on Linux and macOS for every pull request, and builds and vets `cmd/afk` for Linux, macOS and Windows on amd64 and arm64. The tests use shell stubs, so they run on Linux and macOS only; Windows is checked by the cross-build.
+
+On Windows, `internal/launch` starts the CLI on afk's own console without unix job control: there is no ctrl+z suspend, and ctrl+c reaches the CLI directly while afk waits.
+
 ## Parity fixtures
 
 AFK started as a bash engine and lifecycle scripts, and the Go code was ported from them and checked against them. The bash code is gone; its last version is at the [`legacy-bash-final`](https://github.com/jlengelbrecht/agent-flow-kit/tree/legacy-bash-final) tag, for anyone who needs the old scripts. What it decided is kept as frozen fixtures, which can't be regenerated:

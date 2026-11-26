@@ -89,6 +89,7 @@ func TestPoolFailureKind(t *testing.T) {
 	for reason, want := range map[string]string{
 		"please log in": "auth", "Please login again": "auth", "401": "auth",
 		"quota: usage limit reached": "quota", "429 Too Many Requests": "quota", "stream disconnected": "transient",
+		"panic at line 1401": "transient", "529 overloaded": "transient", "Claude AI usage limit reached": "quota",
 	} {
 		if kind, _, _ := PoolFailureKind(reason); kind != want {
 			t.Errorf("%q: %s, want %s", reason, kind, want)
