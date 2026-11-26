@@ -105,11 +105,12 @@ func ProbePools(ctx context.Context, cat *Catalog, e ProbeEnv) *Probe {
 	bound := func(h, pool string) bool { return contains(binds[pool], h) }
 
 	since := e.Now.Add(-300 * time.Minute)
-	c5 := countRecent(filepath.Join(e.Home, ".claude", "projects"), since)
-	// Codex sessions count against the ChatGPT plan only when Codex is
-	// signed in with the plan, not with an API key (metered usage).
+	c5 := countRecent(filepath.Join(claudeDir(e), "projects"), since)
+	// Codex sessions count against the ChatGPT plan only when Codex says it
+	// is signed in with the plan. With an API key they are metered usage;
+	// when Codex couldn't say, they are not counted rather than guessed.
 	x5 := 0
-	if !bound("codex", "api-metered") || bound("codex", "openai-plus") {
+	if bound("codex", "openai-plus") {
 		x5 = countRecent(codexSessionsDir(e), since)
 	}
 	a5 := countRecentDirs(filepath.Join(e.Home, ".gemini", "antigravity-cli", "brain"), since)
@@ -128,8 +129,9 @@ func ProbePools(ctx context.Context, cat *Catalog, e ProbeEnv) *Probe {
 	}
 
 	sig := readSignals(e.SignalsPath())
-	openaiMt := maxInt64(mtime(codexAuthPath(e)), mtime(e.path("AFK_OPENCODE_AUTH_FILE", ".local/share/opencode/auth.json")))
-	claudeMt := mtime(e.path("AFK_CLAUDE_CREDS_FILE", ".claude/.credentials.json"))
+	// A newer login file clears a sign-in failure signal for its pool.
+	openaiMt := mtime(codexAuthPath(e))
+	claudeMt := mtime(claudeCredsPath(e))
 	grokMt := mtime(e.path("AFK_GROK_AUTH_FILE", ".grok/auth.json"))
 
 	pc := poolCalc{cat: cat, sig: sig, now: e.Now.Unix(), gatewayOn: gw.Online, harnesses: harnesses, binds: binds}
@@ -526,14 +528,20 @@ func accountBindings(e ProbeEnv, h map[string]HarnessState, codexMode string) ma
 			out[pool] = append(out[pool], harness)
 		}
 	}
-	if exists(e.path("AFK_CLAUDE_CREDS_FILE", ".claude/.credentials.json")) || isDir(filepath.Join(e.Home, ".claude")) {
+	if exists(claudeCredsPath(e)) || isDir(claudeDir(e)) {
 		add("anthropic-max", "claude")
 	}
 	if nonEmpty(codexAuthPath(e)) {
-		if codexMode == "apikey" {
-			add("api-metered", "codex")
-		} else {
+		// Three answers: the plan, an API key, or Codex couldn't say (slow,
+		// missing or unfamiliar output). The last binds Codex to neither:
+		// its sessions are counted against no pool and its plan pool shows
+		// as estimated, so a metered login is never taken for the plan.
+		// Codex still routes; only the pool arithmetic waits for an answer.
+		switch codexMode {
+		case "chatgpt":
 			add("openai-plus", "codex")
+		case "apikey":
+			add("api-metered", "codex")
 		}
 	}
 	if h["agy"].Installed {

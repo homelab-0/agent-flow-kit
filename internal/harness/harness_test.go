@@ -392,3 +392,36 @@ func TestCapWriterBoundsOutput(t *testing.T) {
 		t.Fatalf("kept %q", got)
 	}
 }
+
+// Gemini and Qwen follow the same file rule: an empty {} is not a login,
+// an API key variable still is, and nothing found is unknown.
+func TestFileOrEnvUsesTheLoginSizeRule(t *testing.T) {
+	e, _ := testEnv(t)
+	e.OS = "linux"
+	for _, c := range []struct{ name, file, key string }{
+		{"gemini", filepath.Join(".gemini", "oauth_creds.json"), "GEMINI_API_KEY"},
+		{"qwen", filepath.Join(".qwen", "oauth_creds.json"), "DASHSCOPE_API_KEY"},
+	} {
+		a := mustLookup(t, c.name)
+		p := filepath.Join(e.Home, c.file)
+		writeFile(t, p, `{}`)
+		if st, _ := a.auth(e); st != AuthUnknown {
+			t.Errorf("%s with {}: %s, want unknown", c.name, st)
+		}
+		writeFile(t, p, `{"access_token":"x","refresh_token":"y"}`)
+		if st, _ := a.auth(e); st != AuthOK {
+			t.Errorf("%s with a login: %s", c.name, st)
+		}
+		_ = os.Remove(p)
+		env := e
+		env.Getenv = func(k string) string {
+			if k == c.key {
+				return "set"
+			}
+			return ""
+		}
+		if st, _ := a.auth(env); st != AuthOK {
+			t.Errorf("%s with %s: %s", c.name, c.key, st)
+		}
+	}
+}

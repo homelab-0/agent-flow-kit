@@ -92,6 +92,25 @@ func probeCodexQuota(e ProbeEnv) quota {
 	return best
 }
 
+// claudeDir is Claude Code's directory: $CLAUDE_CONFIG_DIR when set (as
+// Claude Code itself uses it), else ~/.claude.
+func claudeDir(e ProbeEnv) string {
+	if d := e.getenv("CLAUDE_CONFIG_DIR"); d != "" {
+		return d
+	}
+	return filepath.Join(e.Home, ".claude")
+}
+
+// claudeCredsPath is Claude Code's login file: AFK_CLAUDE_CREDS_FILE,
+// else .credentials.json in claudeDir. Only its existence and time are
+// looked at.
+func claudeCredsPath(e ProbeEnv) string {
+	if p := e.getenv("AFK_CLAUDE_CREDS_FILE"); p != "" {
+		return p
+	}
+	return filepath.Join(claudeDir(e), ".credentials.json")
+}
+
 // codexAuthPath is Codex's login file: AFK_CODEX_AUTH_FILE, then
 // $CODEX_HOME/auth.json, then ~/.codex/auth.json, the same place Codex
 // itself (and its sessions) use. Only its existence, size and time are

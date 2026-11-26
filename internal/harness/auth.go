@@ -105,7 +105,9 @@ func fileOrEnv(file []string, vars ...string) func(Env) (AuthState, string) {
 				return AuthOK, k + " is set"
 			}
 		}
-		if fi, err := os.Stat(e.home(file...)); err == nil && fi.Size() > 0 {
+		// The same rule as every other login file: larger than an empty
+		// JSON object, never opened.
+		if fi, err := os.Stat(e.home(file...)); err == nil && fi.Mode().IsRegular() && fi.Size() > MinLoginSize {
 			return AuthOK, ""
 		}
 		return AuthUnknown, "no login file or API key variable found"
