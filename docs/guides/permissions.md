@@ -72,6 +72,8 @@ A CLI's own skip-permissions flag given through `--pass` (for example `--pass --
 
 Trust also decides whether a one-shot run loads a repository's own CLI settings (hooks, permission rules, MCP servers): see [security](../security.md#a-repositorys-own-cli-settings).
 
+AFK sets the mode, so `--pass` refuses any other flag of the CLI's that would change it: Claude's `--permission-mode`, `--settings`, `--setting-sources` and `--allowedTools`; Codex's `--sandbox`, `--ask-for-approval`, `--full-auto`, `--profile` and a `-c` that sets `sandbox_mode` or `approval_policy`; Grok's `--permission-mode`; Antigravity's `--mode`; Pi's `--tools`. Such a flag would run after AFK's own and win, while the plan and the receipt still named the stricter mode. Use `--mode` instead. A yolo run in a trusted repository takes them. The lists are `modes.mode_flags`, `modes.config_flags` and `modes.config_keys` in each [manifest](../reference/harness-manifests.md).
+
 AFK passes the mode on each launch only. It never writes a mode into a CLI's own settings.
 
 ## Planned

@@ -380,3 +380,41 @@ func TestUntrustedDirectoryKeepsProjectConfigOut(t *testing.T) {
 		t.Fatalf("trusted: %+v %v", p, err)
 	}
 }
+
+// A flag in --pass that changes the CLI's permission mode would run after
+// AFK's own and win, so only a yolo run takes one.
+func TestPassCannotChangeTheMode(t *testing.T) {
+	c, _ := testCore(t)
+	claude := engine.Route{Harness: "claude", Model: "opus", LaunchClass: "claude", CostClass: "subscription", EntitlementPool: "anthropic-max"}
+	codex := engine.Route{Harness: "codex", Model: "gpt", LaunchClass: "codex", CostClass: "subscription", EntitlementPool: "openai-plus"}
+	var ue *UsageError
+	for _, tc := range []struct {
+		r    engine.Route
+		mode string
+		perm string
+		pass []string
+	}{
+		{claude, "interactive", "ask", []string{"--permission-mode", "bypassPermissions"}},
+		{claude, "interactive", "read-only", []string{"--permission-mode=bypassPermissions"}},
+		{claude, "print", "ask", []string{"--settings", `{"permissions":{"defaultMode":"bypassPermissions"}}`}},
+		{claude, "interactive", "auto", []string{"--allowedTools", "Bash"}},
+		{codex, "interactive", "ask", []string{"--sandbox", "danger-full-access"}},
+		{codex, "interactive", "ask", []string{"-c", `sandbox_mode="danger-full-access"`, "-c", `approval_policy="never"`}},
+		{codex, "print", "auto", []string{"--full-auto"}},
+	} {
+		_, err := c.LaunchPlan(context.Background(), tc.r, tc.mode, tc.perm, tc.pass, "x")
+		if !errors.As(err, &ue) || !strings.Contains(err.Error(), "--pass can't take") {
+			t.Errorf("%s %s %v: %v", tc.r.Harness, tc.perm, tc.pass, err)
+		}
+	}
+	// Flags that leave the mode alone still pass.
+	p, err := c.LaunchPlan(context.Background(), codex, "interactive", "ask", []string{"-c", "model_provider=oss"}, "x")
+	if err != nil || !hasRun(p.Argv, []string{"-c", "model_provider=oss"}) {
+		t.Fatalf("harmless -c: %+v %v", p, err)
+	}
+	// In a trusted repository a yolo run takes the CLI's own.
+	trustRepo(t, c)
+	if _, err := c.LaunchPlan(context.Background(), claude, "interactive", "yolo", []string{"--permission-mode", "plan"}, "x"); err != nil {
+		t.Fatalf("yolo: %v", err)
+	}
+}
