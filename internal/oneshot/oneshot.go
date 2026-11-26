@@ -224,9 +224,10 @@ type Request struct {
 type Deps struct {
 	// Run starts the route headless and waits for it.
 	Run func(ctx context.Context, r engine.Route, mode string) Output
-	// Next asks the router again, limited to these CLIs. ok is false when
-	// nothing there can do the task.
-	Next func(ctx context.Context, only []string) (r engine.Route, ok bool)
+	// Next asks the router again, limited to these CLIs and, when pool
+	// is set, to routes that pool serves. ok is false when nothing there
+	// can do the task.
+	Next func(ctx context.Context, only []string, pool string) (r engine.Route, ok bool)
 	// Mark records a model or pool failure for the router (and so for
 	// the next run). reason is at most 160 bytes.
 	Mark func(kind Kind, pool, model, reason string)
@@ -338,7 +339,13 @@ func Do(ctx context.Context, req Request, d Deps) Result {
 			// first.
 			req.Harnesses = without([]string{req.First.Harness}, avoid)
 		}
-		next, found := nextRoute(ctx, req, d, avoid, triedSet)
+		only := ""
+		if req.Failover == "same-pool" {
+			// Ask for the first pool only: a better ranked route through
+			// another pool must not hide a model the plan still has.
+			only = firstPool
+		}
+		next, found := nextRoute(ctx, req, d, avoid, only, triedSet)
 		if found && req.Failover == "same-pool" && next.EntitlementPool != firstPool {
 			found = false
 		}
@@ -360,13 +367,13 @@ func Do(ctx context.Context, req Request, d Deps) Result {
 // A route already tried in this run (the router may not have seen the
 // failure, if the signals file could not be written) moves the run off
 // that CLI too, rather than spending an attempt on it again.
-func nextRoute(ctx context.Context, req Request, d Deps, avoid []string, tried map[string]bool) (engine.Route, bool) {
+func nextRoute(ctx context.Context, req Request, d Deps, avoid []string, pool string, tried map[string]bool) (engine.Route, bool) {
 	for range req.Harnesses {
 		allowed := without(req.Harnesses, avoid)
 		if len(allowed) == 0 || d.Next == nil {
 			return engine.Route{}, false
 		}
-		r, ok := d.Next(ctx, allowed)
+		r, ok := d.Next(ctx, allowed, pool)
 		if !ok || r.Harness == "" {
 			return engine.Route{}, false
 		}
