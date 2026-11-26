@@ -261,7 +261,8 @@ SC_LIFECYCLE=("$KIT_ROOT/bin/agent-flow-kit" "$KIT_ROOT/lib/afk-common.sh" "$KIT
               "$KIT_ROOT/lib/afk-tooling.sh" "$KIT_ROOT/lib/afk-bmad-import.sh" \
               "$KIT_ROOT/tests/factory-router-tests.sh" "$KIT_ROOT/tests/factory-safety-tests.sh" \
               "$KIT_ROOT/tests/factory-ledger-tests.sh" "$KIT_ROOT/tests/factory-tooling-tests.sh" \
-              "$KIT_ROOT/tests/bmad-import-tests.sh" "$KIT_ROOT/tests/paperclip-pm-chat-tests.sh")
+              "$KIT_ROOT/tests/bmad-import-tests.sh" "$KIT_ROOT/tests/paperclip-pm-chat-tests.sh" \
+              "$KIT_ROOT/lib/afk-cli.sh" "$KIT_ROOT/bin/afk" "$KIT_ROOT/tests/afk-cli-tests.sh")
 
 if (( ${#SC_CMD[@]} > 0 )); then
   ok "shellcheck runs here: ${SC_CMD[0]} ${SC_VERSION:-(version not reported)}"
@@ -3979,6 +3980,9 @@ run_gate "factory ledger gate" "$KIT_ROOT/tests/factory-ledger-tests.sh"
 run_gate "factory tooling gate" "$KIT_ROOT/tests/factory-tooling-tests.sh"
 run_gate "factory backlog import gate" "$KIT_ROOT/tests/bmad-import-tests.sh"
 run_gate "paperclip PM chat gate" "$KIT_ROOT/tests/paperclip-pm-chat-tests.sh"
+# The standalone `afk` route: routing over installed CLIs, launch commands,
+# one-shot failover. Stub CLIs only.
+run_gate "afk standalone CLI gate" "$KIT_ROOT/tests/afk-cli-tests.sh"
 
 # ===========================================================================
 # AC-2: total wall time, with a BUDGET warning (never a failure) over 720s.
