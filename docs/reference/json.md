@@ -79,7 +79,7 @@ A `fallback-default` route also has `no_eligible_candidate`, `candidates_conside
 | `argv` | the command, with the CLI's absolute path |
 | `env_set` | variables to set |
 | `env_from` | variables to copy at launch: target name → source variable name. Values are never in the plan |
-| `env_unset` | variables to remove |
+| `env_unset` | variables to remove: on any launch, the gateway key variables that are set (`AFK_GATEWAY_KEY`, the one `AFK_GATEWAY_KEY_ENV` names, each gateway's `key = "env:NAME"`); on a gateway launch, the Claude and Anthropic variables too |
 | `cwd` | where to start it |
 | `mode`, `mode_note` | the permission mode the CLI runs in, and why when it is stricter than the one asked for |
 | `answer` | print mode only: `{"format":"json","file":null}` (the answer is on stdout) or, for Codex, `{"format":"text-file","file":"<path>"}` |
