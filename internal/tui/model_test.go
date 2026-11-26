@@ -166,7 +166,7 @@ func TestLaterStepKeysSayLater(t *testing.T) {
 		t.Errorf("m: %q", m.notice)
 	}
 	press(m, "w")
-	if !strings.Contains(m.notice, "only here") {
+	if !strings.Contains(m.notice, "only this terminal") || strings.Contains(m.notice, "Orca") {
 		t.Errorf("w: %q", m.notice)
 	}
 }

@@ -116,7 +116,7 @@ var registry = []Adapter{
 	{
 		Name: "pi", Display: "Pi", Vendor: "Mario Zechner",
 		Bins: []string{"pi"}, NPMPackage: "@mariozechner/pi-coding-agent",
-		Efforts: []string{"low", "medium", "high"}, EffortFlag: "--thinking <level>",
+		Efforts: []string{"low", "medium", "high", "xhigh", "max"}, EffortFlag: "--thinking <level>",
 		Login: "pi (then /login)",
 		auth:  nonEmptyJSONObject(".pi", "agent", "auth.json"),
 	},

@@ -1,0 +1,923 @@
+{
+ "healthy": {
+  "schema": "afk-router-pools/3",
+  "auth_alerts": [],
+  "unavailable_models": {},
+  "harnesses": {
+   "claude": {
+    "installed": true
+   },
+   "codex": {
+    "installed": true
+   },
+   "opencode": {
+    "installed": true
+   },
+   "grok": {
+    "installed": true
+   },
+   "agy": {
+    "installed": true
+   },
+   "litellm_gateway": {
+    "installed": false,
+    "online": true,
+    "models": [
+     "qwen36-27b"
+    ]
+   }
+  },
+  "pools": {
+   "anthropic-max": {
+    "pool_id": "anthropic-max",
+    "state": "available",
+    "capacity_5h": 60,
+    "remaining_units_5h": 54,
+    "used_pct": 9,
+    "headroom_pct": 91,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "openai-plus": {
+    "pool_id": "openai-plus",
+    "state": "available",
+    "capacity_5h": 40,
+    "remaining_units_5h": 32,
+    "used_pct": 20,
+    "headroom_pct": 80,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "antigravity-pool": {
+    "pool_id": "antigravity-pool",
+    "state": "available",
+    "capacity_5h": 50,
+    "remaining_units_5h": 45,
+    "used_pct": 10,
+    "headroom_pct": 90,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "xai-grok": {
+    "pool_id": "xai-grok",
+    "state": "available",
+    "capacity_5h": 50,
+    "remaining_units_5h": 47,
+    "used_pct": 5,
+    "headroom_pct": 95,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "opencode-free": {
+    "pool_id": "opencode-free",
+    "state": "available",
+    "capacity_5h": 200,
+    "remaining_units_5h": 200,
+    "used_pct": 0,
+    "headroom_pct": 100,
+    "quota_source": "local_5h_activity",
+    "cost_class": "free"
+   },
+   "litellm-local": {
+    "pool_id": "litellm-local",
+    "state": "available",
+    "capacity_5h": 9999,
+    "remaining_units_5h": 9999,
+    "used_pct": 0,
+    "headroom_pct": 100,
+    "quota_source": "gateway_probe",
+    "cost_class": "free"
+   }
+  }
+ },
+ "claude-warning": {
+  "schema": "afk-router-pools/3",
+  "auth_alerts": [],
+  "unavailable_models": {},
+  "harnesses": {
+   "claude": {
+    "installed": true
+   },
+   "codex": {
+    "installed": true
+   },
+   "opencode": {
+    "installed": true
+   },
+   "grok": {
+    "installed": true
+   },
+   "agy": {
+    "installed": true
+   },
+   "litellm_gateway": {
+    "installed": false,
+    "online": true,
+    "models": [
+     "qwen36-27b"
+    ]
+   }
+  },
+  "pools": {
+   "anthropic-max": {
+    "pool_id": "anthropic-max",
+    "state": "warning",
+    "capacity_5h": 60,
+    "remaining_units_5h": 12,
+    "used_pct": 80,
+    "headroom_pct": 20,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "openai-plus": {
+    "pool_id": "openai-plus",
+    "state": "available",
+    "capacity_5h": 40,
+    "remaining_units_5h": 32,
+    "used_pct": 20,
+    "headroom_pct": 80,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "antigravity-pool": {
+    "pool_id": "antigravity-pool",
+    "state": "available",
+    "capacity_5h": 50,
+    "remaining_units_5h": 45,
+    "used_pct": 10,
+    "headroom_pct": 90,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "xai-grok": {
+    "pool_id": "xai-grok",
+    "state": "available",
+    "capacity_5h": 50,
+    "remaining_units_5h": 47,
+    "used_pct": 5,
+    "headroom_pct": 95,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "opencode-free": {
+    "pool_id": "opencode-free",
+    "state": "available",
+    "capacity_5h": 200,
+    "remaining_units_5h": 200,
+    "used_pct": 0,
+    "headroom_pct": 100,
+    "quota_source": "local_5h_activity",
+    "cost_class": "free"
+   },
+   "litellm-local": {
+    "pool_id": "litellm-local",
+    "state": "available",
+    "capacity_5h": 9999,
+    "remaining_units_5h": 9999,
+    "used_pct": 0,
+    "headroom_pct": 100,
+    "quota_source": "gateway_probe",
+    "cost_class": "free"
+   }
+  }
+ },
+ "claude-exhausted": {
+  "schema": "afk-router-pools/3",
+  "auth_alerts": [],
+  "unavailable_models": {},
+  "harnesses": {
+   "claude": {
+    "installed": true
+   },
+   "codex": {
+    "installed": true
+   },
+   "opencode": {
+    "installed": true
+   },
+   "grok": {
+    "installed": true
+   },
+   "agy": {
+    "installed": true
+   },
+   "litellm_gateway": {
+    "installed": false,
+    "online": true,
+    "models": [
+     "qwen36-27b"
+    ]
+   }
+  },
+  "pools": {
+   "anthropic-max": {
+    "pool_id": "anthropic-max",
+    "state": "exhausted",
+    "capacity_5h": 60,
+    "remaining_units_5h": 3,
+    "used_pct": 95,
+    "headroom_pct": 5,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "openai-plus": {
+    "pool_id": "openai-plus",
+    "state": "available",
+    "capacity_5h": 40,
+    "remaining_units_5h": 32,
+    "used_pct": 20,
+    "headroom_pct": 80,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "antigravity-pool": {
+    "pool_id": "antigravity-pool",
+    "state": "available",
+    "capacity_5h": 50,
+    "remaining_units_5h": 45,
+    "used_pct": 10,
+    "headroom_pct": 90,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "xai-grok": {
+    "pool_id": "xai-grok",
+    "state": "available",
+    "capacity_5h": 50,
+    "remaining_units_5h": 47,
+    "used_pct": 5,
+    "headroom_pct": 95,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "opencode-free": {
+    "pool_id": "opencode-free",
+    "state": "available",
+    "capacity_5h": 200,
+    "remaining_units_5h": 200,
+    "used_pct": 0,
+    "headroom_pct": 100,
+    "quota_source": "local_5h_activity",
+    "cost_class": "free"
+   },
+   "litellm-local": {
+    "pool_id": "litellm-local",
+    "state": "available",
+    "capacity_5h": 9999,
+    "remaining_units_5h": 9999,
+    "used_pct": 0,
+    "headroom_pct": 100,
+    "quota_source": "gateway_probe",
+    "cost_class": "free"
+   }
+  }
+ },
+ "grok-auth": {
+  "schema": "afk-router-pools/3",
+  "auth_alerts": [
+   {
+    "pool": "xai-grok",
+    "reauth_command": "grok login"
+   }
+  ],
+  "unavailable_models": {},
+  "harnesses": {
+   "claude": {
+    "installed": true
+   },
+   "codex": {
+    "installed": true
+   },
+   "opencode": {
+    "installed": true
+   },
+   "grok": {
+    "installed": true
+   },
+   "agy": {
+    "installed": true
+   },
+   "litellm_gateway": {
+    "installed": false,
+    "online": true,
+    "models": [
+     "qwen36-27b"
+    ]
+   }
+  },
+  "pools": {
+   "anthropic-max": {
+    "pool_id": "anthropic-max",
+    "state": "available",
+    "capacity_5h": 60,
+    "remaining_units_5h": 54,
+    "used_pct": 9,
+    "headroom_pct": 91,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "openai-plus": {
+    "pool_id": "openai-plus",
+    "state": "available",
+    "capacity_5h": 40,
+    "remaining_units_5h": 32,
+    "used_pct": 20,
+    "headroom_pct": 80,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "antigravity-pool": {
+    "pool_id": "antigravity-pool",
+    "state": "available",
+    "capacity_5h": 50,
+    "remaining_units_5h": 45,
+    "used_pct": 10,
+    "headroom_pct": 90,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "xai-grok": {
+    "pool_id": "xai-grok",
+    "state": "auth_required",
+    "capacity_5h": 50,
+    "remaining_units_5h": 47,
+    "used_pct": 5,
+    "headroom_pct": 95,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "opencode-free": {
+    "pool_id": "opencode-free",
+    "state": "available",
+    "capacity_5h": 200,
+    "remaining_units_5h": 200,
+    "used_pct": 0,
+    "headroom_pct": 100,
+    "quota_source": "local_5h_activity",
+    "cost_class": "free"
+   },
+   "litellm-local": {
+    "pool_id": "litellm-local",
+    "state": "available",
+    "capacity_5h": 9999,
+    "remaining_units_5h": 9999,
+    "used_pct": 0,
+    "headroom_pct": 100,
+    "quota_source": "gateway_probe",
+    "cost_class": "free"
+   }
+  }
+ },
+ "subs-pressure": {
+  "schema": "afk-router-pools/3",
+  "auth_alerts": [],
+  "unavailable_models": {},
+  "harnesses": {
+   "claude": {
+    "installed": true
+   },
+   "codex": {
+    "installed": true
+   },
+   "opencode": {
+    "installed": true
+   },
+   "grok": {
+    "installed": true
+   },
+   "agy": {
+    "installed": true
+   },
+   "litellm_gateway": {
+    "installed": false,
+    "online": true,
+    "models": [
+     "qwen36-27b"
+    ]
+   }
+  },
+  "pools": {
+   "anthropic-max": {
+    "pool_id": "anthropic-max",
+    "state": "warning",
+    "capacity_5h": 60,
+    "remaining_units_5h": 10,
+    "used_pct": 80,
+    "headroom_pct": 20,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "openai-plus": {
+    "pool_id": "openai-plus",
+    "state": "available",
+    "capacity_5h": 40,
+    "remaining_units_5h": 32,
+    "used_pct": 20,
+    "headroom_pct": 80,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "antigravity-pool": {
+    "pool_id": "antigravity-pool",
+    "state": "warning",
+    "capacity_5h": 50,
+    "remaining_units_5h": 10,
+    "used_pct": 80,
+    "headroom_pct": 20,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "xai-grok": {
+    "pool_id": "xai-grok",
+    "state": "warning",
+    "capacity_5h": 50,
+    "remaining_units_5h": 10,
+    "used_pct": 80,
+    "headroom_pct": 20,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "opencode-free": {
+    "pool_id": "opencode-free",
+    "state": "available",
+    "capacity_5h": 200,
+    "remaining_units_5h": 200,
+    "used_pct": 0,
+    "headroom_pct": 100,
+    "quota_source": "local_5h_activity",
+    "cost_class": "free"
+   },
+   "litellm-local": {
+    "pool_id": "litellm-local",
+    "state": "available",
+    "capacity_5h": 9999,
+    "remaining_units_5h": 9999,
+    "used_pct": 0,
+    "headroom_pct": 100,
+    "quota_source": "gateway_probe",
+    "cost_class": "free"
+   }
+  }
+ },
+ "gateway-offline": {
+  "schema": "afk-router-pools/3",
+  "auth_alerts": [],
+  "unavailable_models": {},
+  "harnesses": {
+   "claude": {
+    "installed": true
+   },
+   "codex": {
+    "installed": true
+   },
+   "opencode": {
+    "installed": true
+   },
+   "grok": {
+    "installed": true
+   },
+   "agy": {
+    "installed": true
+   },
+   "litellm_gateway": {
+    "installed": false,
+    "online": false,
+    "models": [
+     "qwen36-27b"
+    ]
+   }
+  },
+  "pools": {
+   "anthropic-max": {
+    "pool_id": "anthropic-max",
+    "state": "available",
+    "capacity_5h": 60,
+    "remaining_units_5h": 54,
+    "used_pct": 9,
+    "headroom_pct": 91,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "openai-plus": {
+    "pool_id": "openai-plus",
+    "state": "available",
+    "capacity_5h": 40,
+    "remaining_units_5h": 32,
+    "used_pct": 20,
+    "headroom_pct": 80,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "antigravity-pool": {
+    "pool_id": "antigravity-pool",
+    "state": "available",
+    "capacity_5h": 50,
+    "remaining_units_5h": 45,
+    "used_pct": 10,
+    "headroom_pct": 90,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "xai-grok": {
+    "pool_id": "xai-grok",
+    "state": "available",
+    "capacity_5h": 50,
+    "remaining_units_5h": 47,
+    "used_pct": 5,
+    "headroom_pct": 95,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "opencode-free": {
+    "pool_id": "opencode-free",
+    "state": "available",
+    "capacity_5h": 200,
+    "remaining_units_5h": 200,
+    "used_pct": 0,
+    "headroom_pct": 100,
+    "quota_source": "local_5h_activity",
+    "cost_class": "free"
+   },
+   "litellm-local": {
+    "pool_id": "litellm-local",
+    "state": "offline",
+    "capacity_5h": 9999,
+    "remaining_units_5h": 9999,
+    "used_pct": 0,
+    "headroom_pct": 100,
+    "quota_source": "gateway_probe",
+    "cost_class": "free"
+   }
+  }
+ },
+ "fable-quota": {
+  "schema": "afk-router-pools/3",
+  "auth_alerts": [],
+  "unavailable_models": {},
+  "harnesses": {
+   "claude": {
+    "installed": true
+   },
+   "codex": {
+    "installed": true
+   },
+   "opencode": {
+    "installed": true
+   },
+   "grok": {
+    "installed": true
+   },
+   "agy": {
+    "installed": true
+   },
+   "litellm_gateway": {
+    "installed": false,
+    "online": true,
+    "models": [
+     "qwen36-27b"
+    ]
+   }
+  },
+  "pools": {
+   "anthropic-max": {
+    "pool_id": "anthropic-max",
+    "state": "available",
+    "capacity_5h": 60,
+    "remaining_units_5h": 54,
+    "used_pct": 9,
+    "headroom_pct": 91,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription",
+    "fable_weekly_used_pct": 93
+   },
+   "openai-plus": {
+    "pool_id": "openai-plus",
+    "state": "available",
+    "capacity_5h": 40,
+    "remaining_units_5h": 32,
+    "used_pct": 20,
+    "headroom_pct": 80,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "antigravity-pool": {
+    "pool_id": "antigravity-pool",
+    "state": "available",
+    "capacity_5h": 50,
+    "remaining_units_5h": 45,
+    "used_pct": 10,
+    "headroom_pct": 90,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "xai-grok": {
+    "pool_id": "xai-grok",
+    "state": "available",
+    "capacity_5h": 50,
+    "remaining_units_5h": 47,
+    "used_pct": 5,
+    "headroom_pct": 95,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "opencode-free": {
+    "pool_id": "opencode-free",
+    "state": "available",
+    "capacity_5h": 200,
+    "remaining_units_5h": 200,
+    "used_pct": 0,
+    "headroom_pct": 100,
+    "quota_source": "local_5h_activity",
+    "cost_class": "free"
+   },
+   "litellm-local": {
+    "pool_id": "litellm-local",
+    "state": "available",
+    "capacity_5h": 9999,
+    "remaining_units_5h": 9999,
+    "used_pct": 0,
+    "headroom_pct": 100,
+    "quota_source": "gateway_probe",
+    "cost_class": "free"
+   }
+  }
+ },
+ "codex-model-down": {
+  "schema": "afk-router-pools/3",
+  "auth_alerts": [],
+  "unavailable_models": {
+   "gpt-6.1-sol": {
+    "updated_epoch": 1,
+    "ttl_sec": 3600
+   }
+  },
+  "harnesses": {
+   "claude": {
+    "installed": true
+   },
+   "codex": {
+    "installed": true
+   },
+   "opencode": {
+    "installed": true
+   },
+   "grok": {
+    "installed": true
+   },
+   "agy": {
+    "installed": true
+   },
+   "litellm_gateway": {
+    "installed": false,
+    "online": true,
+    "models": [
+     "qwen36-27b"
+    ]
+   }
+  },
+  "pools": {
+   "anthropic-max": {
+    "pool_id": "anthropic-max",
+    "state": "available",
+    "capacity_5h": 60,
+    "remaining_units_5h": 54,
+    "used_pct": 9,
+    "headroom_pct": 91,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "openai-plus": {
+    "pool_id": "openai-plus",
+    "state": "available",
+    "capacity_5h": 40,
+    "remaining_units_5h": 32,
+    "used_pct": 20,
+    "headroom_pct": 80,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "antigravity-pool": {
+    "pool_id": "antigravity-pool",
+    "state": "available",
+    "capacity_5h": 50,
+    "remaining_units_5h": 45,
+    "used_pct": 10,
+    "headroom_pct": 90,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "xai-grok": {
+    "pool_id": "xai-grok",
+    "state": "available",
+    "capacity_5h": 50,
+    "remaining_units_5h": 47,
+    "used_pct": 5,
+    "headroom_pct": 95,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "opencode-free": {
+    "pool_id": "opencode-free",
+    "state": "available",
+    "capacity_5h": 200,
+    "remaining_units_5h": 200,
+    "used_pct": 0,
+    "headroom_pct": 100,
+    "quota_source": "local_5h_activity",
+    "cost_class": "free"
+   },
+   "litellm-local": {
+    "pool_id": "litellm-local",
+    "state": "available",
+    "capacity_5h": 9999,
+    "remaining_units_5h": 9999,
+    "used_pct": 0,
+    "headroom_pct": 100,
+    "quota_source": "gateway_probe",
+    "cost_class": "free"
+   }
+  }
+ },
+ "only-opencode": {
+  "schema": "afk-router-pools/3",
+  "auth_alerts": [],
+  "unavailable_models": {},
+  "harnesses": {
+   "opencode": {
+    "installed": true
+   },
+   "litellm_gateway": {
+    "installed": false,
+    "online": true,
+    "models": [
+     "qwen36-27b"
+    ]
+   }
+  },
+  "pools": {
+   "anthropic-max": {
+    "pool_id": "anthropic-max",
+    "state": "available",
+    "capacity_5h": 60,
+    "remaining_units_5h": 54,
+    "used_pct": 9,
+    "headroom_pct": 91,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "openai-plus": {
+    "pool_id": "openai-plus",
+    "state": "available",
+    "capacity_5h": 40,
+    "remaining_units_5h": 32,
+    "used_pct": 20,
+    "headroom_pct": 80,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "antigravity-pool": {
+    "pool_id": "antigravity-pool",
+    "state": "available",
+    "capacity_5h": 50,
+    "remaining_units_5h": 45,
+    "used_pct": 10,
+    "headroom_pct": 90,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "xai-grok": {
+    "pool_id": "xai-grok",
+    "state": "available",
+    "capacity_5h": 50,
+    "remaining_units_5h": 47,
+    "used_pct": 5,
+    "headroom_pct": 95,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "opencode-free": {
+    "pool_id": "opencode-free",
+    "state": "available",
+    "capacity_5h": 200,
+    "remaining_units_5h": 200,
+    "used_pct": 0,
+    "headroom_pct": 100,
+    "quota_source": "local_5h_activity",
+    "cost_class": "free"
+   },
+   "litellm-local": {
+    "pool_id": "litellm-local",
+    "state": "available",
+    "capacity_5h": 9999,
+    "remaining_units_5h": 9999,
+    "used_pct": 0,
+    "headroom_pct": 100,
+    "quota_source": "gateway_probe",
+    "cost_class": "free"
+   }
+  }
+ },
+ "none-installed": {
+  "schema": "afk-router-pools/3",
+  "auth_alerts": [],
+  "unavailable_models": {},
+  "harnesses": {
+   "litellm_gateway": {
+    "installed": false,
+    "online": false
+   }
+  },
+  "pools": {
+   "anthropic-max": {
+    "pool_id": "anthropic-max",
+    "state": "available",
+    "capacity_5h": 60,
+    "remaining_units_5h": 54,
+    "used_pct": 9,
+    "headroom_pct": 91,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "openai-plus": {
+    "pool_id": "openai-plus",
+    "state": "available",
+    "capacity_5h": 40,
+    "remaining_units_5h": 32,
+    "used_pct": 20,
+    "headroom_pct": 80,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "antigravity-pool": {
+    "pool_id": "antigravity-pool",
+    "state": "available",
+    "capacity_5h": 50,
+    "remaining_units_5h": 45,
+    "used_pct": 10,
+    "headroom_pct": 90,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "xai-grok": {
+    "pool_id": "xai-grok",
+    "state": "available",
+    "capacity_5h": 50,
+    "remaining_units_5h": 47,
+    "used_pct": 5,
+    "headroom_pct": 95,
+    "quota_source": "local_5h_activity",
+    "cost_class": "subscription"
+   },
+   "opencode-free": {
+    "pool_id": "opencode-free",
+    "state": "available",
+    "capacity_5h": 200,
+    "remaining_units_5h": 200,
+    "used_pct": 0,
+    "headroom_pct": 100,
+    "quota_source": "local_5h_activity",
+    "cost_class": "free"
+   },
+   "litellm-local": {
+    "pool_id": "litellm-local",
+    "state": "available",
+    "capacity_5h": 9999,
+    "remaining_units_5h": 9999,
+    "used_pct": 0,
+    "headroom_pct": 100,
+    "quota_source": "gateway_probe",
+    "cost_class": "free"
+   }
+  }
+ },
+ "no-pools": {
+  "schema": "afk-router-pools/3",
+  "auth_alerts": [],
+  "unavailable_models": {},
+  "harnesses": {
+   "claude": {
+    "installed": true
+   },
+   "codex": {
+    "installed": true
+   },
+   "opencode": {
+    "installed": true
+   },
+   "grok": {
+    "installed": true
+   },
+   "agy": {
+    "installed": true
+   },
+   "litellm_gateway": {
+    "installed": false,
+    "online": true,
+    "models": [
+     "qwen36-27b"
+    ]
+   }
+  },
+  "pools": {}
+ }
+}

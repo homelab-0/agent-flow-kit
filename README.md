@@ -28,7 +28,7 @@ If you pay for more than one AI coding plan, or use a mix of plans, free models 
 - **Routes on evidence.** It weighs each model's benchmark score for the kind of work, how much is left in each subscription pool, and cost. Free and local models win quick tasks; reviews never go to them.
 - **Shows its work.** A route card shows the pick, the reason, the pool headroom, and the best option from every other installed CLI before anything starts. You can take it, pick another, or change the effort.
 - **Gets out of the way.** The session is the chosen CLI's own interface, with nothing wrapped around it. When it exits, AFK prints a receipt: time, exit status, pool before and after, files changed and commits.
-- **Keeps logins where they belong.** A vendor's plan login is only ever used by that vendor's own CLI, and gateway routes run with a separate config so your plan login never reaches the gateway.
+- **Your CLIs, your logins.** AFK routes to whatever you have installed and signed in, and never hands a plan login to a gateway: gateway routes run with a separate config and the gateway's own key.
 - **One binary.** AFK is written in Go and is moving to a single static binary with no runtime dependencies.
 
 ## Install
@@ -41,10 +41,9 @@ Requires Go 1.26 or newer.
 git clone https://github.com/jlengelbrecht/agent-flow-kit.git
 cd agent-flow-kit
 CGO_ENABLED=0 go build -o ~/.local/bin/afk ./cmd/afk
-export AFK_ENGINE="$PWD/bin/agent-flow-kit"   # add this to your shell profile
 ```
 
-While the routing engine is being ported to Go, the route card still calls the bash engine in this repository (`bin/agent-flow-kit`), which needs `bash` 4+, `jq` and `curl`. AFK looks for it in `$AFK_ENGINE`, then next to the `afk` binary, then on `PATH`. `afk harness` already runs without it.
+That's all the route card, `--explain` and `afk harness` need: routing, pool usage and launch plans run in the Go binary. Only `-p` (one-shot answers with failover) still calls the bash engine in this repository while it is being ported; for it, set `AFK_ENGINE="$PWD/bin/agent-flow-kit"` (it needs `bash` 4+, `jq` and `curl`).
 
 ### Packaged (planned)
 
@@ -153,7 +152,7 @@ afk harness [--all] [--json]
 | `-y`, `--yes` | skip the route card |
 | `--` | everything after it is the prompt |
 
-The full reference is in [docs/CLI.md](docs/CLI.md).
+The full reference is in the [command line reference](docs/reference/cli.md); everything else is in the [documentation](docs/README.md).
 
 ## How routing works
 
@@ -163,7 +162,7 @@ For each installed CLI, AFK considers every model that CLI can run and scores it
 2. **Pool headroom.** How much is left in that subscription's window, from the provider's live usage where it reports one (Claude, Codex) and from recent session activity otherwise. A pool that just hit a quota or sign-in error is marked down for a while.
 3. **Cost.** Subscription, free, local or metered. `--prefer cheap` favours free and local models; `--prefer best` ignores cost.
 
-Effort starts from the task kind and goes up for harder work, within what the CLI supports. Two rules are fixed: a review never goes to a free or local model, and a plan login is only used by its own vendor's CLI.
+Effort starts from the task kind and goes up for harder work, within what the CLI supports. Two rules are fixed: a review never goes to a free or local model, and a plan login is never sent through a gateway.
 
 Press `?` on the route card to see the working:
 
@@ -186,7 +185,7 @@ Press `?` on the route card to see the working:
 | Kiro CLI | `kiro-cli` | ✓ | planned |
 | Qwen Code | `qwen` | ✓ | planned |
 | Kimi Code | `kimi` | ✓ | planned |
-| Pi | `pi` | ✓ | planned |
+| Pi | `pi` | ✓ | ✓ |
 | Devin CLI | `devin` | ✓ | planned |
 
 Discovery reports each CLI's version, how it was installed (mise, npm, bun, pnpm, Homebrew, uv, pipx, cargo or self-managed), the command that updates it, its effort levels, and whether it looks signed in. The sign-in check looks for a login on disk. For Claude, Codex and a few others it opens the credential file to see which login fields are set, but it never decodes, prints, logs or stores a token's value. A file AFK can't read shows as `unknown`, not signed out. Where AFK can't tell, it says `unknown`.
@@ -203,10 +202,15 @@ Configuration is moving into AFK itself (`afk config`, `afk gateway`, `afk mcp`,
 | `AFK_LITELLM_BASE_URL` | address of a LiteLLM (or other Anthropic-compatible) gateway |
 | `AFK_GATEWAY_KEY` / `AFK_GATEWAY_KEY_ENV` | the gateway key, or the name of the variable that holds it |
 | `AFK_HARNESS_BIN_DIR` | look for CLIs only in this directory |
-| `AFK_ENGINE` | path to the bash engine, while it is still needed |
+| `AFK_ENGINE` | path to the bash engine, for `-p` until it is ported |
+| `AFK_BACKEND=bash` | run everything on the bash engine, as before the Go engine |
 | `NO_COLOR`, `AFK_MOTION=off` | no colour; no animation |
 
 A gateway route launches `claude` with `ANTHROPIC_BASE_URL` pointed at the gateway and a separate config directory, so your Claude plan login is never loaded. AFK never prints the gateway key.
+
+## Documentation
+
+The [docs](docs/README.md) cover installing, the route card, how routing works, harnesses, pools, gateways, permissions, scripting, configuration, the JSON formats and security.
 
 ## Roadmap
 
@@ -214,7 +218,8 @@ AFK is becoming a standalone tool. Work is tracked in pull requests against `mas
 
 - [x] Route card, launch and receipts in Go
 - [x] Harness discovery in Go (`afk harness`)
-- [ ] Routing engine in Go: one binary, no bash, `jq` or `yq`
+- [x] Routing engine in Go: route selection, pool usage and launch plans
+- [ ] `-p` one-shot answers with failover, and the benchmark sync, in Go (then no bash, `jq` or `yq` at all)
 - [ ] `afk config`: one config file, managed from the CLI
 - [ ] AI gateways: LiteLLM, OpenRouter and any OpenAI- or Anthropic-compatible endpoint, with keys held as references (env var, OS keychain, 1Password)
 - [ ] MCP servers and skills: define them once in AFK and sync them into every installed CLI's own config
@@ -229,7 +234,9 @@ AFK is becoming a standalone tool. Work is tracked in pull requests against `mas
 cmd/afk/            the afk binary
 internal/harness/   agent CLI registry and discovery
 internal/tui/       route card, why panel, receipts (Bubble Tea)
-internal/engine/    client for the bash engine (going away)
+internal/router/    route selection, benchmark catalog, pool probes
+internal/core/      the Go engine: explain, launch plans, pools
+internal/engine/    route and plan types; client for the bash engine (going away)
 internal/launch/    foreground launch of the chosen CLI
 internal/runrec/    run records
 internal/gitstat/   files changed and commits for receipts
