@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/assets/esc.gif" width="312" alt="Esc, the AFK mascot: a mint keycap that shuffles over to a hammock, climbs in and dozes off">
+
 # AFK
 
 **One command for every coding agent on your machine.**
@@ -12,6 +14,10 @@ AFK finds the agent CLIs you have installed (Claude Code, Codex, OpenCode, Grok,
 
 > [!WARNING]
 > AFK is pre-release and under active development. The command-line interface and config format may change before 1.0. Packaged installs (`npx`, Homebrew) are not published yet; build from source for now.
+
+<p align="center">
+  <img src="docs/assets/demo.gif" width="800" alt="AFK in a terminal: Esc wakes up, the task is routed to Claude Code, the route card shows the alternatives, the session runs, and Esc returns with a receipt">
+</p>
 
 ---
 
@@ -87,6 +93,10 @@ afk -p --task review "review the last commit"
 
 ### The route card
 
+<p align="center">
+  <img src="docs/assets/route-card.png" width="720" alt="The route card: claude picked with effort high, the reason, pool headroom, and the best route from every other installed CLI, gateway and local model">
+</p>
+
 | Key | Does |
 |---|---|
 | `↵` | start the selected route |
@@ -97,7 +107,28 @@ afk -p --task review "review the last commit"
 | `?` | why this route: benchmark, pool, cost and effort |
 | `esc` | cancel; nothing is started |
 
-`-y` / `--yes` skips the card and starts the router's pick. After a session you can rate the pick (`1` solved, `2` partly, `3` wrong pick). Runs are saved to `~/.config/afk/state/runs/`.
+`-y` / `--yes` skips the card and starts the router's pick. When the session ends, Esc comes back with a receipt:
+
+<p align="center">
+  <img src="docs/assets/receipt.png" width="720" alt="The receipt after a session: exit status, time, pool before and after, files changed, and a one-key rating">
+</p>
+
+After a session you can rate the pick (`1` solved, `2` partly, `3` wrong pick). Runs are saved to `~/.config/afk/state/runs/`.
+
+### The control panel
+
+AFK is also where you manage your agent CLIs. These full-screen tabs are from the design and are being built now (see the [roadmap](#roadmap)).
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/assets/tab-harnesses.png" alt="Harnesses tab: every installed CLI with version, sign-in, routes, skills, MCP and updates"><br><sub><b>Harnesses.</b> Every CLI on the machine, its sign-in, updates, and new ones to adopt.</sub></td>
+    <td width="50%"><img src="docs/assets/tab-benchmarks.png" alt="Benchmarks tab: models ranked by score for a task class, with the effective score after headroom and cost"><br><sub><b>Benchmarks.</b> What the scores say per task class, and what AFK picks today.</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/assets/tab-skills.png" alt="Skills tab: one set of skills synced into every harness, with drift detection"><br><sub><b>Skills.</b> One source of skills, synced into each harness's own format.</sub></td>
+    <td width="50%"><img src="docs/assets/tab-mcp.png" alt="MCP tab: MCP servers and gateways written into every harness's config"><br><sub><b>MCP.</b> MCP servers and gateways, written into every harness's config.</sub></td>
+  </tr>
+</table>
 
 ## Usage
 
@@ -223,4 +254,4 @@ For anything larger than a bug fix, open an issue first so we can agree on the a
 
 ## License
 
-A license has not been chosen yet. Until one is added, all rights are reserved by the author.
+AFK is licensed under the [Apache License 2.0](LICENSE).
