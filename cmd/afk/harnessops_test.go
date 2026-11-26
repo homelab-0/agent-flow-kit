@@ -291,6 +291,24 @@ func TestUpdateNeverGoesBackwards(t *testing.T) {
 	}
 }
 
+// With no release past the wait, latest is planned; it still must not go
+// below what is installed (the stub reports 2.1.332).
+func TestUpdateNeverInstallsOlderThanInstalled(t *testing.T) {
+	f := newFake(t, map[string]string{"claude": "--permission-mode"})
+	f.answer["npm view"] = func([]string) ([]byte, int) {
+		return []byte(`{"version":"2.0.0","dist.integrity":"sha512-CCCC","time":{"2.0.0":"2026-11-26T00:00:00.000Z"}}`), 0
+	}
+	o := f.ops()
+	l := &config.Lock{Installs: []config.Install{{Name: "claude", Kind: "harness", Version: "2.1.332", Source: "npm:@anthropic-ai/claude-code@2.1.332", Integrity: "sha512-BBBB", Harnesses: []string{"claude"}}}}
+	if err := config.WriteLock(o.lock, l); err != nil {
+		t.Fatal(err)
+	}
+	code, _, errs := hrun(t, o, "update", "claude", "-y")
+	if code != 1 || installed(f) || !strings.Contains(errs, "nothing to update") {
+		t.Fatalf("update: %d %s %v", code, errs, f.ran)
+	}
+}
+
 func TestChangedRegistryHashIsRefused(t *testing.T) {
 	f := newFake(t, map[string]string{"claude": "--permission-mode"})
 	f.answer["npm view"] = npmView("2.1.332")

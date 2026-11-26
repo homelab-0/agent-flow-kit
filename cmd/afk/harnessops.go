@@ -396,6 +396,14 @@ func npmPlan(ctx context.Context, o hops, verb string, a harness.Adapter, want, 
 		}
 	}
 	ver, integ := in.Version, in.Integrity
+	// Whatever was chosen, an update never installs something older than
+	// what is here (a CLI that updated itself can be ahead of npm's
+	// latest, or of every release that has waited long enough).
+	if hv, ok := versionOf(anyVersion, have); ok {
+		if nv, ok := versionOf(anyVersion, ver); ok && versionLess(nv, hv) {
+			return nil, fmt.Errorf("%s is on %s, which is newer than the %s npm offers; nothing to update", a.Name, have, ver)
+		}
+	}
 	src := "npm:" + a.NPMPackage + "@" + ver
 	// A published version's contents never change. If the registry now
 	// gives another hash for the version afk.lock recorded, something
