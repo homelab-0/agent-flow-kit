@@ -85,7 +85,7 @@ modelsdev = { enabled = true }
 
 | Key | Type | Meaning |
 |---|---|---|
-| `repos` | list | projects whose `.afk/config.json` may still name a gateway through the older `router.litellm_base_url`, used only when you set no gateway yourself |
+| `repos` | list | where [yolo](../guides/permissions.md#yolo-stays-deliberate) may run: git repositories, or folders whose git repositories all count; managed with `afk trust add\|list\|remove`. A project listed here may also still name a gateway through the older `router.litellm_base_url`, used only when you set no gateway yourself |
 
 ### `[gateway.<name>]`
 
@@ -117,13 +117,21 @@ A gateway can only be set by you (here or in the environment), never by a cloned
 | `weights.<task>.<source>` | number | | reserved: how much each source counts per kind of task; validated (not negative), not used yet |
 | `override.<model>.<task>` | number | | reserved |
 
+### `[permissions]`
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `default` | string | `ask` | the [permission mode](../guides/permissions.md): `read-only`, `ask`, `edits`, `auto` or `yolo` |
+| `task.<kind>` | string | | the mode for one kind of task (`coding`, `review`, `quick`, …), over `default` |
+
+`--mode` and `--yolo` win over both. A project's `permissions.default` applies only when it is stricter.
+
 ### Reserved sections
 
 These are validated so a file written now keeps working, but AFK doesn't act on them yet:
 
 | Section | Keys |
 |---|---|
-| `[permissions]` | `default` and `task.<kind>`: `read-only`, `ask`, `edits`, `auto` or `yolo`. Today every launch asks, unless you pass `--yolo` |
 | `[serve]` | `listen`, `tls`, `plan_runs` |
 | `[telemetry.<name>]` | `kind`, `endpoint`, `key` (a secret reference), `content` |
 | `[source.<name>]` | `kind`, `repo`, `labels`, `task`, `mode` (a permission mode), `approve_plan` |
@@ -157,7 +165,7 @@ A cloned repository is someone else's file, so its `.afk/config.json` may only m
 |---|---|
 | `route.prefer` | as in config.toml |
 | `route.prefer_free` | as in config.toml |
-| `permissions.default` | a permission mode, taken only when it is stricter than yours (reserved, like `[permissions]`) |
+| `permissions.default` | a [permission mode](../guides/permissions.md), taken only when it is stricter than yours |
 
 Anything else (a gateway, a key, an install, telemetry, a work source, trust, a looser mode, other `route` keys) is ignored, and AFK prints a warning naming each key. AFK reads the file from the current directory, or from `--repo <dir>`.
 

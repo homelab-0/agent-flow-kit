@@ -1,0 +1,19 @@
+# Grok CLI. Flags checked against grok 1.0.92 --help.
+name = "grok"
+display = "Grok CLI"
+vendor = "xAI"
+bins = ["grok"]
+efforts = ["low", "medium", "high", "xhigh"]
+effort_flag = "--effort <level>"
+self_update = "update"
+
+[auth]
+login = ["grok", "login"]
+
+[modes]
+verified = "1.0.92"
+read-only = ["--permission-mode", "plan"]
+ask = []
+edits = ["--permission-mode", "acceptEdits"]
+auto = ["--permission-mode", "auto"]
+yolo = ["--always-approve"]

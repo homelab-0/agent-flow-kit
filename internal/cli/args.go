@@ -60,7 +60,14 @@ func Parse(argv []string) Args {
 		case "--route":
 			a.Route = v
 		case "--mode":
-			a.Mode = v
+			// --mode is a permission mode (read-only, ask, edits, auto,
+			// yolo) or, with --launch-plan, interactive or print.
+			switch v {
+			case "read-only", "ask", "edits", "auto", "yolo":
+				a.Flags.Perm = v
+			default:
+				a.Mode = v
+			}
 		}
 	}
 	for i := 0; i < len(argv); i++ {
@@ -92,6 +99,7 @@ func Parse(argv []string) Args {
 			}
 		case x == "--yolo":
 			a.Yolo = true
+			a.Flags.Perm = "yolo"
 		case valued[x]:
 			v := ""
 			if i+1 < len(argv) {

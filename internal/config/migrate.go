@@ -287,3 +287,9 @@ func WriteConfig(path string, base, doc []byte) error {
 		return statefile.WriteFile(path, doc)
 	})
 }
+
+func unified(path, old, new string) string {
+	return udiff.Unified(path+" (now)", path+" (new)", old, new)
+}
+
+func writeFile(path string, b []byte) error { return statefile.WriteFile(path, b) }

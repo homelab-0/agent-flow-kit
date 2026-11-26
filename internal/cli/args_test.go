@@ -1,6 +1,9 @@
 package cli
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParse(t *testing.T) {
 	a := Parse([]string{"--task", "review", "--prefer=cheap", "--yes", "--yolo", "--pass", "--continue", "fix", "it", "--prompt", "now"})
@@ -52,5 +55,20 @@ func TestUnknownOptionBeforeHelp(t *testing.T) {
 	}
 	if a := Parse([]string{"-h", "--bogus"}); !a.Help {
 		t.Errorf("-h --bogus is help: %+v", a)
+	}
+}
+
+func TestPermissionModeFlag(t *testing.T) {
+	for argv, want := range map[string][2]string{
+		"--mode edits":               {"edits", ""},
+		"--yolo":                     {"yolo", ""},
+		"--yolo --mode ask":          {"ask", ""},
+		"--launch-plan --mode print": {"", "print"},
+		"--launch-plan --mode=print --mode read-only": {"read-only", "print"},
+	} {
+		a := Parse(strings.Fields(argv))
+		if a.Flags.Perm != want[0] || a.Mode != want[1] {
+			t.Errorf("%s: perm %q mode %q", argv, a.Flags.Perm, a.Mode)
+		}
 	}
 }

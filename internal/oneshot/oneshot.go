@@ -75,6 +75,9 @@ type Output struct {
 	Exit int
 	// LaunchError is set when the route could not be launched at all.
 	LaunchError string
+	// Mode is the permission mode it ran in; ModeNote says why when it is
+	// stricter than asked.
+	Mode, ModeNote string
 }
 
 // ErrReported is an answer document that says the run failed.
@@ -203,6 +206,10 @@ type Request struct {
 	Harnesses []string
 	// Effort, when given on the command line, applies to every route.
 	Effort string
+	// Mode is the permission mode asked for. Each later attempt runs at
+	// this mode or the strictest one an earlier attempt actually ran in,
+	// whichever is stricter: failover never loosens it.
+	Mode string
 	// FirstPool is the pool the first route's failures are recorded
 	// against when the route names none (a pinned route).
 	FirstPool string
@@ -211,7 +218,7 @@ type Request struct {
 // Deps is how a run reaches the outside world.
 type Deps struct {
 	// Run starts the route headless and waits for it.
-	Run func(ctx context.Context, r engine.Route) Output
+	Run func(ctx context.Context, r engine.Route, mode string) Output
 	// Next asks the router again, limited to these CLIs. ok is false when
 	// nothing there can do the task.
 	Next func(ctx context.Context, only []string) (r engine.Route, ok bool)
@@ -245,11 +252,22 @@ type Result struct {
 // pinned, the next best route, up to MaxAttempts.
 func Do(ctx context.Context, req Request, d Deps) Result {
 	route := req.First
+	mode := req.Mode
+	if mode == "" {
+		mode = "ask"
+	}
 	var tried []string
 	triedSet := map[string]bool{}
 	var avoid []string
 	for attempt := 1; ; attempt++ {
-		out := d.Run(ctx, route)
+		out := d.Run(ctx, route, mode)
+		if out.ModeNote != "" && d.Note != nil {
+			d.Note("afk: " + out.ModeNote)
+		}
+		// A later attempt never runs looser than this one did.
+		if out.Mode != "" && rank(out.Mode) < rank(mode) {
+			mode = out.Mode
+		}
 		id := route.Harness + "/" + route.Model
 		tried = append(tried, id)
 		triedSet[id] = true
@@ -392,4 +410,14 @@ func cut(s string, n int) string {
 		n--
 	}
 	return s[:n]
+}
+
+// rank orders the permission modes, strictest first.
+func rank(m string) int {
+	for i, x := range []string{"read-only", "ask", "edits", "auto", "yolo"} {
+		if x == m {
+			return i
+		}
+	}
+	return 1
 }

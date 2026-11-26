@@ -17,7 +17,7 @@ import (
 // Backend is the engine as the card sees it.
 type Backend interface {
 	Explain(ctx context.Context, f engine.RouteFlags, prompt string) (*engine.Explain, error)
-	LaunchPlan(ctx context.Context, r engine.Route, mode string, yolo bool, pass []string, prompt string) (*engine.LaunchPlan, error)
+	LaunchPlan(ctx context.Context, r engine.Route, mode string, perm string, pass []string, prompt string) (*engine.LaunchPlan, error)
 	Pools(ctx context.Context) (*engine.Pools, error)
 }
 
@@ -27,11 +27,14 @@ type Options struct {
 	Prompt string
 	Pass   []string
 	Yolo   bool // --yolo was given
-	Yes    bool // --yes: launch the router's choice without the card
-	Width  int
-	Motion bool
-	FPS    int
-	Dark   bool
+	// YoloBlock, when set, is why yolo can't be turned on here (this
+	// directory isn't trusted); y shows it instead.
+	YoloBlock string
+	Yes       bool // --yes: launch the router's choice without the card
+	Width     int
+	Motion    bool
+	FPS       int
+	Dark      bool
 	// Environ is the environment the launch is checked against (os.Environ
 	// when nil).
 	Environ []string
@@ -175,11 +178,18 @@ func (m *Model) poolsCmd() tea.Cmd {
 }
 
 func (m *Model) planCmd() tea.Cmd {
-	be, r, yolo, pass, p, parent := m.be, m.card.Route(m.card.Sel), m.card.Yolo, m.opt.Pass, m.card.Prompt, m.ctx
+	perm := m.card.Mode
+	if perm == "" || perm == "yolo" {
+		perm = "ask"
+	}
+	if m.card.Yolo {
+		perm = "yolo"
+	}
+	be, r, pass, p, parent := m.be, m.card.Route(m.card.Sel), m.opt.Pass, m.card.Prompt, m.ctx
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(parent, planTimeout)
 		defer cancel()
-		plan, err := be.LaunchPlan(ctx, r, "interactive", yolo, pass, p)
+		plan, err := be.LaunchPlan(ctx, r, "interactive", perm, pass, p)
 		return planMsg{plan, err}
 	}
 }
@@ -277,6 +287,14 @@ func (m *Model) onExplain(msg explainMsg) tea.Cmd {
 	}
 	m.routeErr = false
 	rows, sel := msg.ex.Rows()
+	m.card.Mode = msg.ex.Mode
+	m.card.ModeNotes = map[string]string{}
+	for h, mi := range msg.ex.ModeByHarness {
+		m.card.ModeNotes[h] = mi.Note
+	}
+	if msg.ex.Mode == "yolo" {
+		m.card.Yolo = true
+	}
 	m.card.Task, m.card.Guessed, m.card.Prefer = msg.ex.Task, msg.ex.TaskGuessed, msg.ex.Prefer
 	m.card.Rows, m.card.Sel, m.card.Efforts = rows, sel, map[int]string{}
 	if m.opt.Yes {
@@ -450,6 +468,8 @@ func (m *Model) cardKey(key string) tea.Cmd {
 		case m.card.Yolo:
 			m.card.Yolo = false
 			m.notice = "yolo is off: the CLI asks before it acts"
+		case m.opt.YoloBlock != "":
+			m.notice = m.opt.YoloBlock
 		case armed:
 			m.card.Yolo = true
 		default:

@@ -1,0 +1,7 @@
+# Kimi Code. AFK doesn't launch it yet, so it has no mode table.
+name = "kimi"
+display = "Kimi Code"
+vendor = "Moonshot AI"
+bins = ["kimi"]
+npm_package = "@moonshot-ai/kimi-code"
+login_note = "kimi"

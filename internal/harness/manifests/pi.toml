@@ -1,0 +1,17 @@
+# Pi. Checked against pi 1.6.1 --help: Pi never asks before acting, so only
+# tool allowlists can hold it back. ask and auto aren't possible and drop to
+# read-only and edits.
+name = "pi"
+display = "Pi"
+vendor = "Mario Zechner"
+bins = ["pi"]
+npm_package = "@mariozechner/pi-coding-agent"
+efforts = ["low", "medium", "high", "xhigh", "max"]
+effort_flag = "--thinking <level>"
+login_note = "pi (then /login)"
+
+[modes]
+verified = "1.6.1"
+read-only = ["--tools", "read,grep,find,ls"]
+edits = ["--tools", "read,grep,find,ls,edit,write"]
+yolo = []

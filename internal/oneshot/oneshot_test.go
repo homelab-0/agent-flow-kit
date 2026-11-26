@@ -98,7 +98,7 @@ type fake struct {
 
 func (f *fake) deps() Deps {
 	return Deps{
-		Run: func(_ context.Context, r engine.Route) Output {
+		Run: func(_ context.Context, r engine.Route, _ string) Output {
 			id := r.Harness + "/" + r.Model
 			f.ran = append(f.ran, id+"@"+r.Effort)
 			outs := f.outputs[id]
@@ -261,7 +261,7 @@ func TestInterruptedRunStops(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	f := &fake{next: []engine.Route{route("codex", "b", "p2")}}
 	d := f.deps()
-	d.Run = func(context.Context, engine.Route) Output { cancel(); return Output{Exit: 130} }
+	d.Run = func(context.Context, engine.Route, string) Output { cancel(); return Output{Exit: 130} }
 	res := Do(ctx, Request{First: route("claude", "a", "p1"), Harnesses: all}, d)
 	if !res.Interrupted || res.Exit != 130 || len(f.asked) != 0 || len(f.marks) != 0 {
 		t.Fatalf("result %+v", res)
@@ -291,5 +291,33 @@ func want(t *testing.T, what string, got, wantV any) {
 	t.Helper()
 	if !reflect.DeepEqual(got, wantV) {
 		t.Errorf("%s:\n got %#v\nwant %#v", what, got, wantV)
+	}
+}
+
+// After a CLI ran stricter than asked, failover never loosens the mode.
+func TestFailoverNeverEscalates(t *testing.T) {
+	var modes []string
+	f := &fake{next: []engine.Route{route("codex", "b", "p2"), route("grok", "c", "p3")}}
+	d := f.deps()
+	n := 0
+	d.Run = func(_ context.Context, r engine.Route, mode string) Output {
+		modes = append(modes, r.Harness+":"+mode)
+		n++
+		switch n {
+		case 1:
+			// pi can't do auto and ran in edits.
+			return Output{Exit: 1, Stderr: []byte("boom"), Mode: "edits", ModeNote: "pi: can't run in auto, running in edits"}
+		case 2:
+			return Output{Exit: 1, Stderr: []byte("boom"), Mode: "edits"}
+		}
+		return Output{Stdout: fixture(t, "claude-ok.json"), Mode: "edits"}
+	}
+	res := Do(context.Background(), Request{First: route("pi", "a", "p1"), Harnesses: all, Mode: "auto"}, d)
+	if !res.OK {
+		t.Fatalf("%+v", res)
+	}
+	want(t, "modes", modes, []string{"pi:auto", "codex:edits", "grok:edits"})
+	if len(f.notes) == 0 || !strings.Contains(f.notes[0], "running in edits") {
+		t.Errorf("the downgrade was not noted: %v", f.notes)
 	}
 }

@@ -8,10 +8,11 @@ afk --launch-plan --route <json>   print the launch plan for a route
 afk harness [--all] [--json]       the agent CLIs found on this machine
 afk bench sync [--json]            refresh the benchmark catalog now
 afk config get|set|edit|path|migrate   your settings (config.toml)
+afk trust add|list|remove [dir]    where yolo may run
 afk --help
 ```
 
-A prompt that starts with the word `harness`, `bench` or `config` needs `--` before it.
+A prompt that starts with the word `harness`, `bench`, `config` or `trust` needs `--` before it.
 
 ## Options
 
@@ -27,10 +28,11 @@ A prompt that starts with the word `harness`, `bench` or `config` needs `--` bef
 | `--repo <dir>` | the project whose `.afk/config.json` applies (default: the current directory); the CLI still starts in the current directory |
 | `--explain`, `--dry-run` | show the decision; start nothing |
 | `--json` | machine-readable output for `--explain` and `-p` |
-| `--yolo` | let the CLI act without asking; see [permissions](../guides/permissions.md) |
+| `--mode <mode>` | the [permission mode](../guides/permissions.md): `read-only`, `ask`, `edits`, `auto` or `yolo` |
+| `--yolo` | the same as `--mode yolo`; only in a [trusted](../guides/permissions.md#yolo-stays-deliberate) git repository |
 | `--pass <arg>` | pass one argument to the CLI unchanged; repeat for more. For opencode, a model can't be passed this way |
 | `-y`, `--yes` | skip the route card and start the pick |
-| `--launch-plan` | print a launch plan; with `--route <json or ->` and `--mode interactive\|print` |
+| `--launch-plan` | print a launch plan; with `--route <json or ->` and `--mode interactive\|print` (a permission-mode value of `--mode` sets the plan's mode) |
 | `--` | everything after it is the prompt, even if it starts with a dash |
 | `-h`, `--help` | the help |
 
@@ -42,6 +44,10 @@ Options that take a value also accept `--option=value`.
 |---|---|
 | `--all`, `-a` | also list supported CLIs that are not installed |
 | `--json` | machine-readable output, schema `afk-harnesses/3` |
+
+## `afk trust`
+
+`afk trust add <dir>`, `afk trust list` and `afk trust remove <dir>`, each with `--json`; `add` and `remove` take `--dry-run`. See [yolo stays deliberate](../guides/permissions.md#yolo-stays-deliberate).
 
 ## `afk config`
 

@@ -151,8 +151,17 @@ type Settings struct {
 	BenchAutosync bool
 	// BenchSources says which feeds a sync reads (a missing name is on).
 	BenchSources map[string]bool
-	// Mode is the default permission mode (reserved: not applied yet).
+	// Mode is the default permission mode: permissions.default, else ask,
+	// made stricter by the project's permissions.default.
 	Mode string
+	// TaskModes are permissions.task.<kind>; RepoMode is the project's
+	// permissions.default (it can only tighten).
+	TaskModes map[string]string
+	RepoMode  string
+	// TrustedDirs are trust.repos: where yolo is allowed.
+	TrustedDirs []string
+	// DefaultMode is permissions.default as written ("" when unset).
+	DefaultMode string
 	// Warnings from config.toml and the project's file.
 	Warnings []Problem
 	// FromTOML says whether config.toml was found (else router.json, if
@@ -262,14 +271,10 @@ func Resolve(e Env) (Settings, error) {
 		s.Prefer = c.Route.Prefer
 	}
 
-	s.Mode = c.Permissions.Default
-	if s.Mode == "" {
-		s.Mode = "ask"
-	}
-	if repo.Mode != "" && ModeRank(repo.Mode) < ModeRank(s.Mode) {
-		// Stricter only: a repository can't loosen your mode.
-		s.Mode = repo.Mode
-	} else if repo.Mode != "" && ModeRank(repo.Mode) > ModeRank(s.Mode) {
+	s.TaskModes, s.RepoMode, s.DefaultMode = c.Permissions.Task, repo.Mode, c.Permissions.Default
+	s.TrustedDirs = c.Trust.Repos
+	s.Mode = s.ModeFor("")
+	if repo.Mode != "" && ModeRank(repo.Mode) > ModeRank(s.Mode) {
 		s.Warnings = append(s.Warnings, Problem{File: repo.Path, Key: "permissions.default", Msg: "a repository can only make the mode stricter than yours (" + s.Mode + "); ignored"})
 	}
 
@@ -290,6 +295,24 @@ func Resolve(e Env) (Settings, error) {
 		}
 	}
 	return s, nil
+}
+
+// ModeFor is the permission mode for a kind of task, before a --mode or
+// --yolo flag: permissions.task.<kind>, else permissions.default, else ask;
+// then the project's permissions.default when it is stricter (a project
+// can tighten your mode, never loosen it).
+func (s Settings) ModeFor(task string) string {
+	m := s.TaskModes[task]
+	if m == "" {
+		m = s.DefaultMode
+	}
+	if m == "" {
+		m = "ask"
+	}
+	if s.RepoMode != "" && ModeRank(s.RepoMode) >= 0 && ModeRank(s.RepoMode) < ModeRank(m) {
+		m = s.RepoMode
+	}
+	return m
 }
 
 // BenchSourceOn reports whether a feed is enabled (on unless config turns

@@ -160,6 +160,18 @@ type Explain struct {
 	Prefer      string  `json:"prefer"`
 	Choice      Route   `json:"choice"`
 	ByHarness   []Route `json:"by_harness"`
+	// Mode is the permission mode asked for and where it came from;
+	// ModeByHarness is what each CLI runs it as (stricter when it can't
+	// do it, with a note).
+	Mode          string              `json:"mode,omitempty"`
+	ModeSource    string              `json:"mode_source,omitempty"`
+	ModeByHarness map[string]ModeInfo `json:"mode_by_harness,omitempty"`
+}
+
+// ModeInfo is the permission mode a CLI runs in.
+type ModeInfo struct {
+	Mode string `json:"mode"`
+	Note string `json:"note,omitempty"`
 }
 
 // ParseExplain reads and checks an explain payload.
@@ -202,6 +214,10 @@ type LaunchPlan struct {
 	EnvUnset []string          `json:"env_unset"`
 	Cwd      string            `json:"cwd"`
 	Answer   json.RawMessage   `json:"answer"`
+	// Mode is the permission mode the CLI runs in, and ModeNote says why
+	// when it is stricter than the one asked for.
+	Mode     string `json:"mode,omitempty"`
+	ModeNote string `json:"mode_note,omitempty"`
 }
 
 // ParseLaunchPlan reads and checks a launch plan.

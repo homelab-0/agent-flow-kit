@@ -77,7 +77,11 @@ func TestLaunchPlansMatchBash(t *testing.T) {
 			if err := json.Unmarshal(tc.Route, &r); err != nil {
 				t.Fatal(err)
 			}
-			p, err := c.LaunchPlan(context.Background(), r, tc.Mode, tc.Yolo, tc.Pass, tc.Prompt)
+			perm := "ask"
+			if tc.Yolo {
+				perm = "yolo"
+			}
+			p, err := c.LaunchPlan(context.Background(), r, tc.Mode, perm, tc.Pass, tc.Prompt)
 			if !tc.Want.OK {
 				var pe *engine.PlanError
 				if !errors.As(err, &pe) || pe.Reason != tc.Want.Error {
@@ -154,7 +158,7 @@ func TestGatewayPlanNeedsAKeyFromAPlainVariable(t *testing.T) {
 			}
 			return ""
 		}
-		_, err := c.LaunchPlan(context.Background(), r, "interactive", false, nil, "")
+		_, err := c.LaunchPlan(context.Background(), r, "interactive", "", nil, "")
 		var pe *engine.PlanError
 		if !errors.As(err, &pe) || !strings.HasPrefix(pe.Reason, want) {
 			t.Errorf("%s: %v", env, err)
@@ -181,7 +185,7 @@ func TestGatewayKeyIsBoundToItsGateway(t *testing.T) {
 		return engine.Route{Harness: "claude", Model: "q", EntitlementPool: "litellm-local", CostClass: "free", LaunchClass: "claude-gateway", LitellmBaseURL: u}
 	}
 	plan := func(u string) (*engine.LaunchPlan, error) {
-		return c.LaunchPlan(context.Background(), route(u), "interactive", false, nil, "")
+		return c.LaunchPlan(context.Background(), route(u), "interactive", "", nil, "")
 	}
 	for u, want := range map[string]string{"https://work.example": "WORK_KEY", "http://home.local:4000/": "HOME_KEY"} {
 		p, err := plan(u)

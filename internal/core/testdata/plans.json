@@ -1178,6 +1178,8 @@
     "$BIN/pi",
     "--model",
     "x",
+    "--tools",
+    "read,grep,find,ls",
     "--verbose",
     "--",
     " -fix the bug"
@@ -1240,6 +1242,8 @@
     "$BIN/pi",
     "--model",
     "x",
+    "--tools",
+    "read,grep,find,ls",
     "-p",
     "--mode",
     "json",

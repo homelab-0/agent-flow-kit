@@ -28,10 +28,14 @@ type Card struct {
 	Sel     int
 	Efforts map[int]string // effort chosen with tab, per row
 	Yolo    bool
-	Prog    float64 // meter fill, 0..1
-	Pools   *engine.Pools
-	Now     time.Time
-	Loc     *time.Location
+	// Mode is the permission mode the router was asked with; ModeNotes
+	// say, per CLI, when it runs a stricter one.
+	Mode      string
+	ModeNotes map[string]string
+	Prog      float64 // meter fill, 0..1
+	Pools     *engine.Pools
+	Now       time.Time
+	Loc       *time.Location
 }
 
 // Route is row i with the user's effort applied.
@@ -137,9 +141,14 @@ func (t Theme) routeBox(c Card, w int) []line {
 	}
 	if c.Yolo {
 		head = append(head, sg(t.Plain, "  "), t.yoloTag())
+	} else if c.Mode != "" && c.Mode != "ask" {
+		head = append(head, sg(t.Dim, "  mode "), sg(t.Plain, c.Mode))
 	}
 	out := []line{t.top("Route", w, t.Border), t.boxLine(w, t.Border, head)}
 	out = append(out, t.boxLine(w, t.Border, line{sg(t.Dim, "  "+taskText(c.Task, c.Guessed)+" · "+loginText(r))}))
+	if n := c.ModeNotes[r.Harness]; n != "" && !c.Yolo {
+		out = append(out, t.boxLine(w, t.Border, line{sg(t.Warn, "  "+n)}))
+	}
 	out = append(out, t.boxLine(w, t.Border, nil))
 	why := wrap(reasonText(c.Rows, c.Sel, c.Task, c.now().In(c.loc())), w-8)
 	for len(why) < 2 {

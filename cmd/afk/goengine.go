@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/x/term"
 
 	"github.com/jlengelbrecht/agent-flow-kit/internal/cli"
+	"github.com/jlengelbrecht/agent-flow-kit/internal/config"
 	"github.com/jlengelbrecht/agent-flow-kit/internal/core"
 	"github.com/jlengelbrecht/agent-flow-kit/internal/engine"
 	"github.com/jlengelbrecht/agent-flow-kit/internal/oneshot"
@@ -145,6 +146,13 @@ func explainText(ex *engine.Explain) string {
 		effort = "default"
 	}
 	fmt.Fprintf(&b, "choice: %s / %s [effort %s]\n", r.Harness, r.Model, effort)
+	if ex.Mode != "" {
+		mode := ex.Mode
+		if mi, ok := ex.ModeByHarness[r.Harness]; ok && mi.Note != "" {
+			mode += " (" + mi.Note + ")"
+		}
+		fmt.Fprintf(&b, "  mode: %s [from %s]\n", mode, ex.ModeSource)
+	}
 	pool := r.EntitlementPool
 	if pool == "" {
 		pool = "-"
@@ -179,8 +187,12 @@ func explainText(ex *engine.Explain) string {
 			if pb := a.PoolBasis(); pb != "" {
 				state += ", " + pb
 			}
-			fmt.Fprintf(&b, "  %s %s — score %s, pool %s %s%% left (%s), %s\n",
-				h, a.Model, num(a.EffectiveScore), a.EntitlementPool, num(a.PoolHeadroomPct), state, a.CostClass)
+			mode := ""
+			if mi, ok := ex.ModeByHarness[a.Harness]; ok && mi.Mode != "" && mi.Mode != ex.Mode {
+				mode = ", runs in " + mi.Mode
+			}
+			fmt.Fprintf(&b, "  %s %s — score %s, pool %s %s%% left (%s), %s%s\n",
+				h, a.Model, num(a.EffectiveScore), a.EntitlementPool, num(a.PoolHeadroomPct), state, a.CostClass, mode)
 		}
 	}
 	return b.String()
@@ -222,7 +234,17 @@ func launchPlanCmd(c *core.Core, args cli.Args, stdin io.Reader, stdout, stderr 
 		fmt.Fprintln(stderr, "afk: a print plan needs a prompt")
 		return 2
 	}
-	p, err := c.LaunchPlan(context.Background(), r, mode, args.Yolo, args.Pass, args.Prompt)
+	perm := args.Flags.Perm
+	if perm == "yolo" {
+		if s, err := c.LoadSettings(c.Cwd); err != nil {
+			fmt.Fprintln(stderr, "afk:", err)
+			return 1
+		} else if err := config.CheckYolo(s, c.Home, c.Cwd); err != nil {
+			fmt.Fprintln(stderr, "afk:", err)
+			return 2
+		}
+	}
+	p, err := c.LaunchPlan(context.Background(), r, mode, perm, args.Pass, args.Prompt)
 	var pe *engine.PlanError
 	if errors.As(err, &pe) {
 		b, _ := json.Marshal(map[string]any{"schema": engine.SchemaLaunchPlan, "ok": false, "error": pe.Reason})
@@ -259,7 +281,7 @@ func printCmd(c *core.Core, args cli.Args, stdin *os.File, stdout, stderr io.Wri
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	res, err := c.Print(ctx, core.PrintRequest{Flags: args.Flags, Prompt: prompt, Yolo: args.Yolo, Pass: args.Pass},
+	res, err := c.Print(ctx, core.PrintRequest{Flags: args.Flags, Prompt: prompt, Pass: args.Pass},
 		func(line string) { fmt.Fprintln(stderr, line) })
 	if err != nil {
 		fmt.Fprintln(stderr, "afk:", err)

@@ -19,6 +19,9 @@ const (
 // RouteFlags are the routing options the user gave.
 type RouteFlags struct {
 	Task, Prefer, Harness, Model, Effort, Repo string
+	// Perm is the permission mode from --mode or --yolo ("" when not
+	// given).
+	Perm string
 }
 
 // TimeoutError is a call that did not answer in time. The route card shows

@@ -1,0 +1,22 @@
+# Claude Code. Flags checked against claude 2.1.332 --help.
+name = "claude"
+display = "Claude Code"
+vendor = "Anthropic"
+bins = ["claude"]
+npm_package = "@anthropic-ai/claude-code"
+efforts = ["low", "medium", "high", "xhigh", "max"]
+effort_flag = "--effort <level>"
+self_update = "update"
+
+[auth]
+login = ["claude", "auth", "login"]
+status = ["claude", "auth", "status"]
+errors = ["authentication_failed", "invalid api key", "please run /login"]
+
+[modes]
+verified = "2.1.332"
+read-only = ["--permission-mode", "plan"]
+ask = []
+edits = ["--permission-mode", "acceptEdits"]
+auto = ["--permission-mode", "auto"]
+yolo = ["--dangerously-skip-permissions"]
