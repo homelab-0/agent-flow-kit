@@ -1,151 +1,264 @@
-# agent-flow-kit
+<div align="center">
 
-A portable autonomous development flow for **any project that uses BMAD**, driven by
-a central routing control plane. One PM session plans epics and describes each story
-to the router; a human accepts or deliberately overrides the recommendation; the
-decision is frozen into an immutable execution stamp; disposable worker sessions
-(Claude Code, Codex, and OpenCode) execute them in visible Orca worktrees with BMAD personas
-injected at spawn; deterministic gates verify; a post-PR triage loop works every PR
-to clean; the PM merges under explicit guardrails. Humans decide only what policy
-says humans decide — and every route is one of those things.
+<img src="docs/assets/esc.gif" width="312" alt="Esc, the AFK mascot: a mint keycap that shuffles over to a hammock, climbs in and dozes off">
 
-**The router is the sole routing authority.** There is no local routing table, no
-tier lookup and no runtime fallback chain: the kit owns delegation and control flow,
-Orca owns worktrees/terminals/processes/native auth, and the router owns
-recommendation and placement — never credentials or sessions.
+# AFK
 
-Nothing here is project-specific: point the repo-wiring phase at any BMAD repo. The
-only machine-specific file is the launcher config (router endpoint, caller-token env
-var NAME, catalog path, harness binaries).
+**One command for every coding agent on your machine.**
 
-## Contents
+AFK finds the agent CLIs you have installed (Claude Code, Codex, OpenCode, Grok, Gemini, Copilot and more), picks the best one for the task in front of you, and starts it with the right model and effort.
 
-For the cross-harness status, continuation, onboarding, update, and live
-qualification contract, see [`docs/RUNTIME-EXPERIENCE.md`](docs/RUNTIME-EXPERIENCE.md).
+[Install](#install) · [Quick start](#quick-start) · [How routing works](#how-routing-works) · [Supported CLIs](#supported-clis) · [Roadmap](#roadmap) · [Contributing](#contributing)
 
-- `HANDOFF.md` — executable setup instructions for a fresh agent on a new machine.
-  Idempotent; presentation adapts across Linux/macOS, while automatic release
-  reconciliation is currently qualified only on Linux.
-- `bin/agent-flow-kit` — the lifecycle entry point. Explains what is installed on a
-  host, who owns it, which revision it came from, what has drifted, whether this
-  checkout is eligible to change it — and converges it when it is.
-- `lib/afk-*.sh` — the lifecycle implementation: primitives, source eligibility,
-  the declared component/ownership model, the command surface, the mutation plan
-  and the transaction (lock, journal, backups, rollback, verify, commit).
-- `lifecycle/kit.json` — the source declaration: kit identity, schema versions,
-  canonical branch and the managed input set.
-- `docs/LIFECYCLE-CONTRACT.md` — the documented, versioned machine contract:
-  states, reason codes, ownership classes, evidence provenance, plan and
-  operation vocabularies, exit semantics. Every vocabulary in it is
-  machine-checked against `agent-flow-kit schema`.
-- `files/model-router/` — the routing skill:
-  - `SKILL.md` — how a task is described to `POST /v1/route`, how a recommendation
-    is accepted or overridden, persona selection, validation stories
-  - `subscriptions.yaml` — LAUNCHER CONFIG (endpoint, caller-token env name,
-    catalog path, harness binaries). Not a routing registry; holds no secret.
-  - `scripts/make-stamp.sh` — accepted route decision → immutable execution stamp
-    (`expires_at` copied verbatim; overrides recorded pre-stamp, provenance only)
-  - `scripts/dispatch.sh` — one worker attempt per story: place (when required) →
-    validate the stamp fail-closed → launch in a visible Orca terminal under the
-    frozen harness contract → deterministic gates → thin result JSON
-  - `scripts/usage-check.sh` — pool temperature, observability only (no routing
-    guidance)
-  - `scripts/github-health.sh` — platform-health gate (outage → hold, never batch)
-- `tests/run-tests.sh` — the aggregate gate: shellcheck, contract conformance,
-  refusal-path proofs, and both lifecycle gates below. Runs offline with stubbed
-  orca/validator/router binaries; launches no harness. Before doing any work it
-  takes a host-wide lock (`${XDG_RUNTIME_DIR:-/tmp}/agent-flow-kit-test-suite.lock`,
-  `AFK_TEST_LOCK=off` to disable, `AFK_TEST_LOCK_TIMEOUT=<s>` to bound the wait) so
-  two full runs on one machine never overlap; it prints each child suite's wall
-  time and the run's total, with a `BUDGET` warning (never a failing exit) over
-  240s per suite or 720s total.
-- `tests/runner-lock-tests.sh` — hermetic gate for that lock: contention, the
-  printed holder line, the timeout, stale-lock reclaim, `AFK_TEST_LOCK=off`, and
-  the nested child not re-taking it.
-- `tests/lifecycle-tests.sh` — the read-only lifecycle gate: ownership, drift,
-  adaptation, source eligibility, path/symlink refusal, redaction anti-vacuity,
-  schema stability and exit semantics, all against throwaway homes and checkouts.
-- `tests/lifecycle-mutation-tests.sh` — the destructive-path gate: managed-section
-  insertion and upgrade, byte-for-byte preservation of user-owned content, plan
-  identity and approval invalidation, drift refusal, adaptation dispositions,
-  symlink attack, concurrent mutation, backup/rollback, injected mid-operation
-  failure, interruption recovery and idempotent no-op — every one of them in an
-  isolated temporary HOME. Takes the same host-wide lock as `run-tests.sh` when
-  run standalone; skips it when launched as that script's child (already held).
-- `files/humanizer/` — prose de-AI-ification skill, REQUIRED for the PR language
-  law (no AI attribution, no internal-methodology vocabulary in public text)
-- `files/claude-global-CLAUDE.md` — the policy layer to merge into a machine's
-  `~/.claude/CLAUDE.md`: the route→stamp→validate→place sequence, PM policy, epic
-  source declaration, merge authority + post-PR triage loop, PR language/size/health
-  discipline
-- `files/codex-AGENTS.md` — same policies, pointer form, for Codex-launched PMs
+</div>
 
-## Understanding a host
+> [!WARNING]
+> AFK is pre-release and under active development. The command-line interface and config format may change before 1.0. Packaged installs (`npx`, Homebrew) are not published yet; build from source for now.
 
-    bash bin/agent-flow-kit status              # human-readable
-    bash bin/agent-flow-kit status --json       # the machine contract
-    bash bin/agent-flow-kit adopt --inspect     # what adoption would do; changes nothing
-    bash bin/agent-flow-kit verify              # prove the installed state, offline
-    bash bin/agent-flow-kit schema              # the published vocabularies
+<p align="center">
+  <img src="docs/assets/demo.gif" width="800" alt="AFK in a terminal: Esc wakes up, the task is routed to Claude Code, the route card shows the alternatives, the session runs, and Esc returns with a receipt">
+</p>
 
-`status`, `adopt --inspect` and `verify` are pure functions of local state: they
-write nothing, contact nothing external, and return byte-identical output for
-unchanged state. Network- and auth-dependent facts report `NOT_EVALUATED`; they are
-never optimistically called ready. `verify` observes and proves — it never repairs.
+---
 
-## Changing a host
+## Why AFK
 
-    bash bin/agent-flow-kit adopt --plan        # the complete plan; writes nothing
-    bash bin/agent-flow-kit adopt               # establish ownership, then verify
-    bash bin/agent-flow-kit update --plan       # what convergence would do
-    bash bin/agent-flow-kit update              # converge, or refuse
+If you pay for more than one AI coding plan, or use a mix of plans, free models and a local gateway, you're choosing between them all day: which CLI, which model, how much effort, and whether that subscription has anything left this window. AFK makes that choice for you, shows you why, and gets out of the way.
 
-Both mutating verbs compute their complete plan before the first write, hold an
-exclusive lock, back up what they will touch, journal their intent, write, verify
-the result offline, and only then commit the applied-state manifest. A failure
-restores what it changed and proves the restoration; the applied revision moves
-only after everything succeeded.
+- **Routes on evidence.** It weighs each model's benchmark score for the kind of work, how much is left in each subscription pool, and cost. Free and local models win quick tasks; reviews never go to them.
+- **Shows its work.** A route card shows the pick, the reason, the pool headroom, and the best option from every other installed CLI before anything starts. You can take it, pick another, or change the effort.
+- **Gets out of the way.** The session is the chosen CLI's own interface, with nothing wrapped around it. When it exits, AFK prints a receipt: time, exit status, pool before and after, files changed and commits.
+- **Keeps logins where they belong.** A vendor's plan login is only ever used by that vendor's own CLI, and gateway routes run with a separate config so your plan login never reaches the gateway.
+- **One binary.** AFK is written in Go and is moving to a single static binary with no runtime dependencies.
 
-Adoption establishes ownership at the identities already installed — it never
-overwrites content by adopting it. Update replaces only kit-owned content that
-still matches its recognized applied state: unexplained drift, a redirected path,
-malformed section markers or an adaptation that asks for review all refuse the
-whole plan rather than converging part of it. Content outside a managed section,
-declared machine-local configuration and target-project content are preserved.
+## Install
 
-A plan that crosses an ambiguity or ownership boundary prints a stable identity and
-authorizes nothing until you approve exactly that plan:
+### From source (today)
 
-    bash bin/agent-flow-kit adopt --approve-plan sha256:<identity>
+Requires Go 1.26 or newer.
 
-The identity covers every input the plan was computed from, so an approval never
-carries over to a plan recomputed after anything changed.
+```sh
+git clone https://github.com/jlengelbrecht/agent-flow-kit.git
+cd agent-flow-kit
+CGO_ENABLED=0 go build -o ~/.local/bin/afk ./cmd/afk
+export AFK_ENGINE="$PWD/bin/agent-flow-kit"   # add this to your shell profile
+```
 
-The lifecycle transaction never changes a development clone: it does not pull,
-reset, stash, merge, rebase, clean, or switch the user's branch. The separate
-release client maintains its own bare mirror and isolated candidate checkout from
-AFK's fixed public `master` ref, then hands an immutable revision to that lifecycle
-transaction.
+While the routing engine is being ported to Go, the route card still calls the bash engine in this repository (`bin/agent-flow-kit`), which needs `bash` 4+, `jq` and `curl`. AFK looks for it in `$AFK_ENGINE`, then next to the `afk` binary, then on `PATH`. `afk harness` already runs without it.
 
-Exit codes are coarse and stable: `0` the requested scope succeeded, `1` a command,
-internal or usage failure, `2` owner action or conflict, `3` deterministic
-not-ready, `4` a source or precondition refusal, `5` a live dependency unavailable.
+### Packaged (planned)
 
-## Update discipline
+```sh
+npx agent-flow-kit            # run without installing
+npm install -g agent-flow-kit # installs the `afk` command
+brew install jlengelbrecht/tap/afk
+curl -fsSL https://raw.githubusercontent.com/jlengelbrecht/agent-flow-kit/master/install.sh | sh
+```
 
-This repo is the release channel between machines. After initial enrollment on
-Linux, `afk-session-start` checks the fixed public `master` ref before harness work,
-qualifies a clean isolated candidate, applies the exact approved lifecycle plan,
-verifies it, and composes the installed harness adapter. Repeated starts use a
-locally re-proven last-good release during the check interval; an outage is explicit
-and can continue only from that verified last-good state. No agent needs to `git
-pull` its working clone. macOS keeps the status/context surfaces but omits the
-blocking auto-update hook until its candidate sandbox is qualified; an explicit
-start leaves recorded last-good untouched and refuses with
-`MACOS_SANDBOX_PENDING`. See
-[`docs/RELEASE-UPDATE.md`](docs/RELEASE-UPDATE.md).
+The npm package will ship prebuilt native binaries for Linux, macOS and Windows, with no postinstall download.
 
-Keep files portable (BSD+GNU), and keep machine-specific facts in machine-local
-notes rather than canonical files. Never commit or synchronize secrets:
-credentials remain in their native stores (including 1Password delivery) and AFK
-records only non-secret state and references.
+## Quick start
+
+See which agent CLIs AFK found:
+
+```console
+$ afk harness
+Agent CLIs · 12 of 13 supported CLIs installed
+
+  CLI       VERSION   SIGN-IN        INSTALLED WITH  EFFORT      UPDATE WITH
+  claude    2.1.332   authenticated  mise            low..max    mise upgrade
+  codex     0.172.0   authenticated  mise            low..ultra  mise upgrade
+  opencode  2.4.2     authenticated  mise            low..high   mise upgrade
+  ...
+```
+
+Start a session. AFK shows the route card, and `↵` launches the pick:
+
+```sh
+afk "make the settings page responsive"
+```
+
+Ask what it would pick, without starting anything:
+
+```sh
+afk --explain "refactor the parser"
+afk --explain --json "fix a flaky test"   # machine-readable
+```
+
+Get one answer and exit. If the CLI fails to start or hits a sign-in, quota or rate limit, the next best CLI answers:
+
+```sh
+afk -p "what does lib/afk-cli.sh do?"
+afk -p --task review "review the last commit"
+```
+
+### The route card
+
+<p align="center">
+  <img src="docs/assets/route-card.png" width="720" alt="The route card: claude picked with effort high, the reason, pool headroom, and the best route from every other installed CLI, gateway and local model">
+</p>
+
+| Key | Does |
+|---|---|
+| `↵` | start the selected route |
+| `↑` `↓` / `j` `k` | pick another row |
+| `tab` | change the effort, within what that CLI supports |
+| `e` | edit the prompt and route again |
+| `y` `y` | yolo: the CLI acts without asking for permission (press twice) |
+| `?` | why this route: benchmark, pool, cost and effort |
+| `esc` | cancel; nothing is started |
+
+`-y` / `--yes` skips the card and starts the router's pick. When the session ends, Esc comes back with a receipt:
+
+<p align="center">
+  <img src="docs/assets/receipt.png" width="720" alt="The receipt after a session: exit status, time, pool before and after, files changed, and a one-key rating">
+</p>
+
+After a session you can rate the pick (`1` solved, `2` partly, `3` wrong pick). Runs are saved to `~/.config/afk/state/runs/`.
+
+### The control panel
+
+AFK is also where you manage your agent CLIs. These full-screen tabs are from the design and are being built now (see the [roadmap](#roadmap)).
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/assets/tab-harnesses.png" alt="Harnesses tab: every installed CLI with version, sign-in, routes, skills, MCP and updates"><br><sub><b>Harnesses.</b> Every CLI on the machine, its sign-in, updates, and new ones to adopt.</sub></td>
+    <td width="50%"><img src="docs/assets/tab-benchmarks.png" alt="Benchmarks tab: models ranked by score for a task class, with the effective score after headroom and cost"><br><sub><b>Benchmarks.</b> What the scores say per task class, and what AFK picks today.</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/assets/tab-skills.png" alt="Skills tab: one set of skills synced into every harness, with drift detection"><br><sub><b>Skills.</b> One source of skills, synced into each harness's own format.</sub></td>
+    <td width="50%"><img src="docs/assets/tab-mcp.png" alt="MCP tab: MCP servers and gateways written into every harness's config"><br><sub><b>MCP.</b> MCP servers and gateways, written into every harness's config.</sub></td>
+  </tr>
+</table>
+
+## Usage
+
+```
+afk [options] [prompt]
+afk harness [--all] [--json]
+```
+
+| Option | Meaning |
+|---|---|
+| `-p`, `--print` | one-shot answer; the prompt comes from the arguments or stdin |
+| `--task <kind>` | `coding` (default), `quick`, `complex`, `review`, `architecture`, `webdev`, `research`, `security`; guessed from the prompt when not given |
+| `--prefer <mode>` | `balanced` (default), `cheap` (free and local first), `best` (strongest model for the kind) |
+| `--harness <cli>` | use only this CLI |
+| `--model <id>` | use this model |
+| `--effort <level>` | `low`, `medium`, `high`, or higher where the CLI supports it |
+| `--explain`, `--dry-run` | show the decision and the best route per CLI; start nothing |
+| `--json` | machine-readable output for `--explain` and `-p` |
+| `--yolo` | let the CLI act without asking, using its own skip-permissions flag |
+| `--pass <arg>` | pass one argument through to the CLI unchanged (repeatable) |
+| `-y`, `--yes` | skip the route card |
+| `--` | everything after it is the prompt |
+
+The full reference is in [docs/CLI.md](docs/CLI.md).
+
+## How routing works
+
+For each installed CLI, AFK considers every model that CLI can run and scores it on:
+
+1. **Fit for the task.** Public benchmark results for that kind of work (coding, review, architecture, and so on).
+2. **Pool headroom.** How much is left in that subscription's window, from the provider's live usage where it reports one (Claude, Codex) and from recent session activity otherwise. A pool that just hit a quota or sign-in error is marked down for a while.
+3. **Cost.** Subscription, free, local or metered. `--prefer cheap` favours free and local models; `--prefer best` ignores cost.
+
+Effort starts from the task kind and goes up for harder work, within what the CLI supports. Two rules are fixed: a review never goes to a free or local model, and a plan login is only used by its own vendor's CLI.
+
+Press `?` on the route card to see the working:
+
+<p align="center">
+  <img src="docs/assets/why.png" width="720" alt="The Why panel: task class, benchmark score and when it was measured, pool factor, cost class, effort change and its reason, the effective score, and which CLIs were skipped and why">
+</p>
+
+## Supported CLIs
+
+| CLI | Command | Discovery | Routing |
+|---|---|:---:|:---:|
+| Claude Code | `claude` | ✓ | ✓ |
+| Codex CLI | `codex` | ✓ | ✓ |
+| OpenCode | `opencode` | ✓ | ✓ |
+| Grok CLI | `grok` | ✓ | ✓ |
+| Antigravity CLI | `agy` | ✓ | ✓ |
+| Gemini CLI | `gemini` | ✓ | planned |
+| GitHub Copilot CLI | `copilot` | ✓ | planned |
+| Cursor Agent | `cursor-agent` | ✓ | planned |
+| Kiro CLI | `kiro-cli` | ✓ | planned |
+| Qwen Code | `qwen` | ✓ | planned |
+| Kimi Code | `kimi` | ✓ | planned |
+| Pi | `pi` | ✓ | planned |
+| Devin CLI | `devin` | ✓ | planned |
+
+Discovery reports each CLI's version, how it was installed (mise, npm, bun, pnpm, Homebrew, uv, pipx, cargo or self-managed), the command that updates it, its effort levels, and whether it looks signed in. The sign-in check looks for a login on disk. For Claude, Codex and a few others it opens the credential file to see which login fields are set, but it never decodes, prints, logs or stores a token's value. A file AFK can't read shows as `unknown`, not signed out. Where AFK can't tell, it says `unknown`.
+
+Adding a CLI means adding one entry to [`internal/harness/registry.go`](internal/harness/registry.go).
+
+## Configuration
+
+Configuration is moving into AFK itself (`afk config`, `afk gateway`, `afk mcp`, `afk skills`) with one file at `~/.config/afk/`. Until then, these settings apply:
+
+| Setting | Purpose |
+|---|---|
+| `.afk/config.json` in a project | per-project router settings (`--repo <dir>` picks the project) |
+| `AFK_LITELLM_BASE_URL` | address of a LiteLLM (or other Anthropic-compatible) gateway |
+| `AFK_GATEWAY_KEY` / `AFK_GATEWAY_KEY_ENV` | the gateway key, or the name of the variable that holds it |
+| `AFK_HARNESS_BIN_DIR` | look for CLIs only in this directory |
+| `AFK_ENGINE` | path to the bash engine, while it is still needed |
+| `NO_COLOR`, `AFK_MOTION=off` | no colour; no animation |
+
+A gateway route launches `claude` with `ANTHROPIC_BASE_URL` pointed at the gateway and a separate config directory, so your Claude plan login is never loaded. AFK never prints the gateway key.
+
+## Roadmap
+
+AFK is becoming a standalone tool. Work is tracked in pull requests against `master`.
+
+- [x] Route card, launch and receipts in Go
+- [x] Harness discovery in Go (`afk harness`)
+- [ ] Routing engine in Go: one binary, no bash, `jq` or `yq`
+- [ ] `afk config`: one config file, managed from the CLI
+- [ ] AI gateways: LiteLLM, OpenRouter and any OpenAI- or Anthropic-compatible endpoint, with keys held as references (env var, OS keychain, 1Password)
+- [ ] MCP servers and skills: define them once in AFK and sync them into every installed CLI's own config
+- [ ] Packaging: GoReleaser builds, npm with native binaries, Homebrew tap, install script, `afk update`
+- [ ] Routing for every discovered CLI
+- [ ] Workflows (`afk flow`): multi-stage runs with gates and reviews, defined in config
+- [ ] Remove the legacy BMAD/Orca lifecycle kit
+
+## Project layout
+
+```
+cmd/afk/            the afk binary
+internal/harness/   agent CLI registry and discovery
+internal/tui/       route card, why panel, receipts (Bubble Tea)
+internal/engine/    client for the bash engine (going away)
+internal/launch/    foreground launch of the chosen CLI
+internal/runrec/    run records
+internal/gitstat/   files changed and commits for receipts
+bin/, lib/          the bash engine and the legacy lifecycle kit
+docs/               reference docs
+```
+
+The previous BMAD/Orca lifecycle kit (`adopt`, `update`, the factory and Paperclip integration) is still in the tree while it is retired. Its documentation is in [docs/LEGACY-README.md](docs/LEGACY-README.md), [docs/FACTORY.md](docs/FACTORY.md) and [docs/LIFECYCLE-CONTRACT.md](docs/LIFECYCLE-CONTRACT.md).
+
+## Development
+
+```sh
+go vet ./...
+go test ./...
+CGO_ENABLED=0 go build -o /tmp/afk ./cmd/afk
+```
+
+Tests run offline and never start a real agent CLI. The legacy shell suite is `tests/run-tests.sh`.
+
+## Contributing
+
+Issues and pull requests are welcome. Before opening a pull request:
+
+- keep each change to one concern, with tests;
+- run `go vet ./...` and `go test ./...`;
+- never commit secrets, and never make a test depend on a real login or network call.
+
+For anything larger than a bug fix, open an issue first so we can agree on the approach.
+
+## License
+
+AFK is licensed under the [Apache License 2.0](LICENSE).

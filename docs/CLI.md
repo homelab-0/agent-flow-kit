@@ -88,6 +88,18 @@ The CLI runs as a child of `afk-next` and owns the terminal while it runs. When 
 
 Without a terminal, and with `-p`, `--explain` or `--launch-plan`, `afk-next` runs `agent-flow-kit agent` with the same arguments, so scripts see exactly what `afk` gives them. It finds the engine through `$AFK_ENGINE`, then next to itself, then on PATH. Animation is off with `NO_COLOR`, `TERM=dumb` or `AFK_MOTION=off`.
 
+## Installed CLIs
+
+```
+afk-next harness            # the agent CLIs on this machine
+afk-next harness --all      # also the supported ones that are not installed
+afk-next harness --json     # schema afk-harnesses/3
+```
+
+This runs in Go and needs no bash engine. AFK knows claude, codex, opencode, grok, agy, gemini, copilot, cursor (`cursor-agent`), kiro (`kiro-cli`), qwen, kimi, pi and devin; each one is a single entry in `internal/harness/registry.go`. For every installed CLI it shows the version (each CLI is asked for `--version`, five seconds at most, all in parallel), how it was installed (mise, npm, bun, pnpm, Homebrew, uv, pipx, cargo or self-managed) with the command that updates it (also shown in the table), the effort levels it takes, and whether it looks signed in.
+
+The sign-in check looks for a login on disk. For Claude, Codex and a few others it opens the credential file to see which login fields are set, but it never decodes, prints, logs or stores a token's value. A file AFK can't read shows as `unknown`, not signed out. It can't prove the login still works. Where AFK has no reliable check for a CLI, or the login lives in the macOS Keychain, it says `unknown`. `AFK_HARNESS_BIN_DIR` makes that directory the only place CLIs are looked for.
+
 ## Not yet
 
 - Switching model in the middle of a session. That needs `afk` to proxy the model API through LiteLLM rather than start a CLI.
