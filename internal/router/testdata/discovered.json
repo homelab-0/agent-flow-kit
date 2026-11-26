@@ -1,0 +1,169 @@
+{
+ "models": [
+  {
+   "id": "opencode:opencode/big-pickle",
+   "harness": "opencode",
+   "launch_class": "opencode-native",
+   "entitlement_pool": "opencode-free",
+   "cost_class": "free",
+   "is_free": true,
+   "model": "opencode/big-pickle",
+   "canonical_model": "opencode/big-pickle",
+   "model_family": "opencode",
+   "window_tokens": 200000,
+   "supported_efforts": [
+    "low",
+    "medium",
+    "high"
+   ],
+   "capabilities": {
+    "reasoning": true,
+    "toolcall": true
+   },
+   "benchmarks": {
+    "coding_standard": {
+     "score": 82.0,
+     "source": "models.dev estimate"
+    },
+    "research": {
+     "score": 84.5,
+     "benchmark": "Dyn Research"
+    },
+    "coding_complex": {
+     "score": 70.0
+    }
+   }
+  },
+  {
+   "id": "opencode:opencode/grok-code",
+   "harness": "opencode",
+   "launch_class": "opencode-native",
+   "entitlement_pool": "opencode-free",
+   "cost_class": "free",
+   "is_free": true,
+   "model": "opencode/grok-code",
+   "canonical_model": "xai/grok-code",
+   "model_family": "xai",
+   "window_tokens": 256000,
+   "capabilities": {
+    "reasoning": false,
+    "toolcall": true
+   },
+   "benchmarks": {
+    "coding_standard": {
+     "score": 79.0
+    }
+   }
+  },
+  {
+   "id": "opencode:opencode/no-tools",
+   "harness": "opencode",
+   "launch_class": "opencode-native",
+   "entitlement_pool": "opencode-free",
+   "cost_class": "free",
+   "is_free": true,
+   "model": "opencode/no-tools",
+   "canonical_model": "x/no-tools",
+   "model_family": "x",
+   "capabilities": {
+    "reasoning": false,
+    "toolcall": false
+   },
+   "benchmarks": {
+    "coding_standard": {
+     "score": 99.0
+    }
+   }
+  },
+  {
+   "id": "agy:claude-opus-5-5-high",
+   "harness": "agy",
+   "launch_class": "agy-native",
+   "entitlement_pool": "antigravity-pool",
+   "cost_class": "subscription",
+   "is_free": false,
+   "model": "claude-opus-5-5-high",
+   "canonical_model": "anthropic/claude-opus-5-5",
+   "model_family": "anthropic",
+   "window_tokens": 1000000,
+   "supported_efforts": [
+    "high",
+    "xhigh",
+    "max"
+   ],
+   "capabilities": {
+    "reasoning": true,
+    "toolcall": true
+   },
+   "benchmarks": {
+    "coding_complex": {
+     "score": 96.0,
+     "benchmark": "agy opus"
+    },
+    "architecture": {
+     "score": 97.0
+    }
+   }
+  },
+  {
+   "id": "agy:gemini-4-carbon-high",
+   "harness": "agy",
+   "launch_class": "agy-native",
+   "entitlement_pool": "antigravity-pool",
+   "cost_class": "subscription",
+   "is_free": false,
+   "model": "gemini-4-carbon-high",
+   "canonical_model": "google/gemini-4-carbon",
+   "model_family": "google",
+   "capabilities": {
+    "reasoning": true,
+    "toolcall": true
+   },
+   "benchmarks": {
+    "coding_standard": {
+     "score": 99.9
+    }
+   }
+  },
+  {
+   "id": "opencode:openai/gpt-6.1-sol",
+   "harness": "opencode",
+   "launch_class": "opencode-native",
+   "entitlement_pool": "openai-plus",
+   "cost_class": "subscription",
+   "is_free": false,
+   "model": "openai/gpt-6.1-sol",
+   "canonical_model": "openai/gpt-6.1-sol",
+   "model_family": "openai",
+   "capabilities": {
+    "reasoning": true,
+    "toolcall": true
+   },
+   "benchmarks": {
+    "coding_standard": {
+     "score": 99.0
+    }
+   }
+  },
+  {
+   "id": "opencode:openrouter/metered",
+   "harness": "opencode",
+   "launch_class": "opencode-native",
+   "entitlement_pool": "api-metered",
+   "cost_class": "api-metered",
+   "is_free": false,
+   "model": "openrouter/claude-sonnet-5-5",
+   "canonical_model": "anthropic/claude-sonnet-5-5",
+   "model_family": "anthropic",
+   "capabilities": {
+    "reasoning": true,
+    "toolcall": true
+   },
+   "benchmarks": {
+    "coding_standard": {
+     "score": 99.5
+    }
+   }
+  }
+ ]
+}
