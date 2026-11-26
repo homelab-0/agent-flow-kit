@@ -1145,6 +1145,16 @@ afk_factory_invoke_stage_agent() {
   local compiled_prompt route_json routed_harness routed_launch routed_model routed_effort routed_window routed_mem litellm_url
   compiled_prompt="$(afk_factory_build_stage_prompt "$repo" "$job_dir" "$role" "$stage" "$prompt_file" "$output_file")"
   route_json="$(afk_factory_resolve_stage_route "$repo" "$job_dir" "$stage" "$role")"
+  # A forced harness (a project or consultation override) is routed within
+  # that harness, so its model is one it may use under its own plan; the
+  # router's choice for another CLI is never run on it.
+  if [[ -n "$harness_override" && "$(jq -r '.harness // empty' <<<"$route_json")" != "$harness_override" ]]; then
+    route_json="$(AFK_ROUTER_ONLY_HARNESSES="$harness_override" afk_factory_resolve_stage_route "$repo" "$job_dir" "$stage" "$role")"
+    if [[ "$(jq -r '.harness // empty' <<<"$route_json")" != "$harness_override" ]]; then
+      AFK_LAST_STAGE_FAILURE="no_model_for_override_harness"
+      return 1
+    fi
+  fi
   routed_harness="$(jq -r '.harness // "claude"' <<<"$route_json")"
   routed_launch="$(jq -r '.launch_class // "claude-native"' <<<"$route_json")"
   routed_model="$(jq -r '.model // "sonnet"' <<<"$route_json")"
@@ -1273,14 +1283,20 @@ afk_factory_invoke_stage_agent() {
                 # Through the gateway with the gateway's own key and a config
                 # directory of its own: the Claude plan login never reaches
                 # the gateway. No gateway or no key: the stage cannot run.
-                local gw_key_var="${AFK_GATEWAY_KEY_ENV:-AFK_GATEWAY_KEY}"
-                if [[ -z "$litellm_url" || ! "$gw_key_var" =~ ^[A-Za-z_][A-Za-z0-9_]*$ || -z "${!gw_key_var:-}" ]]; then
-                  printf '{"type":"error","error":{"message":"gateway route without a gateway address or key ($%s)"}}\n' "$gw_key_var" > "$env_file"
+                set +x
+                local gw_key_var="${AFK_GATEWAY_KEY_ENV:-AFK_GATEWAY_KEY}" gw_key=""
+                # The checks live with the CLI route; without them, no gateway launch.
+                if declare -F afk_cli_gateway_key_var_ok >/dev/null 2>&1 && declare -F afk_cli_strip_vendor_env >/dev/null 2>&1 \
+                   && afk_cli_gateway_key_var_ok "$gw_key_var"; then gw_key="${!gw_key_var:-}"; fi
+                if [[ -z "$litellm_url" || -z "$gw_key" ]]; then
+                  printf '{"type":"error","error":{"message":"gateway route without a gateway address or a usable key variable"}}\n' > "$env_file"
                   exit 1
                 fi
-                unset ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN
+                # Every Claude or Anthropic credential the parent has is
+                # dropped; only the gateway address and key are set.
+                afk_cli_strip_vendor_env
                 export ANTHROPIC_BASE_URL="$litellm_url"
-                export ANTHROPIC_AUTH_TOKEN="${!gw_key_var}"
+                export ANTHROPIC_AUTH_TOKEN="$gw_key"
                 export CLAUDE_CONFIG_DIR="${AFK_STATE_DIR:-${HOME:-}/.local/state/agent-flow-kit}/gateway-claude"
                 mkdir -p -- "$CLAUDE_CONFIG_DIR" 2>/dev/null; chmod 700 -- "$CLAUDE_CONFIG_DIR" 2>/dev/null
               fi
@@ -1298,8 +1314,11 @@ afk_factory_invoke_stage_agent() {
             (
               cd "$wt" || exit 1
               [[ -n "$hs_disabled" ]] && export HINDSIGHT_DISABLED="true"
-              if [[ "$routed_launch" == *-gateway && -n "$litellm_url" ]]; then
-                export OPENAI_BASE_URL="$litellm_url"
+              # Only claude is launched against a gateway (its plan login can be
+              # kept away from it); any other gateway route is refused.
+              if [[ "$routed_launch" == *-gateway ]]; then
+                printf '{"type":"error","error":{"message":"gateway routes are only launched for claude"}}\n' > "$env_file"
+                exit 1
               fi
               local -a cx_eff_args=()
               [[ -n "$routed_effort" ]] && cx_eff_args=(-c "model_reasoning_effort=\"$routed_effort\"")
@@ -1349,8 +1368,11 @@ afk_factory_invoke_stage_agent() {
             (
               cd "$wt" || exit 1
               [[ -n "$hs_disabled" ]] && export HINDSIGHT_DISABLED="true"
-              if [[ "$routed_launch" == *-gateway && -n "$litellm_url" ]]; then
-                export OPENAI_BASE_URL="$litellm_url"
+              # Only claude is launched against a gateway (its plan login can be
+              # kept away from it); any other gateway route is refused.
+              if [[ "$routed_launch" == *-gateway ]]; then
+                printf '{"type":"error","error":{"message":"gateway routes are only launched for claude"}}\n' > "$env_file"
+                exit 1
               fi
               "${tmo_cmd[@]}" "$bin_exec" run --pure --auto --format json -m "$routed_model" -- "$(_afk_factory_prompt_text "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
             ) || h_rc=$?

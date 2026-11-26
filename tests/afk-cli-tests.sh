@@ -102,8 +102,8 @@ assert_eq "A prompt that starts with a dash is not read as an option" \
 GWR='{"harness":"claude","model":"qwen36-27b","launch_class":"claude-gateway","litellm_base_url":"http://gw"}'
 GW1="$(AFK_GATEWAY_KEY=sekrit-123 bash -c "$LIBS"'; afk_cli_launch_envjson "$1"' _ "$GWR")"
 assert_eq "A claude gateway launch gets the gateway address, its own config dir and the key by variable name only" \
-  "$(jq -r '"\(.env_set.ANTHROPIC_BASE_URL)|\(.env_set.CLAUDE_CONFIG_DIR | endswith("/gateway-claude"))|\(.env_from.ANTHROPIC_AUTH_TOKEN)|\(.env_unset | join(","))"' <<<"$GW1"):$(grep -c sekrit <<<"$GW1")" \
-  "http://gw|true|AFK_GATEWAY_KEY|ANTHROPIC_API_KEY,CLAUDE_CODE_OAUTH_TOKEN:0"
+  "$(jq -r '"\(.env_set.ANTHROPIC_BASE_URL)|\(.env_set.CLAUDE_CONFIG_DIR | endswith("/gateway-claude"))|\(.env_from.ANTHROPIC_AUTH_TOKEN)|\([.env_unset | index("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN") | . != null] | all)"' <<<"$GW1"):$(grep -c sekrit <<<"$GW1")" \
+  "http://gw|true|AFK_GATEWAY_KEY|true:0"
 GW2="$(env -u AFK_GATEWAY_KEY bash -c "$LIBS"'; afk_cli_launch_envjson "$1"; printf ":%s" "$?"' _ "$GWR")"
 GW3="$(AFK_GATEWAY_KEY=k bash -c "$LIBS"'; afk_cli_launch_envjson "{\"harness\":\"claude\",\"launch_class\":\"claude-gateway\"}"; printf ":%s" "$?"')"
 GW4="$(AFK_GATEWAY_KEY=k bash -c "$LIBS"'; afk_cli_launch_envjson "{\"harness\":\"codex\",\"launch_class\":\"codex-gateway\",\"litellm_base_url\":\"http://gw\"}"; printf ":%s" "$?"')"
@@ -121,6 +121,25 @@ assert_eq "A plan that cannot launch says why and exits 4" "$rcp:$(jq -r '"\(.ok
 CXP="$("$AFK" --launch-plan --json --route '{"harness":"codex","model":"m"}' --mode print -- "hi" 2>/dev/null)"
 assert_eq "A codex print plan names the file its answer is written to" "$(jq -r '"\(.answer.format)|\(.answer.file == .argv[(.argv | index("-o")) + 1])"' <<<"$CXP")" "text-file|true"
 rm -f "$(jq -r .answer.file <<<"$CXP")"
+P1="$("$AFK" --launch-plan --json --route '{"harness":"opencode","model":"openai/gpt-6.1-sol"}' -- hi 2>/dev/null)"; r1=$?
+P2="$("$AFK" --launch-plan --json --route '{"harness":"opencode","model":"opencode/glm-free"}' -- hi 2>/dev/null)"; r2=$?
+P3="$("$AFK" --launch-plan --json --route '{"harness":"codex","model":"m","cost_class":"subscription","entitlement_pool":"xai-grok"}' -- hi 2>/dev/null)"; r3=$?
+assert_eq "Every launch checks the plan-login rule: opencode with a ChatGPT model and codex on the SuperGrok plan are refused; opencode's own free model is fine" \
+  "$r1:$(jq -r .ok <<<"$P1"):$r2:$(jq -r .ok <<<"$P2"):$r3:$(jq -r .ok <<<"$P3")" "4:false:0:true:4:false"
+: > "$LOG"
+"$AFK" --harness opencode --model openai/gpt-6.1-sol "hi" >/dev/null 2>&1; rpin=$?
+assert_eq "A pinned opencode route to another vendor's model is refused and nothing starts" "$rpin:$(wc -l < "$LOG" | tr -d ' ')" "4:0"
+GWK="$(CLAUDE_CODE_OAUTH_TOKEN=plan-token AFK_GATEWAY_KEY_ENV=CLAUDE_CODE_OAUTH_TOKEN bash -c "$LIBS"'; afk_cli_launch_envjson "$1"; printf ":%s" "$?"' _ "$GWR")"
+assert_eq "The gateway key may not be taken from a vendor credential variable" "${GWK##*:}:$(grep -c plan-token <<<"$GWK")" "1:0"
+GWU="$(AFK_GATEWAY_KEY=k CLAUDE_CODE_SOMETHING_NEW=x bash -c "$LIBS"'; afk_cli_launch_envjson "$1"' _ "$GWR")"
+assert_eq "A gateway launch unsets every Claude and Anthropic variable in the environment, and the known credential ones, but not what it sets" \
+  "$(jq -r '[.env_unset | index("CLAUDE_CODE_SOMETHING_NEW", "CLAUDE_CODE_OAUTH_REFRESH_TOKEN", "CLAUDE_CODE_SESSION_ACCESS_TOKEN") | . != null] | all' <<<"$GWU"):$(jq -r '[.env_unset | index("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN") == null] | all' <<<"$GWU")" "true:true"
+APP="$(bash -c "$LIBS"'
+  plan="{\"env_set\":{\"ANTHROPIC_BASE_URL\":\"http://gw\"},\"env_from\":{\"ANTHROPIC_AUTH_TOKEN\":\"AFK_GATEWAY_KEY\"},\"env_unset\":[\"CLAUDE_CODE_OAUTH_TOKEN\",\"AFK_GATEWAY_KEY\"]}"
+  ( AFK_GATEWAY_KEY=gk CLAUDE_CODE_OAUTH_TOKEN=plan; afk_cli_apply_plan_env "$plan" && printf "%s|%s|%s" "${ANTHROPIC_AUTH_TOKEN:-}" "${CLAUDE_CODE_OAUTH_TOKEN:-gone}" "$ANTHROPIC_BASE_URL" )
+  printf ":"
+  ( unset AFK_GATEWAY_KEY; afk_cli_apply_plan_env "$plan"; printf "%s" "$?" )')"
+assert_eq "Applying a plan copies the key before unsetting, drops the plan token, and refuses an empty key source" "$APP" "gk|gone|http://gw:1"
 EXJ="$("$AFK" --explain --json -- "-v flag handling" 2>/dev/null)"
 assert_eq "--explain JSON carries its schema, and the words after -- are the prompt even with a leading dash" \
   "$(jq -r .schema <<<"$EXJ")" "afk-route-explain/1"

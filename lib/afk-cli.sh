@@ -150,6 +150,32 @@ afk_cli_route() {
   printf '%s' "$r"
 }
 
+# afk_cli_gateway_key_var_ok <name>: the variable the gateway key comes from
+# must be a plain name and not one of the vendor credential variables, so a
+# plan token can never be passed off as the gateway key.
+afk_cli_gateway_key_var_ok() {
+  [[ "$1" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+  [[ "$1" =~ ^(CLAUDE_|ANTHROPIC_|OPENAI_|CODEX_|XAI_|GROK_|GEMINI_|GOOGLE_|OPENCODE_) ]] && return 1
+  return 0
+}
+
+# afk_cli_vendor_env_names -> names (one per line) of every Claude or
+# Anthropic variable in this environment, plus the known credential ones.
+afk_cli_vendor_env_names() {
+  { compgen -e | grep -E '^(CLAUDE_CODE_|ANTHROPIC_)' || true
+    printf '%s\n' ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_OAUTH_REFRESH_TOKEN \
+      CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR CLAUDE_CODE_SESSION_ACCESS_TOKEN \
+      CLAUDE_CODE_SESSIONS_OAUTH_TOKEN ANTHROPIC_IDENTITY_TOKEN ANTHROPIC_IDENTITY_TOKEN_FILE ANTHROPIC_CUSTOM_HEADERS \
+      CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY
+  } | sort -u
+}
+
+# afk_cli_strip_vendor_env: unset all of them in this shell.
+afk_cli_strip_vendor_env() {
+  local n
+  while IFS= read -r n; do [[ -n "$n" ]] && unset "$n"; done < <(afk_cli_vendor_env_names)
+}
+
 # afk_cli_launch_envjson <route-json> -> {"env_set":{},"env_from":{},"env_unset":[]}
 # What the CLI's environment needs for this route. A gateway route goes to the
 # gateway with the gateway's own key, from a config directory of its own, so
@@ -165,11 +191,15 @@ afk_cli_launch_envjson() {
   if [[ -z "$url" ]]; then printf 'this route goes through the model gateway and none is configured (set AFK_LITELLM_BASE_URL)'; return 1; fi
   if [[ "$h" != claude ]]; then printf '%s cannot use the gateway without exposing its own plan login' "$h"; return 1; fi
   keyvar="${AFK_GATEWAY_KEY_ENV:-AFK_GATEWAY_KEY}"
-  if ! [[ "$keyvar" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then printf 'AFK_GATEWAY_KEY_ENV must name an environment variable'; return 1; fi
+  if ! afk_cli_gateway_key_var_ok "$keyvar"; then printf 'AFK_GATEWAY_KEY_ENV must name a plain variable that is not a vendor credential (not CLAUDE_*, ANTHROPIC_*, OPENAI_*, ...)'; return 1; fi
   if [[ -z "${!keyvar:-}" ]]; then printf 'the gateway needs its key in $%s (export it, or name another variable in AFK_GATEWAY_KEY_ENV)' "$keyvar"; return 1; fi
   dir="${AFK_STATE_DIR:-${HOME:-}/.local/state/agent-flow-kit}/gateway-claude"
-  jq -cn --arg u "$url" --arg d "$dir" --arg k "$keyvar" \
-    '{env_set:{ANTHROPIC_BASE_URL:$u, CLAUDE_CONFIG_DIR:$d}, env_from:{ANTHROPIC_AUTH_TOKEN:$k}, env_unset:["ANTHROPIC_API_KEY","CLAUDE_CODE_OAUTH_TOKEN"]}'
+  # Unset every Claude or Anthropic variable, except the two set here. An
+  # env_from source is never in env_unset.
+  local unset_j
+  unset_j="$(afk_cli_vendor_env_names | grep -v -x -E 'ANTHROPIC_BASE_URL|ANTHROPIC_AUTH_TOKEN' | jq -R . | jq -cs .)"
+  jq -cn --arg u "$url" --arg d "$dir" --arg k "$keyvar" --argjson un "$unset_j" \
+    '{env_set:{ANTHROPIC_BASE_URL:$u, CLAUDE_CONFIG_DIR:$d}, env_from:{ANTHROPIC_AUTH_TOKEN:$k}, env_unset:$un}'
 }
 
 # afk_cli_launch_plan <route-json> <mode> <yolo> <prompt> <codex-out> [pass...]
@@ -181,6 +211,24 @@ afk_cli_launch_plan() {
   h="$(jq -r '.harness // empty' <<<"$route" 2>/dev/null)"
   m="$(jq -r '.model // empty' <<<"$route" 2>/dev/null)"
   e="$(jq -r '.effort // empty' <<<"$route" 2>/dev/null)"
+  # Every launch passes here, so the plan-login rule is checked here too, for
+  # pinned routes and routes chosen by a front end. A third-party CLI runs
+  # only its own free models (opencode) or nothing (pi).
+  case "$h" in
+    opencode)
+      if [[ "$m" != opencode/* ]]; then
+        jq -cn --arg m "$m" '{schema:"afk-launch-plan/1", ok:false, error:("opencode runs only its own free models here; " + $m + " would use another vendor plan login")}'; return 1
+      fi ;;
+    pi)
+      jq -cn '{schema:"afk-launch-plan/1", ok:false, error:"pi is not launched: it would use another vendor plan login"}'; return 1 ;;
+  esac
+  if [[ "$(jq -r '.cost_class // empty' <<<"$route")" == subscription ]]; then
+    local pool; pool="$(jq -r '.entitlement_pool // empty' <<<"$route")"
+    case "$h:$pool" in
+      claude:anthropic-max|codex:openai-plus|grok:xai-grok|agy:antigravity-pool|*:) ;;
+      *) jq -cn --arg h "$h" --arg p "$pool" '{schema:"afk-launch-plan/1", ok:false, error:("the " + $p + " plan login is not used by " + $h)}'; return 1 ;;
+    esac
+  fi
   if ! envj="$(afk_cli_launch_envjson "$route")"; then
     jq -cn --arg w "$envj" '{schema:"afk-launch-plan/1", ok:false, error:$w}'; return 1
   fi
@@ -189,7 +237,8 @@ afk_cli_launch_plan() {
   if (( ${#argv[@]} == 0 )); then
     jq -cn --arg h "$h" '{schema:"afk-launch-plan/1", ok:false, error:("no launch for " + $h + " here (is it installed?)")}'; return 1
   fi
-  argvj="$(printf '%s\0' "${argv[@]}" | jq -sR 'split("\u0000") | .[:-1]')"
+  # One --arg per element: safe for any byte but NUL, on every jq version.
+  argvj="$(for x in "${argv[@]}"; do jq -cn --arg a "$x" '$a'; done | jq -cs .)"
   if [[ "$mode" != print ]]; then answer=null
   elif [[ "$h" == codex ]]; then answer="$(jq -cn --arg f "$cxout" '{format:"text-file", file:$f}')"
   else answer='{"format":"json","file":null}'; fi
@@ -202,15 +251,21 @@ afk_cli_launch_plan() {
 afk_cli_apply_plan_env() {
   local -; set +x
   local k v
+  # Sources are read before anything is unset, so an env_unset entry can
+  # never empty one; an empty or unsafe source stops the launch.
+  local -a from_k=() from_v=()
+  while IFS= read -r -d '' k && IFS= read -r -d '' v; do
+    afk_cli_gateway_key_var_ok "$v" || return 1
+    [[ -n "${!v:-}" ]] || return 1
+    from_k+=("$k"); from_v+=("${!v}")
+  done < <(jq -j '.env_from // {} | to_entries[] | .key + "\u0000" + .value + "\u0000"' <<<"$1")
   while IFS= read -r -d '' k; do unset "$k"; done < <(jq -j '.env_unset[]? | . + "\u0000"' <<<"$1")
   while IFS= read -r -d '' k && IFS= read -r -d '' v; do
     [[ "$k" == CLAUDE_CONFIG_DIR ]] && { mkdir -p -- "$v" 2>/dev/null; chmod 700 -- "$v" 2>/dev/null; }
     export "$k=$v"
   done < <(jq -j '.env_set // {} | to_entries[] | .key + "\u0000" + .value + "\u0000"' <<<"$1")
-  while IFS= read -r -d '' k && IFS= read -r -d '' v; do
-    [[ "$v" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-    export "$k=${!v:-}"
-  done < <(jq -j '.env_from // {} | to_entries[] | .key + "\u0000" + .value + "\u0000"' <<<"$1")
+  local i
+  for i in "${!from_k[@]}"; do export "${from_k[$i]}=${from_v[$i]}"; done
 }
 
 # afk_cli_plan_argv <plan-json> -> argv, NUL-separated
@@ -446,7 +501,9 @@ afk_cli_main() {
     local -a argv=()
     while IFS= read -r -d '' x; do argv+=("$x"); done < <(afk_cli_plan_argv "$plan")
     printf 'afk: %s / %s%s — %s\n' "$h" "$m" "$([[ -n "$e" ]] && printf ' (%s)' "$e")" "$(jq -r '.reason // ""' <<<"$route" | cut -c1-160)" >&2
-    afk_cli_apply_plan_env "$plan"
+    if ! afk_cli_apply_plan_env "$plan"; then
+      printf 'afk: cannot start %s / %s: the gateway key variable is empty or not allowed\n' "$h" "$m" >&2; return 4
+    fi
     exec "${argv[@]}"
   fi
 
@@ -469,7 +526,7 @@ afk_cli_main() {
       rc=127; printf 'cannot launch %s / %s here: %s\n' "$h" "$m" "$(jq -r '.error' <<<"$plan")" > "$err"
     else
       (
-        afk_cli_apply_plan_env "$plan"
+        afk_cli_apply_plan_env "$plan" || { printf 'the gateway key variable is empty or not allowed\n' >&2; exit 126; }
         local -a argv=()
         while IFS= read -r -d '' x; do argv+=("$x"); done < <(afk_cli_plan_argv "$plan")
         exec "${argv[@]}"
