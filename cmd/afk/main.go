@@ -123,8 +123,15 @@ func interactive(eng tui.Backend, args cli.Args, width int) int {
 	})
 }
 
+// engineFailure prints err and returns its exit code: 2 for a usage
+// error (such as yolo in an untrusted directory), 3 for a CLI that is
+// not installed, else 4.
 func engineFailure(err error) int {
 	fmt.Fprintln(os.Stderr, "afk:", strings.TrimSpace(err.Error()))
+	switch code := core.ExitCode(err); code {
+	case 2, 3:
+		return code
+	}
 	return 4
 }
 

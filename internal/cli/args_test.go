@@ -71,4 +71,18 @@ func TestPermissionModeFlag(t *testing.T) {
 			t.Errorf("%s: perm %q mode %q", argv, a.Flags.Perm, a.Mode)
 		}
 	}
+	// A later --mode turns an earlier --yolo off, and the reverse.
+	for argv, yolo := range map[string]bool{
+		"--yolo --mode ask":   false,
+		"--mode ask --yolo":   true,
+		"--mode yolo":         true,
+		"--yolo --mode=edits": false,
+	} {
+		if a := Parse(strings.Fields(argv)); a.Yolo != yolo {
+			t.Errorf("%s: yolo %v, want %v", argv, a.Yolo, yolo)
+		}
+	}
+	if a := Parse(strings.Fields("--mode reckless x")); a.BadMode != "reckless" || a.Flags.Perm != "" || a.Mode != "" {
+		t.Errorf("--mode reckless: %+v", a)
+	}
 }

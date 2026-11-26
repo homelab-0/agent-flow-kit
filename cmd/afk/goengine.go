@@ -74,6 +74,14 @@ func runGo(args cli.Args) int {
 		fmt.Fprintf(os.Stderr, "afk: unknown option %s (see afk --help; a prompt that starts with a dash goes in --prompt)\n", args.Unknown)
 		return 2
 	}
+	if args.BadMode != "" || (args.Mode != "" && !args.LaunchPlan) {
+		v := args.BadMode
+		if v == "" {
+			v = args.Mode
+		}
+		fmt.Fprintf(os.Stderr, "afk: --mode %s is not a permission mode (read-only, ask, edits, auto or yolo); interactive and print go with --launch-plan\n", v)
+		return 2
+	}
 	c := core.New()
 	if !args.LaunchPlan {
 		repo := args.Flags.Repo
