@@ -133,12 +133,22 @@ func (c *Core) load(ctx context.Context, repo string) (*state, error) {
 	return &state{r: &router.Router{Catalog: cat, Probe: probe, Discovered: c.discovered()}, settings: s}, nil
 }
 
-// discovered reads the models the CLIs reported (written by the model
-// sync), if any.
+// DiscoveredMaxAge is how long ~/.config/afk/discovered-models.json is
+// trusted. Only the old bash engine's model sync wrote it, and nothing
+// refreshes it now, so an old copy would keep offering models a CLI may
+// no longer have.
+const DiscoveredMaxAge = 7 * 24 * time.Hour
+
+// discovered reads the models the CLIs reported, if any: a file named by
+// AFK_DISCOVERED_MODELS_FILE always, ~/.config/afk/discovered-models.json
+// only while it is younger than DiscoveredMaxAge.
 func (c *Core) discovered() []router.DiscoveredModel {
-	p := c.getenv("AFK_DISCOVERED_MODELS_FILE")
+	p, explicit := c.getenv("AFK_DISCOVERED_MODELS_FILE"), true
 	if p == "" {
-		p = filepath.Join(c.Home, ".config", "afk", "discovered-models.json")
+		p, explicit = c.discoveredPath(), false
+	}
+	if !explicit && c.discoveredStale() {
+		return nil
 	}
 	var d struct {
 		Models []router.DiscoveredModel `json:"models"`
@@ -147,6 +157,24 @@ func (c *Core) discovered() []router.DiscoveredModel {
 		_ = json.Unmarshal(b, &d)
 	}
 	return d.Models
+}
+
+func (c *Core) discoveredPath() string {
+	return filepath.Join(c.Home, ".config", "afk", "discovered-models.json")
+}
+
+func (c *Core) discoveredStale() bool {
+	fi, err := os.Stat(c.discoveredPath())
+	return err == nil && c.now().Sub(fi.ModTime()) > DiscoveredMaxAge
+}
+
+// DiscoveredWarning is a line for the person when an old
+// discovered-models.json is being ignored, or "".
+func (c *Core) DiscoveredWarning() string {
+	if c.getenv("AFK_DISCOVERED_MODELS_FILE") != "" || !c.discoveredStale() {
+		return ""
+	}
+	return c.discoveredPath() + " is more than 7 days old and nothing updates it any more, so it is ignored; delete it to drop this note"
 }
 
 // route asks the router for one task, limited to the given CLIs. A
@@ -293,7 +321,7 @@ func (c *Core) decide(ctx context.Context, f engine.RouteFlags, prompt string) (
 		return nil, err
 	}
 	if !ok {
-		return nil, &NoRouteError{"the router found no usable model for this task on " + strings.Join(d.list, ",")}
+		return nil, &NoRouteError{"the router found no usable model for this task on " + strings.Join(d.list, ",") + signInHint(st.r.Probe, d.list)}
 	}
 	if f.Effort != "" {
 		r.Effort = f.Effort
@@ -476,4 +504,46 @@ func modesFor(clis []string, mode string) map[string]engine.ModeInfo {
 		out[h] = engine.ModeInfo{Mode: ran, Note: note}
 	}
 	return out
+}
+
+// signInHint says which of the CLIs asked for needs a sign-in, with the
+// command, when that is why nothing could be routed.
+func signInHint(p *router.Probe, list []string) string {
+	if p == nil {
+		return ""
+	}
+	var parts []string
+	seen := map[string]bool{}
+	for _, a := range p.AuthAlerts {
+		m, ok := a.(map[string]any)
+		if !ok {
+			continue
+		}
+		cmd, _ := m["reauth_command"].(string)
+		var hs []string
+		switch v := m["harnesses"].(type) {
+		case []string:
+			hs = v
+		case []any:
+			for _, x := range v {
+				if s, ok := x.(string); ok {
+					hs = append(hs, s)
+				}
+			}
+		}
+		for _, h := range hs {
+			if contains(list, h) && !seen[h] {
+				seen[h] = true
+				msg := h + " needs sign-in"
+				if cmd != "" {
+					msg += " (run: " + cmd + ")"
+				}
+				parts = append(parts, msg)
+			}
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "; " + strings.Join(parts, "; ")
 }

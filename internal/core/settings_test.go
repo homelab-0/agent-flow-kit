@@ -6,11 +6,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jlengelbrecht/agent-flow-kit/internal/engine"
 )
 
-func TestRepoGatewayNeedsTrust(t *testing.T) {
+func TestRepoNeverSetsTheGateway(t *testing.T) {
 	home, repo := t.TempDir(), t.TempDir()
 	if err := os.MkdirAll(filepath.Join(repo, ".afk"), 0o755); err != nil {
 		t.Fatal(err)
@@ -20,28 +21,22 @@ func TestRepoGatewayNeedsTrust(t *testing.T) {
 	}
 	env := map[string]string{}
 	c := &Core{Home: home, Getenv: func(k string) string { return env[k] }}
-
-	s, _ := c.LoadSettings(repo)
-	if s.GatewayURL != "" || !s.IgnoredRepoGateway {
-		t.Fatalf("an untrusted repo set the gateway: %+v", s)
-	}
-
 	userCfg := filepath.Join(home, ".config", "afk", "router.json")
 	if err := os.MkdirAll(filepath.Dir(userCfg), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// Not even when you trust the project.
 	if err := os.WriteFile(userCfg, []byte(`{"trusted_repos":["`+repo+`"]}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if s, _ := c.LoadSettings(repo); s.GatewayURL != "http://attacker.example" {
-		t.Fatalf("a trusted repo's gateway was not used: %+v", s)
+	if s, _ := c.LoadSettings(repo); s.GatewayURL != "" || len(s.Warnings) == 0 {
+		t.Fatalf("a repo set the gateway: %+v", s)
 	}
-
 	if err := os.WriteFile(userCfg, []byte(`{"litellm_base_url":"http://mine.local"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if s, _ := c.LoadSettings(repo); s.GatewayURL != "http://mine.local" {
-		t.Fatalf("the user's gateway lost to the repo: %+v", s)
+		t.Fatalf("your gateway: %+v", s)
 	}
 	env["AFK_LITELLM_BASE_URL"] = "http://env.local"
 	if s, _ := c.LoadSettings(repo); s.GatewayURL != "http://env.local" {
@@ -49,8 +44,6 @@ func TestRepoGatewayNeedsTrust(t *testing.T) {
 	}
 }
 
-// --prefer beats the project, which beats config.toml; a CLI config turns
-// off leaves routing.
 func TestPreferFlagRepoAndConfig(t *testing.T) {
 	c, _ := testCore(t)
 	c.Installed = func(string) bool { return true }
@@ -148,5 +141,26 @@ func TestPermissionModePrecedence(t *testing.T) {
 	write(cfg, "version = 1\n[trust]\nrepos = [\""+root+"\"]\n")
 	if ex, err := explain(engine.RouteFlags{Perm: "yolo"}, "fix it"); err != nil || ex.Mode != "yolo" {
 		t.Fatalf("trusted yolo: %+v %v", ex, err)
+	}
+}
+
+func TestOldDiscoveredModelsAreIgnored(t *testing.T) {
+	c, _ := testCore(t)
+	now := time.Now()
+	c.Now = func() time.Time { return now }
+	p := filepath.Join(c.Home, ".config", "afk", "discovered-models.json")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(`{"models":[{"id":"x","harness":"opencode","model":"x"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.discovered()) != 1 || c.DiscoveredWarning() != "" {
+		t.Fatal("a fresh file is read, without a note")
+	}
+	old := now.Add(-8 * 24 * time.Hour)
+	_ = os.Chtimes(p, old, old)
+	if len(c.discovered()) != 0 || !strings.Contains(c.DiscoveredWarning(), "more than 7 days old") {
+		t.Fatalf("an old file: %v %q", c.discovered(), c.DiscoveredWarning())
 	}
 }
