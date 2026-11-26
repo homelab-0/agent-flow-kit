@@ -224,12 +224,32 @@ func TestWhyPanelShowsAnEstimatedPool(t *testing.T) {
 	r.Raw = nil
 	c.Rows[c.Sel] = r
 	out := strings.Join(plainLines(join(NewTheme(true).WhyLines(c, 120))), "\n")
-	if !strings.Contains(out, "of 5h window left") || !strings.Contains(out, "(available) · estimated") {
+	if !strings.Contains(out, "of 5h window left") || !strings.Contains(out, "pool figure    estimated") {
 		t.Fatalf("no estimate in the Why panel:\n%s", out)
 	}
 	r.PoolQuotaSource = "codex_rate_limits"
 	c.Rows[c.Sel] = r
-	if out := strings.Join(plainLines(join(NewTheme(true).WhyLines(c, 120))), "\n"); !strings.Contains(out, "· measured") {
+	if out := strings.Join(plainLines(join(NewTheme(true).WhyLines(c, 120))), "\n"); !strings.Contains(out, "pool figure    measured") {
 		t.Fatalf("no basis for a measured pool:\n%s", out)
+	}
+}
+
+// A newer pools reading moves the figure, its window and its reset
+// together, never one without the others.
+func TestPoolFigureComesFromOneReading(t *testing.T) {
+	c := fixtureCard(t, -1)
+	r := c.Rows[c.Sel]
+	ninety, sixty, forty := 90.0, 60.0, 40.0
+	r.PoolHeadroomPct = &ninety
+	c.Pools = &engine.Pools{Pools: map[string]engine.Pool{
+		r.EntitlementPool: {HeadroomPct: &sixty, WeeklyUsedPct: &forty, UsageWindow: "weekly"},
+	}}
+	head, win, _ := c.poolFigure(r)
+	if head == nil || *head != 60 || win != "weekly window" {
+		t.Fatalf("got %v %q, want the snapshot's 60%% of the weekly window", head, win)
+	}
+	c.Pools = nil
+	if head, win, resets := c.poolFigure(r); head == nil || *head != 90 || win != "5h window" || resets != "resets "+unknownText {
+		t.Fatalf("no snapshot: %v %q %q", head, win, resets)
 	}
 }

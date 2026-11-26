@@ -98,10 +98,18 @@ func Answer(stdout, answerFile []byte) (string, bool) {
 		return string(answerFile), true
 	}
 	if parsed {
+		// A stream (claude's stream-json) carries status events too; when
+		// it has a result document, that is the answer.
+		hasResult := false
+		for _, v := range vals {
+			if m, ok := v.(map[string]any); ok && m["type"] == "result" {
+				hasResult = true
+			}
+		}
 		var b strings.Builder
 		for _, v := range vals {
 			m, ok := v.(map[string]any)
-			if !ok {
+			if !ok || (hasResult && m["type"] != "result") {
 				continue
 			}
 			s := firstString(m, "result", "response", "text")
@@ -112,7 +120,9 @@ func Answer(stdout, answerFile []byte) (string, bool) {
 			}
 			b.WriteString(s)
 		}
-		if b.Len() > 0 {
+		// A result document is the answer even when it is empty; the
+		// rest of the stream is status, not output.
+		if hasResult || b.Len() > 0 {
 			return b.String(), true
 		}
 	}

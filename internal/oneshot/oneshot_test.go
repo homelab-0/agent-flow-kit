@@ -367,6 +367,18 @@ func TestFailoverSetting(t *testing.T) {
 	want(t, "same-pool past another pool", res.Tried, []string{"claude/opus", "claude/sonnet"})
 }
 
+func TestAnswerFromAStreamIsTheResultOnly(t *testing.T) {
+	got, ok := Answer(fixture(t, "claude-stream-ok.jsonl"), nil)
+	if !ok || got != "ok" {
+		t.Errorf("got %q %v, want the result document's text only", got, ok)
+	}
+	// An empty result is still the answer, not the whole stream.
+	stream := []byte(`{"type":"system","subtype":"init"}` + "\n" + `{"type":"result","is_error":false,"result":""}` + "\n")
+	if got, ok := Answer(stream, nil); !ok || got != "" {
+		t.Errorf("empty result: got %q %v", got, ok)
+	}
+}
+
 func TestFailoverSaysWhenEditsWereLeftBehind(t *testing.T) {
 	f := &fake{
 		outputs: map[string][]Output{

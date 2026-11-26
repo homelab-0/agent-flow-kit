@@ -335,7 +335,9 @@ func (c *Core) launchArgv(h, model, effort, mode string, modeFlags []string, pro
 		}
 		add(modeFlags...)
 		if print {
-			add("-p", "--output-format", "json")
+			// stream-json, unlike json, carries Claude's rate_limit_event:
+			// the plan's own usage and reset time, with no login read.
+			add("-p", "--output-format", "stream-json", "--verbose")
 		}
 		add(pass...)
 		if prompt != "" {

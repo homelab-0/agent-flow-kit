@@ -94,7 +94,8 @@
     "high",
     "-p",
     "--output-format",
-    "json",
+    "stream-json",
+    "--verbose",
     "--verbose",
     "--",
     " -fix the bug"
@@ -135,7 +136,8 @@
     "--dangerously-skip-permissions",
     "-p",
     "--output-format",
-    "json",
+    "stream-json",
+    "--verbose",
     "--verbose",
     "--",
     " -fix the bug"
@@ -1532,7 +1534,8 @@
     "x",
     "-p",
     "--output-format",
-    "json",
+    "stream-json",
+    "--verbose",
     "--verbose",
     "--",
     " -fix the bug"
@@ -1571,7 +1574,8 @@
     "--dangerously-skip-permissions",
     "-p",
     "--output-format",
-    "json",
+    "stream-json",
+    "--verbose",
     "--verbose",
     "--",
     " -fix the bug"
@@ -1713,7 +1717,8 @@
     "qwen36-27b",
     "-p",
     "--output-format",
-    "json",
+    "stream-json",
+    "--verbose",
     "--verbose",
     "--",
     " -fix the bug"
@@ -1771,7 +1776,8 @@
     "--dangerously-skip-permissions",
     "-p",
     "--output-format",
-    "json",
+    "stream-json",
+    "--verbose",
     "--verbose",
     "--",
     " -fix the bug"
@@ -2054,7 +2060,8 @@
     "sonnet",
     "-p",
     "--output-format",
-    "json",
+    "stream-json",
+    "--verbose",
     "--verbose",
     "--",
     " -fix the bug"
@@ -2092,7 +2099,8 @@
     "--dangerously-skip-permissions",
     "-p",
     "--output-format",
-    "json",
+    "stream-json",
+    "--verbose",
     "--verbose",
     "--",
     " -fix the bug"
