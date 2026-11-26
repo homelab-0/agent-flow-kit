@@ -915,6 +915,7 @@ afk_router_select_candidate() {
     --argjson dl "$diff_lines" \
     --arg bf "$builder_family" \
     --arg mm "$default_mem" \
+    --arg only_h "${AFK_ROUTER_ONLY_HARNESSES:-}" \
     --arg lurl "$litellm_url" \
     --arg sec_csv "$sec_models_csv" \
     --argjson allow_api "$allow_metered" \
@@ -1102,6 +1103,10 @@ afk_router_select_candidate() {
       select($pool.state != "exhausted" and $pool.state != "offline" and $pool.state != "auth_required") |
       # A gateway model is a candidate only while the gateway is up and lists
       # that model; routing to a name it does not serve fails every attempt.
+      # A caller may limit the choice to some CLIs (the standalone `afk` does,
+      # for --harness and per-CLI comparisons). Unlike the test hook
+      # AFK_ROUTER_HARNESS_LIST this changes nothing else: quota is still live.
+      select($only_h == "" or ((("," + $only_h + ",") | index("," + $c.harness + ",")) != null)) |
       select((($c.requires_gateway // false) == false)
              or (($probe.harnesses.litellm_gateway.online == true)
                  and ((($probe.harnesses.litellm_gateway.models // []) | index($c.model)) != null))) |
