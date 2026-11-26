@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io/fs"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -247,6 +249,12 @@ func Resolve(e Env) (Settings, error) {
 		s.GatewayURL = userGateway
 	}
 
+	// A key sent over plain http to another network can be read on the
+	// way. Said once per address; the launch still goes ahead.
+	if PlainHTTP(s.GatewayURL) {
+		s.Warnings = append(s.Warnings, Problem{File: paths.Config, Key: "gateway", Msg: "the gateway address " + hostOf(s.GatewayURL) + " is plain http on what looks like a public host, so its key travels unencrypted; use https"})
+	}
+
 	pick := func(env string, repoV, legacyV, cfgV *bool) bool {
 		if v := e.getenv(env); v != "" {
 			return truthy(v)
@@ -374,4 +382,36 @@ func trusts(list []string, repo string) bool {
 		}
 	}
 	return false
+}
+
+// PlainHTTP reports a gateway address that is http:// to a host that
+// doesn't look local: not loopback, a private or tailnet address, a bare
+// name, or a name under a local-only suffix.
+func PlainHTTP(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "http" {
+		return false
+	}
+	h := strings.ToLower(u.Hostname())
+	if ip := net.ParseIP(h); ip != nil {
+		cgnat := net.IPNet{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)}
+		return !(ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || cgnat.Contains(ip))
+	}
+	if h == "" || !strings.Contains(h, ".") {
+		return false
+	}
+	for _, suf := range []string{".localhost", ".local", ".lan", ".home", ".internal", ".home.arpa", ".ts.net", ".svc", ".cluster.local", ".test"} {
+		if strings.HasSuffix(h, suf) {
+			return false
+		}
+	}
+	return true
+}
+
+// hostOf is an address's host, for messages (never its user info or query).
+func hostOf(raw string) string {
+	if u, err := url.Parse(raw); err == nil {
+		return u.Host
+	}
+	return "(unreadable)"
 }

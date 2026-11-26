@@ -31,6 +31,10 @@ Gateway routes run on `claude` only, so that AFK can keep your Claude plan login
 - `CLAUDE_CONFIG_DIR` points at a separate directory (`~/.local/state/agent-flow-kit/gateway-claude`), so your plan login isn't loaded.
 - Every other Claude and Anthropic variable in your environment is unset for that process.
 
+The key goes only to an address you configured: a `[gateway.<name>]` `url`, or the one from `AFK_LITELLM_BASE_URL` (or the older `router.json`). A route that names any other address, such as a route saved before you changed the gateway, is refused with the addresses you do have, whichever variable holds the key, `AFK_GATEWAY_KEY_ENV` included. Route again and it launches.
+
+A gateway on plain `http://` to what looks like a public host gets a warning each time AFK loads your settings, because the key and your prompts cross the network unencrypted. It still launches. Loopback and private addresses (10.x, 172.16-31.x, 192.168.x, 100.64.x), single-label names, and names under `.local`, `.lan`, `.home`, `.internal`, `.home.arpa`, `.ts.net`, `.svc`, `.cluster.local`, `.localhost` or `.test` don't warn.
+
 The key variable must be a plain name that is not a vendor credential (`CLAUDE_*`, `ANTHROPIC_*`, `OPENAI_*`, `CODEX_*`, `XAI_*`, `GROK_*`, `GEMINI_*`, `GOOGLE_*`, `OPENCODE_*`), so AFK never picks up a plan token from a vendor's own variables by mistake. It checks the variable's name, not where its value came from: put only a key your gateway issued in it, never a copy of a plan login. With no gateway URL or no key, the route isn't launched and AFK says what to set.
 
 A plan is never sent through a gateway, even on its own CLI.

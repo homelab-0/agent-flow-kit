@@ -167,3 +167,24 @@ func TestWithinWholeComponents(t *testing.T) {
 		}
 	}
 }
+
+func TestPlainHTTP(t *testing.T) {
+	for u, want := range map[string]bool{
+		"http://gateway.example.com:4000": true,
+		"http://8.8.8.8/v1":               true,
+		"https://gateway.example.com":     false,
+		"http://localhost:4000":           false,
+		"http://127.0.0.1:4000":           false,
+		"http://10.0.0.5":                 false,
+		"http://100.101.102.103:4000":     false,
+		"http://gw:4000":                  false,
+		"http://gateway.local:4000":       false,
+		"http://box.tailnet.ts.net":       false,
+		"http://llm.svc.cluster.local":    false,
+		"":                                false,
+	} {
+		if got := PlainHTTP(u); got != want {
+			t.Errorf("PlainHTTP(%q) = %v, want %v", u, got, want)
+		}
+	}
+}
