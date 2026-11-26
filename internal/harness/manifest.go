@@ -121,6 +121,31 @@ func (m Manifest) HasModes() bool {
 	return false
 }
 
+// YoloIn reports whether pass holds the CLI's own yolo flags (from either
+// table), as a run of arguments or as --flag=value.
+func (m Manifest) YoloIn(pass []string) bool {
+	for _, print := range []bool{false, true} {
+		f, ok := m.Modes.table(print).get("yolo")
+		if !ok || len(*f) == 0 {
+			continue
+		}
+		run := *f
+		for i := 0; i+len(run) <= len(pass); i++ {
+			match := true
+			for j, x := range run {
+				if pass[i+j] != x && !(len(run) == 1 && strings.HasPrefix(pass[i+j], x+"=")) {
+					match = false
+					break
+				}
+			}
+			if match {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // ModeFlags works out the flags for a requested mode. When the CLI can't
 // do it, the next stricter mode it can do is used (never a looser one):
 // mode is what runs and note says why it differs. ok is false when the CLI

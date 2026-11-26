@@ -120,6 +120,13 @@ func TestTrustSubdirAndOverlap(t *testing.T) {
 	if err := CheckYolo(resolve(t, f), f.home, sub); err != nil {
 		t.Fatalf("yolo in the trusted subdir: %v", err)
 	}
+	// The same argument removes it again.
+	if ch, err := TrustRemove(p, f.home, sub, false); err != nil || ch.Dir != a || len(ch.Repos) != 0 {
+		t.Fatalf("remove by subdir: %+v %v", ch, err)
+	}
+	if _, err := TrustAdd(p, f.home, sub, false); err != nil {
+		t.Fatal(err)
+	}
 	// Removing an entry a parent still covers says yolo stays allowed.
 	if _, err := TrustAdd(p, f.home, repos, false); err != nil {
 		t.Fatal(err)

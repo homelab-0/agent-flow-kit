@@ -169,7 +169,7 @@ func TrustAdd(paths Paths, home, dir string, dryRun bool) (*TrustChange, error) 
 // TrustRemove takes a directory out of trust.repos.
 func TrustRemove(paths Paths, home, dir string, dryRun bool) (*TrustChange, error) {
 	d := realDir(expandHome(dir, home))
-	ch, err := changeTrust(paths, func(cur []string) ([]string, bool) {
+	drop := func(cur []string, d string) ([]string, bool) {
 		var out []string
 		found := false
 		for _, t := range cur {
@@ -180,7 +180,24 @@ func TrustRemove(paths Paths, home, dir string, dryRun bool) (*TrustChange, erro
 			out = append(out, t)
 		}
 		return out, found
+	}
+	ch, err := changeTrust(paths, func(cur []string) ([]string, bool) {
+		if out, found := drop(cur, d); found {
+			return out, true
+		}
+		// afk trust add saves the repository root for a directory inside
+		// a repository, so the same argument removes it.
+		if root := GitRoot(d); root != "" && root != d {
+			if out, found := drop(cur, root); found {
+				d = root
+				return out, true
+			}
+		}
+		return cur, false
 	}, d, nil, dryRun)
+	if err == nil && ch.Changed {
+		ch.Dir = d
+	}
 	if err == nil && !ch.Changed {
 		return ch, fmt.Errorf("%s is not in trust.repos", dir)
 	}
