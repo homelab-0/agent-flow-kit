@@ -21,3 +21,6 @@ ask = ["--permission-mode", "manual"]
 edits = ["--permission-mode", "acceptEdits"]
 auto = ["--permission-mode", "auto"]
 yolo = ["--dangerously-skip-permissions"]
+# Other ways to change what Claude may do without asking; --pass refuses
+# them outside yolo.
+mode_flags = ["--permission-mode", "--allow-dangerously-skip-permissions", "--allowedTools", "--allowed-tools", "--settings", "--setting-sources"]

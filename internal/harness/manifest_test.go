@@ -211,3 +211,38 @@ func TestStripYoloAndDirIn(t *testing.T) {
 		t.Errorf("codex exec ask: %q %s %q", f, ran, note)
 	}
 }
+
+func TestModeIn(t *testing.T) {
+	claude, _ := ManifestFor("claude")
+	codex, _ := ManifestFor("codex")
+	pi, _ := ManifestFor("pi")
+	for _, c := range []struct {
+		m    Manifest
+		pass []string
+		want string
+	}{
+		{claude, []string{"--permission-mode", "bypassPermissions"}, "--permission-mode"},
+		{claude, []string{"--permission-mode=bypassPermissions"}, "--permission-mode"},
+		{claude, []string{"--settings", `{"permissions":{"defaultMode":"bypassPermissions"}}`}, "--settings"},
+		{claude, []string{"--allowedTools", "Bash"}, "--allowedTools"},
+		{claude, []string{"--allow-dangerously-skip-permissions"}, "--allow-dangerously-skip-permissions"},
+		{claude, []string{"--setting-sources", "user,project"}, "--setting-sources"},
+		{claude, []string{"--verbose", "--append-system-prompt", "be brief"}, ""},
+		{codex, []string{"--sandbox", "danger-full-access"}, "--sandbox"},
+		{codex, []string{"-s", "danger-full-access"}, "-s"},
+		{codex, []string{"-sdanger-full-access"}, "-s"},
+		{codex, []string{"--ask-for-approval=never"}, "--ask-for-approval"},
+		{codex, []string{"--full-auto"}, "--full-auto"},
+		{codex, []string{"--profile", "loose"}, "--profile"},
+		{codex, []string{"-c", `sandbox_mode="danger-full-access"`}, "-c sandbox_mode"},
+		{codex, []string{"-c", "approval_policy=never"}, "-c approval_policy"},
+		{codex, []string{"--config=sandbox_workspace_write.network_access=true"}, "--config sandbox_workspace_write.network_access"},
+		{codex, []string{"-c", "model_provider=oss", "--search"}, ""},
+		{codex, []string{"-c"}, ""},
+		{pi, []string{"--tools", "read,bash"}, "--tools"},
+	} {
+		if got := c.m.ModeIn(c.pass); got != c.want {
+			t.Errorf("%s ModeIn(%v) = %q, want %q", c.m.Name, c.pass, got, c.want)
+		}
+	}
+}
