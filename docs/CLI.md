@@ -61,6 +61,33 @@ Sessions started through `afk` count against their pool automatically. The route
 ln -s ~/.agents/skills/afk-runtime/bin/afk ~/.local/bin/afk
 ```
 
+## The route card (preview)
+
+A Go front end for `afk` is being built in `cmd/afk`. It is not installed as `afk` yet; build it to try it:
+
+```
+CGO_ENABLED=0 go build -o ~/.local/bin/afk-next ./cmd/afk
+afk-next "fix the flaky renovate test"
+```
+
+At a terminal it shows a route card before anything starts: the chosen CLI, model and effort, why it was chosen, how much of its 5-hour pool is left, and the best route for every other installed CLI.
+
+| Key | Does |
+|---|---|
+| `↵` | start the selected route |
+| `↑` `↓` or `j` `k` | pick another row |
+| `tab` | change the effort, within what that CLI supports |
+| `e` | edit the prompt and route again |
+| `y` `y` | yolo: the CLI acts without asking (press twice; a red tag shows it is on) |
+| `?` | why this route: benchmark, pool, cost and effort |
+| `esc` | cancel; nothing is started |
+
+`--yes` (or `-y`) skips the card and starts the router's choice. `w` (where) only offers this terminal for now, and `m` (model picker) is not there yet.
+
+The CLI runs as a child of `afk-next` and owns the terminal while it runs. When it exits, `afk-next` prints a receipt (exit status, time, pool before and after, files changed and commits when you're in a git repository) and asks how it went: `1` solved, `2` partly, `3` wrong pick, `↵` skip. Each session is saved to `~/.config/afk/state/runs/<id>.json`. Values it can't know show as `n/e`, never as zero.
+
+Without a terminal, and with `-p`, `--explain` or `--launch-plan`, `afk-next` runs `agent-flow-kit agent` with the same arguments, so scripts see exactly what `afk` gives them. It finds the engine through `$AFK_ENGINE`, then next to itself, then on PATH. Animation is off with `NO_COLOR`, `TERM=dumb` or `AFK_MOTION=off`.
+
 ## Not yet
 
 - Switching model in the middle of a session. That needs `afk` to proxy the model API through LiteLLM rather than start a CLI.
