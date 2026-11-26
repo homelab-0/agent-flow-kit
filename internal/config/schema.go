@@ -49,6 +49,8 @@ type Route struct {
 	// Failover is where a failed one-shot run may go next: any (default),
 	// same-pool or none.
 	Failover string `toml:"failover,omitempty"`
+	// Learn lets your ratings of past runs move route scores (default on).
+	Learn *bool `toml:"learn,omitempty"`
 }
 
 // Permissions is the default permission mode. Reserved: the modes are

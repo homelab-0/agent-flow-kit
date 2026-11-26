@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jlengelbrecht/agent-flow-kit/internal/engine"
+	"github.com/jlengelbrecht/agent-flow-kit/internal/gitstat"
 	"github.com/jlengelbrecht/agent-flow-kit/internal/launch"
 	"github.com/jlengelbrecht/agent-flow-kit/internal/oneshot"
 	"github.com/jlengelbrecht/agent-flow-kit/internal/router"
@@ -73,6 +74,11 @@ func (c *Core) Print(ctx context.Context, req PrintRequest, note func(string)) (
 			}
 		},
 		Note: note,
+	}
+	// What the working copy looked like before the first attempt, so a
+	// failover can say when a failed route left edits behind.
+	if snap := gitstat.Take(c.cwd()); snap.OK() {
+		deps.Changed = func() *int { return snap.Since().Files }
 	}
 	pinned := req.Flags.Harness != "" || req.Flags.Model != ""
 	// The pinned route's JSON keeps entitlement_pool null; its failures

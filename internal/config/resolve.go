@@ -154,7 +154,9 @@ type Settings struct {
 	Prefer string
 	// Failover is where a failed one-shot run may go next: any, same-pool
 	// or none.
-	Failover    string
+	Failover string
+	// Learn is whether your ratings of past runs move route scores.
+	Learn       bool
 	GatewayURL  string
 	GatewayName string
 	GatewayKey  *SecretRef // the default gateway's key reference, if config names one
@@ -309,6 +311,19 @@ func Resolve(e Env) (Settings, error) {
 		s.Failover = v
 	} else if c.Route.Failover != "" {
 		s.Failover = c.Route.Failover
+	}
+
+	// Learning from your ratings is yours to turn off, never a
+	// repository's.
+	s.Learn = true
+	switch strings.ToLower(e.getenv("AFK_ROUTER_LEARN")) {
+	case "0", "false", "off", "no":
+		s.Learn = false
+	case "1", "true", "on", "yes":
+	default:
+		if c.Route.Learn != nil {
+			s.Learn = *c.Route.Learn
+		}
 	}
 
 	s.TaskModes, s.RepoMode, s.DefaultMode = c.Permissions.Task, repo.Mode, c.Permissions.Default
