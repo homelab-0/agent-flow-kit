@@ -20,7 +20,7 @@ const maxHashed = 500
 
 // Snapshot is the repository state before a session.
 type Snapshot struct {
-	Dir   string
+	Dir   string            // top of the work tree once the snapshot is OK
 	Head  string            // HEAD commit, "" on an unborn branch
 	Dirty map[string]string // path -> content hash of files dirty before
 	ok    bool
@@ -57,6 +57,12 @@ func Take(dir string) Snapshot {
 	s := Snapshot{Dir: dir, Dirty: map[string]string{}}
 	if out, err := git(c, dir, "rev-parse", "--is-inside-work-tree"); err != nil || strings.TrimSpace(out) != "true" {
 		return s
+	}
+	// git status lists paths from the top of the work tree, so everything
+	// below works from there, whichever subdirectory afk started in.
+	if out, err := git(c, dir, "rev-parse", "--show-toplevel"); err == nil && strings.TrimSpace(out) != "" {
+		dir = strings.TrimSpace(out)
+		s.Dir = dir
 	}
 	if out, err := git(c, dir, "rev-parse", "--verify", "-q", "HEAD"); err == nil {
 		s.Head = strings.TrimSpace(out)

@@ -367,6 +367,43 @@ func TestFailoverSetting(t *testing.T) {
 	want(t, "same-pool past another pool", res.Tried, []string{"claude/opus", "claude/sonnet"})
 }
 
+func TestFailoverSaysWhenEditsWereLeftBehind(t *testing.T) {
+	f := &fake{
+		outputs: map[string][]Output{
+			"claude/opus":         {{Stdout: fixture(t, "claude-usage-limit.json")}},
+			"opencode/big-pickle": {{Stdout: fixture(t, "opencode-ok.jsonl")}},
+		},
+		next: []engine.Route{route("opencode", "big-pickle", "opencode-free")},
+	}
+	d := f.deps()
+	three := 3
+	d.Changed = func() *int { return &three }
+	res := Do(context.Background(), Request{First: route("claude", "opus", "anthropic-max"), Harnesses: all}, d)
+	if !res.OK {
+		t.Fatalf("result %+v", res)
+	}
+	want(t, "notes", f.notes, []string{
+		"afk: claude/opus failed (pool); trying opencode / big-pickle",
+		"afk: claude/opus left 3 changed files in the working copy; opencode / big-pickle starts from them",
+	})
+	// Nothing changed, or not a repository: no extra line.
+	for _, n := range []*int{nil, new(int)} {
+		f := &fake{
+			outputs: map[string][]Output{
+				"claude/opus":         {{Stdout: fixture(t, "claude-usage-limit.json")}},
+				"opencode/big-pickle": {{Stdout: fixture(t, "opencode-ok.jsonl")}},
+			},
+			next: []engine.Route{route("opencode", "big-pickle", "opencode-free")},
+		}
+		d := f.deps()
+		d.Changed = func() *int { return n }
+		Do(context.Background(), Request{First: route("claude", "opus", "anthropic-max"), Harnesses: all}, d)
+		if len(f.notes) != 1 {
+			t.Errorf("changed=%v: notes %v", n, f.notes)
+		}
+	}
+}
+
 func TestAnAnswerAboutRateLimitsDoesNotMarkThePool(t *testing.T) {
 	// The CLI delivered an answer in JSON, then exited non-zero. The
 	// answer discusses HTTP 429; that says nothing about the plan.
