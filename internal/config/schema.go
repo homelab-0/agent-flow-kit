@@ -46,6 +46,9 @@ type Route struct {
 	// SecurityModels are the restricted security models you are entitled
 	// to (Mythos, Daybreak Blue).
 	SecurityModels []string `toml:"security_models,omitempty"`
+	// Failover is where a failed one-shot run may go next: any (default),
+	// same-pool or none.
+	Failover string `toml:"failover,omitempty"`
 }
 
 // Permissions is the default permission mode. Reserved: the modes are
@@ -120,6 +123,7 @@ type Source struct {
 // Allowed values.
 var (
 	Prefers   = []string{"balanced", "cheap", "best"}
+	Failovers = []string{"any", "same-pool", "none"}
 	Modes     = []string{"read-only", "ask", "edits", "auto", "yolo"}
 	Gateways  = []string{"litellm", "openrouter", "portkey", "agentgateway", "envoy", "kong", "cloudflare", "vercel", "openai", "anthropic", "ollama", "lmstudio", "vllm", "llamacpp", "localai"}
 	Costs     = []string{"metered", "free"}
@@ -173,6 +177,7 @@ func (c *Config) validate(file string, lines map[string]int) []Problem {
 		bad("version", "this afk reads version %d, not %d", Version, c.Version)
 	}
 	oneOf("route.prefer", c.Route.Prefer, Prefers)
+	oneOf("route.failover", c.Route.Failover, Failovers)
 	oneOf("permissions.default", c.Permissions.Default, Modes)
 	for _, t := range sortedKeys(c.Permissions.Task) {
 		oneOf("permissions.task."+t, c.Permissions.Task[t], Modes)

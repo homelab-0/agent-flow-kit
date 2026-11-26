@@ -204,6 +204,11 @@ type Request struct {
 	Pinned bool
 	// Harnesses are the CLIs the run may use.
 	Harnesses []string
+	// Failover is where a failed run may go next: "any" (or empty) for
+	// the next best route, "same-pool" for another model on the same
+	// CLI and plan (so the prompt goes to no other account), "none" to
+	// report the failure.
+	Failover string
 	// Effort, when given on the command line, applies to every route.
 	Effort string
 	// Mode is the permission mode asked for. Each later attempt runs at
@@ -219,9 +224,10 @@ type Request struct {
 type Deps struct {
 	// Run starts the route headless and waits for it.
 	Run func(ctx context.Context, r engine.Route, mode string) Output
-	// Next asks the router again, limited to these CLIs. ok is false when
-	// nothing there can do the task.
-	Next func(ctx context.Context, only []string) (r engine.Route, ok bool)
+	// Next asks the router again, limited to these CLIs and, when pool
+	// is set, to routes that pool serves. ok is false when nothing there
+	// can do the task.
+	Next func(ctx context.Context, only []string, pool string) (r engine.Route, ok bool)
 	// Mark records a model or pool failure for the router (and so for
 	// the next run). reason is at most 160 bytes.
 	Mark func(kind Kind, pool, model, reason string)
@@ -259,6 +265,10 @@ func Do(ctx context.Context, req Request, d Deps) Result {
 	var tried []string
 	triedSet := map[string]bool{}
 	var avoid []string
+	firstPool := req.First.EntitlementPool
+	if firstPool == "" {
+		firstPool = req.FirstPool
+	}
 	for attempt := 1; ; attempt++ {
 		out := d.Run(ctx, route, mode)
 		if out.ModeNote != "" && d.Note != nil {
@@ -318,13 +328,27 @@ func Do(ctx context.Context, req Request, d Deps) Result {
 			return Result{Tried: tried, Attempts: attempt, Exit: 130, Error: "interrupted", Interrupted: true}
 		}
 		fail := Result{Tried: tried, Attempts: attempt, Exit: rc, Error: why}
-		if req.Pinned || route.Pinned || attempt >= MaxAttempts {
+		if req.Pinned || route.Pinned || attempt >= MaxAttempts || req.Failover == "none" {
 			return fail
 		}
 		if kind == KindOther {
 			avoid = append(avoid, route.Harness)
 		}
-		next, found := nextRoute(ctx, req, d, avoid, triedSet)
+		if req.Failover == "same-pool" {
+			// The prompt stays with the CLI and plan the router chose
+			// first.
+			req.Harnesses = without([]string{req.First.Harness}, avoid)
+		}
+		only := ""
+		if req.Failover == "same-pool" {
+			// Ask for the first pool only: a better ranked route through
+			// another pool must not hide a model the plan still has.
+			only = firstPool
+		}
+		next, found := nextRoute(ctx, req, d, avoid, only, triedSet)
+		if found && req.Failover == "same-pool" && next.EntitlementPool != firstPool {
+			found = false
+		}
 		if !found {
 			fail.NoOther = true
 			return fail
@@ -343,13 +367,13 @@ func Do(ctx context.Context, req Request, d Deps) Result {
 // A route already tried in this run (the router may not have seen the
 // failure, if the signals file could not be written) moves the run off
 // that CLI too, rather than spending an attempt on it again.
-func nextRoute(ctx context.Context, req Request, d Deps, avoid []string, tried map[string]bool) (engine.Route, bool) {
+func nextRoute(ctx context.Context, req Request, d Deps, avoid []string, pool string, tried map[string]bool) (engine.Route, bool) {
 	for range req.Harnesses {
 		allowed := without(req.Harnesses, avoid)
 		if len(allowed) == 0 || d.Next == nil {
 			return engine.Route{}, false
 		}
-		r, ok := d.Next(ctx, allowed)
+		r, ok := d.Next(ctx, allowed, pool)
 		if !ok || r.Harness == "" {
 			return engine.Route{}, false
 		}
