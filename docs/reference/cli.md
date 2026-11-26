@@ -7,10 +7,11 @@ afk --explain [options] [prompt]   show the choice and the alternatives
 afk --launch-plan --route <json>   print the launch plan for a route
 afk harness [--all] [--json]       the agent CLIs found on this machine
 afk bench sync [--json]            refresh the benchmark catalog now
+afk config get|set|edit|path|migrate   your settings (config.toml)
 afk --help
 ```
 
-A prompt that starts with the word `harness` or `bench` needs `--` before it.
+A prompt that starts with the word `harness`, `bench` or `config` needs `--` before it.
 
 ## Options
 
@@ -41,6 +42,10 @@ Options that take a value also accept `--option=value`.
 |---|---|
 | `--all`, `-a` | also list supported CLIs that are not installed |
 | `--json` | machine-readable output, schema `afk-harnesses/3` |
+
+## `afk config`
+
+See [afk config](configuration.md#afk-config): `path`, `get`, `set`, `edit` and `migrate`. Every subcommand takes `--json` except `edit`, and `set` and `migrate` take `--dry-run`. Exit status: 0 done, 1 the file doesn't validate or couldn't be written, 2 a usage error.
 
 ## `afk bench sync`
 

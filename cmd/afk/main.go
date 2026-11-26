@@ -38,6 +38,8 @@ func run(argv []string) int {
 			return harnessCmd(argv[1:], os.Stdout, os.Stderr)
 		case "bench":
 			return benchCmd(argv[1:], os.Stdout, os.Stderr)
+		case "config":
+			return configCmd(argv[1:], os.Stdout, os.Stderr)
 		}
 	}
 	return runGo(cli.Parse(argv))

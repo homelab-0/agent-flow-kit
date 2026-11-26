@@ -96,6 +96,13 @@ func WriteJSON(dest string, doc []byte) error {
 	if len(bytes.TrimSpace(doc)) == 0 || !json.Valid(doc) {
 		return errors.New("refusing to write invalid JSON to " + dest)
 	}
+	return WriteFile(dest, doc)
+}
+
+// WriteFile writes doc to dest through a uniquely named temp file beside
+// it and renames it into place, keeping dest's mode (0644 for a new file).
+// dest is either the old or the new document, never a mix.
+func WriteFile(dest string, doc []byte) error {
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return err
 	}
