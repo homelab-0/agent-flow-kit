@@ -396,6 +396,7 @@ func (t Theme) WhyLines(c Card, width int) []line {
 	if poolBasis != "" {
 		lines = append(lines, row("pool figure", sg(t.Dim, poolBasis)))
 	}
+	lines = append(lines, t.pacingRows(c, orig, row)...)
 	lines = append(lines,
 		row("cost class", sg(t.Plain, cost), sg(t.Dim, costNote)),
 		row("effort", sg(t.Plain, effort), sg(t.Dim, effortNote)),
@@ -412,6 +413,29 @@ func (t Theme) WhyLines(c Card, width int) []line {
 	out = append(out, t.bottom(w, t.Border))
 	keys := line{sg(t.Key, " ?"), sg(t.Dim, " close   "), sg(t.Key, "e"), sg(t.Dim, " edit prompt   "), sg(t.Key, "y"), sg(t.Dim, " yolo   "), sg(t.Key, "esc"), sg(t.Dim, " cancel")}
 	return append(out, fitLine(keys, w))
+}
+
+// pacingRows say where the route's plan window is heading and what that
+// did to the score: two rows, so the narrow box never cuts the projection.
+func (t Theme) pacingRows(c Card, r engine.Route, row func(string, ...seg) line) []line {
+	text := engine.PaceText(r.Pacing, c.now(), c.loc())
+	if text == "" {
+		return nil
+	}
+	// The box is narrow: the projection is at the rate so far, which the
+	// row's label already says, so drop the words that repeat it.
+	text = strings.Replace(text, " at this rate", "", 1)
+	text = strings.Replace(text, ", before it resets", ", resets", 1)
+	var effect seg
+	switch {
+	case r.PacingAdjustment != nil:
+		effect = sg(t.Plain, fmt.Sprintf("%+.1f to the score", *r.PacingAdjustment))
+	case r.Pacing.Adjustment != 0:
+		effect = sg(t.Dim, "not applied (route.pacing is off)")
+	default:
+		effect = sg(t.Dim, "no change to the score")
+	}
+	return []line{row("pacing", effect, sg(t.Dim, "   at the rate so far")), row("", sg(t.Dim, text))}
 }
 
 func alertText(a []any) string {

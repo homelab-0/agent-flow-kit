@@ -1,9 +1,10 @@
 package router
 
 import (
-	"fmt"
 	"math"
 	"time"
+
+	"github.com/jlengelbrecht/agent-flow-kit/internal/engine"
 )
 
 // Plan pacing: a flat-rate window that resets with quota left is quota
@@ -13,23 +14,9 @@ import (
 // and, with route.pacing on, leans the routing toward quota that is about
 // to go unused and away from a plan that will run out first.
 
-// Pacing is one pool's projection.
-type Pacing struct {
-	// Window is the window the reading is for: "5h" or "weekly".
-	Window string `json:"window"`
-	// ResetsAt is when that window resets.
-	ResetsAt string `json:"resets_at"`
-	// ElapsedPct is how far through the window we are.
-	ElapsedPct float64 `json:"elapsed_pct"`
-	// UnusedAtResetPct is the share of the window projected to be left
-	// over at the reset, when the pace so far won't use it all.
-	UnusedAtResetPct *float64 `json:"unused_at_reset_pct,omitempty"`
-	// RunsOutAt is when the window is projected to run dry, when that is
-	// before the reset.
-	RunsOutAt *string `json:"runs_out_at,omitempty"`
-	// Adjustment is the points route.pacing adds to routes on this pool.
-	Adjustment float64 `json:"adjustment"`
-}
+// Pacing is one pool's projection. It is engine's type, so the front end
+// reads the same document the router writes.
+type Pacing = engine.Pacing
 
 // Window lengths AFK knows.
 var windowLength = map[string]time.Duration{
@@ -37,9 +24,8 @@ var windowLength = map[string]time.Duration{
 	"weekly": 7 * 24 * time.Hour,
 }
 
-// paceMinElapsed is how far into a window a projection starts: before
-// that, one run is most of the evidence.
-const paceMinElapsed = 0.10
+// paceMinElapsed is how far into a window a projection starts.
+const paceMinElapsed = engine.PaceMinElapsed
 
 // PaceMaxAdjustment is the most pacing moves a route's score, either way.
 const PaceMaxAdjustment = 4.0
@@ -124,47 +110,7 @@ func poolWindow(p Pool) string {
 	return "5h"
 }
 
-// PaceText is the pacing line for people, in loc:
-// "weekly window resets in 9h with ~58% unused at this rate".
+// PaceText is the pacing line for people, in loc.
 func PaceText(pc *Pacing, now time.Time, loc *time.Location) string {
-	if pc == nil {
-		return ""
-	}
-	reset, err := time.Parse(time.RFC3339, pc.ResetsAt)
-	if err != nil {
-		return ""
-	}
-	in := "resets in " + span(reset.Sub(now))
-	switch {
-	case pc.UnusedAtResetPct != nil:
-		return fmt.Sprintf("%s window %s with ~%.0f%% unused at this rate", pc.Window, in, *pc.UnusedAtResetPct)
-	case pc.RunsOutAt != nil:
-		if t, err := time.Parse(time.RFC3339, *pc.RunsOutAt); err == nil {
-			when := t.In(loc).Format("15:04")
-			if t.Sub(now) > 20*time.Hour {
-				when = t.In(loc).Format("Mon 15:04")
-			}
-			return fmt.Sprintf("%s window runs out %s at this rate, before it %s", pc.Window, when, in)
-		}
-	}
-	if pc.ElapsedPct < paceMinElapsed*100 {
-		return fmt.Sprintf("%s window %s (too early to project)", pc.Window, in)
-	}
-	return fmt.Sprintf("%s window %s, on pace", pc.Window, in)
-}
-
-// span is a duration in the largest whole unit that reads well: 40m, 9h,
-// 3d 4h.
-func span(d time.Duration) string {
-	switch {
-	case d < time.Hour:
-		return fmt.Sprintf("%dm", int(math.Max(1, math.Round(d.Minutes()))))
-	case d < 48*time.Hour:
-		return fmt.Sprintf("%dh", int(math.Round(d.Hours())))
-	}
-	days := int(d.Hours()) / 24
-	if h := int(d.Hours()) % 24; h > 0 {
-		return fmt.Sprintf("%dd %dh", days, h)
-	}
-	return fmt.Sprintf("%dd", days)
+	return engine.PaceText(pc, now, loc)
 }

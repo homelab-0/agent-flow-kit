@@ -50,6 +50,10 @@ type Route struct {
 	LitellmBaseURL string   `json:"litellm_base_url"`
 	Pinned         bool     `json:"pinned"`
 	WindowTokens   *float64 `json:"window_tokens"`
+	// Pacing is the route's pool projection; PacingAdjustment is what it
+	// moved the score, nil when route.pacing is off or it moved nothing.
+	Pacing           *Pacing  `json:"pacing"`
+	PacingAdjustment *float64 `json:"pacing_adjustment"`
 }
 
 // UnmarshalJSON keeps the whole object and reads the typed fields from it.
@@ -258,6 +262,8 @@ type Pool struct {
 	// UsageWindow is the window the figure and reset are for, as the
 	// reading named it ("5h", "weekly"); "" when it didn't.
 	UsageWindow string `json:"window"`
+	// Pacing is where a measured window is heading, when projected.
+	Pacing *Pacing `json:"pacing"`
 }
 
 // Window names the window a pool's figure is for: the one the reading
