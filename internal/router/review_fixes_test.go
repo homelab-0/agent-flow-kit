@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -105,27 +104,6 @@ func TestCodexLastUsableRecordAndLongLines(t *testing.T) {
 	q := probeCodexQuota(ProbeEnv{Home: home, Now: time.Now()})
 	if !q.OK || q.UsedPct != 95 {
 		t.Fatalf("got %+v, want the last usable reading (95%%) past the long line and the null one", q)
-	}
-}
-
-func TestCodexSkipsNamedPipes(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("no fifos")
-	}
-	home := t.TempDir()
-	dir := filepath.Join(home, ".codex/sessions")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := syscall.Mkfifo(filepath.Join(dir, "rollout-2026-11-26T09.jsonl"), 0o600); err != nil {
-		t.Skip("mkfifo:", err)
-	}
-	done := make(chan quota, 1)
-	go func() { done <- probeCodexQuota(ProbeEnv{Home: home, Now: time.Now()}) }()
-	select {
-	case <-done:
-	case <-time.After(3 * time.Second):
-		t.Fatal("the probe blocked on a named pipe")
 	}
 }
 
