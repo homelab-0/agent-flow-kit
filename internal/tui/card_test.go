@@ -253,3 +253,36 @@ func TestPoolFigureComesFromOneReading(t *testing.T) {
 		t.Fatalf("no snapshot: %v %q %q", head, win, resets)
 	}
 }
+
+// The Why panel says where the route's plan window is heading and what
+// pacing did to the score, or that it was off.
+func TestWhyPanelShowsPacing(t *testing.T) {
+	c := fixtureCard(t, -1)
+	c.Now = time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)
+	c.Loc = time.UTC
+	r := c.Rows[c.Sel]
+	unused := 58.0
+	r.Pacing = &engine.Pacing{Window: "weekly", ResetsAt: "2026-11-26T21:00:00Z", ElapsedPct: 95, UnusedAtResetPct: &unused, Adjustment: 3.8}
+	c.Rows[c.Sel] = r
+	why := func() string { return strings.Join(plainLines(join(NewTheme(true).WhyLines(c, 80))), "\n") }
+	if out := why(); !strings.Contains(out, "not applied (route.pacing is off)") || !strings.Contains(out, "weekly window resets in 9h with ~58% unused") {
+		t.Fatalf("pacing off:\n%s", out)
+	}
+	adj := 3.8
+	r.PacingAdjustment = &adj
+	c.Rows[c.Sel] = r
+	if out := why(); !strings.Contains(out, "pacing         +3.8 to the score") {
+		t.Fatalf("pacing on:\n%s", out)
+	}
+	short := "2026-11-26T19:00:00Z"
+	r.Pacing = &engine.Pacing{Window: "weekly", ResetsAt: "2026-12-01T16:00:00Z", ElapsedPct: 30, RunsOutAt: &short, Adjustment: -4}
+	c.Rows[c.Sel] = r
+	if out := why(); !strings.Contains(out, "weekly window runs out 19:00, resets in 5d 4h") {
+		t.Fatalf("running out:\n%s", out)
+	}
+	r.Pacing, r.PacingAdjustment = nil, nil
+	c.Rows[c.Sel] = r
+	if out := why(); strings.Contains(out, "pacing") {
+		t.Fatalf("pacing row with no projection:\n%s", out)
+	}
+}
