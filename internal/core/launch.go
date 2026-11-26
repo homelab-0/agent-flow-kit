@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -81,6 +82,14 @@ func (c *Core) LaunchPlan(_ context.Context, r engine.Route, mode string, perm s
 	if perm != "yolo" && man.YoloIn(pass) {
 		perm, passNote = "yolo", "--pass gave "+h+"'s own skip-permissions flag, so this runs as yolo"
 	}
+	// AFK sets the mode. Any other flag of the CLI's that changes it would
+	// run after AFK's own and win, with the plan still naming the stricter
+	// mode, so --pass takes one only in a yolo run.
+	if perm != "yolo" {
+		if f := man.ModeIn(pass); f != "" {
+			return nil, &UsageError{"--pass can't take " + h + "'s " + f + ": it changes the permission mode, which afk sets with --mode (read-only, ask, edits, auto or yolo); only a yolo run takes it"}
+		}
+	}
 	// Trust is checked again for every yolo plan (a retry, or a card
 	// left open while trust was removed), against the settings now.
 	if perm == "yolo" {
@@ -106,6 +115,13 @@ func (c *Core) LaunchPlan(_ context.Context, r engine.Route, mode string, perm s
 	if err != nil {
 		return planError(err.Error())
 	}
+	// AFK's own secrets stay out of the CLI's environment (secrets.go).
+	for _, n := range c.ownSecretVars() {
+		if !slices.Contains(unset, n) {
+			unset = append(unset, n)
+		}
+	}
+	sort.Strings(unset)
 	cxout := ""
 	if mode == "print" && h == "codex" {
 		f, err := os.CreateTemp("", "afk-cli-cx.*")

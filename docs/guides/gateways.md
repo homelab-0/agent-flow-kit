@@ -39,6 +39,8 @@ The key variable must be a plain name that is not a vendor credential (`CLAUDE_*
 
 A plan is never sent through a gateway, even on its own CLI.
 
+The gateway key variables themselves are removed from the environment of every CLI AFK starts, gateway route or not, so the agent's shell commands can't read them. If you run `afk` from inside a CLI session and want gateway routes there, set `AFK_KEEP_SECRETS=1`.
+
 ## Planned: any gateway, any number of them
 
 AFK is meant to work with whichever gateway you use. The plan:
