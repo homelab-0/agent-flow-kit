@@ -29,6 +29,8 @@ const usage = `afk — run the best agent CLI on this machine for the task
   afk harness [--all] [--json]       the agent CLIs found on this machine
   afk bench sync [--json]            refresh the benchmark catalog now
   afk config get|set|edit|path|migrate   your settings (config.toml)
+  afk trust add|list|remove [dir]    where yolo may run
+  afk pools clear [pool...]          forget recorded pool failures
 
 Options:
   -p, --print            one-shot: run headless and print the answer
