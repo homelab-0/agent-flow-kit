@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -251,8 +252,23 @@ func Resolve(e Env) (Settings, error) {
 
 	// A key sent over plain http to another network can be read on the
 	// way. Said once per address; the launch still goes ahead.
-	if PlainHTTP(s.GatewayURL) {
-		s.Warnings = append(s.Warnings, Problem{File: paths.Config, Key: "gateway", Msg: "the gateway address " + hostOf(s.GatewayURL) + " is plain http on what looks like a public host, so its key travels unencrypted; use https"})
+	plainSeen := map[string]bool{}
+	warnPlain := func(key, raw string) {
+		if !PlainHTTP(raw) || plainSeen[raw] {
+			return
+		}
+		plainSeen[raw] = true
+		s.Warnings = append(s.Warnings, Problem{File: paths.Config, Key: key, Msg: "the gateway address " + hostOf(raw) + " is plain http on what looks like a public host, so its key travels unencrypted; use https"})
+	}
+	warnPlain("gateway", s.GatewayURL)
+	// A route can pick any named gateway, not only the default.
+	names := make([]string, 0, len(s.Gateways))
+	for n := range s.Gateways {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		warnPlain("gateway."+n+".url", s.Gateways[n].URL)
 	}
 
 	pick := func(env string, repoV, legacyV, cfgV *bool) bool {
