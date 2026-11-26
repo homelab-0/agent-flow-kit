@@ -264,3 +264,33 @@ func TestAnotherVendorsPlanNeedsThatCLIsLogin(t *testing.T) {
 		t.Fatalf("opencode signed in to xAI was not offered it: %+v", got)
 	}
 }
+
+// With CODEX_HOME set, the login file is $CODEX_HOME/auth.json: an
+// API-key login there keeps its sessions out of the ChatGPT plan pool.
+func TestMeteredCodexUnderCodexHome(t *testing.T) {
+	home := t.TempDir()
+	ch := filepath.Join(home, "elsewhere")
+	for i := 0; i < 40; i++ {
+		put(t, ch, fmt.Sprintf("sessions/s%d.jsonl", i), "{}", 0)
+	}
+	put(t, ch, "auth.json", `{"OPENAI_API_KEY":"sk-x"}`, 0)
+	env := map[string]string{"CODEX_HOME": ch}
+	probe := func(mode string) *Probe {
+		asked := false
+		p := ProbePools(context.Background(), DefaultCatalog(), ProbeEnv{
+			Home: home, Getenv: func(k string) string { return env[k] }, Installed: func(h string) bool { return h == "codex" },
+			CodexLoginMode: func(context.Context) string { asked = true; return mode },
+		})
+		if !asked {
+			t.Fatalf("codex login status was not asked with CODEX_HOME=%s", ch)
+		}
+		return p
+	}
+	if got := *probe("apikey").Pools["openai-plus"].UsedPct; got != 0 {
+		t.Fatalf("API-key sessions under CODEX_HOME charged to the plan: %v%%", got)
+	}
+	// Each probe asks again, so a new login is seen at once.
+	if got := *probe("chatgpt").Pools["openai-plus"].UsedPct; got != 98 {
+		t.Fatalf("a ChatGPT login under CODEX_HOME: %v%%, want 98 (40 sessions, capped)", got)
+	}
+}

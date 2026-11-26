@@ -310,6 +310,15 @@ func (t Theme) WhyLines(c Card, width int) []line {
 	if orig.PoolState != "" {
 		poolTxt += " (" + orig.PoolState + ")"
 	}
+	// How the pool figure was found, in a word (the box is narrow).
+	switch b := orig.PoolBasis(); {
+	case strings.HasPrefix(b, "estimated"):
+		poolTxt += " · estimated"
+	case strings.HasPrefix(b, "set by"):
+		poolTxt += " · failed run"
+	case b != "":
+		poolTxt += " · " + b
+	}
 	cost := orig.CostClass
 	if cost == "" {
 		cost = unknownText

@@ -189,7 +189,7 @@ Press `?` on the route card to see the working:
 | Pi | `pi` | ✓ | ✓ |
 | Devin CLI | `devin` | ✓ | planned |
 
-Discovery reports each CLI's version, how it was installed (mise, npm, bun, pnpm, Homebrew, uv, pipx, cargo or self-managed), the command that updates it, its effort levels, and whether it looks signed in. The sign-in check looks only at whether the CLI's login file exists and is not empty; AFK never opens a credential file. Where AFK can't tell, it says `unknown`.
+Discovery reports each CLI's version, how it was installed (mise, npm, bun, pnpm, Homebrew, uv, pipx, cargo or self-managed), the command that updates it, its effort levels, and whether it looks signed in. The sign-in check looks only at whether the CLI's login file exists and is larger than 4 bytes (an empty `{}` counts as signed out); AFK never opens a credential file. Where AFK can't tell, it says `unknown`.
 
 Adding a CLI means adding one entry to [`internal/harness/registry.go`](internal/harness/registry.go).
 

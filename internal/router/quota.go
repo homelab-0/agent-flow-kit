@@ -92,6 +92,20 @@ func probeCodexQuota(e ProbeEnv) quota {
 	return best
 }
 
+// codexAuthPath is Codex's login file: AFK_CODEX_AUTH_FILE, then
+// $CODEX_HOME/auth.json, then ~/.codex/auth.json, the same place Codex
+// itself (and its sessions) use. Only its existence, size and time are
+// looked at.
+func codexAuthPath(e ProbeEnv) string {
+	if p := e.getenv("AFK_CODEX_AUTH_FILE"); p != "" {
+		return p
+	}
+	if h := e.getenv("CODEX_HOME"); h != "" {
+		return filepath.Join(h, "auth.json")
+	}
+	return filepath.Join(e.Home, ".codex", "auth.json")
+}
+
 // codexSessionsDir is where Codex keeps its sessions:
 // AFK_CODEX_SESSIONS_DIR, then $CODEX_HOME/sessions, then ~/.codex/sessions.
 func codexSessionsDir(e ProbeEnv) string {

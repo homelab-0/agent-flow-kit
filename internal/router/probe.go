@@ -94,7 +94,7 @@ func ProbePools(ctx context.Context, cat *Catalog, e ProbeEnv) *Probe {
 	go func() { defer wg.Done(); codexQ = probeCodexQuota(e) }()
 	go func() {
 		defer wg.Done()
-		if e.CodexLoginMode != nil && nonEmpty(e.path("AFK_CODEX_AUTH_FILE", ".codex/auth.json")) {
+		if e.CodexLoginMode != nil && nonEmpty(codexAuthPath(e)) {
 			codexMode = e.CodexLoginMode(ctx)
 		}
 	}()
@@ -128,7 +128,7 @@ func ProbePools(ctx context.Context, cat *Catalog, e ProbeEnv) *Probe {
 	}
 
 	sig := readSignals(e.SignalsPath())
-	openaiMt := maxInt64(mtime(e.path("AFK_CODEX_AUTH_FILE", ".codex/auth.json")), mtime(e.path("AFK_OPENCODE_AUTH_FILE", ".local/share/opencode/auth.json")))
+	openaiMt := maxInt64(mtime(codexAuthPath(e)), mtime(e.path("AFK_OPENCODE_AUTH_FILE", ".local/share/opencode/auth.json")))
 	claudeMt := mtime(e.path("AFK_CLAUDE_CREDS_FILE", ".claude/.credentials.json"))
 	grokMt := mtime(e.path("AFK_GROK_AUTH_FILE", ".grok/auth.json"))
 
@@ -529,7 +529,7 @@ func accountBindings(e ProbeEnv, h map[string]HarnessState, codexMode string) ma
 	if exists(e.path("AFK_CLAUDE_CREDS_FILE", ".claude/.credentials.json")) || isDir(filepath.Join(e.Home, ".claude")) {
 		add("anthropic-max", "claude")
 	}
-	if nonEmpty(e.path("AFK_CODEX_AUTH_FILE", ".codex/auth.json")) {
+	if nonEmpty(codexAuthPath(e)) {
 		if codexMode == "apikey" {
 			add("api-metered", "codex")
 		} else {

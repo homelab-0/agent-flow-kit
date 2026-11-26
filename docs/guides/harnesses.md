@@ -46,8 +46,8 @@ On your `PATH` first, then the usual install folders (`~/.local/bin`, `~/.bun/bi
 
 | State | Means |
 |---|---|
-| `authenticated` | the CLI's own login file exists and is not empty |
-| `signed_out` | the login file is missing or empty; AFK shows the command to sign in |
+| `authenticated` | the CLI's own login file exists and is larger than 4 bytes |
+| `signed_out` | the login file is missing, or 4 bytes or less (an empty `{}` left by signing out); AFK shows the command to sign in |
 | `unknown` | AFK can't tell: the CLI has no reliable on-disk check, the file can't be checked, or the login is in the macOS Keychain |
 | `not_installed` | the CLI isn't here |
 

@@ -16,7 +16,7 @@ These hold for every route, pinned or not, and are checked again when a launch p
 
 ## AFK never opens a credential file
 
-AFK checks that each CLI's login file **exists and is not empty**, and when it last changed. It never opens one, so no token is ever read, sent, stored or printed. That includes Claude's `~/.claude/.credentials.json`, Codex's `auth.json`, and the login files of Grok, OpenCode, Pi, Devin, Gemini and Qwen. To tell whether Codex uses the ChatGPT plan or an API key, AFK runs Codex's own `codex login status` and looks only for those words.
+AFK checks that each CLI's login file **exists and is larger than 4 bytes** (bigger than the empty `{}` a CLI can leave behind when you sign out), and when it last changed. A smaller file counts as signed out. It never opens one, so no token is ever read, sent, stored or printed. That includes Claude's `~/.claude/.credentials.json`, Codex's `auth.json`, and the login files of Grok, OpenCode, Pi, Devin, Gemini and Qwen. To tell whether Codex uses the ChatGPT plan or an API key, AFK runs Codex's own `codex login status` and looks only for those words.
 
 ## What AFK reads
 
