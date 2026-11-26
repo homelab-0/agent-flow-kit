@@ -21,6 +21,9 @@ type Input struct {
 
 	// OnlyHarnesses limits the choice to these CLIs; empty allows all.
 	OnlyHarnesses []string
+	// OnlyPool limits the choice to routes served by this pool; empty
+	// allows all.
+	OnlyPool string
 
 	GatewayURL         string
 	AllowMetered       bool
@@ -518,6 +521,9 @@ func (r *Router) Select(in Input) Route {
 			continue
 		}
 		if len(only) > 0 && !only[c.Harness] {
+			continue
+		}
+		if in.OnlyPool != "" && c.EntitlementPool != in.OnlyPool {
 			continue
 		}
 		if c.RequiresGateway {
