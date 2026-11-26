@@ -78,6 +78,9 @@ type Output struct {
 	// Mode is the permission mode it ran in; ModeNote says why when it is
 	// stricter than asked.
 	Mode, ModeNote string
+	// ConfigNote says what the run did about the directory's own settings
+	// outside a trusted repository.
+	ConfigNote string
 }
 
 // ErrReported is an answer document that says the run failed.
@@ -263,6 +266,9 @@ func Do(ctx context.Context, req Request, d Deps) Result {
 		out := d.Run(ctx, route, mode)
 		if out.ModeNote != "" && d.Note != nil {
 			d.Note("afk: " + out.ModeNote)
+		}
+		if out.ConfigNote != "" && d.Note != nil {
+			d.Note("afk: " + out.ConfigNote)
 		}
 		// A later attempt never runs looser than this one did.
 		if out.Mode != "" && rank(out.Mode) < rank(mode) {

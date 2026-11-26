@@ -42,6 +42,10 @@ type Core struct {
 	// CodexLogin reports how Codex is signed in (tests; nil asks Codex's
 	// own status command when Live).
 	CodexLogin func(ctx context.Context) string
+	// NoTerminal says afk's output is not a terminal. A CLI started that
+	// way skips its own "trust this folder?" question, as a one-shot run
+	// does.
+	NoTerminal bool
 	// Headless runs a print-mode CLI (tests; nil runs it for real).
 	Headless Headless
 }

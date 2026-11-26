@@ -82,6 +82,7 @@ A `fallback-default` route also has `no_eligible_candidate`, `candidates_conside
 | `env_unset` | variables to remove |
 | `cwd` | where to start it |
 | `mode`, `mode_note` | the permission mode the CLI runs in, and why when it is stricter than the one asked for |
+| `config_note` | for a one-shot run (or one without a terminal) outside a trusted repository: what happens to the settings that directory carries |
 | `answer` | print mode only: `{"format":"json","file":null}` (the answer is on stdout) or, for Codex, `{"format":"text-file","file":"<path>"}` |
 
 A refused plan is `{"schema":"afk-launch-plan/1","ok":false,"error":"<reason>"}`. See [scripting](../guides/scripting.md#applying-a-plan) for how to apply one.

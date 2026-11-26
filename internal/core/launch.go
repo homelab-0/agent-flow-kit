@@ -102,6 +102,18 @@ func (c *Core) LaunchPlan(_ context.Context, r engine.Route, mode string, perm s
 		modeNote = passNote
 	}
 
+	// A one-shot run, or one without a terminal, never shows the CLI's own "trust this folder?"
+	// question, so the settings a directory carries (hooks, permission
+	// rules, environment, MCP servers) would load unasked. Outside a
+	// trusted repository the CLI is kept to your own settings where it
+	// has a flag for that, and the plan says so either way.
+	configNote := ""
+	if (mode == "print" || c.NoTerminal) && man.Modes.ProjectConfig == "" {
+		if flags, note := c.projectConfig(man); note != "" {
+			modeFlags, configNote = append(modeFlags, flags...), note
+		}
+	}
+
 	set, from, unset, err := c.launchEnv(r)
 	if err != nil {
 		return planError(err.Error())
@@ -137,8 +149,31 @@ func (c *Core) LaunchPlan(_ context.Context, r engine.Route, mode string, perm s
 	return &engine.LaunchPlan{
 		Schema: engine.SchemaLaunchPlan, OK: true, Argv: argv,
 		EnvSet: set, EnvFrom: from, EnvUnset: unset, Cwd: cwd, Answer: answer,
-		Mode: ran, ModeNote: modeNote,
+		Mode: ran, ModeNote: modeNote, ConfigNote: configNote,
 	}, nil
+}
+
+// projectConfig is what a one-shot run does about the settings the
+// working directory carries: nothing in a trusted repository; elsewhere
+// the CLI's flags that keep it to your own settings, or, when it has none,
+// only a note that says so.
+func (c *Core) projectConfig(man harness.Manifest) (flags []string, note string) {
+	s, err := c.LoadSettings(c.cwd())
+	if err != nil {
+		return nil, ""
+	}
+	root, ok := config.Trusted(s, c.Home, c.cwd())
+	if ok {
+		return nil, ""
+	}
+	how := "this directory isn't in a git repository you trust"
+	if root != "" {
+		how = root + " isn't trusted (afk trust add " + root + ")"
+	}
+	if len(man.Modes.UserConfig) > 0 {
+		return append([]string{}, man.Modes.UserConfig...), man.Name + " runs with your own settings only, without this directory's (hooks, permission rules, MCP servers): " + how
+	}
+	return nil, "afk can't keep " + man.Name + " from loading this directory's own settings (hooks, permission rules, MCP servers), and " + how
 }
 
 // launchEnv is the environment a route needs. A gateway route runs claude

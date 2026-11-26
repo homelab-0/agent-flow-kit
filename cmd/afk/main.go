@@ -176,6 +176,9 @@ func plainRun(eng tui.Backend, args cli.Args, ask bool) int {
 		if plan.ModeNote != "" {
 			fmt.Fprintln(os.Stderr, "afk: "+plan.ModeNote)
 		}
+		if plan.ConfigNote != "" {
+			fmt.Fprintln(os.Stderr, "afk: "+plan.ConfigNote)
+		}
 	}, func() {}, func(receipt tui.Receipt, fill func() tui.Receipt, save func(string) error) {
 		if !ask {
 			fmt.Fprintln(os.Stderr, tui.ReceiptPlain(fill()))

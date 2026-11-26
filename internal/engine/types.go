@@ -218,6 +218,9 @@ type LaunchPlan struct {
 	// when it is stricter than the one asked for.
 	Mode     string `json:"mode,omitempty"`
 	ModeNote string `json:"mode_note,omitempty"`
+	// ConfigNote says what a one-shot run outside a trusted repository
+	// does about the settings that directory carries.
+	ConfigNote string `json:"config_note,omitempty"`
 }
 
 // ParseLaunchPlan reads and checks a launch plan.

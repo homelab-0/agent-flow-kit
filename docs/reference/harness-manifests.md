@@ -36,6 +36,8 @@ auto = ["--permission-mode", "auto"]
 | `modes.read-only`, `modes.ask`, `modes.edits`, `modes.auto`, `modes.yolo` | the flags for each mode; leave a mode out when the CLI can't do it, and AFK runs the next stricter one |
 | `modes.bypass_flags` | other spellings of the yolo flag (Codex `--yolo`); given through `--pass`, they make the run yolo |
 | `modes.dir_flags` | flags that move the CLI to another directory (Codex `--cd`, `-C`); yolo refuses them in `--pass` |
+| `modes.user_config` | flags that keep the CLI to your own settings (Claude `--setting-sources user`); added to a one-shot run outside a trusted repository |
+| `modes.project_config` | `trusted` when the CLI itself loads a directory's settings only after you trusted it there (Codex), `never` when it has none; otherwise AFK assumes it may load them |
 | `modes.print.*` | the same table for one-shot (`-p`) runs, when it differs; an override changes only the entries it sets |
 
 AFK only ever runs the `auth` commands and reads their exit code or output words. It never reads the credentials a CLI writes.

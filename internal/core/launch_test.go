@@ -332,3 +332,51 @@ func TestCodexPassAliasAndDir(t *testing.T) {
 		t.Fatalf("--cd without yolo: %v", err)
 	}
 }
+
+// A one-shot run outside a trusted repository keeps the CLI to your own
+// settings where it can, and says so; in a trusted one nothing changes.
+func TestUntrustedDirectoryKeepsProjectConfigOut(t *testing.T) {
+	c, _ := testCore(t)
+	claude := engine.Route{Harness: "claude", Model: "opus", LaunchClass: "claude", CostClass: "subscription", EntitlementPool: "anthropic-max"}
+	user := []string{"--setting-sources", "user"}
+
+	p, err := c.LaunchPlan(context.Background(), claude, "print", "ask", nil, "x")
+	if err != nil || !hasRun(p.Argv, user) || !strings.Contains(p.ConfigNote, "your own settings only") {
+		t.Fatalf("untrusted print: %+v %v", p, err)
+	}
+	// The flags sit before the prompt, which follows "--".
+	if n := len(p.Argv); p.Argv[n-2] != "--" || p.Argv[n-1] != "x" {
+		t.Fatalf("prompt moved: %q", p.Argv)
+	}
+	// With a terminal the CLI asks for itself.
+	p, err = c.LaunchPlan(context.Background(), claude, "interactive", "ask", nil, "x")
+	if err != nil || hasRun(p.Argv, user) || p.ConfigNote != "" {
+		t.Fatalf("interactive: %+v %v", p, err)
+	}
+	// Without one it doesn't.
+	c.NoTerminal = true
+	p, err = c.LaunchPlan(context.Background(), claude, "interactive", "ask", nil, "x")
+	if err != nil || !hasRun(p.Argv, user) || p.ConfigNote == "" {
+		t.Fatalf("no terminal: %+v %v", p, err)
+	}
+	c.NoTerminal = false
+
+	// A CLI with no such flag gets the note alone; one that checks trust
+	// itself gets nothing.
+	oc := engine.Route{Harness: "opencode", Model: "m", LaunchClass: "opencode", CostClass: "free", EntitlementPool: "opencode-free"}
+	p, err = c.LaunchPlan(context.Background(), oc, "print", "ask", nil, "x")
+	if err != nil || !strings.Contains(p.ConfigNote, "afk can't keep opencode") {
+		t.Fatalf("opencode: %+v %v", p, err)
+	}
+	cx := engine.Route{Harness: "codex", Model: "gpt", LaunchClass: "codex", CostClass: "subscription", EntitlementPool: "openai-plus"}
+	p, err = c.LaunchPlan(context.Background(), cx, "print", "ask", nil, "x")
+	if err != nil || p.ConfigNote != "" {
+		t.Fatalf("codex: %+v %v", p, err)
+	}
+
+	trustRepo(t, c)
+	p, err = c.LaunchPlan(context.Background(), claude, "print", "ask", nil, "x")
+	if err != nil || hasRun(p.Argv, user) || p.ConfigNote != "" {
+		t.Fatalf("trusted: %+v %v", p, err)
+	}
+}
