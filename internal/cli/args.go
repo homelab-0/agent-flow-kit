@@ -22,6 +22,9 @@ type Args struct {
 	LaunchPlan bool   // --launch-plan
 	Route      string // --route (JSON, or - for stdin)
 	Mode       string // --mode for --launch-plan
+	// BadMode is a --mode value that is neither a permission mode nor a
+	// launch-plan mode.
+	BadMode string
 	// Unknown is the first option this command line does not know.
 	Unknown string
 
@@ -62,11 +65,16 @@ func Parse(argv []string) Args {
 		case "--mode":
 			// --mode is a permission mode (read-only, ask, edits, auto,
 			// yolo) or, with --launch-plan, interactive or print.
+			// The last permission flag wins, so a later --mode ask
+			// turns an earlier --yolo off.
 			switch v {
 			case "read-only", "ask", "edits", "auto", "yolo":
 				a.Flags.Perm = v
-			default:
+				a.Yolo = v == "yolo"
+			case "interactive", "print":
 				a.Mode = v
+			default:
+				a.BadMode = v
 			}
 		}
 	}
