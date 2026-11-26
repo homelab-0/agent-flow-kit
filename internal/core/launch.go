@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/jlengelbrecht/agent-flow-kit/internal/config"
 	"github.com/jlengelbrecht/agent-flow-kit/internal/engine"
 	"github.com/jlengelbrecht/agent-flow-kit/internal/harness"
 )
@@ -118,20 +119,43 @@ func (c *Core) launchEnv(r engine.Route) (set, from map[string]string, unset []s
 	if r.Harness != "claude" {
 		return nil, nil, nil, &UsageError{r.Harness + " cannot use the gateway without exposing its own plan login"}
 	}
-	// The key's variable: AFK_GATEWAY_KEY_ENV, else the default gateway's
-	// key = "env:NAME" in config.toml, else AFK_GATEWAY_KEY. Only the
-	// variable's name is in the plan; the value is copied at spawn time.
+	// The key's variable. AFK_GATEWAY_KEY_ENV is the explicit override.
+	// Otherwise a gateway's key only ever goes to that gateway's own url:
+	// the config.toml gateway whose url is the route's supplies its key =
+	// "env:NAME". A route whose url no config.toml gateway declares (a
+	// route made before the config changed, or from elsewhere) is refused
+	// rather than given another gateway's key; the address from
+	// AFK_LITELLM_BASE_URL (or an older router.json) keeps AFK_GATEWAY_KEY.
+	// Only the variable's name is in the plan; the value is copied at spawn
+	// time.
 	keyVar := c.getenv("AFK_GATEWAY_KEY_ENV")
 	if keyVar == "" {
-		if s, err := c.LoadSettings(""); err == nil && s.GatewayKey != nil {
-			if s.GatewayKey.Kind != "env" {
-				return nil, nil, nil, &UsageError{"gateway " + s.GatewayName + ": a key from " + s.GatewayKey.Kind + ": can't be used to launch yet; use key = \"env:NAME\""}
-			}
-			keyVar = s.GatewayKey.Arg
+		s, err := c.LoadSettings("")
+		if err != nil {
+			return nil, nil, nil, err
 		}
-	}
-	if keyVar == "" {
-		keyVar = "AFK_GATEWAY_KEY"
+		name, g, found := s.GatewayFor(r.LitellmBaseURL)
+		switch {
+		case found && g.Key != "":
+			ref, err := config.ParseSecretRef(g.Key)
+			if err != nil {
+				return nil, nil, nil, &UsageError{"gateway " + name + ": " + err.Error()}
+			}
+			if ref.Kind != "env" {
+				return nil, nil, nil, &UsageError{"gateway " + name + ": a key from " + ref.Kind + ": can't be used to launch yet; use key = \"env:NAME\""}
+			}
+			keyVar = ref.Arg
+		case found:
+			keyVar = "AFK_GATEWAY_KEY"
+		case len(s.Gateways) > 0 && strings.TrimRight(r.LitellmBaseURL, "/") != strings.TrimRight(c.getenv("AFK_LITELLM_BASE_URL"), "/"):
+			var urls []string
+			for _, n := range sortedNames(s.Gateways) {
+				urls = append(urls, n+" = "+s.Gateways[n].URL)
+			}
+			return nil, nil, nil, &UsageError{"the route's gateway " + redactedURL(r.LitellmBaseURL) + " is not one config.toml defines (" + strings.Join(urls, ", ") + "); route again so the gateway's own key is used"}
+		default:
+			keyVar = "AFK_GATEWAY_KEY"
+		}
 	}
 	if !gatewayKeyVarOK(keyVar) {
 		return nil, nil, nil, &UsageError{"AFK_GATEWAY_KEY_ENV must name a plain variable that is not a vendor credential (not CLAUDE_*, ANTHROPIC_*, OPENAI_*, ...)"}
@@ -167,6 +191,21 @@ func (c *Core) launchEnv(r engine.Route) (set, from map[string]string, unset []s
 	set["CLAUDE_CONFIG_DIR"] = filepath.Join(state, "gateway-claude")
 	from["ANTHROPIC_AUTH_TOKEN"] = keyVar
 	return set, from, unset, nil
+}
+
+func sortedNames(m map[string]config.Gateway) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// redactedURL is an address without any user info, for messages.
+func redactedURL(s string) string {
+	r := engine.Route{LitellmBaseURL: s}.Redacted()
+	return r.LitellmBaseURL
 }
 
 // launchArgv is the command for a route. In print mode each CLI writes

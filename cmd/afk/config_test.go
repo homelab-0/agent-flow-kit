@@ -14,6 +14,7 @@ func TestConfigCommands(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("AFK_CONFIG", "")
+	t.Setenv("AFK_GATEWAY_KEY_ENV", "")
 	t.Setenv("AFK_GATEWAY_KEY", "sk-must-never-show")
 	t.Setenv("AFK_LITELLM_BASE_URL", "http://gw.local:4000")
 	t.Chdir(t.TempDir())
@@ -67,5 +68,46 @@ func TestConfigCommands(t *testing.T) {
 	b, _ := os.ReadFile(cfg)
 	if strings.Contains(string(b), "sk-must-never-show") {
 		t.Fatal("the secret reached config.toml")
+	}
+}
+
+func TestConfigGetJSONRefusesNaN(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("AFK_CONFIG", "")
+	cfg := filepath.Join(home, ".config", "afk", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(cfg), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg, []byte("version = 1\nfuture_value = nan\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if code := configCmd([]string{"get", "--json"}, &out, &errb); code != 1 || out.Len() != 0 || !strings.Contains(errb.String(), "JSON") {
+		t.Fatalf("%d %q %q", code, out.String(), errb.String())
+	}
+}
+
+func TestBenchSyncStopsOnInvalidConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("AFK_CONFIG", "")
+	t.Setenv("AFK_BENCHMARK_FEED_DIR", t.TempDir())
+	cfg := filepath.Join(home, ".config", "afk", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(cfg), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg, []byte("version = 1\n[route]\nprefer = \"fast\"\n[bench.sources]\nmodelsdev = { enabled = false }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	code := benchCmd([]string{"sync", "--json"}, &out, &errb)
+	if code != 1 || !strings.Contains(out.String(), `"result":"error"`) || !strings.Contains(out.String(), "route.prefer") {
+		t.Fatalf("%d %s %s", code, out.String(), errb.String())
+	}
+	if _, err := os.Stat(filepath.Join(home, ".config", "afk", "benchmarks.json")); err == nil {
+		t.Fatal("the catalog was written despite the invalid config")
 	}
 }

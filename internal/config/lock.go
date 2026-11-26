@@ -160,6 +160,17 @@ func writeLocked(path string, b []byte) error {
 }
 
 func writeLockedWait(path string, b []byte, wait time.Duration) error {
+	return withLockWait(path, wait, func() error { return statefile.WriteFile(path, b) })
+}
+
+// withLock runs fn while holding path's mkdir lock, so a whole
+// read-modify-write is one step for every writer. The lock is not
+// re-entrant: fn must write with statefile.WriteFile, not writeLocked.
+func withLock(path string, fn func() error) error {
+	return withLockWait(path, 10*time.Second, fn)
+}
+
+func withLockWait(path string, wait time.Duration, fn func() error) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -168,5 +179,5 @@ func writeLockedWait(path string, b []byte, wait time.Duration) error {
 		return err
 	}
 	defer lk.Release()
-	return statefile.WriteFile(path, b)
+	return fn()
 }

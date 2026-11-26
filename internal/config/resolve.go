@@ -131,10 +131,13 @@ func readLegacyUser(path string) (legacyUser, bool) {
 
 // Settings are the effective routing settings for one run.
 type Settings struct {
-	Prefer             string
-	GatewayURL         string
-	GatewayName        string
-	GatewayKey         *SecretRef // the default gateway's key reference, if config names one
+	Prefer      string
+	GatewayURL  string
+	GatewayName string
+	GatewayKey  *SecretRef // the default gateway's key reference, if config names one
+	// Gateways are config.toml's gateways, by name, for matching a route's
+	// gateway URL to its own key.
+	Gateways           map[string]Gateway
 	AllowMetered       bool
 	PreferFree         bool
 	AllowFreeReviewers bool
@@ -201,6 +204,7 @@ func Resolve(e Env) (Settings, error) {
 			}
 		}
 		userSecurity, trusted = c.Route.SecurityModels, c.Trust.Repos
+		s.Gateways = c.Gateway
 	} else if u, ok := readLegacyUser(paths.Legacy); ok {
 		userGateway, userSecurity, trusted = u.GatewayURL, u.Security, u.TrustedRepos
 	}
@@ -293,6 +297,18 @@ func Resolve(e Env) (Settings, error) {
 func (s Settings) BenchSourceOn(name string) bool {
 	on, set := s.BenchSources[name]
 	return !set || on
+}
+
+// GatewayFor finds the config.toml gateway whose url is u (ignoring a
+// trailing slash).
+func (s Settings) GatewayFor(u string) (string, Gateway, bool) {
+	norm := func(x string) string { return strings.TrimRight(x, "/") }
+	for _, n := range sortedKeys(s.Gateways) {
+		if g := s.Gateways[n]; norm(g.URL) == norm(u) {
+			return n, g, true
+		}
+	}
+	return "", Gateway{}, false
 }
 
 // DefaultGateway is the gateway marked default = true, or the only one.

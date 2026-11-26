@@ -17,8 +17,9 @@ func SetValue(doc []byte, key, literal string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	want := strings.Split(key, ".")
 	for _, e := range entries {
-		if e.table || e.path != key {
+		if e.table || !sameComps(e.comps, want) {
 			continue
 		}
 		if e.valStart < 0 {
@@ -27,35 +28,27 @@ func SetValue(doc []byte, key, literal string) ([]byte, error) {
 		return splice(doc, e.valStart, e.valEnd, literal), nil
 	}
 	for _, e := range entries {
-		if !e.table && strings.HasPrefix(key, e.path+".") && e.inline {
+		if !e.table && e.inline && hasPrefixComps(want, e.comps) {
 			return nil, fmt.Errorf("%s is inside the inline table %s; use afk config edit", key, e.path)
 		}
-		if e.table && e.array && strings.HasPrefix(key, e.path+".") {
+		if e.table && e.array && hasPrefixComps(want, e.comps) {
 			return nil, fmt.Errorf("%s is inside the array of tables [[%s]]; use afk config edit", key, e.path)
 		}
 	}
-	table, name := "", key
-	if i := strings.LastIndex(key, "."); i >= 0 {
-		table, name = key[:i], key[i+1:]
-	}
-	line := name + " = " + literal + "\n"
-	if table == "" {
+	table, name := want[:len(want)-1], want[len(want)-1]
+	if len(table) == 0 {
 		// A top-level key goes before the first table.
 		for _, e := range entries {
 			if e.table {
-				at := lineStart(doc, e.lineEnd-1)
-				return splice(doc, at, at, line), nil
+				return insertLine(doc, lineStart(doc, e.lineEnd-1), name+" = "+literal), nil
 			}
 		}
-		return appendLine(doc, line), nil
+		return insertLine(doc, len(doc), name+" = "+literal), nil
 	}
+	// The table's own header: the new key goes after its last key.
 	end, found := -1, false
-	in := ""
 	for _, e := range entries {
-		if e.table {
-			in = e.path
-		}
-		if in == table && (e.table || strings.HasPrefix(e.path, table+".")) {
+		if sameComps(e.scope, table) && (e.table || len(e.comps) > len(table)) {
 			found = true
 			if e.lineEnd > end {
 				end = e.lineEnd
@@ -63,13 +56,41 @@ func SetValue(doc []byte, key, literal string) ([]byte, error) {
 		}
 	}
 	if found {
-		return splice(doc, end, end, line), nil
+		return insertLine(doc, end, name+" = "+literal), nil
+	}
+	// No header, but dotted keys already define the table (route.prefer =
+	// ... at the top, or work.url = ... under [gateway]): a header would
+	// redefine it, so the key goes next to them, dotted the same way.
+	var last *entry
+	for i := range entries {
+		e := &entries[i]
+		if !e.table && hasPrefixComps(e.comps, table) && hasPrefixComps(table, e.scope) || (!e.table && hasPrefixComps(e.comps, table) && len(e.scope) == 0) {
+			last = e
+		}
+	}
+	if last != nil {
+		rel := want[len(last.scope):]
+		return insertLine(doc, last.lineEnd, strings.Join(rel, ".")+" = "+literal), nil
 	}
 	out := doc
 	if len(bytes.TrimSpace(out)) > 0 {
-		out = appendLine(out, "\n")
+		out = insertLine(out, len(out), "")
 	}
-	return appendLine(out, "["+table+"]\n"+line), nil
+	return insertLine(insertLine(out, len(out), "["+strings.Join(table, ".")+"]"), -1, name+" = "+literal), nil
+}
+
+// insertLine puts one line at offset at (-1: the end), starting it on a
+// new line when the byte before isn't a newline, so it can never land in
+// a comment or run into the previous value.
+func insertLine(doc []byte, at int, line string) []byte {
+	if at < 0 || at > len(doc) {
+		at = len(doc)
+	}
+	s := line + "\n"
+	if at > 0 && doc[at-1] != '\n' {
+		s = "\n" + s
+	}
+	return splice(doc, at, at, s)
 }
 
 func splice(doc []byte, from, to int, s string) []byte {
@@ -77,14 +98,6 @@ func splice(doc []byte, from, to int, s string) []byte {
 	out = append(out, doc[:from]...)
 	out = append(out, s...)
 	return append(out, doc[to:]...)
-}
-
-func appendLine(doc []byte, s string) []byte {
-	out := append([]byte(nil), doc...)
-	if len(out) > 0 && out[len(out)-1] != '\n' {
-		out = append(out, '\n')
-	}
-	return append(out, s...)
 }
 
 func lineStart(doc []byte, off int) int {

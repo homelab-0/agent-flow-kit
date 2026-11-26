@@ -187,9 +187,7 @@ func configGet(p config.Paths, f configFlags, stdout, stderr io.Writer) int {
 			if file.Exists {
 				_ = toml.Unmarshal(file.Raw, &m)
 			}
-			out, _ := json.Marshal(map[string]any{"path": p.Config, "exists": file.Exists, "config": m})
-			fmt.Fprintln(stdout, string(out))
-			return 0
+			return printJSON(stdout, stderr, map[string]any{"path": p.Config, "exists": file.Exists, "config": m})
 		}
 		if !file.Exists {
 			fmt.Fprintf(stdout, "# %s doesn't exist yet: AFK is using its defaults", p.Config)
@@ -216,9 +214,7 @@ func configGet(p config.Paths, f configFlags, stdout, stderr io.Writer) int {
 		}
 	}
 	if f.json {
-		out, _ := json.Marshal(map[string]any{"key": key, "value": v, "source": source})
-		fmt.Fprintln(stdout, string(out))
-		return 0
+		return printJSON(stdout, stderr, map[string]any{"key": key, "value": v, "source": source})
 	}
 	switch x := v.(type) {
 	case nil:
@@ -274,8 +270,12 @@ func configEdit(p config.Paths, stdout, stderr io.Writer) error {
 		editor = "vi"
 	}
 	cur, err := os.ReadFile(p.Config)
+	base := cur // what the file held; nil when it doesn't exist yet
 	if errors.Is(err, os.ErrNotExist) {
-		cur, err = []byte(config.Template), nil
+		if _, lerr := os.Stat(p.Legacy); lerr == nil {
+			return fmt.Errorf("%s holds your current settings and stops being read once config.toml exists; run afk config migrate first", p.Legacy)
+		}
+		cur, base, err = []byte(config.Template), nil, nil
 	}
 	if err != nil {
 		return err
@@ -288,8 +288,17 @@ func configEdit(p config.Paths, stdout, stderr io.Writer) error {
 		return err
 	}
 	name := tmp.Name()
-	_, _ = tmp.Write(cur)
-	tmp.Close()
+	// A copy that didn't write in full must never reach the editor: saving
+	// it would drop the rest of your settings.
+	if _, err := tmp.Write(cur); err != nil {
+		tmp.Close()
+		os.Remove(name)
+		return fmt.Errorf("could not make the copy to edit: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(name)
+		return fmt.Errorf("could not make the copy to edit: %w", err)
+	}
 	words := strings.Fields(editor)
 	cmd := exec.Command(words[0], append(words[1:], name)...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
@@ -312,10 +321,22 @@ func configEdit(p config.Paths, stdout, stderr io.Writer) error {
 		fmt.Fprintln(stdout, "No changes.")
 		return nil
 	}
-	if err := config.WriteConfig(p.Config, edited); err != nil {
-		return err
+	if err := config.WriteConfig(p.Config, base, edited); err != nil {
+		return fmt.Errorf("%v; your edits are in %s", err, name)
 	}
 	os.Remove(name)
 	fmt.Fprintf(stdout, "Saved %s.\n", filepath.Clean(p.Config))
 	return nil
+}
+
+// printJSON writes one JSON line. A value JSON can't hold (a TOML nan or
+// inf in an unknown key) is an error, not an empty line.
+func printJSON(stdout, stderr io.Writer, v any) int {
+	b, err := json.Marshal(v)
+	if err != nil {
+		fmt.Fprintln(stderr, "afk config: can't write that as JSON:", err)
+		return 1
+	}
+	fmt.Fprintln(stdout, string(b))
+	return 0
 }

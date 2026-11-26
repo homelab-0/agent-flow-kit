@@ -32,7 +32,7 @@ For each setting, the first of these that sets it wins:
 | free reviewers | | `AFK_ROUTER_ALLOW_FREE_REVIEWERS` | `router.allow_free_reviewers` | `route.allow_free_reviewers` | `false` |
 | security models | | `AFK_SECURITY_MODELS` | `router.security_models` | `route.security_models` | none |
 | gateway | | `AFK_LITELLM_BASE_URL` | `router.litellm_base_url`, only for a [trusted](#trust) project, and only when you set no gateway | `[gateway.<name>]` | none |
-| gateway key | | `AFK_GATEWAY_KEY_ENV` names the variable | never | `gateway.<name>.key` | `$AFK_GATEWAY_KEY` |
+| gateway key | | `AFK_GATEWAY_KEY_ENV` names the variable | never | the `key` of the gateway whose `url` the route uses | `$AFK_GATEWAY_KEY` |
 | daily catalog refresh | | `AFK_SKIP_BENCHMARK_AUTOSYNC=1` | never | `bench.autosync` | on |
 
 The `router.*` keys in a project file are the older format; they keep working as before.
@@ -94,7 +94,7 @@ A model gateway; see [gateways](../guides/gateways.md). The one with `default = 
 | Key | Type | Meaning |
 |---|---|---|
 | `url` | string | required; `http` or `https`, with no user info in it |
-| `key` | string | a [secret reference](#secrets) to the gateway key; launching takes only `env:NAME` today |
+| `key` | string | a [secret reference](#secrets) to the gateway key; launching takes only `env:NAME` today. It is sent only to this gateway's own `url`: a route whose gateway address no gateway here declares is refused rather than given another gateway's key |
 | `kind` | string | `litellm`, `openrouter`, `portkey`, `agentgateway`, `envoy`, `kong`, `cloudflare`, `vercel`, `openai`, `anthropic`, `ollama`, `lmstudio`, `vllm`, `llamacpp` or `localai` (validated; not used for routing yet) |
 | `formats` | list | `openai-chat`, `openai-responses`, `anthropic-messages` (validated; not used yet) |
 | `cost` | string | `metered` or `free` (validated; not used yet) |
@@ -184,10 +184,12 @@ The older `router` block is still read as before:
 | `afk config path [--json]` | prints where config.toml, afk.lock, the state directory and an old router.json are |
 | `afk config get [key] [--json]` | a key's value and whether it came from config.toml or the default; with no key, the whole file. Secret references are shown as references |
 | `afk config set <key> <value> [--dry-run] [--json]` | sets one key and prints the diff. Lists take commas (`afk config set trust.repos ~/a,~/b`). The new file is validated before it is written; comments, key order and spacing are kept. `--dry-run` shows the diff and writes nothing |
-| `afk config edit` | opens a copy in `$VISUAL` or `$EDITOR` and saves it only if it validates |
+| `afk config edit` | opens a copy in `$VISUAL` or `$EDITOR` and saves it only if it validates and nobody changed the file meanwhile |
+
+While `router.json` holds your settings and config.toml doesn't exist yet, `set` and `edit` refuse to create config.toml (it would silently stop router.json from being read): run `afk config migrate` first.
 | `afk config migrate [--dry-run] [--json]` | writes config.toml from the older settings (below) and shows the diff; `--dry-run` writes nothing |
 
-Every write replaces the file atomically (a temporary file renamed into place) while holding a short lock, so two writers can't interleave.
+Every write replaces the file atomically (a temporary file renamed into place). The whole read, change and write happens while holding a short lock, so two `afk config set` calls never lose each other's change, and `migrate` and `edit` refuse to write over a file that changed after they read it.
 
 ## Migrating from router.json
 
@@ -201,7 +203,7 @@ While `config.toml` doesn't exist, `~/.config/afk/router.json` and the `AFK_*` v
 | `AFK_ROUTER_PREFER_FREE`, `AFK_ROUTER_ALLOW_METERED_API`, `AFK_ROUTER_ALLOW_FREE_REVIEWERS` | `route.prefer_free`, `route.allow_metered`, `route.allow_free_reviewers` |
 | `AFK_SKIP_BENCHMARK_AUTOSYNC=1` | `bench.autosync = false` |
 
-It reads no secret: the gateway key becomes a reference to the variable that holds it. A gateway address with user info in it (a credential) is not copied; the command says so. Keys config.toml already sets are kept. The old files are never deleted or changed; once config.toml exists, `router.json` is no longer read. The environment variables keep winning over the file.
+It writes what AFK uses today: when `AFK_LITELLM_BASE_URL` is set, that address goes into config.toml rather than router.json's, and the command says so. It reads no secret: the gateway key becomes a reference to the variable that holds it. A gateway address with user info in it (a credential) is not copied; the command says so. Keys config.toml already sets are kept. The old files are never deleted or changed; once config.toml exists, `router.json` is no longer read. The environment variables keep winning over the file.
 
 ## afk.lock
 

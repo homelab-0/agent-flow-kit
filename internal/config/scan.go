@@ -11,8 +11,13 @@ import (
 // where it is, so the document can be edited in place (comments, order and
 // spacing kept).
 type entry struct {
-	path  string // dotted, for a key the table's path plus the key
-	table bool   // a [table] header (or [[array]] header)
+	path string // dotted, for a key the table's path plus the key
+	// comps are the key's components: "route.prefer" quoted is one
+	// component, route.prefer bare is two. Matching uses these.
+	comps []string
+	// scope is the table header the expression sits under.
+	scope []string
+	table bool // a [table] header (or [[array]] header)
 	array bool
 	line  int
 	// For a key: where its value is, and where its line ends.
@@ -28,27 +33,24 @@ func scan(doc []byte) ([]entry, error) {
 	var p unstable.Parser
 	p.Reset(doc)
 	var out []entry
-	cur := ""
+	var cur []string
 	for p.NextExpression() {
 		n := p.Expression()
 		switch n.Kind {
 		case unstable.Table, unstable.ArrayTable:
-			keys, first := keyOf(n.Key())
-			cur = keys
-			e := entry{path: keys, table: true, array: n.Kind == unstable.ArrayTable}
+			comps, first, _ := keyComps(n.Key())
+			cur = comps
+			e := entry{path: strings.Join(comps, "."), comps: comps, scope: comps, table: true, array: n.Kind == unstable.ArrayTable}
 			if first != nil {
 				e.line = p.Shape(first.Raw).Start.Line
 				e.lineEnd = lineEndAt(doc, int(first.Raw.Offset))
 			}
 			out = append(out, e)
 		case unstable.KeyValue:
-			keys, first, last := keyOf3(n.Key())
-			full := keys
-			if cur != "" {
-				full = cur + "." + keys
-			}
+			comps, first, last := keyComps(n.Key())
+			full := append(append([]string(nil), cur...), comps...)
 			v := n.Value()
-			e := entry{path: full}
+			e := entry{path: strings.Join(full, "."), comps: full, scope: cur}
 			if first != nil {
 				e.line = p.Shape(first.Raw).Start.Line
 			}
@@ -62,12 +64,7 @@ func scan(doc []byte) ([]entry, error) {
 	return out, p.Error()
 }
 
-func keyOf(it unstable.Iterator) (string, *unstable.Node) {
-	k, f, _ := keyOf3(it)
-	return k, f
-}
-
-func keyOf3(it unstable.Iterator) (string, *unstable.Node, *unstable.Node) {
+func keyComps(it unstable.Iterator) ([]string, *unstable.Node, *unstable.Node) {
 	var parts []string
 	var first, last *unstable.Node
 	for it.Next() {
@@ -78,7 +75,26 @@ func keyOf3(it unstable.Iterator) (string, *unstable.Node, *unstable.Node) {
 		last = k
 		parts = append(parts, string(k.Data))
 	}
-	return strings.Join(parts, "."), first, last
+	return parts, first, last
+}
+
+// sameComps compares key components.
+func sameComps(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// hasPrefixComps reports whether a starts with the components of b, and
+// is longer.
+func hasPrefixComps(a, b []string) bool {
+	return len(a) > len(b) && sameComps(a[:len(b)], b)
 }
 
 // valueSpan is where a value's bytes are: from the first byte after the
@@ -134,18 +150,32 @@ func matchBracket(doc []byte, start int, open, close byte) int {
 	return len(doc) - 1
 }
 
+// skipString returns the offset of the last byte of the string that
+// starts at i. A multi-line string may end with up to two extra quotes
+// before its closing three ("""a"""" is a" then the closer), and in basic
+// strings a backslash escapes the next byte.
 func skipString(doc []byte, i int) int {
 	q := doc[i]
-	triple := i+2 < len(doc) && doc[i+1] == q && doc[i+2] == q
-	if triple {
-		end := bytes.Index(doc[i+3:], []byte{q, q, q})
-		if end < 0 {
-			return len(doc) - 1
+	basic := q == '"'
+	if i+2 < len(doc) && doc[i+1] == q && doc[i+2] == q {
+		for j := i + 3; j < len(doc); j++ {
+			if basic && doc[j] == '\\' {
+				j++
+				continue
+			}
+			if j+2 < len(doc) && doc[j] == q && doc[j+1] == q && doc[j+2] == q {
+				end := j + 2
+				// Up to two more quotes belong to the content.
+				for k := 0; k < 2 && end+1 < len(doc) && doc[end+1] == q; k++ {
+					end++
+				}
+				return end
+			}
 		}
-		return i + 3 + end + 2
+		return len(doc) - 1
 	}
 	for j := i + 1; j < len(doc); j++ {
-		if doc[j] == '\\' && q == '"' {
+		if basic && doc[j] == '\\' {
 			j++
 			continue
 		}

@@ -117,8 +117,9 @@ func (f *File) parse() error {
 		}
 		return fmt.Errorf("%s: %w", f.Path, err)
 	}
-	if c.Version == 0 {
-		// Missing: taken as this version, with a warning.
+	if _, set := f.lines["version"]; !set {
+		// Missing: taken as this version, with a warning. An explicit
+		// version = 0 is not missing, and validation refuses it.
 		f.Warnings = append(f.Warnings, Problem{File: f.Path, Line: 1, Key: "version", Msg: fmt.Sprintf("missing; taken as %d (add version = %d)", Version, Version)})
 		c.Version = Version
 	}

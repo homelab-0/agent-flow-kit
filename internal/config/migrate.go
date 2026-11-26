@@ -1,13 +1,16 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 
 	udiff "github.com/aymanbagabas/go-udiff"
+
+	"github.com/jlengelbrecht/agent-flow-kit/internal/statefile"
 )
 
 // Template starts a new config.toml.
@@ -65,22 +68,38 @@ func PlanMigration(e Env) (*Migration, error) {
 	legacy := "router.json"
 
 	var changes []Change
-	add := func(key, raw, from string) {
+	addLit := func(key, lit, from string) {
 		if have[key] {
 			m.Kept = append(m.Kept, key)
 			return
 		}
+		changes = append(changes, Change{Key: key, Value: lit, From: from})
+	}
+	add := func(key, raw, from string) {
 		lit, err := EncodeValue(key, raw)
 		if err != nil {
 			m.Skipped = append(m.Skipped, fmt.Sprintf("%s (from %s): %v", key, from, err))
 			return
 		}
-		changes = append(changes, Change{Key: key, Value: lit, From: from})
+		addLit(key, lit, from)
+	}
+	// A list from router.json is written element by element: a path may
+	// hold a comma.
+	addList := func(key string, items []string, from string) {
+		q := make([]string, len(items))
+		for i, it := range items {
+			q[i] = quote(it)
+		}
+		addLit(key, "["+strings.Join(q, ", ")+"]", from)
 	}
 
-	gw, gwFrom := u.GatewayURL, legacy+" litellm_base_url"
-	if v := e.getenv("AFK_LITELLM_BASE_URL"); v != "" && gw == "" {
-		gw, gwFrom = v, "AFK_LITELLM_BASE_URL"
+	// What AFK uses today: the environment wins over router.json, so that
+	// is what is written.
+	gw, gwFrom := e.getenv("AFK_LITELLM_BASE_URL"), "AFK_LITELLM_BASE_URL"
+	if gw == "" {
+		gw, gwFrom = u.GatewayURL, legacy+" litellm_base_url"
+	} else if u.GatewayURL != "" && u.GatewayURL != gw {
+		m.Skipped = append(m.Skipped, "router.json's litellm_base_url: AFK_LITELLM_BASE_URL is set and is what AFK uses today, so config.toml gets that address instead")
 	}
 	if gw != "" {
 		_, existing := have["gateway"]
@@ -113,10 +132,10 @@ func PlanMigration(e Env) (*Migration, error) {
 	case e.getenv("AFK_SECURITY_MODELS") != "":
 		add("route.security_models", e.getenv("AFK_SECURITY_MODELS"), "AFK_SECURITY_MODELS")
 	case len(u.Security) > 0:
-		add("route.security_models", strings.Join(u.Security, ","), legacy+" security_models")
+		addList("route.security_models", u.Security, legacy+" security_models")
 	}
 	if len(u.TrustedRepos) > 0 {
-		add("trust.repos", strings.Join(u.TrustedRepos, ","), legacy+" trusted_repos")
+		addList("trust.repos", u.TrustedRepos, legacy+" trusted_repos")
 	}
 	for _, b := range []struct{ env, key string }{
 		{"AFK_ROUTER_ALLOW_METERED_API", "route.allow_metered"},
@@ -161,15 +180,41 @@ func (m *Migration) Apply() error {
 	if m.Exists && m.Unchanged() {
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(m.Path), 0o755); err != nil {
-		return err
-	}
-	return writeLocked(m.Path, m.after)
+	return withLock(m.Path, func() error {
+		// The plan was made from what config.toml held then. If it has
+		// changed since (another afk config set), writing the plan would
+		// undo that change.
+		cur, err := os.ReadFile(m.Path)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			if m.Exists {
+				return errChanged(m.Path)
+			}
+		case err != nil:
+			return err
+		case !m.Exists || string(cur) != string(m.before):
+			return errChanged(m.Path)
+		}
+		return statefile.WriteFile(m.Path, m.after)
+	})
+}
+
+func errChanged(path string) error {
+	return fmt.Errorf("%s changed meanwhile, so nothing was written; look at it and try again", path)
+}
+
+// ErrLegacyFirst refuses to start a config.toml while router.json is the
+// file in use: once config.toml exists router.json stops being read, so its
+// settings would be dropped without a word.
+func errLegacyFirst(p Paths) error {
+	return fmt.Errorf("%s holds your current settings and stops being read once config.toml exists; run afk config migrate first", p.Legacy)
 }
 
 // SetKey sets one key in config.toml: the edited document is validated
-// before anything is written, and comments and order are kept. It returns
-// the diff; with dryRun nothing is written.
+// before anything is written, and comments and order are kept. The whole
+// read, edit and write happens under the file's lock, so two afk config
+// set calls never lose each other's change. It returns the diff; with
+// dryRun nothing is written.
 func SetKey(paths Paths, key, raw string, dryRun bool) (string, error) {
 	if strings.Contains(key, " ") || key == "" {
 		return "", fmt.Errorf("%q is not a key", key)
@@ -186,34 +231,59 @@ func SetKey(paths Paths, key, raw string, dryRun bool) (string, error) {
 			return "", fmt.Errorf("%s %v", key, err)
 		}
 	}
-	f, err := Load(paths.Config)
-	if err != nil {
-		return "", err
+	var diff string
+	edit := func(write bool) error {
+		f, err := Load(paths.Config)
+		if err != nil {
+			return err
+		}
+		doc := []byte(Template)
+		old := ""
+		if f.Exists {
+			doc, old = f.Raw, string(f.Raw)
+		} else if _, err := os.Stat(paths.Legacy); err == nil {
+			return errLegacyFirst(paths)
+		}
+		after, err := SetValue(doc, key, lit)
+		if err != nil {
+			return err
+		}
+		if _, err := Parse(paths.Config, after); err != nil {
+			return err
+		}
+		diff = udiff.Unified(paths.Config+" (now)", paths.Config+" (new)", old, string(after))
+		if !write || string(after) == old {
+			return nil
+		}
+		return statefile.WriteFile(paths.Config, after)
 	}
-	doc := []byte(Template)
-	old := ""
-	if f.Exists {
-		doc, old = f.Raw, string(f.Raw)
+	if dryRun {
+		return diff, edit(false)
 	}
-	after, err := SetValue(doc, key, lit)
-	if err != nil {
-		return "", err
-	}
-	if _, err := Parse(paths.Config, after); err != nil {
-		return "", err
-	}
-	diff := udiff.Unified(paths.Config+" (now)", paths.Config+" (new)", old, string(after))
-	if dryRun || string(after) == old {
-		return diff, nil
-	}
-	return diff, writeLocked(paths.Config, after)
+	err = withLock(paths.Config, func() error { return edit(true) })
+	return diff, err
 }
 
 // WriteConfig replaces config.toml with a document that has been
-// validated, atomically and under its lock.
-func WriteConfig(path string, doc []byte) error {
+// validated, atomically and under its lock, provided the file still holds
+// base (what the caller edited), so a change made meanwhile is not lost.
+// A nil base means the file must not exist yet.
+func WriteConfig(path string, base, doc []byte) error {
 	if _, err := Parse(path, doc); err != nil {
 		return err
 	}
-	return writeLocked(path, doc)
+	return withLock(path, func() error {
+		cur, err := os.ReadFile(path)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			if base != nil {
+				return errChanged(path)
+			}
+		case err != nil:
+			return err
+		case base == nil || string(cur) != string(base):
+			return errChanged(path)
+		}
+		return statefile.WriteFile(path, doc)
+	})
 }
