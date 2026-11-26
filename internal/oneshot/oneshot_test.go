@@ -406,3 +406,18 @@ func TestPlainTextErrorOnStdoutStillMarks(t *testing.T) {
 		t.Errorf("marks %v", f.marks)
 	}
 }
+
+func TestTheMarkComesFromTheErrorNotTheAnswer(t *testing.T) {
+	// A real overload on stderr, after an answer that mentions 401: the
+	// mark must be the overload (transient), not a sign-in failure.
+	answer := `{"type":"result","is_error":false,"result":"Return 401 Unauthorized when the token is missing."}`
+	f := &fake{
+		outputs: map[string][]Output{
+			"claude/opus": {{Stdout: []byte(answer), Stderr: []byte("API Error: 529 overloaded"), Exit: 1}},
+		},
+	}
+	Do(context.Background(), Request{First: route("claude", "opus", "anthropic-max"), Harnesses: all}, f.deps())
+	if len(f.marks) != 1 || strings.Contains(f.marks[0], "401") || !strings.Contains(f.marks[0], "529 overloaded") {
+		t.Fatalf("marks %v", f.marks)
+	}
+}

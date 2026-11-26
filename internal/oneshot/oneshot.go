@@ -302,7 +302,10 @@ func Do(ctx context.Context, req Request, d Deps) Result {
 			rc = 1
 		}
 		why := reason(out, text, ok)
-		kind := Classify(errorText(out, text, ok))
+		// Classify, and record, only the error text: the answer may talk
+		// about status codes and would set the wrong kind of mark.
+		errText := strings.TrimSpace(errorText(out, text, ok))
+		kind := Classify(errText)
 		pool := route.EntitlementPool
 		if pool == "" && attempt == 1 {
 			pool = req.FirstPool
@@ -313,10 +316,10 @@ func Do(ctx context.Context, req Request, d Deps) Result {
 			}
 			switch kind {
 			case KindModel:
-				d.Mark(kind, pool, route.Model, cut(why, 160))
+				d.Mark(kind, pool, route.Model, cut(errText, 160))
 			case KindPool:
 				if pool != "" {
-					d.Mark(kind, pool, route.Model, cut(PoolReason(why), 160))
+					d.Mark(kind, pool, route.Model, cut(PoolReason(errText), 160))
 				}
 			}
 		}
