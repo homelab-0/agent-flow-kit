@@ -19,6 +19,7 @@ import (
 	"github.com/jlengelbrecht/agent-flow-kit/internal/engine"
 	"github.com/jlengelbrecht/agent-flow-kit/internal/harness"
 	"github.com/jlengelbrecht/agent-flow-kit/internal/router"
+	"github.com/jlengelbrecht/agent-flow-kit/internal/runrec"
 )
 
 // Routable are the CLIs AFK routes to and launches, in the order the bash
@@ -136,7 +137,51 @@ func (c *Core) load(ctx context.Context, repo string) (*state, error) {
 		Home: c.Home, Getenv: c.getenv, Now: c.now(), GatewayURL: s.GatewayURL,
 		Installed: installed, Live: c.Live, CodexLoginMode: c.codexLoginMode(),
 	})
-	return &state{r: &router.Router{Catalog: cat, Probe: probe, Discovered: c.discovered()}, settings: s}, nil
+	r := &router.Router{Catalog: cat, Probe: probe, Discovered: c.discovered()}
+	if s.Learn {
+		r.Outcomes = Outcomes(runrec.Load(runrec.DirFor(c.Home, c.getenv), c.now().Add(-OutcomeMaxAge)))
+	}
+	return &state{r: r, settings: s}, nil
+}
+
+// OutcomeMaxAge is how far back ratings count: models and CLIs change.
+const OutcomeMaxAge = 180 * 24 * time.Hour
+
+// OutcomesPerRoute is how many of a route's newest ratings count.
+const OutcomesPerRoute = 30
+
+// Outcomes tallies rated run records (newest first) by CLI, model and
+// task class. Unrated runs, and runs with no task class, don't count. A
+// "wrong pick" on a route you pinned yourself says nothing about the
+// router, so it is left out.
+func Outcomes(recs []runrec.Record) map[router.OutcomeKey]router.OutcomeStats {
+	out := map[router.OutcomeKey]router.OutcomeStats{}
+	for _, rec := range recs {
+		if rec.Outcome == nil || rec.Route.TaskClass == "" || rec.Route.Harness == "" {
+			continue
+		}
+		o := *rec.Outcome
+		if o == runrec.WrongPick && rec.Route.Pinned {
+			continue
+		}
+		k := router.OutcomeKeyFor(rec.Route.Harness, rec.Route.CanonicalModel, rec.Route.Model, rec.Route.TaskClass)
+		st := out[k]
+		if st.Runs() >= OutcomesPerRoute {
+			continue
+		}
+		switch o {
+		case runrec.Solved:
+			st.Solved++
+		case runrec.Partly:
+			st.Partly++
+		case runrec.WrongPick:
+			st.Wrong++
+		default:
+			continue
+		}
+		out[k] = st
+	}
+	return out
 }
 
 // DiscoveredMaxAge is how long ~/.config/afk/discovered-models.json is
