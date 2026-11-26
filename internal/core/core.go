@@ -72,8 +72,6 @@ type Settings struct {
 	PreferFree         bool
 	AllowFreeReviewers bool
 	SecurityModels     []string
-	MemoryBuild        string
-	MemoryReview       string
 	// IgnoredRepoGateway is set when the project names a gateway that was
 	// not used because the project isn't trusted.
 	IgnoredRepoGateway bool
@@ -126,10 +124,6 @@ type projectConfig struct {
 		PreferFree         *bool    `json:"prefer_free_for_low_risk"`
 		AllowFreeReviewers *bool    `json:"allow_free_reviewers"`
 		SecurityModels     []string `json:"security_models"`
-		Hindsight          struct {
-			Build  string `json:"build_stages"`
-			Review string `json:"review_stages"`
-		} `json:"hindsight"`
 	} `json:"router"`
 }
 
@@ -144,13 +138,7 @@ func (c *Core) LoadSettings(repo string) Settings {
 		}
 	}
 	r := pc.Router
-	s := Settings{MemoryBuild: "advisory", MemoryReview: "blind"}
-	if r.Hindsight.Build != "" {
-		s.MemoryBuild = r.Hindsight.Build
-	}
-	if r.Hindsight.Review != "" {
-		s.MemoryReview = r.Hindsight.Review
-	}
+	s := Settings{}
 	pick := func(env string, cfg *bool) bool {
 		if v := c.getenv(env); v != "" {
 			return truthy(v)
@@ -246,12 +234,8 @@ func (st *state) route(task, prefer string, only []string) (router.Route, bool, 
 		return router.Route{}, false, err
 	}
 	pf := st.settings.PreferFree || prefer == "cheap" || task == "quick"
-	mem := st.settings.MemoryBuild
-	if strings.HasPrefix(stage, "review") || stage == "approve" {
-		mem = st.settings.MemoryReview
-	}
 	r := st.r.Select(router.Input{
-		Stage: stage, Risk: risk, Round: 1, Surfaces: []string{"code"}, MemoryMode: mem,
+		Stage: stage, Risk: risk, Round: 1, Surfaces: []string{"code"},
 		OnlyHarnesses: only, GatewayURL: st.settings.GatewayURL, AllowMetered: st.settings.AllowMetered,
 		PreferFree: pf, AllowFreeReviewers: st.settings.AllowFreeReviewers, SecurityModels: st.settings.SecurityModels,
 	})

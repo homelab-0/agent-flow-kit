@@ -104,7 +104,7 @@
       "requires_gateway": false,
       "benchmarks": {
         "frontier_synthesis": { "score": 99.0, "benchmark": "Frontier Long-Horizon Synthesis & Multi-System Architecture" },
-        "architecture":       { "score": 98.2, "benchmark": "Frontier Architecture & PRD/Epic Synthesis" },
+        "architecture":       { "score": 98.2, "benchmark": "Frontier Architecture & Spec Synthesis" },
         "coding_complex":     { "score": 98.5, "benchmark": "Frontier Multi-Subsystem Agentic Engineering" },
         "coding_standard":    { "score": 92.0, "benchmark": "Overprovisioned for Standard Edits (Scoped Quota)" },
         "coding_review":      { "score": 97.5, "benchmark": "Frontier Deep Adversarial Verification" },
@@ -189,7 +189,7 @@
       "requires_gateway": false,
       "benchmarks": {
         "frontier_synthesis": { "score": 97.0, "benchmark": "LMArena Agent #1 + Reasoning #3" },
-        "architecture":       { "score": 96.5, "benchmark": "LMArena Agent #1 + Reasoning (PM PRD/Epics & System Design)" },
+        "architecture":       { "score": 96.5, "benchmark": "LMArena Agent #1 + Reasoning (Specs & System Design)" },
         "coding_complex":     { "score": 97.0, "benchmark": "LMArena Agent #1 (0.200) + Task Outcome #1" },
         "coding_standard":    { "score": 92.0, "benchmark": "LMArena Agent + SWE-bench" },
         "coding_review":      { "score": 95.0, "benchmark": "LMArena Agent + Adversarial Review" },
@@ -216,7 +216,7 @@
       "window_tokens": 1000000,
       "requires_gateway": false,
       "benchmarks": {
-        "frontier_synthesis": { "score": 88.0, "benchmark": "Mid-Tier Synthesis (Prefer Opus/Fable/Carbon for PM & Arch)" },
+        "frontier_synthesis": { "score": 88.0, "benchmark": "Mid-Tier Synthesis (Prefer Opus/Fable/Carbon for Architecture)" },
         "architecture":       { "score": 90.5, "benchmark": "LMArena Agent #3 + Task Outcome #2" },
         "coding_complex":     { "score": 92.5, "benchmark": "LMArena Agent #3 (0.160) + Task Outcome #2" },
         "coding_standard":    { "score": 95.0, "benchmark": "LMArena Agent #3 (Best Speed/Throughput)" },

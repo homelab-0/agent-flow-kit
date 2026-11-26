@@ -22,7 +22,6 @@ type scenario struct {
 	SecModels          []string `json:"sec_models"`
 	GatewayURL         string   `json:"gateway_url"`
 	BuilderFamily      string   `json:"builder_family"`
-	Role               string   `json:"role"`
 	Round              int      `json:"round"`
 	Surfaces           []string `json:"surfaces"`
 	Diff               int      `json:"diff"`
@@ -71,7 +70,7 @@ func TestGoldenMatchesBashRouter(t *testing.T) {
 				surf = []string{"code"}
 			}
 			got := r.Select(Input{
-				Stage: s.Stage, Risk: s.Risk, Role: s.Role, Round: s.Round, Surfaces: surf,
+				Stage: s.Stage, Risk: s.Risk, Round: s.Round, Surfaces: surf,
 				DiffLines: s.Diff, BuilderFamily: s.BuilderFamily, OnlyHarnesses: s.Only,
 				GatewayURL: s.GatewayURL, AllowMetered: s.AllowMetered, PreferFree: s.PreferFree,
 				AllowFreeReviewers: s.AllowFreeReviewers, SecurityModels: s.SecModels, Now: time.Now(),
