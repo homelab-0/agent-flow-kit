@@ -1,0 +1,12 @@
+› fix the flaky renovate test in factory-router-tests
+╭─ Why claude / claude-fable-5-2 ──────────────────────────────────────────╮
+│   task class     coding standard  (stage build, risk low)                │
+│   benchmark      SWE-bench Verified 78.1   measured 2026-11-25           │
+│   pool factor    × n/e   78% of 5h window left (available)               │
+│   cost class     subscription   no pay-per-use spend                     │
+│   effort         medium → high   flaky test keywords                     │
+│   effective      78.10                                                   │
+│                                                                          │
+│   skipped  listed once the engine streams routing events (a later step)  │
+╰──────────────────────────────────────────────────────────────────────────╯
+ ? close   e edit prompt   y yolo   esc cancel
