@@ -233,6 +233,7 @@ installed_at = 2026-11-26T12:00:00Z
 | `AFK_LITELLM_BASE_URL` | the model gateway's base URL |
 | `AFK_GATEWAY_KEY` | the gateway's key |
 | `AFK_GATEWAY_KEY_ENV` | the name of another variable that holds the gateway key |
+| `AFK_KEEP_SECRETS` | `1`/`true`: leave the gateway key variables in the environment of the CLIs AFK starts (they are removed by default) |
 | `AFK_ROUTER_PREFER_FREE` | `1`/`true`: as `prefer_free_for_low_risk` |
 | `AFK_ROUTER_ALLOW_FREE_REVIEWERS` | `1`/`true`: as `allow_free_reviewers` |
 | `AFK_ROUTER_ALLOW_METERED_API` | `1`/`true`: as `allow_metered_api` |

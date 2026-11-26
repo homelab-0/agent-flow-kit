@@ -157,7 +157,14 @@ func TestLaunchPlansMatchBash(t *testing.T) {
 			if !reflect.DeepEqual(set, tc.Want.EnvSet) || !reflect.DeepEqual(p.EnvFrom, tc.Want.EnvFrom) {
 				t.Errorf("env\n got  %v %v\n want %v %v", set, p.EnvFrom, tc.Want.EnvSet, tc.Want.EnvFrom)
 			}
-			unset := append([]string(nil), p.EnvUnset...)
+			// AFK's own key is removed from every launch; the bash engine
+			// left it (TestOwnSecretsStayOutOfTheCLI).
+			var unset []string
+			for _, n := range p.EnvUnset {
+				if n != "AFK_GATEWAY_KEY" {
+					unset = append(unset, n)
+				}
+			}
 			sort.Strings(unset)
 			want := tc.Want.EnvUnset
 			if strings.HasSuffix(r.LaunchClass, "-gateway") {
