@@ -1,8 +1,0 @@
-abandoned incarnation: inc-2769834-04f860a3a7744cfaab5408bda77b12c8
-interposed between the judge and the re-read: YES
-afk_lock_reclaim rc=3   (0=took it, 1=live owner, 2=hard refusal, 3=observe again)
-the successor's record after the call: inc-2769717-19e4a1cb4d2840aaad8a4af46074a5ef
-successor's lock still intact        : YES
-reclamation reported                 : false
-residue                              : 0
-==> FAILS CLOSED: the second look can only cost a retry, never a wrong destruction.

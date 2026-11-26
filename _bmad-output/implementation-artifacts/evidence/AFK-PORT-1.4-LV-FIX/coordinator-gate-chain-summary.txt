@@ -1,7 +1,0 @@
-FIXGATES: starting @ bbc84b1
-FIXGATE: bash tests/lifecycle-readiness-tests.sh rc=0 273s 279 passed, 0 failed
-FIXGATE: git diff --check rc=0 0s 
-FIXGATE: bash tests/run-tests.sh rc=1 2520s 332 passed, 1 failed
-FIXGATES: chain complete
-
-[exited with code 0]

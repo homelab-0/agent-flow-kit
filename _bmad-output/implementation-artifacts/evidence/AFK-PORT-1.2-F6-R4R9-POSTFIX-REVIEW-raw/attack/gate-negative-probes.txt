@@ -1,9 +1,0 @@
-Six negative probes against a scratch copy of tests/run-tests.sh section 0.
-
-BASELINE (real PATH):                                13 passed, 0 failed  (nix 0.11.0, 12/12 scripts clean)
-P1 no shellcheck, no nix:                             0 passed, 0 failed, 12 skipped + loud banner
-P2 nix refusing the experimental feature:             0 passed, 0 failed, 12 skipped + loud banner
-P3 identifies itself, exits 1 with no findings:       1 passed, 12 failed ("it did not run")
-P4 (reviewer) exits 0 but prints findings:            1 passed, 12 failed ("exit 0 but the checker still reported")
-P5 (reviewer) crashes (exit 2) on every file:         1 passed, 12 failed ("checker exited 2")
-P6 (reviewer) impostor, exits 0 on --version:         0 passed, 0 failed, 12 skipped (not accepted)

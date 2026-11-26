@@ -1,7 +1,7 @@
 // Package statefile reads and writes AFK's small state files (pool
-// signals, the benchmark catalog) the way the bash engine does, so the two
-// can share them while both exist: a mkdir lock around a read-modify-write,
-// and an atomic rename into place.
+// signals, the benchmark catalog): a mkdir lock around a read-modify-write,
+// and an atomic rename into place. The lock is the one the old bash engine
+// took, so an older install sharing the files still respects it.
 package statefile
 
 import (

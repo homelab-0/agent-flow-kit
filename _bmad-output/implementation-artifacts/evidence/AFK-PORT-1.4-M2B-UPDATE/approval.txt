@@ -1,3 +1,0 @@
-plan_identity: sha256:c61f650b8a4086df4f75a1c486fa12c3436b7e12be56a50109ffea106a1f36ec
-approval_actor: coordinator (delegated by Josh M2 go, 2026-08-27)
-plan_review: three mutations target MANAGED_COPY_TREE, MANAGED_SECTION, and MANAGED_COPY_FILE content; MACHINE_LOCAL subscriptions.yaml is PRESERVE; no mutation targets the canonical checkout's untracked AFK-PORT-1.3-COORDINATOR-HANDOFF.md

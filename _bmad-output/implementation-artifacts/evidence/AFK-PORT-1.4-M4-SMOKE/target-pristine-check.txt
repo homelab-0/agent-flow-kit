@@ -1,4 +1,0 @@
-== target pristine check (2026-08-29T19:12:37Z) ==
-b89c5cd6f5a5f57816c13b67922523d03e47bbad
-* master
-/home/devbox/repos/jlengelbrecht/afk-smoke-target  b89c5cd [master]

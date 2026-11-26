@@ -1,1 +1,0 @@
-{"timestamp":"2026-09-21T09:00:00.000Z","sessionId":"sess-worker-review","isSidechain":false,"agentId":null,"requestId":"req-b1","message":{"id":"msg-b1","model":"claude-sonnet-5","usage":{"input_tokens":1000,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":50}}}

@@ -1,8 +1,8 @@
 // Package router picks the agent CLI, model and effort for a task: the
 // benchmark score for the kind of work, how much is left in each
 // subscription pool, and cost, under fixed rules about which logins may be
-// used where. It is the Go port of the bash engine's router
-// (lib/afk-smart-router.sh and lib/afk-cli.sh), and gives the same picks.
+// used where. It began as a port of the bash engine's router and was
+// checked against it (testdata/golden.json).
 package router
 
 import (
