@@ -40,6 +40,8 @@ type Core struct {
 	Installed func(string) bool
 	// Environ is the environment a launch starts from (os.Environ).
 	Environ func() []string
+	// Headless runs a print-mode CLI (tests; nil runs it for real).
+	Headless Headless
 }
 
 // New is the engine for this machine.
@@ -260,9 +262,28 @@ type NoRouteError struct{ Msg string }
 
 func (e *NoRouteError) Error() string { return e.Msg }
 
-// Explain decides the route for a prompt and, unless a CLI is pinned, the
-// best route on every installed CLI.
-func (c *Core) Explain(ctx context.Context, f engine.RouteFlags, prompt string) (*engine.Explain, error) {
+// decision is a routed request: the route chosen and what it was chosen
+// from, so the alternatives (Explain) or the next route (Print) can be
+// asked for the same way.
+type decision struct {
+	st        *state
+	repo      string
+	task      string
+	prefer    string
+	guessed   bool
+	installed []string
+	// pinH and pinM are the CLI and model after --model was resolved.
+	pinH, pinM string
+	// list is the CLIs the route may use.
+	list   []string
+	effort string
+	// choice is the route: a router.Route, or the pinned route's map.
+	choice any
+}
+
+// decide routes a prompt: checks the flags, finds the installed CLIs and
+// asks the router.
+func (c *Core) decide(ctx context.Context, f engine.RouteFlags, prompt string) (*decision, error) {
 	prefer := f.Prefer
 	if prefer == "" {
 		prefer = "balanced"
@@ -317,34 +338,45 @@ func (c *Core) Explain(ctx context.Context, f engine.RouteFlags, prompt string) 
 			return nil, &UsageError{fmt.Sprintf("%s is served by %s; choose one with --harness", pinM, strings.Join(hs, " and "))}
 		}
 	}
-
-	var choice any
+	d := &decision{
+		st: st, repo: repo, task: task, prefer: prefer, guessed: guessed, installed: installed,
+		pinH: pinH, pinM: pinM, list: installed, effort: f.Effort,
+	}
+	if pinH != "" {
+		d.list = []string{pinH}
+	}
 	if pinH != "" && pinM != "" {
-		choice = map[string]any{
+		d.choice = map[string]any{
 			"harness": pinH, "model": pinM, "effort": nilIfEmpty(f.Effort), "entitlement_pool": nil,
 			"reason": "pinned by --harness and --model", "pinned": true,
 		}
-	} else {
-		list := installed
-		if pinH != "" {
-			list = []string{pinH}
-		}
-		r, ok, err := st.route(task, prefer, list)
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			return nil, &NoRouteError{"the router found no usable model for this task on " + strings.Join(list, ",")}
-		}
-		if f.Effort != "" {
-			r.Effort = f.Effort
-		}
-		choice = r
+		return d, nil
+	}
+	r, ok, err := st.route(task, prefer, d.list)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, &NoRouteError{"the router found no usable model for this task on " + strings.Join(d.list, ",")}
+	}
+	if f.Effort != "" {
+		r.Effort = f.Effort
+	}
+	d.choice = r
+	return d, nil
+}
+
+// Explain decides the route for a prompt and, unless a CLI is pinned, the
+// best route on every installed CLI.
+func (c *Core) Explain(ctx context.Context, f engine.RouteFlags, prompt string) (*engine.Explain, error) {
+	d, err := c.decide(ctx, f, prompt)
+	if err != nil {
+		return nil, err
 	}
 	alts := []router.Route{}
-	if pinH == "" {
-		for _, h := range installed {
-			r, ok, err := st.route(task, prefer, []string{h})
+	if d.pinH == "" {
+		for _, h := range d.installed {
+			r, ok, err := d.st.route(d.task, d.prefer, []string{h})
 			if err != nil || !ok {
 				continue
 			}
@@ -356,8 +388,8 @@ func (c *Core) Explain(ctx context.Context, f engine.RouteFlags, prompt string) 
 		sortByScore(alts)
 	}
 	doc := map[string]any{
-		"schema": engine.SchemaExplain, "task": task, "task_guessed": guessed, "prefer": prefer,
-		"choice": choice, "by_harness": alts,
+		"schema": engine.SchemaExplain, "task": d.task, "task_guessed": d.guessed, "prefer": d.prefer,
+		"choice": d.choice, "by_harness": alts,
 	}
 	b, err := json.Marshal(doc)
 	if err != nil {

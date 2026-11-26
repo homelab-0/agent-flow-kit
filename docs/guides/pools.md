@@ -47,7 +47,7 @@ When a CLI fails in a way that says something about its pool, the failure is rec
 
 A model that a provider refuses ("not found", "no access") is set aside on its own for an hour, without affecting the rest of its pool.
 
-Signals are written by one-shot runs (`afk -p`) today. A truncated or hand-edited signals file is ignored rather than breaking routing.
+Signals are written by one-shot runs (`afk -p`) today, under a short lock so runs that fail at the same time don't lose each other's marks. A truncated or hand-edited signals file is ignored rather than breaking routing.
 
 ## Seeing it
 

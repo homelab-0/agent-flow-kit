@@ -43,7 +43,7 @@ cd agent-flow-kit
 CGO_ENABLED=0 go build -o ~/.local/bin/afk ./cmd/afk
 ```
 
-That's all the route card, `--explain` and `afk harness` need: routing, pool usage and launch plans run in the Go binary. Only `-p` (one-shot answers with failover) still calls the bash engine in this repository while it is being ported; for it, set `AFK_ENGINE="$PWD/bin/agent-flow-kit"` (it needs `bash` 4+, `jq` and `curl`).
+That's all AFK needs: routing, pool usage, launch plans, one-shot answers (`-p`) and the benchmark sync all run in the Go binary, with no `bash`, `jq` or `yq`.
 
 ### Packaged (planned)
 
@@ -135,6 +135,7 @@ AFK is also where you manage your agent CLIs. These full-screen tabs are from th
 ```
 afk [options] [prompt]
 afk harness [--all] [--json]
+afk bench sync [--json]
 ```
 
 | Option | Meaning |
@@ -202,7 +203,7 @@ Configuration is moving into AFK itself (`afk config`, `afk gateway`, `afk mcp`,
 | `AFK_LITELLM_BASE_URL` | address of a LiteLLM (or other Anthropic-compatible) gateway |
 | `AFK_GATEWAY_KEY` / `AFK_GATEWAY_KEY_ENV` | the gateway key, or the name of the variable that holds it |
 | `AFK_HARNESS_BIN_DIR` | look for CLIs only in this directory |
-| `AFK_ENGINE` | path to the bash engine, for `-p` until it is ported |
+| `AFK_SKIP_BENCHMARK_AUTOSYNC=1` | don't refresh the benchmark catalog in the background |
 | `AFK_BACKEND=bash` | run everything on the bash engine, as before the Go engine |
 | `NO_COLOR`, `AFK_MOTION=off` | no colour; no animation |
 
@@ -219,7 +220,7 @@ AFK is becoming a standalone tool. Work is tracked in pull requests against `mas
 - [x] Route card, launch and receipts in Go
 - [x] Harness discovery in Go (`afk harness`)
 - [x] Routing engine in Go: route selection, pool usage and launch plans
-- [ ] `-p` one-shot answers with failover, and the benchmark sync, in Go (then no bash, `jq` or `yq` at all)
+- [x] `-p` one-shot answers with failover, and the benchmark sync (`afk bench sync`), in Go: no bash, `jq` or `yq` on the default path
 - [ ] `afk config`: one config file, managed from the CLI
 - [ ] AI gateways: LiteLLM, OpenRouter and any OpenAI- or Anthropic-compatible endpoint, with keys held as references (env var, OS keychain, 1Password)
 - [ ] MCP servers and skills: define them once in AFK and sync them into every installed CLI's own config
@@ -238,7 +239,9 @@ cmd/afk/            the afk binary
 internal/harness/   agent CLI registry and discovery
 internal/tui/       route card, why panel, receipts (Bubble Tea)
 internal/router/    route selection, benchmark catalog, pool probes
-internal/core/      the Go engine: explain, launch plans, pools
+internal/core/      the Go engine: explain, launch plans, pools, -p
+internal/oneshot/   -p: reading the answer, failover
+internal/bench/     the benchmark sync
 internal/engine/    route and plan types; client for the bash engine (going away)
 internal/launch/    foreground launch of the chosen CLI
 internal/runrec/    run records

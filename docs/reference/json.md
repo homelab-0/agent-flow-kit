@@ -10,6 +10,9 @@ Every machine-readable output carries a `schema` field with a name and a version
 | `afk-router-pools/3` | pool usage (used by the receipt) |
 | `afk-run/1` | run records |
 | `afk-benchmark-catalog/3` | the [benchmark catalog](benchmark-catalog.md) |
+| `afk-benchmark-sync/3` | `afk bench sync --json` |
+
+The one exception is `afk -p --json`, whose one line keeps the shape it has always had, without a `schema` field; see [below](#one-shot-answer-afk--p---json).
 
 Fields AFK can't know are `null`, never zero.
 
@@ -90,6 +93,54 @@ Each entry: `name`, `display`, `vendor`, `installed`, `healthy`, `problem`, `bin
 ## Pools (`afk-router-pools/3`)
 
 `harnesses` (installed state per CLI, plus `litellm_gateway` with `online` and `models`), `auth_alerts`, `unavailable_models` (models set aside, with reason and time) and `pools`. Each pool: `pool_id`, `provider`, `pool_tier`, `cost_class`, `state`, `capacity_5h`, `remaining_units_5h`, `used_pct`, `headroom_pct`, `quota_source` (`anthropic_oauth_api`, `codex_rate_limits`, `local_5h_activity`, `gateway_probe`, `runtime_signal:<kind>` or `unauthenticated`), and when known `weekly_used_pct`, `five_hour_used_pct`, `fable_weekly_used_pct`, `resets_at`, `degraded_kind`, `degraded_reason`.
+
+## One-shot answer (`afk -p --json`)
+
+```json
+{"ok":true,"harness":"codex","model":"gpt-6.1-sol","effort":"medium","attempts":2,"output":"..."}
+{"ok":false,"tried":"claude/sonnet, codex/gpt-6.1-sol","exit":1,"error":"..."}
+```
+
+| Field | Meaning |
+|---|---|
+| `ok` | whether an answer was printed |
+| `harness`, `model`, `effort` | the route that answered; `effort` is `null` for the CLI's default |
+| `attempts` | how many routes were tried, at most 3 |
+| `output` | the answer text |
+| `tried` | every route tried, as `harness/model`, comma-separated in order |
+| `exit` | the last CLI's exit status (1 when it exited 0 but its JSON reported an error, 127 when it could not be started) |
+| `error` | the last failure's text, at most 600 bytes |
+
+## Benchmark sync receipt (`afk-benchmark-sync/3`)
+
+```json
+{
+  "schema": "afk-benchmark-sync/3",
+  "result": "synced",
+  "catalog_path": "/home/me/.config/afk/benchmarks.json",
+  "synced_at": "2026-11-26T12:00:00Z",
+  "candidates_count": 11,
+  "live_scores": 23,
+  "unmatched": ["opencode-grok-native"],
+  "feeds": {
+    "lmarena_agent": "live_synced (2026-11-11)",
+    "lmarena_webdev": "live_synced (2026-11-11)",
+    "lmarena_text": "offline",
+    "swe_bench_official": "not_scored",
+    "models_dev": "live_synced",
+    "artificial_analysis": "not_used"
+  }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `result` | `synced` (at least one leaderboard read), `feeds_unavailable` (none reachable) or `error` (then only `reason`, `catalog_path` and possibly `synced_at` are given) |
+| `candidates_count`, `live_scores` | candidates in the catalog now, and how many of their scores are measured |
+| `unmatched` | general candidates the agent board did not list under their `arena_match` name |
+| `feeds` | each feed: `live_synced` (with the board's date), `offline`, or `not_scored`/`not_used` for feeds AFK does not read. Artificial Analysis needs an API key, and AFK never sends one |
+
+The catalog it writes also carries the same figures under `sync_receipt`, plus `estimated_scores` and `capped_scores`.
 
 ## Run record (`afk-run/1`)
 

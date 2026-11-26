@@ -1,9 +1,10 @@
 // afk is AFK's command: it shows the route card for a task, lets the user
 // change the pick, starts the chosen CLI as a foreground child, and prints
-// a receipt when the CLI exits. Routing and launch plans come from the Go
-// engine (internal/core). Only -p still runs the bash engine
-// (agent-flow-kit agent), until its failover is ported; AFK_BACKEND=bash
-// sends everything there, the way afk worked before.
+// a receipt when the CLI exits. Routing, launch plans, one-shot answers
+// (-p) and the benchmark sync all run in Go (internal/core,
+// internal/oneshot, internal/bench); AFK_BACKEND=bash still sends
+// everything to the bash engine (agent-flow-kit agent), the way afk worked
+// before.
 package main
 
 import (
@@ -40,6 +41,7 @@ Terminal front end (this afk):
 
 Commands:
   afk harness [--all] [--json]   the agent CLIs found on this machine
+  afk bench sync [--json]        refresh the benchmark catalog now
 `
 
 func main() { os.Exit(run(os.Args[1:])) }
@@ -51,6 +53,8 @@ func run(argv []string) int {
 		switch argv[0] {
 		case "harness", "harnesses":
 			return harnessCmd(argv[1:], os.Stdout, os.Stderr)
+		case "bench":
+			return benchCmd(argv[1:], os.Stdout, os.Stderr)
 		}
 	}
 	args := cli.Parse(argv)
