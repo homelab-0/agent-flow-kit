@@ -80,6 +80,12 @@ func (r Route) MarshalJSON() ([]byte, error) {
 
 // WithEffort returns a copy of the route with another effort.
 func (r Route) WithEffort(effort string) Route {
+	r.Effort = effort
+	if r.Raw == nil {
+		// A route built in code has only its typed fields; MarshalJSON
+		// writes those.
+		return r
+	}
 	raw := make(map[string]any, len(r.Raw)+1)
 	for k, v := range r.Raw {
 		raw[k] = v
@@ -90,7 +96,6 @@ func (r Route) WithEffort(effort string) Route {
 		raw["effort"] = effort
 	}
 	r.Raw = raw
-	r.Effort = effort
 	return r
 }
 
@@ -101,6 +106,10 @@ func (r Route) Redacted() Route {
 		return r
 	}
 	clean := redactURL(r.LitellmBaseURL)
+	if r.Raw == nil {
+		r.LitellmBaseURL = clean
+		return r
+	}
 	raw := make(map[string]any, len(r.Raw))
 	for k, v := range r.Raw {
 		raw[k] = v

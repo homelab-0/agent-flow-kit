@@ -32,8 +32,11 @@ const EngineName = "agent-flow-kit"
 // binary (as invoked, then with symlinks resolved), then PATH.
 func Locate() (string, error) {
 	if p := os.Getenv("AFK_ENGINE"); p != "" {
-		if isExec(p) {
-			return p, nil
+		// Return the path that was checked: a bare name would send
+		// exec to PATH, which may find another program.
+		abs, err := filepath.Abs(p)
+		if err == nil && isExec(abs) {
+			return abs, nil
 		}
 		return "", fmt.Errorf("AFK_ENGINE=%s is not an executable file", p)
 	}
@@ -100,7 +103,13 @@ func (e *TimeoutError) Error() string {
 // (a grandchild holding them) before the call returns anyway.
 const waitDelay = 2 * time.Second
 
+// CallTimeout is the longest any engine call may run, whatever the caller
+// asked for. A shorter deadline from the caller still applies.
+var CallTimeout = 2 * time.Minute
+
 func (e *Engine) run(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, CallTimeout)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, e.Path, args...)
 	cmd.Env = e.Env
 	var out, errb bytes.Buffer
@@ -169,7 +178,7 @@ func (e *Engine) Explain(ctx context.Context, f RouteFlags, prompt string) (*Exp
 // on stdin (--route -), never on the command line, where any process can
 // read it.
 func LaunchArgs(route Route, mode string, yolo bool, pass []string, prompt string) (args []string, stdin []byte, err error) {
-	rj, err := json.Marshal(route.Raw)
+	rj, err := json.Marshal(route)
 	if err != nil {
 		return nil, nil, err
 	}

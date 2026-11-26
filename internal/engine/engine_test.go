@@ -186,3 +186,52 @@ esac
 		t.Fatalf("a hung engine and its children are stopped: %v after %v", err, time.Since(start))
 	}
 }
+
+func TestTypedOnlyRoutes(t *testing.T) {
+	r := Route{Harness: "claude", Model: "m", LitellmBaseURL: "http://u:pw@gw/v1"}
+	for name, got := range map[string]Route{"effort": r.WithEffort("high"), "redacted": r.Redacted(), "both": r.Redacted().WithEffort("low")} {
+		out, err := json.Marshal(got)
+		if err != nil || !strings.Contains(string(out), `"harness":"claude"`) || !strings.Contains(string(out), `"model":"m"`) {
+			t.Errorf("%s: a route built in code keeps its identity: %s %v", name, out, err)
+		}
+		if name != "effort" && strings.Contains(string(out), "pw") {
+			t.Errorf("%s: user info stays out: %s", name, out)
+		}
+	}
+	if e := r.WithEffort("high"); e.Effort != "high" || e.Raw != nil {
+		t.Errorf("WithEffort on a typed route: %+v", e)
+	}
+	_, stdin, err := LaunchArgs(r, "interactive", false, nil, "hi")
+	if err != nil || string(stdin) == "null" || !strings.Contains(string(stdin), `"harness":"claude"`) {
+		t.Errorf("a typed route goes to the engine whole, not as null: %s %v", stdin, err)
+	}
+}
+
+func TestLocateRelativeOverride(t *testing.T) {
+	dir := t.TempDir()
+	stub(t, dir, "my-engine", "exit 0\n")
+	wd, _ := os.Getwd()
+	t.Cleanup(func() { os.Chdir(wd) })
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AFK_ENGINE", "my-engine")
+	p, err := Locate()
+	if err != nil || p != filepath.Join(dir, "my-engine") {
+		t.Errorf("a relative AFK_ENGINE comes back as the absolute path it checked: %q %v", p, err)
+	}
+}
+
+func TestCallTimeoutCeiling(t *testing.T) {
+	dir := t.TempDir()
+	e := &Engine{Path: stub(t, dir, "eng", "sleep 30\n")}
+	old := CallTimeout
+	CallTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { CallTimeout = old })
+	start := time.Now()
+	_, err := e.Explain(context.Background(), RouteFlags{}, "x")
+	var te *TimeoutError
+	if !errors.As(err, &te) || time.Since(start) > 5*time.Second {
+		t.Fatalf("a call with no deadline still stops: %v after %v", err, time.Since(start))
+	}
+}
