@@ -285,14 +285,30 @@ func planRemove(o hops, a harness.Adapter, in harness.Info) (*plan, error) {
 	}
 	e := lockEntry(lock, a.Name)
 	if e == nil {
-		how := in.InstallMethod
-		if how == "" {
-			how = "however it was installed"
-		}
-		return nil, fmt.Errorf("AFK didn't install %s, so it won't remove it; remove it with %s", a.Name, how)
+		return nil, fmt.Errorf("AFK didn't install %s, so it won't remove it; %s", a.Name, removeHint(in))
 	}
 	return &plan{Verb: "remove", Harness: a.Name, Command: []string{"npm", "uninstall", "-g", a.NPMPackage},
 		Version: e.Version, Source: e.Source, drop: true}, nil
+}
+
+// removeHint says how to remove a CLI that AFK did not install.
+func removeHint(in harness.Info) string {
+	cmd := map[string]string{
+		"npm": "npm uninstall -g ", "bun": "bun remove -g ", "pnpm": "pnpm remove -g ",
+		"mise": "mise uninstall ", "homebrew": "brew uninstall ", "uv": "uv tool uninstall ",
+		"pipx": "pipx uninstall ", "cargo": "cargo uninstall ",
+	}[in.InstallMethod]
+	where := in.ResolvedPath
+	if where == "" {
+		where = in.Binary
+	}
+	switch {
+	case cmd != "" && in.Package != "":
+		return "it was installed with " + in.InstallMethod + ", so remove it with: " + cmd + in.Package
+	case in.InstallMethod != "" && in.InstallMethod != "self-managed":
+		return "it was installed with " + in.InstallMethod + " (" + where + "); remove it with " + in.InstallMethod
+	}
+	return "it manages its own install (" + where + "); remove it with the vendor's uninstall steps or by deleting that file"
 }
 
 func lockEntry(l *config.Lock, name string) *config.Install {
@@ -306,25 +322,32 @@ func lockEntry(l *config.Lock, name string) *config.Install {
 
 // carryOut shows the plan, asks once, runs it and records it.
 func carryOut(ctx context.Context, o hops, p *plan, f hflags, stdout, stderr io.Writer) int {
-	show := func() {
-		fmt.Fprintf(stdout, "afk harness %s %s will run:\n  %s\n", p.Verb, p.Harness, strings.Join(p.Command, " "))
+	show := func(w io.Writer) {
+		fmt.Fprintf(w, "afk harness %s %s will run:\n  %s\n", p.Verb, p.Harness, strings.Join(p.Command, " "))
 		for _, s := range p.Scripts {
-			fmt.Fprintf(stdout, "  the package runs this on install: %s\n", s)
+			fmt.Fprintf(w, "  the package runs this on install: %s\n", s)
 		}
 		for _, n := range p.Notes {
-			fmt.Fprintf(stdout, "  (%s)\n", n)
+			fmt.Fprintf(w, "  (%s)\n", n)
 		}
 	}
 	if f.dryRun {
 		if f.json {
 			return printHJSON(stdout, stderr, map[string]any{"plan": p, "dry_run": true})
 		}
-		show()
+		show(stdout)
 		fmt.Fprintln(stdout, "(dry run: nothing was run)")
 		return 0
 	}
-	if !f.json {
-		show()
+	// With --json, stdout holds only the JSON, so the plan shown before
+	// asking goes to stderr: nobody is asked to agree to a command they
+	// haven't seen.
+	msgs := stdout
+	if f.json {
+		msgs = stderr
+	}
+	if !f.json || !f.yes {
+		show(msgs)
 	}
 	if !f.yes {
 		if !o.isTTY {
@@ -332,7 +355,7 @@ func carryOut(ctx context.Context, o hops, p *plan, f hflags, stdout, stderr io.
 			return 2
 		}
 		if !o.confirm("Go ahead?") {
-			fmt.Fprintln(stdout, "Nothing was changed.")
+			fmt.Fprintln(msgs, "Nothing was changed.")
 			return 1
 		}
 	}
@@ -488,7 +511,15 @@ func doctor(o hops, f hflags, stdout, stderr io.Writer) int {
 		rows = []doctorRow{}
 	}
 	if f.json {
-		return printHJSON(stdout, stderr, map[string]any{"harnesses": rows})
+		if code := printHJSON(stdout, stderr, map[string]any{"harnesses": rows}); code != 0 {
+			return code
+		}
+		for _, r := range rows {
+			if len(r.Problems) > 0 {
+				return 1
+			}
+		}
+		return 0
 	}
 	if len(rows) == 0 {
 		fmt.Fprintln(stdout, "None of the supported CLIs is installed.")

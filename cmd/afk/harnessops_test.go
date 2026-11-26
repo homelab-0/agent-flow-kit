@@ -99,6 +99,12 @@ func TestHarnessAddPinsAndRecords(t *testing.T) {
 	if code, _, _ := hrun(t, o, "add", "gemini"); code != 1 || installed(f) {
 		t.Fatal("installed without a yes")
 	}
+	// --json and asked: the plan goes to stderr before the question,
+	// and stdout stays JSON-only.
+	if code, out, errs := hrun(t, o, "add", "gemini", "--json"); code != 1 || installed(f) || out != "" ||
+		!strings.Contains(errs, "npm install -g @google/gemini-cli@0.71.1") || !strings.Contains(errs, "postinstall: node install.cjs") {
+		t.Fatalf("--json ask: %d %q %q", code, out, errs)
+	}
 	// No terminal and no -y: refused.
 	o.isTTY = false
 	if code, _, errs := hrun(t, o, "add", "gemini"); code != 2 || !strings.Contains(errs, "-y") || installed(f) {
@@ -140,7 +146,7 @@ func TestHarnessUpdateAndRemove(t *testing.T) {
 	if code, out, errs := hrun(t, o, "update", "claude", "-y"); code != 0 || !strings.HasSuffix(strings.Join(f.ran[len(f.ran)-1], " "), "claude update") {
 		t.Fatalf("update: %d %s %s %v", code, out, errs, f.ran)
 	}
-	if code, _, errs := hrun(t, o, "remove", "claude", "-y"); code != 1 || !strings.Contains(errs, "AFK didn't install claude") {
+	if code, _, errs := hrun(t, o, "remove", "claude", "-y"); code != 1 || !strings.Contains(errs, "AFK didn't install claude") || !strings.Contains(errs, "remove it with") {
 		t.Fatalf("remove: %d %s", code, errs)
 	}
 	// Recorded in afk.lock: updated with npm, pinned, and removable.
@@ -199,10 +205,26 @@ func TestHarnessDoctor(t *testing.T) {
 	f := newFake(t, map[string]string{"claude": "--dangerously-skip-permissions"})
 	f.answer["claude auth"] = func([]string) ([]byte, int) { return nil, 1 }
 	code, out, _ := hrun(t, f.ops(), "doctor", "--json")
-	if code != 0 || !strings.Contains(out, `"missing_flags":["--permission-mode"]`) || !strings.Contains(out, `"auth_status":"signed_out"`) || !strings.Contains(out, "afk harness login claude") {
+	if code != 1 || !strings.Contains(out, `"missing_flags":["--permission-mode"]`) || !strings.Contains(out, `"auth_status":"signed_out"`) || !strings.Contains(out, "afk harness login claude") {
 		t.Fatalf("%d %s", code, out)
 	}
 	if code, _, _ := hrun(t, f.ops(), "doctor"); code != 1 {
 		t.Fatal("a problem should exit 1")
+	}
+}
+
+func TestRemoveHint(t *testing.T) {
+	for _, c := range []struct {
+		in   harness.Info
+		want string
+	}{
+		{harness.Info{InstallMethod: "npm", Package: "@openai/codex"}, "npm uninstall -g @openai/codex"},
+		{harness.Info{InstallMethod: "homebrew", Package: "opencode"}, "brew uninstall opencode"},
+		{harness.Info{InstallMethod: "mise", ResolvedPath: "/x/mise/shims/pi"}, "remove it with mise"},
+		{harness.Info{InstallMethod: "self-managed", ResolvedPath: "/home/u/.local/bin/claude"}, "/home/u/.local/bin/claude"},
+	} {
+		if got := removeHint(c.in); !strings.Contains(got, c.want) {
+			t.Errorf("%+v: %q, want %q", c.in, got, c.want)
+		}
 	}
 }
