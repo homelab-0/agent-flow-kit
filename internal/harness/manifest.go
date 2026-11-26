@@ -67,6 +67,16 @@ type Modes struct {
 	// DirFlags are the CLI's flags that choose another working directory;
 	// yolo refuses them in --pass, because trust is checked where afk runs.
 	DirFlags []string `toml:"dir_flags"`
+	// ModeFlags are the CLI's other flags that change what it may do
+	// without asking (its permission mode, sandbox, settings source or tool
+	// allowlist). AFK sets the mode itself, so --pass refuses them unless
+	// the run is yolo.
+	ModeFlags []string `toml:"mode_flags"`
+	// ConfigFlags take a key=value setting (Codex -c); ConfigKeys are the
+	// settings among them that change the mode. --pass refuses those keys
+	// (and any key below them) unless the run is yolo.
+	ConfigFlags []string `toml:"config_flags"`
+	ConfigKeys  []string `toml:"config_keys"`
 }
 
 // ModeFlags is a mode table without the version.
@@ -201,6 +211,54 @@ func (m Manifest) DirIn(pass []string) string {
 	return ""
 }
 
+// flagValue reports whether x is flag f, and the value attached to it
+// (--flag=value, or -fvalue for a one-letter flag).
+func flagValue(x, f string) (value string, attached, ok bool) {
+	switch {
+	case x == f:
+		return "", false, true
+	case strings.HasPrefix(x, f+"="):
+		return x[len(f)+1:], true, true
+	case len(f) == 2 && f[0] == '-' && f[1] != '-' && strings.HasPrefix(x, f) && len(x) > 2:
+		return x[2:], true, true
+	}
+	return "", false, false
+}
+
+// ModeIn is the first argument in pass that would change the CLI's
+// permission mode behind AFK's back: one of mode_flags, or a config_flags
+// setting whose key is one of config_keys. "" when there is none. The
+// CLI's yolo flags are YoloIn's.
+func (m Manifest) ModeIn(pass []string) string {
+	for i, x := range pass {
+		for _, f := range m.Modes.ModeFlags {
+			if _, _, ok := flagValue(x, f); ok {
+				return f
+			}
+		}
+		for _, f := range m.Modes.ConfigFlags {
+			v, attached, ok := flagValue(x, f)
+			if !ok {
+				continue
+			}
+			if !attached {
+				if i+1 >= len(pass) {
+					continue
+				}
+				v = pass[i+1]
+			}
+			key, _, _ := strings.Cut(v, "=")
+			key = strings.TrimSpace(key)
+			for _, k := range m.Modes.ConfigKeys {
+				if key == k || strings.HasPrefix(key, k+".") {
+					return f + " " + key
+				}
+			}
+		}
+	}
+	return ""
+}
+
 // ModeFlags works out the flags for a requested mode. When the CLI can't
 // do it, the next stricter mode it can do is used (never a looser one):
 // mode is what runs and note says why it differs. ok is false when the CLI
@@ -321,6 +379,9 @@ func merge(base, over Manifest) Manifest {
 	set(&base.Modes.Verified, o.Verified)
 	list(&base.Modes.BypassFlags, o.BypassFlags)
 	list(&base.Modes.DirFlags, o.DirFlags)
+	list(&base.Modes.ModeFlags, o.ModeFlags)
+	list(&base.Modes.ConfigFlags, o.ConfigFlags)
+	list(&base.Modes.ConfigKeys, o.ConfigKeys)
 	for _, p := range []struct{ dst, src **[]string }{
 		{&base.Modes.ReadOnly, &o.ReadOnly}, {&base.Modes.Ask, &o.Ask}, {&base.Modes.Edits, &o.Edits},
 		{&base.Modes.Auto, &o.Auto}, {&base.Modes.Yolo, &o.Yolo},
