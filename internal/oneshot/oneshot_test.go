@@ -71,6 +71,8 @@ func TestClassify(t *testing.T) {
 		"your org does not have access to this model": KindModel,
 		"Unknown model 'x'":                           KindModel,
 		"stream disconnected before completion":       KindOther,
+		"exception at worker.go line 1401":            KindOther,
+		"QuotaManager failed to start":                KindOther,
 		"cannot launch grok / grok-4 here: no CLI":    KindOther,
 	} {
 		if got := Classify(text); got != want {
@@ -363,4 +365,44 @@ func TestFailoverSetting(t *testing.T) {
 	f = &fake{outputs: spent(), next: []engine.Route{route("claude", "qwen", "litellm-local"), route("claude", "sonnet", "anthropic-max")}}
 	res = Do(context.Background(), Request{First: first, Harnesses: all, Failover: "same-pool"}, f.deps())
 	want(t, "same-pool past another pool", res.Tried, []string{"claude/opus", "claude/sonnet"})
+}
+
+func TestAnAnswerAboutRateLimitsDoesNotMarkThePool(t *testing.T) {
+	// The CLI delivered an answer in JSON, then exited non-zero. The
+	// answer discusses HTTP 429; that says nothing about the plan.
+	answer := `{"type":"result","is_error":false,"result":"Handle HTTP 429 and 401 with a quota-aware retry."}`
+	f := &fake{
+		outputs: map[string][]Output{
+			"claude/opus": {{Stdout: []byte(answer), Exit: 1}},
+		},
+	}
+	Do(context.Background(), Request{First: route("claude", "opus", "anthropic-max"), Harnesses: all}, f.deps())
+	if len(f.marks) != 0 {
+		t.Errorf("an answer was read as a pool failure: %v", f.marks)
+	}
+}
+
+func TestAStackTraceLineNumberDoesNotMarkThePool(t *testing.T) {
+	f := &fake{
+		outputs: map[string][]Output{
+			"codex/sol": {{Stderr: []byte("panic: boom\n  at runner.go line 1401\n  at main.go:429"), Exit: 2}},
+		},
+	}
+	Do(context.Background(), Request{First: route("codex", "sol", "openai-plus"), Harnesses: all}, f.deps())
+	if len(f.marks) != 0 {
+		t.Errorf("a line number was read as a pool failure: %v", f.marks)
+	}
+}
+
+func TestPlainTextErrorOnStdoutStillMarks(t *testing.T) {
+	// Not JSON: the CLI printing its own error, not a model answer.
+	f := &fake{
+		outputs: map[string][]Output{
+			"grok/grok-4": {{Stdout: []byte("Error: HTTP 429 Too Many Requests\n"), Exit: 1}},
+		},
+	}
+	Do(context.Background(), Request{First: route("grok", "grok-4", "xai-grok"), Harnesses: all}, f.deps())
+	if len(f.marks) != 1 || !strings.HasPrefix(f.marks[0], "pool xai-grok ") {
+		t.Errorf("marks %v", f.marks)
+	}
 }
