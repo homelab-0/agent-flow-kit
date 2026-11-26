@@ -11,13 +11,14 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/harmonica"
 	"github.com/jlengelbrecht/agent-flow-kit/internal/engine"
+	"github.com/jlengelbrecht/agent-flow-kit/internal/harness"
 	"github.com/jlengelbrecht/agent-flow-kit/internal/launch"
 )
 
 // Backend is the engine as the card sees it.
 type Backend interface {
 	Explain(ctx context.Context, f engine.RouteFlags, prompt string) (*engine.Explain, error)
-	LaunchPlan(ctx context.Context, r engine.Route, mode string, yolo bool, pass []string, prompt string) (*engine.LaunchPlan, error)
+	LaunchPlan(ctx context.Context, r engine.Route, mode string, perm string, pass []string, prompt string) (*engine.LaunchPlan, error)
 	Pools(ctx context.Context) (*engine.Pools, error)
 }
 
@@ -27,11 +28,14 @@ type Options struct {
 	Prompt string
 	Pass   []string
 	Yolo   bool // --yolo was given
-	Yes    bool // --yes: launch the router's choice without the card
-	Width  int
-	Motion bool
-	FPS    int
-	Dark   bool
+	// YoloBlock, when set, is why yolo can't be turned on here (this
+	// directory isn't trusted); y shows it instead.
+	YoloBlock string
+	Yes       bool // --yes: launch the router's choice without the card
+	Width     int
+	Motion    bool
+	FPS       int
+	Dark      bool
 	// Environ is the environment the launch is checked against (os.Environ
 	// when nil).
 	Environ []string
@@ -109,6 +113,7 @@ type Model struct {
 	errText   string
 	nextBest  int
 	input     textinput.Model
+	yoloSet   bool // y has set the yolo toggle
 
 	dec Decision
 
@@ -174,11 +179,19 @@ func (m *Model) poolsCmd() tea.Cmd {
 }
 
 func (m *Model) planCmd() tea.Cmd {
-	be, r, yolo, pass, p, parent := m.be, m.card.Route(m.card.Sel), m.card.Yolo, m.opt.Pass, m.card.Prompt, m.ctx
+	perm := m.card.LaunchMode()
+	be, r, pass, p, parent := m.be, m.card.Route(m.card.Sel), m.opt.Pass, m.card.Prompt, m.ctx
+	// Turning yolo off with y also drops the CLI's own skip-permissions
+	// flag from --pass, which would turn it back on.
+	if m.yoloSet && !m.card.Yolo {
+		if man, ok := harness.ManifestFor(r.Harness); ok {
+			pass = man.StripYolo(pass)
+		}
+	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(parent, planTimeout)
 		defer cancel()
-		plan, err := be.LaunchPlan(ctx, r, "interactive", yolo, pass, p)
+		plan, err := be.LaunchPlan(ctx, r, "interactive", perm, pass, p)
 		return planMsg{plan, err}
 	}
 }
@@ -270,6 +283,17 @@ func (m *Model) onExplain(msg explainMsg) tea.Cmd {
 		return m.finish(Decision{Err: msg.err})
 	}
 	rows, sel := msg.ex.Rows()
+	m.card.Mode = msg.ex.Mode
+	m.card.ModeNotes = map[string]string{}
+	for h, mi := range msg.ex.ModeByHarness {
+		m.card.ModeNotes[h] = mi.Note
+	}
+	// The toggle follows the routed mode (on for yolo, off for anything
+	// stricter) until you set it with y; after that a reroute never
+	// changes it.
+	if !m.yoloSet {
+		m.card.Yolo = msg.ex.Mode == "yolo"
+	}
 	m.card.Task, m.card.Guessed, m.card.Prefer = msg.ex.Task, msg.ex.TaskGuessed, msg.ex.Prefer
 	m.card.Rows, m.card.Sel, m.card.Efforts = rows, sel, map[int]string{}
 	if m.opt.Yes {
@@ -431,10 +455,12 @@ func (m *Model) cardKey(key string) tea.Cmd {
 	case "y":
 		switch {
 		case m.card.Yolo:
-			m.card.Yolo = false
+			m.card.Yolo, m.yoloSet = false, true
 			m.notice = "yolo is off: the CLI asks before it acts"
+		case m.opt.YoloBlock != "":
+			m.notice = m.opt.YoloBlock
 		case armed:
-			m.card.Yolo = true
+			m.card.Yolo, m.yoloSet = true, true
 		default:
 			m.yoloArmed = true
 			m.notice = "press y again: " + routeName(r) + " will act without asking (its own skip-permissions flag)"

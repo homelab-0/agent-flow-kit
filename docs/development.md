@@ -54,6 +54,7 @@ The Go engine fixes some things the bash engine got wrong, so on these points th
 - A gateway that answers with an HTTP error is offline.
 - Without a terminal, `afk` never waits for a rating.
 - No plan-login policy: the bash engine kept each vendor's plan to its own CLI and OpenCode to its own free models, and never launched Pi. AFK routes to any installed CLI that is signed in to the model's plan, and launches Pi, in `-p` too. `golden.json` was recorded with those two rules removed from the bash router.
+- Pi never asks before acting, so in the default `ask` mode it runs `read-only` (`--tools read,grep,find,ls`); `plans.json` records that for its two `ask` cases.
 - `-p` never tries the same route twice in one run, even if the signals file couldn't be written; an `error` given as a plain string is read as the message.
 - The benchmark sync doesn't read Artificial Analysis: it needs an API key, and AFK never sends one. Its receipt reports that feed as `not_used`. With the key unset the bash sync gave the same scores.
 

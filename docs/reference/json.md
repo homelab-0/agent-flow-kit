@@ -31,6 +31,8 @@ Fields AFK can't know are `null`, never zero.
 
 Version 2 drops the routes' `role` and `memory_mode` fields that version 1 had. Version 1 is no longer read or written.
 
+It also has `mode` (the [permission mode](../guides/permissions.md) asked for), `mode_source` (`flag`, `permissions.task.<kind>`, `permissions.default`, `project` or `default`) and `mode_by_harness`: for each installed CLI, the `mode` it runs that as and a `note` when it is stricter (an empty `mode` means the CLI can't run it at all).
+
 With `--harness` and `--model` together, `choice` is a pinned route (`harness`, `model`, `effort`, `entitlement_pool: null`, `reason`, `pinned: true`) and `by_harness` is empty.
 
 ## Route
@@ -79,6 +81,7 @@ A `fallback-default` route also has `no_eligible_candidate`, `candidates_conside
 | `env_from` | variables to copy at launch: target name → source variable name. Values are never in the plan |
 | `env_unset` | variables to remove |
 | `cwd` | where to start it |
+| `mode`, `mode_note` | the permission mode the CLI runs in, and why when it is stricter than the one asked for |
 | `answer` | print mode only: `{"format":"json","file":null}` (the answer is on stdout) or, for Codex, `{"format":"text-file","file":"<path>"}` |
 
 A refused plan is `{"schema":"afk-launch-plan/1","ok":false,"error":"<reason>"}`. See [scripting](../guides/scripting.md#applying-a-plan) for how to apply one.

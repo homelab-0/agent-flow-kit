@@ -20,8 +20,11 @@ import (
 	"github.com/charmbracelet/x/term"
 
 	"github.com/jlengelbrecht/agent-flow-kit/internal/cli"
+	"github.com/jlengelbrecht/agent-flow-kit/internal/config"
+	"github.com/jlengelbrecht/agent-flow-kit/internal/core"
 	"github.com/jlengelbrecht/agent-flow-kit/internal/engine"
 	"github.com/jlengelbrecht/agent-flow-kit/internal/gitstat"
+	"github.com/jlengelbrecht/agent-flow-kit/internal/harness"
 	"github.com/jlengelbrecht/agent-flow-kit/internal/launch"
 	"github.com/jlengelbrecht/agent-flow-kit/internal/runrec"
 	"github.com/jlengelbrecht/agent-flow-kit/internal/tui"
@@ -30,6 +33,18 @@ import (
 func main() { os.Exit(run(os.Args[1:])) }
 
 func run(argv []string) int {
+	// Harness manifest overrides (~/.config/afk/harnesses/*.toml).
+	if home, err := os.UserHomeDir(); err == nil {
+		dir := filepath.Join(config.PathsFor(home, os.Getenv).Dir, "harnesses")
+		warns, err := harness.LoadOverrides(dir)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "afk:", err)
+			return 1
+		}
+		for _, w := range warns {
+			fmt.Fprintln(os.Stderr, "afk: warning:", w)
+		}
+	}
 	// Subcommands the Go front end answers itself, without the engine.
 	// A prompt that starts with one of these words needs "--" first.
 	if len(argv) > 0 {
@@ -40,6 +55,8 @@ func run(argv []string) int {
 			return benchCmd(argv[1:], os.Stdout, os.Stderr)
 		case "config":
 			return configCmd(argv[1:], os.Stdout, os.Stderr)
+		case "trust":
+			return trustCmd(argv[1:], os.Stdout, os.Stderr)
 		}
 	}
 	return runGo(cli.Parse(argv))
@@ -67,6 +84,7 @@ func interactive(eng tui.Backend, args cli.Args, width int) int {
 	opt := tui.Options{
 		Flags: args.Flags, Prompt: args.Prompt, Pass: args.Pass, Yolo: args.Yolo,
 		Yes: args.Yes, Width: width, Motion: motion, FPS: tui.FPS(os.Getenv), Dark: dark,
+		YoloBlock: yoloBlock(eng),
 	}
 	model := tui.New(eng, opt)
 	p := tea.NewProgram(model, tea.WithFPS(opt.FPS))
@@ -89,6 +107,9 @@ func interactive(eng tui.Backend, args cli.Args, width int) int {
 	s := sessionInfo{eng: eng, route: dec.Route, plan: dec.Plan, before: dec.Pools.Headroom(dec.Route.EntitlementPool)}
 	return s.run(func(id string) {
 		lipgloss.Println(theme.LaunchText(dec.Route, "here", id, dec.Yolo, width))
+		if dec.Plan != nil && dec.Plan.ModeNote != "" {
+			lipgloss.Println(theme.Dim.Render("  " + dec.Plan.ModeNote))
+		}
 		lipgloss.Println()
 		lipgloss.Println(theme.SessionRuleText(dec.Route))
 	}, func() {
@@ -102,8 +123,15 @@ func interactive(eng tui.Backend, args cli.Args, width int) int {
 	})
 }
 
+// engineFailure prints err and returns its exit code: 2 for a usage
+// error (such as yolo in an untrusted directory), 3 for a CLI that is
+// not installed, else 4.
 func engineFailure(err error) int {
 	fmt.Fprintln(os.Stderr, "afk:", strings.TrimSpace(err.Error()))
+	switch code := core.ExitCode(err); code {
+	case 2, 3:
+		return code
+	}
 	return 4
 }
 
@@ -120,7 +148,7 @@ func plainRun(eng tui.Backend, args cli.Args, ask bool) int {
 	}
 	r := ex.Choice
 	ctx, cancel = context.WithTimeout(context.Background(), 20*time.Second)
-	plan, err := eng.LaunchPlan(ctx, r, "interactive", args.Yolo, args.Pass, args.Prompt)
+	plan, err := eng.LaunchPlan(ctx, r, "interactive", ex.Mode, args.Pass, args.Prompt)
 	cancel()
 	var pe *engine.PlanError
 	if errors.As(err, &pe) {
@@ -145,6 +173,9 @@ func plainRun(eng tui.Backend, args cli.Args, ask bool) int {
 			reason = reason[:160]
 		}
 		fmt.Fprintf(os.Stderr, "afk: %s / %s%s — %s (run %s)\n", r.Harness, r.Model, e, reason, id)
+		if plan.ModeNote != "" {
+			fmt.Fprintln(os.Stderr, "afk: "+plan.ModeNote)
+		}
 	}, func() {}, func(receipt tui.Receipt, fill func() tui.Receipt, save func(string) error) {
 		if !ask {
 			fmt.Fprintln(os.Stderr, tui.ReceiptPlain(fill()))
@@ -284,4 +315,20 @@ func lookArgv0(name string, env []string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("cannot find %s on PATH", name)
+}
+
+// yoloBlock is why yolo can't be turned on in this directory, or "".
+func yoloBlock(eng tui.Backend) string {
+	c, ok := eng.(*core.Core)
+	if !ok {
+		return ""
+	}
+	s, err := c.LoadSettings(c.Cwd)
+	if err != nil {
+		return err.Error()
+	}
+	if err := config.CheckYolo(s, c.Home, c.Cwd); err != nil {
+		return err.Error()
+	}
+	return ""
 }

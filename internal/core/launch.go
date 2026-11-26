@@ -45,7 +45,10 @@ func planError(msg string) (*engine.LaunchPlan, error) {
 // it needs and where its answer goes. Every launch passes here, so the
 // gateway rule is checked here too, for pinned routes and routes a front
 // end chose: a plan login is never sent through a gateway.
-func (c *Core) LaunchPlan(_ context.Context, r engine.Route, mode string, yolo bool, pass []string, prompt string) (*engine.LaunchPlan, error) {
+// perm is the permission mode asked for ("" is ask). When the CLI can't do
+// it, the next stricter mode it can do is used and the plan says so; a CLI
+// that can do nothing as strict is refused.
+func (c *Core) LaunchPlan(_ context.Context, r engine.Route, mode string, perm string, pass []string, prompt string) (*engine.LaunchPlan, error) {
 	h, m, e := r.Harness, r.Model, r.Effort
 	if mode != "interactive" && mode != "print" {
 		return nil, &UsageError{"--mode must be interactive or print"}
@@ -65,6 +68,40 @@ func (c *Core) LaunchPlan(_ context.Context, r engine.Route, mode string, yolo b
 		return planError("the " + pool + " plan login is never sent through a gateway")
 	}
 
+	if perm == "" {
+		perm = "ask"
+	}
+	man, ok := harness.ManifestFor(h)
+	if !ok {
+		return planError("no launch for " + h + " here (is it installed?)")
+	}
+	// The CLI's own skip-permissions flag given through --pass is yolo,
+	// so it gets the same trust check, and the plan says yolo.
+	passNote := ""
+	if perm != "yolo" && man.YoloIn(pass) {
+		perm, passNote = "yolo", "--pass gave "+h+"'s own skip-permissions flag, so this runs as yolo"
+	}
+	// Trust is checked again for every yolo plan (a retry, or a card
+	// left open while trust was removed), against the settings now.
+	if perm == "yolo" {
+		if err := c.checkYolo(); err != nil {
+			return nil, err
+		}
+		if d := man.DirIn(pass); d != "" {
+			return nil, &UsageError{"yolo checks trust for the directory afk runs in, so it can't take " + h + "'s " + d + " in --pass; run afk from that directory instead"}
+		}
+	}
+	modeFlags, ran, modeNote, ok := man.ModeFlags(perm, mode == "print")
+	if !ok {
+		if modeNote == "" {
+			modeNote = perm + " is not a permission mode (read-only, ask, edits, auto or yolo)"
+		}
+		return planError(modeNote)
+	}
+	if passNote != "" {
+		modeNote = passNote
+	}
+
 	set, from, unset, err := c.launchEnv(r)
 	if err != nil {
 		return planError(err.Error())
@@ -78,7 +115,7 @@ func (c *Core) LaunchPlan(_ context.Context, r engine.Route, mode string, yolo b
 		cxout = f.Name()
 		f.Close()
 	}
-	argv := c.launchArgv(h, m, e, mode, yolo, prompt, cxout, pass)
+	argv := c.launchArgv(h, m, e, mode, modeFlags, prompt, cxout, pass)
 	if argv == nil {
 		if cxout != "" {
 			os.Remove(cxout)
@@ -100,6 +137,7 @@ func (c *Core) LaunchPlan(_ context.Context, r engine.Route, mode string, yolo b
 	return &engine.LaunchPlan{
 		Schema: engine.SchemaLaunchPlan, OK: true, Argv: argv,
 		EnvSet: set, EnvFrom: from, EnvUnset: unset, Cwd: cwd, Answer: answer,
+		Mode: ran, ModeNote: modeNote,
 	}, nil
 }
 
@@ -211,7 +249,7 @@ func redactedURL(s string) string {
 // launchArgv is the command for a route. In print mode each CLI writes
 // JSON, so errors reported with exit 0 are still seen. Arguments passed
 // through go before the prompt, so a CLI never reads them as prompt text.
-func (c *Core) launchArgv(h, model, effort, mode string, yolo bool, prompt, cxout string, pass []string) []string {
+func (c *Core) launchArgv(h, model, effort, mode string, modeFlags []string, prompt, cxout string, pass []string) []string {
 	a, ok := harness.Lookup(h)
 	if !ok {
 		return nil
@@ -235,9 +273,7 @@ func (c *Core) launchArgv(h, model, effort, mode string, yolo bool, prompt, cxou
 		if effort != "" {
 			add("--effort", effort)
 		}
-		if yolo {
-			add("--dangerously-skip-permissions")
-		}
+		add(modeFlags...)
 		if print {
 			add("-p", "--output-format", "json")
 		}
@@ -255,9 +291,7 @@ func (c *Core) launchArgv(h, model, effort, mode string, yolo bool, prompt, cxou
 		if effort != "" {
 			add("-c", `model_reasoning_effort="`+effort+`"`)
 		}
-		if yolo {
-			add("--dangerously-bypass-approvals-and-sandbox")
-		}
+		add(modeFlags...)
 		add(pass...)
 		if prompt != "" {
 			add("--", prompt)
@@ -268,15 +302,14 @@ func (c *Core) launchArgv(h, model, effort, mode string, yolo bool, prompt, cxou
 			if model != "" {
 				add("-m", model)
 			}
-			if yolo {
-				add("--auto")
-			}
+			add(modeFlags...)
 			add(pass...)
 			add("--", prompt)
 		} else {
 			if model != "" {
 				add("-m", model)
 			}
+			add(modeFlags...)
 			add(pass...)
 			if prompt != "" {
 				add("--prompt=" + prompt)
@@ -289,9 +322,7 @@ func (c *Core) launchArgv(h, model, effort, mode string, yolo bool, prompt, cxou
 		if effort != "" {
 			add("--effort", effort)
 		}
-		if yolo {
-			add("--always-approve")
-		}
+		add(modeFlags...)
 		if print {
 			add("--output-format", "json")
 			add(pass...)
@@ -314,9 +345,7 @@ func (c *Core) launchArgv(h, model, effort, mode string, yolo bool, prompt, cxou
 		if effort != "" {
 			add("--effort", effort)
 		}
-		if yolo {
-			add("--dangerously-skip-permissions")
-		}
+		add(modeFlags...)
 		if print {
 			add("--output-format", "json")
 			add(pass...)
@@ -334,7 +363,8 @@ func (c *Core) launchArgv(h, model, effort, mode string, yolo bool, prompt, cxou
 		if effort != "" {
 			add("--thinking", effort)
 		}
-		// Pi has no permission prompts to skip, so yolo changes nothing.
+		// Pi never asks; its modes are tool allowlists.
+		add(modeFlags...)
 		if print {
 			add("-p", "--mode", "json")
 		}

@@ -1,0 +1,7 @@
+# Qwen Code. AFK doesn't launch it yet, so it has no mode table.
+name = "qwen"
+display = "Qwen Code"
+vendor = "Alibaba"
+bins = ["qwen"]
+npm_package = "@qwen-code/qwen-code"
+login_note = "qwen"

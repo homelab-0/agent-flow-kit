@@ -1,0 +1,7 @@
+# Cursor Agent. AFK doesn't launch it yet, so it has no mode table.
+name = "cursor"
+display = "Cursor Agent"
+vendor = "Cursor"
+bins = ["cursor-agent"]
+self_update = "update"
+login_note = "cursor-agent login"

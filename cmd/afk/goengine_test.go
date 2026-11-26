@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 
@@ -79,5 +80,26 @@ func TestLaunchPlanCmdRefusals(t *testing.T) {
 	args = cli.Args{LaunchPlan: true, Route: `{"harness":"claude","entitlement_pool":"anthropic-max","cost_class":"subscription","launch_class":"claude-gateway"}`}
 	if code := launchPlanCmd(c, args, nil, &out, &errb); code != 4 || !strings.Contains(out.String(), "never sent through a gateway") {
 		t.Fatalf("plan through a gateway: %d %q", code, out.String())
+	}
+}
+
+func TestBadModeIsUsageError(t *testing.T) {
+	for _, argv := range [][]string{
+		{"--explain", "--json", "--mode", "reckless", "x"},
+		{"--mode", "reckless", "x"},
+		{"--mode", "print", "x"},
+	} {
+		if code := runGo(cli.Parse(argv)); code != 2 {
+			t.Errorf("%v: exit %d, want 2", argv, code)
+		}
+	}
+}
+
+func TestEngineFailureExitCodes(t *testing.T) {
+	if code := engineFailure(&core.UsageError{Msg: "yolo needs a trusted git repository"}); code != 2 {
+		t.Errorf("usage error: exit %d, want 2", code)
+	}
+	if code := engineFailure(errors.New("boom")); code != 4 {
+		t.Errorf("other error: exit %d, want 4", code)
 	}
 }

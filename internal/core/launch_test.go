@@ -9,9 +9,11 @@ import (
 	"reflect"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/jlengelbrecht/agent-flow-kit/internal/config"
 	"github.com/jlengelbrecht/agent-flow-kit/internal/engine"
 	"github.com/jlengelbrecht/agent-flow-kit/internal/harness"
 )
@@ -54,6 +56,24 @@ func testCore(t *testing.T) (*Core, string) {
 	}, bin
 }
 
+// trustRepo makes c's working directory a git repository that config.toml
+// trusts, so yolo plans may be built there.
+func trustRepo(t *testing.T, c *Core) {
+	t.Helper()
+	repo := filepath.Join(c.Home, "repos", "app")
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.PathsFor(c.Home, c.Getenv).Config
+	if err := os.MkdirAll(filepath.Dir(cfg), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg, []byte("version = 1\n\n[trust]\nrepos = ["+strconv.Quote(repo)+"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c.Cwd = repo
+}
+
 // TestLaunchPlansMatchBash compares every plan with what the bash engine's
 // agent --launch-plan printed for the same route (testdata/plans.json, a
 // frozen fixture: the bash engine was removed after the legacy-bash-final
@@ -71,13 +91,18 @@ func TestLaunchPlansMatchBash(t *testing.T) {
 		t.Fatal(err)
 	}
 	c, bin := testCore(t)
+	trustRepo(t, c)
 	for _, tc := range cases {
 		t.Run(tc.Name, func(t *testing.T) {
 			var r engine.Route
 			if err := json.Unmarshal(tc.Route, &r); err != nil {
 				t.Fatal(err)
 			}
-			p, err := c.LaunchPlan(context.Background(), r, tc.Mode, tc.Yolo, tc.Pass, tc.Prompt)
+			perm := "ask"
+			if tc.Yolo {
+				perm = "yolo"
+			}
+			p, err := c.LaunchPlan(context.Background(), r, tc.Mode, perm, tc.Pass, tc.Prompt)
 			if !tc.Want.OK {
 				var pe *engine.PlanError
 				if !errors.As(err, &pe) || pe.Reason != tc.Want.Error {
@@ -107,6 +132,20 @@ func TestLaunchPlansMatchBash(t *testing.T) {
 			var argv []string
 			for _, a := range p.Argv {
 				argv = append(argv, norm(a))
+			}
+			// The bash engine passed nothing for ask. AFK now pins ask
+			// with the CLI's own flag, so a setting in the CLI can't
+			// loosen it: check those flags are there, then compare the
+			// rest with bash.
+			if !tc.Yolo {
+				var r engine.Route
+				_ = json.Unmarshal(tc.Route, &r)
+				if m, ok := harness.ManifestFor(r.Harness); ok {
+					ask, _, _, _ := m.ModeFlags("ask", tc.Mode == "print")
+					if !hasRun(tc.Want.Argv, ask) {
+						argv = dropRun(t, argv, ask)
+					}
+				}
 			}
 			if !reflect.DeepEqual(argv, tc.Want.Argv) {
 				t.Errorf("argv\n got  %q\n want %q", argv, tc.Want.Argv)
@@ -154,7 +193,7 @@ func TestGatewayPlanNeedsAKeyFromAPlainVariable(t *testing.T) {
 			}
 			return ""
 		}
-		_, err := c.LaunchPlan(context.Background(), r, "interactive", false, nil, "")
+		_, err := c.LaunchPlan(context.Background(), r, "interactive", "", nil, "")
 		var pe *engine.PlanError
 		if !errors.As(err, &pe) || !strings.HasPrefix(pe.Reason, want) {
 			t.Errorf("%s: %v", env, err)
@@ -181,7 +220,7 @@ func TestGatewayKeyIsBoundToItsGateway(t *testing.T) {
 		return engine.Route{Harness: "claude", Model: "q", EntitlementPool: "litellm-local", CostClass: "free", LaunchClass: "claude-gateway", LitellmBaseURL: u}
 	}
 	plan := func(u string) (*engine.LaunchPlan, error) {
-		return c.LaunchPlan(context.Background(), route(u), "interactive", false, nil, "")
+		return c.LaunchPlan(context.Background(), route(u), "interactive", "", nil, "")
 	}
 	for u, want := range map[string]string{"https://work.example": "WORK_KEY", "http://home.local:4000/": "HOME_KEY"} {
 		p, err := plan(u)
@@ -212,5 +251,84 @@ func TestGatewayKeyIsBoundToItsGateway(t *testing.T) {
 	write("version = 1\n[route]\nprefer = \"fastest\"\n")
 	if _, err := plan("http://env.local"); err == nil || !strings.Contains(err.Error(), "route.prefer") {
 		t.Fatalf("invalid config: %v", err)
+	}
+}
+
+// dropRun removes the flags run from argv, failing when they aren't there
+// in order.
+func dropRun(t *testing.T, argv, run []string) []string {
+	t.Helper()
+	if len(run) == 0 {
+		return argv
+	}
+	for i := 0; i+len(run) <= len(argv); i++ {
+		if reflect.DeepEqual(argv[i:i+len(run)], run) {
+			return append(append([]string{}, argv[:i]...), argv[i+len(run):]...)
+		}
+	}
+	t.Errorf("argv %q lacks %q", argv, run)
+	return argv
+}
+
+func hasRun(argv, run []string) bool {
+	for i := 0; len(run) > 0 && i+len(run) <= len(argv); i++ {
+		if reflect.DeepEqual(argv[i:i+len(run)], run) {
+			return true
+		}
+	}
+	return false
+}
+
+// Every yolo plan checks trust again, against the settings now.
+func TestYoloPlanChecksTrust(t *testing.T) {
+	c, _ := testCore(t)
+	trustRepo(t, c)
+	r := engine.Route{Harness: "claude", Model: "opus", LaunchClass: "claude", CostClass: "subscription", EntitlementPool: "anthropic-max"}
+	if _, err := c.LaunchPlan(context.Background(), r, "interactive", "yolo", nil, "x"); err != nil {
+		t.Fatalf("trusted: %v", err)
+	}
+	cfg := config.PathsFor(c.Home, c.Getenv).Config
+	if err := os.WriteFile(cfg, []byte("version = 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := c.LaunchPlan(context.Background(), r, "interactive", "yolo", nil, "x")
+	var ue *UsageError
+	if !errors.As(err, &ue) || !strings.Contains(err.Error(), "afk trust add") {
+		t.Fatalf("untrusted: %v", err)
+	}
+}
+
+// A skip-permissions flag given through --pass is yolo: trust is checked
+// and the plan says so.
+func TestPassedBypassIsYolo(t *testing.T) {
+	c, _ := testCore(t)
+	r := engine.Route{Harness: "claude", Model: "opus", LaunchClass: "claude", CostClass: "subscription", EntitlementPool: "anthropic-max"}
+	_, err := c.LaunchPlan(context.Background(), r, "interactive", "ask", []string{"--dangerously-skip-permissions"}, "x")
+	var ue *UsageError
+	if !errors.As(err, &ue) {
+		t.Fatalf("untrusted: %v", err)
+	}
+	trustRepo(t, c)
+	p, err := c.LaunchPlan(context.Background(), r, "interactive", "ask", []string{"--dangerously-skip-permissions"}, "x")
+	if err != nil || p.Mode != "yolo" || !strings.Contains(p.ModeNote, "--pass") {
+		t.Fatalf("trusted: %+v %v", p, err)
+	}
+}
+
+// Codex's --yolo alias in --pass is yolo too, and yolo refuses --cd.
+func TestCodexPassAliasAndDir(t *testing.T) {
+	c, _ := testCore(t)
+	r := engine.Route{Harness: "codex", Model: "gpt", LaunchClass: "codex", CostClass: "subscription", EntitlementPool: "openai-plus"}
+	_, err := c.LaunchPlan(context.Background(), r, "interactive", "ask", []string{"--yolo"}, "x")
+	var ue *UsageError
+	if !errors.As(err, &ue) {
+		t.Fatalf("--yolo alias untrusted: %v", err)
+	}
+	trustRepo(t, c)
+	if _, err := c.LaunchPlan(context.Background(), r, "interactive", "yolo", []string{"--cd", "/elsewhere"}, "x"); !errors.As(err, &ue) || !strings.Contains(err.Error(), "--cd") {
+		t.Fatalf("--cd in yolo: %v", err)
+	}
+	if _, err := c.LaunchPlan(context.Background(), r, "interactive", "ask", []string{"--cd", "/elsewhere"}, "x"); err != nil {
+		t.Fatalf("--cd without yolo: %v", err)
 	}
 }

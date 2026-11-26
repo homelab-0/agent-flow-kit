@@ -18,7 +18,7 @@ The top box is the pick: the CLI, model and effort, the kind of task (and whethe
 | `↑` `↓` or `j` `k` | pick another row |
 | `tab` | step through the effort levels that CLI accepts |
 | `e` | edit the prompt; `↵` routes it again, `esc` goes back |
-| `y` `y` | yolo: the CLI acts without asking (press twice; a red tag shows it is on, `y` again turns it off). An interactive OpenCode session keeps its own prompts |
+| `y` `y` | yolo: the CLI acts without asking (press twice; a red tag shows it is on, `y` again turns it off). Only in a [trusted](permissions.md#yolo-stays-deliberate) git repository; an interactive OpenCode session keeps its own prompts. The box shows the [permission mode](permissions.md) when it isn't `ask`, and a line when the selected CLI runs a stricter one |
 | `?` | the Why panel; `?` again closes it |
 | `esc` or `ctrl+c` | cancel; nothing is started (exit code 130) |
 
