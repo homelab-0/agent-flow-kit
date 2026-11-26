@@ -168,6 +168,9 @@ func (t Theme) poolLine(c Card, r engine.Route) line {
 	l = append(l, t.meter(r.PoolHeadroomPct, c.Prog)...)
 	if r.PoolHeadroomPct != nil {
 		l = append(l, sg(t.Plain, " "+pctText(r.PoolHeadroomPct)+" left"))
+		if r.PoolQuotaSource == "local_5h_activity" {
+			l = append(l, sg(t.Dim, " (estimated)"))
+		}
 	} else {
 		l = append(l, sg(t.Dim, " "+unknownText))
 	}

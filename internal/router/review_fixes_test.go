@@ -53,7 +53,10 @@ func TestMeteredCodexIsNotChargedToThePlan(t *testing.T) {
 		put(t, home, fmt.Sprintf(".codex/sessions/s%d.jsonl", i), "{}", 0)
 	}
 	put(t, home, ".codex/auth.json", `{"OPENAI_API_KEY":"sk-x"}`, 0)
-	p := ProbePools(context.Background(), DefaultCatalog(), ProbeEnv{Home: home, Installed: func(h string) bool { return h == "codex" }})
+	// How Codex is signed in comes from `codex login status`, never from
+	// auth.json.
+	p := ProbePools(context.Background(), DefaultCatalog(), ProbeEnv{Home: home, Installed: func(h string) bool { return h == "codex" },
+		CodexLoginMode: func(context.Context) string { return "apikey" }})
 	if got := *p.Pools["openai-plus"].UsedPct; got != 0 {
 		t.Fatalf("API-key Codex sessions charged to the plan: %v%%", got)
 	}
@@ -76,34 +79,6 @@ func TestZeroCapacityIsSkipped(t *testing.T) {
 	g := p.Pools["xai-grok"]
 	if *g.Capacity5h != 50 || g.UsedPct == nil || *g.UsedPct != *g.UsedPct {
 		t.Fatalf("xai-grok %+v", g)
-	}
-}
-
-func TestClaudeUsageWithNoFiguresIsNotAReading(t *testing.T) {
-	if q := parseClaudeUsage([]byte(`{"five_hour":null,"seven_day":null}`)); q.OK {
-		t.Fatalf("nulls read as %v%% used", q.UsedPct)
-	}
-	if q := parseClaudeUsage([]byte(`{"five_hour":{"utilization":0},"seven_day":null}`)); !q.OK || q.UsedPct != 0 {
-		t.Fatalf("an explicit 0 is a reading: %+v", q)
-	}
-}
-
-func TestClaudeCacheBelongsToTheLogin(t *testing.T) {
-	calls := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
-		fmt.Fprintf(w, `{"five_hour":{"utilization":%d}}`, calls*10)
-	}))
-	defer srv.Close()
-	home := t.TempDir()
-	put(t, home, ".claude/.credentials.json", `{"claudeAiOauth":{"accessToken":"a"}}`, time.Minute)
-	e := ProbeEnv{Home: home, Live: true, ClaudeUsageURL: srv.URL, HTTP: srv.Client(), Now: time.Now()}
-	if q := probeClaudeQuota(context.Background(), e); q.UsedPct != 10 {
-		t.Fatalf("first %v", q.UsedPct)
-	}
-	put(t, home, ".claude/.credentials.json", `{"claudeAiOauth":{"accessToken":"someone-else"}}`, 0)
-	if q := probeClaudeQuota(context.Background(), e); q.UsedPct != 20 || calls != 2 {
-		t.Fatalf("after a new login: %v%% from %d calls; the old login's cache was reused", q.UsedPct, calls)
 	}
 }
 

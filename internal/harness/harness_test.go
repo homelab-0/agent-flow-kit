@@ -223,9 +223,9 @@ func TestClassify(t *testing.T) {
 func TestAuthChecksNeverNeedTokenValues(t *testing.T) {
 	e, _ := testEnv(t)
 	e.OS = "linux"
-	// Present but empty records are signed out.
-	writeFile(t, filepath.Join(e.Home, ".claude", ".credentials.json"), `{"claudeAiOauth":{}}`)
-	writeFile(t, filepath.Join(e.Home, ".grok", "auth.json"), `{}`)
+	// Empty login files are signed out. Only their size is looked at.
+	writeFile(t, filepath.Join(e.Home, ".claude", ".credentials.json"), ``)
+	writeFile(t, filepath.Join(e.Home, ".grok", "auth.json"), ``)
 	if st, _ := claudeAuth(e); st != AuthSignedOut {
 		t.Errorf("claude empty = %s", st)
 	}
@@ -233,6 +233,7 @@ func TestAuthChecksNeverNeedTokenValues(t *testing.T) {
 		t.Errorf("grok empty = %s", st)
 	}
 	// macOS keeps Claude's login in the Keychain.
+	_ = os.Remove(filepath.Join(e.Home, ".claude", ".credentials.json"))
 	e.OS = "darwin"
 	if st, _ := claudeAuth(e); st != AuthUnknown {
 		t.Errorf("claude darwin = %s", st)
@@ -312,33 +313,57 @@ func TestClaudeConfigDirIsTheOnlyLoginLooked(t *testing.T) {
 	}
 }
 
-func TestUnreadableLoginIsUnknown(t *testing.T) {
+// AFK never opens a login file: one it can't read still counts as signed
+// in, and what is inside never matters, only whether anything is.
+func TestLoginFilesAreNeverOpened(t *testing.T) {
 	if runtime.GOOS == "windows" || os.Getuid() == 0 {
 		t.Skip("needs file permissions that root ignores")
 	}
 	e, _ := testEnv(t)
 	e.OS = "linux"
-	p := filepath.Join(e.Home, ".codex", "auth.json")
-	writeFile(t, p, `{"OPENAI_API_KEY":"k"}`)
-	if err := os.Chmod(p, 0); err != nil {
-		t.Fatal(err)
-	}
-	if st, _ := codexAuth(e); st != AuthUnknown {
-		t.Fatalf("auth = %s, want unknown for an unreadable file", st)
+	for _, c := range []struct {
+		name string
+		path []string
+	}{
+		{"claude", []string{".claude", ".credentials.json"}},
+		{"codex", []string{".codex", "auth.json"}},
+		{"grok", []string{".grok", "auth.json"}},
+		{"pi", []string{".pi", "agent", "auth.json"}},
+		{"devin", []string{".local", "share", "devin", "credentials.toml"}},
+	} {
+		p := filepath.Join(append([]string{e.Home}, c.path...)...)
+		writeFile(t, p, `{not json`)
+		if err := os.Chmod(p, 0); err != nil {
+			t.Fatal(err)
+		}
+		if st, _ := mustLookup(t, c.name).auth(e); st != AuthOK {
+			t.Errorf("%s: auth = %s for an unreadable, malformed login file; want authenticated", c.name, st)
+		}
 	}
 }
 
-func TestMalformedLoginIsUnknownAndEmptyIsSignedOut(t *testing.T) {
+func TestEmptyLoginIsSignedOut(t *testing.T) {
 	e, _ := testEnv(t)
 	e.OS = "linux"
-	p := filepath.Join(e.Home, ".claude", ".credentials.json")
-	writeFile(t, p, `{not json`)
-	if st, _ := claudeAuth(e); st != AuthUnknown {
-		t.Fatalf("malformed: auth = %s, want unknown", st)
+	p := filepath.Join(e.Home, ".codex", "auth.json")
+	for _, body := range []string{``, `{}`, "{}\n"} {
+		writeFile(t, p, body)
+		if st, _ := codexAuth(e); st != AuthSignedOut {
+			t.Fatalf("%q: auth = %s, want signed_out", body, st)
+		}
 	}
-	writeFile(t, p, `{"claudeAiOauth":{"accessToken":"","refreshToken":null}}`)
-	if st, _ := claudeAuth(e); st != AuthSignedOut {
-		t.Fatalf("empty tokens: auth = %s, want signed_out", st)
+}
+
+func TestClassifyCodexLogin(t *testing.T) {
+	for out, want := range map[string]string{
+		"Logged in using ChatGPT\n":                 "chatgpt",
+		"Logged in using an API key - sk-***abcd\n": "apikey",
+		"Not logged in\n":                           "",
+		"error: unknown command\n":                  "",
+	} {
+		if got := ClassifyCodexLogin(out); got != want {
+			t.Errorf("%q: %q, want %q", out, got, want)
+		}
 	}
 }
 

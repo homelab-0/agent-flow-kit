@@ -73,10 +73,8 @@ AFK sends your gateway key to the gateway when it launches a gateway route, so t
 | `AFK_ROUTER_BIN_FAIL_CACHE_SEC` | how long a failed answer is remembered (default 30) |
 | `AFK_ROUTER_BIN_CACHE_FILE` | where those answers are kept |
 | `AFK_ROUTER_SIGNALS_FILE` | where failure signals are kept |
-| `AFK_QUOTA_CACHE_FILE` | where the Claude usage figures are cached |
-| `AFK_CLAUDE_CREDS_FILE`, `AFK_CODEX_AUTH_FILE`, `AFK_GROK_AUTH_FILE`, `AFK_OPENCODE_AUTH_FILE`, `AFK_PI_AUTH_FILE` | read a CLI's credential file from here instead of its default place |
+| `AFK_CLAUDE_CREDS_FILE`, `AFK_CODEX_AUTH_FILE`, `AFK_GROK_AUTH_FILE`, `AFK_OPENCODE_AUTH_FILE`, `AFK_PI_AUTH_FILE` | check for a CLI's login file here instead of its default place (only that it exists; it is never opened) |
 | `AFK_CODEX_SESSIONS_DIR` | read Codex's rate limits from here |
-| `AFK_CLAUDE_USAGE_FIXTURE` | read the Claude usage answer from this file instead of asking (tests) |
 | `CLAUDE_CONFIG_DIR`, `CODEX_HOME` | honoured as the CLIs themselves honour them |
 | `AFK_ROUTER_SIGNALS_FILE` | use this [signals file](../guides/pools.md#failure-signals) instead of `~/.config/afk/pool-signals.json` |
 
@@ -105,7 +103,6 @@ AFK sends your gateway key to the gateway when it launches a gateway route, so t
 |---|---|
 | `~/.config/afk/state/runs/<id>.json` | [run records](../guides/runs.md) |
 | `~/.config/afk/pool-signals.json` | [failure signals](../guides/pools.md#failure-signals) |
-| `~/.config/afk/live-quota-cache.json` | Claude usage figures, two minutes (mode 600; no tokens) |
 | `~/.config/afk/harness-bin-cache.json` | which CLIs answered `--version`, five minutes |
 | `~/.config/afk/benchmarks.json` | the [synced benchmark catalog](benchmark-catalog.md#refreshing-it), used when present and current; `.sync-attempt` beside it marks the last attempt |
 | `~/.config/afk/discovered-models.json` | models the CLIs reported, used when present |

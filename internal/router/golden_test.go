@@ -93,6 +93,10 @@ func TestGoldenMatchesBashRouter(t *testing.T) {
 			sort.Strings(names)
 			for _, k := range names {
 				w, g := want[k], gotMap[k]
+				if k == "pool_quota_source" {
+					// Added after the bash router; not in the frozen fixture.
+					continue
+				}
 				if k == "reason" {
 					ws, _ := w.(string)
 					gs, _ := g.(string)

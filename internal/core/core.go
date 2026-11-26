@@ -40,6 +40,9 @@ type Core struct {
 	Installed func(string) bool
 	// Environ is the environment a launch starts from (os.Environ).
 	Environ func() []string
+	// CodexLogin reports how Codex is signed in (tests; nil asks Codex's
+	// own status command when Live).
+	CodexLogin func(ctx context.Context) string
 	// Headless runs a print-mode CLI (tests; nil runs it for real).
 	Headless Headless
 }
@@ -49,6 +52,18 @@ func New() *Core {
 	he := harness.HostEnv()
 	cwd, _ := os.Getwd()
 	return &Core{Home: he.Home, Getenv: os.Getenv, Harness: he, Cwd: cwd, Live: true, Now: time.Now, Environ: os.Environ}
+}
+
+// codexLoginMode is how the pool probe learns whether Codex uses the
+// ChatGPT plan or an API key, without opening Codex's auth.json.
+func (c *Core) codexLoginMode() func(ctx context.Context) string {
+	if c.CodexLogin != nil {
+		return c.CodexLogin
+	}
+	if !c.Live {
+		return nil
+	}
+	return func(ctx context.Context) string { return harness.CodexLoginMode(ctx, c.Harness) }
 }
 
 func (c *Core) getenv(k string) string {
@@ -206,7 +221,7 @@ func (c *Core) load(ctx context.Context, repo string) (*state, error) {
 	}
 	probe := router.ProbePools(ctx, cat, router.ProbeEnv{
 		Home: c.Home, Getenv: c.getenv, Now: c.now(), GatewayURL: s.GatewayURL,
-		Installed: installed, Live: c.Live,
+		Installed: installed, Live: c.Live, CodexLoginMode: c.codexLoginMode(),
 	})
 	return &state{r: &router.Router{Catalog: cat, Probe: probe, Discovered: c.discovered()}, settings: s}, nil
 }
@@ -411,6 +426,7 @@ func (c *Core) Pools(ctx context.Context) (*engine.Pools, error) {
 	}
 	p := router.ProbePools(ctx, cat, router.ProbeEnv{
 		Home: c.Home, Getenv: c.getenv, Now: c.now(), GatewayURL: s.GatewayURL, Installed: installed, Live: c.Live,
+		CodexLoginMode: c.codexLoginMode(),
 	})
 	p.Schema = engine.SchemaPools
 	b, err := json.Marshal(p)

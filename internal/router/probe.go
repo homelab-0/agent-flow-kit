@@ -25,15 +25,17 @@ type ProbeEnv struct {
 	// Installed reports whether a CLI is installed and answers. Nil uses
 	// the cached --version check (VerifyBinaries).
 	Installed func(name string) bool
-	// HTTP is used for the Claude usage API and the gateway (nil: a
-	// client with short timeouts).
+	// HTTP is used for the gateway's model list (nil: a client with
+	// short timeouts).
 	HTTP *http.Client
-	// Live turns the network probes on: Claude's usage API and the
-	// gateway's model list. Off, pools come from local activity and
-	// signals only.
+	// Live turns the gateway probe on. Off, pools come from local
+	// activity and signals only.
 	Live bool
-	// ClaudeUsageURL overrides the usage endpoint (tests).
-	ClaudeUsageURL string
+	// CodexLoginMode reports how Codex is signed in, from Codex's own
+	// `codex login status`: "chatgpt" (the plan), "apikey" (metered), or
+	// "" when it can't tell. AFK never opens Codex's auth.json to find
+	// out. Nil means unknown.
+	CodexLoginMode func(ctx context.Context) string
 }
 
 func (e ProbeEnv) getenv(k string) string {
@@ -85,15 +87,21 @@ func ProbePools(ctx context.Context, cat *Catalog, e ProbeEnv) *Probe {
 		}()
 	}
 	var gw HarnessState
-	var claudeQ, codexQ quota
+	var codexQ quota
+	codexMode := ""
 	wg.Add(3)
 	go func() { defer wg.Done(); gw = probeGateway(ctx, e) }()
-	go func() { defer wg.Done(); claudeQ = probeClaudeQuota(ctx, e) }()
 	go func() { defer wg.Done(); codexQ = probeCodexQuota(e) }()
+	go func() {
+		defer wg.Done()
+		if e.CodexLoginMode != nil && nonEmpty(e.path("AFK_CODEX_AUTH_FILE", ".codex/auth.json")) {
+			codexMode = e.CodexLoginMode(ctx)
+		}
+	}()
 	wg.Wait()
 	harnesses["litellm_gateway"] = gw
 
-	binds := accountBindings(e, harnesses)
+	binds := accountBindings(e, harnesses, codexMode)
 	bound := func(h, pool string) bool { return contains(binds[pool], h) }
 
 	since := e.Now.Add(-300 * time.Minute)
@@ -126,7 +134,7 @@ func ProbePools(ctx context.Context, cat *Catalog, e ProbeEnv) *Probe {
 
 	pc := poolCalc{cat: cat, sig: sig, now: e.Now.Unix(), gatewayOn: gw.Online, harnesses: harnesses, binds: binds}
 	pools := map[string]Pool{
-		"anthropic-max":    pc.calc("anthropic-max", c5, false, []string{"claude"}, claudeQ, claudeMt),
+		"anthropic-max":    pc.calc("anthropic-max", c5, false, []string{"claude"}, quota{}, claudeMt),
 		"openai-plus":      pc.calc("openai-plus", x5, false, []string{"codex"}, codexQ, openaiMt),
 		"antigravity-pool": pc.calc("antigravity-pool", a5, false, []string{"agy"}, quota{}, 0),
 		"xai-grok":         pc.calc("xai-grok", xai5, false, []string{"grok", "opencode"}, quota{}, grokMt),
@@ -502,9 +510,16 @@ func maxInt64(a, b int64) int64 {
 
 // --- account bindings -------------------------------------------------------
 
-// accountBindings maps each pool to the CLIs signed in to it. A third-party
-// CLI (opencode, pi) signed in with a vendor plan shares that plan's pool.
-func accountBindings(e ProbeEnv, h map[string]HarnessState) map[string][]string {
+// accountBindings maps each pool to the CLIs signed in to it. Every check
+// here looks only at whether a login file exists and is not empty: AFK
+// never opens a credential file. How Codex is signed in (the ChatGPT plan
+// or an API key) comes from Codex's own status command.
+//
+// A third-party CLI (opencode, pi) signed in with a vendor plan would share
+// that plan's pool, but which plan is written only inside its credential
+// file, so AFK no longer binds them to vendor pools: opencode draws on its
+// own free pool, and pi on none.
+func accountBindings(e ProbeEnv, h map[string]HarnessState, codexMode string) map[string][]string {
 	out := map[string][]string{}
 	add := func(pool, harness string) {
 		if !contains(out[pool], harness) {
@@ -514,8 +529,8 @@ func accountBindings(e ProbeEnv, h map[string]HarnessState) map[string][]string 
 	if exists(e.path("AFK_CLAUDE_CREDS_FILE", ".claude/.credentials.json")) || isDir(filepath.Join(e.Home, ".claude")) {
 		add("anthropic-max", "claude")
 	}
-	if codex := e.path("AFK_CODEX_AUTH_FILE", ".codex/auth.json"); exists(codex) {
-		if codexMetered(codex) {
+	if nonEmpty(e.path("AFK_CODEX_AUTH_FILE", ".codex/auth.json")) {
+		if codexMode == "apikey" {
 			add("api-metered", "codex")
 		} else {
 			add("openai-plus", "codex")
@@ -524,25 +539,11 @@ func accountBindings(e ProbeEnv, h map[string]HarnessState) map[string][]string 
 	if h["agy"].Installed {
 		add("antigravity-pool", "agy")
 	}
-	var grokAuth map[string]json.RawMessage
-	if readJSONFile(e.path("AFK_GROK_AUTH_FILE", ".grok/auth.json"), &grokAuth) && len(grokAuth) > 0 {
+	if nonEmpty(e.path("AFK_GROK_AUTH_FILE", ".grok/auth.json")) {
 		add("xai-grok", "grok")
 	}
-	ocAuth := e.path("AFK_OPENCODE_AUTH_FILE", ".local/share/opencode/auth.json")
-	if h["opencode"].Installed || exists(ocAuth) {
+	if h["opencode"].Installed || exists(e.path("AFK_OPENCODE_AUTH_FILE", ".local/share/opencode/auth.json")) {
 		add("opencode-free", "opencode")
-		for prov, typ := range authEntries(ocAuth, "api") {
-			add(planPool(prov, typ, map[string]string{
-				"openai": "openai-plus", "codex": "openai-plus", "openai-codex": "openai-plus",
-				"anthropic": "anthropic-max", "google": "antigravity-pool", "gemini": "antigravity-pool",
-				"xai": "xai-grok", "grok": "xai-grok",
-			}, false), "opencode")
-		}
-	}
-	for prov, typ := range authEntries(e.path("AFK_PI_AUTH_FILE", ".pi/agent/auth.json"), "oauth") {
-		add(planPool(prov, typ, map[string]string{
-			"openai": "openai-plus", "codex": "openai-plus", "anthropic": "anthropic-max", "xai": "xai-grok", "grok": "xai-grok",
-		}, true), "pi")
 	}
 	for k := range out {
 		sort.Strings(out[k])
@@ -550,73 +551,11 @@ func accountBindings(e ProbeEnv, h map[string]HarnessState) map[string][]string 
 	return out
 }
 
-// planPool is the pool a provider login draws on. prefix matches the
-// provider name by its start (pi's names carry suffixes).
-func planPool(prov, typ string, plans map[string]string, prefix bool) string {
-	if typ != "oauth" {
-		return "api-metered"
-	}
-	if p, ok := plans[prov]; ok {
-		return p
-	}
-	if prefix {
-		for name, p := range plans {
-			if strings.HasPrefix(prov, name) {
-				return p
-			}
-		}
-	}
-	return prov + "-oauth"
-}
-
-// authEntries lists provider -> auth type from an opencode/pi auth file.
-// Only the type is read.
-func authEntries(path, defType string) map[string]string {
-	var raw map[string]struct {
-		Type string `json:"type"`
-	}
-	out := map[string]string{}
-	if !readJSONFile(path, &raw) {
-		return out
-	}
-	for prov, v := range raw {
-		t := v.Type
-		if t == "" {
-			t = defType
-		}
-		out[prov] = t
-	}
-	return out
-}
-
-func codexMetered(path string) bool {
-	var v struct {
-		Mode   string          `json:"auth_mode"`
-		Key    json.RawMessage `json:"OPENAI_API_KEY"`
-		Tokens *struct {
-			Access  json.RawMessage `json:"access_token"`
-			Refresh json.RawMessage `json:"refresh_token"`
-			ID      json.RawMessage `json:"id_token"`
-		} `json:"tokens"`
-	}
-	if !readJSONFile(path, &v) {
-		return false
-	}
-	switch strings.ToLower(v.Mode) {
-	case "apikey", "api", "api_key", "api-key":
-		return true
-	}
-	hasKey := present(v.Key)
-	hasOAuth := v.Tokens != nil && (present(v.Tokens.Access) || present(v.Tokens.Refresh) || present(v.Tokens.ID))
-	return hasKey && !hasOAuth
-}
-
-func present(v json.RawMessage) bool {
-	switch string(v) {
-	case "", "null", `""`:
-		return false
-	}
-	return true
+// nonEmpty: a regular file bigger than an empty JSON object ("{}", which a
+// CLI that signed out may leave behind). Its contents are never read.
+func nonEmpty(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && fi.Mode().IsRegular() && fi.Size() > 4
 }
 
 func readJSONFile(path string, v any) bool {

@@ -136,6 +136,9 @@ func explainText(ex *engine.Explain) string {
 	head := ""
 	if r.PoolHeadroomPct != nil {
 		head = fmt.Sprintf("(%s%% left, %s)", num(r.PoolHeadroomPct), r.PoolState)
+		if b := r.PoolBasis(); b != "" {
+			head = fmt.Sprintf("(%s%% left, %s, %s)", num(r.PoolHeadroomPct), r.PoolState, b)
+		}
 	}
 	fmt.Fprintf(&b, "  pool: %s %s\n", pool, head)
 	score := "-"

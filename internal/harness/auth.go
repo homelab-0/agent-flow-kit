@@ -1,13 +1,15 @@
 package harness
 
 import (
-	"encoding/json"
+	"bytes"
+	"context"
 	"errors"
-	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // AuthState is whether a CLI looks signed in, from what it keeps on disk.
@@ -22,12 +24,11 @@ const (
 	AuthNotInstalled AuthState = "not_installed"
 )
 
-// The checks below only test that a credential exists. Where a check has
-// to look inside a credential file, it decodes only the field names and
-// whether each value is empty: token values are never decoded into
-// strings, printed, logged or stored. A file AFK can't read (permissions,
-// I/O errors, malformed JSON) gives "unknown", not "signed_out", because
-// the check could not tell whether a login is there.
+// The checks below only test that a login is there: a credential file
+// exists and is not empty, a state directory has something in it, or an
+// API key variable is set. AFK never opens a credential file, so no token
+// is ever read, printed, logged, stored or sent anywhere. A file AFK can't
+// stat (permissions, I/O errors) gives "unknown", not "signed_out".
 
 func claudeAuth(e Env) (AuthState, string) {
 	// Claude Code reads its login from CLAUDE_CONFIG_DIR when that is set,
@@ -36,7 +37,7 @@ func claudeAuth(e Env) (AuthState, string) {
 	if dir := e.getenv("CLAUDE_CONFIG_DIR"); dir != "" {
 		path = filepath.Join(dir, ".credentials.json")
 	}
-	st, why := claudeCreds(path)
+	st, why := fileState(path, "Claude ")
 	if st == AuthSignedOut && e.OS == "darwin" {
 		// On macOS Claude Code keeps its login in the Keychain, which
 		// AFK does not read.
@@ -45,66 +46,33 @@ func claudeAuth(e Env) (AuthState, string) {
 	return st, why
 }
 
-func claudeCreds(path string) (AuthState, string) {
-	var v struct {
-		OAuth map[string]json.RawMessage `json:"claudeAiOauth"`
-	}
-	switch err := readJSON(path, &v); {
-	case errors.Is(err, fs.ErrNotExist):
-		return AuthSignedOut, "no Claude login found"
-	case err != nil:
-		return AuthUnknown, "could not read the Claude login file"
-	}
-	if present(v.OAuth["accessToken"]) || present(v.OAuth["refreshToken"]) {
-		return AuthOK, ""
-	}
-	return AuthSignedOut, "no Claude login found"
-}
-
 func codexAuth(e Env) (AuthState, string) {
 	home := e.getenv("CODEX_HOME")
 	if home == "" {
 		home = e.home(".codex")
 	}
-	var v struct {
-		Key    json.RawMessage            `json:"OPENAI_API_KEY"`
-		Tokens map[string]json.RawMessage `json:"tokens"`
-	}
-	switch err := readJSON(filepath.Join(home, "auth.json"), &v); {
+	return fileState(filepath.Join(home, "auth.json"), "Codex ")
+}
+
+// fileState: signed in when the login file exists and is bigger than an
+// empty JSON object. Only the file's metadata is looked at.
+func fileState(path, who string) (AuthState, string) {
+	fi, err := os.Stat(path)
+	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		return AuthSignedOut, "no Codex login found"
+		return AuthSignedOut, "no " + who + "login found"
 	case err != nil:
-		return AuthUnknown, "could not read the Codex login file"
-	}
-	if present(v.Key) || present(v.Tokens["access_token"]) || present(v.Tokens["refresh_token"]) || present(v.Tokens["account_id"]) {
+		return AuthUnknown, "could not check the " + who + "login file"
+	case fi.Mode().IsRegular() && fi.Size() > MinLoginSize:
 		return AuthOK, ""
 	}
-	return AuthSignedOut, "no Codex login found"
+	return AuthSignedOut, "no " + who + "login found"
 }
 
-// present reports whether a raw JSON value is set: not missing, not null
-// and not an empty string. It never decodes the value itself.
-func present(raw json.RawMessage) bool {
-	t := strings.TrimSpace(string(raw))
-	return t != "" && t != "null" && t != `""`
-}
-
-// nonEmptyJSONObject: signed in when the file holds a JSON object with at
-// least one key.
-func nonEmptyJSONObject(parts ...string) func(Env) (AuthState, string) {
-	return func(e Env) (AuthState, string) {
-		var v map[string]json.RawMessage
-		switch err := readJSON(e.home(parts...), &v); {
-		case errors.Is(err, fs.ErrNotExist):
-			return AuthSignedOut, "no login found"
-		case err != nil:
-			return AuthUnknown, "could not read the login file"
-		case len(v) > 0:
-			return AuthOK, ""
-		}
-		return AuthSignedOut, "no login found"
-	}
-}
+// MinLoginSize is the largest file that can't hold a login: a CLI that
+// signed out often leaves "{}" (or "{}\n") behind. Every real login file is
+// far bigger. Size is metadata: the file is still never opened.
+const MinLoginSize = 4
 
 // nonEmptyDir: signed in when the CLI has written anything to its state
 // directory. An install that never logged in leaves it missing or empty.
@@ -124,18 +92,7 @@ func nonEmptyDir(parts ...string) func(Env) (AuthState, string) {
 }
 
 func nonEmptyFile(parts ...string) func(Env) (AuthState, string) {
-	return func(e Env) (AuthState, string) {
-		fi, err := os.Stat(e.home(parts...))
-		switch {
-		case errors.Is(err, fs.ErrNotExist):
-			return AuthSignedOut, "no login found"
-		case err != nil:
-			return AuthUnknown, "could not read the login file"
-		case fi.Mode().IsRegular() && fi.Size() > 0:
-			return AuthOK, ""
-		}
-		return AuthSignedOut, "no login found"
-	}
+	return func(e Env) (AuthState, string) { return fileState(e.home(parts...), "") }
 }
 
 // fileOrEnv: signed in when the OAuth file exists or one of the API key
@@ -155,16 +112,41 @@ func fileOrEnv(file []string, vars ...string) func(Env) (AuthState, string) {
 	}
 }
 
-// readJSON decodes a JSON file. A missing file returns an error wrapping
-// fs.ErrNotExist; any other failure (permissions, I/O, bad JSON) returns
-// a different error, so callers can tell "absent" from "can't tell".
-func readJSON(path string, v any) error {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return err
+// CodexLoginMode asks Codex how it is signed in (`codex login status`):
+// "chatgpt" for the ChatGPT plan, "apikey" for an API key, "" when it can't
+// tell. Only those words are looked for; the rest of the answer is dropped
+// without being kept or printed.
+func CodexLoginMode(ctx context.Context, e Env) string {
+	a, ok := Lookup("codex")
+	if !ok {
+		return ""
 	}
-	if err := json.Unmarshal(b, v); err != nil {
-		return fmt.Errorf("%s: %w", path, err)
+	bin := Locate(e, a)
+	if bin == "" {
+		return ""
 	}
-	return nil
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "login", "status")
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	cmd.WaitDelay = time.Second
+	_ = cmd.Run()
+	mode := ClassifyCodexLogin(out.String())
+	out.Reset()
+	return mode
+}
+
+// ClassifyCodexLogin reads `codex login status` output.
+func ClassifyCodexLogin(s string) string {
+	l := strings.ToLower(s)
+	switch {
+	case strings.Contains(l, "not logged in"):
+		return ""
+	case strings.Contains(l, "api key"):
+		return "apikey"
+	case strings.Contains(l, "chatgpt"):
+		return "chatgpt"
+	}
+	return ""
 }

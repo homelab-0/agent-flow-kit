@@ -83,7 +83,7 @@ For offline use and tests, `AFK_BENCHMARK_FEED_DIR` reads each feed from a file 
 | `requires_entitlement` | `mythos` or `daybreak-blue`: only when you are entitled (`security_models`) |
 | `specialist_domain` | `security`: preferred for security work, held back elsewhere |
 | `frontier_only` | kept for the hardest work |
-| `scoped_quota` | `fable`: skipped when the Fable weekly quota is 90% used |
+| `scoped_quota` | `fable`: a model with its own weekly quota. AFK can't see that quota without the Claude login, so it isn't checked; a quota failure from a run sets the pool aside |
 | `is_bridged_oauth` | a third-party CLI using a vendor login |
 | `arena_match`, `models_dev_provider`, `models_dev_id` | the names the sync looks the model up by |
 | `benchmarks` | per task class: `score`, `benchmark` (its name) and, when synced, `basis`, `synced_at`, `synced_epoch`, `live`, and for a measured score `feed`, `rank`, `value` and `match` |
