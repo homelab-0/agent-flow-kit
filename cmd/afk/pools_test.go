@@ -102,3 +102,19 @@ func TestPoolsTextShowsPacing(t *testing.T) {
 		t.Error("with route.pacing off the routing effect is shown")
 	}
 }
+
+func TestPoolsJSONIsThePoolsDocument(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PATH", t.TempDir())
+	var out, errb bytes.Buffer
+	if code := poolsCmd([]string{"--json"}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+	var doc struct {
+		Schema string                 `json:"schema"`
+		Pools  map[string]router.Pool `json:"pools"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil || doc.Schema != router.PoolsSchema || len(doc.Pools) == 0 {
+		t.Fatalf("%v %q %d pools", err, doc.Schema, len(doc.Pools))
+	}
+}

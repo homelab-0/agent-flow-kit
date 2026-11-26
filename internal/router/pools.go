@@ -26,7 +26,9 @@ type Pool struct {
 	Window string `json:"window,omitempty"`
 	// Pacing is where the window is heading at the rate so far, when the
 	// figures are measured.
-	Pacing         *Pacing `json:"pacing,omitempty"`
+	Pacing *Pacing `json:"pacing,omitempty"`
+	// observed is when the measured reading was taken.
+	observed       time.Time
 	DegradedKind   *string `json:"degraded_kind,omitempty"`
 	DegradedReason *string `json:"degraded_reason,omitempty"`
 }

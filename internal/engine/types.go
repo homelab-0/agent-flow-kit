@@ -264,7 +264,7 @@ type Pool struct {
 // named, else "weekly" when the weekly reading is the fuller one (or the
 // only one), else "5h".
 func (p Pool) Window() string {
-	if p.UsageWindow != "" {
+	if p.UsageWindow == "5h" || p.UsageWindow == "weekly" {
 		return p.UsageWindow
 	}
 	// The figure shown is the fuller window's, so name that one.

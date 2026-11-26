@@ -224,7 +224,7 @@ type quota struct {
 	Window          string   `json:"window,omitempty"`
 	PlanType        *string  `json:"plan_type,omitempty"`
 	ExtraUsageOn    bool     `json:"extra_usage_enabled,omitempty"`
-	FetchedEpochRaw int64    `json:"-"`
+	FetchedEpochRaw int64    `json:"-"` // when the reading was taken (unix seconds), 0 unknown
 }
 
 // --- signals ---------------------------------------------------------------
@@ -444,6 +444,9 @@ func (pc *poolCalc) calc(pid string, sessions int, local bool, defaultH []string
 		p.WeeklyUsedPct, p.FiveHourUsedPct = live.SevenDayPct, live.FiveHourPct
 		p.FableWeeklyUsedPct, p.ResetsAt = live.FableWeeklyPct, live.ResetsAt
 		p.Window = live.Window
+		if live.FetchedEpochRaw > 0 {
+			p.observed = time.Unix(live.FetchedEpochRaw, 0)
+		}
 	}
 	if p.ResetsAt == nil && live.OK && live.ResetsAtEpoch != nil && src == live.Source {
 		r := time.Unix(int64(*live.ResetsAtEpoch), 0).UTC().Format(time.RFC3339)

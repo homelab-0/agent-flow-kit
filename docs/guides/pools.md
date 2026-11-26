@@ -55,7 +55,7 @@ Signals are written by one-shot runs (`afk -p`) today, under a short lock so run
 
 ## Seeing it
 
-`afk pools` lists every pool with its state, how much is left and how that was found. Under a measured pool it shows where the window is heading at the rate so far, for example `weekly window resets in 9h with ~58% unused at this rate` or `5h window runs out 16:40 at this rate, before it resets in 3h`, and, with [plan pacing](routing.md#plan-pacing) on, how much that moves routing. `afk pools --json` prints the same, with `pacing` per pool.
+`afk pools` lists every pool with its state, how much is left and how that was found. Under a measured pool with a 5-hour or weekly window it shows where the window is heading at the rate so far, projected from when the reading was taken (in the first 10% of a window it says it is too early), for example `weekly window resets in 9h with ~58% unused at this rate` or `5h window runs out 16:40 at this rate, before it resets in 3h`, and, with [plan pacing](routing.md#plan-pacing) on, how much that moves routing. `afk pools --json` prints the [pools document](../reference/json.md#pools-afk-router-pools3), with `pacing` per pool.
 
 `afk --explain` shows each route's pool, headroom, state and, for an estimate, `estimated from recent sessions`; `--explain --json` has every figure, with the source in `pool_quota_source`. The receipt shows the pool before and after a session.
 

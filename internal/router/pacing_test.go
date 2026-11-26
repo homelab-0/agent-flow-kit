@@ -96,3 +96,31 @@ func TestCodexReadingKeepsTheFullerWindowsReset(t *testing.T) {
 }
 
 func itoa64(n int64) string { return strconv.FormatInt(n, 10) }
+
+// A reading reused on later probes is projected from when it was taken:
+// its used share doesn't move, so the elapsed share mustn't either.
+func TestPaceIsFromTheReading(t *testing.T) {
+	taken := time.Unix(1795000000, 0)
+	p := measured(30, "5h", 4*time.Hour, taken) // 1 h in, 30% used: runs dry
+	p.observed = taken
+	first := pace(p, taken)
+	later := pace(p, taken.Add(2*time.Hour))
+	if first == nil || later == nil || first.RunsOutAt == nil || later.RunsOutAt == nil || later.Adjustment != first.Adjustment {
+		t.Fatalf("the same reading projected differently later: %+v then %+v", first, later)
+	}
+}
+
+// A window length AFK doesn't know is not taken for 5 hours.
+func TestPaceSkipsAnUnknownWindow(t *testing.T) {
+	now := int64(1795000000)
+	doc := `{"type":"token_count","rate_limits":{"primary":{"used_percent":60,"window_minutes":60,"resets_at":` + itoa64(now+1800) + `}}}`
+	q, ok := parseCodexRateLimits([]byte(doc), now)
+	if !ok || q.Window != "other" {
+		t.Fatalf("%+v %v", q, ok)
+	}
+	used := q.UsedPct
+	r := time.Unix(now+1800, 0).UTC().Format(time.RFC3339)
+	if pc := pace(Pool{QuotaSource: "codex_rate_limits", UsedPct: &used, ResetsAt: &r, Window: q.Window, FiveHourUsedPct: q.FiveHourPct}, time.Unix(now, 0)); pc != nil {
+		t.Errorf("a 60-minute window was projected: %+v", pc)
+	}
+}

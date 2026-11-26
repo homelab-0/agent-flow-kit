@@ -56,7 +56,7 @@ Options that take a value also accept `--option=value`.
 
 ## `afk pools`
 
-`afk pools` lists each plan and gateway pool: its state, how much is left, and whether that figure is measured or estimated. Under a measured pool, a second line says where its window is heading at the rate so far, and how much [plan pacing](../guides/routing.md#plan-pacing) moves routing because of it. `--json` prints `{"pools": {...}}` with every figure and each pool's `pacing`.
+`afk pools` lists each plan and gateway pool: its state, how much is left, and whether that figure is measured or estimated. Under a measured pool whose window is 5 hours or a week, a second line says where its window is heading (or that it is too early in the window to say) at the rate so far, and how much [plan pacing](../guides/routing.md#plan-pacing) moves routing because of it. `--json` prints the [pools document](json.md#pools-afk-router-pools3), with every figure and each pool's `pacing`.
 
 ## `afk pools clear`
 

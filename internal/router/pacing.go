@@ -52,6 +52,10 @@ var measuredSources = map[string]bool{
 
 // pace projects a pool's window, or returns nil when its figures are not
 // a measurement with a known window and reset.
+//
+// The projection is from when the reading was taken: a reading reused on
+// later probes keeps the same used share, so measuring the elapsed share
+// at the probe would drift it toward "unused" as time passed.
 func pace(p Pool, now time.Time) *Pacing {
 	if !measuredSources[p.QuotaSource] || p.UsedPct == nil || p.ResetsAt == nil {
 		return nil
@@ -61,15 +65,20 @@ func pace(p Pool, now time.Time) *Pacing {
 		return nil
 	}
 	reset, err := time.Parse(time.RFC3339, *p.ResetsAt)
-	if err != nil {
+	if err != nil || !reset.After(now) {
 		return nil
 	}
-	left := reset.Sub(now)
+	at := now
+	if !p.observed.IsZero() && p.observed.Before(now) {
+		at = p.observed
+	}
+	left := reset.Sub(at)
 	if left <= 0 || left > length {
 		return nil
 	}
 	elapsed := 1 - float64(left)/float64(length)
 	out := &Pacing{Window: poolWindow(p), ResetsAt: *p.ResetsAt, ElapsedPct: math.Round(elapsed * 100)}
+	now = at // the projection below is as of the reading
 	if elapsed < paceMinElapsed {
 		return out
 	}

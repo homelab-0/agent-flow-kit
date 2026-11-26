@@ -99,7 +99,7 @@ func poolsList(c *core.Core, argv []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if f.json {
-		return printJSON(stdout, stderr, map[string]any{"pools": p.Pools})
+		return printJSON(stdout, stderr, p)
 	}
 	pacing := true
 	if s, err := c.LoadSettings(c.Cwd); err == nil {

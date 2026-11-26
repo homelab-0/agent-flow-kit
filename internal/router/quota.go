@@ -89,6 +89,7 @@ func probeCodexQuota(e ProbeEnv) quota {
 	if bestAt < 0 {
 		return quota{}
 	}
+	best.FetchedEpochRaw = bestAt
 	return best
 }
 
@@ -290,12 +291,15 @@ func parseCodexRateLimits(line []byte, now int64) (quota, bool) {
 			if w.ResetsAt != nil {
 				rst = f64(*w.ResetsAt)
 			}
-			window = ""
 			switch {
 			case mins == 300:
 				window = "5h"
 			case mins == 10080:
 				window = "weekly"
+			case mins > 0:
+				window = "other" // a length AFK doesn't project
+			default:
+				window = ""
 			}
 		}
 	}
