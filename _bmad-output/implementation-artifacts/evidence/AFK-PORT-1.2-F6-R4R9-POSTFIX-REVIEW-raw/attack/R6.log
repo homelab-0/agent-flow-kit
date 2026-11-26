@@ -1,9 +1,0 @@
-acquire rc=3
-owner_state=DEAD
-owner_detail=pid 2867969 is no longer running
-reason a run would report: OPERATION_LOCK_OWNER_UNVERIFIABLE
-action:  Confirm no lifecycle operation is running on this installation, then remove the reported lock directory by hand.
-reclamation reported: false
-==> F6-R6 CONFIRMED: the owner is proven DEAD ('pid 2867969 is no longer running') and the
-    run still reports OPERATION_LOCK_OWNER_UNVERIFIABLE and tells an operator to
-    remove by hand a lock the kit itself has just proven reclaimable.

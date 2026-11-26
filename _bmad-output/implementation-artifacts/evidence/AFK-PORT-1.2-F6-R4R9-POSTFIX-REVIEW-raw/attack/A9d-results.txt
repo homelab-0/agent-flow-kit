@@ -1,9 +1,0 @@
-A9d — forced lost take, 15 rounds each tree (attack/A9d-forced-lost-take.sh)
-
-FIXED TREE
-  sample: rc=3 reclaimed=true reports=1 stolen=stolen detail='pid 3034421 is no longer running'
-  rounds=15  exactly-once=15  silent=0  duplicated=0
-
-R9-REVERTED TREE
-  round 9..15: SILENT DESTRUCTION rc=3 reclaimed=false reports=0
-  rounds=15  exactly-once=0  silent=15  duplicated=0

@@ -1,23 +1,18 @@
 // afk is AFK's command: it shows the route card for a task, lets the user
 // change the pick, starts the chosen CLI as a foreground child, and prints
 // a receipt when the CLI exits. Routing, launch plans, one-shot answers
-// (-p) and the benchmark sync all run in Go (internal/core,
-// internal/oneshot, internal/bench); AFK_BACKEND=bash still sends
-// everything to the bash engine (agent-flow-kit agent), the way afk worked
-// before.
+// (-p) and the benchmark sync run in internal/core, internal/oneshot and
+// internal/bench.
 package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -32,18 +27,6 @@ import (
 	"github.com/jlengelbrecht/agent-flow-kit/internal/tui"
 )
 
-const goHelp = `
-Terminal front end (this afk):
-  -y, --yes              start the router's choice without showing the route card
-  On the route card: ↵ launch · ↑↓/jk pick · tab effort · e edit the prompt ·
-  y twice for yolo · ? why · esc cancel. Without a terminal, and with -p,
-  --explain or --launch-plan, afk runs the engine directly.
-
-Commands:
-  afk harness [--all] [--json]   the agent CLIs found on this machine
-  afk bench sync [--json]        refresh the benchmark catalog now
-`
-
 func main() { os.Exit(run(os.Args[1:])) }
 
 func run(argv []string) int {
@@ -57,28 +40,7 @@ func run(argv []string) int {
 			return benchCmd(argv[1:], os.Stdout, os.Stderr)
 		}
 	}
-	args := cli.Parse(argv)
-	if os.Getenv("AFK_BACKEND") == "bash" {
-		return runBash(args)
-	}
-	return runGo(args)
-}
-
-// runBash is afk over the bash engine, as before the Go engine.
-func runBash(args cli.Args) int {
-	path, err := engine.Locate()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "afk:", err)
-		return 127
-	}
-	if args.Help {
-		return help(path)
-	}
-	tty := term.IsTerminal(os.Stdin.Fd()) && term.IsTerminal(os.Stdout.Fd())
-	if args.Engine || !tty {
-		return handOver(path, args.Forward)
-	}
-	return interactive(&engine.Engine{Path: path}, args, termWidth())
+	return runGo(cli.Parse(argv))
 }
 
 func termWidth() int {
@@ -87,27 +49,6 @@ func termWidth() int {
 		width = 80
 	}
 	return width
-}
-
-// handOver replaces afk with the engine, same arguments (minus --yes).
-func handOver(path string, forward []string) int {
-	argv := append([]string{path, "agent"}, forward...)
-	err := syscall.Exec(path, argv, os.Environ())
-	fmt.Fprintln(os.Stderr, "afk: cannot run the engine:", err)
-	return 127
-}
-
-func help(path string) int {
-	cmd := exec.Command(path, "agent", "--help")
-	var out bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, os.Stderr
-	if err := cmd.Run(); err != nil {
-		fmt.Fprintln(os.Stderr, "afk:", err)
-		return 1
-	}
-	fmt.Print(out.String())
-	fmt.Print(goHelp)
-	return 0
 }
 
 func interactive(eng tui.Backend, args cli.Args, width int) int {
@@ -161,10 +102,6 @@ func interactive(eng tui.Backend, args cli.Args, width int) int {
 
 func engineFailure(err error) int {
 	fmt.Fprintln(os.Stderr, "afk:", strings.TrimSpace(err.Error()))
-	var ee *engine.ExitError
-	if errors.As(err, &ee) && ee.Code > 0 {
-		return ee.Code
-	}
 	return 4
 }
 

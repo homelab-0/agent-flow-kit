@@ -1,3 +1,0 @@
-bbc84b1a22af1b20e83a5c24233c0e35227fbfea Close the xtrace credential channel and the stale-result window in the gateway launch
-1a388bff7b2ec4c640c256604af44db64ea6b4b3 Record the implementation commit SHA in the story's Dev Agent Record
-533880df5369d6d58b663ccbe61a345a26bf40d9 Add a gateway-backed launch class for local profiles on the claude harness

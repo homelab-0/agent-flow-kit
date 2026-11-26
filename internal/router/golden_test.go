@@ -41,7 +41,13 @@ func readJSON(t *testing.T, path string, v any) {
 
 // TestGoldenMatchesBashRouter runs every scenario through the Go router
 // and compares the decision, field by field, with what the bash router
-// decided for the same catalog, pools and models (testdata/gen-golden.sh).
+// decided for the same catalog, pools and models.
+//
+// testdata/golden.json is frozen: the bash router that wrote it was removed
+// (the last version is at the legacy-bash-final tag), so it can't be
+// regenerated. A new scenario needs its expected decision written by hand
+// and checked; a deliberate change in routing updates the affected entries
+// the same way.
 func TestGoldenMatchesBashRouter(t *testing.T) {
 	var scenarios []scenario
 	var probes map[string]*Probe
@@ -59,7 +65,7 @@ func TestGoldenMatchesBashRouter(t *testing.T) {
 		t.Run(s.Name, func(t *testing.T) {
 			want, ok := golden[s.Name]
 			if !ok {
-				t.Fatalf("no golden decision; rerun testdata/gen-golden.sh")
+				t.Fatalf("no golden decision for this scenario in testdata/golden.json")
 			}
 			r := &Router{Catalog: cat, Probe: probes[s.Probe], Discovered: disc.Models}
 			if s.NoDiscovered {

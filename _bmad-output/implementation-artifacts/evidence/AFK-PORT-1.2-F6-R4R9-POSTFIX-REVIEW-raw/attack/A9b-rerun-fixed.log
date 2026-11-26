@@ -1,9 +1,0 @@
-abandoned lock present: yes, inc=inc-2241912-e9ab34206cdd4b569d351f9705f5d2b7
-  rc=3
-  inc=
-  lock_inc_after=
-  another contender took the lock path first: stolen
-  the abandoned incarnation's record is gone : YES
-  stale residue left behind                  : 0
-  --> the abandoned lock was removed; rc is 3 ('observe again'), so
-      AFK_LOCK_RECLAIMED stays false and no OPERATION_LOCK_RECLAIMED is ever emitted.

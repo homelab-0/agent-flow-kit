@@ -29,7 +29,7 @@ Fields AFK can't know are `null`, never zero.
 }
 ```
 
-Version 2 drops the routes' `role` and `memory_mode` fields that version 1 had. `AFK_BACKEND=bash` still writes version 1.
+Version 2 drops the routes' `role` and `memory_mode` fields that version 1 had. Version 1 is no longer read or written.
 
 With `--harness` and `--model` together, `choice` is a pinned route (`harness`, `model`, `effort`, `entitlement_pool: null`, `reason`, `pinned: true`) and `by_harness` is empty.
 

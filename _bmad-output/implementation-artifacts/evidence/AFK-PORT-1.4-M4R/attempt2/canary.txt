@@ -1,3 +1,0 @@
-agent-flow-kit orchestration acceptance canary
-AFK-PORT-1.4 M4
-frozen 2026-08-28

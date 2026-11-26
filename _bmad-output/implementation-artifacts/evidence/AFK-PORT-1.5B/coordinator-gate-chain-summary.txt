@@ -1,9 +1,0 @@
-15B GATES: starting @ 54dfd14
-15B GATE: bash tests/lifecycle-readiness-tests.sh rc=0 277s 286 passed, 0 failed
-15B GATE: bash tests/lifecycle-dispatch-tests.sh rc=0 201s 256 passed, 0 failed
-15B GATE: bash tests/lifecycle-tests.sh rc=0 453s 478 passed, 0 failed
-15B GATE: git diff --check rc=0 0s 
-15B GATE: bash tests/run-tests.sh rc=1 2653s 555 passed, 1 failed
-15B GATES: chain complete
-
-[exited with code 0]

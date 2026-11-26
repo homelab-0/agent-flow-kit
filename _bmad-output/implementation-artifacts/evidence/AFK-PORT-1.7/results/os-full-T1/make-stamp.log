@@ -1,6 +1,0 @@
-make-stamp: OVERRIDE recorded: ORCH coordinator (Story 1.7 spike-class evaluation cell; Josh's go 2026-09-07) chose codex/openai/strong over the recommendation.
-make-stamp:   This is provenance only. It grants no bypass: the final fields are validated on their own merits.
-make-stamp: wrote /home/devbox/repos/jlengelbrecht/agent-flow-kit/_bmad-output/implementation-artifacts/evidence/AFK-PORT-1.7/results/os-full-T1/CELL-os-full-T1.md.stamp.json
-make-stamp:   codex openai/strong effort=medium cost=subscription
-make-stamp:   placement_required=false expires_at=2026-09-08T07:24:39Z
-make-stamp:   digest sha256:3bd0a91d84702f3338040225f65eb77795d3ff332af767fd3d814c704bb1c9f3

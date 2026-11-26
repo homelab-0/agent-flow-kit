@@ -1,8 +1,0 @@
-{
-  "delivery_id": "msg_coord_settle_adc58e37c16b",
-  "dispatch_id": "ctx_adc58e37c16b",
-  "kind": "worker_done",
-  "result": {
-    "status": "succeeded"
-  }
-}
