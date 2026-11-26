@@ -75,8 +75,9 @@ type Modes struct {
 	UserConfig []string `toml:"user_config"`
 	// ProjectConfig says when the CLI loads settings from the directory
 	// it runs in: "trusted" when it does so only for a directory you
-	// trusted in the CLI itself, "never" when it has none. Anything else
-	// means it may, and AFK says so when it can't stop it.
+	// trusted in the CLI itself, "never" when it has none. "unknown" (or
+	// nothing) means it may, and AFK says so when it can't stop it; an
+	// override spells it "unknown" to undo a built-in "trusted".
 	ProjectConfig string `toml:"project_config"`
 	// ModeFlags are the CLI's other flags that change what it may do
 	// without asking (its permission mode, sandbox, settings source or tool
@@ -346,9 +347,9 @@ func (m Manifest) validate(path string) error {
 		}
 	}
 	switch m.Modes.ProjectConfig {
-	case "", "trusted", "never":
+	case "", "unknown", "trusted", "never":
 	default:
-		return fmt.Errorf("%s: modes.project_config must be trusted or never", path)
+		return fmt.Errorf("%s: modes.project_config must be trusted, never or unknown", path)
 	}
 	for _, t := range []ModeFlags{m.Modes.table(false), m.Modes.table(true)} {
 		for _, mode := range PermissionModes {

@@ -37,7 +37,7 @@ auto = ["--permission-mode", "auto"]
 | `modes.bypass_flags` | other spellings of the yolo flag (Codex `--yolo`); given through `--pass`, they make the run yolo |
 | `modes.dir_flags` | flags that move the CLI to another directory (Codex `--cd`, `-C`); yolo refuses them in `--pass` |
 | `modes.user_config` | flags that keep the CLI to your own settings (Claude `--setting-sources user`); added to a one-shot run outside a trusted repository |
-| `modes.project_config` | `trusted` when the CLI itself loads a directory's settings only after you trusted it there (Codex), `never` when it has none; otherwise AFK assumes it may load them |
+| `modes.project_config` | `trusted` when the CLI itself loads a directory's settings only after you trusted it there (Codex), `never` when it has none; left out, or `unknown`, AFK assumes it may load them. An override uses `unknown` to undo a built-in `trusted` |
 | `modes.mode_flags` | the CLI's other flags that change what it may do without asking (permission mode, sandbox, settings source, tool allowlist); `--pass` refuses them unless the run is yolo |
 | `modes.config_flags`, `modes.config_keys` | flags that take a `key=value` setting (Codex `-c`), and the keys among them that change the mode; `--pass` refuses those keys, and any key below them, unless the run is yolo |
 | `modes.print.*` | the same table for one-shot (`-p`) runs, when it differs; an override changes only the entries it sets |

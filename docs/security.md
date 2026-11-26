@@ -22,10 +22,10 @@ Most agent CLIs load settings from the directory they run in: hooks, permission 
 So for a one-shot run, or one without a terminal, outside a [trusted repository](guides/permissions.md):
 
 - **Claude Code** is started with `--setting-sources user`, so it loads `~/.claude` and nothing from the directory. Its hooks, permission rules and environment don't apply.
-- **Codex** needs nothing: it reads a project's config only for a project you trusted in Codex.
+- **Codex** needs nothing: it reads a project's config only for a project you trusted in Codex. That was checked on Codex 0.172.0; on an older Codex, set `project_config = "unknown"` in a [manifest override](reference/harness-manifests.md) to get AFK's note back.
 - **OpenCode, Grok, Antigravity and Pi** have no flag AFK knows for this, so AFK starts them and says it couldn't keep the directory's settings out.
 
-AFK prints one line on stderr either way, and the launch plan carries it as `config_note`. `afk trust add <repo>` makes a repository's own settings load in these runs, as well as allowing yolo there. Instruction files such as `CLAUDE.md` and `AGENTS.md` are still read: they are text for the model, not settings.
+AFK prints one line on stderr for Claude Code and for the CLIs without such a flag, and the launch plan carries it as `config_note`. Codex gets no line. `afk trust add <repo>` lets Claude Code and those other CLIs load a repository's own settings in these runs, as well as allowing yolo there. It doesn't change Codex, which goes by the projects you trusted in Codex itself. Instruction files such as `CLAUDE.md` and `AGENTS.md` are still read: they are text for the model, not settings.
 
 ## AFK never opens a credential file
 

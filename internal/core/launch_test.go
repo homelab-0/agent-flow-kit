@@ -379,6 +379,15 @@ func TestUntrustedDirectoryKeepsProjectConfigOut(t *testing.T) {
 	if err != nil || hasRun(p.Argv, user) || p.ConfigNote != "" {
 		t.Fatalf("trusted: %+v %v", p, err)
 	}
+
+	// Settings that can't be read are not trust.
+	cfg := filepath.Join(c.Home, ".config", "afk", "config.toml")
+	if err := os.WriteFile(cfg, []byte("version = 1\n[route\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if flags, note := c.projectConfig(harness.Manifest{Name: "claude", Modes: harness.Modes{UserConfig: user}}); !reflect.DeepEqual(flags, user) || !strings.Contains(note, "couldn't read your settings") {
+		t.Fatalf("unreadable settings: %v %q", flags, note)
+	}
 }
 
 // A flag in --pass that changes the CLI's permission mode would run after

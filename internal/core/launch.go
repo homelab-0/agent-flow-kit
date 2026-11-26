@@ -116,7 +116,7 @@ func (c *Core) LaunchPlan(_ context.Context, r engine.Route, mode string, perm s
 	// trusted repository the CLI is kept to your own settings where it
 	// has a flag for that, and the plan says so either way.
 	configNote := ""
-	if (mode == "print" || c.NoTerminal) && man.Modes.ProjectConfig == "" {
+	if (mode == "print" || c.NoTerminal) && (man.Modes.ProjectConfig == "" || man.Modes.ProjectConfig == "unknown") {
 		if flags, note := c.projectConfig(man); note != "" {
 			modeFlags, configNote = append(modeFlags, flags...), note
 		}
@@ -166,16 +166,20 @@ func (c *Core) LaunchPlan(_ context.Context, r engine.Route, mode string, perm s
 // the CLI's flags that keep it to your own settings, or, when it has none,
 // only a note that says so.
 func (c *Core) projectConfig(man harness.Manifest) (flags []string, note string) {
+	// Settings that can't be read say nothing about trust, so the
+	// directory counts as untrusted.
+	root, ok := "", false
 	s, err := c.LoadSettings(c.cwd())
-	if err != nil {
-		return nil, ""
+	if err == nil {
+		root, ok = config.Trusted(s, c.Home, c.cwd())
 	}
-	root, ok := config.Trusted(s, c.Home, c.cwd())
 	if ok {
 		return nil, ""
 	}
 	how := "this directory isn't in a git repository you trust"
-	if root != "" {
+	if err != nil {
+		how = "afk couldn't read your settings to see whether this directory is trusted"
+	} else if root != "" {
 		how = root + " isn't trusted (afk trust add " + root + ")"
 	}
 	if len(man.Modes.UserConfig) > 0 {
