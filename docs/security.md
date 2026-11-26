@@ -41,6 +41,7 @@ AFK does not change your CLIs' own settings. Yolo applies to one launch and is n
 
 - The gateway you configured, for its model list.
 - The public benchmark feeds (Hugging Face's dataset server for the LMArena leaderboards, and models.dev), when the benchmark catalog is refreshed: about once a day, or when you run `afk bench sync`. These are plain GETs with no key, token or identifier of yours.
+- Your npm registry, when you run `afk harness add` or `update`: npm is run from a directory of AFK's own, so the registry is the one in your own npm settings, never one a repository's `.npmrc` names.
 
 Nothing else leaves your machine: no telemetry, no analytics.
 
