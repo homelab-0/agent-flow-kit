@@ -13,7 +13,8 @@ login = ["grok", "login"]
 [modes]
 verified = "1.0.92"
 read-only = ["--permission-mode", "plan"]
-ask = []
+# ask is pinned, so a permission mode in Grok's config can't loosen it.
+ask = ["--permission-mode", "default"]
 edits = ["--permission-mode", "acceptEdits"]
 auto = ["--permission-mode", "auto"]
 yolo = ["--always-approve"]

@@ -85,4 +85,9 @@ func TestPermissionModeFlag(t *testing.T) {
 	if a := Parse(strings.Fields("--mode reckless x")); a.BadMode != "reckless" || a.Flags.Perm != "" || a.Mode != "" {
 		t.Errorf("--mode reckless: %+v", a)
 	}
+	for _, argv := range [][]string{{"--mode=", "x"}, {"x", "--mode"}, {"--mode", "", "x"}} {
+		if a := Parse(argv); !a.HasBadMode() {
+			t.Errorf("%q: an empty --mode is accepted", argv)
+		}
+	}
 }

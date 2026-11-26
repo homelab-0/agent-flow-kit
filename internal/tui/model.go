@@ -112,6 +112,7 @@ type Model struct {
 	errText   string
 	nextBest  int
 	input     textinput.Model
+	yoloSet   bool // y has set the yolo toggle
 
 	dec Decision
 
@@ -178,13 +179,7 @@ func (m *Model) poolsCmd() tea.Cmd {
 }
 
 func (m *Model) planCmd() tea.Cmd {
-	perm := m.card.Mode
-	if perm == "" || perm == "yolo" {
-		perm = "ask"
-	}
-	if m.card.Yolo {
-		perm = "yolo"
-	}
+	perm := m.card.LaunchMode()
 	be, r, pass, p, parent := m.be, m.card.Route(m.card.Sel), m.opt.Pass, m.card.Prompt, m.ctx
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(parent, planTimeout)
@@ -292,7 +287,9 @@ func (m *Model) onExplain(msg explainMsg) tea.Cmd {
 	for h, mi := range msg.ex.ModeByHarness {
 		m.card.ModeNotes[h] = mi.Note
 	}
-	if msg.ex.Mode == "yolo" {
+	// A routed yolo turns the toggle on, unless you already set it with
+	// y: a reroute never turns yolo back on after you turned it off.
+	if msg.ex.Mode == "yolo" && !m.yoloSet {
 		m.card.Yolo = true
 	}
 	m.card.Task, m.card.Guessed, m.card.Prefer = msg.ex.Task, msg.ex.TaskGuessed, msg.ex.Prefer
@@ -466,12 +463,12 @@ func (m *Model) cardKey(key string) tea.Cmd {
 	case "y":
 		switch {
 		case m.card.Yolo:
-			m.card.Yolo = false
+			m.card.Yolo, m.yoloSet = false, true
 			m.notice = "yolo is off: the CLI asks before it acts"
 		case m.opt.YoloBlock != "":
 			m.notice = m.opt.YoloBlock
 		case armed:
-			m.card.Yolo = true
+			m.card.Yolo, m.yoloSet = true, true
 		default:
 			m.yoloArmed = true
 			m.notice = "press y again: " + routeName(r) + " will act without asking (its own skip-permissions flag)"

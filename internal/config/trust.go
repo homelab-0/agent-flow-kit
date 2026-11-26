@@ -86,6 +86,9 @@ type TrustChange struct {
 	Covers  []string `json:"covers"`  // git repositories the directory now covers
 	Diff    string   `json:"diff"`    // config.toml before and after
 	Changed bool     `json:"changed"` // false when nothing needed changing
+	// StillTrustedBy, after a remove, is the trust.repos entries that
+	// still cover the directory, so yolo stays allowed there.
+	StillTrustedBy []string `json:"still_trusted_by,omitempty"`
 }
 
 // CheckTrustable says whether dir may be trusted: an existing directory,
@@ -97,13 +100,20 @@ func CheckTrustable(home, dir string) (string, []string, error) {
 	if err != nil || !fi.IsDir() {
 		return "", nil, fmt.Errorf("%s is not a directory", dir)
 	}
+	// Inside a repository, the repository itself is what is trusted:
+	// yolo checks the repository root, so a subdirectory entry would
+	// never match.
+	root := GitRoot(d)
+	if root != "" {
+		d = root
+	}
 	h := realDir(home)
 	if d == h || within(h, d) {
 		return "", nil, fmt.Errorf("%s is your home directory or above it; trust a repository or a folder of repositories below it instead", d)
 	}
-	covers := reposUnder(d)
-	if root := GitRoot(d); root != "" {
-		covers = []string{root}
+	covers := []string{root}
+	if root == "" {
+		covers = reposUnder(d)
 	}
 	if len(covers) == 0 {
 		return "", nil, fmt.Errorf("%s is not a git repository and has none below it", d)
@@ -173,6 +183,13 @@ func TrustRemove(paths Paths, home, dir string, dryRun bool) (*TrustChange, erro
 	}, d, nil, dryRun)
 	if err == nil && !ch.Changed {
 		return ch, fmt.Errorf("%s is not in trust.repos", dir)
+	}
+	if err == nil {
+		for _, t := range ch.Repos {
+			if within(d, realDir(expandHome(t, home))) {
+				ch.StillTrustedBy = append(ch.StillTrustedBy, t)
+			}
+		}
 	}
 	return ch, err
 }

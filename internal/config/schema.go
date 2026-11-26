@@ -10,6 +10,7 @@ package config
 import (
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -226,6 +227,12 @@ func (c *Config) validate(file string, lines map[string]int) []Problem {
 			if w := c.Bench.Weights[kind][src]; w < 0 {
 				bad("bench.weights."+kind+"."+src, "a weight can't be negative")
 			}
+		}
+	}
+	// A relative trust entry would resolve against wherever afk runs.
+	for _, t := range c.Trust.Repos {
+		if t != "~" && !strings.HasPrefix(t, "~/") && !filepath.IsAbs(t) {
+			bad("trust.repos", "%q is not an absolute path or a path under ~", t)
 		}
 	}
 	return out

@@ -10,7 +10,7 @@ AFK has five permission modes of its own. You pick one, and AFK turns it into th
 | `auto` | edit and run commands inside its sandbox |
 | `yolo` | anything, with no prompts and no sandbox |
 
-`ask` passes no permission flag at all, so each CLI's own prompts, and any defaults you set in that CLI's settings, apply as they always have.
+`ask` pins each CLI's own asking mode where the CLI has a flag for it (Claude `--permission-mode manual`, Grok `--permission-mode default`, Codex `--sandbox workspace-write --ask-for-approval on-request`), so a looser default in that CLI's settings can't turn it into something else. Agy and OpenCode have no such flag, so with them a default you set in their own settings still applies.
 
 ## What each CLI gets
 
@@ -19,7 +19,7 @@ Each flag was checked against the CLI's own `--help`; the version is in its [man
 | Mode | `claude` (2.1.332) | `codex` (0.172.0) | `grok` (1.0.92) | `agy` (1.5.18) | `opencode` (2.4.2) | `pi` (1.6.1) |
 |---|---|---|---|---|---|---|
 | `read-only` | `--permission-mode plan` | `--sandbox read-only --ask-for-approval on-request` | `--permission-mode plan` | `--mode plan` | can't | `--tools read,grep,find,ls` |
-| `ask` | none | none | none | none | none | can't: runs `read-only` |
+| `ask` | `--permission-mode manual` | `--sandbox workspace-write --ask-for-approval on-request` | `--permission-mode default` | none | none | can't: runs `read-only` |
 | `edits` | `--permission-mode acceptEdits` | can't: runs `ask` | `--permission-mode acceptEdits` | `--mode accept-edits` | can't: runs `ask` | `--tools read,grep,find,ls,edit,write` |
 | `auto` | `--permission-mode auto` | `--sandbox workspace-write --ask-for-approval never` | `--permission-mode auto` | `--mode auto` | can't: runs `ask` | can't: runs `edits` |
 | `yolo` | `--dangerously-skip-permissions` | `--dangerously-bypass-approvals-and-sandbox` | `--always-approve` | `--dangerously-skip-permissions` | one-shot runs only: `--auto` | none (all tools) |
@@ -64,9 +64,9 @@ afk trust list
 afk trust remove ~/repos
 ```
 
-`afk trust add` refuses your home directory and anything above it, and a folder with no git repository in it, and prints the repositories it now covers. When yolo is refused, the message gives the exact `afk trust add` command that would allow it. The list is `trust.repos` in config.toml.
+`afk trust add` refuses your home directory and anything above it, and a folder with no git repository in it, and prints the repositories it now covers. A directory inside a repository trusts that repository (its root is what is saved). `afk trust remove` says so when another entry, such as a parent folder, still covers the directory, because yolo then stays allowed there. Entries in `trust.repos` must be absolute paths or start with `~`. When yolo is refused, the message gives the exact `afk trust add` command that would allow it. The list is `trust.repos` in config.toml.
 
-On the route card, `y` twice turns yolo on (a red `yolo` tag shows it; `y` again turns it off). Outside a trusted repository, `y` says why it can't.
+On the route card, `y` twice turns yolo on (a red `yolo` tag shows it; `y` again turns it off, and it stays off when you edit the prompt and the card reroutes). Outside a trusted repository, `y` says why it can't. Trust is checked again each time a yolo launch is built, so removing trust while a card is open, or between a one-shot run's retries, stops the next yolo launch.
 
 AFK passes the mode on each launch only. It never writes a mode into a CLI's own settings.
 

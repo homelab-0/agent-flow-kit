@@ -17,7 +17,9 @@ errors = ["refresh token", "not logged in", "401 unauthorized"]
 [modes]
 verified = "0.172.0"
 read-only = ["--sandbox", "read-only", "--ask-for-approval", "on-request"]
-ask = []
+# ask is pinned to Codex's own default, so a sandbox_mode or
+# approval_policy in ~/.codex/config.toml can't loosen it.
+ask = ["--sandbox", "workspace-write", "--ask-for-approval", "on-request"]
 # edits (edit freely, ask before commands) has no Codex equivalent.
 auto = ["--sandbox", "workspace-write", "--ask-for-approval", "never"]
 yolo = ["--dangerously-bypass-approvals-and-sandbox"]

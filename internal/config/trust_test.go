@@ -100,3 +100,46 @@ func TestModeFor(t *testing.T) {
 		t.Errorf("default: %s", got)
 	}
 }
+
+func TestTrustSubdirAndOverlap(t *testing.T) {
+	f := newEnv(t)
+	f.config(t, "version = 1\n")
+	p := f.paths()
+	repos := filepath.Join(f.home, "repos")
+	a := gitRepo(t, filepath.Join(repos, "app"))
+	sub := filepath.Join(a, "src")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Trusting a directory inside a repository trusts the repository,
+	// so yolo then runs there.
+	ch, err := TrustAdd(p, f.home, sub, false)
+	if err != nil || ch.Dir != a || strings.Join(ch.Repos, ",") != a {
+		t.Fatalf("subdir: %+v %v", ch, err)
+	}
+	if err := CheckYolo(resolve(t, f), f.home, sub); err != nil {
+		t.Fatalf("yolo in the trusted subdir: %v", err)
+	}
+	// Removing an entry a parent still covers says yolo stays allowed.
+	if _, err := TrustAdd(p, f.home, repos, false); err != nil {
+		t.Fatal(err)
+	}
+	ch, err = TrustRemove(p, f.home, a, false)
+	if err != nil || strings.Join(ch.StillTrustedBy, ",") != repos {
+		t.Fatalf("overlap: %+v %v", ch, err)
+	}
+}
+
+func TestRelativeTrustRejected(t *testing.T) {
+	for _, v := range []string{`""`, `"."`, `"repos/app"`} {
+		_, err := Parse("config.toml", []byte("version = 1\n\n[trust]\nrepos = ["+v+"]\n"))
+		if err == nil || !strings.Contains(err.Error(), "trust.repos") {
+			t.Errorf("%s: %v", v, err)
+		}
+	}
+	for _, v := range []string{`"~"`, `"~/repos"`, `"/src"`} {
+		if _, err := Parse("config.toml", []byte("version = 1\n\n[trust]\nrepos = ["+v+"]\n")); err != nil {
+			t.Errorf("%s: %v", v, err)
+		}
+	}
+}

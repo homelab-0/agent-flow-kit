@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/jlengelbrecht/agent-flow-kit/internal/config"
 )
@@ -82,6 +83,12 @@ func trustCmd(argv []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "Would trust %s. yolo could then run in:\n", ch.Dir)
 		case argv[0] == "add":
 			fmt.Fprintf(stdout, "Trusted %s. yolo may now run in:\n", ch.Dir)
+		case len(ch.StillTrustedBy) > 0:
+			verb := "Removed"
+			if f.dryRun {
+				verb = "Would remove"
+			}
+			fmt.Fprintf(stdout, "%s %s from trust.repos, but yolo stays allowed there: %s is still trusted.\n", verb, ch.Dir, strings.Join(ch.StillTrustedBy, ", "))
 		case f.dryRun:
 			fmt.Fprintf(stdout, "Would stop trusting %s.\n", ch.Dir)
 		default:

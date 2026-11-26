@@ -428,15 +428,36 @@ func (c *Core) permMode(s Settings, flag, task string) (mode, source string, err
 		return "", "", &UsageError{"--mode must be read-only, ask, edits, auto or yolo"}
 	}
 	if mode == "yolo" {
-		cwd := c.Cwd
-		if cwd == "" {
-			cwd, _ = os.Getwd()
-		}
-		if err := config.CheckYolo(s, c.Home, cwd); err != nil {
-			return "", "", &UsageError{err.Error()}
+		if err := c.checkYoloWith(s); err != nil {
+			return "", "", err
 		}
 	}
 	return mode, source, nil
+}
+
+// checkYolo refuses yolo outside a trusted git repository, reading the
+// settings as they are now.
+func (c *Core) checkYolo() error {
+	s, err := c.LoadSettings(c.cwd())
+	if err != nil {
+		return err
+	}
+	return c.checkYoloWith(s)
+}
+
+func (c *Core) checkYoloWith(s Settings) error {
+	if err := config.CheckYolo(s, c.Home, c.cwd()); err != nil {
+		return &UsageError{err.Error()}
+	}
+	return nil
+}
+
+func (c *Core) cwd() string {
+	if c.Cwd != "" {
+		return c.Cwd
+	}
+	d, _ := os.Getwd()
+	return d
 }
 
 // modesFor is what each CLI runs a mode as.

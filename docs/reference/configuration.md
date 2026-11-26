@@ -85,7 +85,7 @@ modelsdev = { enabled = true }
 
 | Key | Type | Meaning |
 |---|---|---|
-| `repos` | list | where [yolo](../guides/permissions.md#yolo-stays-deliberate) may run: git repositories, or folders whose git repositories all count; managed with `afk trust add\|list\|remove`. A project listed here may also still name a gateway through the older `router.litellm_base_url`, used only when you set no gateway yourself |
+| `repos` | list | where [yolo](../guides/permissions.md#yolo-stays-deliberate) may run: git repositories, or folders whose git repositories all count, each an absolute path or one starting with `~`; managed with `afk trust add\|list\|remove`. A project listed here may also still name a gateway through the older `router.litellm_base_url`, used only when you set no gateway yourself |
 
 ### `[gateway.<name>]`
 

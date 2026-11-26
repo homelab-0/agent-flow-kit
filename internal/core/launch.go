@@ -71,6 +71,13 @@ func (c *Core) LaunchPlan(_ context.Context, r engine.Route, mode string, perm s
 	if perm == "" {
 		perm = "ask"
 	}
+	// Trust is checked again for every yolo plan (a retry, or a card
+	// left open while trust was removed), against the settings now.
+	if perm == "yolo" {
+		if err := c.checkYolo(); err != nil {
+			return nil, err
+		}
+	}
 	man, ok := harness.ManifestFor(h)
 	if !ok {
 		return planError("no launch for " + h + " here (is it installed?)")

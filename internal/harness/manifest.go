@@ -248,7 +248,18 @@ func merge(base, over Manifest) Manifest {
 		}
 	}
 	if o.Print != nil {
-		base.Modes.Print = o.Print
+		// Field by field over the print table in effect, on a copy so the
+		// built-in table is left as it is.
+		t := base.Modes.table(true)
+		for _, p := range []struct{ dst, src **[]string }{
+			{&t.ReadOnly, &o.Print.ReadOnly}, {&t.Ask, &o.Print.Ask}, {&t.Edits, &o.Print.Edits},
+			{&t.Auto, &o.Print.Auto}, {&t.Yolo, &o.Print.Yolo},
+		} {
+			if *p.src != nil {
+				*p.dst = *p.src
+			}
+		}
+		base.Modes.Print = &t
 	}
 	return base
 }

@@ -29,19 +29,20 @@ func TestModeFlags(t *testing.T) {
 	cases := map[string]map[string]want{
 		"claude": {
 			"read-only": {[]string{"--permission-mode", "plan"}, "read-only", ""},
-			"ask":       {[]string{}, "ask", ""},
+			"ask":       {[]string{"--permission-mode", "manual"}, "ask", ""},
 			"edits":     {[]string{"--permission-mode", "acceptEdits"}, "edits", ""},
 			"auto":      {[]string{"--permission-mode", "auto"}, "auto", ""},
 			"yolo":      {[]string{"--dangerously-skip-permissions"}, "yolo", ""},
 		},
 		"codex": {
 			"read-only": {[]string{"--sandbox", "read-only", "--ask-for-approval", "on-request"}, "read-only", ""},
-			"ask":       {[]string{}, "ask", ""},
-			"edits":     {[]string{}, "ask", "codex: can't run in edits, running in ask"},
+			"ask":       {[]string{"--sandbox", "workspace-write", "--ask-for-approval", "on-request"}, "ask", ""},
+			"edits":     {[]string{"--sandbox", "workspace-write", "--ask-for-approval", "on-request"}, "ask", "codex: can't run in edits, running in ask"},
 			"auto":      {[]string{"--sandbox", "workspace-write", "--ask-for-approval", "never"}, "auto", ""},
 			"yolo":      {[]string{"--dangerously-bypass-approvals-and-sandbox"}, "yolo", ""},
 		},
 		"grok": {
+			"ask":   {[]string{"--permission-mode", "default"}, "ask", ""},
 			"edits": {[]string{"--permission-mode", "acceptEdits"}, "edits", ""},
 			"yolo":  {[]string{"--always-approve"}, "yolo", ""},
 		},
@@ -144,5 +145,27 @@ func TestOverrides(t *testing.T) {
 	}
 	if _, err := LoadOverrides(filepath.Join(dir, "missing")); err != nil {
 		t.Errorf("a missing directory: %v", err)
+	}
+}
+
+// A [modes.print] override changes only the entries it sets.
+func TestPrintOverrideMerges(t *testing.T) {
+	defer func() { manifests = loadEmbedded(); rebuild() }()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "codex.toml"), []byte("name = \"codex\"\n[modes.print]\nauto = [\"--sandbox\", \"read-only\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadOverrides(dir); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := ManifestFor("codex")
+	if f, _, _, _ := m.ModeFlags("auto", true); !reflect.DeepEqual(f, []string{"--sandbox", "read-only"}) {
+		t.Errorf("auto: %q", f)
+	}
+	if f, ran, _, ok := m.ModeFlags("ask", true); !ok || ran != "ask" || len(f) != 0 {
+		t.Errorf("ask lost: %q %s %v", f, ran, ok)
+	}
+	if f, _, _, _ := m.ModeFlags("yolo", true); !reflect.DeepEqual(f, []string{"--dangerously-bypass-approvals-and-sandbox"}) {
+		t.Errorf("yolo lost: %q", f)
 	}
 }
