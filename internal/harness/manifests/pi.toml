@@ -15,3 +15,5 @@ verified = "1.6.1"
 read-only = ["--tools", "read,grep,find,ls"]
 edits = ["--tools", "read,grep,find,ls,edit,write"]
 yolo = []
+# Pi's modes are its tool allowlist.
+mode_flags = ["--tools"]
