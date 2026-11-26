@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -106,6 +107,13 @@ func (c *Core) LaunchPlan(_ context.Context, r engine.Route, mode string, perm s
 	if err != nil {
 		return planError(err.Error())
 	}
+	// AFK's own secrets stay out of the CLI's environment (secrets.go).
+	for _, n := range c.ownSecretVars() {
+		if !slices.Contains(unset, n) {
+			unset = append(unset, n)
+		}
+	}
+	sort.Strings(unset)
 	cxout := ""
 	if mode == "print" && h == "codex" {
 		f, err := os.CreateTemp("", "afk-cli-cx.*")
