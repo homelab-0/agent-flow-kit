@@ -5,7 +5,7 @@ Agent CLIs ask before they edit files or run commands. AFK keeps that behaviour 
 ## Today: ask, or yolo
 
 - **Ask** (default): AFK starts the CLI with its own default permission behaviour; it asks you before acting.
-- **Yolo**: the CLI acts without asking, using its own skip-permissions flag. Turn it on with `--yolo`, or press `y` twice on the route card (a red `yolo` tag shows it is on; `y` again turns it off).
+- **Yolo**: the CLI acts without asking, using its own skip-permissions flag. Turn it on with `--yolo`, or press `y` twice on the route card (a red `yolo` tag shows it is on; `y` again turns it off). OpenCode takes yolo only in one-shot runs (`-p`); an interactive OpenCode session keeps its own prompts.
 
 | CLI | Yolo flag AFK passes |
 |---|---|

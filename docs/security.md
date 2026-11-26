@@ -8,7 +8,8 @@ These hold for every route, pinned or not, and are checked again when a launch p
 
 - **A plan login is used only by its own vendor's CLI.** Claude's plan only by `claude`, ChatGPT's only by `codex`, SuperGrok's only by `grok`, Antigravity's only by `agy`. A third-party CLI never runs a vendor plan model: OpenCode runs only its own free models, and Pi is not launched with a plan.
 - **A plan login never goes through a gateway.** A gateway route runs `claude` with the gateway's own key, from a separate config directory, with every Claude and Anthropic variable unset, so your plan login isn't loaded or sent.
-- **The gateway key comes from a plain variable that is not a vendor credential**, so a plan token can't be passed off as a gateway key.
+- **The gateway key comes from a plain variable that is not a vendor credential**, so AFK never picks up a plan token from a vendor's own variables. The check is on the variable's name: put only a gateway-issued key in it.
+- **The gateway address comes from you**, not from a repository: the environment, your own `~/.config/afk/router.json`, or a project you listed in `trusted_repos`. A repository you clone can't send your gateway key to its own server.
 
 ## What AFK reads
 

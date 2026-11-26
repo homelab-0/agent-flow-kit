@@ -21,7 +21,7 @@ var Prefers = []string{"balanced", "cheap", "best"}
 const b = `(^|[^a-z])`
 
 var (
-	reAction   = regexp.MustCompile(b + `(fix|add|implement|write|build|create|make|update|change|remove|delete|port|wire)([^a-z]|$)`)
+	reAction   = regexp.MustCompile(b + `(fix|patch|add|implement|write|build|create|make|update|change|remove|delete|port|wire)([^a-z]|$)`)
 	reSecurity = regexp.MustCompile(b + `(security|vulnerab|cve-|exploit|threat model|pentest|xss|csrf|sql injection|command injection|prompt injection|secret leak)`)
 	reReview   = regexp.MustCompile(b + `(review|audit|look over|critique)`)
 	reArch     = regexp.MustCompile(b + `(architect|design doc|system design|plan out|roadmap|prd([^a-z]|$)|spec out)`)

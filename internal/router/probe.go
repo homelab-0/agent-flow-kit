@@ -98,7 +98,12 @@ func ProbePools(ctx context.Context, cat *Catalog, e ProbeEnv) *Probe {
 
 	since := e.Now.Add(-300 * time.Minute)
 	c5 := countRecent(filepath.Join(e.Home, ".claude", "projects"), since)
-	x5 := countRecent(filepath.Join(e.Home, ".codex", "sessions"), since)
+	// Codex sessions count against the ChatGPT plan only when Codex is
+	// signed in with the plan, not with an API key (metered usage).
+	x5 := 0
+	if !bound("codex", "api-metered") || bound("codex", "openai-plus") {
+		x5 = countRecent(codexSessionsDir(e), since)
+	}
 	a5 := countRecentDirs(filepath.Join(e.Home, ".gemini", "antigravity-cli", "brain"), since)
 	o5 := countRecent(filepath.Join(e.Home, ".local", "share", "opencode"), since)
 	p5 := countRecent(filepath.Join(e.Home, ".pi", "agent", "sessions"), since)
@@ -231,8 +236,13 @@ type signals struct {
 func readSignals(path string) signals {
 	var s signals
 	b, err := os.ReadFile(path)
-	if err == nil {
-		_ = json.Unmarshal(b, &s)
+	if err != nil {
+		return signals{}
+	}
+	// A file that doesn't decode is ignored whole: a half-read file must
+	// not quarantine a model or a pool.
+	if json.Unmarshal(b, &s) != nil {
+		return signals{}
 	}
 	return s
 }
@@ -320,13 +330,16 @@ func (pc *poolCalc) calc(pid string, sessions int, local bool, defaultH []string
 	sg, kind, active := activeSignal(pc.sig, pid, authMtime, pc.now)
 	bound := pc.binds[pid]
 
+	// The first positive capacity wins; zero or negative would divide by
+	// zero below, so it is skipped.
 	capacity := 50.0
+	pos := func(v *float64) bool { return v != nil && *v > 0 }
 	switch {
-	case active && sg.Capacity5h != nil:
+	case active && pos(sg.Capacity5h):
 		capacity = *sg.Capacity5h
-	case pc.sig.Pools[pid].Capacity5h != nil:
+	case pos(pc.sig.Pools[pid].Capacity5h):
 		capacity = *pc.sig.Pools[pid].Capacity5h
-	case meta.FiveHourSession != nil:
+	case pos(meta.FiveHourSession):
 		capacity = *meta.FiveHourSession
 	}
 	unauth := pid == "xai-grok" && !active && len(bound) == 0

@@ -103,6 +103,22 @@ type Route struct {
 	PoolStates           map[string]string `json:"pool_states,omitempty"`
 }
 
+// ServedBy returns, for each installed CLI that can run the model (named
+// as that CLI names it, or by its canonical name), that CLI's name for it:
+// from the catalog and from the models the CLIs reported, as routing sees
+// them.
+func (r *Router) ServedBy(model string, installed []string, allowMetered bool) map[string]string {
+	out := map[string]string{}
+	for _, c := range r.candidates(allowMetered) {
+		if (c.Model == model || c.CanonicalModel == model) && contains(installed, c.Harness) {
+			if _, seen := out[c.Harness]; !seen {
+				out[c.Harness] = c.Model
+			}
+		}
+	}
+	return out
+}
+
 // IsFallback reports whether nothing passed the eligibility rules.
 func (r Route) IsFallback() bool { return r.RouterSource == "fallback-default" }
 
@@ -345,16 +361,22 @@ func (r *Router) Select(in Input) Route {
 	for _, m := range in.SecurityModels {
 		sec[strings.ToLower(strings.ReplaceAll(m, " ", ""))] = true
 	}
-	discoveredHas := func(sub string) bool {
+	// A CLI that lists a restricted model has access to it on its own
+	// account only; it says nothing about another CLI's account.
+	discoveredHas := func(harness, sub string) bool {
 		for _, d := range r.Discovered {
-			if strings.Contains(strings.ToLower(d.Model), sub) {
+			if d.Harness == harness && strings.Contains(strings.ToLower(d.Model), sub) {
 				return true
 			}
 		}
 		return false
 	}
-	mythos := sec["all"] || sec["mythos"] || sec["claude-mythos"] || discoveredHas("mythos")
-	daybreak := sec["all"] || sec["daybreak"] || sec["daybreak-blue"] || sec["gpt-daybreak-blue"] || discoveredHas("daybreak")
+	mythos := func(h string) bool {
+		return sec["all"] || sec["mythos"] || sec["claude-mythos"] || discoveredHas(h, "mythos")
+	}
+	daybreak := func(h string) bool {
+		return sec["all"] || sec["daybreak"] || sec["daybreak-blue"] || sec["gpt-daybreak-blue"] || discoveredHas(h, "daybreak")
+	}
 
 	only := map[string]bool{}
 	for _, h := range in.OnlyHarnesses {
@@ -402,11 +424,11 @@ func (r *Router) Select(in Input) Route {
 		switch c.RequiresEntitlement {
 		case "":
 		case "mythos":
-			if !mythos {
+			if !mythos(c.Harness) {
 				continue
 			}
 		case "daybreak-blue":
-			if !daybreak {
+			if !daybreak(c.Harness) {
 				continue
 			}
 		default:

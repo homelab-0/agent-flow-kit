@@ -22,11 +22,13 @@ That is all the route card, `--explain`, `--launch-plan` and `afk harness` need.
 
 ### One-shot answers (`-p`)
 
-`afk -p` still uses the bash engine in this repository while its failover is ported to Go. To use it, point AFK at the engine:
+`afk -p` still uses the bash engine in this repository while its failover is ported to Go. To use it, point AFK at the engine. From the cloned `agent-flow-kit` directory:
 
 ```sh
-export AFK_ENGINE="$HOME/path/to/agent-flow-kit/bin/agent-flow-kit"
+export AFK_ENGINE="$PWD/bin/agent-flow-kit"
 ```
+
+To keep it, put that line in your shell profile with `$PWD` replaced by the clone's full path.
 
 The bash engine needs `bash` 4 or newer, `jq` and `curl`. AFK looks for it in `$AFK_ENGINE`, then next to the `afk` binary, then on `PATH`.
 

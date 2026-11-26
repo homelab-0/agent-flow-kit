@@ -20,8 +20,8 @@ For each pool AFK takes the best source available, in this order:
 1. **A recent failure signal** (below), while it is still in force.
 2. **The provider's own figure**:
    - **Claude**: Anthropic's usage endpoint for your plan login, the same figures Claude Code shows. AFK takes the larger of the 5-hour and weekly use; the Fable weekly quota is tracked separately. The answer is cached for two minutes.
-   - **Codex**: the rate limits Codex writes into its own session files (`~/.codex/sessions/**/rollout-*.jsonl`). No network call.
-3. **Recent activity**: session files each CLI wrote in the last 5 hours, against the pool's capacity, capped at 98%.
+   - **Codex**: the rate limits Codex writes into its own session files (`rollout-*.jsonl` under `$CODEX_HOME/sessions`, by default `~/.codex/sessions`). The newest reading wins, by when it was recorded. No network call.
+3. **Recent activity**: session files each CLI wrote in the last 5 hours, against the pool's capacity, capped at 98%. Codex sessions count against the ChatGPT plan only when Codex is signed in with the plan; with an API key they are metered usage, not plan usage.
 
 A third-party CLI signed in with a vendor plan shares that plan's pool: for example OpenCode signed in with xAI counts against `xai-grok`. If Grok is installed but no login for xAI exists anywhere, `xai-grok` is offline and AFK says to run `grok login`.
 
@@ -55,4 +55,4 @@ Signals are written by one-shot runs (`afk -p`) today. A truncated or hand-edite
 
 ## Privacy
 
-The Claude check reads your Claude login to make the request and sends it only to Anthropic's own endpoint. The cache file (`~/.config/afk/live-quota-cache.json`, mode 600) holds usage percentages only, never a token. Activity counting looks only at file names and times, not contents. See [security and privacy](../security.md).
+The Claude check reads your Claude login to make the request and sends it only to Anthropic's own endpoint. The cache file (`~/.config/afk/live-quota-cache.json`, mode 600) holds usage percentages and a hash that identifies the login's current version (so a new login is never shown the old one's figures), never a token. Activity counting looks only at file names and times, not contents. See [security and privacy](../security.md).

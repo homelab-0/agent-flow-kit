@@ -74,6 +74,49 @@ type Settings struct {
 	SecurityModels     []string
 	MemoryBuild        string
 	MemoryReview       string
+	// IgnoredRepoGateway is set when the project names a gateway that was
+	// not used because the project isn't trusted.
+	IgnoredRepoGateway bool
+}
+
+// userRouter is ~/.config/afk/router.json: settings that are yours, not a
+// project's.
+type userRouter struct {
+	GatewayURL   string   `json:"litellm_base_url"`
+	Security     []string `json:"security_models"`
+	TrustedRepos []string `json:"trusted_repos"`
+}
+
+func (c *Core) userRouterConfig() userRouter {
+	var u userRouter
+	if b, err := os.ReadFile(filepath.Join(c.Home, ".config", "afk", "router.json")); err == nil {
+		_ = json.Unmarshal(b, &u)
+	}
+	return u
+}
+
+// trusts reports whether a project directory is listed in trusted_repos
+// (compared after resolving symlinks).
+func (u userRouter) trusts(repo string) bool {
+	if repo == "" {
+		return false
+	}
+	real := func(p string) string {
+		if abs, err := filepath.Abs(p); err == nil {
+			p = abs
+		}
+		if r, err := filepath.EvalSymlinks(p); err == nil {
+			return r
+		}
+		return filepath.Clean(p)
+	}
+	want := real(repo)
+	for _, t := range u.TrustedRepos {
+		if t != "" && real(t) == want {
+			return true
+		}
+	}
+	return false
 }
 
 type projectConfig struct {
@@ -114,9 +157,21 @@ func (c *Core) LoadSettings(repo string) Settings {
 		}
 		return cfg != nil && *cfg
 	}
+	user := c.userRouterConfig()
+	// The gateway gets the gateway key at launch, so its address must come
+	// from you: the environment, your own router.json, or a project you
+	// have listed as trusted there. A cloned repository can't point your
+	// key at its own server.
 	s.GatewayURL = c.getenv("AFK_LITELLM_BASE_URL")
-	if s.GatewayURL == "" && r.GatewayURL != nil {
-		s.GatewayURL = *r.GatewayURL
+	if s.GatewayURL == "" {
+		s.GatewayURL = user.GatewayURL
+	}
+	if s.GatewayURL == "" && r.GatewayURL != nil && *r.GatewayURL != "" {
+		if user.trusts(repo) {
+			s.GatewayURL = *r.GatewayURL
+		} else {
+			s.IgnoredRepoGateway = true
+		}
 	}
 	s.AllowMetered = pick("AFK_ROUTER_ALLOW_METERED_API", r.AllowMetered)
 	s.PreferFree = pick("AFK_ROUTER_PREFER_FREE", r.PreferFree)
@@ -126,13 +181,7 @@ func (c *Core) LoadSettings(repo string) Settings {
 	} else if len(r.SecurityModels) > 0 {
 		s.SecurityModels = r.SecurityModels
 	} else {
-		var g struct {
-			Security []string `json:"security_models"`
-		}
-		if b, err := os.ReadFile(filepath.Join(c.Home, ".config", "afk", "router.json")); err == nil {
-			_ = json.Unmarshal(b, &g)
-			s.SecurityModels = g.Security
-		}
+		s.SecurityModels = user.Security
 	}
 	return s
 }
@@ -266,7 +315,7 @@ func (c *Core) Explain(ctx context.Context, f engine.RouteFlags, prompt string) 
 		return nil, err
 	}
 	if pinM != "" && pinH == "" {
-		served := st.r.Catalog.ModelsFor(pinM, installed)
+		served := st.r.ServedBy(pinM, installed, st.settings.AllowMetered)
 		switch len(served) {
 		case 0:
 			return nil, &UsageError{fmt.Sprintf("no installed CLI is known to serve %s; name one with --harness", pinM)}

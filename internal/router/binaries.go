@@ -51,7 +51,9 @@ func VerifyBinaries(ctx context.Context, he harness.Env, getenv func(string) str
 		}
 		mt := ""
 		if fi, err := os.Stat(bin); err == nil {
-			mt = strconv.FormatInt(fi.ModTime().Unix(), 10)
+			// Full precision: a CLI replaced within the same second
+			// is checked again.
+			mt = strconv.FormatInt(fi.ModTime().UnixNano(), 10)
 		}
 		now := time.Now().Unix()
 		mu.Lock()
@@ -71,6 +73,11 @@ func VerifyBinaries(ctx context.Context, he harness.Env, getenv func(string) str
 		cmd := exec.CommandContext(cctx, bin, "--version")
 		cmd.WaitDelay = time.Second
 		answered := cmd.Run() == nil
+		// A check cut short because the caller gave up says nothing
+		// about the CLI; don't remember it.
+		if ctx.Err() != nil {
+			return answered
+		}
 		if ttl > 0 {
 			mu.Lock()
 			// Re-read so CLIs checked by another afk at the same time are kept.

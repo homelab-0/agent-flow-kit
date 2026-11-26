@@ -4,7 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"math"
 	"net/http"
@@ -42,13 +45,18 @@ func probeClaudeQuota(ctx context.Context, e ProbeEnv) quota {
 	}
 	cache := e.path("AFK_QUOTA_CACHE_FILE", ".config/afk/live-quota-cache.json")
 	now := e.Now.Unix()
+	login := loginGeneration(creds)
 	var cached struct {
 		Claude *struct {
-			Fetched int64 `json:"fetched_epoch"`
-			Data    quota `json:"data"`
+			Fetched int64  `json:"fetched_epoch"`
+			Login   string `json:"login"`
+			Data    quota  `json:"data"`
 		} `json:"claude"`
 	}
-	if readJSONFile(cache, &cached) && cached.Claude != nil && cached.Claude.Fetched > 0 && now-cached.Claude.Fetched < 120 {
+	// A reading belongs to the login it was made with: signing in again,
+	// or as someone else, starts afresh.
+	if readJSONFile(cache, &cached) && cached.Claude != nil && cached.Claude.Fetched > 0 &&
+		cached.Claude.Login == login && now-cached.Claude.Fetched < 120 {
 		return cached.Claude.Data
 	}
 	var c struct {
@@ -85,9 +93,21 @@ func probeClaudeQuota(ctx context.Context, e ProbeEnv) quota {
 	}
 	q := parseClaudeUsage(body)
 	if q.OK {
-		writeQuotaCache(cache, "claude", now, q)
+		writeQuotaCache(cache, "claude", now, login, q)
 	}
 	return q
+}
+
+// loginGeneration identifies a credential file's current contents without
+// holding anything from them: a hash of its path, size and modification
+// time. It changes whenever the login is renewed or replaced.
+func loginGeneration(path string) string {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%d|%d", path, fi.Size(), fi.ModTime().UnixNano())))
+	return hex.EncodeToString(sum[:8])
 }
 
 type usageWindow struct {
@@ -136,7 +156,8 @@ func parseClaudeUsage(b []byte) quota {
 		return quota{}
 	}
 	fh := 0.0
-	if u.FiveHour != nil && u.FiveHour.Utilization != nil {
+	haveFH := u.FiveHour != nil && u.FiveHour.Utilization != nil
+	if haveFH {
 		fh = *u.FiveHour.Utilization
 	}
 	kindOr := func(l usageLimit, def string) string {
@@ -172,6 +193,12 @@ func parseClaudeUsage(b []byte) quota {
 		if l.Active && group != "scoped_weekly" && kindOr(l, "weekly_all") != "weekly_scoped" && !strings.Contains(strings.ToLower(l.Kind), "fable") {
 			other = append(other, *l.Percent)
 		}
+	}
+	// No figure at all (nulls everywhere) is not a reading of 0%: the
+	// activity estimate is used instead. An explicit 0 is a reading.
+	haveSD := u.SevenDay != nil && u.SevenDay.Utilization != nil
+	if !haveFH && !haveSD && len(weekly) == 0 && len(other) == 0 {
+		return quota{}
 	}
 	wk := 0.0
 	switch {
@@ -221,13 +248,13 @@ func maxOf(v []float64) float64 {
 	return m
 }
 
-func writeQuotaCache(path, key string, now int64, q quota) {
+func writeQuotaCache(path, key string, now int64, login string, q quota) {
 	cur := map[string]json.RawMessage{}
 	_ = readJSONFile(path, &cur)
 	if cur == nil {
 		cur = map[string]json.RawMessage{}
 	}
-	entry, err := json.Marshal(map[string]any{"fetched_epoch": now, "data": q})
+	entry, err := json.Marshal(map[string]any{"fetched_epoch": now, "login": login, "data": q})
 	if err != nil {
 		return
 	}
@@ -268,58 +295,113 @@ func writeFileAtomic(path string, b []byte, mode os.FileMode) error {
 // probeCodexQuota reads the newest unexpired rate-limit snapshot Codex
 // wrote into its rollout files. No network.
 func probeCodexQuota(e ProbeEnv) quota {
-	var dirs []string
-	if d := e.getenv("AFK_CODEX_SESSIONS_DIR"); d != "" {
-		dirs = []string{d}
-	} else {
-		home := e.getenv("CODEX_HOME")
-		if home == "" {
-			home = filepath.Join(e.Home, ".codex")
-		}
-		dirs = []string{filepath.Join(home, "sessions")}
-	}
+	dir := codexSessionsDir(e)
 	var files []string
-	for _, d := range dirs {
-		_ = filepath.WalkDir(d, func(p string, de os.DirEntry, err error) error {
-			if err == nil && !de.IsDir() && strings.HasPrefix(de.Name(), "rollout-") && strings.HasSuffix(de.Name(), ".jsonl") {
-				files = append(files, p)
-			}
-			return nil
-		})
-	}
-	// Newest by name (the names carry the start time), the last eight.
+	_ = filepath.WalkDir(dir, func(p string, de os.DirEntry, err error) error {
+		// Regular files only: opening a named pipe could block.
+		if err == nil && de.Type().IsRegular() && strings.HasPrefix(de.Name(), "rollout-") && strings.HasSuffix(de.Name(), ".jsonl") {
+			files = append(files, p)
+		}
+		return nil
+	})
+	// The eight newest sessions by name (the names carry the start time).
 	sort.SliceStable(files, func(i, j int) bool { return filepath.Base(files[i]) < filepath.Base(files[j]) })
 	if len(files) > 8 {
 		files = files[len(files)-8:]
 	}
+	// An older session can still write newer rate limits, so the newest
+	// reading wins by when it was observed, not by file name.
 	now := e.Now.Unix()
-	for i := len(files) - 1; i >= 0; i-- {
-		line := lastLineWith(files[i], []byte(`"rate_limits"`))
-		if line == nil {
-			continue
-		}
-		if q, ok := parseCodexRateLimits(line, now); ok {
-			return q
+	var best quota
+	var bestAt int64 = -1
+	for _, f := range files {
+		q, at, ok := lastCodexReading(f, now)
+		if ok && at > bestAt {
+			best, bestAt = q, at
 		}
 	}
-	return quota{}
+	if bestAt < 0 {
+		return quota{}
+	}
+	return best
 }
 
-func lastLineWith(path string, needle []byte) []byte {
+// codexSessionsDir is where Codex keeps its sessions:
+// AFK_CODEX_SESSIONS_DIR, then $CODEX_HOME/sessions, then ~/.codex/sessions.
+func codexSessionsDir(e ProbeEnv) string {
+	if d := e.getenv("AFK_CODEX_SESSIONS_DIR"); d != "" {
+		return d
+	}
+	if h := e.getenv("CODEX_HOME"); h != "" {
+		return filepath.Join(h, "sessions")
+	}
+	return filepath.Join(e.Home, ".codex", "sessions")
+}
+
+// maxRecord bounds one rollout line; a longer one is skipped, and reading
+// carries on after it.
+const maxRecord = 16 << 20
+
+// lastCodexReading returns the last usable rate-limit reading in a rollout
+// file and when it was observed (the record's timestamp, else the file's
+// modification time).
+func lastCodexReading(path string, now int64) (quota, int64, bool) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil
+		return quota{}, 0, false
 	}
 	defer f.Close()
-	var last []byte
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 64*1024), 16*1024*1024)
-	for sc.Scan() {
-		if bytes.Contains(sc.Bytes(), needle) {
-			last = append(last[:0], sc.Bytes()...)
-		}
+	fileTime := int64(0)
+	if fi, err := f.Stat(); err == nil {
+		fileTime = fi.ModTime().Unix()
 	}
-	return last
+	var best quota
+	var bestAt int64
+	found := false
+	r := bufio.NewReaderSize(f, 64*1024)
+	var line []byte
+	tooLong := false
+	for {
+		chunk, isPrefix, err := r.ReadLine()
+		if err != nil {
+			break
+		}
+		if !tooLong {
+			line = append(line, chunk...)
+			if len(line) > maxRecord {
+				tooLong, line = true, line[:0]
+			}
+		}
+		if isPrefix {
+			continue
+		}
+		if !tooLong && bytes.Contains(line, []byte(`"rate_limits"`)) {
+			if q, ok := parseCodexRateLimits(line, now); ok {
+				at := recordTime(line)
+				if at == 0 {
+					at = fileTime
+				}
+				best, bestAt, found = q, at, true
+			}
+		}
+		line, tooLong = line[:0], false
+	}
+	return best, bestAt, found
+}
+
+// recordTime reads a record's top-level "timestamp", if any.
+func recordTime(line []byte) int64 {
+	var v struct {
+		Timestamp string `json:"timestamp"`
+	}
+	if json.Unmarshal(line, &v) != nil || v.Timestamp == "" {
+		return 0
+	}
+	t, err := time.Parse(time.RFC3339Nano, v.Timestamp)
+	if err != nil {
+		return 0
+	}
+	return t.Unix()
 }
 
 type rateWindow struct {
@@ -433,6 +515,9 @@ func probeGateway(ctx context.Context, e ProbeEnv) HarnessState {
 		return gw
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		return gw
+	}
 	var body struct {
 		Data []struct {
 			ID string `json:"id"`

@@ -110,7 +110,7 @@ func interactive(eng tui.Backend, args cli.Args, width int) int {
 	// Below 40 columns, or on a dumb terminal, there is no card and no
 	// Bubble Tea program: plain lines, the way the bash afk prints.
 	if width < 40 || strings.EqualFold(os.Getenv("TERM"), "dumb") {
-		return plainRun(eng, args)
+		return plainRun(eng, args, true)
 	}
 	motion := !tui.MotionOff(os.Getenv)
 	dark := true
@@ -164,8 +164,11 @@ func engineFailure(err error) int {
 	return 4
 }
 
-// plainRun is the narrow or dumb-terminal session: no card, no program.
-func plainRun(eng tui.Backend, args cli.Args) int {
+// plainRun is the session without a card: a narrow or dumb terminal, or
+// no terminal at all. ask is whether a person is there to rate the run;
+// without one, the receipt goes to stderr and nothing reads stdin, so a
+// script or a redirected afk never waits.
+func plainRun(eng tui.Backend, args cli.Args, ask bool) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	ex, err := eng.Explain(ctx, args.Flags, args.Prompt)
 	cancel()
@@ -200,6 +203,13 @@ func plainRun(eng tui.Backend, args cli.Args) int {
 		}
 		fmt.Fprintf(os.Stderr, "afk: %s / %s%s — %s (run %s)\n", r.Harness, r.Model, e, reason, id)
 	}, func() {}, func(receipt tui.Receipt, fill func() tui.Receipt, save func(string) error) {
+		if !ask {
+			fmt.Fprintln(os.Stderr, tui.ReceiptPlain(fill()))
+			if err := save(""); err != nil {
+				fmt.Fprintln(os.Stderr, "afk: run not saved:", err)
+			}
+			return
+		}
 		fmt.Println(tui.ReceiptPlain(fill()))
 		if err := save(""); err != nil {
 			fmt.Fprintln(os.Stderr, "afk: run not saved:", err)

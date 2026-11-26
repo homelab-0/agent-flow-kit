@@ -8,11 +8,17 @@ Point AFK at a gateway that speaks the Anthropic Messages API, and give it the g
 
 ```sh
 export AFK_LITELLM_BASE_URL="http://gateway.local:4000"
-export AFK_GATEWAY_KEY="..."            # or name another variable:
+export AFK_GATEWAY_KEY="..."              # the key, in the default variable
+```
+
+Or keep the key in a variable of your own and tell AFK its name. The two are alternatives: when `AFK_GATEWAY_KEY_ENV` is set, only the variable it names is read.
+
+```sh
+export MY_GATEWAY_KEY="..."
 export AFK_GATEWAY_KEY_ENV="MY_GATEWAY_KEY"
 ```
 
-The gateway URL can also go in a project's `.afk/config.json` as `router.litellm_base_url`.
+The gateway URL can also go in `~/.config/afk/router.json` as `litellm_base_url`, or in a project's `.afk/config.json` as `router.litellm_base_url`. A project's setting is used only when you have listed the project in `trusted_repos` in your `router.json`: the gateway receives your gateway key, so a repository you clone can't choose where it goes. See [configuration](../reference/configuration.md#your-own-settings-configafkrouterjson).
 
 AFK asks the gateway for its model list (`GET /v1/models`) when routing. A gateway model is a candidate only while the gateway answers and lists it; the built-in catalog includes one local coding model (`qwen36-27b`) as an example. Gateway models count as free and get a bonus on low-risk coding and research.
 
@@ -25,7 +31,7 @@ Gateway routes run on `claude` only, so that AFK can keep your Claude plan login
 - `CLAUDE_CONFIG_DIR` points at a separate directory (`~/.local/state/agent-flow-kit/gateway-claude`), so your plan login isn't loaded.
 - Every other Claude and Anthropic variable in your environment is unset for that process.
 
-The key variable must be a plain name that is not a vendor credential (`CLAUDE_*`, `ANTHROPIC_*`, `OPENAI_*`, `CODEX_*`, `XAI_*`, `GROK_*`, `GEMINI_*`, `GOOGLE_*`, `OPENCODE_*`), so a plan token can never pass as the gateway key. With no gateway URL or no key, the route isn't launched and AFK says what to set.
+The key variable must be a plain name that is not a vendor credential (`CLAUDE_*`, `ANTHROPIC_*`, `OPENAI_*`, `CODEX_*`, `XAI_*`, `GROK_*`, `GEMINI_*`, `GOOGLE_*`, `OPENCODE_*`), so AFK never picks up a plan token from a vendor's own variables by mistake. It checks the variable's name, not where its value came from: put only a key your gateway issued in it, never a copy of a plan login. With no gateway URL or no key, the route isn't launched and AFK says what to set.
 
 A plan is never sent through a gateway, even on its own CLI.
 

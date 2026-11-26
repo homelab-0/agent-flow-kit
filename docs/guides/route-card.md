@@ -18,7 +18,7 @@ The top box is the pick: the CLI, model and effort, the kind of task (and whethe
 | `↑` `↓` or `j` `k` | pick another row |
 | `tab` | step through the effort levels that CLI accepts |
 | `e` | edit the prompt; `↵` routes it again, `esc` goes back |
-| `y` `y` | yolo: the CLI acts without asking (press twice; a red tag shows it is on, `y` again turns it off) |
+| `y` `y` | yolo: the CLI acts without asking (press twice; a red tag shows it is on, `y` again turns it off). An interactive OpenCode session keeps its own prompts |
 | `?` | the Why panel; `?` again closes it |
 | `esc` or `ctrl+c` | cancel; nothing is started (exit code 130) |
 
@@ -61,6 +61,6 @@ Values AFK can't know show as `n/e`, never as zero. Then it asks how it went: `1
 
 ## Narrow and plain terminals
 
-Below 40 columns, or with `TERM=dumb`, there is no card: AFK prints one line with its pick and starts it. Without a terminal at all (a pipe or a script), it does the same.
+Below 40 columns, or with `TERM=dumb`, there is no card: AFK prints one line with its pick and starts it, then a plain receipt and the rating question. Without a terminal at all (a pipe, a redirect or a script), it starts the pick the same way, prints the receipt to stderr, and never waits for a rating; the run is saved without one.
 
 Colour and animation follow your terminal: `NO_COLOR`, `TERM=dumb` or `AFK_MOTION=off` turn animation off, and over SSH the card redraws less often.

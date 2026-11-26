@@ -22,13 +22,31 @@ A project can tune routing in `.afk/config.json`. AFK reads it from the current 
 
 | Key | Default | Meaning |
 |---|---|---|
-| `litellm_base_url` | none | a model gateway; see [gateways](../guides/gateways.md) |
+| `litellm_base_url` | none | a model gateway; used only when the project is trusted (below); see [gateways](../guides/gateways.md) |
 | `prefer_free_for_low_risk` | `false` | prefer free and local models for low-risk work, as `--prefer cheap` does |
 | `allow_free_reviewers` | `false` | let free and local models take reviews |
 | `allow_metered_api` | `false` | allow pay-per-token API models |
 | `security_models` | none | specialist security models you are entitled to (`mythos`, `daybreak-blue`, or `all`) |
 
-An environment variable with the same purpose (below) wins over the file. Security models can also be set for all projects in `~/.config/afk/router.json` as `{"security_models": [...]}`.
+An environment variable with the same purpose (below) wins over the file.
+
+### Your own settings: `~/.config/afk/router.json`
+
+```json
+{
+  "litellm_base_url": "http://gateway.local:4000",
+  "security_models": ["mythos"],
+  "trusted_repos": ["/home/me/src/work-project"]
+}
+```
+
+| Key | Meaning |
+|---|---|
+| `litellm_base_url` | your gateway, for every project |
+| `security_models` | used when a project doesn't set its own |
+| `trusted_repos` | projects whose `.afk/config.json` may name a gateway |
+
+AFK sends your gateway key to the gateway when it launches a gateway route, so the gateway address must come from you: `AFK_LITELLM_BASE_URL`, then `litellm_base_url` here, then a project's own setting only if the project is listed in `trusted_repos`. A repository you clone can't point your key at its own server.
 
 ## Environment variables
 

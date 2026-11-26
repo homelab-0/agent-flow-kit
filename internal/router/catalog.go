@@ -143,21 +143,3 @@ func LoadCatalog(home string, getenv func(string) string) (*Catalog, error) {
 	}
 	return DefaultCatalog(), nil
 }
-
-// ModelsFor returns, for each installed CLI the catalog says serves the
-// model (by its CLI name or canonical name), that CLI's name for it.
-func (c *Catalog) ModelsFor(model string, installed []string) map[string]string {
-	ok := map[string]bool{}
-	for _, h := range installed {
-		ok[h] = true
-	}
-	out := map[string]string{}
-	for _, cand := range c.Candidates {
-		if (cand.Model == model || cand.CanonicalModel == model) && ok[cand.Harness] {
-			if _, seen := out[cand.Harness]; !seen {
-				out[cand.Harness] = cand.Model
-			}
-		}
-	}
-	return out
-}

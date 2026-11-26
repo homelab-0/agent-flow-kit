@@ -19,7 +19,7 @@ Every route starts from a task kind. Give it with `--task`, or let AFK guess fro
 | `research` | research, compare, explain, what is, why does, how does, summarise, investigate | research |
 | `security` | security, vulnerability, CVE, exploit, threat model, pentest, XSS, CSRF, SQL/command/prompt injection, secret leak | security review |
 
-Words match at the start of a word, so "optimizing" counts as optimise. A prompt that asks for a change (fix, add, implement, write, build, create, make, update, change, remove, delete, port, wire) is never taken as research. `--explain` tells you when the kind was guessed.
+Words match at the start of a word, so "optimizing" counts as optimise. A prompt that asks for a change (fix, patch, add, implement, write, build, create, make, update, change, remove, delete, port, wire) is never taken as research. `--explain` tells you when the kind was guessed.
 
 ## 2. Your preference
 
