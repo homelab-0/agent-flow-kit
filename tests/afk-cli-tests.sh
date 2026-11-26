@@ -101,7 +101,9 @@ GW="$(bash -c "$LIBS"'; afk_cli_launch_env "{\"harness\":\"claude\",\"launch_cla
 assert_eq "A gateway route is sent to the gateway; without a gateway address it cannot be launched; a native route needs nothing" \
   "$GW" "ANTHROPIC_BASE_URL=http://gw|:1:0"
 MODEL_HS="$(bash -c "$LIBS"'; afk_cli_harnesses_for_model gpt-6-astra "claude,codex,opencode"; printf ":"; afk_cli_harnesses_for_model not-a-model "claude,codex"')"
-assert_eq "--model alone is matched to the CLI the catalog says serves it" "$MODEL_HS" "codex:"
+assert_eq "--model alone is matched to the CLI the catalog says serves it" "$MODEL_HS" "codex=gpt-6-astra:"
+CANON="$(bash -c "$LIBS"'; afk_cli_harnesses_for_model "$(jq -r ".candidates[] | select(.harness == \"claude\") | .canonical_model" "$AFK_ROUTER_BENCHMARKS_FILE" | head -n 1)" "claude"')"
+assert_eq "A canonical model name launches under the name the CLI uses" "${CANON#claude=}" "$(jq -r '.candidates[] | select(.harness == "claude") | .model' "$AFK_ROUTER_BENCHMARKS_FILE" | head -n 1)"
 
 # ============================================================================
 head1 "4. One-shot answers and failover"
@@ -119,6 +121,8 @@ assert_eq "The pool behind the failed CLI is recorded as out of quota" \
   "$(jq -r '[.pools[] | select(.degraded_kind == "quota")] | length' "$AFK_ROUTER_SIGNALS_FILE" 2>/dev/null)" "1"
 rm -f "$AFK_ROUTER_SIGNALS_FILE"
 O="$(env FAIL_CODEX="Error: 429" "$AFK" -p --json --harness codex "add a retry" 2>/dev/null)"; rc=$?
+assert_eq "A pinned CLI that hits its rate limit is still recorded for the router" \
+  "$(jq -r '[.pools[] | select(.degraded_kind == "quota")] | length' "$AFK_ROUTER_SIGNALS_FILE" 2>/dev/null)" "1"
 assert_eq "A pinned CLI that fails is reported, not swapped for another" \
   "$rc:$(jq -r '"\(.ok):\(.tried)"' <<<"$O")" "5:false:codex/$(jq -r '.tried' <<<"$O" | cut -d/ -f2-)"
 rm -f "$AFK_ROUTER_SIGNALS_FILE"

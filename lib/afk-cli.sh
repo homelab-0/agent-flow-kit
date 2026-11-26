@@ -109,15 +109,16 @@ afk_cli_bin() {
   fi
 }
 
-# afk_cli_harnesses_for_model <model> <installed-csv> -> CLIs the catalog says
-# serve that model, among the installed ones, comma-separated.
+# afk_cli_harnesses_for_model <model> <installed-csv> -> "harness=model" pairs
+# (comma-separated) for the installed CLIs the catalog says serve that model,
+# with the model as that CLI names it.
 afk_cli_harnesses_for_model() {
   local cat_file
   cat_file="$(afk_router_catalog_path 2>/dev/null || true)"
   [[ -f "$cat_file" ]] || return 0
   jq -j --arg m "$1" --arg inst ",$2," '
-    [ .candidates[] | select(.model == $m or .canonical_model == $m) | .harness ]
-    | unique | map(. as $h | select(($inst | index("," + $h + ",")) != null)) | join(",")' "$cat_file" 2>/dev/null
+    [ .candidates[] | select(.model == $m or .canonical_model == $m) | {h: .harness, m: .model} ]
+    | unique_by(.h) | map(. as $c | select(($inst | index("," + $c.h + ",")) != null) | "\(.h)=\(.m)") | join(",")' "$cat_file" 2>/dev/null
 }
 
 # afk_cli_route <repo> <task> <prefer> [<harness-list>] -> route JSON
@@ -252,7 +253,7 @@ afk_cli_mark_failure() { # <kind> <pool> <model> <reason>
     # The router reads the reason to decide how long to avoid the pool. CLI
     # wording such as "usage limit reached" is a quota event it would not
     # otherwise recognise.
-    if [[ "$lw" =~ (usage[[:space:]]+limit|credit[[:space:]]+balance|overloaded|529) ]] && ! [[ "$lw" =~ (429|rate_limit|rate[[:space:]]+limit|quota) ]]; then why="quota: $why"; fi
+    if [[ "$lw" =~ (usage[[:space:]]+limit|credit[[:space:]]+balance) ]] && ! [[ "$lw" =~ (429|rate_limit|rate[[:space:]]+limit|quota) ]]; then why="quota: $why"; fi
     afk_router_mark_pool_degraded "$2" "${why:0:160}" >/dev/null 2>&1 || true
   fi
 }
@@ -315,9 +316,9 @@ afk_cli_main() {
     if [[ -z "$served" ]]; then
       printf 'afk: no installed CLI is known to serve %s; name one with --harness\n' "$pin_m" >&2; return 2
     elif [[ "$served" == *,* ]]; then
-      printf 'afk: %s is served by %s; choose one with --harness\n' "$pin_m" "${served//,/ and }" >&2; return 2
+      printf 'afk: %s is served by %s; choose one with --harness\n' "$pin_m" "$(printf '%s' "$served" | sed 's/=[^,]*//g; s/,/ and /g')" >&2; return 2
     fi
-    pin_h="$served"
+    pin_h="${served%%=*}"; pin_m="${served#*=}"
   fi
 
   # The decision. A pinned harness and model skip the router entirely.
@@ -408,6 +409,8 @@ afk_cli_main() {
     ans=""
     kind="$(afk_cli_failure_kind "$why")"
     if [[ "$(jq -r '.pinned // false' <<<"$route")" == true || -n "$pin_h" || -n "$pin_m" ]] || (( attempt >= max )); then
+      # Still tell the router, so the factory does not walk into it too.
+      afk_cli_mark_failure "$kind" "$(jq -r '.entitlement_pool // empty' <<<"$route")" "$m" "$why"
       if [[ "$json" == true ]]; then
         jq -cn --arg t "$tried" --arg w "$why" --argjson rc "$rc" '{ok:false, tried:$t, exit:$rc, error:$w}'
       else
