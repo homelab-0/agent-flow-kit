@@ -215,7 +215,7 @@ It writes what AFK uses today: when `AFK_LITELLM_BASE_URL` is set, that address 
 
 ## afk.lock
 
-`afk.lock` records everything AFK installs, so a setup can be reproduced on another machine and an install undone exactly. AFK writes it; nothing installs yet in this version, so the file appears with the first installer.
+`afk.lock` records everything AFK installs, so a setup can be reproduced on another machine and an install undone exactly. `afk harness add` and `update` write it today (kind `harness`); skills, MCP servers and tools will follow.
 
 ```toml
 version = 1
