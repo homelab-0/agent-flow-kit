@@ -459,7 +459,7 @@ func (m *Model) cardKey(key string) tea.Cmd {
 	case "?":
 		m.st = sWhy
 	case "w":
-		m.notice = "where: only here for now; Orca worktrees and the factory come in a later step"
+		m.notice = "where: only this terminal for now; background and remote runs come later"
 	case "m":
 		m.notice = "model picker comes in a later step"
 	case "esc":

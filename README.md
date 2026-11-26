@@ -152,7 +152,7 @@ afk harness [--all] [--json]
 | `-y`, `--yes` | skip the route card |
 | `--` | everything after it is the prompt |
 
-The full reference is in [docs/CLI.md](docs/CLI.md).
+The full reference is in the [command line reference](docs/reference/cli.md); everything else is in the [documentation](docs/README.md).
 
 ## How routing works
 
@@ -207,6 +207,10 @@ Configuration is moving into AFK itself (`afk config`, `afk gateway`, `afk mcp`,
 | `NO_COLOR`, `AFK_MOTION=off` | no colour; no animation |
 
 A gateway route launches `claude` with `ANTHROPIC_BASE_URL` pointed at the gateway and a separate config directory, so your Claude plan login is never loaded. AFK never prints the gateway key.
+
+## Documentation
+
+The [docs](docs/README.md) cover installing, the route card, how routing works, harnesses, pools, gateways, permissions, scripting, configuration, the JSON formats and security.
 
 ## Roadmap
 
