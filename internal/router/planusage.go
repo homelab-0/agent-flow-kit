@@ -193,7 +193,7 @@ func readPlanUsage(path, pool string, now time.Time) (quota, bool) {
 	if u.ResetsAt != 0 && u.ResetsAt <= now.Unix() {
 		return quota{}, false
 	}
-	q := quota{OK: true, Source: u.Source, UsedPct: u.UsedPct, FiveHourPct: u.FiveHourPct, SevenDayPct: u.SevenDayPct, Window: u.Window}
+	q := quota{OK: true, Source: u.Source, UsedPct: u.UsedPct, FiveHourPct: u.FiveHourPct, SevenDayPct: u.SevenDayPct, Window: u.Window, FetchedEpochRaw: u.Observed}
 	if q.Source == "" {
 		q.Source = "plan_usage"
 	}

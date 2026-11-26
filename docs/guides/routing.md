@@ -58,6 +58,7 @@ Each remaining model starts from its benchmark score for the task class (see the
 | Specialist security model: on security work / on anything else | +4 / −15 |
 | A third-party CLI using a vendor login | −0.5 |
 | Your ratings of this CLI and model on this task class (below) | −8 to +6 |
+| [Plan pacing](#plan-pacing): a measured window heading for a reset with quota unused, or running out before its reset | −4 to +4 |
 
 ### Your ratings
 
@@ -69,6 +70,16 @@ When a session ends, the receipt asks how it went: solved, partly, or wrong pick
 - Skipped ratings, one-shot runs (they have no receipt) and a wrong pick on a route you pinned yourself don't count.
 
 `--explain` shows the effect in `outcome_runs` and `outcome_adjustment`, and in the reason line (`your ratings: 4 solved, 1 partly, 0 wrong pick of 5; +3.3`). Set `route.learn = false` (or `AFK_ROUTER_LEARN=0`) to route on benchmarks only. A project can't change it.
+
+### Plan pacing
+
+A flat-rate window that resets with quota left is quota you paid for and didn't use, and one that runs dry before its reset stops your work. When a pool's figure is measured (Codex, and Claude after an `afk -p` run), AFK projects where the window ends at the rate used so far:
+
+- **Heading for unused quota**: routes on that plan gain up to +4, more the closer the reset and the more would be lost (full weight at half the window unused).
+- **Running out before the reset**: routes on that plan lose up to −4, more the longer the plan would sit empty.
+- Nothing is projected in the first 10% of a window, for an estimated pool, or for a spent one (its state already rules it out).
+
+`afk pools` shows the projection per pool (`weekly window resets in 9h with ~58% unused at this rate`). `--explain` adds it to the reason line (`pacing: ...; +3.8`), and `--explain --json` has `pacing` and `pacing_adjustment`. Set `route.pacing = false` (or `AFK_ROUTER_PACING=0`) to keep the projection on show without it moving scores. A project can't change it.
 
 The highest effective score wins; ties keep catalog order. `--explain` prints the effective score for the pick and the best route on each installed CLI.
 

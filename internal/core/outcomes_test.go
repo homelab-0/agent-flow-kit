@@ -71,3 +71,24 @@ func TestLoadReadsRatingsUnlessLearningIsOff(t *testing.T) {
 		t.Errorf("learning is off, yet outcomes were read: %+v", st.r.Outcomes)
 	}
 }
+
+func TestPacingIsOnUnlessTurnedOff(t *testing.T) {
+	c, _, _ := printCore(t, func([]string) ([]byte, []byte, int) { return nil, nil, 0 })
+	st, err := c.load(context.Background(), c.Home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.r.Pacing {
+		t.Error("pacing is off by default")
+	}
+	get := c.Getenv
+	c.Getenv = func(k string) string {
+		if k == "AFK_ROUTER_PACING" {
+			return "off"
+		}
+		return get(k)
+	}
+	if st, err = c.load(context.Background(), c.Home); err != nil || st.r.Pacing {
+		t.Errorf("AFK_ROUTER_PACING=off left pacing on (%v)", err)
+	}
+}

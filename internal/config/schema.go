@@ -51,6 +51,9 @@ type Route struct {
 	Failover string `toml:"failover,omitempty"`
 	// Learn lets your ratings of past runs move route scores (default on).
 	Learn *bool `toml:"learn,omitempty"`
+	// Pacing leans routing toward plan quota about to reset unused and
+	// away from a plan that will run out first (default on).
+	Pacing *bool `toml:"pacing,omitempty"`
 }
 
 // Permissions is the default permission mode. Reserved: the modes are

@@ -10,6 +10,7 @@ afk harness doctor|login|add|update|remove <name>   check, sign in, install
 afk bench sync [--json]            refresh the benchmark catalog now
 afk config get|set|edit|path|migrate   your settings (config.toml)
 afk trust add|list|remove [dir]    where yolo may run
+afk pools [--json]                 each pool's state, what's left, and its pacing
 afk pools clear [pool...]          forget recorded pool failures
 afk --help
 ```
@@ -52,6 +53,10 @@ Options that take a value also accept `--option=value`.
 ## `afk trust`
 
 `afk trust add <dir>`, `afk trust list` and `afk trust remove <dir>`, each with `--json`; `add` and `remove` take `--dry-run`. See [yolo stays deliberate](../guides/permissions.md#yolo-stays-deliberate).
+
+## `afk pools`
+
+`afk pools` lists each plan and gateway pool: its state, how much is left, and whether that figure is measured or estimated. Under a measured pool whose window is 5 hours or a week, a second line says where its window is heading (or that it is too early in the window to say) at the rate so far, and how much [plan pacing](../guides/routing.md#plan-pacing) moves routing because of it. `--json` prints the [pools document](json.md#pools-afk-router-pools3), with every figure and each pool's `pacing`.
 
 ## `afk pools clear`
 

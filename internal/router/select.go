@@ -105,6 +105,11 @@ type Route struct {
 	OutcomeRuns       *int     `json:"outcome_runs,omitempty"`
 	OutcomeAdjustment *float64 `json:"outcome_adjustment,omitempty"`
 
+	// Where the route's plan window is heading, and the points pacing
+	// moved the score (0 with route.pacing off).
+	Pacing           *Pacing  `json:"pacing,omitempty"`
+	PacingAdjustment *float64 `json:"pacing_adjustment,omitempty"`
+
 	// Set on the fallback route only.
 	NoEligibleCandidate  bool              `json:"no_eligible_candidate,omitempty"`
 	CandidatesConsidered *int              `json:"candidates_considered,omitempty"`
@@ -200,6 +205,9 @@ type Router struct {
 	// Outcomes are your ratings of past runs. Nil leaves scores to the
 	// benchmarks.
 	Outcomes map[OutcomeKey]OutcomeStats
+	// Pacing leans routes toward a measured window that is about to reset
+	// unused, and away from one that will run out first (route.pacing).
+	Pacing bool
 }
 
 // probeOrder is the order the pool probe lists the CLIs in.
@@ -585,6 +593,12 @@ func (r *Router) Select(in Input) Route {
 			outRuns, outAdj = &n, &a
 			adj += a
 		}
+		var paceAdj *float64
+		if r.Pacing && pool.Pacing != nil && pool.Pacing.Adjustment != 0 {
+			a := pool.Pacing.Adjustment
+			paceAdj = &a
+			adj += a
+		}
 		eff := math.Round((baseScore+adj)*100) / 100
 
 		ef := in.resolveEffort(tc, c.Effort, c.SupportedEfforts)
@@ -630,11 +644,15 @@ func (r *Router) Select(in Input) Route {
 			BenchmarkSyncedAt: bm.SyncedAt, EffectiveScore: eff, CrossFamilyReview: &cross,
 			RouterSource: source, LitellmBaseURL: gwURL, AuthAlerts: alerts,
 			OutcomeRuns: outRuns, OutcomeAdjustment: outAdj,
+			Pacing: pool.Pacing, PacingAdjustment: paceAdj,
 		}
 		route.Reason = reasonText(route, c, pool, ef, tc, cross, in.BuilderFamily, scoreText)
 		if outAdj != nil {
 			st := r.Outcomes[OutcomeKeyFor(c.Harness, c.CanonicalModel, c.Model, tc)]
 			route.Reason += fmt.Sprintf(" (your ratings: %d solved, %d partly, %d wrong pick of %d; %+.1f)", st.Solved, st.Partly, st.Wrong, st.Runs(), *outAdj)
+		}
+		if paceAdj != nil {
+			route.Reason += fmt.Sprintf(" (pacing: %s; %+.1f)", PaceText(pool.Pacing, probe.now(), time.Local), *paceAdj)
 		}
 		routes = append(routes, route)
 	}
