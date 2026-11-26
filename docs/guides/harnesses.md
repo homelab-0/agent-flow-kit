@@ -40,7 +40,7 @@ It changes nothing: `afk harness` only reads.
 
 ### Where AFK looks
 
-On your `PATH` first, then the usual install folders (`~/.local/bin`, `~/.bun/bin`, `~/.cargo/bin`, `~/.npm-global/bin`, the mise shims, and the Grok and OpenCode installers' own folders), then `/opt/homebrew/bin`, `/usr/local/bin` and Linuxbrew. Set `AFK_HARNESS_BIN_DIR` to make one folder the only place AFK looks; that is useful in containers and tests.
+On your `PATH` first, then the usual install folders (`~/.local/bin`, `~/.bun/bin`, `~/.cargo/bin`, `~/.npm-global/bin`, the mise shims, and the Grok and OpenCode installers' own folders), then `/opt/homebrew/bin`, `/usr/local/bin` and Linuxbrew. A relative `PATH` entry (`.` or an empty one) is skipped, so a file named `claude` in a project you opened is never taken for the CLI. Set `AFK_HARNESS_BIN_DIR` to make one folder the only place AFK looks; that is useful in containers and tests.
 
 ### Sign-in states
 

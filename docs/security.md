@@ -33,7 +33,7 @@ AFK checks that each CLI's login file **exists and is larger than 4 bytes** (big
 
 ## What AFK writes
 
-Caches, signals and run records under `~/.config/afk/` (see [configuration](reference/configuration.md#files-afk-keeps)). None of them hold a token. Run records keep a gateway's host but drop any user info in its address.
+Caches, signals and run records under `~/.config/afk/` (see [configuration](reference/configuration.md#files-afk-keeps)). None of them hold a token, but they can quote a prompt or a CLI's error text, so a new file is readable by you alone (mode 600; a file that already exists keeps its mode). Run records keep a gateway's host but drop any user info in its address.
 
 AFK does not change your CLIs' own settings. Yolo applies to one launch and is never written into a CLI's config.
 
