@@ -268,6 +268,8 @@ func parseCodexRateLimits(line []byte, now int64) (quota, bool) {
 	}
 	var used []float64
 	var fh, wk, rst *float64
+	window := ""
+	fullest := -1.0
 	for _, w := range wins {
 		used = append(used, *w.UsedPercent)
 		mins := 0.0
@@ -280,14 +282,27 @@ func parseCodexRateLimits(line []byte, now int64) (quota, bool) {
 		if mins >= 1000 && wk == nil {
 			wk = f64(math.Round(*w.UsedPercent))
 		}
-		if w.ResetsAt != nil && (rst == nil || *w.ResetsAt < *rst) {
-			rst = f64(*w.ResetsAt)
+		// The figure is the fuller window's, so its reset and name go
+		// with it.
+		if *w.UsedPercent > fullest {
+			fullest = *w.UsedPercent
+			rst = nil
+			if w.ResetsAt != nil {
+				rst = f64(*w.ResetsAt)
+			}
+			window = ""
+			switch {
+			case mins == 300:
+				window = "5h"
+			case mins == 10080:
+				window = "weekly"
+			}
 		}
 	}
 	eff := math.Max(0, math.Min(100, math.Round(maxOf(used))))
 	return quota{
 		OK: true, Source: "codex_rate_limits", UsedPct: eff,
-		FiveHourPct: fh, SevenDayPct: wk, ResetsAtEpoch: rst, PlanType: rl.PlanType,
+		FiveHourPct: fh, SevenDayPct: wk, ResetsAtEpoch: rst, PlanType: rl.PlanType, Window: window,
 	}, true
 }
 

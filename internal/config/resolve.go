@@ -156,7 +156,9 @@ type Settings struct {
 	// or none.
 	Failover string
 	// Learn is whether your ratings of past runs move route scores.
-	Learn       bool
+	Learn bool
+	// Pacing is whether a plan window's projection moves route scores.
+	Pacing      bool
 	GatewayURL  string
 	GatewayName string
 	GatewayKey  *SecretRef // the default gateway's key reference, if config names one
@@ -323,6 +325,17 @@ func Resolve(e Env) (Settings, error) {
 	default:
 		if c.Route.Learn != nil {
 			s.Learn = *c.Route.Learn
+		}
+	}
+	// So is pacing.
+	s.Pacing = true
+	switch strings.ToLower(e.getenv("AFK_ROUTER_PACING")) {
+	case "0", "false", "off", "no":
+		s.Pacing = false
+	case "1", "true", "on", "yes":
+	default:
+		if c.Route.Pacing != nil {
+			s.Pacing = *c.Route.Pacing
 		}
 	}
 

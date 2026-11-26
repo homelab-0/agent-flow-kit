@@ -137,7 +137,7 @@ func (c *Core) load(ctx context.Context, repo string) (*state, error) {
 		Home: c.Home, Getenv: c.getenv, Now: c.now(), GatewayURL: s.GatewayURL,
 		Installed: installed, Live: c.Live, CodexLoginMode: c.codexLoginMode(),
 	})
-	r := &router.Router{Catalog: cat, Probe: probe, Discovered: c.discovered()}
+	r := &router.Router{Catalog: cat, Probe: probe, Discovered: c.discovered(), Pacing: s.Pacing}
 	if s.Learn {
 		r.Outcomes = Outcomes(runrec.Load(runrec.DirFor(c.Home, c.getenv), c.now().Add(-OutcomeMaxAge)))
 	}
@@ -418,6 +418,20 @@ func (c *Core) Explain(ctx context.Context, f engine.RouteFlags, prompt string) 
 
 // Pools reports plan pool usage, for the receipt.
 func (c *Core) Pools(ctx context.Context) (*engine.Pools, error) {
+	p, err := c.Probe(ctx)
+	if err != nil {
+		return nil, err
+	}
+	p.Schema = engine.SchemaPools
+	b, err := json.Marshal(p)
+	if err != nil {
+		return nil, err
+	}
+	return engine.ParsePools(b)
+}
+
+// Probe is the state of every plan pool now, as routing sees it.
+func (c *Core) Probe(ctx context.Context) (*router.Probe, error) {
 	cat, err := router.LoadCatalog(c.Home, c.getenv)
 	if err != nil {
 		return nil, err
@@ -430,16 +444,10 @@ func (c *Core) Pools(ctx context.Context) (*engine.Pools, error) {
 	if installed == nil {
 		installed = router.VerifyBinaries(ctx, c.Harness, c.getenv)
 	}
-	p := router.ProbePools(ctx, cat, router.ProbeEnv{
+	return router.ProbePools(ctx, cat, router.ProbeEnv{
 		Home: c.Home, Getenv: c.getenv, Now: c.now(), GatewayURL: s.GatewayURL, Installed: installed, Live: c.Live,
 		CodexLoginMode: c.codexLoginMode(),
-	})
-	p.Schema = engine.SchemaPools
-	b, err := json.Marshal(p)
-	if err != nil {
-		return nil, err
-	}
-	return engine.ParsePools(b)
+	}), nil
 }
 
 func sortByScore(rs []router.Route) {

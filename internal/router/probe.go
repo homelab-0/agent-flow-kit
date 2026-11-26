@@ -148,6 +148,11 @@ func ProbePools(ctx context.Context, cat *Catalog, e ProbeEnv) *Probe {
 		"litellm-local":    pc.calc("litellm-local", 0, true, []string{"claude", "opencode"}, quota{}, 0),
 	}
 
+	for id, p := range pools {
+		p.Pacing = pace(p, e.Now)
+		pools[id] = p
+	}
+
 	alerts := []any{}
 	ids := make([]string, 0, len(pools))
 	for id := range pools {
@@ -189,7 +194,7 @@ func ProbePools(ctx context.Context, cat *Catalog, e ProbeEnv) *Probe {
 			unavailable[m] = v
 		}
 	}
-	return &Probe{Schema: PoolsSchema, Harnesses: harnesses, AuthAlerts: alerts, UnavailableModels: unavailable, Pools: pools, Bindings: binds}
+	return &Probe{Schema: PoolsSchema, Harnesses: harnesses, AuthAlerts: alerts, UnavailableModels: unavailable, Pools: pools, Bindings: binds, at: e.Now}
 }
 
 func reauth(h string) string {
