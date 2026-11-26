@@ -96,6 +96,9 @@ func runGo(args cli.Args) int {
 		for _, w := range s.Warnings {
 			fmt.Fprintln(os.Stderr, "afk: warning:", w)
 		}
+		if w := c.DiscoveredWarning(); w != "" {
+			fmt.Fprintln(os.Stderr, "afk: note:", w)
+		}
 		if s.BenchAutosync {
 			refreshBenchmarks(c.Home)
 		}

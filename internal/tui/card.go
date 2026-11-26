@@ -427,18 +427,6 @@ func (t Theme) ErrorLines(c Card, width int, reason string, next int) []line {
 	return append(out, fitLine(keys, max(width, 1)))
 }
 
-// RouteErrorLines is the error dialog when routing itself failed (the
-// engine did not answer in time): there is no route to fall back to.
-func (t Theme) RouteErrorLines(prompt string, width int, reason string) []line {
-	w := boxW(width)
-	out := []line{t.promptLine(prompt, width), t.top("Can't route this task", w, t.Bad)}
-	for _, l := range wrap(reason, w-8) {
-		out = append(out, t.boxLine(w, t.Bad, line{sg(t.Plain, "  "+l)}))
-	}
-	out = append(out, t.boxLine(w, t.Bad, nil), t.boxLine(w, t.Bad, line{sg(t.Dim, "  Nothing was started.")}), t.bottom(w, t.Bad))
-	return append(out, fitLine(line{sg(t.Key, " r"), sg(t.Dim, " retry  "), sg(t.Key, "esc"), sg(t.Dim, " cancel")}, max(width, 1)))
-}
-
 // LaunchLine is the receipt line printed when the CLI starts:
 // ▸ CL claude · claude-fable-5-2 · high · here    run r-7f3c
 func (t Theme) LaunchLine(r engine.Route, where, id string, yolo bool, width int) line {

@@ -116,9 +116,8 @@ type Model struct {
 
 	dec Decision
 
-	ctx      context.Context // cancelled when the card ends
-	cancel   context.CancelFunc
-	routeErr bool // the error dialog is about routing, not a launch
+	ctx    context.Context // cancelled when the card ends
+	cancel context.CancelFunc
 }
 
 // New builds the card model.
@@ -273,14 +272,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *Model) onExplain(msg explainMsg) tea.Cmd {
 	if msg.err != nil {
-		var te *engine.TimeoutError
-		if errors.As(msg.err, &te) {
-			m.errText, m.routeErr, m.st = sentence(msg.err.Error()), true, sError
-			return nil
-		}
 		return m.finish(Decision{Err: msg.err})
 	}
-	m.routeErr = false
 	rows, sel := msg.ex.Rows()
 	m.card.Mode = msg.ex.Mode
 	m.card.ModeNotes = map[string]string{}
@@ -318,8 +311,7 @@ func (m *Model) onPlan(msg planMsg) tea.Cmd {
 	if msg.err != nil {
 		var pe *engine.PlanError
 		var ee *launch.EnvError
-		var te *engine.TimeoutError
-		if !errors.As(msg.err, &pe) && !errors.As(msg.err, &ee) && !errors.As(msg.err, &te) && m.opt.Yes {
+		if !errors.As(msg.err, &pe) && !errors.As(msg.err, &ee) && m.opt.Yes {
 			return m.finish(Decision{Err: msg.err})
 		}
 		m.errText = sentence(msg.err.Error())
@@ -379,15 +371,6 @@ func (m *Model) onKey(k tea.KeyPressMsg) tea.Cmd {
 		m.input, cmd = m.input.Update(k)
 		return cmd
 	case sError:
-		if m.routeErr {
-			switch key {
-			case "r":
-				return m.reroute()
-			case "esc":
-				return m.finish(Decision{Cancelled: true})
-			}
-			return nil
-		}
 		switch key {
 		case "r":
 			m.st = sLaunching
@@ -420,7 +403,7 @@ func (m *Model) onKey(k tea.KeyPressMsg) tea.Cmd {
 	return nil
 }
 
-// reroute asks the engine again (after an edit, or a routing timeout).
+// reroute asks the engine again (after an edit).
 func (m *Model) reroute() tea.Cmd {
 	m.st = sRouting
 	m.started = m.opt.Now()
@@ -530,9 +513,6 @@ func (m *Model) Render() string {
 		lines := m.cardBody(compact, false)
 		return join(append(lines, nil, m.busyLine("Starting", routeName(r)+" / "+r.Model)))
 	case sError:
-		if m.routeErr || len(m.card.Rows) == 0 {
-			return join(t.RouteErrorLines(m.card.Prompt, w, m.errText))
-		}
 		return join(t.ErrorLines(m.card, w, m.errText, m.nextBest))
 	case sDone:
 		if !m.dec.Launch && !m.dec.Cancelled || m.opt.Yes || len(m.card.Rows) == 0 {

@@ -27,13 +27,10 @@ type Repo struct {
 	Warnings []Problem
 }
 
-// LegacyRepo is the router block older AFK versions read from a project.
+// LegacyRepo is what is still read from the router block older AFK
+// versions read from a project: its route preference only.
 type LegacyRepo struct {
-	GatewayURL         *string  `json:"litellm_base_url"`
-	AllowMetered       *bool    `json:"allow_metered_api"`
-	PreferFree         *bool    `json:"prefer_free_for_low_risk"`
-	AllowFreeReviewers *bool    `json:"allow_free_reviewers"`
-	SecurityModels     []string `json:"security_models"`
+	PreferFree *bool
 }
 
 // repoAllowed are the keys a repository may set, by section.
@@ -65,7 +62,27 @@ func LoadRepo(repo string) *Repo {
 	for _, k := range sortedKeys(top) {
 		switch k {
 		case "router":
-			_ = json.Unmarshal(top[k], &r.Legacy)
+			// The older block: only its route preference is still read. A
+			// gateway, keys, metered models, free reviewers or security
+			// models from someone else's repository are ignored, trusted
+			// or not.
+			var sec map[string]json.RawMessage
+			if json.Unmarshal(top[k], &sec) != nil {
+				warn(k, "not an object; ignored")
+				continue
+			}
+			for _, sk := range sortedKeys(sec) {
+				if sk != "prefer_free_for_low_risk" {
+					warn("router."+sk, "a repository can't set this (only route.prefer, route.prefer_free and a stricter permissions.default); ignored")
+					continue
+				}
+				var b bool
+				if json.Unmarshal(sec[sk], &b) != nil {
+					warn("router."+sk, "must be true or false; ignored")
+					continue
+				}
+				r.Legacy.PreferFree = &b
+			}
 		case "route", "permissions":
 			var sec map[string]json.RawMessage
 			if json.Unmarshal(top[k], &sec) != nil {
@@ -142,9 +159,6 @@ type Settings struct {
 	PreferFree         bool
 	AllowFreeReviewers bool
 	SecurityModels     []string
-	// IgnoredRepoGateway: the project named a gateway that was not used
-	// because the project isn't trusted.
-	IgnoredRepoGateway bool
 	// Disabled are CLIs config keeps out of routing.
 	Disabled map[string]bool
 	// BenchAutosync is whether the daily catalog refresh runs.
@@ -202,7 +216,7 @@ func Resolve(e Env) (Settings, error) {
 	c := f.Config
 
 	// The user's own settings: config.toml, else router.json.
-	userGateway, userSecurity, trusted := "", []string(nil), []string(nil)
+	userGateway, userSecurity := "", []string(nil)
 	if f.Exists {
 		if name, g, ok := c.DefaultGateway(); ok {
 			userGateway, s.GatewayName = g.URL, name
@@ -212,33 +226,25 @@ func Resolve(e Env) (Settings, error) {
 				}
 			}
 		}
-		userSecurity, trusted = c.Route.SecurityModels, c.Trust.Repos
+		userSecurity = c.Route.SecurityModels
 		s.Gateways = c.Gateway
 	} else if u, ok := readLegacyUser(paths.Legacy); ok {
-		userGateway, userSecurity, trusted = u.GatewayURL, u.Security, u.TrustedRepos
+		userGateway, userSecurity = u.GatewayURL, u.Security
 	}
 
 	repo := LoadRepo(e.Repo)
 	s.Warnings = append(s.Warnings, repo.Warnings...)
 	lr := repo.Legacy
 
-	// The gateway gets the gateway key at launch, so its address must come
-	// from you: the environment, your own config, or (the old router
-	// block) a project you trust. A cloned repository can't point your key
-	// at its own server.
+	// The gateway gets the gateway key at launch, so its address comes
+	// only from you: the environment or your own config. A repository can
+	// never point your key at its own server.
 	s.GatewayURL = e.getenv("AFK_LITELLM_BASE_URL")
 	if s.GatewayURL != "" {
 		s.GatewayName = "default"
 	}
 	if s.GatewayURL == "" {
 		s.GatewayURL = userGateway
-	}
-	if s.GatewayURL == "" && lr.GatewayURL != nil && *lr.GatewayURL != "" {
-		if trusts(trusted, e.Repo) {
-			s.GatewayURL = *lr.GatewayURL
-		} else {
-			s.IgnoredRepoGateway = true
-		}
 	}
 
 	pick := func(env string, repoV, legacyV, cfgV *bool) bool {
@@ -252,14 +258,12 @@ func Resolve(e Env) (Settings, error) {
 		}
 		return false
 	}
-	s.AllowMetered = pick("AFK_ROUTER_ALLOW_METERED_API", nil, lr.AllowMetered, c.Route.AllowMetered)
+	s.AllowMetered = pick("AFK_ROUTER_ALLOW_METERED_API", nil, nil, c.Route.AllowMetered)
 	s.PreferFree = pick("AFK_ROUTER_PREFER_FREE", repo.PreferFree, lr.PreferFree, c.Route.PreferFree)
-	s.AllowFreeReviewers = pick("AFK_ROUTER_ALLOW_FREE_REVIEWERS", nil, lr.AllowFreeReviewers, c.Route.AllowFreeReviewers)
+	s.AllowFreeReviewers = pick("AFK_ROUTER_ALLOW_FREE_REVIEWERS", nil, nil, c.Route.AllowFreeReviewers)
 	switch {
 	case e.getenv("AFK_SECURITY_MODELS") != "":
 		s.SecurityModels = strings.Split(e.getenv("AFK_SECURITY_MODELS"), ",")
-	case len(lr.SecurityModels) > 0:
-		s.SecurityModels = lr.SecurityModels
 	default:
 		s.SecurityModels = userSecurity
 	}

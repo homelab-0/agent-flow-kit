@@ -380,33 +380,6 @@ func TestExplainFailureEnds(t *testing.T) {
 	}
 }
 
-func TestRoutingTimeoutShowsDialog(t *testing.T) {
-	m := New(&fake{}, Options{Prompt: framePrompt, Width: 80})
-	m.Init()
-	m.Update(explainMsg{err: &engine.TimeoutError{Call: "explain"}})
-	out := ansi.Strip(m.Render())
-	if m.st != sError || !strings.Contains(out, "Can't route this task") || !strings.Contains(out, "did not answer explain in time") {
-		t.Fatalf("a routing timeout shows the error dialog:\n%s", out)
-	}
-	f := fixtures(t)
-	m.be = f
-	cmd := m.onKey(key("r"))
-	if m.st != sRouting || cmd == nil {
-		t.Fatal("r routes again")
-	}
-}
-
-func TestPlanTimeoutShowsDialogEvenWithYes(t *testing.T) {
-	f := fixtures(t)
-	m := New(f, Options{Prompt: framePrompt, Width: 80, Yes: true, Environ: []string{"PATH=/bin"}})
-	m.Init()
-	m.Update(explainMsg{ex: f.ex})
-	m.Update(planMsg{err: &engine.TimeoutError{Call: "launch-plan"}})
-	if m.st != sError || m.Decision().Err != nil {
-		t.Fatalf("a launch-plan timeout shows the dialog: state %v %+v", m.st, m.Decision())
-	}
-}
-
 // blocking is an engine that never answers until its context ends.
 type blocking struct{ fake }
 

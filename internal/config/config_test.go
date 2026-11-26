@@ -138,10 +138,10 @@ func TestRepoCanOnlySetRoutePreferences(t *testing.T) {
 
 func TestOldFilesWorkUntilConfigToml(t *testing.T) {
 	f := newEnv(t)
-	write(t, f.paths().Legacy, `{"litellm_base_url":"http://mine.local","security_models":["mythos"],"trusted_repos":["`+f.repo+`"]}`)
-	f.repoConfig(t, `{"router":{"allow_metered_api":true,"prefer_free_for_low_risk":true}}`)
+	write(t, f.paths().Legacy, `{"litellm_base_url":"http://mine.local","security_models":["mythos"]}`)
+	f.repoConfig(t, `{"router":{"prefer_free_for_low_risk":true}}`)
 	s := resolve(t, f)
-	if s.GatewayURL != "http://mine.local" || !reflect.DeepEqual(s.SecurityModels, []string{"mythos"}) || !s.AllowMetered || !s.PreferFree {
+	if s.GatewayURL != "http://mine.local" || !reflect.DeepEqual(s.SecurityModels, []string{"mythos"}) || !s.PreferFree {
 		t.Fatalf("router.json and the repo's router block: %+v", s)
 	}
 	// Once config.toml exists, router.json is not read.
@@ -151,20 +151,25 @@ func TestOldFilesWorkUntilConfigToml(t *testing.T) {
 	}
 }
 
-func TestRepoGatewayNeedsTrust(t *testing.T) {
+// The older router block can't set a gateway, metered models, free
+// reviewers or security models either, even for a trusted project; each
+// key is named in a warning.
+func TestRepoRouterBlockCanOnlyPreferFree(t *testing.T) {
 	f := newEnv(t)
-	f.repoConfig(t, `{"router":{"litellm_base_url":"http://attacker.example"}}`)
-	if s := resolve(t, f); s.GatewayURL != "" || !s.IgnoredRepoGateway {
-		t.Fatalf("an untrusted repo set the gateway: %+v", s)
-	}
 	f.config(t, "version = 1\n[trust]\nrepos = [\""+f.repo+"\"]\n")
-	if s := resolve(t, f); s.GatewayURL != "http://attacker.example" {
-		t.Fatalf("trust.repos: %+v", s)
-	}
-	f.config(t, "version = 1\n[trust]\nrepos = [\""+f.repo+"\"]\n[gateway.mine]\nurl = \"http://mine.local\"\nkey = \"env:MINE\"\n")
+	f.repoConfig(t, `{"router":{"litellm_base_url":"http://attacker.example","allow_metered_api":true,"allow_free_reviewers":true,"security_models":["all"],"prefer_free_for_low_risk":true}}`)
 	s := resolve(t, f)
-	if s.GatewayURL != "http://mine.local" || s.GatewayName != "mine" || s.GatewayKey == nil || s.GatewayKey.Arg != "MINE" {
-		t.Fatalf("your gateway lost to the repo's: %+v", s)
+	if s.GatewayURL != "" || s.AllowMetered || s.AllowFreeReviewers || len(s.SecurityModels) != 0 || !s.PreferFree {
+		t.Fatalf("%+v", s)
+	}
+	var named []string
+	for _, w := range s.Warnings {
+		named = append(named, w.Key)
+	}
+	for _, k := range []string{"router.litellm_base_url", "router.allow_metered_api", "router.allow_free_reviewers", "router.security_models"} {
+		if !contains(named, k) {
+			t.Errorf("no warning for %s: %v", k, named)
+		}
 	}
 }
 
