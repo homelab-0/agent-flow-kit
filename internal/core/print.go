@@ -48,13 +48,13 @@ func (c *Core) Print(ctx context.Context, req PrintRequest, note func(string)) (
 		Run: func(ctx context.Context, r engine.Route, mode string) oneshot.Output {
 			return c.runHeadless(ctx, r, mode, req)
 		},
-		Next: func(ctx context.Context, only []string) (engine.Route, bool) {
+		Next: func(ctx context.Context, only []string, pool string) (engine.Route, bool) {
 			// Read the pools again: the failure just recorded is in them.
 			st, err := c.load(ctx, d.repo)
 			if err != nil {
 				return engine.Route{}, false
 			}
-			r, ok, err := st.route(d.task, d.prefer, only)
+			r, ok, err := st.route(d.task, d.prefer, only, pool)
 			if err != nil || !ok {
 				return engine.Route{}, false
 			}
@@ -78,7 +78,7 @@ func (c *Core) Print(ctx context.Context, req PrintRequest, note func(string)) (
 	if first.EntitlementPool == "" {
 		firstPool = d.st.r.PoolFor(first.Harness, first.Model)
 	}
-	return oneshot.Do(ctx, oneshot.Request{First: first, Pinned: pinned, Harnesses: d.list, Effort: req.Flags.Effort, FirstPool: firstPool, Mode: d.mode}, deps), nil
+	return oneshot.Do(ctx, oneshot.Request{First: first, Pinned: pinned, Harnesses: d.list, Effort: req.Flags.Effort, FirstPool: firstPool, Mode: d.mode, Failover: d.st.settings.Failover}, deps), nil
 }
 
 func toEngineRoute(v any) (engine.Route, error) {

@@ -310,6 +310,10 @@ func lookArgv0(name string, env []string) (string, error) {
 	for _, kv := range env {
 		if v, ok := strings.CutPrefix(kv, "PATH="); ok {
 			for _, d := range filepath.SplitList(v) {
+				// Never the current directory: see harness.Locate.
+				if !filepath.IsAbs(d) {
+					continue
+				}
 				p := filepath.Join(d, name)
 				if st, err := os.Stat(p); err == nil && !st.IsDir() && st.Mode()&0o111 != 0 {
 					return p, nil

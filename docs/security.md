@@ -11,8 +11,11 @@ AFK doesn't decide which CLI you may use with which login; whether a setup suits
 These hold for every route, pinned or not, and are checked again when a launch plan is built:
 
 - **A plan login never goes through a gateway.** A gateway route runs `claude` with the gateway's own key, from a separate config directory, with every Claude and Anthropic variable unset, so your plan login isn't loaded or sent.
+- **A CLI doesn't get your gateway key in its environment.** AFK removes `AFK_GATEWAY_KEY`, the variable `AFK_GATEWAY_KEY_ENV` names and each gateway's `key = "env:NAME"` variable from the environment of every CLI it starts, so a command the agent runs can't read a key that works on every model behind your gateway. A gateway launch still gets its key, as `ANTHROPIC_AUTH_TOKEN`. A vendor's own variables (`OPENAI_API_KEY` and the like) are left alone: the CLI may need them. Set `AFK_KEEP_SECRETS=1` to turn this off, for example when a CLI calls `afk` itself and needs to launch gateway routes.
 - **The gateway key comes from a plain variable that is not a vendor credential**, so AFK never picks up a plan token from a vendor's own variables. The check is on the variable's name: put only a gateway-issued key in it.
 - **The gateway address comes from you**, never from a repository: the environment or your own `config.toml` (or the older `router.json`). A repository you clone can't send your gateway key to its own server. Its `.afk/config.json` can set only `route.prefer`, `route.prefer_free` and a stricter `permissions.default`; a gateway, a key, metered models, free reviewers, security models, an install, telemetry or a looser mode is ignored with a warning naming the key, including in the older `router` block and for a project you trust.
+- **The gateway key goes only to a gateway address you configured.** A route that names another address is refused, whichever variable holds the key. A gateway on plain `http://` to what looks like a public host gets a warning, not a block. AFK judges that from the address as written and doesn't look the name up, so a bare name such as `gateway` never warns, even if it points somewhere public.
+- **Gateway addresses in run records and messages are trimmed** to scheme, host and path: user info, the query string and the fragment are dropped, since some gateways take a key there.
 - **Secrets in config are references** (`env:NAME`, `file:`, `cmd:`, `op://`, `keychain:`), never values. A value that isn't one is refused without being repeated, and AFK resolves a reference only when the secret is used, never writing or printing it. `afk config migrate` won't copy a gateway address that carries user info.
 
 ## A repository's own CLI settings
@@ -45,7 +48,7 @@ AFK checks that each CLI's login file **exists and is larger than 4 bytes** (big
 
 ## What AFK writes
 
-Caches, signals and run records under `~/.config/afk/` (see [configuration](reference/configuration.md#files-afk-keeps)). None of them hold a token. Run records keep a gateway's host but drop any user info in its address.
+Caches, signals and run records under `~/.config/afk/` (see [configuration](reference/configuration.md#files-afk-keeps)). None of them hold a token, but they can quote a prompt or a CLI's error text, so a new file is readable by you alone (mode 600; a file that already exists keeps its mode). Run records keep a gateway's host but drop any user info in its address.
 
 AFK does not change your CLIs' own settings. Yolo applies to one launch and is never written into a CLI's config.
 
@@ -53,6 +56,7 @@ AFK does not change your CLIs' own settings. Yolo applies to one launch and is n
 
 - The gateway you configured, for its model list.
 - The public benchmark feeds (Hugging Face's dataset server for the LMArena leaderboards, and models.dev), when the benchmark catalog is refreshed: about once a day, or when you run `afk bench sync`. These are plain GETs with no key, token or identifier of yours.
+- Your npm registry, when you run `afk harness add` or `update`: npm is run from a directory of AFK's own, so the registry is the one in your own npm settings, never one a repository's `.npmrc` names.
 
 Nothing else leaves your machine: no telemetry, no analytics.
 

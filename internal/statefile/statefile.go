@@ -100,13 +100,14 @@ func WriteJSON(dest string, doc []byte) error {
 }
 
 // WriteFile writes doc to dest through a uniquely named temp file beside
-// it and renames it into place, keeping dest's mode (0644 for a new file).
+// it and renames it into place, keeping dest's mode (0600 for a new file, in a 0700 directory when it
+// has to make one: state can quote prompts and error text).
 // dest is either the old or the new document, never a mix.
 func WriteFile(dest string, doc []byte) error {
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
 		return err
 	}
-	mode := os.FileMode(0o644)
+	mode := os.FileMode(0o600)
 	if fi, err := os.Stat(dest); err == nil {
 		mode = fi.Mode().Perm()
 	}

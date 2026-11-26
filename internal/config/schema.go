@@ -46,6 +46,9 @@ type Route struct {
 	// SecurityModels are the restricted security models you are entitled
 	// to (Mythos, Daybreak Blue).
 	SecurityModels []string `toml:"security_models,omitempty"`
+	// Failover is where a failed one-shot run may go next: any (default),
+	// same-pool or none.
+	Failover string `toml:"failover,omitempty"`
 }
 
 // Permissions is the default permission mode. Reserved: the modes are
@@ -120,6 +123,7 @@ type Source struct {
 // Allowed values.
 var (
 	Prefers   = []string{"balanced", "cheap", "best"}
+	Failovers = []string{"any", "same-pool", "none"}
 	Modes     = []string{"read-only", "ask", "edits", "auto", "yolo"}
 	Gateways  = []string{"litellm", "openrouter", "portkey", "agentgateway", "envoy", "kong", "cloudflare", "vercel", "openai", "anthropic", "ollama", "lmstudio", "vllm", "llamacpp", "localai"}
 	Costs     = []string{"metered", "free"}
@@ -153,9 +157,21 @@ func (p Problem) String() string {
 		loc = fmt.Sprintf("%s:%d", p.File, p.Line)
 	}
 	if p.Key == "" {
-		return fmt.Sprintf("%s: %s", loc, p.Msg)
+		return plain(fmt.Sprintf("%s: %s", loc, p.Msg))
 	}
-	return fmt.Sprintf("%s: %s: %s", loc, p.Key, p.Msg)
+	return plain(fmt.Sprintf("%s: %s: %s", loc, p.Key, p.Msg))
+}
+
+// plain replaces control characters. A problem can quote a key or a value
+// from a repository's file, and a terminal would act on an escape sequence
+// in it (move the cursor, rewrite the line above, set the title).
+func plain(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) {
+			return '?'
+		}
+		return r
+	}, s)
 }
 
 // validate checks the values. lines maps a dotted key to its line.
@@ -173,6 +189,7 @@ func (c *Config) validate(file string, lines map[string]int) []Problem {
 		bad("version", "this afk reads version %d, not %d", Version, c.Version)
 	}
 	oneOf("route.prefer", c.Route.Prefer, Prefers)
+	oneOf("route.failover", c.Route.Failover, Failovers)
 	oneOf("permissions.default", c.Permissions.Default, Modes)
 	for _, t := range sortedKeys(c.Permissions.Task) {
 		oneOf("permissions.task."+t, c.Permissions.Task[t], Modes)

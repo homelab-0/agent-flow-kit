@@ -183,8 +183,9 @@ func (c *Core) DiscoveredWarning() string {
 
 // route asks the router for one task, limited to the given CLIs. A
 // fallback that names a CLI outside them means nothing here can do the
-// task (ok is false).
-func (st *state) route(task, prefer string, only []string) (router.Route, bool, error) {
+// task (ok is false). A pool limits it further to routes that pool
+// serves; "" allows any.
+func (st *state) route(task, prefer string, only []string, pool string) (router.Route, bool, error) {
 	stage, risk, err := router.TaskRoute(task, prefer)
 	if err != nil {
 		return router.Route{}, false, err
@@ -192,10 +193,10 @@ func (st *state) route(task, prefer string, only []string) (router.Route, bool, 
 	pf := st.settings.PreferFree || prefer == "cheap" || task == "quick"
 	r := st.r.Select(router.Input{
 		Stage: stage, Risk: risk, Round: 1, Surfaces: []string{"code"},
-		OnlyHarnesses: only, GatewayURL: st.settings.GatewayURL, AllowMetered: st.settings.AllowMetered,
+		OnlyHarnesses: only, OnlyPool: pool, GatewayURL: st.settings.GatewayURL, AllowMetered: st.settings.AllowMetered,
 		PreferFree: pf, AllowFreeReviewers: st.settings.AllowFreeReviewers, SecurityModels: st.settings.SecurityModels,
 	})
-	if r.IsFallback() && !contains(only, r.Harness) {
+	if r.IsFallback() && (!contains(only, r.Harness) || (pool != "" && r.EntitlementPool != pool)) {
 		return r, false, nil
 	}
 	return r, true, nil
@@ -320,7 +321,7 @@ func (c *Core) decide(ctx context.Context, f engine.RouteFlags, prompt string) (
 		}
 		return d, nil
 	}
-	r, ok, err := st.route(task, prefer, d.list)
+	r, ok, err := st.route(task, prefer, d.list, "")
 	if err != nil {
 		return nil, err
 	}
@@ -344,7 +345,7 @@ func (c *Core) Explain(ctx context.Context, f engine.RouteFlags, prompt string) 
 	alts := []router.Route{}
 	if d.pinH == "" {
 		for _, h := range d.installed {
-			r, ok, err := d.st.route(d.task, d.prefer, []string{h})
+			r, ok, err := d.st.route(d.task, d.prefer, []string{h}, "")
 			if err != nil || !ok {
 				continue
 			}

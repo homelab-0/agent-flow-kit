@@ -32,8 +32,13 @@ type Change struct {
 	Commits *int
 }
 
+// quiet turns off the setting in a repository's own .git/config that makes
+// a read-only git command run a program: afk looks at a directory before
+// anyone has said they trust it.
+var quiet = []string{"-c", "core.fsmonitor=false"}
+
 func git(ctx context.Context, dir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir, "--no-optional-locks"}, args...)...)
+	cmd := exec.CommandContext(ctx, "git", append(append([]string{"-C", dir, "--no-optional-locks"}, quiet...), args...)...)
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	err := cmd.Run()
@@ -181,7 +186,7 @@ func hashFiles(c context.Context, dir string, paths []string) (map[string]string
 	if len(paths) == 0 {
 		return out, nil
 	}
-	cmd := exec.CommandContext(c, "git", "-C", dir, "hash-object", "--no-filters", "--stdin-paths")
+	cmd := exec.CommandContext(c, "git", append(append([]string{"-C", dir}, quiet...), "hash-object", "--no-filters", "--stdin-paths")...)
 	var in, res bytes.Buffer
 	var present []string
 	for _, p := range paths {

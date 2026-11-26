@@ -101,7 +101,7 @@ func (r Route) WithEffort(effort string) Route {
 }
 
 // Redacted is the route as it may be stored: the gateway address keeps its
-// host and path but loses any user info.
+// host and path but loses any user info and query.
 func (r Route) Redacted() Route {
 	if r.LitellmBaseURL == "" {
 		return r
@@ -125,7 +125,8 @@ func redactURL(s string) string {
 	if err != nil {
 		return ""
 	}
-	u.User = nil
+	// User info is a credential, and so may a query be (?api_key=...).
+	u.User, u.RawQuery, u.Fragment = nil, "", ""
 	return u.String()
 }
 

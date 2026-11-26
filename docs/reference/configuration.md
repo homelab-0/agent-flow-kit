@@ -27,12 +27,13 @@ For each setting, the first of these that sets it wins:
 | Setting | Flag | Environment | Project | config.toml | Default |
 |---|---|---|---|---|---|
 | preference | `--prefer` | | `route.prefer` | `route.prefer` | `balanced` |
+| one-shot failover | | `AFK_ROUTER_FAILOVER` | never | `route.failover` | `any` |
 | free first for low-risk work | `--prefer cheap` | `AFK_ROUTER_PREFER_FREE` | `route.prefer_free`, `router.prefer_free_for_low_risk` | `route.prefer_free` | `false` |
 | metered API models | | `AFK_ROUTER_ALLOW_METERED_API` | never | `route.allow_metered` | `false` |
 | free reviewers | | `AFK_ROUTER_ALLOW_FREE_REVIEWERS` | never | `route.allow_free_reviewers` | `false` |
 | security models | | `AFK_SECURITY_MODELS` | never | `route.security_models` | none |
 | gateway | | `AFK_LITELLM_BASE_URL` | never | `[gateway.<name>]` | none |
-| gateway key | | `AFK_GATEWAY_KEY_ENV` names the variable | never | the `key` of the gateway whose `url` the route uses | `$AFK_GATEWAY_KEY` |
+| gateway key | | `AFK_GATEWAY_KEY_ENV` names the variable | never | the `key` of the gateway whose `url` the route uses; a route to an address you didn't configure gets no key | `$AFK_GATEWAY_KEY` |
 | daily catalog refresh | | `AFK_SKIP_BENCHMARK_AUTOSYNC=1` | never | `bench.autosync` | on |
 
 The `router.prefer_free_for_low_risk` key in a project file is the older form of `route.prefer_free` and still works; the other `router.*` keys are ignored (below).
@@ -79,6 +80,7 @@ modelsdev = { enabled = true }
 | `prefer_free` | bool | `false` | prefer free and local models for low-risk work |
 | `allow_metered` | bool | `false` | allow pay-per-token API models |
 | `allow_free_reviewers` | bool | `false` | let free and local models take reviews |
+| `failover` | string | `any` | where a failed [one-shot run](../guides/print-mode.md#failover) may go next: `any` (the next best route), `same-pool` (another model on the same CLI and plan) or `none` (report the failure). A project file can't set it |
 | `security_models` | list | none | specialist security models you are entitled to (`mythos`, `daybreak-blue`, or `all`) |
 
 ### `[trust]`
@@ -233,10 +235,12 @@ installed_at = 2026-11-26T12:00:00Z
 | `AFK_LITELLM_BASE_URL` | the model gateway's base URL |
 | `AFK_GATEWAY_KEY` | the gateway's key |
 | `AFK_GATEWAY_KEY_ENV` | the name of another variable that holds the gateway key |
+| `AFK_KEEP_SECRETS` | `1`/`true`: leave the gateway key variables in the environment of the CLIs AFK starts (they are removed by default) |
 | `AFK_ROUTER_PREFER_FREE` | `1`/`true`: as `prefer_free_for_low_risk` |
 | `AFK_ROUTER_ALLOW_FREE_REVIEWERS` | `1`/`true`: as `allow_free_reviewers` |
 | `AFK_ROUTER_ALLOW_METERED_API` | `1`/`true`: as `allow_metered_api` |
 | `AFK_SECURITY_MODELS` | comma-separated, as `security_models` |
+| `AFK_ROUTER_FAILOVER` | `any`, `same-pool` or `none`: as `route.failover` |
 | `AFK_ROUTER_BENCHMARKS_FILE` | use this benchmark catalog instead of the synced or built-in one |
 | `AFK_DISCOVERED_MODELS_FILE` | read models the CLIs reported from this file |
 
@@ -268,7 +272,8 @@ installed_at = 2026-11-26T12:00:00Z
 
 | Variable | Meaning |
 |---|---|
-| `AFK_STATE_DIR` | where the separate Claude config for gateway routes lives (default `~/.local/state/agent-flow-kit`) |
+| `AFK_STATE_DIR` | where the separate Claude config for gateway routes lives, and the empty directory npm is run from (default `~/.local/state/agent-flow-kit`) |
+| `AFK_RELEASE_COOLDOWN_DAYS` | how many days a new release waits before `afk harness add` and `update` install it as latest (default 3, `0` for no wait) |
 | `NO_COLOR`, `TERM=dumb`, `AFK_MOTION=off` | no animation (and no colour for `NO_COLOR`) |
 | `XDG_CONFIG_HOME` | the base for `afk/config.toml` and `afk/state/runs` |
 | `XDG_STATE_HOME` | the base for `afk/` runtime state |
