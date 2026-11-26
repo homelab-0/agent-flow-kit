@@ -100,6 +100,11 @@ type Route struct {
 	AuthAlerts        []any   `json:"auth_alerts"`
 	Reason            string  `json:"reason"`
 
+	// Your ratings of this CLI and model on this kind of task, when there
+	// are enough of them to count, and the points they moved the score.
+	OutcomeRuns       *int     `json:"outcome_runs,omitempty"`
+	OutcomeAdjustment *float64 `json:"outcome_adjustment,omitempty"`
+
 	// Set on the fallback route only.
 	NoEligibleCandidate  bool              `json:"no_eligible_candidate,omitempty"`
 	CandidatesConsidered *int              `json:"candidates_considered,omitempty"`
@@ -192,6 +197,9 @@ type Router struct {
 	Catalog    *Catalog
 	Probe      *Probe
 	Discovered []DiscoveredModel
+	// Outcomes are your ratings of past runs. Nil leaves scores to the
+	// benchmarks.
+	Outcomes map[OutcomeKey]OutcomeStats
 }
 
 // probeOrder is the order the pool probe lists the CLIs in.
@@ -570,6 +578,13 @@ func (r *Router) Select(in Input) Route {
 		if isFree && in.Risk == "low" && (tc == "research" || tc == "coding_standard") && (in.PreferFree || subsUnderPressure) {
 			adj += 14
 		}
+		var outRuns *int
+		var outAdj *float64
+		if st, ok := r.Outcomes[OutcomeKeyFor(c.Harness, c.CanonicalModel, c.Model, tc)]; ok && st.Runs() >= MinRatedRuns {
+			n, a := st.Runs(), st.Adjustment()
+			outRuns, outAdj = &n, &a
+			adj += a
+		}
 		eff := math.Round((baseScore+adj)*100) / 100
 
 		ef := in.resolveEffort(tc, c.Effort, c.SupportedEfforts)
@@ -614,8 +629,13 @@ func (r *Router) Select(in Input) Route {
 			BenchmarkLive:     basis == "measured" && bm.Live,
 			BenchmarkSyncedAt: bm.SyncedAt, EffectiveScore: eff, CrossFamilyReview: &cross,
 			RouterSource: source, LitellmBaseURL: gwURL, AuthAlerts: alerts,
+			OutcomeRuns: outRuns, OutcomeAdjustment: outAdj,
 		}
 		route.Reason = reasonText(route, c, pool, ef, tc, cross, in.BuilderFamily, scoreText)
+		if outAdj != nil {
+			st := r.Outcomes[OutcomeKeyFor(c.Harness, c.CanonicalModel, c.Model, tc)]
+			route.Reason += fmt.Sprintf(" (your ratings: %d solved, %d partly, %d wrong pick of %d; %+.1f)", st.Solved, st.Partly, st.Wrong, st.Runs(), *outAdj)
+		}
 		routes = append(routes, route)
 	}
 	sort.SliceStable(routes, func(i, j int) bool { return routes[i].EffectiveScore > routes[j].EffectiveScore })

@@ -49,6 +49,7 @@ With `--harness` and `--model` together, `choice` is a pinned route (`harness`, 
 | `pool_quota_source` | where the pool figures came from: `codex_rate_limits` (measured), `local_5h_activity` (estimated from recent sessions), `runtime_signal:<kind>`, `gateway_probe` or `unauthenticated` |
 | `benchmark_name`, `benchmark_score`, `benchmark_basis`, `benchmark_live`, `benchmark_synced_at` | the score used and where it came from (`measured`, `capped`, `estimate` or `stale`) |
 | `effective_score` | the score after adjustments; routes are ranked by it |
+| `outcome_runs`, `outcome_adjustment` | when your ratings count for this route: how many, and the points they added or took away (absent otherwise) |
 | `window_tokens` | the model's context window |
 | `router_source` | `afk-benchmarks`, `afk-benchmarks+litellm` for a gateway model, or `fallback-default` |
 | `litellm_base_url` | the gateway, for a gateway route |

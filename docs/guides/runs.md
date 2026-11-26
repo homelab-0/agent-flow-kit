@@ -19,7 +19,7 @@ Schema `afk-run/1`:
 | `exit` | the CLI's exit code |
 | `pool_before`, `pool_after` | the pool's headroom (%) when the card opened and after the session |
 | `files_changed`, `commits` | in a git repository: files changed and commits made during the session |
-| `outcome` | your answer: `solved`, `partly`, `wrong-pick`, or `null` when skipped |
+| `outcome` | your answer: `solved`, `partly`, `wrong-pick`, or `null` when skipped. Ratings feed back into routing: see [your ratings](routing.md#your-ratings) |
 
 Values AFK couldn't know are `null`, never zero.
 
@@ -30,4 +30,3 @@ One-shot runs (`-p`) are not recorded.
 - `afk runs` to list and show records.
 - `afk ps` and `afk watch` to see sessions that are running now and follow what the CLI is doing, read from its own transcript.
 - `afk attach` to open a running session from another terminal, and background runs.
-- Ratings feeding back into routing.

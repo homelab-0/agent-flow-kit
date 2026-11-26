@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"testing"
+	"time"
 
 	"github.com/jlengelbrecht/agent-flow-kit/internal/engine"
 )
@@ -62,5 +63,29 @@ func TestWriteRecord(t *testing.T) {
 			t.Fatalf("reserve %d: %q %v", i, n, err)
 		}
 		seen[n] = true
+	}
+}
+
+func TestLoadSkipsPlaceholdersOldAndForeignRecords(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	if _, err := Reserve(dir); err != nil { // an empty placeholder
+		t.Fatal(err)
+	}
+	if _, err := Write(dir, Record{ID: "r-new1", EndedAt: Stamp(now)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Write(dir, Record{ID: "r-old1", EndedAt: Stamp(now.Add(-400 * 24 * time.Hour))}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "r-other.json"), []byte(`{"schema":"afk-run/9"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := Load(dir, now.Add(-180*24*time.Hour))
+	if len(got) != 1 || got[0].ID != "r-new1" {
+		t.Fatalf("loaded %+v", got)
+	}
+	if Load(filepath.Join(dir, "missing"), now) != nil {
+		t.Error("a missing dir should be no records")
 	}
 }

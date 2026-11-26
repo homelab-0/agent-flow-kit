@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/jlengelbrecht/agent-flow-kit/internal/engine"
@@ -45,15 +47,75 @@ type Record struct {
 // Dir is where run records live: $XDG_CONFIG_HOME/afk/state/runs, or
 // ~/.config/afk/state/runs.
 func Dir() (string, error) {
-	base := os.Getenv("XDG_CONFIG_HOME")
+	if os.Getenv("XDG_CONFIG_HOME") != "" {
+		return DirFor("", os.Getenv), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return DirFor(home, os.Getenv), nil
+}
+
+// DirFor is Dir for a given home directory and environment.
+func DirFor(home string, getenv func(string) string) string {
+	base := ""
+	if getenv != nil {
+		base = getenv("XDG_CONFIG_HOME")
+	}
 	if base == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
 		base = filepath.Join(home, ".config")
 	}
-	return filepath.Join(base, "afk", "state", "runs"), nil
+	return filepath.Join(base, "afk", "state", "runs")
+}
+
+// MaxLoad is how many of the newest run records Load reads at most.
+const MaxLoad = 5000
+
+// Load reads the run records in dir that ended at or after since, newest
+// first (by file time). Placeholders, records of another schema and files
+// that don't decode are skipped. A missing dir is no records.
+func Load(dir string, since time.Time) []Record {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	type file struct {
+		name string
+		mod  time.Time
+	}
+	var files []file
+	for _, e := range ents {
+		n := e.Name()
+		if e.IsDir() || !strings.HasPrefix(n, "r-") || !strings.HasSuffix(n, ".json") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || !info.Mode().IsRegular() || info.Size() == 0 || info.ModTime().Before(since) {
+			continue
+		}
+		files = append(files, file{n, info.ModTime()})
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].mod.After(files[j].mod) })
+	if len(files) > MaxLoad {
+		files = files[:MaxLoad]
+	}
+	var out []Record
+	for _, f := range files {
+		b, err := os.ReadFile(filepath.Join(dir, f.name))
+		if err != nil {
+			continue
+		}
+		var r Record
+		if json.Unmarshal(b, &r) != nil || r.Schema != Schema {
+			continue
+		}
+		if t, err := time.Parse(time.RFC3339, r.EndedAt); err == nil && t.Before(since) {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 // Reserve picks a run id like r-7f3c and claims it in dir at once (an
