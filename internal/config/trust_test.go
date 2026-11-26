@@ -132,7 +132,9 @@ func TestTrustSubdirAndOverlap(t *testing.T) {
 		t.Fatal(err)
 	}
 	ch, err = TrustRemove(p, f.home, a, false)
-	if err != nil || strings.Join(ch.StillTrustedBy, ",") != repos {
+	// The entry is saved with symlinks resolved (macOS's /var is
+	// /private/var).
+	if err != nil || strings.Join(ch.StillTrustedBy, ",") != realDir(repos) {
 		t.Fatalf("overlap: %+v %v", ch, err)
 	}
 }
