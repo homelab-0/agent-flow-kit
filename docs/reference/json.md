@@ -50,14 +50,14 @@ With `--harness` and `--model` together, `choice` is a pinned route (`harness`, 
 | `benchmark_name`, `benchmark_score`, `benchmark_basis`, `benchmark_live`, `benchmark_synced_at` | the score used and where it came from (`measured`, `capped`, `estimate` or `stale`) |
 | `effective_score` | the score after adjustments; routes are ranked by it |
 | `window_tokens` | the model's context window |
-| `router_source` | `afk-benchmarks`, `afk-benchmarks+litellm` for a gateway model, or `fallback-default` |
+| `router_source` | `afk-benchmarks`, or `afk-benchmarks+litellm` for a gateway model |
 | `litellm_base_url` | the gateway, for a gateway route |
 | `auth_alerts` | pools waiting for a sign-in, with the command to run |
 | `reason` | one line explaining the pick |
 | `cross_family_review` | for a review, whether the reviewer is from a different model family than the work it reviews |
 | `specialist_domain` | set for a specialist model, for example `security` |
 
-A `fallback-default` route also has `no_eligible_candidate`, `candidates_considered`, `installed_harnesses` and `pool_states`, recording why nothing qualified.
+When nothing qualifies there is no route document: afk exits with code 4 and says why on stderr (see [when nothing qualifies](../guides/routing.md#when-nothing-qualifies)).
 
 ## Launch plan (`afk-launch-plan/1`)
 
