@@ -21,14 +21,6 @@ type RouteFlags struct {
 	Task, Prefer, Harness, Model, Effort, Repo string
 }
 
-// TimeoutError is a call that did not answer in time. The route card shows
-// it as a dialog the user can retry from.
-type TimeoutError struct{ Call string }
-
-func (e *TimeoutError) Error() string {
-	return fmt.Sprintf("the router did not answer %s in time", e.Call)
-}
-
 // PlanError is a route AFK will not start, with its reason.
 type PlanError struct{ Reason string }
 

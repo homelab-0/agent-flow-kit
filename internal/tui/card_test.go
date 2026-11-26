@@ -199,10 +199,6 @@ func TestErrorDialogs(t *testing.T) {
 			t.Errorf("launch error lacks %q:\n%s", want, out)
 		}
 	}
-	out = ansi.Strip(join(th.RouteErrorLines(framePrompt, 80, "The engine did not answer explain in time.")))
-	if !strings.Contains(out, "Can't route this task") || strings.Contains(out, "next best") {
-		t.Errorf("routing error:\n%s", out)
-	}
 }
 
 func TestWidths(t *testing.T) {
