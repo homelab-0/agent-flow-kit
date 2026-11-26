@@ -40,4 +40,4 @@ auto = ["--permission-mode", "auto"]
 
 AFK only ever runs the `auth` commands and reads their exit code or output words. It never reads the credentials a CLI writes.
 
-The `auth` commands are recorded now; `afk harness login` and the sign-in check that uses `auth.status` come in a later release.
+`afk harness login` runs `auth.login` (or `auth.device_login` with `--device`) in your terminal, and `afk harness doctor` and `login` run `auth.status`. `auth.expiry` and `auth.errors` are recorded but not used yet.

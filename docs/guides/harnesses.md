@@ -55,8 +55,18 @@ The check only looks at whether the login file is there. AFK never opens it, so 
 
 ## Installing and updating CLIs from AFK
 
-**Planned:** `afk harness add | update | remove | login | doctor`. AFK will install a CLI with its official installer, show the exact command and ask before running it, and open the vendor's own sign-in. It will never handle passwords.
+| Command | What it does |
+|---|---|
+| `afk harness doctor [name] [--json]` | checks each installed CLI: its version, its sign-in through the CLI's own status command (only the exit code counts; `claude auth status`, `codex login status`), whether its `--help` still lists the flags its [permission modes](permissions.md) use, and whether its version differs from the one those flags were checked on. Exits 1 when something needs attention |
+| `afk harness login <name> [--device]` | runs the CLI's own sign-in in this terminal (`--device` for the sign-in that works without a local browser, where the CLI has one), then checks it with the status command. The prompts are the CLI's; AFK sees nothing you type |
+| `afk harness add <name> [--version V]` | installs a CLI from its vendor's npm package, at an exact version (`latest` is looked up once and pinned), and records it in [`afk.lock`](../reference/configuration.md#afklock) with npm's integrity hash |
+| `afk harness update <name>` | updates it the way it was installed: npm, pinned to the new latest, for one AFK installed or one installed with npm; otherwise the CLI's own updater (`claude update`, `brew upgrade …`) |
+| `afk harness remove <name>` | uninstalls a CLI that AFK installed (it is in afk.lock); one you installed yourself is left alone, with how to remove it |
+
+`add`, `update` and `remove` show the exact command first, including the install scripts an npm package runs, and ask once; `-y` skips the question, and without a terminal they need `-y`. `--dry-run` shows the plan and runs nothing; `--json` prints it. A CLI that isn't on npm (Grok, Antigravity, Cursor, Kiro, Devin) isn't installed by AFK: install it as its vendor describes and AFK finds it.
+
+AFK never handles a password or a token: signing in is always the CLI's own.
 
 ## Adding support for a CLI
 
-Each CLI is one entry in [`internal/harness/registry.go`](../../internal/harness/registry.go): its executable names, npm package, effort levels and flag, sign-in command, self-update argument and sign-in check. Routing and launching need an adapter in the router and in [`internal/core/launch.go`](../../internal/core/launch.go) too.
+Each CLI is one [manifest](../reference/harness-manifests.md) in [`internal/harness/manifests/`](../../internal/harness/manifests/): its executable names, npm package, effort levels, sign-in commands and permission-mode flags. A sign-in check that needs code goes in `authChecks` in [`internal/harness/registry.go`](../../internal/harness/registry.go). Routing and launching need an adapter in the router and in [`internal/core/launch.go`](../../internal/core/launch.go) too.

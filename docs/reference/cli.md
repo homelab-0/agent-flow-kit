@@ -6,6 +6,7 @@ afk -p [options] prompt...         print one answer and exit
 afk --explain [options] [prompt]   show the choice and the alternatives
 afk --launch-plan --route <json>   print the launch plan for a route
 afk harness [--all] [--json]       the agent CLIs found on this machine
+afk harness doctor|login|add|update|remove <name>   check, sign in, install
 afk bench sync [--json]            refresh the benchmark catalog now
 afk config get|set|edit|path|migrate   your settings (config.toml)
 afk trust add|list|remove [dir]    where yolo may run
@@ -44,6 +45,8 @@ Options that take a value also accept `--option=value`.
 |---|---|
 | `--all`, `-a` | also list supported CLIs that are not installed |
 | `--json` | machine-readable output, schema `afk-harnesses/3` |
+
+`afk harness doctor`, `login`, `add`, `update` and `remove` are described in [agent CLIs](../guides/harnesses.md#installing-and-updating-clis-from-afk). Their options: `--json`, `-y`/`--yes` (don't ask), `--dry-run` (show, run nothing), `--version <v>` (`add`), `--device` (`login`).
 
 ## `afk trust`
 
