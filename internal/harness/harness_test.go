@@ -199,7 +199,7 @@ func TestClassify(t *testing.T) {
 		{"opencode", "/h/.local/share/mise/installs/opencode/latest/node_modules/.bin/opencode", "/h/.local/share/mise/installs/opencode/2.4.2/node_modules/.bin/opencode",
 			"mise", "opencode", []string{"mise", "upgrade", "opencode"}},
 		{"claude", "/h/.local/share/mise/command-wrappers/bin/claude", "/usr/bin/mise",
-			"mise", "", []string{"mise", "upgrade"}},
+			"mise", "", nil},
 		{"claude", "/opt/homebrew/bin/claude", "/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js",
 			"npm", "@anthropic-ai/claude-code", []string{"npm", "install", "-g", "@anthropic-ai/claude-code@latest"}},
 		{"codex", "/opt/homebrew/bin/codex", "/opt/homebrew/Caskroom/codex/0.1/codex",

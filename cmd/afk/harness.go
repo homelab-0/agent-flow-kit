@@ -102,6 +102,9 @@ func renderHarnesses(r harness.Report, all, color, dark bool) string {
 			effort = h.Efforts[0] + ".." + h.Efforts[len(h.Efforts)-1]
 		}
 		update := "no known updater"
+		if h.InstallMethod != "" && h.InstallMethod != "self-managed" {
+			update = "via " + h.InstallMethod
+		}
 		if len(h.UpdateCommand) > 0 {
 			update = strings.Join(h.UpdateCommand, " ")
 		}

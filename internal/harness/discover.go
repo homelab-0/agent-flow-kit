@@ -286,8 +286,9 @@ func classify(a Adapter, bin, resolved string) (method, pkg string, update []str
 		}
 		return "mise", tool, []string{"mise", "upgrade", tool}
 	case has("/mise/shims/") || has("/mise/command-wrappers/") || strings.HasSuffix(r, "/mise"):
-		// A mise shim does not say which tool backs it.
-		return "mise", "", []string{"mise", "upgrade"}
+		// A mise shim does not say which tool backs it, and a bare
+		// "mise upgrade" would upgrade every tool, so no command is given.
+		return "mise", "", nil
 	case has("/.bun/"):
 		p := nodePkg(r, npmPkg)
 		return "bun", p, []string{"bun", "add", "-g", p + "@latest"}
