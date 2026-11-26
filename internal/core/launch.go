@@ -171,7 +171,7 @@ func (c *Core) launchEnv(r engine.Route) (set, from map[string]string, unset []s
 	if !found && !yours {
 		var urls []string
 		for _, n := range sortedNames(s.Gateways) {
-			urls = append(urls, n+" = "+s.Gateways[n].URL)
+			urls = append(urls, n+" = "+redactedURL(s.Gateways[n].URL))
 		}
 		if s.GatewayURL != "" && len(urls) == 0 {
 			urls = append(urls, redactedURL(s.GatewayURL))

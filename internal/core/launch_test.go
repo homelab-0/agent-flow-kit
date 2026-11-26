@@ -233,6 +233,13 @@ func TestGatewayKeyIsBoundToItsGateway(t *testing.T) {
 	}
 	// A route to a url no config.toml gateway declares (made before the
 	// config changed) is refused, naming both, instead of getting a key.
+	// The refusal lists your gateways without what an address may carry
+	// as a credential.
+	write("version = 1\n[gateway.work]\nurl = \"https://work.example/?api_key=sk-1#frag\"\nkey = \"env:WORK_KEY\"\ndefault = true\n")
+	if _, err := plan("http://other.example"); err == nil || strings.Contains(err.Error(), "sk-1") || strings.Contains(err.Error(), "frag") || !strings.Contains(err.Error(), "work = https://work.example/") {
+		t.Fatalf("refusal: %v", err)
+	}
+	write("version = 1\n[gateway.work]\nurl = \"https://work.example/\"\nkey = \"env:WORK_KEY\"\ndefault = true\n[gateway.home]\nurl = \"http://home.local:4000\"\nkey = \"env:HOME_KEY\"\n")
 	_, err := plan("http://u:pw@stale.example")
 	var pe *engine.PlanError
 	if !errors.As(err, &pe) || !strings.Contains(pe.Reason, "http://stale.example") || !strings.Contains(pe.Reason, "work = https://work.example/") || strings.Contains(pe.Reason, "pw") {
