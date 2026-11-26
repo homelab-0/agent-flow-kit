@@ -32,6 +32,8 @@ name="$(basename "$0")"
 printf '%s' "$name" >> "$LOG"; for a in "$@"; do printf ' [%s]' "$a" >> "$LOG"; done; printf '\n' >> "$LOG"
 fail_var="FAIL_$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')"
 if [[ -n "${!fail_var:-}" ]]; then printf '%s\n' "${!fail_var}" >&2; exit 1; fi
+json_var="JSON_$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')"
+if [[ -n "${!json_var:-}" ]]; then cat "${!json_var}"; exit 0; fi
 printf 'answer from %s\n' "$name"
 SH
   chmod +x "$BIN/$h"
@@ -42,9 +44,9 @@ LIBS='. "'"$KIT_ROOT"'/lib/afk-common.sh" 2>/dev/null; . "'"$KIT_ROOT"'/lib/afk-
 # ============================================================================
 head1 "1. Task kind from the prompt"
 # ============================================================================
-G="$(bash -c "$LIBS"'; for p in "review this diff" "design the architecture for sync" "make the landing page responsive" "explain how the scheduler works" "refactor the parser" "fix a typo in the readme" "add a retry to the client" "check for XSS in the form" ""; do printf "%s," "$(afk_cli_guess_task "$p")"; done')"
-assert_eq "Prompts map to review, architecture, webdev, research, complex, quick, coding, security, and an empty prompt to coding" \
-  "$G" "review,architecture,webdev,research,complex,quick,coding,security,coding,"
+G="$(bash -c "$LIBS"'; for p in "review this diff" "design the architecture for sync" "make the landing page responsive" "explain how the scheduler works" "refactor the parser" "fix a typo in the readme" "add a retry to the client" "check for XSS in the form" "" "find the vulnerability" "fix the concurrency bug" "use dependency injection" "explain why the build fails and fix it"; do printf "%s," "$(afk_cli_guess_task "$p")"; done')"
+assert_eq "Prompts map to their kind; word stems match inflections, and a prompt asking for a change is not research" \
+  "$G" "review,architecture,webdev,research,complex,quick,coding,security,coding,security,complex,coding,coding,"
 
 # ============================================================================
 head1 "2. The choice and the alternatives"
@@ -81,18 +83,25 @@ assert_eq "The CLI never turns on the router's hermetic test mode" "$(grep -c 'A
 head1 "3. The command each CLI is started with"
 # ============================================================================
 argv() { bash -c "$LIBS"'; afk_cli_launch_argv "$@" | tr "\0" "|"' _ "$@"; }
-assert_eq "claude interactive: model, effort, prompt; no permission bypass unless --yolo" \
-  "$(argv claude sonnet high interactive false "do it")" "$BIN/claude|--model|sonnet|--effort|high|do it|"
-assert_eq "claude one-shot with --yolo" \
-  "$(argv claude sonnet "" print true "do it")" "$BIN/claude|--model|sonnet|--dangerously-skip-permissions|-p|do it|"
+assert_eq "claude interactive: model, effort, then the prompt after --; no permission bypass unless --yolo" \
+  "$(argv claude sonnet high interactive false "do it" "")" "$BIN/claude|--model|sonnet|--effort|high|--|do it|"
+assert_eq "claude one-shot asks for JSON, with --yolo" \
+  "$(argv claude sonnet "" print true "do it" "")" "$BIN/claude|--model|sonnet|--dangerously-skip-permissions|-p|--output-format|json|--|do it|"
 assert_eq "codex interactive uses -m and the effort config (its -p means profile, so it is never used)" \
-  "$(argv codex gpt-6-sol medium interactive false "do it")" "$BIN/codex|-m|gpt-6-sol|-c|model_reasoning_effort=\"medium\"|--|do it|"
-assert_eq "codex one-shot runs codex exec" \
-  "$(argv codex gpt-6-sol "" print false "do it")" "$BIN/codex|exec|-m|gpt-6-sol|--|do it|"
-assert_eq "opencode interactive passes the prompt with --prompt; one-shot uses run" \
-  "$(argv opencode a/b "" interactive false "hi")|$(argv opencode a/b "" print false "hi")" "$BIN/opencode|-m|a/b|--prompt|hi||$BIN/opencode|run|-m|a/b|--|hi|"
-assert_eq "Arguments after -- reach the CLI unchanged" \
-  "$(argv claude sonnet "" interactive false "" --continue)" "$BIN/claude|--model|sonnet|--continue|"
+  "$(argv codex gpt-6-sol medium interactive false "do it" "")" "$BIN/codex|-m|gpt-6-sol|-c|model_reasoning_effort=\"medium\"|--|do it|"
+assert_eq "codex one-shot runs exec in or out of a git repository, with JSON and the answer file" \
+  "$(argv codex gpt-6-sol "" print false "do it" /tmp/o)" "$BIN/codex|exec|--skip-git-repo-check|--json|-o|/tmp/o|-m|gpt-6-sol|--|do it|"
+assert_eq "opencode interactive passes the prompt as --prompt=; one-shot uses run with JSON" \
+  "$(argv opencode a/b "" interactive false "hi" "")|$(argv opencode a/b "" print false "hi" "")" "$BIN/opencode|-m|a/b|--prompt=hi||$BIN/opencode|run|--format|json|-m|a/b|--|hi|"
+assert_eq "Arguments after -- go before the prompt, so no CLI reads them as prompt text" \
+  "$(argv codex m "" print false "hi" /tmp/o --skip-something)" "$BIN/codex|exec|--skip-git-repo-check|--json|-o|/tmp/o|-m|m|--skip-something|--|hi|"
+assert_eq "A prompt that starts with a dash is not read as an option" \
+  "$(argv claude m "" print false "-n is a flag" "")" "$BIN/claude|--model|m|-p|--output-format|json|--| -n is a flag|"
+GW="$(bash -c "$LIBS"'; afk_cli_launch_env "{\"harness\":\"claude\",\"launch_class\":\"claude-gateway\",\"litellm_base_url\":\"http://gw\"}" | tr "\0" "|"; printf ":"; afk_cli_launch_env "{\"harness\":\"claude\",\"launch_class\":\"claude-gateway\"}"; printf "%s:" "$?"; afk_cli_launch_env "{\"harness\":\"claude\",\"launch_class\":\"claude-native\"}"; printf "%s" "$?"')"
+assert_eq "A gateway route is sent to the gateway; without a gateway address it cannot be launched; a native route needs nothing" \
+  "$GW" "ANTHROPIC_BASE_URL=http://gw|:1:0"
+MODEL_HS="$(bash -c "$LIBS"'; afk_cli_harnesses_for_model gpt-6-astra "claude,codex,opencode"; printf ":"; afk_cli_harnesses_for_model not-a-model "claude,codex"')"
+assert_eq "--model alone is matched to the CLI the catalog says serves it" "$MODEL_HS" "codex:"
 
 # ============================================================================
 head1 "4. One-shot answers and failover"
@@ -116,6 +125,17 @@ rm -f "$AFK_ROUTER_SIGNALS_FILE"
 O="$(env FAIL_CLAUDE=boom FAIL_CODEX=boom FAIL_OPENCODE=boom "$AFK" -p --json "add a retry" 2>/dev/null)"; rc=$?
 assert_eq "When every CLI fails, it stops after three attempts" "$rc:$(jq -r '.tried | split(", ") | length' <<<"$O")" "5:3"
 rm -f "$AFK_ROUTER_SIGNALS_FILE"
+cat > "$BIN/claude.json" <<'J'
+{"type":"result","is_error":true,"result":"Claude AI usage limit reached"}
+J
+O="$(env JSON_CLAUDE="$BIN/claude.json" "$AFK" -p --json --task coding "add a retry" 2>/dev/null)"
+assert_eq "An error the CLI reports in its JSON with exit 0 still fails over, and marks the pool" \
+  "$(jq -r '"\(.ok):\(.harness != "claude")"' <<<"$O"):$(jq -r '.pools["anthropic-max"].degraded_kind // "none"' "$AFK_ROUTER_SIGNALS_FILE" 2>/dev/null)" "true:true:quota"
+rm -f "$AFK_ROUTER_SIGNALS_FILE"
+O="$(env FAIL_CLAUDE="segfault in plugin" "$AFK" -p --json --task coding "add a retry" 2>/dev/null)"
+assert_eq "A failure that is not about quota or sign-in moves on without marking any pool" \
+  "$(jq -r '"\(.ok):\(.harness != "claude")"' <<<"$O"):$( [[ -s "$AFK_ROUTER_SIGNALS_FILE" ]] && jq -r '[.pools[]?] | length' "$AFK_ROUTER_SIGNALS_FILE" || printf 0)" "true:true:0"
+rm -f "$AFK_ROUTER_SIGNALS_FILE"
 O="$(printf 'piped prompt' | "$AFK" -p --json 2>/dev/null)"
 assert_eq "-p reads the prompt from stdin when none is given" "$(jq -r .ok <<<"$O")" "true"
 
@@ -124,7 +144,15 @@ head1 "5. Interactive start and bad input"
 # ============================================================================
 : > "$LOG"
 "$AFK" --harness claude --model sonnet "hello there" >/dev/null 2>&1
-assert_eq "afk with a prompt hands the terminal to the CLI with that prompt" "$(cat "$LOG")" "claude [--model] [sonnet] [hello there]"
+assert_eq "afk with a prompt hands the terminal to the CLI with that prompt" "$(cat "$LOG")" "claude [--model] [sonnet] [--] [hello there]"
+: > "$LOG"
+"$AFK" --model gpt-6-astra "hi" >/dev/null 2>&1
+assert_eq "--model without --harness starts the CLI that serves it" "$(cut -d' ' -f1 "$LOG")" "codex"
+"$AFK" --model not-a-model "hi" >/dev/null 2>&1; rm_=$?
+assert_eq "--model the catalog does not know, without --harness, is refused" "$rm_" "2"
+: > "$LOG"
+"$AFK" --harness claude --model sonnet -- --continue >/dev/null 2>&1
+assert_eq "Interactive arguments after -- reach the CLI" "$(cat "$LOG")" "claude [--model] [sonnet] [--continue]"
 "$AFK" --bogus >/dev/null 2>&1; r1=$?
 "$AFK" --harness agy x >/dev/null 2>&1; r2=$?
 "$AFK" --prefer fastest x >/dev/null 2>&1; r3=$?
