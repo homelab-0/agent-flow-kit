@@ -1,0 +1,763 @@
+[
+ {
+  "name": "coding-balanced",
+  "probe": "healthy",
+  "stage": "build",
+  "risk": "low",
+  "prefer_free": false
+ },
+ {
+  "name": "coding-cheap",
+  "probe": "healthy",
+  "stage": "build",
+  "risk": "low",
+  "prefer_free": true
+ },
+ {
+  "name": "coding-best",
+  "probe": "healthy",
+  "stage": "build",
+  "risk": "high",
+  "prefer_free": false
+ },
+ {
+  "name": "quick-balanced",
+  "probe": "healthy",
+  "stage": "build",
+  "risk": "low",
+  "prefer_free": true
+ },
+ {
+  "name": "quick-cheap",
+  "probe": "healthy",
+  "stage": "build",
+  "risk": "low",
+  "prefer_free": true
+ },
+ {
+  "name": "quick-best",
+  "probe": "healthy",
+  "stage": "build",
+  "risk": "low",
+  "prefer_free": true
+ },
+ {
+  "name": "complex-balanced",
+  "probe": "healthy",
+  "stage": "build",
+  "risk": "high",
+  "prefer_free": false
+ },
+ {
+  "name": "complex-cheap",
+  "probe": "healthy",
+  "stage": "build",
+  "risk": "high",
+  "prefer_free": true
+ },
+ {
+  "name": "complex-best",
+  "probe": "healthy",
+  "stage": "build",
+  "risk": "high",
+  "prefer_free": false
+ },
+ {
+  "name": "review-balanced",
+  "probe": "healthy",
+  "stage": "review-code",
+  "risk": "low",
+  "prefer_free": false
+ },
+ {
+  "name": "review-cheap",
+  "probe": "healthy",
+  "stage": "review-code",
+  "risk": "low",
+  "prefer_free": true
+ },
+ {
+  "name": "review-best",
+  "probe": "healthy",
+  "stage": "review-code",
+  "risk": "high",
+  "prefer_free": false
+ },
+ {
+  "name": "architecture-balanced",
+  "probe": "healthy",
+  "stage": "architecture",
+  "risk": "low",
+  "prefer_free": false
+ },
+ {
+  "name": "architecture-cheap",
+  "probe": "healthy",
+  "stage": "architecture",
+  "risk": "low",
+  "prefer_free": true
+ },
+ {
+  "name": "architecture-best",
+  "probe": "healthy",
+  "stage": "architecture",
+  "risk": "high",
+  "prefer_free": false
+ },
+ {
+  "name": "webdev-balanced",
+  "probe": "healthy",
+  "stage": "ux",
+  "risk": "low",
+  "prefer_free": false
+ },
+ {
+  "name": "webdev-cheap",
+  "probe": "healthy",
+  "stage": "ux",
+  "risk": "low",
+  "prefer_free": true
+ },
+ {
+  "name": "webdev-best",
+  "probe": "healthy",
+  "stage": "ux",
+  "risk": "high",
+  "prefer_free": false
+ },
+ {
+  "name": "research-balanced",
+  "probe": "healthy",
+  "stage": "research",
+  "risk": "low",
+  "prefer_free": false
+ },
+ {
+  "name": "research-cheap",
+  "probe": "healthy",
+  "stage": "research",
+  "risk": "low",
+  "prefer_free": true
+ },
+ {
+  "name": "research-best",
+  "probe": "healthy",
+  "stage": "research",
+  "risk": "high",
+  "prefer_free": false
+ },
+ {
+  "name": "security-balanced",
+  "probe": "healthy",
+  "stage": "review-security",
+  "risk": "low",
+  "prefer_free": false
+ },
+ {
+  "name": "security-cheap",
+  "probe": "healthy",
+  "stage": "review-security",
+  "risk": "low",
+  "prefer_free": true
+ },
+ {
+  "name": "security-best",
+  "probe": "healthy",
+  "stage": "review-security",
+  "risk": "high",
+  "prefer_free": false
+ },
+ {
+  "name": "only-claude-coding",
+  "probe": "healthy",
+  "stage": "build",
+  "risk": "low",
+  "only": [
+   "claude"
+  ],
+  "prefer_free": false
+ },
+ {
+  "name": "only-claude-review",
+  "probe": "healthy",
+  "stage": "review-code",
+  "risk": "low",
+  "only": [
+   "claude"
+  ],
+  "prefer_free": false
+ },
+ {
+  "name": "only-claude-research",
+  "probe": "healthy",
+  "stage": "research",
+  "risk": "low",
+  "only": [
+   "claude"
+  ],
+  "prefer_free": false
+ },
+ {
+  "name": "only-claude-quick",
+  "probe": "healthy",
+  "stage": "build",
+  "risk": "low",
+  "only": [
+   "claude"
+  ],
+  "prefer_free": true
+ },
+ {
+  "name": "only-codex-coding",
+  "probe": "healthy",
+  "stage": "build",
+  "risk": "low",
+  "only": [
+   "codex"
+  ],
+  "prefer_free": false
+ },
+ {
+  "name": "only-codex-review",
+  "probe": "healthy",
+  "stage": "review-code",
+  "risk": "low",
+  "only": [
+   "codex"
+  ],
+  "prefer_free": false
+ },
+ {
+  "name": "only-codex-research",
+  "probe": "healthy",
+  "stage": "research",
+  "risk": "low",
+  "only": [
+   "codex"
+  ],
+  "prefer_free": false
+ },
+ {
+  "name": "only-codex-quick",
+  "probe": "healthy",
+  "stage": "build",
+  "risk": "low",
+  "only": [
+   "codex"
+  ],
+  "prefer_free": true
+ },
+ {
+  "name": "only-opencode-coding",
+  "probe": "healthy",
+  "stage": "build",
+  "risk": "low",
+  "only": [
+   "opencode"
+  ],
+  "prefer_free": false
+ },
+ {
+  "name": "only-opencode-review",
+  "probe": "healthy",
+  "stage": "review-code",
+  "risk": "low",
+  "only": [
+   "opencode"
+  ],
+  "prefer_free": false
+ },
+ {
+  "name": "only-opencode-research",
+  "probe": "healthy",
+  "stage": "research",
+  "risk": "low",
+  "only": [
+   "opencode"
+  ],
+  "prefer_free": false
+ },
+ {
+  "name": "only-opencode-quick",
+  "probe": "healthy",
+  "stage": "build",
+  "risk": "low",
+  "only": [
+   "opencode"
+  ],
+  "prefer_free": true
+ },
+ {
+  "name": "only-grok-coding",
+  "probe": "healthy",
+  "stage": "build",
+  "risk": "low",
+  "only": [
+   "grok"
+  ],
+  "prefer_free": false
+ },
+ {
+  "name": "only-grok-review",
+  "probe": "healthy",
+  "stage": "review-code",
+  "risk": "low",
+  "only": [
+   "grok"
+  ],
+  "prefer_free": false
+ },
+ {
+  "name": "only-grok-research",
+  "probe": "healthy",
+  "stage": "research",
+  "risk": "low",
+  "only": [
+   "grok"
+  ],
+  "prefer_free": false
+ },
+ {
+  "name": "only-grok-quick",
+  "probe": "healthy",
+  "stage": "build",
+  "risk": "low",
+  "only": [
+   "grok"
+  ],
+  "prefer_free": true
+ },
+ {
+  "name": "only-agy-coding",
+  "probe": "healthy",
+  "stage": "build",
+  "risk": "low",
+  "only": [
+   "agy"
+  ],
+  "prefer_free": false
+ },
+ {
+  "name": "only-agy-review",
+  "probe": "healthy",
+  "stage": "review-code",
+  "risk": "low",
+  "only": [
+   "agy"
+  ],
+  "prefer_free": false
+ },
+ {
+  "name": "only-agy-research",
+  "probe": "healthy",
+  "stage": "research",
+  "risk": "low",
+  "only": [
+   "agy"
+  ],
+  "prefer_free": false
+ },
+ {
+  "name": "only-agy-quick",
+  "probe": "healthy",
+  "stage": "build",
+  "risk": "low",
+  "only": [
+   "agy"
+  ],
+  "prefer_free": true
+ },
+ {
+  "name": "pools-claude-warning-coding",
+  "probe": "claude-warning",
+  "stage": "build",
+  "risk": "low"
+ },
+ {
+  "name": "pools-claude-warning-research",
+  "probe": "claude-warning",
+  "stage": "research",
+  "risk": "low"
+ },
+ {
+  "name": "pools-claude-warning-complex",
+  "probe": "claude-warning",
+  "stage": "build",
+  "risk": "high"
+ },
+ {
+  "name": "pools-claude-warning-review",
+  "probe": "claude-warning",
+  "stage": "review-code",
+  "risk": "low"
+ },
+ {
+  "name": "pools-claude-exhausted-coding",
+  "probe": "claude-exhausted",
+  "stage": "build",
+  "risk": "low"
+ },
+ {
+  "name": "pools-claude-exhausted-research",
+  "probe": "claude-exhausted",
+  "stage": "research",
+  "risk": "low"
+ },
+ {
+  "name": "pools-claude-exhausted-complex",
+  "probe": "claude-exhausted",
+  "stage": "build",
+  "risk": "high"
+ },
+ {
+  "name": "pools-claude-exhausted-review",
+  "probe": "claude-exhausted",
+  "stage": "review-code",
+  "risk": "low"
+ },
+ {
+  "name": "pools-grok-auth-coding",
+  "probe": "grok-auth",
+  "stage": "build",
+  "risk": "low"
+ },
+ {
+  "name": "pools-grok-auth-research",
+  "probe": "grok-auth",
+  "stage": "research",
+  "risk": "low"
+ },
+ {
+  "name": "pools-grok-auth-complex",
+  "probe": "grok-auth",
+  "stage": "build",
+  "risk": "high"
+ },
+ {
+  "name": "pools-grok-auth-review",
+  "probe": "grok-auth",
+  "stage": "review-code",
+  "risk": "low"
+ },
+ {
+  "name": "pools-subs-pressure-coding",
+  "probe": "subs-pressure",
+  "stage": "build",
+  "risk": "low"
+ },
+ {
+  "name": "pools-subs-pressure-research",
+  "probe": "subs-pressure",
+  "stage": "research",
+  "risk": "low"
+ },
+ {
+  "name": "pools-subs-pressure-complex",
+  "probe": "subs-pressure",
+  "stage": "build",
+  "risk": "high"
+ },
+ {
+  "name": "pools-subs-pressure-review",
+  "probe": "subs-pressure",
+  "stage": "review-code",
+  "risk": "low"
+ },
+ {
+  "name": "pools-gateway-offline-coding",
+  "probe": "gateway-offline",
+  "stage": "build",
+  "risk": "low"
+ },
+ {
+  "name": "pools-gateway-offline-research",
+  "probe": "gateway-offline",
+  "stage": "research",
+  "risk": "low"
+ },
+ {
+  "name": "pools-gateway-offline-complex",
+  "probe": "gateway-offline",
+  "stage": "build",
+  "risk": "high"
+ },
+ {
+  "name": "pools-gateway-offline-review",
+  "probe": "gateway-offline",
+  "stage": "review-code",
+  "risk": "low"
+ },
+ {
+  "name": "pools-fable-quota-coding",
+  "probe": "fable-quota",
+  "stage": "build",
+  "risk": "low"
+ },
+ {
+  "name": "pools-fable-quota-research",
+  "probe": "fable-quota",
+  "stage": "research",
+  "risk": "low"
+ },
+ {
+  "name": "pools-fable-quota-complex",
+  "probe": "fable-quota",
+  "stage": "build",
+  "risk": "high"
+ },
+ {
+  "name": "pools-fable-quota-review",
+  "probe": "fable-quota",
+  "stage": "review-code",
+  "risk": "low"
+ },
+ {
+  "name": "pools-codex-model-down-coding",
+  "probe": "codex-model-down",
+  "stage": "build",
+  "risk": "low"
+ },
+ {
+  "name": "pools-codex-model-down-research",
+  "probe": "codex-model-down",
+  "stage": "research",
+  "risk": "low"
+ },
+ {
+  "name": "pools-codex-model-down-complex",
+  "probe": "codex-model-down",
+  "stage": "build",
+  "risk": "high"
+ },
+ {
+  "name": "pools-codex-model-down-review",
+  "probe": "codex-model-down",
+  "stage": "review-code",
+  "risk": "low"
+ },
+ {
+  "name": "pools-only-opencode-coding",
+  "probe": "only-opencode",
+  "stage": "build",
+  "risk": "low"
+ },
+ {
+  "name": "pools-only-opencode-research",
+  "probe": "only-opencode",
+  "stage": "research",
+  "risk": "low"
+ },
+ {
+  "name": "pools-only-opencode-complex",
+  "probe": "only-opencode",
+  "stage": "build",
+  "risk": "high"
+ },
+ {
+  "name": "pools-only-opencode-review",
+  "probe": "only-opencode",
+  "stage": "review-code",
+  "risk": "low"
+ },
+ {
+  "name": "pools-none-installed-coding",
+  "probe": "none-installed",
+  "stage": "build",
+  "risk": "low"
+ },
+ {
+  "name": "pools-none-installed-research",
+  "probe": "none-installed",
+  "stage": "research",
+  "risk": "low"
+ },
+ {
+  "name": "pools-none-installed-complex",
+  "probe": "none-installed",
+  "stage": "build",
+  "risk": "high"
+ },
+ {
+  "name": "pools-none-installed-review",
+  "probe": "none-installed",
+  "stage": "review-code",
+  "risk": "low"
+ },
+ {
+  "name": "pools-no-pools-coding",
+  "probe": "no-pools",
+  "stage": "build",
+  "risk": "low"
+ },
+ {
+  "name": "pools-no-pools-research",
+  "probe": "no-pools",
+  "stage": "research",
+  "risk": "low"
+ },
+ {
+  "name": "pools-no-pools-complex",
+  "probe": "no-pools",
+  "stage": "build",
+  "risk": "high"
+ },
+ {
+  "name": "pools-no-pools-review",
+  "probe": "no-pools",
+  "stage": "review-code",
+  "risk": "low"
+ },
+ {
+  "name": "security-mythos",
+  "probe": "healthy",
+  "stage": "review-security",
+  "risk": "low",
+  "sec_models": [
+   "mythos"
+  ]
+ },
+ {
+  "name": "security-daybreak",
+  "probe": "healthy",
+  "stage": "review-security",
+  "risk": "low",
+  "sec_models": [
+   "daybreak-blue"
+  ]
+ },
+ {
+  "name": "security-all",
+  "probe": "healthy",
+  "stage": "review-security",
+  "risk": "high",
+  "sec_models": [
+   "all"
+  ]
+ },
+ {
+  "name": "coding-mythos-penalised",
+  "probe": "healthy",
+  "stage": "build",
+  "risk": "low",
+  "sec_models": [
+   "all"
+  ]
+ },
+ {
+  "name": "review-cross-family",
+  "probe": "healthy",
+  "stage": "review-code",
+  "risk": "low",
+  "builder_family": "anthropic"
+ },
+ {
+  "name": "review-free-allowed",
+  "probe": "healthy",
+  "stage": "review-code",
+  "risk": "low",
+  "allow_free_reviewers": true,
+  "prefer_free": true
+ },
+ {
+  "name": "review-medium",
+  "probe": "healthy",
+  "stage": "review-code",
+  "risk": "medium"
+ },
+ {
+  "name": "review-big-diff",
+  "probe": "healthy",
+  "stage": "review-code",
+  "risk": "low",
+  "diff": 300
+ },
+ {
+  "name": "build-round2",
+  "probe": "healthy",
+  "stage": "build",
+  "risk": "low",
+  "round": 2
+ },
+ {
+  "name": "build-round3-high",
+  "probe": "healthy",
+  "stage": "build",
+  "risk": "high",
+  "round": 3
+ },
+ {
+  "name": "build-critical",
+  "probe": "healthy",
+  "stage": "build",
+  "risk": "critical"
+ },
+ {
+  "name": "build-small-diff",
+  "probe": "healthy",
+  "stage": "build",
+  "risk": "low",
+  "diff": 20
+ },
+ {
+  "name": "intake-low",
+  "probe": "healthy",
+  "stage": "intake",
+  "risk": "low"
+ },
+ {
+  "name": "pm-architecture",
+  "probe": "healthy",
+  "stage": "architecture",
+  "risk": "medium",
+  "role": "pm"
+ },
+ {
+  "name": "spec-low",
+  "probe": "healthy",
+  "stage": "spec",
+  "risk": "low",
+  "diff": 10
+ },
+ {
+  "name": "build-security-surface",
+  "probe": "healthy",
+  "stage": "build",
+  "risk": "low",
+  "surfaces": [
+   "code",
+   "auth"
+  ]
+ },
+ {
+  "name": "metered-allowed",
+  "probe": "healthy",
+  "stage": "build",
+  "risk": "low",
+  "allow_metered": true
+ },
+ {
+  "name": "gateway-url",
+  "probe": "healthy",
+  "stage": "research",
+  "risk": "low",
+  "gateway_url": "http://gw.local:4000",
+  "prefer_free": true
+ },
+ {
+  "name": "no-discovered-coding",
+  "probe": "healthy",
+  "stage": "build",
+  "risk": "low",
+  "no_discovered": true,
+  "prefer_free": true
+ },
+ {
+  "name": "only-missing",
+  "probe": "healthy",
+  "stage": "build",
+  "risk": "low",
+  "only": [
+   "devin"
+  ]
+ }
+]
