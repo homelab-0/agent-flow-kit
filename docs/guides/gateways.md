@@ -18,7 +18,7 @@ export MY_GATEWAY_KEY="..."
 export AFK_GATEWAY_KEY_ENV="MY_GATEWAY_KEY"
 ```
 
-The gateway URL can also go in `~/.config/afk/router.json` as `litellm_base_url`, or in a project's `.afk/config.json` as `router.litellm_base_url`. A project's setting is used only when you have listed the project in `trusted_repos` in your `router.json`: the gateway receives your gateway key, so a repository you clone can't choose where it goes. See [configuration](../reference/configuration.md#your-own-settings-configafkrouterjson).
+The gateway can also go in your `~/.config/afk/config.toml` as a `[gateway.<name>]` with `url` and `key = "env:NAME"` (or, while config.toml doesn't exist, in `~/.config/afk/router.json` as `litellm_base_url`). A project's `.afk/config.json` can never set it: the gateway receives your gateway key, so a repository you clone can't choose where it goes. See [configuration](../reference/configuration.md#gatewayname).
 
 AFK asks the gateway for its model list (`GET /v1/models`) when routing. A gateway model is a candidate only while the gateway answers and lists it; the built-in catalog includes one local coding model (`qwen36-27b`) as an example. Gateway models count as free and get a bonus on low-risk coding and research.
 
