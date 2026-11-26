@@ -29,6 +29,7 @@ For each setting, the first of these that sets it wins:
 | preference | `--prefer` | | `route.prefer` | `route.prefer` | `balanced` |
 | one-shot failover | | `AFK_ROUTER_FAILOVER` | never | `route.failover` | `any` |
 | learn from your ratings | | `AFK_ROUTER_LEARN` | never | `route.learn` | `true` |
+| plan pacing | | `AFK_ROUTER_PACING` | never | `route.pacing` | `true` |
 | free first for low-risk work | `--prefer cheap` | `AFK_ROUTER_PREFER_FREE` | `route.prefer_free`, `router.prefer_free_for_low_risk` | `route.prefer_free` | `false` |
 | metered API models | | `AFK_ROUTER_ALLOW_METERED_API` | never | `route.allow_metered` | `false` |
 | free reviewers | | `AFK_ROUTER_ALLOW_FREE_REVIEWERS` | never | `route.allow_free_reviewers` | `false` |
@@ -83,6 +84,7 @@ modelsdev = { enabled = true }
 | `allow_free_reviewers` | bool | `false` | let free and local models take reviews |
 | `failover` | string | `any` | where a failed [one-shot run](../guides/print-mode.md#failover) may go next: `any` (the next best route), `same-pool` (another model on the same CLI and plan) or `none` (report the failure). A project file can't set it |
 | `learn` | bool | `true` | let your [ratings](../guides/routing.md#your-ratings) of past sessions move route scores. A project file can't set it |
+| `pacing` | bool | `true` | let [plan pacing](../guides/routing.md#plan-pacing) move route scores toward quota about to reset unused and away from a plan that will run out first. A project file can't set it |
 | `security_models` | list | none | specialist security models you are entitled to (`mythos`, `daybreak-blue`, or `all`) |
 
 ### `[trust]`
@@ -244,6 +246,7 @@ installed_at = 2026-11-26T12:00:00Z
 | `AFK_SECURITY_MODELS` | comma-separated, as `security_models` |
 | `AFK_ROUTER_FAILOVER` | `any`, `same-pool` or `none`: as `route.failover` |
 | `AFK_ROUTER_LEARN` | `0`/`false` or `1`/`true`: as `route.learn` |
+| `AFK_ROUTER_PACING` | `0`/`false` or `1`/`true`: as `route.pacing` |
 | `AFK_ROUTER_BENCHMARKS_FILE` | use this benchmark catalog instead of the synced or built-in one |
 | `AFK_DISCOVERED_MODELS_FILE` | read models the CLIs reported from this file |
 

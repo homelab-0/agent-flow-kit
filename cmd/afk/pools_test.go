@@ -81,3 +81,40 @@ func TestPoolsClearWithNoFile(t *testing.T) {
 		t.Error("clearing with no file should not create one")
 	}
 }
+
+func TestPoolsTextShowsPacing(t *testing.T) {
+	now := time.Unix(1795000000, 0)
+	used, head := 40.0, 60.0
+	reset := now.Add(9 * time.Hour).UTC().Format(time.RFC3339)
+	unused := 58.0
+	p := &router.Probe{Pools: map[string]router.Pool{
+		"openai-plus": {State: "available", UsedPct: &used, HeadroomPct: &head, QuotaSource: "codex_rate_limits", ResetsAt: &reset, Window: "weekly",
+			Pacing: &router.Pacing{Window: "weekly", ResetsAt: reset, ElapsedPct: 95, UnusedAtResetPct: &unused, Adjustment: 3.8}},
+		"opencode-free": {State: "offline"},
+	}}
+	got := poolsText(p, now, time.UTC, true)
+	for _, want := range []string{"openai-plus", "60% left, measured", "weekly window resets in 9h with ~58% unused at this rate (routing +3.8)", "opencode-free     offline"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in\n%s", want, got)
+		}
+	}
+	if strings.Contains(poolsText(p, now, time.UTC, false), "routing") {
+		t.Error("with route.pacing off the routing effect is shown")
+	}
+}
+
+func TestPoolsJSONIsThePoolsDocument(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PATH", t.TempDir())
+	var out, errb bytes.Buffer
+	if code := poolsCmd([]string{"--json"}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+	var doc struct {
+		Schema string                 `json:"schema"`
+		Pools  map[string]router.Pool `json:"pools"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil || doc.Schema != router.PoolsSchema || len(doc.Pools) == 0 {
+		t.Fatalf("%v %q %d pools", err, doc.Schema, len(doc.Pools))
+	}
+}

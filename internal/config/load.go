@@ -163,6 +163,7 @@ var Defaults = map[string]any{
 	"route.allow_metered":        false,
 	"route.allow_free_reviewers": false,
 	"route.learn":                true,
+	"route.pacing":               true,
 	"permissions.default":        "ask",
 	"bench.autosync":             true,
 }

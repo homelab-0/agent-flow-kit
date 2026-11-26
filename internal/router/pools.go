@@ -1,5 +1,7 @@
 package router
 
+import "time"
+
 // PoolsSchema is the version of the pool probe document.
 const PoolsSchema = "afk-router-pools/3"
 
@@ -21,7 +23,12 @@ type Pool struct {
 	ResetsAt           *string  `json:"resets_at,omitempty"`
 	// Window is the window the figure and reset are for ("5h", "weekly"),
 	// when the reading names it.
-	Window         string  `json:"window,omitempty"`
+	Window string `json:"window,omitempty"`
+	// Pacing is where the window is heading at the rate so far, when the
+	// figures are measured.
+	Pacing *Pacing `json:"pacing,omitempty"`
+	// observed is when the measured reading was taken.
+	observed       time.Time
 	DegradedKind   *string `json:"degraded_kind,omitempty"`
 	DegradedReason *string `json:"degraded_reason,omitempty"`
 }
@@ -45,6 +52,7 @@ type Probe struct {
 	// Bindings lists, per pool, the CLIs signed in to it. Nil means
 	// unknown, and then no candidate is held back for want of a login.
 	Bindings map[string][]string `json:"bindings,omitempty"`
+	at       time.Time           // when the probe ran
 }
 
 // gateway is the probe's entry for the model gateway.
@@ -61,4 +69,12 @@ func defaultPool(costClass string) Pool {
 		State: "available", HeadroomPct: f64(100), UsedPct: f64(0),
 		Capacity5h: f64(50), Remaining5h: f64(50), CostClass: costClass,
 	}
+}
+
+// now is when the probe ran (the clock, for a probe built by hand).
+func (p *Probe) now() time.Time {
+	if p.at.IsZero() {
+		return time.Now()
+	}
+	return p.at
 }
