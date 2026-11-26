@@ -27,6 +27,12 @@ auto = ["--sandbox", "workspace-write", "--ask-for-approval", "never"]
 yolo = ["--dangerously-bypass-approvals-and-sandbox"]
 bypass_flags = ["--yolo"]
 dir_flags = ["--cd", "-C"]
+# Other ways to change the sandbox or approvals; --pass refuses them
+# outside yolo. -c sets any config key, so only the keys that matter are
+# refused.
+mode_flags = ["--sandbox", "-s", "--ask-for-approval", "-a", "--full-auto", "--profile", "-p", "--add-dir"]
+config_flags = ["-c", "--config"]
+config_keys = ["sandbox_mode", "approval_policy", "sandbox_workspace_write", "sandbox_permissions", "profile", "profiles", "projects"]
 
 # codex exec can't ask (it has no --ask-for-approval), so one-shot runs
 # have no ask: ask runs read-only, pinned so ~/.codex/config.toml can't
