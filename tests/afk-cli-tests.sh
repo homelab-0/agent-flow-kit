@@ -54,8 +54,10 @@ head1 "2. The choice and the alternatives"
 E="$("$AFK" --explain --json "add a retry to the client" 2>/dev/null)"
 assert_eq "--explain picks one of the installed CLIs and says the task was guessed" \
   "$(jq -r '"\(.task):\(.task_guessed):\(.choice.harness | IN("claude","codex","opencode"))"' <<<"$E")" "coding:true:true"
-assert_eq "--explain lists the best route per installed CLI, best first" \
-  "$(jq -r '[.by_harness[].harness] | sort | join(",")' <<<"$E"):$(jq -r '[.by_harness[].effective_score] | . == (sort | reverse)' <<<"$E")" "claude,codex,opencode:true"
+# opencode is installed here but has no route: its only catalog model uses the
+# SuperGrok plan, and a plan login is never used outside its own vendor CLI.
+assert_eq "--explain lists the best route per installed CLI that may be used, best first" \
+  "$(jq -r '[.by_harness[].harness] | sort | join(",")' <<<"$E"):$(jq -r '[.by_harness[].effective_score] | . == (sort | reverse)' <<<"$E")" "claude,codex:true"
 assert_eq "--explain starts nothing" "$(wc -l < "$LOG" | tr -d ' ')" "0"
 E="$("$AFK" --explain --json --harness codex "add a retry" 2>/dev/null)"
 assert_eq "--harness keeps the router to that CLI" "$(jq -r .choice.harness <<<"$E")" "codex"
@@ -93,13 +95,63 @@ assert_eq "codex one-shot runs exec in or out of a git repository, with JSON and
   "$(argv codex gpt-6-sol "" print false "do it" /tmp/o)" "$BIN/codex|exec|--skip-git-repo-check|--json|-o|/tmp/o|-m|gpt-6-sol|--|do it|"
 assert_eq "opencode interactive passes the prompt as --prompt=; one-shot uses run with JSON" \
   "$(argv opencode a/b "" interactive false "hi" "")|$(argv opencode a/b "" print false "hi" "")" "$BIN/opencode|-m|a/b|--prompt=hi||$BIN/opencode|run|--format|json|-m|a/b|--|hi|"
-assert_eq "Arguments after -- go before the prompt, so no CLI reads them as prompt text" \
+assert_eq "Passed-through arguments go before the prompt, so no CLI reads them as prompt text" \
   "$(argv codex m "" print false "hi" /tmp/o --skip-something)" "$BIN/codex|exec|--skip-git-repo-check|--json|-o|/tmp/o|-m|m|--skip-something|--|hi|"
 assert_eq "A prompt that starts with a dash is not read as an option" \
   "$(argv claude m "" print false "-n is a flag" "")" "$BIN/claude|--model|m|-p|--output-format|json|--| -n is a flag|"
-GW="$(bash -c "$LIBS"'; afk_cli_launch_env "{\"harness\":\"claude\",\"launch_class\":\"claude-gateway\",\"litellm_base_url\":\"http://gw\"}" | tr "\0" "|"; printf ":"; afk_cli_launch_env "{\"harness\":\"claude\",\"launch_class\":\"claude-gateway\"}"; printf "%s:" "$?"; afk_cli_launch_env "{\"harness\":\"claude\",\"launch_class\":\"claude-native\"}"; printf "%s" "$?"')"
-assert_eq "A gateway route is sent to the gateway; without a gateway address it cannot be launched; a native route needs nothing" \
-  "$GW" "ANTHROPIC_BASE_URL=http://gw|:1:0"
+GWR='{"harness":"claude","model":"qwen36-27b","launch_class":"claude-gateway","litellm_base_url":"http://gw"}'
+GW1="$(AFK_GATEWAY_KEY=sekrit-123 bash -c "$LIBS"'; afk_cli_launch_envjson "$1"' _ "$GWR")"
+assert_eq "A claude gateway launch gets the gateway address, its own config dir and the key by variable name only" \
+  "$(jq -r '"\(.env_set.ANTHROPIC_BASE_URL)|\(.env_set.CLAUDE_CONFIG_DIR | endswith("/gateway-claude"))|\(.env_from.ANTHROPIC_AUTH_TOKEN)|\([.env_unset | index("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN") | . != null] | all)"' <<<"$GW1"):$(grep -c sekrit <<<"$GW1")" \
+  "http://gw|true|AFK_GATEWAY_KEY|true:0"
+GW2="$(env -u AFK_GATEWAY_KEY bash -c "$LIBS"'; afk_cli_launch_envjson "$1"; printf ":%s" "$?"' _ "$GWR")"
+GW3="$(AFK_GATEWAY_KEY=k bash -c "$LIBS"'; afk_cli_launch_envjson "{\"harness\":\"claude\",\"launch_class\":\"claude-gateway\"}"; printf ":%s" "$?"')"
+GW4="$(AFK_GATEWAY_KEY=k bash -c "$LIBS"'; afk_cli_launch_envjson "{\"harness\":\"codex\",\"launch_class\":\"codex-gateway\",\"litellm_base_url\":\"http://gw\"}"; printf ":%s" "$?"')"
+assert_eq "No gateway key, no gateway address, or a CLI that would expose its plan login: the gateway route cannot launch" \
+  "${GW2##*:}${GW3##*:}${GW4##*:}:$(grep -c 'AFK_GATEWAY_KEY' <<<"$GW2")" "111:1"
+NAT="$(bash -c "$LIBS"'; afk_cli_launch_envjson "{\"harness\":\"claude\",\"launch_class\":\"claude-native\"}"')"
+assert_eq "A native route changes nothing in the environment" "$NAT" '{"env_set":{},"env_from":{},"env_unset":[]}'
+
+PLAN="$(AFK_GATEWAY_KEY=sekrit-123 "$AFK" --launch-plan --json --route "$GWR" --mode print -- "-n is a flag" 2>/dev/null)"
+assert_eq "--launch-plan prints the afk-launch-plan/1 JSON with argv, env and the answer format, and no secret" \
+  "$(jq -r '"\(.schema)|\(.ok)|\(.argv[0] | endswith("/claude"))|\(.argv[-1])|\(.answer.format)|\(.env_from.ANTHROPIC_AUTH_TOKEN)"' <<<"$PLAN"):$(grep -c sekrit <<<"$PLAN")" \
+  "afk-launch-plan/1|true|true| -n is a flag|json|AFK_GATEWAY_KEY:0"
+PLAN2="$(env -u AFK_GATEWAY_KEY "$AFK" --launch-plan --json --route "$GWR" -- "hi" 2>/dev/null)"; rcp=$?
+assert_eq "A plan that cannot launch says why and exits 4" "$rcp:$(jq -r '"\(.ok)|\(.error | test("AFK_GATEWAY_KEY"))"' <<<"$PLAN2")" "4:false|true"
+CXP="$("$AFK" --launch-plan --json --route '{"harness":"codex","model":"m"}' --mode print -- "hi" 2>/dev/null)"
+assert_eq "A codex print plan names the file its answer is written to" "$(jq -r '"\(.answer.format)|\(.answer.file == .argv[(.argv | index("-o")) + 1])"' <<<"$CXP")" "text-file|true"
+rm -f "$(jq -r .answer.file <<<"$CXP")"
+SIP="$(printf '%s' '{"harness":"codex","model":"m"}' | "$AFK" --launch-plan --json --route - --mode print -- "hi" 2>/dev/null)"
+assert_eq "--route - reads the route from stdin, so it stays off the command line" \
+  "$(jq -r '"\(.ok)|\(.argv[0] | endswith("/codex"))|\(.argv[-1])"' <<<"$SIP")" "true|true|hi"
+rm -f "$(jq -r .answer.file <<<"$SIP")"
+P1="$("$AFK" --launch-plan --json --route '{"harness":"opencode","model":"openai/gpt-6.1-sol"}' -- hi 2>/dev/null)"; r1=$?
+P2="$("$AFK" --launch-plan --json --route '{"harness":"opencode","model":"opencode/glm-free"}' -- hi 2>/dev/null)"; r2=$?
+P3="$("$AFK" --launch-plan --json --route '{"harness":"codex","model":"m","cost_class":"subscription","entitlement_pool":"xai-grok"}' -- hi 2>/dev/null)"; r3=$?
+assert_eq "Every launch checks the plan-login rule: opencode with a ChatGPT model and codex on the SuperGrok plan are refused; opencode's own free model is fine" \
+  "$r1:$(jq -r .ok <<<"$P1"):$r2:$(jq -r .ok <<<"$P2"):$r3:$(jq -r .ok <<<"$P3")" "4:false:0:true:4:false"
+: > "$LOG"
+"$AFK" --harness opencode --model openai/gpt-6.1-sol "hi" >/dev/null 2>&1; rpin=$?
+assert_eq "A pinned opencode route to another vendor's model is refused and nothing starts" "$rpin:$(wc -l < "$LOG" | tr -d ' ')" "4:0"
+GWK="$(CLAUDE_CODE_OAUTH_TOKEN=plan-token AFK_GATEWAY_KEY_ENV=CLAUDE_CODE_OAUTH_TOKEN bash -c "$LIBS"'; afk_cli_launch_envjson "$1"; printf ":%s" "$?"' _ "$GWR")"
+assert_eq "The gateway key may not be taken from a vendor credential variable" "${GWK##*:}:$(grep -c plan-token <<<"$GWK")" "1:0"
+GWU="$(AFK_GATEWAY_KEY=k CLAUDE_CODE_SOMETHING_NEW=x bash -c "$LIBS"'; afk_cli_launch_envjson "$1"' _ "$GWR")"
+assert_eq "A gateway launch unsets every Claude and Anthropic variable in the environment, and the known credential ones, but not what it sets" \
+  "$(jq -r '[.env_unset | index("CLAUDE_CODE_SOMETHING_NEW", "CLAUDE_CODE_OAUTH_REFRESH_TOKEN", "CLAUDE_CODE_SESSION_ACCESS_TOKEN") | . != null] | all' <<<"$GWU"):$(jq -r '[.env_unset | index("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN") == null] | all' <<<"$GWU")" "true:true"
+APP="$(bash -c "$LIBS"'
+  plan="{\"env_set\":{\"ANTHROPIC_BASE_URL\":\"http://gw\"},\"env_from\":{\"ANTHROPIC_AUTH_TOKEN\":\"AFK_GATEWAY_KEY\"},\"env_unset\":[\"CLAUDE_CODE_OAUTH_TOKEN\",\"AFK_GATEWAY_KEY\"]}"
+  ( AFK_GATEWAY_KEY=gk CLAUDE_CODE_OAUTH_TOKEN=plan; afk_cli_apply_plan_env "$plan" && printf "%s|%s|%s" "${ANTHROPIC_AUTH_TOKEN:-}" "${CLAUDE_CODE_OAUTH_TOKEN:-gone}" "$ANTHROPIC_BASE_URL" )
+  printf ":"
+  ( unset AFK_GATEWAY_KEY; afk_cli_apply_plan_env "$plan"; printf "%s" "$?" )')"
+assert_eq "Applying a plan copies the key before unsetting, drops the plan token, and refuses an empty key source" "$APP" "gk|gone|http://gw:1"
+Q1="$("$AFK" --launch-plan --json --route '{"harness":"opencode","model":"opencode/paid","cost_class":"api-metered"}' -- hi 2>/dev/null)"; q1=$?
+Q2="$(AFK_GATEWAY_KEY=k "$AFK" --launch-plan --json --route '{"harness":"claude","model":"opus","launch_class":"claude-gateway","litellm_base_url":"http://gw","cost_class":"subscription","entitlement_pool":"anthropic-max"}' -- hi 2>/dev/null)"; q2=$?
+Q3="$("$AFK" --launch-plan --json --route '{"harness":"opencode","model":"opencode/glm-free","cost_class":"free"}' --pass -m --pass openai/gpt-6.1-sol -- hi 2>/dev/null)"; q3=$?
+assert_eq "A priced opencode model, a plan route marked as a gateway launch, and a model slipped in through --pass are all refused" \
+  "$q1:$(jq -r .ok <<<"$Q1"):$q2:$(jq -r .ok <<<"$Q2"):$q3:$(jq -r .ok <<<"$Q3")" "4:false:4:false:4:false"
+EXJ="$("$AFK" --explain --json -- "-v flag handling" 2>/dev/null)"
+assert_eq "--explain JSON carries its schema, and the words after -- are the prompt even with a leading dash" \
+  "$(jq -r .schema <<<"$EXJ")" "afk-route-explain/1"
 MODEL_HS="$(bash -c "$LIBS"'; afk_cli_harnesses_for_model gpt-6-astra "claude,codex,opencode"; printf ":"; afk_cli_harnesses_for_model not-a-model "claude,codex"')"
 assert_eq "--model alone is matched to the CLI the catalog says serves it" "$MODEL_HS" "codex=gpt-6-astra:"
 CANON="$(bash -c "$LIBS"'; afk_cli_harnesses_for_model "$(jq -r ".candidates[] | select(.harness == \"claude\") | .canonical_model" "$AFK_ROUTER_BENCHMARKS_FILE" | head -n 1)" "claude"')"
@@ -127,7 +179,7 @@ assert_eq "A pinned CLI that fails is reported, not swapped for another" \
   "$rc:$(jq -r '"\(.ok):\(.tried)"' <<<"$O")" "5:false:codex/$(jq -r '.tried' <<<"$O" | cut -d/ -f2-)"
 rm -f "$AFK_ROUTER_SIGNALS_FILE"
 O="$(env FAIL_CLAUDE=boom FAIL_CODEX=boom FAIL_OPENCODE=boom "$AFK" -p --json "add a retry" 2>/dev/null)"; rc=$?
-assert_eq "When every CLI fails, it stops after three attempts" "$rc:$(jq -r '.tried | split(", ") | length' <<<"$O")" "5:3"
+assert_eq "When every usable CLI fails, it stops once none is left" "$rc:$(jq -r '.tried | split(", ") | length' <<<"$O")" "5:2"
 rm -f "$AFK_ROUTER_SIGNALS_FILE"
 cat > "$BIN/claude.json" <<'J'
 {"type":"result","is_error":true,"result":"Claude AI usage limit reached"}
@@ -155,8 +207,8 @@ assert_eq "--model without --harness starts the CLI that serves it" "$(cut -d' '
 "$AFK" --model not-a-model "hi" >/dev/null 2>&1; rm_=$?
 assert_eq "--model the catalog does not know, without --harness, is refused" "$rm_" "2"
 : > "$LOG"
-"$AFK" --harness claude --model sonnet -- --continue >/dev/null 2>&1
-assert_eq "Interactive arguments after -- reach the CLI" "$(cat "$LOG")" "claude [--model] [sonnet] [--continue]"
+"$AFK" --harness claude --model sonnet --pass --continue >/dev/null 2>&1
+assert_eq "Interactive arguments given with --pass reach the CLI" "$(cat "$LOG")" "claude [--model] [sonnet] [--continue]"
 "$AFK" --bogus >/dev/null 2>&1; r1=$?
 "$AFK" --harness agy x >/dev/null 2>&1; r2=$?
 "$AFK" --prefer fastest x >/dev/null 2>&1; r3=$?

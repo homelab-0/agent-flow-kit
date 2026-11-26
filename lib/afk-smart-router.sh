@@ -1100,6 +1100,20 @@ afk_router_select_candidate() {
         ) | not
       ) |
       select($cclass != "api-metered" or $allow_api == true) |
+      # A plan login is used only by the CLI of the vendor that sells it:
+      # never through a gateway, never by a third-party harness that can sign
+      # in with another vendor plan (opencode with ChatGPT or SuperGrok, for
+      # instance). Free, local and gateway pools are not plan logins.
+      ({"claude":["anthropic-max"], "codex":["openai-plus"], "grok":["xai-grok"],
+        "agy":["antigravity-pool"], "opencode":[], "pi":[]}) as $own_plans |
+      select($cclass != "subscription" or ((($own_plans[$c.harness] // []) | index($c.entitlement_pool)) != null)) |
+      # opencode: only its own free models, whatever an older catalog says.
+      select($c.harness != "opencode" or ((($c.model // "") | startswith("opencode/")) and $cclass == "free")) |
+      # A plan never goes through a gateway.
+      select((($c.launch_class // "") | endswith("-gateway") | not) or $cclass != "subscription") |
+      # A gateway route is launched only where AFK can keep the vendor login
+      # away from the gateway (claude: own config dir and the gateway key).
+      select((($c.launch_class // "") | endswith("-gateway") | not) or $c.harness == "claude") |
       select($pool.state != "exhausted" and $pool.state != "offline" and $pool.state != "auth_required") |
       # A gateway model is a candidate only while the gateway is up and lists
       # that model; routing to a name it does not serve fails every attempt.

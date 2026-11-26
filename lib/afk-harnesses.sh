@@ -1218,11 +1218,18 @@ afk_harness_sync_models() {
       # The binding only decides subscription. Its own cost_class is not used
       # as the fallback: provider "opencode" always has the free-tier binding,
       # which made every priced model under it "free".
+      # Zero cost is free only for the opencode provider itself. A model from
+      # another vendor listed at zero cost is that vendor plan, seen without
+      # its binding; treating it as free would let a plan login run outside
+      # its own CLI.
       (if $b.cost_class == "subscription" then "subscription"
-       elif $zero_cost then "free"
+       elif $zero_cost and $prov == "opencode" then "free"
+       elif $zero_cost then "subscription"
        else "api-metered" end) as $cclass |
+      # Without a binding, a subscription model belongs to its vendor plan, not
+      # to opencode-free.
       (if $cclass == "free" then "opencode-free"
-       elif $cclass == "subscription" then $b.entitlement_pool
+       elif $cclass == "subscription" then (if ($b.entitlement_pool // "") == "" or $b.entitlement_pool == "opencode-free" then ($prov + "-oauth") else $b.entitlement_pool end)
        else "api-metered" end) as $pool |
       infer_family($prov; $m.id) as $fam |
       ($m.capabilities.reasoning // false) as $reas |
