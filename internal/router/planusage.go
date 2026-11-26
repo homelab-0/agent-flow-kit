@@ -103,8 +103,18 @@ func ParseClaudeUsage(stdout []byte, now time.Time) (PlanUsage, bool) {
 		found = true
 	}
 	if last.Info.Status == "rejected" {
+		// The plan refused the call: the limit it names is full, and the
+		// pool is usable again when that limit resets, whatever the other
+		// windows say.
 		used, found = 100, true
-		if u.ResetsAt == 0 && last.Info.ResetsAt != nil {
+		full := 100.0
+		switch last.Info.RateLimitType {
+		case "five_hour":
+			u.FiveHourPct = &full
+		case "seven_day":
+			u.SevenDayPct = &full
+		}
+		if last.Info.ResetsAt != nil {
 			u.ResetsAt = int64(*last.Info.ResetsAt)
 		}
 	}

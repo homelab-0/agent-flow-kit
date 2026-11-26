@@ -257,10 +257,14 @@ type Pool struct {
 	WeeklyUsedPct   *float64 `json:"weekly_used_pct"`
 }
 
-// Window names the window a pool's figure is for: "weekly" when only a
-// weekly reading is known, else "5h".
+// Window names the window a pool's figure is for: "weekly" when the weekly
+// reading is the fuller one (or the only one), else "5h".
 func (p Pool) Window() string {
-	if p.WeeklyUsedPct != nil && p.FiveHourUsedPct == nil {
+	// The figure shown is the fuller window's, so name that one.
+	switch {
+	case p.WeeklyUsedPct == nil:
+		return "5h"
+	case p.FiveHourUsedPct == nil || *p.WeeklyUsedPct > *p.FiveHourUsedPct:
 		return "weekly"
 	}
 	return "5h"

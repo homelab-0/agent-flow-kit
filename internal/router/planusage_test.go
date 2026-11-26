@@ -1,6 +1,7 @@
 package router
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -26,6 +27,12 @@ func TestParseClaudeUsage(t *testing.T) {
 	rej := []byte(`{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1795003600}}`)
 	if u, ok = ParseClaudeUsage(rej, now); !ok || u.UsedPct != 100 || u.ResetsAt != 1795003600 {
 		t.Fatalf("rejected: %+v %v", u, ok)
+	}
+	// Refused while another window still had room: the named limit is
+	// full, and the pool is back when that limit resets.
+	rejNamed := []byte(`{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","resetsAt":1795003600,"unifiedWindows":{"seven_day":{"utilization":0.6,"resetsAt":1795813200,"status":"allowed"}}}}`)
+	if u, ok = ParseClaudeUsage(rejNamed, now); !ok || u.UsedPct != 100 || u.ResetsAt != 1795003600 || u.FiveHourPct == nil || *u.FiveHourPct != 100 || *u.SevenDayPct != 60 {
+		t.Fatalf("rejected with a named limit: %+v %v", u, ok)
 	}
 	if _, ok := ParseClaudeUsage([]byte(`{"type":"result","result":"ok"}`), now); ok {
 		t.Error("no event, yet a reading")
@@ -72,5 +79,36 @@ func TestProbeUsesClaudesReportedUsage(t *testing.T) {
 	}
 	if pool.ResetsAt == nil || *pool.ResetsAt != time.Unix(now.Unix()+7200, 0).UTC().Format(time.RFC3339) {
 		t.Errorf("resets_at %v", pool.ResetsAt)
+	}
+}
+
+func TestASignalHidesTheReadingsWindows(t *testing.T) {
+	home := t.TempDir()
+	now := time.Unix(1795000000, 0)
+	usage := filepath.Join(home, "plan-usage.json")
+	sig := filepath.Join(home, "sig.json")
+	weekly := 40.0
+	if err := RecordPlanUsage(usage, "anthropic-max", PlanUsage{UsedPct: 40, SevenDayPct: &weekly, ResetsAt: now.Unix() + 3*86400, Observed: now.Unix() - 60, Source: "claude_rate_limit_event"}); err != nil {
+		t.Fatal(err)
+	}
+	doc := fmt.Sprintf(`{"pools":{"anthropic-max":{"used_pct":100,"degraded_reason":"429 Too Many Requests","degraded_kind":"quota","updated_epoch":%d}}}`, now.Unix()-30)
+	if err := os.WriteFile(sig, []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{"AFK_PLAN_USAGE_FILE": usage, "AFK_ROUTER_SIGNALS_FILE": sig}
+	probe := func() Pool {
+		p := ProbePools(t.Context(), DefaultCatalog(), ProbeEnv{Home: home, Now: now, Getenv: func(k string) string { return env[k] }, Installed: func(string) bool { return true }})
+		return p.Pools["anthropic-max"]
+	}
+	pool := probe()
+	if pool.State != "exhausted" || pool.QuotaSource != "runtime_signal:quota" || pool.WeeklyUsedPct != nil || pool.ResetsAt != nil {
+		t.Fatalf("under a signal the reading's 40%% weekly must not show: %+v", pool)
+	}
+	// Signal gone: the reading speaks again.
+	if err := os.Remove(sig); err != nil {
+		t.Fatal(err)
+	}
+	if pool = probe(); pool.QuotaSource != "claude_rate_limit_event" || pool.WeeklyUsedPct == nil || *pool.WeeklyUsedPct != 40 || pool.ResetsAt == nil {
+		t.Fatalf("reading: %+v", pool)
 	}
 }

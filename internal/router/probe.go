@@ -429,8 +429,14 @@ func (pc *poolCalc) calc(pid string, sessions int, local bool, defaultH []string
 	p := Pool{
 		PoolID: pid, Provider: provider, PoolTier: tier, CostClass: cc, State: state,
 		Capacity5h: f64(capacity), Remaining5h: f64(remaining), UsedPct: f64(used), HeadroomPct: f64(headroom),
-		QuotaSource: src, WeeklyUsedPct: live.SevenDayPct, FiveHourUsedPct: live.FiveHourPct,
-		FableWeeklyUsedPct: live.FableWeeklyPct, ResetsAt: live.ResetsAt,
+		QuotaSource: src,
+	}
+	// The reading's windows and reset time describe the pool only while the
+	// reading is what the figure comes from: under a failed run's signal they
+	// would contradict the state shown beside them.
+	if live.OK && src == live.Source {
+		p.WeeklyUsedPct, p.FiveHourUsedPct = live.SevenDayPct, live.FiveHourPct
+		p.FableWeeklyUsedPct, p.ResetsAt = live.FableWeeklyPct, live.ResetsAt
 	}
 	if p.ResetsAt == nil && live.OK && live.ResetsAtEpoch != nil && src == live.Source {
 		r := time.Unix(int64(*live.ResetsAtEpoch), 0).UTC().Format(time.RFC3339)

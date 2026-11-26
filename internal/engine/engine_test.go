@@ -100,3 +100,21 @@ func TestParseExplainRefusesVersion1(t *testing.T) {
 		}
 	}
 }
+
+func TestWindowIsTheFullerOne(t *testing.T) {
+	f := func(v float64) *float64 { return &v }
+	for _, c := range []struct {
+		five, week *float64
+		want       string
+	}{
+		{nil, nil, "5h"},
+		{f(10), nil, "5h"},
+		{nil, f(10), "weekly"},
+		{f(10), f(60), "weekly"},
+		{f(70), f(60), "5h"},
+	} {
+		if got := (Pool{FiveHourUsedPct: c.five, WeeklyUsedPct: c.week}).Window(); got != c.want {
+			t.Errorf("5h %v weekly %v: %s, want %s", c.five, c.week, got, c.want)
+		}
+	}
+}
