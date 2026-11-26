@@ -86,7 +86,7 @@ func renderHarnesses(r harness.Report, all, color, dark bool) string {
 	if !all {
 		rows = r.Installed()
 	}
-	head := []string{"CLI", "VERSION", "SIGN-IN", "INSTALLED WITH", "EFFORT"}
+	head := []string{"CLI", "VERSION", "SIGN-IN", "INSTALLED WITH", "EFFORT", "UPDATE WITH"}
 	cells := make([][]string, 0, len(rows))
 	for _, h := range rows {
 		ver := h.Version
@@ -101,10 +101,14 @@ func renderHarnesses(r harness.Report, all, color, dark bool) string {
 		if len(h.Efforts) > 0 {
 			effort = h.Efforts[0] + ".." + h.Efforts[len(h.Efforts)-1]
 		}
-		if !h.Installed {
-			ver, method, effort = "", "", ""
+		update := "no known updater"
+		if len(h.UpdateCommand) > 0 {
+			update = strings.Join(h.UpdateCommand, " ")
 		}
-		cells = append(cells, []string{h.Name, ver, string(h.Auth), method, effort})
+		if !h.Installed {
+			ver, method, effort, update = "", "", "", ""
+		}
+		cells = append(cells, []string{h.Name, ver, string(h.Auth), method, effort, update})
 	}
 	widths := make([]int, len(head))
 	for i, c := range head {

@@ -2,7 +2,12 @@ package harness
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
+	"strings"
 )
 
 // AuthState is whether a CLI looks signed in, from what it keeps on disk.
@@ -17,17 +22,22 @@ const (
 	AuthNotInstalled AuthState = "not_installed"
 )
 
-// The checks below only test that a credential exists. They never read a
-// token's value out of a file, and never print anything from one.
+// The checks below only test that a credential exists. Where a check has
+// to look inside a credential file, it decodes only the field names and
+// whether each value is empty: token values are never decoded into
+// strings, printed, logged or stored. A file AFK can't read (permissions,
+// I/O errors, malformed JSON) gives "unknown", not "signed_out", because
+// the check could not tell whether a login is there.
 
 func claudeAuth(e Env) (AuthState, string) {
+	// Claude Code reads its login from CLAUDE_CONFIG_DIR when that is set,
+	// and from ~/.claude otherwise. Only the selected directory counts.
+	path := e.home(".claude", ".credentials.json")
 	if dir := e.getenv("CLAUDE_CONFIG_DIR"); dir != "" {
-		if st, why := claudeCreds(dir + "/.credentials.json"); st == AuthOK {
-			return st, why
-		}
+		path = filepath.Join(dir, ".credentials.json")
 	}
-	st, why := claudeCreds(e.home(".claude", ".credentials.json"))
-	if st != AuthOK && e.OS == "darwin" {
+	st, why := claudeCreds(path)
+	if st == AuthSignedOut && e.OS == "darwin" {
 		// On macOS Claude Code keeps its login in the Keychain, which
 		// AFK does not read.
 		return AuthUnknown, "the login is in the macOS Keychain"
@@ -37,15 +47,18 @@ func claudeAuth(e Env) (AuthState, string) {
 
 func claudeCreds(path string) (AuthState, string) {
 	var v struct {
-		OAuth *struct {
-			Access  string `json:"accessToken"`
-			Refresh string `json:"refreshToken"`
-		} `json:"claudeAiOauth"`
+		OAuth map[string]json.RawMessage `json:"claudeAiOauth"`
 	}
-	if !readJSON(path, &v) || v.OAuth == nil || (v.OAuth.Access == "" && v.OAuth.Refresh == "") {
+	switch err := readJSON(path, &v); {
+	case errors.Is(err, fs.ErrNotExist):
 		return AuthSignedOut, "no Claude login found"
+	case err != nil:
+		return AuthUnknown, "could not read the Claude login file"
 	}
-	return AuthOK, ""
+	if present(v.OAuth["accessToken"]) || present(v.OAuth["refreshToken"]) {
+		return AuthOK, ""
+	}
+	return AuthSignedOut, "no Claude login found"
 }
 
 func codexAuth(e Env) (AuthState, string) {
@@ -54,19 +67,26 @@ func codexAuth(e Env) (AuthState, string) {
 		home = e.home(".codex")
 	}
 	var v struct {
-		Key    string `json:"OPENAI_API_KEY"`
-		Tokens *struct {
-			Access  string `json:"access_token"`
-			Refresh string `json:"refresh_token"`
-			Account string `json:"account_id"`
-		} `json:"tokens"`
+		Key    json.RawMessage            `json:"OPENAI_API_KEY"`
+		Tokens map[string]json.RawMessage `json:"tokens"`
 	}
-	if readJSON(home+"/auth.json", &v) {
-		if v.Key != "" || (v.Tokens != nil && (v.Tokens.Access != "" || v.Tokens.Refresh != "" || v.Tokens.Account != "")) {
-			return AuthOK, ""
-		}
+	switch err := readJSON(filepath.Join(home, "auth.json"), &v); {
+	case errors.Is(err, fs.ErrNotExist):
+		return AuthSignedOut, "no Codex login found"
+	case err != nil:
+		return AuthUnknown, "could not read the Codex login file"
+	}
+	if present(v.Key) || present(v.Tokens["access_token"]) || present(v.Tokens["refresh_token"]) || present(v.Tokens["account_id"]) {
+		return AuthOK, ""
 	}
 	return AuthSignedOut, "no Codex login found"
+}
+
+// present reports whether a raw JSON value is set: not missing, not null
+// and not an empty string. It never decodes the value itself.
+func present(raw json.RawMessage) bool {
+	t := strings.TrimSpace(string(raw))
+	return t != "" && t != "null" && t != `""`
 }
 
 // nonEmptyJSONObject: signed in when the file holds a JSON object with at
@@ -74,7 +94,12 @@ func codexAuth(e Env) (AuthState, string) {
 func nonEmptyJSONObject(parts ...string) func(Env) (AuthState, string) {
 	return func(e Env) (AuthState, string) {
 		var v map[string]json.RawMessage
-		if readJSON(e.home(parts...), &v) && len(v) > 0 {
+		switch err := readJSON(e.home(parts...), &v); {
+		case errors.Is(err, fs.ErrNotExist):
+			return AuthSignedOut, "no login found"
+		case err != nil:
+			return AuthUnknown, "could not read the login file"
+		case len(v) > 0:
 			return AuthOK, ""
 		}
 		return AuthSignedOut, "no login found"
@@ -86,7 +111,12 @@ func nonEmptyJSONObject(parts ...string) func(Env) (AuthState, string) {
 func nonEmptyDir(parts ...string) func(Env) (AuthState, string) {
 	return func(e Env) (AuthState, string) {
 		ents, err := os.ReadDir(e.home(parts...))
-		if err == nil && len(ents) > 0 {
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			return AuthSignedOut, "no login found"
+		case err != nil:
+			return AuthUnknown, "could not read the login directory"
+		case len(ents) > 0:
 			return AuthOK, ""
 		}
 		return AuthSignedOut, "no login found"
@@ -95,7 +125,13 @@ func nonEmptyDir(parts ...string) func(Env) (AuthState, string) {
 
 func nonEmptyFile(parts ...string) func(Env) (AuthState, string) {
 	return func(e Env) (AuthState, string) {
-		if fi, err := os.Stat(e.home(parts...)); err == nil && fi.Mode().IsRegular() && fi.Size() > 0 {
+		fi, err := os.Stat(e.home(parts...))
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			return AuthSignedOut, "no login found"
+		case err != nil:
+			return AuthUnknown, "could not read the login file"
+		case fi.Mode().IsRegular() && fi.Size() > 0:
 			return AuthOK, ""
 		}
 		return AuthSignedOut, "no login found"
@@ -119,10 +155,16 @@ func fileOrEnv(file []string, vars ...string) func(Env) (AuthState, string) {
 	}
 }
 
-func readJSON(path string, v any) bool {
+// readJSON decodes a JSON file. A missing file returns an error wrapping
+// fs.ErrNotExist; any other failure (permissions, I/O, bad JSON) returns
+// a different error, so callers can tell "absent" from "can't tell".
+func readJSON(path string, v any) error {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return false
+		return err
 	}
-	return json.Unmarshal(b, v) == nil
+	if err := json.Unmarshal(b, v); err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	return nil
 }

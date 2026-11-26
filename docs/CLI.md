@@ -96,9 +96,9 @@ afk-next harness --all      # also the supported ones that are not installed
 afk-next harness --json     # schema afk-harnesses/3
 ```
 
-This runs in Go and needs no bash engine. AFK knows claude, codex, opencode, grok, agy, gemini, copilot, cursor (`cursor-agent`), kiro (`kiro-cli`), qwen, kimi, pi and devin; each one is a single entry in `internal/harness/registry.go`. For every installed CLI it shows the version (each CLI is asked for `--version`, five seconds at most, all in parallel), how it was installed (mise, npm, bun, pnpm, Homebrew, uv, pipx, cargo or self-managed) with the command that updates it, the effort levels it takes, and whether it looks signed in.
+This runs in Go and needs no bash engine. AFK knows claude, codex, opencode, grok, agy, gemini, copilot, cursor (`cursor-agent`), kiro (`kiro-cli`), qwen, kimi, pi and devin; each one is a single entry in `internal/harness/registry.go`. For every installed CLI it shows the version (each CLI is asked for `--version`, five seconds at most, all in parallel), how it was installed (mise, npm, bun, pnpm, Homebrew, uv, pipx, cargo or self-managed) with the command that updates it (also shown in the table), the effort levels it takes, and whether it looks signed in.
 
-The sign-in check only looks for a login on disk and never reads a token's value. It can't prove the login still works. Where AFK has no reliable check for a CLI, or the login lives in the macOS Keychain, it says `unknown`. `AFK_HARNESS_BIN_DIR` makes that directory the only place CLIs are looked for.
+The sign-in check looks for a login on disk. For Claude, Codex and a few others it opens the credential file to see which login fields are set, but it never decodes, prints, logs or stores a token's value. A file AFK can't read shows as `unknown`, not signed out. It can't prove the login still works. Where AFK has no reliable check for a CLI, or the login lives in the macOS Keychain, it says `unknown`. `AFK_HARNESS_BIN_DIR` makes that directory the only place CLIs are looked for.
 
 ## Not yet
 

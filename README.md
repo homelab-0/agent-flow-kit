@@ -41,6 +41,7 @@ Requires Go 1.26 or newer.
 git clone https://github.com/jlengelbrecht/agent-flow-kit.git
 cd agent-flow-kit
 CGO_ENABLED=0 go build -o ~/.local/bin/afk ./cmd/afk
+export AFK_ENGINE="$PWD/bin/agent-flow-kit"   # add this to your shell profile
 ```
 
 While the routing engine is being ported to Go, the route card still calls the bash engine in this repository (`bin/agent-flow-kit`), which needs `bash` 4+, `jq` and `curl`. AFK looks for it in `$AFK_ENGINE`, then next to the `afk` binary, then on `PATH`. `afk harness` already runs without it.
@@ -64,10 +65,10 @@ See which agent CLIs AFK found:
 $ afk harness
 Agent CLIs · 12 of 13 supported CLIs installed
 
-  CLI       VERSION   SIGN-IN        INSTALLED WITH  EFFORT
-  claude    2.1.332   authenticated  mise            low..max
-  codex     0.172.0   authenticated  mise            low..ultra
-  opencode  2.4.2     authenticated  mise            low..high
+  CLI       VERSION   SIGN-IN        INSTALLED WITH  EFFORT      UPDATE WITH
+  claude    2.1.332   authenticated  mise            low..max    mise upgrade
+  codex     0.172.0   authenticated  mise            low..ultra  mise upgrade
+  opencode  2.4.2     authenticated  mise            low..high   mise upgrade
   ...
 ```
 
@@ -188,7 +189,7 @@ Press `?` on the route card to see the working:
 | Pi | `pi` | ✓ | planned |
 | Devin CLI | `devin` | ✓ | planned |
 
-Discovery reports each CLI's version, how it was installed (mise, npm, bun, pnpm, Homebrew, uv, pipx, cargo or self-managed), the command that updates it, its effort levels, and whether it looks signed in. The sign-in check only looks for a login on disk and never reads token values; where AFK can't tell, it says `unknown`.
+Discovery reports each CLI's version, how it was installed (mise, npm, bun, pnpm, Homebrew, uv, pipx, cargo or self-managed), the command that updates it, its effort levels, and whether it looks signed in. The sign-in check looks for a login on disk. For Claude, Codex and a few others it opens the credential file to see which login fields are set, but it never decodes, prints, logs or stores a token's value. A file AFK can't read shows as `unknown`, not signed out. Where AFK can't tell, it says `unknown`.
 
 Adding a CLI means adding one entry to [`internal/harness/registry.go`](internal/harness/registry.go).
 

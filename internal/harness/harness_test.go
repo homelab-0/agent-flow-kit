@@ -39,7 +39,10 @@ func testEnv(t *testing.T) (Env, string) {
 		t.Fatal(err)
 	}
 	vars := map[string]string{}
-	return Env{Home: home, Path: bin, OS: runtime.GOOS, Getenv: func(k string) string { return vars[k] }}, bin
+	// BinDir keeps discovery inside the fixture: without it Locate would
+	// also search the host's /usr/local/bin and friends, and could find
+	// (and run) real CLIs.
+	return Env{Home: home, Path: bin, BinDir: bin, OS: runtime.GOOS, Getenv: func(k string) string { return vars[k] }}, bin
 }
 
 func find(r Report, name string) Info {
@@ -161,6 +164,10 @@ func TestLocateFallsBackToInstallDirs(t *testing.T) {
 		t.Skip("shell scripts")
 	}
 	e, _ := testEnv(t)
+	e.BinDir = ""
+	saved := systemDirs
+	systemDirs = nil // only the fixture's PATH and home dirs
+	t.Cleanup(func() { systemDirs = saved })
 	want := filepath.Join(e.Home, ".local", "bin", "opencode")
 	writeExe(t, want, "true")
 	if p := Locate(e, mustLookup(t, "opencode")); p != want {
@@ -193,6 +200,8 @@ func TestClassify(t *testing.T) {
 			"mise", "opencode", []string{"mise", "upgrade", "opencode"}},
 		{"claude", "/h/.local/share/mise/command-wrappers/bin/claude", "/usr/bin/mise",
 			"mise", "", []string{"mise", "upgrade"}},
+		{"claude", "/opt/homebrew/bin/claude", "/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js",
+			"npm", "@anthropic-ai/claude-code", []string{"npm", "install", "-g", "@anthropic-ai/claude-code@latest"}},
 		{"codex", "/opt/homebrew/bin/codex", "/opt/homebrew/Caskroom/codex/0.1/codex",
 			"homebrew", "codex", []string{"brew", "upgrade", "codex"}},
 		{"gemini", "/h/.bun/bin/gemini", "/h/.bun/install/global/node_modules/@google/gemini-cli/dist/index.js",
@@ -277,5 +286,84 @@ func TestReportJSONShape(t *testing.T) {
 		if _, ok := h["efforts"].([]any); !ok {
 			t.Errorf("%v: efforts must be an array, even when empty", h["name"])
 		}
+	}
+}
+
+func TestClaudeConfigDirIsTheOnlyLoginLooked(t *testing.T) {
+	e, _ := testEnv(t)
+	e.OS = "linux"
+	writeFile(t, filepath.Join(e.Home, ".claude", ".credentials.json"), `{"claudeAiOauth":{"accessToken":"x"}}`)
+	sel := filepath.Join(e.Home, "other")
+	if err := os.MkdirAll(sel, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e.Getenv = func(k string) string {
+		if k == "CLAUDE_CONFIG_DIR" {
+			return sel
+		}
+		return ""
+	}
+	if st, _ := claudeAuth(e); st != AuthSignedOut {
+		t.Fatalf("auth = %s, want signed_out from the selected dir only", st)
+	}
+	writeFile(t, filepath.Join(sel, ".credentials.json"), `{"claudeAiOauth":{"refreshToken":"y"}}`)
+	if st, _ := claudeAuth(e); st != AuthOK {
+		t.Fatalf("auth = %s, want authenticated", st)
+	}
+}
+
+func TestUnreadableLoginIsUnknown(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Getuid() == 0 {
+		t.Skip("needs file permissions that root ignores")
+	}
+	e, _ := testEnv(t)
+	e.OS = "linux"
+	p := filepath.Join(e.Home, ".codex", "auth.json")
+	writeFile(t, p, `{"OPENAI_API_KEY":"k"}`)
+	if err := os.Chmod(p, 0); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := codexAuth(e); st != AuthUnknown {
+		t.Fatalf("auth = %s, want unknown for an unreadable file", st)
+	}
+}
+
+func TestMalformedLoginIsUnknownAndEmptyIsSignedOut(t *testing.T) {
+	e, _ := testEnv(t)
+	e.OS = "linux"
+	p := filepath.Join(e.Home, ".claude", ".credentials.json")
+	writeFile(t, p, `{not json`)
+	if st, _ := claudeAuth(e); st != AuthUnknown {
+		t.Fatalf("malformed: auth = %s, want unknown", st)
+	}
+	writeFile(t, p, `{"claudeAiOauth":{"accessToken":"","refreshToken":null}}`)
+	if st, _ := claudeAuth(e); st != AuthSignedOut {
+		t.Fatalf("empty tokens: auth = %s, want signed_out", st)
+	}
+}
+
+func TestLocateReturnsAbsolutePath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell scripts")
+	}
+	e, bin := testEnv(t)
+	writeExe(t, filepath.Join(bin, "claude"), "echo 1.0.0")
+	t.Chdir(bin)
+	e.BinDir = "."
+	p := Locate(e, mustLookup(t, "claude"))
+	if !filepath.IsAbs(p) || filepath.Base(p) != "claude" {
+		t.Fatalf("Locate = %q, want an absolute path", p)
+	}
+}
+
+func TestCapWriterBoundsOutput(t *testing.T) {
+	w := &capWriter{max: 8}
+	for i := 0; i < 1000; i++ {
+		if n, err := w.Write([]byte("0123456789")); n != 10 || err != nil {
+			t.Fatalf("Write = %d, %v", n, err)
+		}
+	}
+	if got := w.String(); got != "01234567" {
+		t.Fatalf("kept %q", got)
 	}
 }

@@ -154,6 +154,12 @@ func Locate(e Env, a Adapter) string {
 			for _, cand := range exeNames(e.OS, name) {
 				p := filepath.Join(d, cand)
 				if isExecutable(e.OS, p) {
+					// An absolute path keeps a relative override such as
+					// AFK_HARNESS_BIN_DIR=. pointing at this file when the
+					// version check runs it, instead of a new PATH lookup.
+					if abs, err := filepath.Abs(p); err == nil {
+						return abs
+					}
 					return p
 				}
 			}
@@ -195,16 +201,13 @@ func version(ctx context.Context, bin string, limit time.Duration) (string, stri
 	ctx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, "--version")
-	var out bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &out
+	out := &capWriter{max: maxVersionOutput}
+	cmd.Stdout, cmd.Stderr = out, out
 	cmd.Stdin = nil
 	// Node CLIs can leave children holding the pipe; don't wait on them.
 	cmd.WaitDelay = time.Second
 	err := cmd.Run()
 	text := out.String()
-	if len(text) > 4096 {
-		text = text[:4096]
-	}
 	v := semverRE.FindString(text)
 	switch {
 	case ctx.Err() == context.DeadlineExceeded:
@@ -213,6 +216,36 @@ func version(ctx context.Context, bin string, limit time.Duration) (string, stri
 		return v, "--version failed: " + firstLine(text, err.Error())
 	}
 	return v, ""
+}
+
+const maxVersionOutput = 4096
+
+// capWriter keeps the first max bytes written to it and drops the rest,
+// while still reporting every write as successful so the child keeps
+// draining its output instead of blocking. A CLI that floods --version
+// can't grow memory past max. It is safe for stdout and stderr to share.
+type capWriter struct {
+	mu  sync.Mutex
+	max int
+	buf bytes.Buffer
+}
+
+func (w *capWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if room := w.max - w.buf.Len(); room > 0 {
+		if len(p) < room {
+			room = len(p)
+		}
+		w.buf.Write(p[:room])
+	}
+	return len(p), nil
+}
+
+func (w *capWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
 }
 
 func firstLine(text, fallback string) string {
@@ -255,15 +288,6 @@ func classify(a Adapter, bin, resolved string) (method, pkg string, update []str
 	case has("/mise/shims/") || has("/mise/command-wrappers/") || strings.HasSuffix(r, "/mise"):
 		// A mise shim does not say which tool backs it.
 		return "mise", "", []string{"mise", "upgrade"}
-	case has("/opt/homebrew/") || has("/Cellar/") || has("/Caskroom/") || has("/home/linuxbrew/.linuxbrew/"):
-		p := after(r, "/Cellar/")
-		if p == "" {
-			p = after(r, "/Caskroom/")
-		}
-		if p == "" {
-			p = a.Bins[0]
-		}
-		return "homebrew", p, []string{"brew", "upgrade", p}
 	case has("/.bun/"):
 		p := nodePkg(r, npmPkg)
 		return "bun", p, []string{"bun", "add", "-g", p + "@latest"}
@@ -273,6 +297,18 @@ func classify(a Adapter, bin, resolved string) (method, pkg string, update []str
 	case has("/node_modules/"):
 		p := nodePkg(r, npmPkg)
 		return "npm", p, []string{"npm", "install", "-g", p + "@latest"}
+	// Homebrew is checked after the Node package managers: npm, bun and
+	// pnpm can install under the /opt/homebrew prefix too, and the
+	// package layout says who manages the CLI better than the prefix does.
+	case has("/Cellar/") || has("/Caskroom/") || has("/opt/homebrew/") || has("/home/linuxbrew/.linuxbrew/"):
+		p := after(r, "/Cellar/")
+		if p == "" {
+			p = after(r, "/Caskroom/")
+		}
+		if p == "" {
+			p = a.Bins[0]
+		}
+		return "homebrew", p, []string{"brew", "upgrade", p}
 	case has("/uv/tools/"):
 		p := after(r, "/uv/tools/")
 		return "uv", p, []string{"uv", "tool", "upgrade", p}
