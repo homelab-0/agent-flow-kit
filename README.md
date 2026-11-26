@@ -82,7 +82,7 @@ Get one answer and exit. If the CLI fails to start or hits a sign-in, quota or r
 
 ```sh
 afk -p "what does lib/afk-cli.sh do?"
-git diff | afk -p --task review "review this change"
+afk -p --task review "review the last commit"
 ```
 
 ### The route card
