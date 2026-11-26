@@ -65,6 +65,37 @@ func TestSession(t *testing.T) {
 	}
 }
 
+// A session started in a subdirectory still sees changes to files that were
+// already dirty: git status names paths from the top of the work tree.
+func TestSessionFromSubdir(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "pkg", "inner")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, dir, "init", "-q")
+	write(t, dir, "top", "1")
+	write(t, sub, "f", "1")
+	gitIn(t, dir, "add", ".")
+	gitIn(t, dir, "commit", "-qm", "base")
+	write(t, sub, "f", "dirty before")
+	write(t, dir, "top", "dirty before, untouched")
+
+	s := Take(sub)
+	if !s.OK() {
+		t.Fatal("snapshot of a repository from a subdirectory")
+	}
+	write(t, sub, "f", "changed again")
+	ch := s.Since()
+	if ch.Files == nil || *ch.Files != 1 {
+		t.Errorf("files %v (pkg/inner/f only)", deref(ch.Files))
+	}
+}
+
 func deref(p *int) any {
 	if p == nil {
 		return nil

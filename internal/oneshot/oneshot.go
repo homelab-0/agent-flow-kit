@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"regexp"
 	"strings"
@@ -231,6 +232,10 @@ type Deps struct {
 	Mark func(kind Kind, pool, model, reason string)
 	// Note is a line for the person, on stderr.
 	Note func(string)
+	// Changed is how many files in the working copy changed since the run
+	// began (nil when that isn't known, as outside a git repository). A
+	// route that fails after editing files leaves them for the next one.
+	Changed func() *int
 }
 
 // Result is how the run ended.
@@ -362,6 +367,11 @@ func Do(ctx context.Context, req Request, d Deps) Result {
 		}
 		if d.Note != nil {
 			d.Note("afk: " + id + " failed (" + string(kind) + "); trying " + next.Harness + " / " + next.Model)
+			if d.Changed != nil {
+				if n := d.Changed(); n != nil && *n > 0 {
+					d.Note(fmt.Sprintf("afk: %s left %d changed %s in the working copy; %s / %s starts from them", id, *n, plural(*n, "file", "files"), next.Harness, next.Model))
+				}
+			}
 		}
 		route = next
 	}
@@ -465,4 +475,11 @@ func rank(m string) int {
 		}
 	}
 	return 1
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }

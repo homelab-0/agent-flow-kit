@@ -20,6 +20,15 @@ If the CLI can't be started, exits with an error, or reports one in its JSON, AF
 
 The first two are written to the signals file, so the next `afk` run (and the route card) avoids them too. A route this run already tried is never tried again.
 
+Every route runs in the same working copy; there are no separate worktrees yet. If a route edited files before it failed, the next route starts from those edits, and in a git repository AFK says so on stderr:
+
+```text
+afk: claude/opus failed (pool); trying codex / sol
+afk: claude/opus left 3 changed files in the working copy; codex / sol starts from them
+```
+
+The count covers files changed since the run began: files that were already modified and didn't change again aren't counted. Set `route.failover = "none"` (below) when a half-finished edit shouldn't be handed on.
+
 The run stops when:
 
 - a CLI answers;
