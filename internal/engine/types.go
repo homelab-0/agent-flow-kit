@@ -31,6 +31,7 @@ type Route struct {
 	PoolUsedPct     *float64 `json:"pool_used_pct"`
 	PoolCapacity5h  *float64 `json:"pool_capacity_5h"`
 	PoolRemaining5h *float64 `json:"pool_remaining_5h"`
+	PoolQuotaSource string   `json:"pool_quota_source"`
 
 	BenchmarkName     string   `json:"benchmark_name"`
 	BenchmarkScore    *float64 `json:"benchmark_score"`
@@ -129,6 +130,21 @@ func redactURL(s string) string {
 }
 
 // IsGateway reports a route that goes through a model gateway.
+// PoolBasis says how the pool figures were found, for people: "measured"
+// (the CLI's own rate-limit record), "estimated from recent sessions", "set
+// by a failed run", or "" when the route doesn't say.
+func (r Route) PoolBasis() string {
+	switch {
+	case r.PoolQuotaSource == "codex_rate_limits":
+		return "measured"
+	case r.PoolQuotaSource == "local_5h_activity":
+		return "estimated from recent sessions"
+	case strings.HasPrefix(r.PoolQuotaSource, "runtime_signal:"):
+		return "set by a failed run"
+	}
+	return ""
+}
+
 func (r Route) IsGateway() bool { return strings.HasSuffix(r.LaunchClass, "-gateway") }
 
 // SameAs reports whether two routes start the same thing.

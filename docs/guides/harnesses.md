@@ -46,12 +46,12 @@ On your `PATH` first, then the usual install folders (`~/.local/bin`, `~/.bun/bi
 
 | State | Means |
 |---|---|
-| `authenticated` | the CLI's own credential file holds a login |
-| `signed_out` | the credential file is missing or empty; AFK shows the command to sign in |
-| `unknown` | AFK can't tell: the CLI has no reliable on-disk check, the file can't be read, or the login is in the macOS Keychain |
+| `authenticated` | the CLI's own login file exists and is larger than 4 bytes |
+| `signed_out` | the login file is missing, or 4 bytes or less (an empty `{}` left by signing out); AFK shows the command to sign in |
+| `unknown` | AFK can't tell: the CLI has no reliable on-disk check, the file can't be checked, or the login is in the macOS Keychain |
 | `not_installed` | the CLI isn't here |
 
-The check only looks for a login. It never prints or stores a token, and it can't prove the login still works; only a real request proves that. Claude's login is read from `CLAUDE_CONFIG_DIR` when set, otherwise `~/.claude`; Codex's from `CODEX_HOME` when set.
+The check only looks at whether the login file is there. AFK never opens it, so it never reads, prints or stores a token, and it can't prove the login still works; only a real request proves that. Claude's login is read from `CLAUDE_CONFIG_DIR` when set, otherwise `~/.claude`; Codex's from `CODEX_HOME` when set.
 
 ## Installing and updating CLIs from AFK
 

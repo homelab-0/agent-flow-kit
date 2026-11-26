@@ -136,6 +136,9 @@ func explainText(ex *engine.Explain) string {
 	head := ""
 	if r.PoolHeadroomPct != nil {
 		head = fmt.Sprintf("(%s%% left, %s)", num(r.PoolHeadroomPct), r.PoolState)
+		if b := r.PoolBasis(); b != "" {
+			head = fmt.Sprintf("(%s%% left, %s, %s)", num(r.PoolHeadroomPct), r.PoolState, b)
+		}
 	}
 	fmt.Fprintf(&b, "  pool: %s %s\n", pool, head)
 	score := "-"
@@ -156,8 +159,12 @@ func explainText(ex *engine.Explain) string {
 		b.WriteString("best per installed CLI:\n")
 		for _, a := range ex.ByHarness {
 			h := (a.Harness + "         ")[:9]
+			state := a.PoolState
+			if pb := a.PoolBasis(); pb != "" {
+				state += ", " + pb
+			}
 			fmt.Fprintf(&b, "  %s %s — score %s, pool %s %s%% left (%s), %s\n",
-				h, a.Model, num(a.EffectiveScore), a.EntitlementPool, num(a.PoolHeadroomPct), a.PoolState, a.CostClass)
+				h, a.Model, num(a.EffectiveScore), a.EntitlementPool, num(a.PoolHeadroomPct), state, a.CostClass)
 		}
 	}
 	return b.String()
