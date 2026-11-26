@@ -136,7 +136,7 @@ func (r *Router) launchable(c Candidate) bool {
 	if cclass == "subscription" && !contains(ownPlans[c.Harness], c.EntitlementPool) {
 		return false
 	}
-	if c.Harness == "opencode" && !(strings.HasPrefix(c.Model, "opencode/") && (cclass == "free" || c.EntitlementPool == "opencode-free")) {
+	if c.Harness == "opencode" && !(strings.HasPrefix(c.Model, "opencode/") && cclass == "free") {
 		return false
 	}
 	if c.Harness == "pi" {
@@ -487,6 +487,11 @@ func (r *Router) Select(in Input) Route {
 		}
 		// opencode: only its own free models.
 		if c.Harness == "opencode" && !(strings.HasPrefix(c.Model, "opencode/") && cclass == "free") {
+			continue
+		}
+		// Pi is never launched (it would use another vendor's plan login),
+		// so it never wins a route either.
+		if c.Harness == "pi" {
 			continue
 		}
 		viaGateway := strings.HasSuffix(c.LaunchClass, "-gateway")

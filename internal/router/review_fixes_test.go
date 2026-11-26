@@ -259,3 +259,18 @@ func TestSymlinkedCodexSessions(t *testing.T) {
 		t.Fatalf("countRecent through the symlink = %d, want 5", n)
 	}
 }
+
+func TestPiNeverWinsARoute(t *testing.T) {
+	probe := &Probe{Harnesses: map[string]HarnessState{"pi": {Installed: true}}, Pools: map[string]Pool{}}
+	r := &Router{Catalog: DefaultCatalog(), Probe: probe, Discovered: []DiscoveredModel{{
+		ID: "pi:free", Harness: "pi", Model: "free-model", CostClass: "free", IsFree: true,
+		EntitlementPool: "opencode-free", LaunchClass: "pi-native",
+		Capabilities: struct {
+			Reasoning bool `json:"reasoning"`
+			Toolcall  bool `json:"toolcall"`
+		}{Toolcall: true},
+	}}}
+	if got := r.Select(Input{Stage: "build", Risk: "low", PreferFree: true}); got.Harness == "pi" {
+		t.Fatalf("pi won: %+v", got)
+	}
+}
