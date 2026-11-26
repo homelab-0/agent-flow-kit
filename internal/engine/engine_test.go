@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -164,7 +165,7 @@ func TestRouteOnStdinAndTimeout(t *testing.T) {
 	got := filepath.Join(dir, "got")
 	e := &Engine{Path: stub(t, dir, "eng", `case "$2" in
 --launch-plan) printf '%s' "$*" > "`+got+`.args"; cat > "`+got+`"; printf '{"schema":"afk-launch-plan/1","ok":true,"argv":["/bin/true"]}';;
---explain) (sleep 30; echo late) & sleep 30;;
+--explain) (sleep 30; echo late) & echo $! > "`+got+`.pid"; sleep 30;;
 esac
 `)}
 	var r Route
@@ -184,6 +185,22 @@ esac
 	var te *TimeoutError
 	if !errors.As(err, &te) || time.Since(start) > 5*time.Second {
 		t.Fatalf("a hung engine and its children are stopped: %v after %v", err, time.Since(start))
+	}
+	raw, err := os.ReadFile(got + ".pid")
+	if err != nil {
+		t.Fatalf("the stub recorded its background child: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil || pid <= 0 {
+		t.Fatalf("background pid %q: %v", raw, err)
+	}
+	t.Cleanup(func() { killPid(pid) })
+	deadline := time.Now().Add(3 * time.Second)
+	for processAlive(pid) {
+		if time.Now().After(deadline) {
+			t.Fatalf("background child %d outlived the timeout", pid)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 
