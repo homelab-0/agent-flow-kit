@@ -10,6 +10,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -63,6 +66,9 @@ func hostOps() hops {
 			ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+			if argv[0] == "npm" {
+				cmd.Dir = npmDir(home)
+			}
 			var out bytes.Buffer
 			cmd.Stdout, cmd.Stderr = &out, &out
 			err := cmd.Run()
@@ -197,29 +203,141 @@ type plan struct {
 	drop   bool
 }
 
+// npmDir is where npm runs: an empty directory of AFK's own under your
+// home, never the project you happen to be in. npm reads a .npmrc from the
+// directory it runs in, and a repository's .npmrc can name another
+// registry; your own ~/.npmrc still applies.
+func npmDir(home string) string {
+	state := os.Getenv("AFK_STATE_DIR")
+	if state == "" {
+		state = filepath.Join(home, ".local", "state", "agent-flow-kit")
+	}
+	d := filepath.Join(state, "npm")
+	if err := os.MkdirAll(d, 0o700); err != nil {
+		return home
+	}
+	return d
+}
+
+// npmInfo is what npm says about one version of a package.
+type npmInfo struct {
+	Version   string
+	Integrity string
+	Scripts   []string
+	// Published is when this version was published; Times is every
+	// version's publish time. Both are empty when npm gave none.
+	Published time.Time
+	Times     map[string]time.Time
+}
+
 // npmVersion pins a package version and reads what npm says about it.
-func npmVersion(ctx context.Context, o hops, pkg, want string) (version, integrity string, scripts []string, err error) {
+func npmVersion(ctx context.Context, o hops, pkg, want string) (npmInfo, error) {
 	if want == "" {
 		want = "latest"
 	}
-	out, code, err := o.run(ctx, []string{"npm", "view", pkg + "@" + want, "version", "dist.integrity", "scripts", "--json"})
+	out, code, err := o.run(ctx, []string{"npm", "view", pkg + "@" + want, "version", "dist.integrity", "scripts", "time", "--json"})
 	if err != nil || code != 0 {
-		return "", "", nil, fmt.Errorf("npm couldn't resolve %s@%s: %s", pkg, want, strings.TrimSpace(firstLines(out, 3)))
+		return npmInfo{}, fmt.Errorf("npm couldn't resolve %s@%s: %s", pkg, want, strings.TrimSpace(firstLines(out, 3)))
 	}
 	var v struct {
 		Version   string            `json:"version"`
 		Integrity string            `json:"dist.integrity"`
 		Scripts   map[string]string `json:"scripts"`
+		Time      map[string]string `json:"time"`
 	}
 	if err := json.Unmarshal(out, &v); err != nil || v.Version == "" {
-		return "", "", nil, fmt.Errorf("npm's answer for %s@%s wasn't one version (give an exact one with --version)", pkg, want)
+		return npmInfo{}, fmt.Errorf("npm's answer for %s@%s wasn't one version (give an exact one with --version)", pkg, want)
 	}
+	in := npmInfo{Version: v.Version, Integrity: v.Integrity, Times: map[string]time.Time{}}
 	for _, k := range []string{"preinstall", "install", "postinstall"} {
 		if s, ok := v.Scripts[k]; ok {
-			scripts = append(scripts, k+": "+s)
+			in.Scripts = append(in.Scripts, k+": "+s)
 		}
 	}
-	return v.Version, v.Integrity, scripts, nil
+	for ver, at := range v.Time {
+		if t, err := time.Parse(time.RFC3339, at); err == nil {
+			in.Times[ver] = t
+		}
+	}
+	in.Published = in.Times[v.Version]
+	return in, nil
+}
+
+// defaultCooldown is how long a release waits before AFK installs it as
+// "latest". A bad or hijacked release is usually pulled within days, so a
+// short wait keeps most of them off your machine.
+const defaultCooldown = 3
+
+// cooldown is the wait in days: AFK_RELEASE_COOLDOWN_DAYS, 0 for none.
+func cooldown(o hops) time.Duration {
+	days := defaultCooldown
+	if o.env.Getenv != nil {
+		if v := strings.TrimSpace(o.env.Getenv("AFK_RELEASE_COOLDOWN_DAYS")); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+				days = n
+			}
+		}
+	}
+	return time.Duration(days) * 24 * time.Hour
+}
+
+var plainVersion = regexp.MustCompile(`^(\d+)\.(\d+)\.(\d+)$`)
+var anyVersion = regexp.MustCompile(`(\d+)\.(\d+)\.(\d+)`)
+
+// versionOf reads x.y.z, with ok false for anything else (a prerelease, a
+// nightly, a tag).
+func versionOf(re *regexp.Regexp, s string) (v [3]int, ok bool) {
+	m := re.FindStringSubmatch(s)
+	if m == nil {
+		return v, false
+	}
+	for i := range v {
+		n, err := strconv.Atoi(m[i+1])
+		if err != nil {
+			return v, false
+		}
+		v[i] = n
+	}
+	return v, true
+}
+
+func versionLess(a, b [3]int) bool {
+	for i := range a {
+		if a[i] != b[i] {
+			return a[i] < b[i]
+		}
+	}
+	return false
+}
+
+// settled is the newest plain release below latest that was published
+// before the cutoff, or "" when there is none.
+func settled(in npmInfo, cutoff time.Time) string {
+	top, ok := versionOf(plainVersion, in.Version)
+	if !ok {
+		return ""
+	}
+	best, bestV := "", [3]int{}
+	for ver, at := range in.Times {
+		v, ok := versionOf(plainVersion, ver)
+		if !ok || at.After(cutoff) || !versionLess(v, top) {
+			continue
+		}
+		if best == "" || versionLess(bestV, v) {
+			best, bestV = ver, v
+		}
+	}
+	return best
+}
+
+func age(d time.Duration) string {
+	switch {
+	case d < time.Hour:
+		return "less than an hour ago"
+	case d < 48*time.Hour:
+		return fmt.Sprintf("%d hours ago", int(d.Hours()))
+	}
+	return fmt.Sprintf("%d days ago", int(d.Hours()/24))
 }
 
 func firstLines(b []byte, n int) string {
@@ -237,18 +355,67 @@ func planAdd(ctx context.Context, o hops, a harness.Adapter, in harness.Info, wa
 	if a.NPMPackage == "" {
 		return nil, fmt.Errorf("%s isn't installed from npm; install it the way its vendor describes, and AFK will find it", a.Name)
 	}
-	return npmPlan(ctx, o, "add", a, want)
+	return npmPlan(ctx, o, "add", a, want, "")
 }
 
-func npmPlan(ctx context.Context, o hops, verb string, a harness.Adapter, want string) (*plan, error) {
-	ver, integ, scripts, err := npmVersion(ctx, o, a.NPMPackage, want)
+// npmPlan plans an npm install of a's package. want is a version, or ""
+// or "latest" for the newest release that has been out for the cooldown;
+// have is the version installed now, which an update never goes below.
+func npmPlan(ctx context.Context, o hops, verb string, a harness.Adapter, want, have string) (*plan, error) {
+	in, err := npmVersion(ctx, o, a.NPMPackage, want)
 	if err != nil {
 		return nil, err
 	}
+	var notes []string
+	latest := want == "" || want == "latest"
+	wait := cooldown(o)
+	if !in.Published.IsZero() && wait > 0 && o.now().Sub(in.Published) < wait {
+		days := int(wait.Hours() / 24)
+		young := fmt.Sprintf("%s was published %s", in.Version, age(o.now().Sub(in.Published)))
+		older := ""
+		if latest {
+			older = settled(in, o.now().Add(-wait))
+		}
+		switch {
+		case !latest:
+			notes = append(notes, young+"; you asked for it by version, so the "+strconv.Itoa(days)+"-day wait for new releases doesn't apply")
+		case older == "":
+			notes = append(notes, young+" and there is no older release to install instead")
+		default:
+			skip := fmt.Sprintf("latest is %s, published %s; AFK waits %d days before installing a new release (--version %s installs it now, AFK_RELEASE_COOLDOWN_DAYS=0 turns the wait off)", in.Version, age(o.now().Sub(in.Published)), days, in.Version)
+			if hv, ok := versionOf(anyVersion, have); ok {
+				if ov, _ := versionOf(plainVersion, older); !versionLess(hv, ov) {
+					return nil, fmt.Errorf("%s is on %s and nothing newer is ready: %s", a.Name, have, skip)
+				}
+			}
+			if in, err = npmVersion(ctx, o, a.NPMPackage, older); err != nil {
+				return nil, err
+			}
+			notes = append(notes, skip)
+			latest = false
+		}
+	}
+	ver, integ := in.Version, in.Integrity
+	// Whatever was chosen, an update never installs something older than
+	// what is here (a CLI that updated itself can be ahead of npm's
+	// latest, or of every release that has waited long enough).
+	if hv, ok := versionOf(anyVersion, have); ok {
+		if nv, ok := versionOf(anyVersion, ver); ok && versionLess(nv, hv) {
+			return nil, fmt.Errorf("%s is on %s, which is newer than the %s npm offers; nothing to update", a.Name, have, ver)
+		}
+	}
 	src := "npm:" + a.NPMPackage + "@" + ver
+	// A published version's contents never change. If the registry now
+	// gives another hash for the version afk.lock recorded, something
+	// replaced it.
+	if lock, err := config.ReadLock(o.lock); err == nil {
+		if e := lockEntry(lock, a.Name); e != nil && e.Source == src && e.Integrity != "" && integ != "" && e.Integrity != integ {
+			return nil, fmt.Errorf("the registry's %s@%s is not the one AFK installed: afk.lock recorded %s and npm now says %s. A published version shouldn't change, so nothing was installed; check your npm registry setting (npm config get registry) and the package's page", a.NPMPackage, ver, e.Integrity, integ)
+		}
+	}
 	p := &plan{Verb: verb, Harness: a.Name, Command: []string{"npm", "install", "-g", a.NPMPackage + "@" + ver},
-		Version: ver, Source: src, Integrity: integ, Scripts: scripts}
-	if want == "" || want == "latest" {
+		Version: ver, Source: src, Integrity: integ, Scripts: in.Scripts, Notes: notes}
+	if latest {
 		p.Notes = append(p.Notes, "latest is "+ver+"; that exact version is installed and recorded")
 	}
 	if integ == "" {
@@ -269,7 +436,7 @@ func planUpdate(ctx context.Context, o hops, a harness.Adapter, in harness.Info)
 	}
 	ours := lockEntry(lock, a.Name) != nil
 	if ours || (in.InstallMethod == "npm" && a.NPMPackage != "") {
-		return npmPlan(ctx, o, "update", a, "latest")
+		return npmPlan(ctx, o, "update", a, "latest", in.Version)
 	}
 	if len(in.UpdateCommand) == 0 {
 		return nil, fmt.Errorf("AFK doesn't know how %s was installed here (%s); update it that way", a.Name, in.ResolvedPath)

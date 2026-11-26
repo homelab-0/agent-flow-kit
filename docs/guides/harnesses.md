@@ -65,6 +65,12 @@ The check only looks at whether the login file is there. AFK never opens it, so 
 
 `add`, `update` and `remove` show the exact command first, including the install scripts an npm package runs, and ask once; `-y` skips the question, and without a terminal they need `-y`. `--dry-run` shows the plan and runs nothing; `--json` prints it. A CLI that isn't on npm (Grok, Antigravity, Cursor, Kiro, Devin) isn't installed by AFK: install it as its vendor describes and AFK finds it.
 
+Three things keep an install from pulling in something you didn't mean to:
+
+- **npm runs in a directory of AFK's own**, not the project you're in. npm reads a `.npmrc` from the directory it runs in, and a repository's `.npmrc` can point at another registry. Your own `~/.npmrc` still applies.
+- **A new release waits 3 days.** When `latest` was published less than 3 days ago, `add` and `update` plan the newest release that is older than that, and say so. A bad or hijacked release is usually pulled within days. `--version V` installs any version now, and `AFK_RELEASE_COOLDOWN_DAYS` changes the wait (`0` turns it off). `update` never goes below the version you have: it says nothing newer is ready yet.
+- **A version's hash can't change.** If npm gives a different integrity hash for the exact version `afk.lock` recorded, nothing is installed and AFK says so.
+
 AFK never handles a password or a token: signing in is always the CLI's own.
 
 ## Adding support for a CLI
