@@ -1,7 +1,0 @@
-3bf9b0bf0515899886c6fa33026065fa6319284334141820a1ec8e587ae55c88  /home/devbox/.agents/skills/model-router/subscriptions.yaml
-e67e9065bff6d0c3f5defaf91c4490d43fbbfe282a79f951c1172a58f31be5bb  /home/devbox/.claude/CLAUDE.md
-11beea17cf5493f66c393ee9c71b737a5a6b0fbc7466411d1d3a105ee16c7ed3  /home/devbox/repos/jlengelbrecht/agent-flow-kit/_bmad-output/implementation-artifacts/AFK-PORT-1.3-COORDINATOR-HANDOFF.md
-67bf0dd82bcca2c55bfeb29b555f5de327cc70267eddf5021ec6af7aba40e827  /home/devbox/repos/jlengelbrecht/agent-flow-kit/_bmad-output/implementation-artifacts/AFK-PORT-1.8.md
-da1474e2d8f684ef33f009557afddc269848c713a8888df45ceaaa161ca67232  /home/devbox/repos/jlengelbrecht/agent-flow-kit/_bmad-output/planning-artifacts/epics-block-1.8.md
-2d3efb92a86bb4becf74183b9de40e3ac3bffb2116a71113a8923ad41adb029a  /home/devbox/repos/jlengelbrecht/agent-flow-kit/_bmad-output/planning-artifacts/prds/prd-agent-flow-kit-2026-08-24/prd-addendum-1.8.md
-4534f6f368f2a6f4bd75e73edbdf1a6deb6593ee63eae8dd8e0a77327e2227a0  /home/devbox/repos/jlengelbrecht/agent-flow-kit/_bmad-output/planning-artifacts/prds/prd-agent-flow-kit-2026-08-24/reconciliation-story-1.8.md

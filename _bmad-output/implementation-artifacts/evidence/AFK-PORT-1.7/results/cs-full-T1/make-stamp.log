@@ -1,6 +1,0 @@
-make-stamp: OVERRIDE recorded: ORCH coordinator (Story 1.7 spike-class evaluation cell; Josh's go 2026-09-07) chose claude/claude/strong over the recommendation.
-make-stamp:   This is provenance only. It grants no bypass: the final fields are validated on their own merits.
-make-stamp: wrote /home/devbox/repos/jlengelbrecht/agent-flow-kit/_bmad-output/implementation-artifacts/evidence/AFK-PORT-1.7/results/cs-full-T1/CELL-cs-full-T1.md.stamp.json
-make-stamp:   claude claude/strong effort=medium cost=subscription
-make-stamp:   placement_required=false expires_at=2026-09-08T07:21:56Z
-make-stamp:   digest sha256:a16693c9626bdee499378d66fc64485feca8bd7a7745d2b18ab4e42004cb775e

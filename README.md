@@ -87,7 +87,7 @@ afk --explain --json "fix a flaky test"   # machine-readable
 Get one answer and exit. If the CLI fails to start or hits a sign-in, quota or rate limit, the next best CLI answers:
 
 ```sh
-afk -p "what does lib/afk-cli.sh do?"
+afk -p "what does internal/router/select.go do?"
 afk -p --task review "review the last commit"
 ```
 
@@ -204,7 +204,6 @@ Configuration is moving into AFK itself (`afk config`, `afk gateway`, `afk mcp`,
 | `AFK_GATEWAY_KEY` / `AFK_GATEWAY_KEY_ENV` | the gateway key, or the name of the variable that holds it |
 | `AFK_HARNESS_BIN_DIR` | look for CLIs only in this directory |
 | `AFK_SKIP_BENCHMARK_AUTOSYNC=1` | don't refresh the benchmark catalog in the background |
-| `AFK_BACKEND=bash` | run everything on the bash engine, as before the Go engine |
 | `NO_COLOR`, `AFK_MOTION=off` | no colour; no animation |
 
 A gateway route launches `claude` with `ANTHROPIC_BASE_URL` pointed at the gateway and a separate config directory, so your Claude plan login is never loaded. AFK never prints the gateway key.
@@ -220,7 +219,8 @@ AFK is becoming a standalone tool. Work is tracked in pull requests against `mas
 - [x] Route card, launch and receipts in Go
 - [x] Harness discovery in Go (`afk harness`)
 - [x] Routing engine in Go: route selection, pool usage and launch plans
-- [x] `-p` one-shot answers with failover, and the benchmark sync (`afk bench sync`), in Go: no bash, `jq` or `yq` on the default path
+- [x] `-p` one-shot answers with failover, and the benchmark sync (`afk bench sync`), in Go: no bash, `jq` or `yq`
+- [x] Remove the legacy bash engine and scripts (the last version is tagged `legacy-bash-final`)
 - [ ] `afk config`: one config file, managed from the CLI
 - [ ] AI gateways: LiteLLM, OpenRouter and any OpenAI- or Anthropic-compatible endpoint, with keys held as references (env var, OS keychain, 1Password)
 - [ ] MCP servers and skills: define them once in AFK and sync them into every installed CLI's own config
@@ -230,7 +230,6 @@ AFK is becoming a standalone tool. Work is tracked in pull requests against `mas
 - [ ] Work sources: issue trackers and webhooks (GitHub Issues, Linear, Jira and others) that hand tasks to AFK through one runs API
 - [ ] Telemetry: OpenTelemetry traces of routing and runs for Langfuse, LangSmith or any OTLP collector
 - [ ] Workflows (`afk flow`): multi-stage runs with gates and reviews, defined in config
-- [ ] Remove the remaining bash code
 
 ## Project layout
 
@@ -242,11 +241,10 @@ internal/router/    route selection, benchmark catalog, pool probes
 internal/core/      the Go engine: explain, launch plans, pools, -p
 internal/oneshot/   -p: reading the answer, failover
 internal/bench/     the benchmark sync
-internal/engine/    route and plan types; client for the bash engine (going away)
+internal/engine/    route, explain, launch-plan and pool types
 internal/launch/    foreground launch of the chosen CLI
 internal/runrec/    run records
 internal/gitstat/   files changed and commits for receipts
-bin/, lib/          the bash engine (being retired)
 docs/               reference docs
 ```
 

@@ -1,2 +1,0 @@
-claude version: 2.1.266 (Claude Code)
-placement: cachyos-7900xtx

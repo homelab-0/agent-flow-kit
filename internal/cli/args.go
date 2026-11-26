@@ -1,5 +1,4 @@
-// Package cli reads afk's command line the way the bash engine does, and
-// decides whether the Go front end handles it or hands it to the engine.
+// Package cli reads afk's command line.
 package cli
 
 import (
@@ -16,14 +15,7 @@ type Args struct {
 	Yolo   bool
 	Yes    bool
 	Help   bool
-	// Engine is set when the engine must handle the call itself: -p,
-	// --explain/--dry-run, --launch-plan, --json, or an option this front end
-	// does not know (the engine prints the same error it always has).
-	Engine bool
-	// Forward is the command line for the engine, without --yes.
-	Forward []string
-
-	// The non-interactive modes, for the Go engine.
+	// The non-interactive modes.
 	Print      bool   // -p, --print
 	Explain    bool   // --explain, --dry-run
 	JSON       bool   // --json
@@ -36,7 +28,7 @@ type Args struct {
 	unknown bool // an unknown option came before any -h
 }
 
-// Options that take a value, as in lib/afk-cli.sh.
+// Options that take a value.
 var valued = map[string]bool{
 	"--prompt": true, "--task": true, "--prefer": true, "--harness": true, "--model": true,
 	"--effort": true, "--repo": true, "--pass": true, "--route": true, "--mode": true,
@@ -66,9 +58,9 @@ func Parse(argv []string) Args {
 		case "--pass":
 			a.Pass = append(a.Pass, v)
 		case "--route":
-			a.Engine, a.Route = true, v
+			a.Route = v
 		case "--mode":
-			a.Engine, a.Mode = true, v
+			a.Mode = v
 		}
 	}
 	for i := 0; i < len(argv); i++ {
@@ -76,20 +68,18 @@ func Parse(argv []string) Args {
 		switch {
 		case x == "--":
 			words = append(words, argv[i+1:]...)
-			a.Forward = append(a.Forward, argv[i:]...)
 			i = len(argv)
 			continue
 		case x == "-y" || x == "--yes":
 			a.Yes = true
 			continue
 		case x == "-h" || x == "--help":
-			// The engine reads options in order: an unknown one before -h
-			// is reported (exit 2) instead of the help.
+			// Options are read in order: an unknown one before -h is
+			// reported (exit 2) instead of the help.
 			if !a.unknown {
 				a.Help = true
 			}
 		case x == "-p" || x == "--print" || x == "--explain" || x == "--dry-run" || x == "--launch-plan" || x == "--json":
-			a.Engine = true
 			switch x {
 			case "-p", "--print":
 				a.Print = true
@@ -108,17 +98,12 @@ func Parse(argv []string) Args {
 				v = argv[i+1]
 			}
 			set(x, v)
-			a.Forward = append(a.Forward, x)
-			if i+1 < len(argv) {
-				a.Forward = append(a.Forward, argv[i+1])
-			}
 			i++
 			continue
 		case strings.HasPrefix(x, "--") && strings.Contains(x, "=") && valued[x[:strings.Index(x, "=")]]:
 			k := x[:strings.Index(x, "=")]
 			set(k, x[strings.Index(x, "=")+1:])
 		case strings.HasPrefix(x, "-"):
-			a.Engine = true
 			if !a.Help {
 				a.unknown = true
 				if a.Unknown == "" {
@@ -128,7 +113,6 @@ func Parse(argv []string) Args {
 		default:
 			words = append(words, x)
 		}
-		a.Forward = append(a.Forward, x)
 	}
 	a.Prompt = strings.Join(words, " ")
 	if promptOpt != "" {

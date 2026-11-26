@@ -93,7 +93,6 @@ AFK sends your gateway key to the gateway when it launches a gateway route, so t
 | Variable | Meaning |
 |---|---|
 | `AFK_STATE_DIR` | where the separate Claude config for gateway routes lives (default `~/.local/state/agent-flow-kit`) |
-| `AFK_BACKEND=bash` | send every call to the bash engine, as before the Go engine; it is found through `AFK_ENGINE`, next to the `afk` binary, or on `PATH` |
 | `NO_COLOR`, `TERM=dumb`, `AFK_MOTION=off` | no animation (and no colour for `NO_COLOR`) |
 | `XDG_CONFIG_HOME` | the base for `afk/state/runs` |
 

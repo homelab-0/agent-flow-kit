@@ -1,1 +1,0 @@
-{"timestamp":"2026-09-21T09:05:00.000Z","sessionId":"sess-sub-1","isSidechain":true,"agentId":"agent-x","requestId":"req-d1","message":{"id":"msg-d1","model":"claude-haiku-5","usage":{"input_tokens":500,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":20}}}

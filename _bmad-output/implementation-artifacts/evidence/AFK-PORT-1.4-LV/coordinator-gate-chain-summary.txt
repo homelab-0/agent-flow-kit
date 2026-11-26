@@ -1,9 +1,0 @@
-GATES: starting in /home/devbox/orca/workspaces/agent-flow-kit/afk-port-1.4-lv @ 1a388bf
-GATE: bash tests/lifecycle-readiness-tests.sh rc=0 273s 279 passed, 0 failed
-GATE: bash tests/lifecycle-dispatch-tests.sh rc=0 187s 250 passed, 0 failed
-GATE: bash tests/lifecycle-tests.sh rc=0 458s 476 passed, 0 failed
-GATE: git diff --check rc=0 0s 
-GATE: bash tests/run-tests.sh rc=1 2502s 322 passed, 1 failed
-GATES: chain complete
-
-[exited with code 0]

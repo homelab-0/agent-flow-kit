@@ -1,4 +1,0 @@
-plan_identity: sha256:74987c656cf8106eed576abd1e4e71724c525e3f85b2651eb345ab86fda0e62a
-approval_actor: coordinator (delegated by Josh M2 go, 2026-08-27)
-plan_disposition: MUTATION_REQUIRED
-plan_review: all mutating actions are CLAIM operations; MACHINE_LOCAL content is claimed in place; USER_OWNED content has action NONE; no preserved path is a content-write target

@@ -1,5 +1,0 @@
-release rc=1  guard raced: YES
-lock path is a live contender's dir: yes
-stale directories NESTED inside the live lock: 1
-==> F6-R8 REPRODUCED: /tmp/tmp.9U93QGIzgx/state/lock/lock.released.inc-3706170-54ed7c68ea2f436fb9442908f7e3f9f4
-    contents: lock.released.inc-3706170-54ed7c68ea2f436fb9442908f7e3f9f4 marker 
