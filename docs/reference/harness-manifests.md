@@ -34,6 +34,8 @@ auto = ["--permission-mode", "auto"]
 | `auth.errors` | words in a failed run's output that mean the login is gone |
 | `modes.verified` | the CLI version the mode flags were checked against |
 | `modes.read-only`, `modes.ask`, `modes.edits`, `modes.auto`, `modes.yolo` | the flags for each mode; leave a mode out when the CLI can't do it, and AFK runs the next stricter one |
+| `modes.bypass_flags` | other spellings of the yolo flag (Codex `--yolo`); given through `--pass`, they make the run yolo |
+| `modes.dir_flags` | flags that move the CLI to another directory (Codex `--cd`, `-C`); yolo refuses them in `--pass` |
 | `modes.print.*` | the same table for one-shot (`-p`) runs, when it differs; an override changes only the entries it sets |
 
 AFK only ever runs the `auth` commands and reads their exit code or output words. It never reads the credentials a CLI writes.

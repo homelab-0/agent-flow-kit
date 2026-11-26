@@ -87,6 +87,9 @@ func (c *Core) LaunchPlan(_ context.Context, r engine.Route, mode string, perm s
 		if err := c.checkYolo(); err != nil {
 			return nil, err
 		}
+		if d := man.DirIn(pass); d != "" {
+			return nil, &UsageError{"yolo checks trust for the directory afk runs in, so it can't take " + h + "'s " + d + " in --pass; run afk from that directory instead"}
+		}
 	}
 	modeFlags, ran, modeNote, ok := man.ModeFlags(perm, mode == "print")
 	if !ok {

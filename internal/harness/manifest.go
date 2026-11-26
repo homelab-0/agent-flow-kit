@@ -61,6 +61,12 @@ type Modes struct {
 	Auto     *[]string  `toml:"auto"`
 	Yolo     *[]string  `toml:"yolo"`
 	Print    *ModeFlags `toml:"print"`
+	// BypassFlags are other spellings of the yolo flag (aliases): given
+	// through --pass, they make the run yolo too.
+	BypassFlags []string `toml:"bypass_flags"`
+	// DirFlags are the CLI's flags that choose another working directory;
+	// yolo refuses them in --pass, because trust is checked where afk runs.
+	DirFlags []string `toml:"dir_flags"`
 }
 
 // ModeFlags is a mode table without the version.
@@ -121,29 +127,78 @@ func (m Manifest) HasModes() bool {
 	return false
 }
 
-// YoloIn reports whether pass holds the CLI's own yolo flags (from either
-// table), as a run of arguments or as --flag=value.
-func (m Manifest) YoloIn(pass []string) bool {
+// yoloRuns are the argument runs that turn on the CLI's yolo: its yolo
+// flags from either table, and each bypass alias.
+func (m Manifest) yoloRuns() [][]string {
+	var runs [][]string
 	for _, print := range []bool{false, true} {
-		f, ok := m.Modes.table(print).get("yolo")
-		if !ok || len(*f) == 0 {
-			continue
+		if f, ok := m.Modes.table(print).get("yolo"); ok && len(*f) > 0 {
+			runs = append(runs, *f)
 		}
-		run := *f
-		for i := 0; i+len(run) <= len(pass); i++ {
-			match := true
-			for j, x := range run {
-				if pass[i+j] != x && !(len(run) == 1 && strings.HasPrefix(pass[i+j], x+"=")) {
-					match = false
-					break
-				}
-			}
-			if match {
+	}
+	for _, b := range m.Modes.BypassFlags {
+		runs = append(runs, []string{b})
+	}
+	return runs
+}
+
+// matchAt reports how many arguments of pass, from i, are the run (as
+// given, or as --flag=value for a one-flag run), or 0.
+func matchAt(pass []string, i int, run []string) int {
+	if i+len(run) > len(pass) {
+		return 0
+	}
+	for j, x := range run {
+		if pass[i+j] != x && !(len(run) == 1 && strings.HasPrefix(pass[i+j], x+"=")) {
+			return 0
+		}
+	}
+	return len(run)
+}
+
+// YoloIn reports whether pass holds the CLI's own yolo flags.
+func (m Manifest) YoloIn(pass []string) bool {
+	for i := range pass {
+		for _, run := range m.yoloRuns() {
+			if matchAt(pass, i, run) > 0 {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// StripYolo is pass without the CLI's own yolo flags.
+func (m Manifest) StripYolo(pass []string) []string {
+	var out []string
+	for i := 0; i < len(pass); {
+		n := 0
+		for _, run := range m.yoloRuns() {
+			if n = matchAt(pass, i, run); n > 0 {
+				break
+			}
+		}
+		if n > 0 {
+			i += n
+			continue
+		}
+		out = append(out, pass[i])
+		i++
+	}
+	return out
+}
+
+// DirIn is the first flag in pass that chooses another working directory,
+// or "".
+func (m Manifest) DirIn(pass []string) string {
+	for _, x := range pass {
+		for _, d := range m.Modes.DirFlags {
+			if x == d || strings.HasPrefix(x, d+"=") || (len(d) == 2 && d[0] == '-' && d[1] != '-' && strings.HasPrefix(x, d) && len(x) > 2) {
+				return d
+			}
+		}
+	}
+	return ""
 }
 
 // ModeFlags works out the flags for a requested mode. When the CLI can't
@@ -264,6 +319,8 @@ func merge(base, over Manifest) Manifest {
 	list(&base.Auth.Errors, over.Auth.Errors)
 	o := over.Modes
 	set(&base.Modes.Verified, o.Verified)
+	list(&base.Modes.BypassFlags, o.BypassFlags)
+	list(&base.Modes.DirFlags, o.DirFlags)
 	for _, p := range []struct{ dst, src **[]string }{
 		{&base.Modes.ReadOnly, &o.ReadOnly}, {&base.Modes.Ask, &o.Ask}, {&base.Modes.Edits, &o.Edits},
 		{&base.Modes.Auto, &o.Auto}, {&base.Modes.Yolo, &o.Yolo},

@@ -162,8 +162,8 @@ func TestPrintOverrideMerges(t *testing.T) {
 	if f, _, _, _ := m.ModeFlags("auto", true); !reflect.DeepEqual(f, []string{"--sandbox", "read-only"}) {
 		t.Errorf("auto: %q", f)
 	}
-	if f, ran, _, ok := m.ModeFlags("ask", true); !ok || ran != "ask" || len(f) != 0 {
-		t.Errorf("ask lost: %q %s %v", f, ran, ok)
+	if f, ran, _, ok := m.ModeFlags("read-only", true); !ok || ran != "read-only" || !reflect.DeepEqual(f, []string{"--sandbox", "read-only"}) {
+		t.Errorf("read-only lost: %q %s %v", f, ran, ok)
 	}
 	if f, _, _, _ := m.ModeFlags("yolo", true); !reflect.DeepEqual(f, []string{"--dangerously-bypass-approvals-and-sandbox"}) {
 		t.Errorf("yolo lost: %q", f)
@@ -184,10 +184,30 @@ func TestYoloIn(t *testing.T) {
 		{claude, []string{"--verbose"}, false},
 		{grok, []string{"--always-approve"}, true},
 		{codex, []string{"--dangerously-bypass-approvals-and-sandbox"}, true},
+		{codex, []string{"--yolo"}, true},
 		{pi, []string{"--tools", "x"}, false},
 	} {
 		if got := c.m.YoloIn(c.pass); got != c.want {
 			t.Errorf("%s %q: %v", c.m.Name, c.pass, got)
 		}
+	}
+}
+
+func TestStripYoloAndDirIn(t *testing.T) {
+	codex, _ := ManifestFor("codex")
+	if got := codex.StripYolo([]string{"--yolo", "-c", "x=1", "--dangerously-bypass-approvals-and-sandbox"}); !reflect.DeepEqual(got, []string{"-c", "x=1"}) {
+		t.Errorf("strip: %q", got)
+	}
+	for _, pass := range [][]string{{"--cd", "/x"}, {"--cd=/x"}, {"-C", "/x"}, {"-C/x"}} {
+		if codex.DirIn(pass) == "" {
+			t.Errorf("%q: no directory flag found", pass)
+		}
+	}
+	if d := codex.DirIn([]string{"-c", "x=1"}); d != "" {
+		t.Errorf("-c taken for -C: %q", d)
+	}
+	// codex exec can't ask: one-shot ask runs read-only, and says so.
+	if f, ran, note, _ := codex.ModeFlags("ask", true); ran != "read-only" || !reflect.DeepEqual(f, []string{"--sandbox", "read-only"}) || note == "" {
+		t.Errorf("codex exec ask: %q %s %q", f, ran, note)
 	}
 }

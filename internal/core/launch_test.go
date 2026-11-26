@@ -314,3 +314,21 @@ func TestPassedBypassIsYolo(t *testing.T) {
 		t.Fatalf("trusted: %+v %v", p, err)
 	}
 }
+
+// Codex's --yolo alias in --pass is yolo too, and yolo refuses --cd.
+func TestCodexPassAliasAndDir(t *testing.T) {
+	c, _ := testCore(t)
+	r := engine.Route{Harness: "codex", Model: "gpt", LaunchClass: "codex", CostClass: "subscription", EntitlementPool: "openai-plus"}
+	_, err := c.LaunchPlan(context.Background(), r, "interactive", "ask", []string{"--yolo"}, "x")
+	var ue *UsageError
+	if !errors.As(err, &ue) {
+		t.Fatalf("--yolo alias untrusted: %v", err)
+	}
+	trustRepo(t, c)
+	if _, err := c.LaunchPlan(context.Background(), r, "interactive", "yolo", []string{"--cd", "/elsewhere"}, "x"); !errors.As(err, &ue) || !strings.Contains(err.Error(), "--cd") {
+		t.Fatalf("--cd in yolo: %v", err)
+	}
+	if _, err := c.LaunchPlan(context.Background(), r, "interactive", "ask", []string{"--cd", "/elsewhere"}, "x"); err != nil {
+		t.Fatalf("--cd without yolo: %v", err)
+	}
+}
