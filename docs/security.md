@@ -4,7 +4,7 @@ AFK sits between you and agent CLIs that hold your plan logins, so it is built t
 
 ## Your CLIs, your choice
 
-AFK doesn't decide which CLI you may use with which login. If you have signed OpenCode or Pi in to a Claude, ChatGPT or other plan, AFK can route to it; whether that suits the provider's terms is between you and the provider. AFK only offers a plan model on another vendor's CLI when that CLI is actually signed in to the plan, because otherwise it couldn't run.
+AFK doesn't decide which CLI you may use with which login; whether a setup suits a provider's terms is between you and the provider. AFK no longer detects which vendor plan OpenCode or Pi is signed in to, because that is written only inside their credential files, which AFK never opens. So they are not mapped to vendor plans automatically: OpenCode is routed on its own free models, and Pi isn't matched to a plan pool.
 
 ## Credential safety
 

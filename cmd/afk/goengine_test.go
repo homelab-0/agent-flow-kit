@@ -35,6 +35,34 @@ func TestExplainTextMatchesTheBashLayout(t *testing.T) {
 	}
 }
 
+func TestExplainTextShowsThePoolBasis(t *testing.T) {
+	ex := &engine.Explain{
+		Task: "coding", Prefer: "balanced",
+		Choice: engine.Route{Harness: "claude", Model: "sonnet", EntitlementPool: "anthropic-max",
+			PoolHeadroomPct: f(98), PoolState: "available", PoolQuotaSource: "local_5h_activity"},
+		ByHarness: []engine.Route{
+			{Harness: "claude", Model: "sonnet", EffectiveScore: f(98), EntitlementPool: "anthropic-max",
+				PoolHeadroomPct: f(98), PoolState: "available", PoolQuotaSource: "local_5h_activity", CostClass: "subscription"},
+			{Harness: "codex", Model: "gpt-6.1-sol", EffectiveScore: f(95), EntitlementPool: "openai-plus",
+				PoolHeadroomPct: f(76), PoolState: "available", PoolQuotaSource: "codex_rate_limits", CostClass: "subscription"},
+			{Harness: "opencode", Model: "big-pickle", EffectiveScore: f(80), EntitlementPool: "opencode-free",
+				PoolHeadroomPct: f(100), PoolState: "available", CostClass: "free"},
+		},
+	}
+	got := explainText(ex)
+	for _, want := range []string{
+		"  pool: anthropic-max (98% left, available, estimated from recent sessions)\n",
+		"pool anthropic-max 98% left (available, estimated from recent sessions), subscription\n",
+		"pool openai-plus 76% left (available, measured), subscription\n",
+		// No basis: the format is unchanged.
+		"pool opencode-free 100% left (available), free\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in\n%s", want, got)
+		}
+	}
+}
+
 func TestLaunchPlanCmdRefusals(t *testing.T) {
 	c := &core.Core{Getenv: func(string) string { return "" }}
 	var out, errb bytes.Buffer
