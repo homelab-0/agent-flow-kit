@@ -136,7 +136,7 @@ func (r Route) SameAs(o Route) bool {
 	return r.Harness == o.Harness && r.Model == o.Model && r.LaunchClass == o.LaunchClass
 }
 
-// Explain is the afk-route-explain/1 payload.
+// Explain is the afk-route-explain/2 payload (or /1 from the bash engine).
 type Explain struct {
 	Schema      string  `json:"schema"`
 	Task        string  `json:"task"`
@@ -149,7 +149,9 @@ type Explain struct {
 // ParseExplain reads and checks an explain payload.
 func ParseExplain(b []byte) (*Explain, error) {
 	if err := checkSchema(b, SchemaExplain); err != nil {
-		return nil, err
+		if checkSchema(b, SchemaExplainV1) != nil {
+			return nil, err
+		}
 	}
 	var e Explain
 	if err := json.Unmarshal(b, &e); err != nil {

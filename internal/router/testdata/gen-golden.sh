@@ -46,11 +46,12 @@ for ((i = 0; i < n; i++)); do
     AFK_SECURITY_MODELS="$(jq -r '(.sec_models // []) | join(",")' <<<"$s")" \
     AFK_LITELLM_BASE_URL="$(jq -r '.gateway_url // ""' <<<"$s")" \
     afk_router_select_candidate "" "$(jq -r .stage <<<"$s")" "$(jq -r .risk <<<"$s")" \
-      "$(jq -r '.builder_family // ""' <<<"$s")" "$(jq -r '.role // ""' <<<"$s")" \
+      "$(jq -r '.builder_family // ""' <<<"$s")" "" \
       "$(jq -r '.round // 1' <<<"$s")" "$(jq -r '(.surfaces // ["code"]) | join(",")' <<<"$s")" \
       "$(jq -r '.diff // 0' <<<"$s")"
   )"
   out="$(jq -c --arg k "$name" --argjson r "$r" '. + {($k): $r}' <<<"$out")"
 done
-jq -S . <<<"$out" > "$here/golden.json"
+# AFK has no roles or memory modes; the bash router still reports them.
+jq -S 'map_values(del(.role, .memory_mode))' <<<"$out" > "$here/golden.json"
 echo "wrote $n decisions to golden.json"

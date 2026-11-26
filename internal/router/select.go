@@ -14,12 +14,10 @@ import (
 type Input struct {
 	Stage         string
 	Risk          string
-	Role          string
 	Round         int
 	Surfaces      []string
 	DiffLines     int
 	BuilderFamily string // the family that built the work, for cross-family review
-	MemoryMode    string // advisory, blind, ...; passed through
 
 	// OnlyHarnesses limits the choice to these CLIs; empty allows all.
 	OnlyHarnesses []string
@@ -58,7 +56,6 @@ type DiscoveredModel struct {
 // Route is the router's decision.
 type Route struct {
 	Stage             string   `json:"stage"`
-	Role              *string  `json:"role"`
 	Round             int      `json:"round"`
 	TaskClass         string   `json:"task_class"`
 	Risk              string   `json:"risk"`
@@ -90,7 +87,6 @@ type Route struct {
 	BenchmarkSyncedAt *string  `json:"benchmark_synced_at"`
 	EffectiveScore    float64  `json:"effective_score"`
 	CrossFamilyReview *bool    `json:"cross_family_review,omitempty"`
-	MemoryMode        string   `json:"memory_mode"`
 	RouterSource      string   `json:"router_source"`
 	LitellmBaseURL    *string  `json:"litellm_base_url"`
 	AuthAlerts        []any    `json:"auth_alerts"`
@@ -244,14 +240,12 @@ type effortChoice struct {
 }
 
 func (in Input) resolveEffort(tc, candDefault string, supported []string) effortChoice {
-	st, rk, rl, dl := in.Stage, in.Risk, in.Role, in.DiffLines
+	st, rk, dl := in.Stage, in.Risk, in.DiffLines
 	var base int
 	switch {
 	case tc == "frontier_synthesis" || rk == "critical":
 		base = 4
 	case tc == "security" || tc == "architecture" || tc == "coding_complex" || rk == "high":
-		base = 3
-	case (rl == "pm" || rl == "architect" || rl == "security") && (st != "intake" || rk != "low"):
 		base = 3
 	case strings.HasPrefix(st, "review") && rk == "medium":
 		base = 3
@@ -289,8 +283,6 @@ func (in Input) resolveEffort(tc, candDefault string, supported []string) effort
 		reason = "critical_frontier_synthesis"
 	case tc == "security":
 		reason = "security_deep_audit"
-	case (rl == "pm" || rl == "architect") && tc == "architecture":
-		reason = "bmad_" + rl + "_synthesis_floor"
 	}
 	return effortChoice{
 		effort: clampEffort(target, supported), base: clampEffort(base, supported),
@@ -364,13 +356,6 @@ func (r *Router) Select(in Input) Route {
 	if in.Round < 1 {
 		in.Round = 1
 	}
-	if in.MemoryMode == "" {
-		// Reviews don't see the builder's memory by default.
-		in.MemoryMode = "advisory"
-		if strings.HasPrefix(in.Stage, "review") || in.Stage == "approve" {
-			in.MemoryMode = "blind"
-		}
-	}
 	if in.CarrySec <= 0 {
 		in.CarrySec = 1209600
 	}
@@ -385,7 +370,7 @@ func (r *Router) Select(in Input) Route {
 	if alerts == nil {
 		alerts = []any{}
 	}
-	tc := TaskClass(in.Stage, in.Risk, in.Role, in.Surfaces, in.Round, in.DiffLines)
+	tc := TaskClass(in.Stage, in.Risk, in.Surfaces, in.Round, in.DiffLines)
 	isReview := tc == "coding_review" || strings.HasPrefix(in.Stage, "review") || in.Stage == "approve"
 	reviewish := tc == "coding_review" || strings.HasPrefix(in.Stage, "review")
 
@@ -542,9 +527,6 @@ func (r *Router) Select(in Input) Route {
 				adj -= 15
 			}
 		}
-		if (in.Role == "pm" || in.Role == "architect") && (tc == "architecture" || tc == "frontier_synthesis") && (c.Tier == "standard" || isFree) {
-			adj -= 8
-		}
 		cross := reviewish && in.BuilderFamily != "" && c.ModelFamily != in.BuilderFamily
 		if cross {
 			adj += 6
@@ -587,7 +569,7 @@ func (r *Router) Select(in Input) Route {
 			spec = &s
 		}
 		route := Route{
-			Stage: in.Stage, Role: strPtr(in.Role), Round: in.Round, TaskClass: tc, Risk: in.Risk,
+			Stage: in.Stage, Round: in.Round, TaskClass: tc, Risk: in.Risk,
 			CandidateID: c.ID, Harness: c.Harness, LaunchClass: c.LaunchClass, Model: c.Model,
 			CanonicalModel: c.CanonicalModel, ModelFamily: c.ModelFamily, SpecialistDomain: spec,
 			CostClass: cclass, IsFree: isFree || cclass == "free",
@@ -598,7 +580,7 @@ func (r *Router) Select(in Input) Route {
 			BenchmarkName: bname, BenchmarkScore: baseScore, BenchmarkBasis: basis,
 			BenchmarkLive:     basis == "measured" && bm.Live,
 			BenchmarkSyncedAt: bm.SyncedAt, EffectiveScore: eff, CrossFamilyReview: &cross,
-			MemoryMode: in.MemoryMode, RouterSource: source, LitellmBaseURL: gwURL, AuthAlerts: alerts,
+			RouterSource: source, LitellmBaseURL: gwURL, AuthAlerts: alerts,
 		}
 		route.Reason = reasonText(route, c, pool, ef, tc, cross, in.BuilderFamily, scoreText)
 		routes = append(routes, route)
@@ -636,13 +618,13 @@ func (r *Router) fallback(in Input, tc string, considered int, alerts []any, pro
 		gw = &u
 	}
 	return Route{
-		Stage: in.Stage, Role: strPtr(in.Role), Round: in.Round, TaskClass: tc, Risk: in.Risk,
+		Stage: in.Stage, Round: in.Round, TaskClass: tc, Risk: in.Risk,
 		Harness: "claude", LaunchClass: "claude-native", Model: "sonnet",
 		CanonicalModel: "anthropic/claude-sonnet-5-5", ModelFamily: "anthropic",
 		CostClass: "subscription", Effort: "medium", BaseEffort: "medium", EffortReason: "fallback_default",
 		SupportedEfforts: defaultEffort, WindowTokens: f64(1000000), EntitlementPool: "anthropic-max",
 		PoolHeadroomPct: f64(100), BenchmarkName: "Fallback Default", BenchmarkScore: 85,
-		BenchmarkBasis: "estimate", EffectiveScore: 85, MemoryMode: in.MemoryMode,
+		BenchmarkBasis: "estimate", EffectiveScore: 85,
 		RouterSource: "fallback-default", NoEligibleCandidate: true, CandidatesConsidered: &considered,
 		InstalledHarnesses: &installed, PoolStates: states, LitellmBaseURL: gw, AuthAlerts: alerts,
 		Reason: "Fallback route (no eligible candidate matched)",

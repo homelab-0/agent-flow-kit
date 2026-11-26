@@ -20,7 +20,11 @@ import (
 
 // Schemas this front end understands.
 const (
-	SchemaExplain    = "afk-route-explain/1"
+	SchemaExplain = "afk-route-explain/2"
+	// SchemaExplainV1 is what the bash engine still writes: the same
+	// payload with the routes' role and memory_mode fields, which the
+	// front end never reads.
+	SchemaExplainV1  = "afk-route-explain/1"
 	SchemaLaunchPlan = "afk-launch-plan/1"
 	SchemaPools      = "afk-router-pools/3"
 )

@@ -705,13 +705,6 @@
   "risk": "low"
  },
  {
-  "name": "pm-architecture",
-  "probe": "healthy",
-  "stage": "architecture",
-  "risk": "medium",
-  "role": "pm"
- },
- {
   "name": "spec-low",
   "probe": "healthy",
   "stage": "spec",

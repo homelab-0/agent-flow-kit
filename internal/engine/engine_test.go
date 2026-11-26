@@ -13,7 +13,7 @@ import (
 )
 
 func TestSchemaRefused(t *testing.T) {
-	for _, b := range []string{`{"schema":"afk-route-explain/2","choice":{"harness":"claude"}}`, `{"choice":{"harness":"claude"}}`} {
+	for _, b := range []string{`{"schema":"afk-route-explain/3","choice":{"harness":"claude"}}`, `{"choice":{"harness":"claude"}}`} {
 		_, err := ParseExplain([]byte(b))
 		var se *SchemaError
 		if !errors.As(err, &se) {
@@ -250,5 +250,16 @@ func TestCallTimeoutCeiling(t *testing.T) {
 	var te *TimeoutError
 	if !errors.As(err, &te) || time.Since(start) > 5*time.Second {
 		t.Fatalf("a call with no deadline still stops: %v after %v", err, time.Since(start))
+	}
+}
+
+func TestParseExplainAcceptsBothVersions(t *testing.T) {
+	for _, s := range []string{SchemaExplain, SchemaExplainV1} {
+		if _, err := ParseExplain([]byte(`{"schema":"` + s + `","choice":{"harness":"claude"}}`)); err != nil {
+			t.Errorf("%s: %v", s, err)
+		}
+	}
+	if _, err := ParseExplain([]byte(`{"schema":"afk-route-explain/9","choice":{"harness":"claude"}}`)); err == nil {
+		t.Error("an unknown version was accepted")
 	}
 }

@@ -225,8 +225,11 @@ AFK is becoming a standalone tool. Work is tracked in pull requests against `mas
 - [ ] MCP servers and skills: define them once in AFK and sync them into every installed CLI's own config
 - [ ] Packaging: GoReleaser builds, npm with native binaries, Homebrew tap, install script, `afk update`
 - [ ] Routing for every discovered CLI
+- [ ] API keys and `afk serve`: router keys that let any LLM gateway route through AFK, and keys scoped to one harness or provider
+- [ ] Work sources: issue trackers and webhooks (GitHub Issues, Linear, Jira and others) that hand tasks to AFK through one runs API
+- [ ] Telemetry: OpenTelemetry traces of routing and runs for Langfuse, LangSmith or any OTLP collector
 - [ ] Workflows (`afk flow`): multi-stage runs with gates and reviews, defined in config
-- [ ] Remove the legacy BMAD/Orca lifecycle kit
+- [ ] Remove the remaining bash code
 
 ## Project layout
 
@@ -240,11 +243,9 @@ internal/engine/    route and plan types; client for the bash engine (going away
 internal/launch/    foreground launch of the chosen CLI
 internal/runrec/    run records
 internal/gitstat/   files changed and commits for receipts
-bin/, lib/          the bash engine and the legacy lifecycle kit
+bin/, lib/          the bash engine (being retired)
 docs/               reference docs
 ```
-
-The previous BMAD/Orca lifecycle kit (`adopt`, `update`, the factory and Paperclip integration) is still in the tree while it is retired. Its documentation is in [docs/LEGACY-README.md](docs/LEGACY-README.md), [docs/FACTORY.md](docs/FACTORY.md) and [docs/LIFECYCLE-CONTRACT.md](docs/LIFECYCLE-CONTRACT.md).
 
 ## Development
 
@@ -254,7 +255,7 @@ go test ./...
 CGO_ENABLED=0 go build -o /tmp/afk ./cmd/afk
 ```
 
-Tests run offline and never start a real agent CLI. The legacy shell suite is `tests/run-tests.sh`.
+Tests run offline and never start a real agent CLI.
 
 ## Contributing
 

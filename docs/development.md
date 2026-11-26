@@ -13,7 +13,7 @@ internal/launch/    starting a plan as a foreground child
 internal/runrec/    run records
 internal/gitstat/   files changed and commits for the receipt
 internal/engine/    route and plan types, and the client for the bash engine
-bin/, lib/          the bash engine and the legacy lifecycle kit
+bin/, lib/          the bash engine (being retired)
 ```
 
 ## Build and test
@@ -38,7 +38,7 @@ While the bash engine still exists, the Go engine is checked against it:
 
 The Go engine fixes some things the bash engine gets wrong, so on these points the two disagree on purpose:
 
-- Codex's sessions are read from `$CODEX_HOME/sessions` when set (and `AFK_CODEX_SESSIONS_DIR` first), for both rate limits and activity. The Orca `codex-accounts` directories are not read.
+- Codex's sessions are read from `$CODEX_HOME/sessions` when set (and `AFK_CODEX_SESSIONS_DIR` first), for both rate limits and activity.
 - Codex signed in with an API key is metered usage: its sessions don't count against the ChatGPT plan pool.
 - A project's `.afk/config.json` can set the gateway only when the project is listed in `trusted_repos`.
 - A restricted model (Mythos, Daybreak Blue) that one CLI lists unlocks it for that CLI's account only.
