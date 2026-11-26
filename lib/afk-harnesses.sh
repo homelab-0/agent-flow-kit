@@ -1226,8 +1226,10 @@ afk_harness_sync_models() {
        elif $zero_cost and $prov == "opencode" then "free"
        elif $zero_cost then "subscription"
        else "api-metered" end) as $cclass |
+      # Without a binding, a subscription model belongs to its vendor plan, not
+      # to opencode-free.
       (if $cclass == "free" then "opencode-free"
-       elif $cclass == "subscription" then $b.entitlement_pool
+       elif $cclass == "subscription" then (if ($b.entitlement_pool // "") == "" or $b.entitlement_pool == "opencode-free" then ($prov + "-oauth") else $b.entitlement_pool end)
        else "api-metered" end) as $pool |
       infer_family($prov; $m.id) as $fam |
       ($m.capabilities.reasoning // false) as $reas |

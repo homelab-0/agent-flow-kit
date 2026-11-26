@@ -1105,7 +1105,7 @@ afk_router_select_candidate() {
       # in with another vendor plan (opencode with ChatGPT or SuperGrok, for
       # instance). Free, local and gateway pools are not plan logins.
       ({"claude":["anthropic-max"], "codex":["openai-plus"], "grok":["xai-grok"],
-        "agy":["antigravity-pool"], "opencode":["opencode-free"], "pi":[]}) as $own_plans |
+        "agy":["antigravity-pool"], "opencode":[], "pi":[]}) as $own_plans |
       select($cclass != "subscription" or ((($own_plans[$c.harness] // []) | index($c.entitlement_pool)) != null)) |
       # A gateway route is launched only where AFK can keep the vendor login
       # away from the gateway (claude: own config dir and the gateway key).

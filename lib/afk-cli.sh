@@ -222,13 +222,19 @@ afk_cli_launch_plan() {
     pi)
       jq -cn '{schema:"afk-launch-plan/1", ok:false, error:"pi is not launched: it would use another vendor plan login"}'; return 1 ;;
   esac
-  if [[ "$(jq -r '.cost_class // empty' <<<"$route")" == subscription ]]; then
-    local pool; pool="$(jq -r '.entitlement_pool // empty' <<<"$route")"
-    case "$h:$pool" in
-      claude:anthropic-max|codex:openai-plus|grok:xai-grok|agy:antigravity-pool|*:) ;;
-      *) jq -cn --arg h "$h" --arg p "$pool" '{schema:"afk-launch-plan/1", ok:false, error:("the " + $p + " plan login is not used by " + $h)}'; return 1 ;;
-    esac
-  fi
+  # By pool as well as by cost class: a known plan pool runs only on its CLI.
+  local pool cclass
+  pool="$(jq -r '.entitlement_pool // empty' <<<"$route")"
+  cclass="$(jq -r '.cost_class // empty' <<<"$route")"
+  case "$h:$pool" in
+    claude:anthropic-max|codex:openai-plus|grok:xai-grok|agy:antigravity-pool) ;;
+    *:anthropic-max|*:openai-plus|*:xai-grok|*:antigravity-pool|*:*-oauth)
+      jq -cn --arg h "$h" --arg p "$pool" '{schema:"afk-launch-plan/1", ok:false, error:("the " + $p + " plan login is not used by " + $h)}'; return 1 ;;
+    *)
+      if [[ "$cclass" == subscription ]]; then
+        jq -cn --arg h "$h" --arg p "$pool" '{schema:"afk-launch-plan/1", ok:false, error:("no plan login of " + $h + " covers pool " + $p)}'; return 1
+      fi ;;
+  esac
   if ! envj="$(afk_cli_launch_envjson "$route")"; then
     jq -cn --arg w "$envj" '{schema:"afk-launch-plan/1", ok:false, error:$w}'; return 1
   fi

@@ -401,10 +401,13 @@ assert_eq "A gateway model is routed to only while the gateway lists it" \
 PLAN_CAT="$TMPROOT/plan-rule.json"
 jq '(.candidates[] | select(.harness == "opencode") | .benchmarks.coding_standard.score) = 120
     | .candidates += [ (.candidates[] | select(.harness == "codex") | .id = "codex-via-gw" | .launch_class = "codex-gateway" | .entitlement_pool = "litellm-local" | .benchmarks.coding_standard.score = 130) ]' "$OUT" > "$PLAN_CAT"
+# And a zero-cost model from another vendor on opencode, seen without its
+# binding, is that vendor plan: never selected.
+jq '.candidates += [ (.candidates[] | select(.harness == "opencode") | .id = "oc-zero-openai" | .model = "openai/gpt-6.1-sol" | .cost_class = "subscription" | .entitlement_pool = "openai-oauth" | .benchmarks.coding_standard.score = 140) ]' "$PLAN_CAT" > "$PLAN_CAT.x" && mv "$PLAN_CAT.x" "$PLAN_CAT"
 R_PLAN="$(AFK_ROUTER_BENCHMARKS_FILE="$PLAN_CAT" AFK_ROUTER_LITELLM_ASSUME_ONLINE=1 AFK_ROUTER_LITELLM_MODELS='["gpt-6.1-sol","gpt-6-astra","gpt-daybreak-blue-latest"]' AFK_LITELLM_BASE_URL=http://gateway.invalid AFK_ROUTER_HARNESS_LIST="claude,codex,opencode" AFK_ROUTER_SIGNALS_FILE="$TMPROOT/signals-empty.json" \
   afk_router_select_candidate "$ROUTE_REPO" build low "" dev 1 code 40)"
 assert_eq "No route uses a plan login outside its own vendor CLI, and no gateway route goes to a CLI other than claude" \
-  "$(jq -r '"\(.harness)/\(.entitlement_pool)"' <<<"$R_PLAN" | grep -c -E '^opencode/xai-grok|-gateway|^codex/litellm-local')" "0"
+  "$(jq -r '"\(.harness)/\(.entitlement_pool)"' <<<"$R_PLAN" | grep -c -E '^opencode/|-gateway|^codex/litellm-local')" "0"
 
 R_ALL="$(AFK_ROUTER_HARNESS_LIST="claude,codex" AFK_ROUTER_SIGNALS_FILE="$TMPROOT/signals-empty.json" afk_router_select_candidate "$ROUTE_REPO" build low "" dev 1 code 40)"
 R_SAME="$(AFK_ROUTER_ONLY_HARNESSES="$(jq -r .harness <<<"$R_ALL")" AFK_ROUTER_HARNESS_LIST="claude,codex" AFK_ROUTER_SIGNALS_FILE="$TMPROOT/signals-empty.json" afk_router_select_candidate "$ROUTE_REPO" build low "" dev 1 code 40)"

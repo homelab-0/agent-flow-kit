@@ -1374,6 +1374,12 @@ afk_factory_invoke_stage_agent() {
                 printf '{"type":"error","error":{"message":"gateway routes are only launched for claude"}}\n' > "$env_file"
                 exit 1
               fi
+              # opencode runs only its own free models: any other vendor model
+              # would use that vendor plan login outside its own CLI.
+              if [[ "$routed_model" != opencode/* ]]; then
+                printf '{"type":"error","error":{"message":"opencode runs only its own free models"}}\n' > "$env_file"
+                exit 1
+              fi
               "${tmo_cmd[@]}" "$bin_exec" run --pure --auto --format json -m "$routed_model" -- "$(_afk_factory_prompt_text "$compiled_prompt")" < /dev/null > "$env_file" 2>/dev/null
             ) || h_rc=$?
           else
