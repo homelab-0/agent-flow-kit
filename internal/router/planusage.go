@@ -26,6 +26,9 @@ type PlanUsage struct {
 	UsedPct     float64  `json:"used_pct"`
 	FiveHourPct *float64 `json:"five_hour_pct,omitempty"`
 	SevenDayPct *float64 `json:"seven_day_pct,omitempty"`
+	// Window is the window UsedPct and ResetsAt are for: "5h", "weekly",
+	// or "" when Claude didn't name it.
+	Window string `json:"window,omitempty"`
 	// ResetsAt is when the fullest window resets (unix seconds), 0 unknown.
 	ResetsAt int64  `json:"resets_at_epoch,omitempty"`
 	Observed int64  `json:"observed_epoch"`
@@ -95,6 +98,7 @@ func ParseClaudeUsage(stdout []byte, now time.Time) (PlanUsage, bool) {
 		}
 		if !found || pct > used {
 			used = pct
+			u.Window = windowName(name)
 			u.ResetsAt = 0
 			if w.ResetsAt != nil {
 				u.ResetsAt = int64(*w.ResetsAt)
@@ -102,10 +106,11 @@ func ParseClaudeUsage(stdout []byte, now time.Time) (PlanUsage, bool) {
 		}
 		found = true
 	}
-	if last.Info.Status == "rejected" {
+	if last.Info.Status == "rejected" && !rejectionOver(last, now) {
 		// The plan refused the call: the limit it names is full, and the
 		// pool is usable again when that limit resets, whatever the other
-		// windows say.
+		// windows say. A refusal whose limit has reset since says nothing
+		// now, and the other windows stand.
 		used, found = 100, true
 		full := 100.0
 		switch last.Info.RateLimitType {
@@ -114,6 +119,7 @@ func ParseClaudeUsage(stdout []byte, now time.Time) (PlanUsage, bool) {
 		case "seven_day":
 			u.SevenDayPct = &full
 		}
+		u.Window = windowName(last.Info.RateLimitType)
 		if last.Info.ResetsAt != nil {
 			u.ResetsAt = int64(*last.Info.ResetsAt)
 		}
@@ -123,6 +129,29 @@ func ParseClaudeUsage(stdout []byte, now time.Time) (PlanUsage, bool) {
 	}
 	u.UsedPct = math.Round(used)
 	return u, true
+}
+
+// rejectionOver reports a refusal whose limit has reset by now.
+func rejectionOver(ev *claudeRateEvent, now time.Time) bool {
+	if ev.Info.ResetsAt != nil {
+		return int64(*ev.Info.ResetsAt) <= now.Unix()
+	}
+	if w, ok := ev.Info.UnifiedWindows[ev.Info.RateLimitType]; ok && w.ResetsAt != nil {
+		return int64(*w.ResetsAt) <= now.Unix()
+	}
+	return false
+}
+
+// windowName is the short name of a Claude window, "" for one AFK doesn't
+// show by name.
+func windowName(claude string) string {
+	switch claude {
+	case "five_hour":
+		return "5h"
+	case "seven_day":
+		return "weekly"
+	}
+	return ""
 }
 
 // RecordPlanUsage keeps a reading for a pool, under the same kind of lock
@@ -164,7 +193,7 @@ func readPlanUsage(path, pool string, now time.Time) (quota, bool) {
 	if u.ResetsAt != 0 && u.ResetsAt <= now.Unix() {
 		return quota{}, false
 	}
-	q := quota{OK: true, Source: u.Source, UsedPct: u.UsedPct, FiveHourPct: u.FiveHourPct, SevenDayPct: u.SevenDayPct}
+	q := quota{OK: true, Source: u.Source, UsedPct: u.UsedPct, FiveHourPct: u.FiveHourPct, SevenDayPct: u.SevenDayPct, Window: u.Window}
 	if q.Source == "" {
 		q.Source = "plan_usage"
 	}

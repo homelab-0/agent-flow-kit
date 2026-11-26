@@ -120,7 +120,9 @@ func Answer(stdout, answerFile []byte) (string, bool) {
 			}
 			b.WriteString(s)
 		}
-		if b.Len() > 0 {
+		// A result document is the answer even when it is empty; the
+		// rest of the stream is status, not output.
+		if hasResult || b.Len() > 0 {
 			return b.String(), true
 		}
 	}

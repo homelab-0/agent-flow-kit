@@ -34,7 +34,8 @@ The top box is the pick: the CLI, model and effort, the kind of task (and whethe
 
 - **task class**: the benchmark class the task is scored on, with the stage and risk it came from
 - **benchmark**: the score used and its basis: `measured` (read from a public board), `capped`, `estimate` (a catalog figure) or `stale` (a measurement older than two weeks)
-- **pool factor**: how much of the 5-hour window is left, and the pool state
+- **pool factor**: how much of the pool's window (5h or weekly) is left, and the pool state
+- **pool figure**: how that figure was found: `measured (last -p)`, `measured`, `estimated` or `failed run`
 - **cost class**: subscription, free, local or metered
 - **effort**: the effort and, when it was raised, why
 - **effective**: the final score the routes are ranked by

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jlengelbrecht/agent-flow-kit/internal/engine"
+	"github.com/jlengelbrecht/agent-flow-kit/internal/oneshot"
 )
 
 // printCore is a Core whose CLIs are never run: Headless answers for them.
@@ -130,5 +132,40 @@ func TestPrintKeepsClaudesReportedUsage(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join(c.Home, ".config", "afk", "state", "plan-usage.json"))
 	if err != nil || !strings.Contains(string(b), `"anthropic-max"`) || !strings.Contains(string(b), `"used_pct": 17`) {
 		t.Fatalf("plan usage %s %v", b, err)
+	}
+}
+
+func TestCappedStreamKeepsTheResult(t *testing.T) {
+	status := []byte(`{"type":"assistant","message":"` + strings.Repeat("x", 90) + `"}` + "\n")
+	w := capped{max: 1000, keepLines: true}
+	for i := 0; i < 50; i++ {
+		_, _ = w.Write(status)
+	}
+	_, _ = w.Write([]byte(`{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}` + "\n"))
+	// The result arrives split across writes.
+	_, _ = w.Write([]byte(`{"type":"result","is_error":false,`))
+	_, _ = w.Write([]byte(`"result":"done"}` + "\n"))
+	out := w.Output()
+	if got, ok := oneshot.Answer(out, nil); !ok || got != "done" {
+		t.Fatalf("answer %q %v from\n%s", got, ok, out)
+	}
+	if !bytes.Contains(out, []byte("rate_limit_event")) {
+		t.Error("the usage event past the cap was dropped")
+	}
+
+	// Cut short with no result: a failure, never a fragment as the answer.
+	w = capped{max: 1000, keepLines: true}
+	for i := 0; i < 50; i++ {
+		_, _ = w.Write(status)
+	}
+	if got, ok := oneshot.Answer(w.Output(), nil); ok || !strings.Contains(got, "64 MiB") {
+		t.Fatalf("truncated stream: %q %v", got, ok)
+	}
+
+	// Plain text is cut as before.
+	w = capped{max: 10, keepLines: true}
+	_, _ = w.Write([]byte("hello world, this is long"))
+	if string(w.Output()) != "hello worl" {
+		t.Errorf("text: %q", w.Output())
 	}
 }

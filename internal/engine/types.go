@@ -255,11 +255,18 @@ type Pool struct {
 	// The plan's own windows, when the CLI reports them.
 	FiveHourUsedPct *float64 `json:"five_hour_used_pct"`
 	WeeklyUsedPct   *float64 `json:"weekly_used_pct"`
+	// UsageWindow is the window the figure and reset are for, as the
+	// reading named it ("5h", "weekly"); "" when it didn't.
+	UsageWindow string `json:"window"`
 }
 
-// Window names the window a pool's figure is for: "weekly" when the weekly
-// reading is the fuller one (or the only one), else "5h".
+// Window names the window a pool's figure is for: the one the reading
+// named, else "weekly" when the weekly reading is the fuller one (or the
+// only one), else "5h".
 func (p Pool) Window() string {
+	if p.UsageWindow != "" {
+		return p.UsageWindow
+	}
 	// The figure shown is the fuller window's, so name that one.
 	switch {
 	case p.WeeklyUsedPct == nil:

@@ -34,6 +34,16 @@ func TestParseClaudeUsage(t *testing.T) {
 	if u, ok = ParseClaudeUsage(rejNamed, now); !ok || u.UsedPct != 100 || u.ResetsAt != 1795003600 || u.FiveHourPct == nil || *u.FiveHourPct != 100 || *u.SevenDayPct != 60 {
 		t.Fatalf("rejected with a named limit: %+v %v", u, ok)
 	}
+	// A refusal whose limit has since reset: the live weekly reading stands.
+	rejOver := []byte(`{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","resetsAt":1794999000,"unifiedWindows":{"five_hour":{"utilization":1,"resetsAt":1794999000,"status":"rejected"},"seven_day":{"utilization":0.6,"resetsAt":1795813200,"status":"allowed"}}}}`)
+	if u, ok = ParseClaudeUsage(rejOver, now); !ok || u.UsedPct != 60 || u.ResetsAt != 1795813200 || u.Window != "weekly" || u.FiveHourPct != nil {
+		t.Fatalf("refusal already over: %+v %v", u, ok)
+	}
+	// The window chosen is carried, even when both round to the same figure.
+	same := []byte(`{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"seven_day","resetsAt":1795813200,"unifiedWindows":{"five_hour":{"utilization":0.999,"resetsAt":1795003600}}}}`)
+	if u, ok = ParseClaudeUsage(same, now); !ok || u.Window != "weekly" || u.ResetsAt != 1795813200 || *u.FiveHourPct != 100 {
+		t.Fatalf("named window: %+v %v", u, ok)
+	}
 	if _, ok := ParseClaudeUsage([]byte(`{"type":"result","result":"ok"}`), now); ok {
 		t.Error("no event, yet a reading")
 	}

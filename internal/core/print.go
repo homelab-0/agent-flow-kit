@@ -167,12 +167,13 @@ func execHeadless(ctx context.Context, argv, env []string, dir string) ([]byte, 
 	cmd.Env, cmd.Dir = env, dir
 	var stdout, stderr capped
 	stdout.max, stderr.max = maxStdout, maxStderr
+	stdout.keepLines = true
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
 	cmd.WaitDelay = 5 * time.Second
 	err := cmd.Run()
 	if err == nil {
-		return stdout.Bytes(), stderr.Bytes(), 0
+		return stdout.Output(), stderr.Bytes(), 0
 	}
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {
@@ -183,28 +184,117 @@ func execHeadless(ctx context.Context, argv, env []string, dir string) ([]byte, 
 		if code <= 0 {
 			code = 1
 		}
-		return stdout.Bytes(), stderr.Bytes(), code
+		return stdout.Output(), stderr.Bytes(), code
 	}
 	// It never started.
 	stderr.Write([]byte(err.Error()))
-	return stdout.Bytes(), stderr.Bytes(), 127
+	return stdout.Output(), stderr.Bytes(), 127
 }
 
 // capped keeps the first max bytes written to it and drops the rest.
+//
+// For stdout (keepLines) it also keeps, past the cap, the last result
+// document and the last rate_limit_event of a JSON stream (claude's
+// stream-json), so a long run's status events can't push its answer out.
+// A JSON stream cut short with no result kept ends in an error document,
+// so the run is not taken as having answered with a fragment.
 type capped struct {
 	bytes.Buffer
-	max int
+	max       int
+	keepLines bool
+	dropped   bool
+	line      []byte // the line being written, once past the cap
+	skipping  bool   // the current line is too long to keep
+	result    []byte
+	usage     []byte
 }
 
 func (w *capped) Write(p []byte) (int, error) {
-	if room := w.max - w.Len(); room > 0 {
-		if len(p) > room {
-			w.Buffer.Write(p[:room])
-		} else {
+	n := len(p)
+	if !w.dropped {
+		room := w.max - w.Len()
+		if len(p) <= room {
 			w.Buffer.Write(p)
+			return n, nil
+		}
+		w.Buffer.Write(p[:max(room, 0)])
+		p = p[max(room, 0):]
+		w.dropped = true
+		if !w.keepLines {
+			return n, nil
+		}
+		// Finish the line the cap cut, without keeping it.
+		w.skipping = true
+	}
+	if !w.keepLines {
+		return n, nil
+	}
+	for len(p) > 0 {
+		i := bytes.IndexByte(p, '\n')
+		chunk := p
+		if i >= 0 {
+			chunk = p[:i]
+		}
+		if !w.skipping {
+			if len(w.line)+len(chunk) > keptLineMax {
+				w.line, w.skipping = nil, true
+			} else {
+				w.line = append(w.line, chunk...)
+			}
+		}
+		if i < 0 {
+			break
+		}
+		if !w.skipping {
+			w.keep(w.line)
+		}
+		w.line, w.skipping = nil, false
+		p = p[i+1:]
+	}
+	return n, nil
+}
+
+// keptLineMax is the longest line kept past the cap.
+const keptLineMax = 4 << 20
+
+func (w *capped) keep(line []byte) {
+	switch {
+	case bytes.Contains(line, []byte(`"type":"result"`)):
+		w.result = append([]byte(nil), line...)
+	case bytes.Contains(line, []byte(`"rate_limit_event"`)):
+		w.usage = append([]byte(nil), line...)
+	}
+}
+
+// Output is what was kept: everything, or the start up to its last whole
+// line plus the documents kept past the cap.
+func (w *capped) Output() []byte {
+	if !w.dropped || !w.keepLines {
+		return w.Bytes()
+	}
+	if len(w.line) > 0 && !w.skipping {
+		w.keep(w.line) // a last line with no newline
+		w.line = nil
+	}
+	b := w.Bytes()
+	head := b
+	if i := bytes.LastIndexByte(b, '\n'); i >= 0 {
+		head = b[:i+1]
+	}
+	stream := bytes.HasPrefix(bytes.TrimSpace(b), []byte("{"))
+	if !stream {
+		return b
+	}
+	out := append([]byte(nil), head...)
+	for _, d := range [][]byte{w.usage, w.result} {
+		if len(d) > 0 {
+			out = append(append(out, d...), '\n')
 		}
 	}
-	return len(p), nil
+	if len(w.result) == 0 {
+		out = append(out, []byte(`{"type":"result","is_error":true,"result":"afk: the CLI's output passed 64 MiB before its answer, which was lost"}`+"\n")...)
+	}
+	return out
 }
 
 // notePlanUsage keeps the plan usage a run's own output reported, so the

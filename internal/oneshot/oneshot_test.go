@@ -372,6 +372,11 @@ func TestAnswerFromAStreamIsTheResultOnly(t *testing.T) {
 	if !ok || got != "ok" {
 		t.Errorf("got %q %v, want the result document's text only", got, ok)
 	}
+	// An empty result is still the answer, not the whole stream.
+	stream := []byte(`{"type":"system","subtype":"init"}` + "\n" + `{"type":"result","is_error":false,"result":""}` + "\n")
+	if got, ok := Answer(stream, nil); !ok || got != "" {
+		t.Errorf("empty result: got %q %v", got, ok)
+	}
 }
 
 func TestFailoverSaysWhenEditsWereLeftBehind(t *testing.T) {

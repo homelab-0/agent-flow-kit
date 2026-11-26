@@ -216,6 +216,7 @@ type quota struct {
 	FableWeeklyPct  *float64 `json:"fable_weekly_pct"`
 	ResetsAt        *string  `json:"resets_at"`
 	ResetsAtEpoch   *float64 `json:"resets_at_epoch,omitempty"`
+	Window          string   `json:"window,omitempty"`
 	PlanType        *string  `json:"plan_type,omitempty"`
 	ExtraUsageOn    bool     `json:"extra_usage_enabled,omitempty"`
 	FetchedEpochRaw int64    `json:"-"`
@@ -437,6 +438,7 @@ func (pc *poolCalc) calc(pid string, sessions int, local bool, defaultH []string
 	if live.OK && src == live.Source {
 		p.WeeklyUsedPct, p.FiveHourUsedPct = live.SevenDayPct, live.FiveHourPct
 		p.FableWeeklyUsedPct, p.ResetsAt = live.FableWeeklyPct, live.ResetsAt
+		p.Window = live.Window
 	}
 	if p.ResetsAt == nil && live.OK && live.ResetsAtEpoch != nil && src == live.Source {
 		r := time.Unix(int64(*live.ResetsAtEpoch), 0).UTC().Format(time.RFC3339)

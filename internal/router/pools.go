@@ -19,8 +19,11 @@ type Pool struct {
 	FiveHourUsedPct    *float64 `json:"five_hour_used_pct,omitempty"`
 	FableWeeklyUsedPct *float64 `json:"fable_weekly_used_pct,omitempty"`
 	ResetsAt           *string  `json:"resets_at,omitempty"`
-	DegradedKind       *string  `json:"degraded_kind,omitempty"`
-	DegradedReason     *string  `json:"degraded_reason,omitempty"`
+	// Window is the window the figure and reset are for ("5h", "weekly"),
+	// when the reading names it.
+	Window         string  `json:"window,omitempty"`
+	DegradedKind   *string `json:"degraded_kind,omitempty"`
+	DegradedReason *string `json:"degraded_reason,omitempty"`
 }
 
 // HarnessState is whether a CLI is installed, as the probe saw it.
