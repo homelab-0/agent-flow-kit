@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -142,6 +143,10 @@ func helper(mode string) int {
 
 func underPTY(t *testing.T, mode string) string {
 	t.Helper()
+	// The helper reads /proc/self/stat, and script -e -c is util-linux's.
+	if runtime.GOOS != "linux" {
+		t.Skip("needs Linux script(1) and /proc")
+	}
 	if _, err := exec.LookPath("script"); err != nil {
 		t.Skip("script(1) is not installed")
 	}
@@ -194,6 +199,9 @@ func TestRunLeavesTTINStoppedChild(t *testing.T) {
 	// Not in the foreground: a child stopped by SIGTTIN is not resumed (it
 	// would only stop again). It stays stopped until something ends it; here
 	// a helper it started kills it after a moment.
+	if !stopsReachUs() {
+		t.Skip("SIGTTIN is discarded here (an orphaned process group, as under some CI runners)")
+	}
 	start := time.Now()
 	res, err := Run(Spec{Argv: []string{"/bin/sh", "-c", "(sleep 0.6; kill -KILL $$) & kill -TTIN $$; exit 0"}, Env: []string{"PATH=/usr/bin:/bin"}})
 	if err != nil {
@@ -202,4 +210,32 @@ func TestRunLeavesTTINStoppedChild(t *testing.T) {
 	if res.Signal != "SIGKILL" || time.Since(start) < 500*time.Millisecond {
 		t.Errorf("the stopped child was resumed instead of left stopped: %+v after %v", res, time.Since(start))
 	}
+}
+
+// stopsReachUs reports whether SIGTTIN stops a child in our process
+// group. The kernel discards it when the group is orphaned, as it is under
+// some CI runners, so the test above can't tell anything there.
+func stopsReachUs() bool {
+	cmd := exec.Command("/bin/sh", "-c", "kill -TTIN $$; exit 0")
+	if cmd.Start() != nil {
+		return false
+	}
+	pid := cmd.Process.Pid
+	var ws syscall.WaitStatus
+	for {
+		_, err := syscall.Wait4(pid, &ws, syscall.WUNTRACED, nil)
+		if errors.Is(err, syscall.EINTR) {
+			continue
+		}
+		if err != nil {
+			return false
+		}
+		break
+	}
+	if ws.Stopped() {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+		_, _ = syscall.Wait4(pid, &ws, 0, nil)
+		return true
+	}
+	return false
 }
