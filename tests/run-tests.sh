@@ -3985,6 +3985,32 @@ run_gate "paperclip PM chat gate" "$KIT_ROOT/tests/paperclip-pm-chat-tests.sh"
 run_gate "afk standalone CLI gate" "$KIT_ROOT/tests/afk-cli-tests.sh"
 
 # ===========================================================================
+head1 "37. Go front end (cmd/afk): vet, unit and golden tests, engine parity"
+# ===========================================================================
+# The terminal front end for afk. Skipped, with a notice, where Go is not
+# installed. The shared Go caches are used; nothing is cached per checkout.
+if command -v go >/dev/null 2>&1; then
+  if out="$(cd "$KIT_ROOT" && go vet ./... 2>&1)"; then ok "go vet ./..."
+  else bad "go vet ./..." "$(tail -5 <<<"$out")"; fi
+  if out="$(cd "$KIT_ROOT" && go test ./... 2>&1)"; then ok "go test ./...: $(grep -c '^ok' <<<"$out") packages"
+  else bad "go test ./..." "$(tail -20 <<<"$out")"; printf '%s\n' "$out" | tail -40; fi
+  # Without a terminal the Go afk hands every call to the engine, so the
+  # bash CLI suite must pass against it unchanged.
+  if (cd "$KIT_ROOT" && CGO_ENABLED=0 go build -o "$TMPROOT/afk-go/afk" ./cmd/afk) 2>/dev/null; then
+    if out="$(AFK_CLI_UNDER_TEST="$TMPROOT/afk-go/afk" AFK_ENGINE="$KIT_ROOT/bin/agent-flow-kit" \
+      bash "$KIT_ROOT/tests/afk-cli-tests.sh" {AFK_TEST_LOCK_FD}<&- 2>&1)"; then
+      ok "afk CLI suite against the Go front end: $(tail -1 <<<"$out")"
+    else
+      bad "afk CLI suite against the Go front end" "$(tail -1 <<<"$out")"; printf '%s\n' "$out" | tail -40
+    fi
+  else
+    bad "CGO_ENABLED=0 go build ./cmd/afk"
+  fi
+else
+  skip "Go front end: go is not installed here, so go vet, go test and the parity run were not run"
+fi
+
+# ===========================================================================
 # AC-2: total wall time, with a BUDGET warning (never a failure) over 720s.
 printf '\ntotal wall time: %ss\n' "$SECONDS"
 (( SECONDS > GATE_TOTAL_BUDGET_S )) &&

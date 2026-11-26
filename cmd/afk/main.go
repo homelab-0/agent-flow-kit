@@ -1,0 +1,311 @@
+// afk is the terminal front end of AFK: it shows the route card for a task,
+// lets the user change the pick, starts the chosen CLI as a foreground
+// child, and prints a receipt when the CLI exits. Routing and launch rules
+// stay in the bash engine (agent-flow-kit agent); afk only reads its JSON.
+// Non-interactive use (-p, --explain, --launch-plan, no terminal) goes
+// straight to the engine with the same arguments.
+package main
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"time"
+
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/term"
+
+	"github.com/jlengelbrecht/agent-flow-kit/internal/cli"
+	"github.com/jlengelbrecht/agent-flow-kit/internal/engine"
+	"github.com/jlengelbrecht/agent-flow-kit/internal/gitstat"
+	"github.com/jlengelbrecht/agent-flow-kit/internal/launch"
+	"github.com/jlengelbrecht/agent-flow-kit/internal/runrec"
+	"github.com/jlengelbrecht/agent-flow-kit/internal/tui"
+)
+
+const goHelp = `
+Terminal front end (this afk):
+  -y, --yes              start the router's choice without showing the route card
+  On the route card: ↵ launch · ↑↓/jk pick · tab effort · e edit the prompt ·
+  y twice for yolo · ? why · esc cancel. Without a terminal, and with -p,
+  --explain or --launch-plan, afk runs the engine directly.
+`
+
+func main() { os.Exit(run(os.Args[1:])) }
+
+func run(argv []string) int {
+	args := cli.Parse(argv)
+	path, err := engine.Locate()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "afk:", err)
+		return 127
+	}
+	if args.Help {
+		return help(path)
+	}
+	tty := term.IsTerminal(os.Stdin.Fd()) && term.IsTerminal(os.Stdout.Fd())
+	if args.Engine || !tty {
+		return handOver(path, args.Forward)
+	}
+	width, _, err := term.GetSize(os.Stdout.Fd())
+	if err != nil || width <= 0 {
+		width = 80
+	}
+	return interactive(&engine.Engine{Path: path}, args, width)
+}
+
+// handOver replaces afk with the engine, same arguments (minus --yes).
+func handOver(path string, forward []string) int {
+	argv := append([]string{path, "agent"}, forward...)
+	err := syscall.Exec(path, argv, os.Environ())
+	fmt.Fprintln(os.Stderr, "afk: cannot run the engine:", err)
+	return 127
+}
+
+func help(path string) int {
+	cmd := exec.Command(path, "agent", "--help")
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintln(os.Stderr, "afk:", err)
+		return 1
+	}
+	fmt.Print(out.String())
+	fmt.Print(goHelp)
+	return 0
+}
+
+func interactive(eng *engine.Engine, args cli.Args, width int) int {
+	// Below 40 columns, or on a dumb terminal, there is no card and no
+	// Bubble Tea program: plain lines, the way the bash afk prints.
+	if width < 40 || strings.EqualFold(os.Getenv("TERM"), "dumb") {
+		return plainRun(eng, args)
+	}
+	motion := !tui.MotionOff(os.Getenv)
+	dark := true
+	if os.Getenv("NO_COLOR") == "" {
+		dark = lipgloss.HasDarkBackground(os.Stdin, os.Stdout)
+	}
+	opt := tui.Options{
+		Flags: args.Flags, Prompt: args.Prompt, Pass: args.Pass, Yolo: args.Yolo,
+		Yes: args.Yes, Width: width, Motion: motion, FPS: tui.FPS(os.Getenv), Dark: dark,
+	}
+	model := tui.New(eng, opt)
+	p := tea.NewProgram(model, tea.WithFPS(opt.FPS))
+	_, err := p.Run()
+	model.Close()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "afk:", err)
+		return 1
+	}
+	dec := model.Decision()
+	switch {
+	case dec.Err != nil:
+		return engineFailure(dec.Err)
+	case dec.Cancelled:
+		return 130
+	case !dec.Launch:
+		return 1
+	}
+	theme := tui.NewTheme(dark)
+	s := sessionInfo{eng: eng, route: dec.Route, plan: dec.Plan, before: dec.Pools.Headroom(dec.Route.EntitlementPool)}
+	return s.run(func(id string) {
+		lipgloss.Println(theme.LaunchText(dec.Route, "here", id, dec.Yolo, width))
+		lipgloss.Println()
+		lipgloss.Println(theme.SessionRuleText(dec.Route))
+	}, func() {
+		lipgloss.Println(theme.EndRuleText())
+		lipgloss.Println()
+	}, func(receipt tui.Receipt, fill func() tui.Receipt, save func(string) error) {
+		rm := tui.NewRating(receipt, fill, save, dark, motion)
+		if _, err := tea.NewProgram(rm).Run(); err != nil {
+			fmt.Fprintln(os.Stderr, "afk:", err)
+		}
+	})
+}
+
+func engineFailure(err error) int {
+	fmt.Fprintln(os.Stderr, "afk:", strings.TrimSpace(err.Error()))
+	var ee *engine.ExitError
+	if errors.As(err, &ee) && ee.Code > 0 {
+		return ee.Code
+	}
+	return 4
+}
+
+// plainRun is the narrow or dumb-terminal session: no card, no program.
+func plainRun(eng *engine.Engine, args cli.Args) int {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ex, err := eng.Explain(ctx, args.Flags, args.Prompt)
+	cancel()
+	if err != nil {
+		return engineFailure(err)
+	}
+	r := ex.Choice
+	ctx, cancel = context.WithTimeout(context.Background(), 20*time.Second)
+	plan, err := eng.LaunchPlan(ctx, r, "interactive", args.Yolo, args.Pass, args.Prompt)
+	cancel()
+	var pe *engine.PlanError
+	if errors.As(err, &pe) {
+		fmt.Fprintf(os.Stderr, "afk: cannot start %s / %s: %s\n", r.Harness, r.Model, pe.Reason)
+		return 4
+	}
+	if err != nil {
+		return engineFailure(err)
+	}
+	if _, err := launch.BuildEnv(os.Environ(), plan.EnvSet, plan.EnvFrom, plan.EnvUnset); err != nil {
+		fmt.Fprintf(os.Stderr, "afk: cannot start %s / %s: %s\n", r.Harness, r.Model, err)
+		return 4
+	}
+	s := sessionInfo{eng: eng, route: r, plan: plan, before: r.PoolHeadroomPct}
+	return s.run(func(id string) {
+		e := ""
+		if r.Effort != "" {
+			e = " (" + r.Effort + ")"
+		}
+		reason := r.Reason
+		if len(reason) > 160 {
+			reason = reason[:160]
+		}
+		fmt.Fprintf(os.Stderr, "afk: %s / %s%s — %s (run %s)\n", r.Harness, r.Model, e, reason, id)
+	}, func() {}, func(receipt tui.Receipt, fill func() tui.Receipt, save func(string) error) {
+		fmt.Println(tui.ReceiptPlain(fill()))
+		if err := save(""); err != nil {
+			fmt.Fprintln(os.Stderr, "afk: run not saved:", err)
+		}
+		fmt.Print(tui.RatingPlain() + " ")
+		ans, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		outcome := tui.Ratings[strings.TrimSpace(ans)]
+		if err := save(outcome); err != nil {
+			fmt.Fprintln(os.Stderr, "afk: run not saved:", err)
+		} else if outcome != "" {
+			fmt.Println("    Saved.")
+		}
+	})
+}
+
+// sessionInfo is one launch: what to start and what to measure.
+type sessionInfo struct {
+	eng    *engine.Engine
+	route  engine.Route
+	plan   *engine.LaunchPlan
+	before *float64 // pool headroom when the card opened
+}
+
+// run starts the CLI, then measures and records the session. The three
+// hooks print around it: before (with the run id), after, and the receipt.
+func (s sessionInfo) run(before func(id string), after func(), receipt func(tui.Receipt, func() tui.Receipt, func(string) error)) int {
+	r, plan := s.route, s.plan
+	dir, err := runrec.Dir()
+	id := ""
+	if err == nil {
+		id, err = runrec.Reserve(dir)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "afk: this run will not be saved:", err)
+		dir, id = "", runrec.Fallback()
+	}
+	unreserve := func() {
+		if dir != "" {
+			_ = os.Remove(filepath.Join(dir, id+".json"))
+		}
+	}
+
+	env, err := launch.BuildEnv(os.Environ(), plan.EnvSet, plan.EnvFrom, plan.EnvUnset)
+	if err != nil {
+		unreserve()
+		fmt.Fprintln(os.Stderr, "afk: not starting", r.Harness+":", err)
+		return 4
+	}
+	cwd := plan.Cwd
+	if cwd == "" {
+		cwd, _ = os.Getwd()
+	}
+	argv0, err := lookArgv0(plan.Argv[0], env)
+	if err != nil {
+		unreserve()
+		fmt.Fprintln(os.Stderr, "afk:", err)
+		return 127
+	}
+	before(id)
+	snap := gitstat.Take(cwd)
+	pre := s.before
+	if pre == nil {
+		pre = r.PoolHeadroomPct
+	}
+	launch.PrepareDirs(plan.EnvSet)
+	spec := launch.Spec{Argv: append([]string{argv0}, plan.Argv[1:]...), Env: env, Dir: cwd, TTY: os.Stdin}
+	saved, _ := term.GetState(os.Stdin.Fd())
+	res, runErr := launch.Run(spec)
+	spec.Env, env = nil, nil
+	if saved != nil {
+		_ = term.Restore(os.Stdin.Fd(), saved)
+	}
+	if runErr != nil {
+		unreserve()
+		fmt.Fprintln(os.Stderr, "afk:", runErr)
+		return 127
+	}
+	after()
+
+	rec := runrec.Record{
+		ID: id, Where: "here", Route: r.Redacted(), Exit: res.ExitCode,
+		StartedAt: runrec.Stamp(res.Started), EndedAt: runrec.Stamp(res.Ended),
+		DurationS:  int64(res.Duration().Round(time.Second) / time.Second),
+		PoolBefore: tui.PctInt(pre),
+	}
+	rc := tui.Receipt{Route: r, ExitCode: res.ExitCode, Signal: res.Signal, Duration: res.Duration(), PoolBefore: pre, InRepo: snap.OK()}
+	fill := func() tui.Receipt {
+		out := rc
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if pools, err := s.eng.Pools(ctx); err == nil {
+			out.PoolAfter = pools.Headroom(r.EntitlementPool)
+		}
+		ch := snap.Since()
+		out.Files, out.Commits = ch.Files, ch.Commits
+		rec.PoolAfter, rec.FilesChanged, rec.Commits = tui.PctInt(out.PoolAfter), ch.Files, ch.Commits
+		return out
+	}
+	save := func(outcome string) error {
+		if dir == "" {
+			return errors.New("no place for run records")
+		}
+		rec.Outcome = nil
+		if outcome != "" {
+			o := outcome
+			rec.Outcome = &o
+		}
+		_, err := runrec.Write(dir, rec)
+		return err
+	}
+	receipt(rc, fill, save)
+	return res.ExitCode
+}
+
+// lookArgv0 resolves a bare command name on the child's PATH; the engine
+// normally gives an absolute path already.
+func lookArgv0(name string, env []string) (string, error) {
+	if strings.Contains(name, "/") {
+		return name, nil
+	}
+	for _, kv := range env {
+		if v, ok := strings.CutPrefix(kv, "PATH="); ok {
+			for _, d := range filepath.SplitList(v) {
+				p := filepath.Join(d, name)
+				if st, err := os.Stat(p); err == nil && !st.IsDir() && st.Mode()&0o111 != 0 {
+					return p, nil
+				}
+			}
+		}
+	}
+	return "", fmt.Errorf("cannot find %s on PATH", name)
+}
