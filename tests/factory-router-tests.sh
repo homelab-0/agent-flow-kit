@@ -388,13 +388,23 @@ assert_eq "A model behind the local gateway never reviews, even if its pool is n
 
 # The same catalog, with the local model made the clear winner for a low-risk
 # build: it is chosen while the gateway serves it and skipped when it does not.
-jq '(.candidates[] | select(.id == "litellm-local-coding") | .benchmarks.coding_standard.score) = 99.9' "$LOCAL_CAT" > "$LOCAL_CAT.b"
+jq '(.candidates[] | select(.id == "litellm-local-coding") | .benchmarks.coding_standard.score) = 99.9 | .entitlement_pools["litellm-local"].cost_class = "free"' "$LOCAL_CAT" > "$LOCAL_CAT.b"
 R_ON="$(AFK_ROUTER_LITELLM_ASSUME_ONLINE=1 AFK_LITELLM_BASE_URL=http://gateway.invalid AFK_ROUTER_BENCHMARKS_FILE="$LOCAL_CAT.b" AFK_ROUTER_HARNESS_LIST="claude" AFK_ROUTER_SIGNALS_FILE="$TMPROOT/signals-empty.json" \
   afk_router_select_candidate "$ROUTE_REPO" build low "" dev 1 code 40)"
 R_OFF="$(AFK_ROUTER_LITELLM_ASSUME_ONLINE=1 AFK_ROUTER_LITELLM_MODELS='["some-other-model"]' AFK_LITELLM_BASE_URL=http://gateway.invalid AFK_ROUTER_BENCHMARKS_FILE="$LOCAL_CAT.b" AFK_ROUTER_HARNESS_LIST="claude" AFK_ROUTER_SIGNALS_FILE="$TMPROOT/signals-empty.json" \
   afk_router_select_candidate "$ROUTE_REPO" build low "" dev 1 code 40)"
 assert_eq "A gateway model is routed to only while the gateway lists it" \
   "$(jq -r .model <<<"$R_ON"):$(jq -r '.model != "qwen36-27b"' <<<"$R_OFF")" "qwen36-27b:true"
+
+# A plan login only in its own vendor CLI: opencode may not use the SuperGrok
+# plan, a gateway route is never launched for a CLI other than claude.
+PLAN_CAT="$TMPROOT/plan-rule.json"
+jq '(.candidates[] | select(.harness == "opencode") | .benchmarks.coding_standard.score) = 120
+    | .candidates += [ (.candidates[] | select(.harness == "codex") | .id = "codex-via-gw" | .launch_class = "codex-gateway" | .entitlement_pool = "litellm-local" | .benchmarks.coding_standard.score = 130) ]' "$OUT" > "$PLAN_CAT"
+R_PLAN="$(AFK_ROUTER_BENCHMARKS_FILE="$PLAN_CAT" AFK_ROUTER_LITELLM_ASSUME_ONLINE=1 AFK_ROUTER_LITELLM_MODELS='["gpt-6.1-sol","gpt-6-astra","gpt-daybreak-blue-latest"]' AFK_LITELLM_BASE_URL=http://gateway.invalid AFK_ROUTER_HARNESS_LIST="claude,codex,opencode" AFK_ROUTER_SIGNALS_FILE="$TMPROOT/signals-empty.json" \
+  afk_router_select_candidate "$ROUTE_REPO" build low "" dev 1 code 40)"
+assert_eq "No route uses a plan login outside its own vendor CLI, and no gateway route goes to a CLI other than claude" \
+  "$(jq -r '"\(.harness)/\(.entitlement_pool)"' <<<"$R_PLAN" | grep -c -E '^opencode/xai-grok|-gateway|^codex/litellm-local')" "0"
 
 R_ALL="$(AFK_ROUTER_HARNESS_LIST="claude,codex" AFK_ROUTER_SIGNALS_FILE="$TMPROOT/signals-empty.json" afk_router_select_candidate "$ROUTE_REPO" build low "" dev 1 code 40)"
 R_SAME="$(AFK_ROUTER_ONLY_HARNESSES="$(jq -r .harness <<<"$R_ALL")" AFK_ROUTER_HARNESS_LIST="claude,codex" AFK_ROUTER_SIGNALS_FILE="$TMPROOT/signals-empty.json" afk_router_select_candidate "$ROUTE_REPO" build low "" dev 1 code 40)"

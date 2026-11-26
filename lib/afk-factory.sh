@@ -1269,8 +1269,20 @@ afk_factory_invoke_stage_agent() {
             (
               cd "$wt" || exit 1
               [[ -n "$hs_disabled" ]] && export HINDSIGHT_DISABLED="true"
-              if [[ "$routed_launch" == *-gateway && -n "$litellm_url" ]]; then
+              if [[ "$routed_launch" == *-gateway ]]; then
+                # Through the gateway with the gateway's own key and a config
+                # directory of its own: the Claude plan login never reaches
+                # the gateway. No gateway or no key: the stage cannot run.
+                local gw_key_var="${AFK_GATEWAY_KEY_ENV:-AFK_GATEWAY_KEY}"
+                if [[ -z "$litellm_url" || ! "$gw_key_var" =~ ^[A-Za-z_][A-Za-z0-9_]*$ || -z "${!gw_key_var:-}" ]]; then
+                  printf '{"type":"error","error":{"message":"gateway route without a gateway address or key ($%s)"}}\n' "$gw_key_var" > "$env_file"
+                  exit 1
+                fi
+                unset ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN
                 export ANTHROPIC_BASE_URL="$litellm_url"
+                export ANTHROPIC_AUTH_TOKEN="${!gw_key_var}"
+                export CLAUDE_CONFIG_DIR="${AFK_STATE_DIR:-${HOME:-}/.local/state/agent-flow-kit}/gateway-claude"
+                mkdir -p -- "$CLAUDE_CONFIG_DIR" 2>/dev/null; chmod 700 -- "$CLAUDE_CONFIG_DIR" 2>/dev/null
               fi
               local -a cl_mcp_args=() cl_eff_args=()
               [[ -n "$mcp_cfg" ]] && cl_mcp_args=(--mcp-config "$mcp_cfg")

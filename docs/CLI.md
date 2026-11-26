@@ -31,9 +31,23 @@ The session itself is the chosen CLI's own interface. `afk` prints one line sayi
 | `--explain`, `--dry-run` | show the decision and the best route per installed CLI; start nothing |
 | `--json` | machine-readable output for `--explain` and `-p` |
 | `--yolo` | let the CLI act without asking, using that CLI's own skip-permissions flag. Off by default. |
-| `--` | pass everything after it to the CLI unchanged, e.g. `afk --harness claude -- --continue` |
+| `--pass <arg>` | pass one argument to the CLI unchanged; repeat it for more, e.g. `afk --harness claude --pass --continue` |
+| `--` | ends the options: everything after it is the prompt, even if it starts with a dash |
+| `--launch-plan --route <json> [--mode interactive\|print]` | print the launch plan for a route chosen elsewhere (`afk-launch-plan/1`: argv, environment, answer format) and start nothing. Front ends use this. |
 
 Reviews never go to a free or local model, the same reviewer floor the factory uses.
+
+## Plan logins and gateways
+
+A plan login is only ever used by its own vendor's CLI. Claude's plan is used only in `claude`, ChatGPT's only in `codex`, SuperGrok's only in `grok`, and Antigravity's only in `agy`. AFK never routes a plan model through a gateway or a third-party CLI; opencode, for instance, only gets its own free models. This rule applies in the factory as well.
+
+A gateway route, such as a local model behind LiteLLM, is launched only for `claude`, and in a way that keeps your Claude login away from the gateway:
+
+- `ANTHROPIC_BASE_URL` points at the gateway (`AFK_LITELLM_BASE_URL`).
+- `ANTHROPIC_AUTH_TOKEN` is copied from the gateway key variable: `AFK_GATEWAY_KEY`, or the variable named in `AFK_GATEWAY_KEY_ENV`. AFK never prints the key.
+- The Claude config directory is separate, so the plan login isn't loaded.
+
+With no gateway address or key, the route isn't launched, and AFK says what to set.
 
 ## How usage is counted
 
