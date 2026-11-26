@@ -45,6 +45,10 @@ When a CLI fails in a way that says something about its pool, the failure is rec
 | quota or rate limit (429, usage limit, out of credits) | 1 hour |
 | anything else | 15 minutes |
 
+Only error text is read: the CLI's error document, its stderr, and stdout that isn't JSON. An answer the model gave is never read for failure words, so an answer about HTTP 429 doesn't set a pool aside. Status codes count only as status codes: on their own, after `HTTP`, `status`, `code`, `error` or `api`, or with their reason phrase (`429 Too Many Requests`). A line number such as `line 1401` or `main.go:429` doesn't count. An overloaded provider (529) moves the run to another route, and sets the pool aside only for the 15-minute transient time.
+
+If a mark is wrong, or you've just signed in again, `afk pools clear <pool>` (or `afk pools clear` for all) removes it.
+
 A model that a provider refuses ("not found", "no access") is set aside on its own for an hour, without affecting the rest of its pool.
 
 Signals are written by one-shot runs (`afk -p`) today, under a short lock so runs that fail at the same time don't lose each other's marks. A truncated or hand-edited signals file is ignored rather than breaking routing.
