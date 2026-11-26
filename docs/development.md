@@ -45,7 +45,7 @@ The Go engine fixes some things the bash engine got wrong, so on these points th
 
 - Codex's sessions are read from `$CODEX_HOME/sessions` when set (and `AFK_CODEX_SESSIONS_DIR` first), for both rate limits and activity.
 - Codex signed in with an API key is metered usage: its sessions don't count against the ChatGPT plan pool.
-- A project's `.afk/config.json` can set the gateway (through its older `router` block) only when the project is listed in `trust.repos` (or `trusted_repos` in `router.json`).
+- A project's `.afk/config.json` can't set a gateway, metered models, free reviewers or security models at all, not even through its older `router` block.
 - A restricted model (Mythos, Daybreak Blue) that one CLI lists unlocks it for that CLI's account only.
 - "patch" counts as asking for a change when guessing the task.
 - A signals file that doesn't fully decode is ignored whole; a zero or negative pool capacity is skipped.

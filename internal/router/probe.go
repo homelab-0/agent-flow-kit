@@ -114,7 +114,9 @@ func ProbePools(ctx context.Context, cat *Catalog, e ProbeEnv) *Probe {
 		x5 = countRecent(codexSessionsDir(e), since)
 	}
 	a5 := countRecentDirs(filepath.Join(e.Home, ".gemini", "antigravity-cli", "brain"), since)
-	o5 := countRecent(filepath.Join(e.Home, ".local", "share", "opencode"), since)
+	// OpenCode's sessions and messages live under storage/; its auth.json
+	// beside it changes on sign-in, which is not activity.
+	o5 := countRecent(filepath.Join(e.Home, ".local", "share", "opencode", "storage"), since)
 	p5 := countRecent(filepath.Join(e.Home, ".pi", "agent", "sessions"), since)
 	g5 := countRecent(filepath.Join(e.Home, ".grok"), since)
 	xai5 := g5

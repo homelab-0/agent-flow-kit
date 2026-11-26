@@ -50,7 +50,7 @@ func fakeHome(t *testing.T) (string, map[string]string) {
 		"{\"payload\":{\"rate_limits\":{\"primary\":{\"used_percent\":99,\"window_minutes\":300,\"resets_at\":%d}}}}\n", now-50), 0)
 	put(t, home, ".grok/auth.json", `{"x::uid42":{"t":1}}`, 0)
 	for i := 0; i < 3; i++ {
-		put(t, home, fmt.Sprintf(".local/share/opencode/x/m%d.json", i), "{}", 0)
+		put(t, home, fmt.Sprintf(".local/share/opencode/storage/message/m%d.json", i), "{}", 0)
 	}
 	put(t, home, ".local/share/opencode/auth.json", `{"xai":{"type":"oauth"},"anthropic":{"type":"api"}}`, 0)
 	put(t, home, ".pi/agent/auth.json", `{"openai-codex":{"type":"oauth"}}`, 0)
@@ -209,5 +209,23 @@ func TestCredentialFilesAreNeverOpened(t *testing.T) {
 	}
 	if b := accountBindings(ProbeEnv{Home: home}, map[string]HarnessState{}, "apikey"); !contains(b["api-metered"], "codex") || contains(b["openai-plus"], "codex") {
 		t.Errorf("an API-key Codex is metered: %v", b)
+	}
+}
+
+// OpenCode's auth.json changing (a sign-in) is not activity.
+func TestOpenCodeLoginIsNotActivity(t *testing.T) {
+	home := t.TempDir()
+	put(t, home, ".local/share/opencode/auth.json", `{"openai":{"type":"oauth"}}`, 0)
+	put(t, home, ".local/share/opencode/storage/session/s1.json", "{}", 0)
+	p := ProbePools(context.Background(), DefaultCatalog(), ProbeEnv{Home: home, Installed: func(h string) bool { return h == "opencode" }})
+	// One session of 200: 0.5%, rounded to 1. With auth.json counted it
+	// would be 1%, rounded to 1 too, so check with only the login file.
+	if got := *p.Pools["opencode-free"].UsedPct; got != 1 {
+		t.Fatalf("one session: %v%%", got)
+	}
+	_ = os.Remove(filepath.Join(home, ".local/share/opencode/storage/session/s1.json"))
+	p = ProbePools(context.Background(), DefaultCatalog(), ProbeEnv{Home: home, Installed: func(h string) bool { return h == "opencode" }})
+	if got := *p.Pools["opencode-free"].UsedPct; got != 0 {
+		t.Fatalf("auth.json counted as activity: %v%%", got)
 	}
 }

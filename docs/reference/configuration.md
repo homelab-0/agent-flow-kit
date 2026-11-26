@@ -28,14 +28,14 @@ For each setting, the first of these that sets it wins:
 |---|---|---|---|---|---|
 | preference | `--prefer` | | `route.prefer` | `route.prefer` | `balanced` |
 | free first for low-risk work | `--prefer cheap` | `AFK_ROUTER_PREFER_FREE` | `route.prefer_free`, `router.prefer_free_for_low_risk` | `route.prefer_free` | `false` |
-| metered API models | | `AFK_ROUTER_ALLOW_METERED_API` | `router.allow_metered_api` | `route.allow_metered` | `false` |
-| free reviewers | | `AFK_ROUTER_ALLOW_FREE_REVIEWERS` | `router.allow_free_reviewers` | `route.allow_free_reviewers` | `false` |
-| security models | | `AFK_SECURITY_MODELS` | `router.security_models` | `route.security_models` | none |
-| gateway | | `AFK_LITELLM_BASE_URL` | `router.litellm_base_url`, only for a [trusted](#trust) project, and only when you set no gateway | `[gateway.<name>]` | none |
+| metered API models | | `AFK_ROUTER_ALLOW_METERED_API` | never | `route.allow_metered` | `false` |
+| free reviewers | | `AFK_ROUTER_ALLOW_FREE_REVIEWERS` | never | `route.allow_free_reviewers` | `false` |
+| security models | | `AFK_SECURITY_MODELS` | never | `route.security_models` | none |
+| gateway | | `AFK_LITELLM_BASE_URL` | never | `[gateway.<name>]` | none |
 | gateway key | | `AFK_GATEWAY_KEY_ENV` names the variable | never | the `key` of the gateway whose `url` the route uses | `$AFK_GATEWAY_KEY` |
 | daily catalog refresh | | `AFK_SKIP_BENCHMARK_AUTOSYNC=1` | never | `bench.autosync` | on |
 
-The `router.*` keys in a project file are the older format; they keep working as before.
+The `router.prefer_free_for_low_risk` key in a project file is the older form of `route.prefer_free` and still works; the other `router.*` keys are ignored (below).
 
 ## config.toml
 
@@ -85,7 +85,7 @@ modelsdev = { enabled = true }
 
 | Key | Type | Meaning |
 |---|---|---|
-| `repos` | list | projects whose `.afk/config.json` may still name a gateway through the older `router.litellm_base_url`, used only when you set no gateway yourself |
+| `repos` | list | directories you trust; reserved (validated, not used yet). A project's file can't set a gateway whether or not it is listed |
 
 ### `[gateway.<name>]`
 
@@ -161,21 +161,7 @@ A cloned repository is someone else's file, so its `.afk/config.json` may only m
 
 Anything else (a gateway, a key, an install, telemetry, a work source, trust, a looser mode, other `route` keys) is ignored, and AFK prints a warning naming each key. AFK reads the file from the current directory, or from `--repo <dir>`.
 
-The older `router` block is still read as before:
-
-```json
-{
-  "router": {
-    "litellm_base_url": "http://gateway.local:4000",
-    "prefer_free_for_low_risk": false,
-    "allow_free_reviewers": false,
-    "allow_metered_api": false,
-    "security_models": ["mythos"]
-  }
-}
-```
-
-`litellm_base_url` there is used only when the project is listed in `trust.repos` (or `trusted_repos` in `router.json`) and you have set no gateway yourself.
+From the older `router` block only `prefer_free_for_low_risk` is still read, as `route.prefer_free`. Its `litellm_base_url`, `allow_metered_api`, `allow_free_reviewers` and `security_models` are ignored with a warning naming each, even for a project in `trust.repos`: a gateway receives your key, and the others would spend money, lower review quality or claim an entitlement on your behalf. Set them in your own config.toml instead.
 
 ## afk config
 
@@ -288,7 +274,7 @@ installed_at = 2026-11-26T12:00:00Z
 | `~/.config/afk/pool-signals.json` | [failure signals](../guides/pools.md#failure-signals) |
 | `~/.config/afk/harness-bin-cache.json` | which CLIs answered `--version`, five minutes |
 | `~/.config/afk/benchmarks.json` | the [synced benchmark catalog](benchmark-catalog.md#refreshing-it), used when present and current; `.sync-attempt` beside it marks the last attempt |
-| `~/.config/afk/discovered-models.json` | models the CLIs reported, used when present |
+| `~/.config/afk/discovered-models.json` | models the CLIs reported, written by older AFK versions; read while it is less than 7 days old and ignored (with a note) after that, since nothing updates it now. `AFK_DISCOVERED_MODELS_FILE` names a file that is always read |
 | `~/.local/state/agent-flow-kit/gateway-claude/` | the separate Claude config for gateway routes |
 
 All of them can be deleted; AFK recreates what it needs.
