@@ -21,6 +21,9 @@ ask = ["--permission-mode", "manual"]
 edits = ["--permission-mode", "acceptEdits"]
 auto = ["--permission-mode", "auto"]
 yolo = ["--dangerously-skip-permissions"]
+# claude -p skips the workspace trust dialog, and a project's hooks then
+# run unasked (checked on 2.1.332). This keeps it to ~/.claude.
+user_config = ["--setting-sources", "user"]
 # Other ways to change what Claude may do without asking; --pass refuses
 # them outside yolo.
 mode_flags = ["--permission-mode", "--allow-dangerously-skip-permissions", "--allowedTools", "--allowed-tools", "--settings", "--setting-sources"]

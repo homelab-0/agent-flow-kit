@@ -128,7 +128,7 @@ func (c *Core) runHeadless(ctx context.Context, r engine.Route, mode string, req
 		run = execHeadless
 	}
 	stdout, stderr, exit := run(ctx, plan.Argv, env, plan.Cwd)
-	out := oneshot.Output{Stdout: stdout, Stderr: stderr, Exit: exit, Mode: plan.Mode, ModeNote: plan.ModeNote}
+	out := oneshot.Output{Stdout: stdout, Stderr: stderr, Exit: exit, Mode: plan.Mode, ModeNote: plan.ModeNote, ConfigNote: plan.ConfigNote}
 	if answerFile != "" {
 		if b, err := os.ReadFile(answerFile); err == nil {
 			out.Answer = b

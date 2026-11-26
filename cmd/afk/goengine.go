@@ -116,6 +116,7 @@ func runGo(args cli.Args) int {
 	}
 	tty := term.IsTerminal(os.Stdin.Fd()) && term.IsTerminal(os.Stdout.Fd())
 	if !tty {
+		c.NoTerminal = true
 		return plainRun(c, args, false)
 	}
 	return interactive(c, args, termWidth())
