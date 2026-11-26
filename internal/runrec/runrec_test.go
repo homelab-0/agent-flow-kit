@@ -89,3 +89,23 @@ func TestLoadSkipsPlaceholdersOldAndForeignRecords(t *testing.T) {
 		t.Error("a missing dir should be no records")
 	}
 }
+
+func TestLoadOrdersBySessionEndNotFileTime(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	for _, r := range []Record{
+		{ID: "r-aa01", EndedAt: Stamp(now.Add(-time.Hour))},
+		{ID: "r-aa02", EndedAt: Stamp(now.Add(-48 * time.Hour))},
+	} {
+		if _, err := Write(dir, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The older session was rated later, so its file is newer.
+	_ = os.Chtimes(filepath.Join(dir, "r-aa02.json"), now, now)
+	_ = os.Chtimes(filepath.Join(dir, "r-aa01.json"), now.Add(-time.Hour), now.Add(-time.Hour))
+	got := Load(dir, now.Add(-180*24*time.Hour))
+	if len(got) != 2 || got[0].ID != "r-aa01" {
+		t.Fatalf("order %+v", got)
+	}
+}

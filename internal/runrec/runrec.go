@@ -73,7 +73,7 @@ func DirFor(home string, getenv func(string) string) string {
 const MaxLoad = 5000
 
 // Load reads the run records in dir that ended at or after since, newest
-// first (by file time). Placeholders, records of another schema and files
+// first (by when the session ended). Placeholders, records of another schema and files
 // that don't decode are skipped. A missing dir is no records.
 func Load(dir string, since time.Time) []Record {
 	ents, err := os.ReadDir(dir)
@@ -100,7 +100,11 @@ func Load(dir string, since time.Time) []Record {
 	if len(files) > MaxLoad {
 		files = files[:MaxLoad]
 	}
-	var out []Record
+	type rec struct {
+		r   Record
+		end time.Time
+	}
+	var got []rec
 	for _, f := range files {
 		b, err := os.ReadFile(filepath.Join(dir, f.name))
 		if err != nil {
@@ -110,10 +114,24 @@ func Load(dir string, since time.Time) []Record {
 		if json.Unmarshal(b, &r) != nil || r.Schema != Schema {
 			continue
 		}
-		if t, err := time.Parse(time.RFC3339, r.EndedAt); err == nil && t.Before(since) {
-			continue
+		end := f.mod
+		if t, err := time.Parse(time.RFC3339, r.EndedAt); err == nil {
+			if t.Before(since) {
+				continue
+			}
+			end = t
 		}
-		out = append(out, r)
+		got = append(got, rec{r, end})
+	}
+	// Newest session first, by when it ended: a rating saved later
+	// touches the file, so its time isn't the session's.
+	sort.SliceStable(got, func(i, j int) bool { return got[i].end.After(got[j].end) })
+	out := make([]Record, 0, len(got))
+	for _, g := range got {
+		out = append(out, g.r)
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }
