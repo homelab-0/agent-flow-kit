@@ -48,7 +48,7 @@ func testCore(t *testing.T) (*Core, string) {
 			t.Fatal(err)
 		}
 	}
-	env := map[string]string{"AFK_GATEWAY_KEY": "k"}
+	env := map[string]string{"AFK_GATEWAY_KEY": "k", "AFK_LITELLM_BASE_URL": "http://gw:4000"}
 	return &Core{
 		Home: home, Getenv: func(k string) string { return env[k] }, Cwd: home,
 		Harness: harness.Env{Home: home, Path: bin, BinDir: bin, OS: runtime.GOOS, Getenv: func(string) string { return "" }},
@@ -195,8 +195,11 @@ func TestGatewayPlanNeedsAKeyFromAPlainVariable(t *testing.T) {
 		"MY_KEY":            "the gateway needs its key in $MY_KEY",
 	} {
 		c.Getenv = func(k string) string {
-			if k == "AFK_GATEWAY_KEY_ENV" {
+			switch k {
+			case "AFK_GATEWAY_KEY_ENV":
 				return env
+			case "AFK_LITELLM_BASE_URL":
+				return "http://gw"
 			}
 			return ""
 		}
@@ -237,6 +240,13 @@ func TestGatewayKeyIsBoundToItsGateway(t *testing.T) {
 	}
 	// A route to a url no config.toml gateway declares (made before the
 	// config changed) is refused, naming both, instead of getting a key.
+	// The refusal lists your gateways without what an address may carry
+	// as a credential.
+	write("version = 1\n[gateway.work]\nurl = \"https://work.example/?api_key=sk-1#frag\"\nkey = \"env:WORK_KEY\"\ndefault = true\n")
+	if _, err := plan("http://other.example"); err == nil || strings.Contains(err.Error(), "sk-1") || strings.Contains(err.Error(), "frag") || !strings.Contains(err.Error(), "work = https://work.example/") {
+		t.Fatalf("refusal: %v", err)
+	}
+	write("version = 1\n[gateway.work]\nurl = \"https://work.example/\"\nkey = \"env:WORK_KEY\"\ndefault = true\n[gateway.home]\nurl = \"http://home.local:4000\"\nkey = \"env:HOME_KEY\"\n")
 	_, err := plan("http://u:pw@stale.example")
 	var pe *engine.PlanError
 	if !errors.As(err, &pe) || !strings.Contains(pe.Reason, "http://stale.example") || !strings.Contains(pe.Reason, "work = https://work.example/") || strings.Contains(pe.Reason, "pw") {
@@ -252,7 +262,26 @@ func TestGatewayKeyIsBoundToItsGateway(t *testing.T) {
 	if p, err := plan("https://work.example"); err != nil || p.EnvFrom["ANTHROPIC_AUTH_TOKEN"] != "HOME_KEY" {
 		t.Fatalf("override: %+v %v", p, err)
 	}
+	// The override chooses the variable, never the address: a url you
+	// didn't configure gets no key from it either.
+	if _, err := plan("https://evil.example"); !errors.As(err, &pe) || !strings.Contains(pe.Reason, "not one you configured") {
+		t.Fatalf("override to an unknown url: %v", err)
+	}
 	delete(env, "AFK_GATEWAY_KEY_ENV")
+	// With no gateway in config.toml, only the AFK_LITELLM_BASE_URL
+	// address gets AFK_GATEWAY_KEY.
+	write("version = 1\n")
+	if _, err := plan("https://evil.example"); !errors.As(err, &pe) || !strings.Contains(pe.Reason, "not one you configured") {
+		t.Fatalf("unknown url without gateways: %v", err)
+	}
+	if p, err := plan("http://env.local/"); err != nil || p.EnvFrom["ANTHROPIC_AUTH_TOKEN"] != "AFK_GATEWAY_KEY" {
+		t.Fatalf("env gateway without gateways: %+v %v", p, err)
+	}
+	delete(env, "AFK_LITELLM_BASE_URL")
+	if _, err := plan("https://evil.example"); !errors.As(err, &pe) || !strings.Contains(pe.Reason, "none is configured") {
+		t.Fatalf("nothing configured: %v", err)
+	}
+	env["AFK_LITELLM_BASE_URL"] = "http://env.local"
 	// A config.toml that doesn't validate refuses the launch, rather than
 	// falling back to AFK_GATEWAY_KEY.
 	write("version = 1\n[route]\nprefer = \"fastest\"\n")
