@@ -10,13 +10,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jlengelbrecht/agent-flow-kit/internal/config"
 	"github.com/jlengelbrecht/agent-flow-kit/internal/engine"
 	"github.com/jlengelbrecht/agent-flow-kit/internal/harness"
 	"github.com/jlengelbrecht/agent-flow-kit/internal/router"
+	"github.com/jlengelbrecht/agent-flow-kit/internal/runrec"
 )
 
 // Routable are the CLIs AFK routes to and launches, in the order the bash
@@ -134,7 +137,51 @@ func (c *Core) load(ctx context.Context, repo string) (*state, error) {
 		Home: c.Home, Getenv: c.getenv, Now: c.now(), GatewayURL: s.GatewayURL,
 		Installed: installed, Live: c.Live, CodexLoginMode: c.codexLoginMode(),
 	})
-	return &state{r: &router.Router{Catalog: cat, Probe: probe, Discovered: c.discovered()}, settings: s}, nil
+	r := &router.Router{Catalog: cat, Probe: probe, Discovered: c.discovered()}
+	if s.Learn {
+		r.Outcomes = Outcomes(runrec.Load(runrec.DirFor(c.Home, c.getenv), c.now().Add(-OutcomeMaxAge)))
+	}
+	return &state{r: r, settings: s}, nil
+}
+
+// OutcomeMaxAge is how far back ratings count: models and CLIs change.
+const OutcomeMaxAge = 180 * 24 * time.Hour
+
+// OutcomesPerRoute is how many of a route's newest ratings count.
+const OutcomesPerRoute = 30
+
+// Outcomes tallies rated run records (newest first) by CLI, model and
+// task class. Unrated runs, and runs with no task class, don't count. A
+// "wrong pick" on a route you pinned yourself says nothing about the
+// router, so it is left out.
+func Outcomes(recs []runrec.Record) map[router.OutcomeKey]router.OutcomeStats {
+	out := map[router.OutcomeKey]router.OutcomeStats{}
+	for _, rec := range recs {
+		if rec.Outcome == nil || rec.Route.TaskClass == "" || rec.Route.Harness == "" {
+			continue
+		}
+		o := *rec.Outcome
+		if o == runrec.WrongPick && rec.Route.Pinned {
+			continue
+		}
+		k := router.OutcomeKeyFor(rec.Route.Harness, rec.Route.CanonicalModel, rec.Route.Model, rec.Route.TaskClass)
+		st := out[k]
+		if st.Runs() >= OutcomesPerRoute {
+			continue
+		}
+		switch o {
+		case runrec.Solved:
+			st.Solved++
+		case runrec.Partly:
+			st.Partly++
+		case runrec.WrongPick:
+			st.Wrong++
+		default:
+			continue
+		}
+		out[k] = st
+	}
+	return out
 }
 
 // DiscoveredMaxAge is how long ~/.config/afk/discovered-models.json is
@@ -181,10 +228,11 @@ func (c *Core) DiscoveredWarning() string {
 	return c.discoveredPath() + " is more than 7 days old and nothing updates it any more, so it is ignored; delete it to drop this note"
 }
 
-// route asks the router for one task, limited to the given CLIs. A
-// fallback that names a CLI outside them means nothing here can do the
-// task (ok is false). A pool limits it further to routes that pool
-// serves; "" allows any.
+// route asks the router for one task, limited to the given CLIs. When no
+// route qualifies, ok is false: the router's fallback carries made-up
+// numbers (score 85, full headroom), so it is never launched or shown as
+// a pick. A pool limits it further to routes that pool serves; "" allows
+// any.
 func (st *state) route(task, prefer string, only []string, pool string) (router.Route, bool, error) {
 	stage, risk, err := router.TaskRoute(task, prefer)
 	if err != nil {
@@ -196,7 +244,7 @@ func (st *state) route(task, prefer string, only []string, pool string) (router.
 		OnlyHarnesses: only, OnlyPool: pool, GatewayURL: st.settings.GatewayURL, AllowMetered: st.settings.AllowMetered,
 		PreferFree: pf, AllowFreeReviewers: st.settings.AllowFreeReviewers, SecurityModels: st.settings.SecurityModels,
 	})
-	if r.IsFallback() && (!contains(only, r.Harness) || (pool != "" && r.EntitlementPool != pool)) {
+	if r.IsFallback() {
 		return r, false, nil
 	}
 	return r, true, nil
@@ -326,7 +374,7 @@ func (c *Core) decide(ctx context.Context, f engine.RouteFlags, prompt string) (
 		return nil, err
 	}
 	if !ok {
-		return nil, &NoRouteError{"the router found no usable model for this task on " + strings.Join(d.list, ",") + signInHint(st.r.Probe, d.list)}
+		return nil, &NoRouteError{"the router found no usable model for this task on " + strings.Join(d.list, ",") + signInHint(st.r.Probe, d.list) + poolHint(st.r, d.list, st.settings.GatewayURL != "")}
 	}
 	if f.Effort != "" {
 		r.Effort = f.Effort
@@ -513,6 +561,73 @@ func modesFor(clis []string, mode string) map[string]engine.ModeInfo {
 
 // signInHint says which of the CLIs asked for needs a sign-in, with the
 // command, when that is why nothing could be routed.
+// poolHint says, for each pool that the given CLIs draw on and that the
+// router set aside, why and what to do about it. A sign-in failure is left
+// to signInHint.
+func poolHint(r *router.Router, list []string, gateway bool) string {
+	if r == nil || r.Probe == nil || r.Catalog == nil {
+		return ""
+	}
+	var ids []string
+	seen := map[string]bool{}
+	for _, c := range r.Catalog.Candidates {
+		// Gateway routes count only when a gateway is set up.
+		if !gateway && strings.HasSuffix(c.LaunchClass, "-gateway") {
+			continue
+		}
+		if c.EntitlementPool != "" && contains(list, c.Harness) && !seen[c.EntitlementPool] {
+			seen[c.EntitlementPool] = true
+			ids = append(ids, c.EntitlementPool)
+		}
+	}
+	sort.Strings(ids)
+	var parts []string
+	for _, id := range ids {
+		p, ok := r.Probe.Pools[id]
+		if !ok {
+			continue
+		}
+		var msg string
+		switch p.State {
+		case "exhausted":
+			msg = id + " is exhausted"
+			if p.UsedPct != nil {
+				msg += fmt.Sprintf(" (%.0f%% used", *p.UsedPct)
+				if p.QuotaSource != "" {
+					msg += ", " + p.QuotaSource
+				}
+				msg += ")"
+			}
+			if p.ResetsAt != nil && *p.ResetsAt != "" {
+				msg += ", resets " + *p.ResetsAt
+			}
+		case "offline":
+			msg = id + " is offline"
+		default:
+			continue
+		}
+		if p.DegradedReason != nil && *p.DegradedReason != "" {
+			msg += fmt.Sprintf(": a run failed with %q; if that was wrong, run: afk pools clear %s", cutHint(*p.DegradedReason, 80), id)
+		}
+		parts = append(parts, msg)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "; " + strings.Join(parts, "; ") + ". To use a set-aside plan anyway, pin it with --harness and --model"
+}
+
+func cutHint(s string, n int) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "…"
+}
+
 func signInHint(p *router.Probe, list []string) string {
 	if p == nil {
 		return ""
