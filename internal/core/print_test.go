@@ -78,6 +78,26 @@ func TestPrintPinnedReportsTheFailure(t *testing.T) {
 	}
 }
 
+func TestPrintPinnedRateLimitMarksItsPool(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell stubs")
+	}
+	c, ran, signals := printCore(t, func([]string) ([]byte, []byte, int) {
+		return []byte(`{"type":"result","is_error":true,"result":"429 rate limit exceeded"}`), nil, 1
+	})
+	res, err := c.Print(context.Background(), PrintRequest{Prompt: "hi", Flags: engine.RouteFlags{Harness: "claude", Model: "sonnet"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.OK || res.Attempts != 1 || len(*ran) != 1 {
+		t.Fatalf("result %+v", res)
+	}
+	b, err := os.ReadFile(signals)
+	if err != nil || !strings.Contains(string(b), `"anthropic-max"`) || !strings.Contains(string(b), `"degraded_kind": "quota"`) {
+		t.Errorf("signals %s %v", b, err)
+	}
+}
+
 func TestPrintUsageErrors(t *testing.T) {
 	c, ran, _ := printCore(t, nil)
 	if _, err := c.Print(context.Background(), PrintRequest{}, nil); ExitCode(err) != 2 {

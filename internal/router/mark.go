@@ -14,7 +14,7 @@ import (
 
 // The kinds of pool failure, and how long each keeps the pool aside.
 var (
-	markAuthRE  = regexp.MustCompile(`(401|unauthorized|token_revoked|invalidated\s+oauth|refresh\s+token|not\s+logged\s+in)`)
+	markAuthRE  = regexp.MustCompile(`(401|unauthorized|token_revoked|invalidated\s+oauth|refresh\s+token|not\s+logged\s+in|please\s+log\s?in)`)
 	markQuotaRE = regexp.MustCompile(`(429|rate_limit|rate\s+limit|quota|out_of_credits|spend_limit|exhausted)`)
 )
 
@@ -87,7 +87,11 @@ func MarkModelUnavailable(path, model, reason string, now time.Time) error {
 
 // updateSignals is a read-modify-write of the signals file under its lock
 // (the same lock the bash engine takes): several runs may mark at once, and
-// each rewrites the whole file. A file that does not decode is replaced.
+// each rewrites the whole file. When the lock can't be had (another writer
+// held it for the whole 30-second wait, or its directory can't be made),
+// the mark is written without it, as the bash engine does: a mark is worth
+// more than strict ordering. A writer that raced it in that window can
+// lose its own update. A file that does not decode is replaced.
 func updateSignals(path string, change func(map[string]any)) error {
 	lock, err := acquireSignals(path)
 	if err == nil {

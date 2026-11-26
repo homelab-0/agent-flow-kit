@@ -48,6 +48,9 @@ var allFeeds = []string{FeedAgent, FeedWebdev, FeedText, FeedModelsDev}
 
 func sync(t *testing.T, out string, feeds Fetcher, now time.Time, carry time.Duration) (Receipt, int) {
 	t.Helper()
+	if carry == 0 {
+		carry = DefaultCarry
+	}
 	return Sync(context.Background(), Options{Base: router.DefaultCatalogJSON(), Out: out, Now: now, Carry: carry, Feeds: feeds})
 }
 
@@ -226,6 +229,36 @@ func TestSyncWithTheAgentBoardDownCarriesReviewAndKeepsOwnWindow(t *testing.T) {
 	want(t, "the local model keeps its own window", c.window(t, "litellm-local-coding"), 65536.0)
 }
 
+func TestCarryZeroKeepsNothing(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "benchmarks.json")
+	sync(t, out, fixtures(t, allFeeds...), t0, 0)
+	// AFK_BENCHMARK_CARRY_SEC=0: with the text board down a minute later,
+	// its research score is not carried.
+	Sync(context.Background(), Options{Base: router.DefaultCatalogJSON(), Out: out, Now: t0.Add(time.Minute), Carry: 0,
+		Feeds: fixtures(t, FeedAgent, FeedWebdev)})
+	res := read(t, out).entry(t, "agy-carbon-native", "research")
+	want(t, "no carry", []any{res["basis"], res["score"]}, []any{"estimate", baseScore(t, "agy-carbon-native", "research")})
+}
+
+func TestWindowIsCarriedOnlyForTheSameModel(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "benchmarks.json")
+	sync(t, out, fixtures(t, allFeeds...), t0, 0)
+	// The previous catalog had opus under another models.dev id (a model
+	// upgrade under the same candidate id), with a window of its own.
+	b := mustRead(t, out)
+	b = []byte(strings.Replace(string(b), `"models_dev_id": "claude-opus-5-5"`, `"models_dev_id": "claude-opus-5-1"`, 1))
+	if err := os.WriteFile(out, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sync(t, out, fixtures(t, FeedAgent), t0.Add(time.Minute), 0)
+	want(t, "the built-in window, not the other model's", read(t, out).window(t, "claude-opus-native"), 1000000.0)
+
+	// Same model: models.dev down, the last sync's window is kept.
+	sync(t, out, fixtures(t, allFeeds...), t0.Add(2*time.Minute), 0)
+	sync(t, out, fixtures(t, FeedAgent), t0.Add(3*time.Minute), 0)
+	want(t, "same model carries", read(t, out).window(t, "claude-opus-native"), 2000000.0)
+}
+
 func TestSyncWithNoBoardLeavesTheCatalogAlone(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "benchmarks.json")
 	sync(t, out, fixtures(t, allFeeds...), t0, 0)
@@ -386,4 +419,15 @@ func TestDueAndAutoSync(t *testing.T) {
 	_ = os.Remove(cat + ".sync-attempt.lock")
 	AutoSync(context.Background(), e, run)
 	want(t, "lock free", calls, 4)
+
+	// The attempt marker can't be written: no sync, or every route would
+	// start one.
+	_ = os.Remove(cat + ".sync-attempt")
+	if err := os.Mkdir(cat+".sync-attempt", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Hour)
+	_ = os.Chtimes(cat+".sync-attempt", old, old)
+	AutoSync(context.Background(), e, run)
+	want(t, "unwritable marker", calls, 4)
 }

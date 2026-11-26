@@ -115,8 +115,10 @@ type Options struct {
 	Base []byte
 	// Out is the catalog to write; the previous one there supplies the
 	// scores to carry while a feed is down.
-	Out   string
-	Now   time.Time
+	Out string
+	Now time.Time
+	// Carry is how long a measured score is kept while its board is down;
+	// 0 keeps none (callers pass DefaultCarry for the usual 14 days).
 	Carry time.Duration
 	Feeds Fetcher
 }
@@ -308,9 +310,6 @@ func numText(v any) string {
 func Sync(ctx context.Context, o Options) (Receipt, int) {
 	if o.Now.IsZero() {
 		o.Now = time.Now()
-	}
-	if o.Carry <= 0 {
-		o.Carry = DefaultCarry
 	}
 	ts := o.Now.UTC().Format("2006-01-02T15:04:05Z")
 	base, err := decodeObject(o.Base)

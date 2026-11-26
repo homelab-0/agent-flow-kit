@@ -32,7 +32,7 @@ How a board becomes a score:
 - When a board is unreachable, the scores it gave last time are carried for 14 days (`AFK_BENCHMARK_CARRY_SEC`), then fall back to the estimates. A score carried for a model whose `arena_match` has since changed is dropped.
 - When no board is reachable, an existing catalog is left exactly as it is.
 
-`afk` also refreshes the catalog by itself: when it routes and the catalog is missing, has no measured score, or is more than a day old (`AFK_BENCHMARK_TTL_SEC`), it starts `afk bench sync` in the background and routes with the catalog it has. A failed refresh is retried no sooner than 15 minutes later (`AFK_BENCHMARK_RETRY_SEC`). `AFK_SKIP_BENCHMARK_AUTOSYNC=1`, or naming your own catalog in `AFK_ROUTER_BENCHMARKS_FILE`, turns this off.
+On Linux, macOS and other Unix systems, `afk` also refreshes the catalog by itself: when it routes and the catalog is missing, has no measured score, or is more than a day old (`AFK_BENCHMARK_TTL_SEC`), it starts `afk bench sync` in the background and routes with the catalog it has. A failed refresh is retried no sooner than 15 minutes later (`AFK_BENCHMARK_RETRY_SEC`). `AFK_SKIP_BENCHMARK_AUTOSYNC=1`, or naming your own catalog in `AFK_ROUTER_BENCHMARKS_FILE`, turns this off. On other systems there is no background refresh: run `afk bench sync` yourself to keep the catalog current.
 
 For offline use and tests, `AFK_BENCHMARK_FEED_DIR` reads each feed from a file in that directory instead (`lmarena-agent.json`, `lmarena-webdev.json`, `lmarena-text.json`, `models-dev.json`).
 

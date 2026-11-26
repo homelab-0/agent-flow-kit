@@ -121,9 +121,14 @@ func AutoSync(ctx context.Context, e Env, sync func(context.Context) int) bool {
 	if !Due(e) {
 		return false
 	}
+	// Without a marker, a sync that reaches no board would be tried again
+	// on every route: no marker, no sync.
 	now := time.Now()
-	if err := os.WriteFile(marker, nil, 0o644); err == nil {
-		_ = os.Chtimes(marker, now, now)
+	if err := os.WriteFile(marker, nil, 0o644); err != nil {
+		return false
+	}
+	if err := os.Chtimes(marker, now, now); err != nil {
+		return false
 	}
 	sync(ctx)
 	return true

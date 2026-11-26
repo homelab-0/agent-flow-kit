@@ -82,7 +82,8 @@ func (s *syncer) candidate(c map[string]any) map[string]any {
 	if p, ok := s.md[str(c["models_dev_provider"])]; ok {
 		window = p[str(c["models_dev_id"])]
 	}
-	if !truthy(window) && !(s.mdLive || str(c["models_dev_id"]) == "") && pc != nil {
+	sameModel := pc != nil && str(pc["models_dev_provider"]) == str(c["models_dev_provider"]) && str(pc["models_dev_id"]) == str(c["models_dev_id"])
+	if !truthy(window) && !(s.mdLive || str(c["models_dev_id"]) == "") && sameModel {
 		window = pc["window_tokens"]
 	}
 	if !truthy(window) {

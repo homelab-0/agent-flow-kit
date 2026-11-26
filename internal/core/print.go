@@ -73,7 +73,13 @@ func (c *Core) Print(ctx context.Context, req PrintRequest, note func(string)) (
 		Note: note,
 	}
 	pinned := req.Flags.Harness != "" || req.Flags.Model != ""
-	return oneshot.Do(ctx, oneshot.Request{First: first, Pinned: pinned, Harnesses: d.list, Effort: req.Flags.Effort}, deps), nil
+	// The pinned route's JSON keeps entitlement_pool null; its failures
+	// are still recorded against the pool that serves it.
+	firstPool := ""
+	if first.EntitlementPool == "" {
+		firstPool = d.st.r.PoolFor(first.Harness, first.Model)
+	}
+	return oneshot.Do(ctx, oneshot.Request{First: first, Pinned: pinned, Harnesses: d.list, Effort: req.Flags.Effort, FirstPool: firstPool}, deps), nil
 }
 
 func toEngineRoute(v any) (engine.Route, error) {

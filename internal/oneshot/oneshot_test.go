@@ -49,6 +49,11 @@ func TestAnswer(t *testing.T) {
 			}
 		})
 	}
+	// A status line before the error is not the reason.
+	got, ok := Answer([]byte(`{"type":"status","message":"connected"}`+"\n"+`{"type":"error","error":{"message":"401 Unauthorized"}}`), nil)
+	if ok || got != "401 Unauthorized" || Classify(got) != KindPool {
+		t.Errorf("status line then error: %q %v", got, ok)
+	}
 	if got, ok := Answer([]byte(`{"type":"error"}`), nil); ok || got != "the CLI reported an error" {
 		t.Errorf("an error with no message: %q %v", got, ok)
 	}

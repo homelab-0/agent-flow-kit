@@ -63,6 +63,17 @@ func TestMarksAreReadBackAsSignals(t *testing.T) {
 	}
 }
 
+func TestPoolFailureKind(t *testing.T) {
+	for reason, want := range map[string]string{
+		"please log in": "auth", "Please login again": "auth", "401": "auth",
+		"quota: usage limit reached": "quota", "429 Too Many Requests": "quota", "stream disconnected": "transient",
+	} {
+		if kind, _, _ := PoolFailureKind(reason); kind != want {
+			t.Errorf("%q: %s, want %s", reason, kind, want)
+		}
+	}
+}
+
 func TestMarkTakesOverAStaleLock(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pool-signals.json")
 	// A lock left by a killed writer, as the bash engine leaves one.

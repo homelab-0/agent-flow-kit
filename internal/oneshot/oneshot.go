@@ -154,10 +154,12 @@ func isFailure(v any) bool {
 // error.message, the result of an is_error document, or message.
 func failureText(vals []any) string {
 	for _, v := range vals {
-		m, ok := v.(map[string]any)
-		if !ok {
+		// Only a value that reports the failure: a status line before it
+		// ("connected") is not the reason.
+		if !isFailure(v) {
 			continue
 		}
+		m := v.(map[string]any)
 		var cands []any
 		switch e := m["error"].(type) {
 		case map[string]any:
@@ -201,6 +203,9 @@ type Request struct {
 	Harnesses []string
 	// Effort, when given on the command line, applies to every route.
 	Effort string
+	// FirstPool is the pool the first route's failures are recorded
+	// against when the route names none (a pinned route).
+	FirstPool string
 }
 
 // Deps is how a run reaches the outside world.
@@ -269,16 +274,20 @@ func Do(ctx context.Context, req Request, d Deps) Result {
 		}
 		why := reason(out, text, ok)
 		kind := Classify(why)
+		pool := route.EntitlementPool
+		if pool == "" && attempt == 1 {
+			pool = req.FirstPool
+		}
 		mark := func() {
 			if d.Mark == nil {
 				return
 			}
 			switch kind {
 			case KindModel:
-				d.Mark(kind, route.EntitlementPool, route.Model, cut(why, 160))
+				d.Mark(kind, pool, route.Model, cut(why, 160))
 			case KindPool:
-				if route.EntitlementPool != "" {
-					d.Mark(kind, route.EntitlementPool, route.Model, cut(PoolReason(why), 160))
+				if pool != "" {
+					d.Mark(kind, pool, route.Model, cut(PoolReason(why), 160))
 				}
 			}
 		}
