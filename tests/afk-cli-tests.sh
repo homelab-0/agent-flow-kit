@@ -38,7 +38,9 @@ printf 'answer from %s\n' "$name"
 SH
   chmod +x "$BIN/$h"
 done
-AFK="$KIT_ROOT/bin/afk"
+# AFK_CLI_UNDER_TEST runs the same behaviours against another afk (the Go
+# front end), which must hand all of them to this engine unchanged.
+AFK="${AFK_CLI_UNDER_TEST:-$KIT_ROOT/bin/afk}"
 LIBS='. "'"$KIT_ROOT"'/lib/afk-common.sh" 2>/dev/null; . "'"$KIT_ROOT"'/lib/afk-harnesses.sh" 2>/dev/null; . "'"$KIT_ROOT"'/lib/afk-smart-router.sh" 2>/dev/null; . "'"$KIT_ROOT"'/lib/afk-cli.sh"'
 
 # ============================================================================

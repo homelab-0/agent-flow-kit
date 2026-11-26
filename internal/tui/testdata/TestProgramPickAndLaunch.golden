@@ -1,0 +1,16 @@
+› fix the flaky renovate test in factory-router-tests
+╭─ Route ──────────────────────────────────────────────────────────────────╮
+│ GK grok · grok-4.7 · effort medium                                       │
+│   coding (guessed) · SuperGrok sign-in · grok’s own auth                 │
+│                                                                          │
+│   Most headroom left, but 9.1 points lower on coding than claude, and    │
+│   the score is a catalog estimate, not measured.                         │
+│                                                                          │
+│   pool  █████████░ 91% left · 5h window resets 04:10                     │
+╰──────────────────────────────────────────────────────────────────────────╯
+
+      route        model            effort score  headroom         cost
+   CL claude       claude-fable-5-2 high   78.1   ████████░░  78%  plan
+   CX codex        gpt-6.1-sol      high   76.4   █████░░░░░  52%  plan
+▌  GK grok         grok-4.7         medium 69.0   █████████░  91%  plan
+   GW gateway      qwen36-27b       —      58.2   GW factory        free
