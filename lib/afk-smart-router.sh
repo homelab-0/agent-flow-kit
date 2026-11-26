@@ -1107,6 +1107,10 @@ afk_router_select_candidate() {
       ({"claude":["anthropic-max"], "codex":["openai-plus"], "grok":["xai-grok"],
         "agy":["antigravity-pool"], "opencode":[], "pi":[]}) as $own_plans |
       select($cclass != "subscription" or ((($own_plans[$c.harness] // []) | index($c.entitlement_pool)) != null)) |
+      # opencode: only its own free models, whatever an older catalog says.
+      select($c.harness != "opencode" or ((($c.model // "") | startswith("opencode/")) and $cclass == "free")) |
+      # A plan never goes through a gateway.
+      select((($c.launch_class // "") | endswith("-gateway") | not) or $cclass != "subscription") |
       # A gateway route is launched only where AFK can keep the vendor login
       # away from the gateway (claude: own config dir and the gateway key).
       select((($c.launch_class // "") | endswith("-gateway") | not) or $c.harness == "claude") |

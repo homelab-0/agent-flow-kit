@@ -1376,7 +1376,7 @@ afk_factory_invoke_stage_agent() {
               fi
               # opencode runs only its own free models: any other vendor model
               # would use that vendor plan login outside its own CLI.
-              if [[ "$routed_model" != opencode/* ]]; then
+              if [[ "$routed_model" != opencode/* ]] || ! [[ "$(jq -r '.cost_class // "free"' <<<"$route_json" 2>/dev/null)" == free ]]; then
                 printf '{"type":"error","error":{"message":"opencode runs only its own free models"}}\n' > "$env_file"
                 exit 1
               fi

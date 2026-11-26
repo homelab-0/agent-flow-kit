@@ -404,6 +404,8 @@ jq '(.candidates[] | select(.harness == "opencode") | .benchmarks.coding_standar
 # And a zero-cost model from another vendor on opencode, seen without its
 # binding, is that vendor plan: never selected.
 jq '.candidates += [ (.candidates[] | select(.harness == "opencode") | .id = "oc-zero-openai" | .model = "openai/gpt-6.1-sol" | .cost_class = "subscription" | .entitlement_pool = "openai-oauth" | .benchmarks.coding_standard.score = 140) ]' "$PLAN_CAT" > "$PLAN_CAT.x" && mv "$PLAN_CAT.x" "$PLAN_CAT"
+# An older discovered catalog that still calls a vendor model on opencode free.
+jq '.candidates += [ (.candidates[] | select(.harness == "opencode") | .id = "oc-stale-free" | .model = "openai/gpt-6.1-sol" | .cost_class = "free" | .entitlement_pool = "opencode-free" | .benchmarks.coding_standard.score = 150) ]' "$PLAN_CAT" > "$PLAN_CAT.x" && mv "$PLAN_CAT.x" "$PLAN_CAT"
 R_PLAN="$(AFK_ROUTER_BENCHMARKS_FILE="$PLAN_CAT" AFK_ROUTER_LITELLM_ASSUME_ONLINE=1 AFK_ROUTER_LITELLM_MODELS='["gpt-6.1-sol","gpt-6-astra","gpt-daybreak-blue-latest"]' AFK_LITELLM_BASE_URL=http://gateway.invalid AFK_ROUTER_HARNESS_LIST="claude,codex,opencode" AFK_ROUTER_SIGNALS_FILE="$TMPROOT/signals-empty.json" \
   afk_router_select_candidate "$ROUTE_REPO" build low "" dev 1 code 40)"
 assert_eq "No route uses a plan login outside its own vendor CLI, and no gateway route goes to a CLI other than claude" \

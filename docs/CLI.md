@@ -31,7 +31,7 @@ The session itself is the chosen CLI's own interface. `afk` prints one line sayi
 | `--explain`, `--dry-run` | show the decision and the best route per installed CLI; start nothing |
 | `--json` | machine-readable output for `--explain` and `-p` |
 | `--yolo` | let the CLI act without asking, using that CLI's own skip-permissions flag. Off by default. |
-| `--pass <arg>` | pass one argument to the CLI unchanged; repeat it for more, e.g. `afk --harness claude --pass --continue` |
+| `--pass <arg>` | pass one argument to the CLI unchanged; repeat it for more, e.g. `afk --harness claude --pass --continue`. For opencode, a model flag (`-m`, `--model`) can't be passed this way; use `--model`, so the plan-login check sees it. |
 | `--` | ends the options: everything after it is the prompt, even if it starts with a dash |
 | `--launch-plan --route <json> [--mode interactive\|print]` | print the launch plan for a route chosen elsewhere (`afk-launch-plan/1`: argv, environment, answer format) and start nothing. `--route -` reads the route from stdin, so it stays off the command line. Front ends use this. |
 

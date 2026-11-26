@@ -144,6 +144,11 @@ APP="$(bash -c "$LIBS"'
   printf ":"
   ( unset AFK_GATEWAY_KEY; afk_cli_apply_plan_env "$plan"; printf "%s" "$?" )')"
 assert_eq "Applying a plan copies the key before unsetting, drops the plan token, and refuses an empty key source" "$APP" "gk|gone|http://gw:1"
+Q1="$("$AFK" --launch-plan --json --route '{"harness":"opencode","model":"opencode/paid","cost_class":"api-metered"}' -- hi 2>/dev/null)"; q1=$?
+Q2="$(AFK_GATEWAY_KEY=k "$AFK" --launch-plan --json --route '{"harness":"claude","model":"opus","launch_class":"claude-gateway","litellm_base_url":"http://gw","cost_class":"subscription","entitlement_pool":"anthropic-max"}' -- hi 2>/dev/null)"; q2=$?
+Q3="$("$AFK" --launch-plan --json --route '{"harness":"opencode","model":"opencode/glm-free","cost_class":"free"}' --pass -m --pass openai/gpt-6.1-sol -- hi 2>/dev/null)"; q3=$?
+assert_eq "A priced opencode model, a plan route marked as a gateway launch, and a model slipped in through --pass are all refused" \
+  "$q1:$(jq -r .ok <<<"$Q1"):$q2:$(jq -r .ok <<<"$Q2"):$q3:$(jq -r .ok <<<"$Q3")" "4:false:4:false:4:false"
 EXJ="$("$AFK" --explain --json -- "-v flag handling" 2>/dev/null)"
 assert_eq "--explain JSON carries its schema, and the words after -- are the prompt even with a leading dash" \
   "$(jq -r .schema <<<"$EXJ")" "afk-route-explain/1"

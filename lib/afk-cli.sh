@@ -184,6 +184,8 @@ afk_cli_strip_vendor_env() {
 # variable to copy a secret from at spawn time; no secret value is printed.
 # Not launchable: status 1, and the reason on stdout.
 afk_cli_launch_envjson() {
+  # The key is expanded below to test it is set: never under tracing.
+  local -; set +x
   local lc url h keyvar dir
   lc="$(jq -r '.launch_class // empty' <<<"$1" 2>/dev/null)"
   if [[ "$lc" != *-gateway ]]; then printf '{"env_set":{},"env_from":{},"env_unset":[]}'; return 0; fi
@@ -219,7 +221,19 @@ afk_cli_launch_plan() {
     opencode)
       if [[ "$m" != opencode/* ]]; then
         jq -cn --arg m "$m" '{schema:"afk-launch-plan/1", ok:false, error:("opencode runs only its own free models here; " + $m + " would use another vendor plan login")}'; return 1
-      fi ;;
+      fi
+      case "$(jq -r '.cost_class // empty' <<<"$route")" in
+        ""|free) ;;
+        *) jq -cn --arg m "$m" '{schema:"afk-launch-plan/1", ok:false, error:("opencode runs only its own free models here; " + $m + " is priced")}'; return 1 ;;
+      esac
+      # A model chosen through --pass would bypass the check above.
+      local pa
+      for pa in "$@"; do
+        case "$pa" in
+          -m|-m*|--model|--model=*)
+            jq -cn '{schema:"afk-launch-plan/1", ok:false, error:"opencode: choose the model with --model, not through --pass"}'; return 1 ;;
+        esac
+      done ;;
     pi)
       jq -cn '{schema:"afk-launch-plan/1", ok:false, error:"pi is not launched: it would use another vendor plan login"}'; return 1 ;;
   esac
@@ -227,6 +241,11 @@ afk_cli_launch_plan() {
   local pool cclass
   pool="$(jq -r '.entitlement_pool // empty' <<<"$route")"
   cclass="$(jq -r '.cost_class // empty' <<<"$route")"
+  # A plan never goes through a gateway, even on its own CLI.
+  if [[ "$(jq -r '.launch_class // empty' <<<"$route")" == *-gateway ]] \
+     && { [[ "$cclass" == subscription ]] || [[ "$pool" =~ ^(anthropic-max|openai-plus|xai-grok|antigravity-pool)$|-oauth$ ]]; }; then
+    jq -cn --arg p "$pool" '{schema:"afk-launch-plan/1", ok:false, error:("the " + $p + " plan login is never sent through a gateway")}'; return 1
+  fi
   case "$h:$pool" in
     claude:anthropic-max|codex:openai-plus|grok:xai-grok|agy:antigravity-pool) ;;
     *:anthropic-max|*:openai-plus|*:xai-grok|*:antigravity-pool|*:*-oauth)
