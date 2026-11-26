@@ -4,7 +4,7 @@ Every machine-readable output carries a `schema` field with a name and a version
 
 | Schema | Written by |
 |---|---|
-| `afk-route-explain/1` | `afk --explain --json` |
+| `afk-route-explain/2` | `afk --explain --json` |
 | `afk-launch-plan/1` | `afk --launch-plan` |
 | `afk-harnesses/3` | `afk harness --json` |
 | `afk-router-pools/3` | pool usage (used by the receipt) |
@@ -13,11 +13,11 @@ Every machine-readable output carries a `schema` field with a name and a version
 
 Fields AFK can't know are `null`, never zero.
 
-## Explain (`afk-route-explain/1`)
+## Explain (`afk-route-explain/2`)
 
 ```json
 {
-  "schema": "afk-route-explain/1",
+  "schema": "afk-route-explain/2",
   "task": "coding",
   "task_guessed": true,
   "prefer": "balanced",
@@ -25,6 +25,8 @@ Fields AFK can't know are `null`, never zero.
   "by_harness": [ { "...": "the best route on each installed CLI, highest score first" } ]
 }
 ```
+
+Version 2 drops the routes' `role` and `memory_mode` fields that version 1 had. `AFK_BACKEND=bash` still writes version 1.
 
 With `--harness` and `--model` together, `choice` is a pinned route (`harness`, `model`, `effort`, `entitlement_pool: null`, `reason`, `pinned: true`) and `by_harness` is empty.
 
