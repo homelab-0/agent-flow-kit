@@ -143,3 +143,7 @@ func LoadCatalog(home string, getenv func(string) string) (*Catalog, error) {
 	}
 	return DefaultCatalog(), nil
 }
+
+// DefaultCatalogJSON is the built-in catalog document, the base a
+// benchmark sync rescores.
+func DefaultCatalogJSON() []byte { return append([]byte(nil), defaultCatalog...) }

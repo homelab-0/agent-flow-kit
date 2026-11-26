@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/charmbracelet/x/term"
@@ -15,6 +17,7 @@ import (
 	"github.com/jlengelbrecht/agent-flow-kit/internal/cli"
 	"github.com/jlengelbrecht/agent-flow-kit/internal/core"
 	"github.com/jlengelbrecht/agent-flow-kit/internal/engine"
+	"github.com/jlengelbrecht/agent-flow-kit/internal/oneshot"
 )
 
 const usage = `afk — run the best agent CLI on this machine for the task
@@ -23,6 +26,7 @@ const usage = `afk — run the best agent CLI on this machine for the task
   afk -p [options] prompt...         print one answer and exit
   afk --explain [options] [prompt]   show the choice and the alternatives
   afk harness [--all] [--json]       the agent CLIs found on this machine
+  afk bench sync [--json]            refresh the benchmark catalog now
 
 Options:
   -p, --print            one-shot: run headless and print the answer
@@ -54,7 +58,7 @@ Options:
 On the route card: ↵ launch · ↑↓/jk pick · tab effort · e edit the prompt ·
 y twice for yolo · ? why · esc cancel.
 
-A prompt that starts with "harness" needs "--" before it.
+A prompt that starts with "harness" or "bench" needs "--" before it.
 `
 
 // runGo is afk on the Go engine.
@@ -68,17 +72,14 @@ func runGo(args cli.Args) int {
 		return 2
 	}
 	c := core.New()
+	if !args.LaunchPlan {
+		refreshBenchmarks(c.Home)
+	}
 	switch {
 	case args.LaunchPlan:
 		return launchPlanCmd(c, args, os.Stdin, os.Stdout, os.Stderr)
 	case args.Print:
-		// The one-shot run with failover is still the bash engine's.
-		path, err := engine.Locate()
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "afk: -p still needs the bash engine (agent-flow-kit):", err)
-			return 127
-		}
-		return handOver(path, args.Forward)
+		return printCmd(c, args, os.Stdin, os.Stdout, os.Stderr)
 	case args.Explain:
 		return explainCmd(c, args, os.Stdout, os.Stderr)
 	case args.JSON:
@@ -216,4 +217,79 @@ func launchPlanCmd(c *core.Core, args cli.Args, stdin io.Reader, stdout, stderr 
 	}
 	fmt.Fprintln(stdout, string(b))
 	return 0
+}
+
+// printCmd is afk -p: one answer on stdout, with failover.
+func printCmd(c *core.Core, args cli.Args, stdin *os.File, stdout, stderr io.Writer) int {
+	prompt := args.Prompt
+	if prompt == "" && !term.IsTerminal(stdin.Fd()) {
+		b, err := io.ReadAll(io.LimitReader(stdin, 16<<20))
+		if err != nil {
+			fmt.Fprintln(stderr, "afk:", err)
+			return 1
+		}
+		prompt = strings.TrimRight(string(b), "\n")
+	}
+	if prompt == "" {
+		fmt.Fprintln(stderr, "afk: -p needs a prompt")
+		return 2
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	res, err := c.Print(ctx, core.PrintRequest{Flags: args.Flags, Prompt: prompt, Yolo: args.Yolo, Pass: args.Pass},
+		func(line string) { fmt.Fprintln(stderr, line) })
+	if err != nil {
+		fmt.Fprintln(stderr, "afk:", err)
+		return core.ExitCode(err)
+	}
+	return printResult(res, args.JSON, stdout, stderr)
+}
+
+// printOK and printFailed are afk -p --json's one line.
+type printOK struct {
+	OK       bool    `json:"ok"`
+	Harness  string  `json:"harness"`
+	Model    *string `json:"model"`
+	Effort   *string `json:"effort"`
+	Attempts int     `json:"attempts"`
+	Output   string  `json:"output"`
+}
+
+type printFailed struct {
+	OK    bool   `json:"ok"`
+	Tried string `json:"tried"`
+	Exit  int    `json:"exit"`
+	Error string `json:"error"`
+}
+
+func printResult(res oneshot.Result, asJSON bool, stdout, stderr io.Writer) int {
+	tried := strings.Join(res.Tried, ", ")
+	switch {
+	case res.Interrupted:
+		fmt.Fprintln(stderr, "afk: interrupted")
+		return 130
+	case res.OK && asJSON:
+		b, _ := json.Marshal(printOK{OK: true, Harness: res.Route.Harness, Model: strPtr(res.Route.Model),
+			Effort: strPtr(res.Route.Effort), Attempts: res.Attempts, Output: res.Output})
+		fmt.Fprintln(stdout, string(b))
+		return 0
+	case res.OK:
+		fmt.Fprintln(stdout, res.Output)
+		return 0
+	case asJSON:
+		b, _ := json.Marshal(printFailed{OK: false, Tried: tried, Exit: res.Exit, Error: res.Error})
+		fmt.Fprintln(stdout, string(b))
+	case res.NoOther:
+		fmt.Fprintf(stderr, "afk: %s failed and no other model is usable: %s\n", tried, res.Error)
+	default:
+		fmt.Fprintf(stderr, "afk: %s failed (exit %d): %s\n", tried, res.Exit, res.Error)
+	}
+	return 5
+}
+
+func strPtr(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }

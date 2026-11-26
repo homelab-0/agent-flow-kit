@@ -78,14 +78,24 @@ AFK sends your gateway key to the gateway when it launches a gateway route, so t
 | `AFK_CODEX_SESSIONS_DIR` | read Codex's rate limits from here |
 | `AFK_CLAUDE_USAGE_FIXTURE` | read the Claude usage answer from this file instead of asking (tests) |
 | `CLAUDE_CONFIG_DIR`, `CODEX_HOME` | honoured as the CLIs themselves honour them |
+| `AFK_ROUTER_SIGNALS_FILE` | use this [signals file](../guides/pools.md#failure-signals) instead of `~/.config/afk/pool-signals.json` |
+
+### Benchmark sync
+
+| Variable | Meaning |
+|---|---|
+| `AFK_SKIP_BENCHMARK_AUTOSYNC=1` | don't refresh the catalog in the background |
+| `AFK_BENCHMARK_TTL_SEC` | refresh a catalog older than this (default 86400, a day) |
+| `AFK_BENCHMARK_RETRY_SEC` | wait this long after an attempt before another (default 900) |
+| `AFK_BENCHMARK_CARRY_SEC` | keep a measured score this long while its board is unreachable (default 1209600, 14 days) |
+| `AFK_BENCHMARK_FEED_DIR` | read the feeds from files in this directory instead of the network |
 
 ### Launching and display
 
 | Variable | Meaning |
 |---|---|
 | `AFK_STATE_DIR` | where the separate Claude config for gateway routes lives (default `~/.local/state/agent-flow-kit`) |
-| `AFK_ENGINE` | the bash engine, for `-p` |
-| `AFK_BACKEND=bash` | send every call to the bash engine, as before the Go engine |
+| `AFK_BACKEND=bash` | send every call to the bash engine, as before the Go engine; it is found through `AFK_ENGINE`, next to the `afk` binary, or on `PATH` |
 | `NO_COLOR`, `TERM=dumb`, `AFK_MOTION=off` | no animation (and no colour for `NO_COLOR`) |
 | `XDG_CONFIG_HOME` | the base for `afk/state/runs` |
 
@@ -97,7 +107,7 @@ AFK sends your gateway key to the gateway when it launches a gateway route, so t
 | `~/.config/afk/pool-signals.json` | [failure signals](../guides/pools.md#failure-signals) |
 | `~/.config/afk/live-quota-cache.json` | Claude usage figures, two minutes (mode 600; no tokens) |
 | `~/.config/afk/harness-bin-cache.json` | which CLIs answered `--version`, five minutes |
-| `~/.config/afk/benchmarks.json` | a synced benchmark catalog, used when present and current |
+| `~/.config/afk/benchmarks.json` | the [synced benchmark catalog](benchmark-catalog.md#refreshing-it), used when present and current; `.sync-attempt` beside it marks the last attempt |
 | `~/.config/afk/discovered-models.json` | models the CLIs reported, used when present |
 | `~/.local/state/agent-flow-kit/gateway-claude/` | the separate Claude config for gateway routes |
 

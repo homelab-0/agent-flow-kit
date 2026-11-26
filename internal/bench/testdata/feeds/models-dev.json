@@ -1,0 +1,23 @@
+{
+  "anthropic": {
+    "models": {
+      "claude-opus-5-5": {
+        "limit": {
+          "context": 2000000
+        }
+      },
+      "claude-sonnet-5-5": {
+        "limit": {}
+      }
+    }
+  },
+  "openai": {
+    "models": {
+      "gpt-6-astra": {
+        "limit": {
+          "context": 1100000
+        }
+      }
+    }
+  }
+}

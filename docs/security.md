@@ -36,6 +36,7 @@ AFK does not change your CLIs' own settings. Yolo applies to one launch and is n
 
 - Anthropic's usage endpoint, with your Claude login, at most every two minutes while routing.
 - The gateway you configured, for its model list.
+- The public benchmark feeds (Hugging Face's dataset server for the LMArena leaderboards, and models.dev), when the benchmark catalog is refreshed: about once a day, or when you run `afk bench sync`. These are plain GETs with no key, token or identifier of yours.
 
 Nothing else leaves your machine: no telemetry, no analytics.
 
