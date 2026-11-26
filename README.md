@@ -28,7 +28,7 @@ If you pay for more than one AI coding plan, or use a mix of plans, free models 
 - **Routes on evidence.** It weighs each model's benchmark score for the kind of work, how much is left in each subscription pool, and cost. Free and local models win quick tasks; reviews never go to them.
 - **Shows its work.** A route card shows the pick, the reason, the pool headroom, and the best option from every other installed CLI before anything starts. You can take it, pick another, or change the effort.
 - **Gets out of the way.** The session is the chosen CLI's own interface, with nothing wrapped around it. When it exits, AFK prints a receipt: time, exit status, pool before and after, files changed and commits.
-- **Keeps logins where they belong.** A vendor's plan login is only ever used by that vendor's own CLI, and gateway routes run with a separate config so your plan login never reaches the gateway.
+- **Your CLIs, your logins.** AFK routes to whatever you have installed and signed in, and never hands a plan login to a gateway: gateway routes run with a separate config and the gateway's own key.
 - **One binary.** AFK is written in Go and is moving to a single static binary with no runtime dependencies.
 
 ## Install
@@ -162,7 +162,7 @@ For each installed CLI, AFK considers every model that CLI can run and scores it
 2. **Pool headroom.** How much is left in that subscription's window, from the provider's live usage where it reports one (Claude, Codex) and from recent session activity otherwise. A pool that just hit a quota or sign-in error is marked down for a while.
 3. **Cost.** Subscription, free, local or metered. `--prefer cheap` favours free and local models; `--prefer best` ignores cost.
 
-Effort starts from the task kind and goes up for harder work, within what the CLI supports. Two rules are fixed: a review never goes to a free or local model, and a plan login is only used by its own vendor's CLI.
+Effort starts from the task kind and goes up for harder work, within what the CLI supports. Two rules are fixed: a review never goes to a free or local model, and a plan login is never sent through a gateway.
 
 Press `?` on the route card to see the working:
 
@@ -185,7 +185,7 @@ Press `?` on the route card to see the working:
 | Kiro CLI | `kiro-cli` | ✓ | planned |
 | Qwen Code | `qwen` | ✓ | planned |
 | Kimi Code | `kimi` | ✓ | planned |
-| Pi | `pi` | ✓ | planned |
+| Pi | `pi` | ✓ | ✓ |
 | Devin CLI | `devin` | ✓ | planned |
 
 Discovery reports each CLI's version, how it was installed (mise, npm, bun, pnpm, Homebrew, uv, pipx, cargo or self-managed), the command that updates it, its effort levels, and whether it looks signed in. The sign-in check looks for a login on disk. For Claude, Codex and a few others it opens the credential file to see which login fields are set, but it never decodes, prints, logs or stores a token's value. A file AFK can't read shows as `unknown`, not signed out. Where AFK can't tell, it says `unknown`.

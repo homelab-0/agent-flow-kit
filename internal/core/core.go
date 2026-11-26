@@ -22,7 +22,7 @@ import (
 
 // Routable are the CLIs AFK routes to and launches, in the order the bash
 // engine lists them.
-var Routable = []string{"claude", "codex", "opencode", "grok", "agy"}
+var Routable = []string{"claude", "codex", "opencode", "grok", "agy", "pi"}
 
 // Core is the Go engine for one machine.
 type Core struct {

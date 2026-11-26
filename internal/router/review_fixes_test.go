@@ -190,7 +190,7 @@ func TestServedByIncludesDiscoveredModels(t *testing.T) {
 	}
 }
 
-func TestServedByAppliesTheLoginRules(t *testing.T) {
+func TestServedByOffersEveryCLIThatServesIt(t *testing.T) {
 	tc := struct {
 		Reasoning bool `json:"reasoning"`
 		Toolcall  bool `json:"toolcall"`
@@ -200,14 +200,13 @@ func TestServedByAppliesTheLoginRules(t *testing.T) {
 		CanonicalModel: "anthropic/claude-sonnet-5-5", CostClass: "subscription", EntitlementPool: "anthropic-max",
 		Capabilities: tc,
 	}}}
+	// Which CLI runs a model is the user's choice: both are offered, so
+	// --model alone asks which one.
 	got := r.ServedBy("anthropic/claude-sonnet-5-5", []string{"opencode", "claude"}, false)
-	if _, ok := got["opencode"]; ok {
-		t.Fatalf("a Claude plan model was offered on opencode: %v", got)
+	if got["claude"] != "sonnet" || got["opencode"] != "anthropic/claude-sonnet-5-5" {
+		t.Fatalf("ServedBy = %v", got)
 	}
-	if got["claude"] != "sonnet" {
-		t.Fatalf("claude should serve it as sonnet: %v", got)
-	}
-	// The gateway model in the catalog stays pinnable on claude.
+	// A gateway model runs on claude only (a technical limit).
 	if got := r.ServedBy("qwen36-27b", []string{"claude"}, false); got["claude"] != "qwen36-27b" {
 		t.Fatalf("gateway model: %v", got)
 	}
@@ -260,7 +259,7 @@ func TestSymlinkedCodexSessions(t *testing.T) {
 	}
 }
 
-func TestPiNeverWinsARoute(t *testing.T) {
+func TestPiCanWinARoute(t *testing.T) {
 	probe := &Probe{Harnesses: map[string]HarnessState{"pi": {Installed: true}}, Pools: map[string]Pool{}}
 	r := &Router{Catalog: DefaultCatalog(), Probe: probe, Discovered: []DiscoveredModel{{
 		ID: "pi:free", Harness: "pi", Model: "free-model", CostClass: "free", IsFree: true,
@@ -270,7 +269,23 @@ func TestPiNeverWinsARoute(t *testing.T) {
 			Toolcall  bool `json:"toolcall"`
 		}{Toolcall: true},
 	}}}
-	if got := r.Select(Input{Stage: "build", Risk: "low", PreferFree: true}); got.Harness == "pi" {
-		t.Fatalf("pi won: %+v", got)
+	if got := r.Select(Input{Stage: "build", Risk: "low", PreferFree: true}); got.Harness != "pi" {
+		t.Fatalf("pi was not routed to: %+v", got)
+	}
+}
+
+func TestAnotherVendorsPlanNeedsThatCLIsLogin(t *testing.T) {
+	probe := &Probe{
+		Harnesses: map[string]HarnessState{"opencode": {Installed: true}},
+		Pools:     map[string]Pool{"xai-grok": {State: "available"}},
+		Bindings:  map[string][]string{"xai-grok": {"grok"}},
+	}
+	r := &Router{Catalog: DefaultCatalog(), Probe: probe}
+	if got := r.Select(Input{Stage: "build", Risk: "low", OnlyHarnesses: []string{"opencode"}}); got.Model == "xai/grok-4.5" {
+		t.Fatal("opencode was offered xAI's plan without being signed in to it")
+	}
+	probe.Bindings["xai-grok"] = []string{"grok", "opencode"}
+	if got := r.Select(Input{Stage: "build", Risk: "low", OnlyHarnesses: []string{"opencode"}}); got.Model != "xai/grok-4.5" {
+		t.Fatalf("opencode signed in to xAI was not offered it: %+v", got)
 	}
 }

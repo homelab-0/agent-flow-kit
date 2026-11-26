@@ -19,7 +19,7 @@ A prompt that starts with the word `harness` needs `--` before it.
 | `--prompt <text>` | the prompt, in addition to (after) any words on the command line |
 | `--task <kind>` | `coding` (default), `quick`, `complex`, `review`, `architecture`, `webdev`, `research`, `security`; guessed from the prompt when not given |
 | `--prefer <mode>` | `balanced` (default), `cheap`, `best` |
-| `--harness <cli>` | only this CLI: `claude`, `codex`, `opencode`, `grok`, `agy` |
+| `--harness <cli>` | only this CLI: `claude`, `codex`, `opencode`, `grok`, `agy`, `pi` |
 | `--model <id>` | this model; without `--harness`, the CLI that serves it is looked up |
 | `--effort <level>` | `low`, `medium` or `high` |
 | `--repo <dir>` | the project whose `.afk/config.json` applies (default: the current directory); the CLI still starts in the current directory |

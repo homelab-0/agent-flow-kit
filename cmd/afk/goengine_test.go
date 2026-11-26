@@ -47,8 +47,9 @@ func TestLaunchPlanCmdRefusals(t *testing.T) {
 		t.Fatalf("print without prompt: %d %q", code, errb.String())
 	}
 	out.Reset()
-	args = cli.Args{LaunchPlan: true, Route: `{"harness":"pi","entitlement_pool":"openai-plus"}`}
-	if code := launchPlanCmd(c, args, nil, &out, &errb); code != 4 || !strings.Contains(out.String(), `"ok":false`) {
-		t.Fatalf("pi: %d %q", code, out.String())
+	// A plan login is never sent through a gateway.
+	args = cli.Args{LaunchPlan: true, Route: `{"harness":"claude","entitlement_pool":"anthropic-max","cost_class":"subscription","launch_class":"claude-gateway"}`}
+	if code := launchPlanCmd(c, args, nil, &out, &errb); code != 4 || !strings.Contains(out.String(), "never sent through a gateway") {
+		t.Fatalf("plan through a gateway: %d %q", code, out.String())
 	}
 }

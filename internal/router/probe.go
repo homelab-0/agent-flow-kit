@@ -175,7 +175,7 @@ func ProbePools(ctx context.Context, cat *Catalog, e ProbeEnv) *Probe {
 			unavailable[m] = v
 		}
 	}
-	return &Probe{Schema: PoolsSchema, Harnesses: harnesses, AuthAlerts: alerts, UnavailableModels: unavailable, Pools: pools}
+	return &Probe{Schema: PoolsSchema, Harnesses: harnesses, AuthAlerts: alerts, UnavailableModels: unavailable, Pools: pools, Bindings: binds}
 }
 
 func reauth(h string) string {

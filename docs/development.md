@@ -48,6 +48,7 @@ The Go engine fixes some things the bash engine gets wrong, so on these points t
 - The newest Codex rate-limit reading wins by when it was recorded, the last usable record in each file counts, and very long lines are skipped instead of ending the read.
 - A gateway that answers with an HTTP error is offline.
 - Without a terminal, `afk` never waits for a rating.
+- No plan-login policy: the bash engine kept each vendor's plan to its own CLI and OpenCode to its own free models, and never launched Pi. AFK routes to any installed CLI that is signed in to the model's plan, and launches Pi. `gen-golden.sh` removes those two rules from a copy of the bash router before comparing. `-p` still runs on the bash engine and keeps its rules until it is ported.
 
 The parity fixtures don't cover these cases; each has its own test.
 

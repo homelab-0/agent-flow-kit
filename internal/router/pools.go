@@ -39,6 +39,9 @@ type Probe struct {
 	UnavailableModels map[string]any          `json:"unavailable_models"`
 	Pools             map[string]Pool         `json:"pools"`
 	ProbeFailed       bool                    `json:"probe_failed,omitempty"`
+	// Bindings lists, per pool, the CLIs signed in to it. Nil means
+	// unknown, and then no candidate is held back for want of a login.
+	Bindings map[string][]string `json:"bindings,omitempty"`
 }
 
 // gateway is the probe's entry for the model gateway.

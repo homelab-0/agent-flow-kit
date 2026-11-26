@@ -36,8 +36,8 @@ A model is only considered when all of these hold:
 - Its CLI is installed and answers `--version`.
 - Its pool isn't exhausted (90% or more used), offline, or waiting for a sign-in.
 - The model hasn't failed recently with "not found" or "no access" (it is set aside for an hour).
-- **A plan login is used only by its own vendor's CLI.** The Claude plan only through `claude`, ChatGPT only through `codex`, SuperGrok only through `grok`, Antigravity only through `agy`. OpenCode runs only its own free models, and Pi is never launched with a plan.
-- **A plan never goes through a gateway.** Gateway routes run only on `claude`, in a way that keeps the plan login away from the gateway (see [gateways](gateways.md)). A gateway model counts only while the gateway is up and lists it.
+- **The CLI can reach the model.** A plan model on another vendor's CLI (OpenCode or Pi with a Claude, ChatGPT or xAI plan, say) counts only when that CLI is signed in to the plan. Which CLIs you use with which logins is up to you; AFK doesn't police it.
+- **A plan never goes through a gateway.** This is credential safety: a gateway is someone else's server, so gateway routes run only on `claude`, with the gateway's own key and your plan login kept out (see [gateways](gateways.md)). A gateway model counts only while the gateway is up and lists it.
 - **Reviews never go to a free or local model**, unless a project opts in (`allow_free_reviewers`).
 - Metered pay-per-token API models are skipped unless allowed (`allow_metered_api`).
 - Specialist security models are considered only when you are entitled to them (`security_models`).

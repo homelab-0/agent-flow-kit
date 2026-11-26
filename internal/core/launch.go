@@ -20,11 +20,6 @@ var (
 	effortTierRE = regexp.MustCompile(`-(low|medium|high)$`)
 )
 
-// ownPool is the plan pool each CLI's own login draws on.
-var ownPool = map[string]string{
-	"claude": "anthropic-max", "codex": "openai-plus", "grok": "xai-grok", "agy": "antigravity-pool",
-}
-
 // knownVendorVars are the Claude/Anthropic credential variables, unset for
 // a gateway launch so the plan login never reaches the gateway.
 var knownVendorVars = []string{
@@ -47,9 +42,8 @@ func planError(msg string) (*engine.LaunchPlan, error) {
 
 // LaunchPlan works out how to start a route: the command, the environment
 // it needs and where its answer goes. Every launch passes here, so the
-// login rules are checked here too, for pinned routes and routes a front
-// end chose: a plan login is used only by its own vendor's CLI and never
-// through a gateway.
+// gateway rule is checked here too, for pinned routes and routes a front
+// end chose: a plan login is never sent through a gateway.
 func (c *Core) LaunchPlan(_ context.Context, r engine.Route, mode string, yolo bool, pass []string, prompt string) (*engine.LaunchPlan, error) {
 	h, m, e := r.Harness, r.Model, r.Effort
 	if mode != "interactive" && mode != "print" {
@@ -62,32 +56,12 @@ func (c *Core) LaunchPlan(_ context.Context, r engine.Route, mode string, yolo b
 		return nil, &UsageError{"a print plan needs a prompt"}
 	}
 	cclass, pool := r.CostClass, r.EntitlementPool
-	switch h {
-	case "opencode":
-		if !strings.HasPrefix(m, "opencode/") {
-			return planError("opencode runs only its own free models here; " + m + " would use another vendor plan login")
-		}
-		if cclass != "" && cclass != "free" {
-			return planError("opencode runs only its own free models here; " + m + " is priced")
-		}
-		// A model chosen through --pass would get past the check above.
-		for _, p := range pass {
-			if p == "-m" || strings.HasPrefix(p, "-m") || p == "--model" || strings.HasPrefix(p, "--model=") {
-				return planError("opencode: choose the model with --model, not through --pass")
-			}
-		}
-	case "pi":
-		return planError("pi is not launched: it would use another vendor plan login")
-	}
+	// Which CLI runs which model with which login is your choice; AFK
+	// launches what you route to. The one refusal left is credential
+	// safety: a plan login is never sent to a gateway (another party's
+	// server).
 	if strings.HasSuffix(r.LaunchClass, "-gateway") && (cclass == "subscription" || planPoolRE.MatchString(pool)) {
 		return planError("the " + pool + " plan login is never sent through a gateway")
-	}
-	if own, isPlanCLI := ownPool[h]; isPlanCLI && pool == own {
-		// The CLI's own plan.
-	} else if planPoolRE.MatchString(pool) {
-		return planError("the " + pool + " plan login is not used by " + h)
-	} else if cclass == "subscription" {
-		return planError("no plan login of " + h + " covers pool " + pool)
 	}
 
 	set, from, unset, err := c.launchEnv(r)
@@ -302,6 +276,21 @@ func (c *Core) launchArgv(h, model, effort, mode string, yolo bool, prompt, cxou
 			if prompt != "" {
 				add("-i", prompt)
 			}
+		}
+	case "pi":
+		if model != "" {
+			add("--model", model)
+		}
+		if effort != "" {
+			add("--thinking", effort)
+		}
+		// Pi has no permission prompts to skip, so yolo changes nothing.
+		if print {
+			add("-p", "--mode", "json")
+		}
+		add(pass...)
+		if prompt != "" {
+			add("--", prompt)
 		}
 	default:
 		return nil

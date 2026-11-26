@@ -11,8 +11,20 @@ export HOME="$(mktemp -d)"; trap 'rm -rf -- "$HOME"' EXIT
 export AFK_ROUTER_BENCHMARKS_FILE="$here/../benchmarks.json"
 export AFK_ROUTER_SIGNALS_FILE="$HOME/none.json"
 unset AFK_LITELLM_BASE_URL AFK_ROUTER_ALLOW_METERED_API AFK_ROUTER_PREFER_FREE AFK_ROUTER_ALLOW_FREE_REVIEWERS AFK_SECURITY_MODELS AFK_ROUTER_ONLY_HARNESSES
+# AFK doesn't police which CLI uses which login, so the bash router's
+# plan-login rules are taken out of a copy of it before it runs: a plan
+# only in its own CLI, and OpenCode only with its own free models. Every
+# other rule is compared as it is.
+lib="$HOME/lib"; cp -R "$root/lib" "$lib"
+sed -i.orig \
+  -e '/select(\$cclass != "subscription" or (((\$own_plans/d' \
+  -e '/select(\$c.harness != "opencode" or/d' \
+  "$lib/afk-smart-router.sh"
+if grep -q 'own_plans\[' "$lib/afk-smart-router.sh" || grep -q 'select(\$c.harness != "opencode"' "$lib/afk-smart-router.sh"; then
+  echo "gen-golden: a plan-login rule is still in the bash router copy; update the sed patterns" >&2; exit 1
+fi
 # shellcheck source=/dev/null
-. "$root/lib/afk-smart-router.sh"
+. "$lib/afk-smart-router.sh"
 afk_router_ensure_fresh_benchmarks() { :; }
 PROBE=""
 afk_router_probe_pools() { printf '%s' "$PROBE"; }

@@ -12,7 +12,7 @@ Agent CLIs · 5 of 13 supported CLIs installed
   ...
 ```
 
-AFK routes to `claude`, `codex`, `opencode`, `grok` and `agy` today. Sign in to each one with its own command (`claude auth login`, `codex login`, and so on); AFK never handles your password.
+AFK routes to `claude`, `codex`, `opencode`, `grok`, `agy` and `pi` today. Sign in to each one with its own command (`claude auth login`, `codex login`, and so on); AFK never handles your password.
 
 ## 2. Ask what AFK would pick
 

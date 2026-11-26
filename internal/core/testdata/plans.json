@@ -454,9 +454,20 @@
   ],
   "prompt": "-fix the bug",
   "want": {
-   "ok": false,
-   "error": "opencode runs only its own free models here; xai/grok-4.5 would use another vendor plan login"
-  }
+   "ok": true,
+   "argv": [
+    "$BIN/opencode",
+    "-m",
+    "xai/grok-4.5",
+    "--verbose",
+    "--prompt= -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": null
+  },
+  "note": "refused by the bash engine's plan-login rule; AFK no longer polices which CLI uses which login"
  },
  {
   "name": "opencode-plan-interactive-yolo",
@@ -474,9 +485,20 @@
   ],
   "prompt": "-fix the bug",
   "want": {
-   "ok": false,
-   "error": "opencode runs only its own free models here; xai/grok-4.5 would use another vendor plan login"
-  }
+   "ok": true,
+   "argv": [
+    "$BIN/opencode",
+    "-m",
+    "xai/grok-4.5",
+    "--verbose",
+    "--prompt= -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": null
+  },
+  "note": "refused by the bash engine's plan-login rule; AFK no longer polices which CLI uses which login"
  },
  {
   "name": "opencode-plan-print-ask",
@@ -494,9 +516,27 @@
   ],
   "prompt": "-fix the bug",
   "want": {
-   "ok": false,
-   "error": "opencode runs only its own free models here; xai/grok-4.5 would use another vendor plan login"
-  }
+   "ok": true,
+   "argv": [
+    "$BIN/opencode",
+    "run",
+    "--format",
+    "json",
+    "-m",
+    "xai/grok-4.5",
+    "--verbose",
+    "--",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": {
+    "file": null,
+    "format": "json"
+   }
+  },
+  "note": "refused by the bash engine's plan-login rule; AFK no longer polices which CLI uses which login"
  },
  {
   "name": "opencode-plan-print-yolo",
@@ -514,9 +554,28 @@
   ],
   "prompt": "-fix the bug",
   "want": {
-   "ok": false,
-   "error": "opencode runs only its own free models here; xai/grok-4.5 would use another vendor plan login"
-  }
+   "ok": true,
+   "argv": [
+    "$BIN/opencode",
+    "run",
+    "--format",
+    "json",
+    "-m",
+    "xai/grok-4.5",
+    "--auto",
+    "--verbose",
+    "--",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": {
+    "file": null,
+    "format": "json"
+   }
+  },
+  "note": "refused by the bash engine's plan-login rule; AFK no longer polices which CLI uses which login"
  },
  {
   "name": "opencode-priced-interactive-ask",
@@ -534,9 +593,20 @@
   ],
   "prompt": "-fix the bug",
   "want": {
-   "ok": false,
-   "error": "opencode runs only its own free models here; opencode/pro is priced"
-  }
+   "ok": true,
+   "argv": [
+    "$BIN/opencode",
+    "-m",
+    "opencode/pro",
+    "--verbose",
+    "--prompt= -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": null
+  },
+  "note": "refused by the bash engine's plan-login rule; AFK no longer polices which CLI uses which login"
  },
  {
   "name": "opencode-priced-interactive-yolo",
@@ -554,9 +624,20 @@
   ],
   "prompt": "-fix the bug",
   "want": {
-   "ok": false,
-   "error": "opencode runs only its own free models here; opencode/pro is priced"
-  }
+   "ok": true,
+   "argv": [
+    "$BIN/opencode",
+    "-m",
+    "opencode/pro",
+    "--verbose",
+    "--prompt= -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": null
+  },
+  "note": "refused by the bash engine's plan-login rule; AFK no longer polices which CLI uses which login"
  },
  {
   "name": "opencode-priced-print-ask",
@@ -574,9 +655,27 @@
   ],
   "prompt": "-fix the bug",
   "want": {
-   "ok": false,
-   "error": "opencode runs only its own free models here; opencode/pro is priced"
-  }
+   "ok": true,
+   "argv": [
+    "$BIN/opencode",
+    "run",
+    "--format",
+    "json",
+    "-m",
+    "opencode/pro",
+    "--verbose",
+    "--",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": {
+    "file": null,
+    "format": "json"
+   }
+  },
+  "note": "refused by the bash engine's plan-login rule; AFK no longer polices which CLI uses which login"
  },
  {
   "name": "opencode-priced-print-yolo",
@@ -594,9 +693,28 @@
   ],
   "prompt": "-fix the bug",
   "want": {
-   "ok": false,
-   "error": "opencode runs only its own free models here; opencode/pro is priced"
-  }
+   "ok": true,
+   "argv": [
+    "$BIN/opencode",
+    "run",
+    "--format",
+    "json",
+    "-m",
+    "opencode/pro",
+    "--auto",
+    "--verbose",
+    "--",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": {
+    "file": null,
+    "format": "json"
+   }
+  },
+  "note": "refused by the bash engine's plan-login rule; AFK no longer polices which CLI uses which login"
  },
  {
   "name": "grok-interactive-ask",
@@ -1055,9 +1173,21 @@
   ],
   "prompt": "-fix the bug",
   "want": {
-   "ok": false,
-   "error": "pi is not launched: it would use another vendor plan login"
-  }
+   "ok": true,
+   "argv": [
+    "$BIN/pi",
+    "--model",
+    "x",
+    "--verbose",
+    "--",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": null
+  },
+  "note": "refused by the bash engine's plan-login rule; AFK no longer polices which CLI uses which login"
  },
  {
   "name": "pi-interactive-yolo",
@@ -1074,9 +1204,21 @@
   ],
   "prompt": "-fix the bug",
   "want": {
-   "ok": false,
-   "error": "pi is not launched: it would use another vendor plan login"
-  }
+   "ok": true,
+   "argv": [
+    "$BIN/pi",
+    "--model",
+    "x",
+    "--verbose",
+    "--",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": null
+  },
+  "note": "refused by the bash engine's plan-login rule; AFK no longer polices which CLI uses which login"
  },
  {
   "name": "pi-print-ask",
@@ -1093,9 +1235,27 @@
   ],
   "prompt": "-fix the bug",
   "want": {
-   "ok": false,
-   "error": "pi is not launched: it would use another vendor plan login"
-  }
+   "ok": true,
+   "argv": [
+    "$BIN/pi",
+    "--model",
+    "x",
+    "-p",
+    "--mode",
+    "json",
+    "--verbose",
+    "--",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": {
+    "file": null,
+    "format": "json"
+   }
+  },
+  "note": "refused by the bash engine's plan-login rule; AFK no longer polices which CLI uses which login"
  },
  {
   "name": "pi-print-yolo",
@@ -1112,9 +1272,27 @@
   ],
   "prompt": "-fix the bug",
   "want": {
-   "ok": false,
-   "error": "pi is not launched: it would use another vendor plan login"
-  }
+   "ok": true,
+   "argv": [
+    "$BIN/pi",
+    "--model",
+    "x",
+    "-p",
+    "--mode",
+    "json",
+    "--verbose",
+    "--",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": {
+    "file": null,
+    "format": "json"
+   }
+  },
+  "note": "refused by the bash engine's plan-login rule; AFK no longer polices which CLI uses which login"
  },
  {
   "name": "codex-on-claude-pool-interactive-ask",
@@ -1132,9 +1310,21 @@
   ],
   "prompt": "-fix the bug",
   "want": {
-   "ok": false,
-   "error": "the anthropic-max plan login is not used by codex"
-  }
+   "ok": true,
+   "argv": [
+    "$BIN/codex",
+    "-m",
+    "x",
+    "--verbose",
+    "--",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": null
+  },
+  "note": "refused by the bash engine's plan-login rule; AFK no longer polices which CLI uses which login"
  },
  {
   "name": "codex-on-claude-pool-interactive-yolo",
@@ -1152,9 +1342,22 @@
   ],
   "prompt": "-fix the bug",
   "want": {
-   "ok": false,
-   "error": "the anthropic-max plan login is not used by codex"
-  }
+   "ok": true,
+   "argv": [
+    "$BIN/codex",
+    "-m",
+    "x",
+    "--dangerously-bypass-approvals-and-sandbox",
+    "--verbose",
+    "--",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": null
+  },
+  "note": "refused by the bash engine's plan-login rule; AFK no longer polices which CLI uses which login"
  },
  {
   "name": "codex-on-claude-pool-print-ask",
@@ -1172,9 +1375,29 @@
   ],
   "prompt": "-fix the bug",
   "want": {
-   "ok": false,
-   "error": "the anthropic-max plan login is not used by codex"
-  }
+   "ok": true,
+   "argv": [
+    "$BIN/codex",
+    "exec",
+    "--skip-git-repo-check",
+    "--json",
+    "-o",
+    "$CXOUT",
+    "-m",
+    "x",
+    "--verbose",
+    "--",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": {
+    "file": "$CXOUT",
+    "format": "text-file"
+   }
+  },
+  "note": "refused by the bash engine's plan-login rule; AFK no longer polices which CLI uses which login"
  },
  {
   "name": "codex-on-claude-pool-print-yolo",
@@ -1192,9 +1415,30 @@
   ],
   "prompt": "-fix the bug",
   "want": {
-   "ok": false,
-   "error": "the anthropic-max plan login is not used by codex"
-  }
+   "ok": true,
+   "argv": [
+    "$BIN/codex",
+    "exec",
+    "--skip-git-repo-check",
+    "--json",
+    "-o",
+    "$CXOUT",
+    "-m",
+    "x",
+    "--dangerously-bypass-approvals-and-sandbox",
+    "--verbose",
+    "--",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": {
+    "file": "$CXOUT",
+    "format": "text-file"
+   }
+  },
+  "note": "refused by the bash engine's plan-login rule; AFK no longer polices which CLI uses which login"
  },
  {
   "name": "claude-other-sub-interactive-ask",
@@ -1212,9 +1456,21 @@
   ],
   "prompt": "-fix the bug",
   "want": {
-   "ok": false,
-   "error": "no plan login of claude covers pool weird"
-  }
+   "ok": true,
+   "argv": [
+    "$BIN/claude",
+    "--model",
+    "x",
+    "--verbose",
+    "--",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": null
+  },
+  "note": "refused by the bash engine's plan-login rule; AFK no longer polices which CLI uses which login"
  },
  {
   "name": "claude-other-sub-interactive-yolo",
@@ -1232,9 +1488,22 @@
   ],
   "prompt": "-fix the bug",
   "want": {
-   "ok": false,
-   "error": "no plan login of claude covers pool weird"
-  }
+   "ok": true,
+   "argv": [
+    "$BIN/claude",
+    "--model",
+    "x",
+    "--dangerously-skip-permissions",
+    "--verbose",
+    "--",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": null
+  },
+  "note": "refused by the bash engine's plan-login rule; AFK no longer polices which CLI uses which login"
  },
  {
   "name": "claude-other-sub-print-ask",
@@ -1252,9 +1521,27 @@
   ],
   "prompt": "-fix the bug",
   "want": {
-   "ok": false,
-   "error": "no plan login of claude covers pool weird"
-  }
+   "ok": true,
+   "argv": [
+    "$BIN/claude",
+    "--model",
+    "x",
+    "-p",
+    "--output-format",
+    "json",
+    "--verbose",
+    "--",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": {
+    "file": null,
+    "format": "json"
+   }
+  },
+  "note": "refused by the bash engine's plan-login rule; AFK no longer polices which CLI uses which login"
  },
  {
   "name": "claude-other-sub-print-yolo",
@@ -1272,9 +1559,28 @@
   ],
   "prompt": "-fix the bug",
   "want": {
-   "ok": false,
-   "error": "no plan login of claude covers pool weird"
-  }
+   "ok": true,
+   "argv": [
+    "$BIN/claude",
+    "--model",
+    "x",
+    "--dangerously-skip-permissions",
+    "-p",
+    "--output-format",
+    "json",
+    "--verbose",
+    "--",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": {
+    "file": null,
+    "format": "json"
+   }
+  },
+  "note": "refused by the bash engine's plan-login rule; AFK no longer polices which CLI uses which login"
  },
  {
   "name": "gateway-interactive-ask",
@@ -1813,9 +2119,21 @@
   ],
   "prompt": "hi",
   "want": {
-   "ok": false,
-   "error": "opencode: choose the model with --model, not through --pass"
-  }
+   "ok": true,
+   "argv": [
+    "$BIN/opencode",
+    "-m",
+    "opencode/big-pickle",
+    "-m",
+    "x",
+    "--prompt=hi"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": null
+  },
+  "note": "refused by the bash engine's plan-login rule; AFK no longer polices which CLI uses which login"
  },
  {
   "name": "no-prompt",

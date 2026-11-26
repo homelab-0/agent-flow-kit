@@ -32,7 +32,7 @@ Options:
                          Without it the kind is guessed from the prompt.
   --prefer <mode>        balanced (default), cheap (free and local first),
                          best (strongest model for the kind)
-  --harness <name>       use this CLI (claude, codex, opencode, grok, agy)
+  --harness <name>       use this CLI (claude, codex, opencode, grok, agy, pi)
   --model <id>           use this model; without --harness, the CLI that
                          serves it is looked up in the catalog
   --effort <level>       low, medium, high (claude, codex, grok, agy)

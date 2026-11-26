@@ -14,6 +14,7 @@ Agent CLIs ask before they edit files or run commands. AFK keeps that behaviour 
 | `opencode` | `--auto` (one-shot runs) |
 | `grok` | `--always-approve` |
 | `agy` | `--dangerously-skip-permissions` |
+| `pi` | none: Pi doesn't ask before acting, so yolo changes nothing |
 
 AFK sets yolo for one launch only. It never writes it into a CLI's own settings.
 

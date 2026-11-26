@@ -25,7 +25,7 @@ Prints the launch plan (schema `afk-launch-plan/1`) for a route chosen elsewhere
 - `--mode interactive` (default) or `--mode print`. A print plan needs a prompt.
 - `--yolo` and `--pass <arg>` (repeatable) apply as they would to a launch.
 
-Every plan passes the login rules: a route that would send a plan login to the wrong CLI or through a gateway is refused with `{"ok":false,"error":"..."}` and exit code 4.
+A route that would send a plan login through a gateway is refused with `{"ok":false,"error":"..."}` and exit code 4. Any other route is planned as asked: which CLI runs which model is your choice.
 
 ### Applying a plan
 

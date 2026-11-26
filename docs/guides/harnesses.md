@@ -8,7 +8,7 @@ AFK doesn't run models itself. It picks one of the agent CLIs you already have, 
 |---|---|:---:|:---:|
 | Claude Code | `claude` | yes | yes |
 | Codex CLI | `codex` | yes | yes |
-| OpenCode | `opencode` | yes | yes (its own free models) |
+| OpenCode | `opencode` | yes | yes |
 | Grok CLI | `grok` | yes | yes |
 | Antigravity CLI | `agy` | yes | yes |
 | Gemini CLI | `gemini` | yes | planned |
@@ -17,7 +17,7 @@ AFK doesn't run models itself. It picks one of the agent CLIs you already have, 
 | Kiro CLI | `kiro-cli` | yes | planned |
 | Qwen Code | `qwen` | yes | planned |
 | Kimi Code | `kimi` | yes | planned |
-| Pi | `pi` | yes | never with a plan login |
+| Pi | `pi` | yes | yes |
 | Devin CLI | `devin` | yes | planned |
 
 ## `afk harness`

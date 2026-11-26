@@ -113,6 +113,9 @@ func (r *Router) ServedBy(model string, installed []string, allowMetered bool) m
 		if !r.launchable(c) {
 			continue
 		}
+		if r.Probe != nil && !r.Probe.signedIn(c.Harness, c.EntitlementPool) {
+			continue
+		}
 		if (c.Model == model || c.CanonicalModel == model) && contains(installed, c.Harness) {
 			if _, seen := out[c.Harness]; !seen {
 				out[c.Harness] = c.Model
@@ -122,9 +125,11 @@ func (r *Router) ServedBy(model string, installed []string, allowMetered bool) m
 	return out
 }
 
-// launchable applies the rules no route can break, whatever the pools:
-// a plan login only in its own CLI and never through a gateway, OpenCode
-// only with its own free models, gateway routes only on claude.
+// launchable reports whether AFK can launch the candidate at all. Which
+// CLI you use with which login is your choice; the only limits are
+// technical and credential safety: a gateway route runs on claude only
+// (the one CLI AFK can point at a gateway with the gateway's own key),
+// and a plan login is never sent to a gateway.
 func (r *Router) launchable(c Candidate) bool {
 	cclass := c.CostClass
 	if cclass == "" && r.Catalog != nil {
@@ -133,17 +138,24 @@ func (r *Router) launchable(c Candidate) bool {
 	if cclass == "" {
 		cclass = "subscription"
 	}
-	if cclass == "subscription" && !contains(ownPlans[c.Harness], c.EntitlementPool) {
-		return false
-	}
-	if c.Harness == "opencode" && !(strings.HasPrefix(c.Model, "opencode/") && cclass == "free") {
-		return false
-	}
-	if c.Harness == "pi" {
-		return false
-	}
 	viaGateway := strings.HasSuffix(c.LaunchClass, "-gateway")
 	return !viaGateway || (cclass != "subscription" && c.Harness == "claude")
+}
+
+// planHome is the CLI whose own login each plan pool is.
+var planHome = map[string]string{
+	"anthropic-max": "claude", "openai-plus": "codex", "xai-grok": "grok", "antigravity-pool": "agy",
+}
+
+// signedIn reports whether a CLI can draw on a plan pool: its own plan
+// always (the pool's state covers sign-in), another vendor's plan only
+// when the CLI is signed in to it. Unknown bindings hold nothing back.
+func (p *Probe) signedIn(harness, pool string) bool {
+	home, isPlan := planHome[pool]
+	if !isPlan || home == harness || p.Bindings == nil {
+		return true
+	}
+	return contains(p.Bindings[pool], harness)
 }
 
 // IsFallback reports whether nothing passed the eligibility rules.
@@ -158,13 +170,6 @@ type Router struct {
 
 // probeOrder is the order the pool probe lists the CLIs in.
 var probeOrder = []string{"claude", "codex", "opencode", "grok", "agy", "pi", "devin"}
-
-// A plan login is used only by the CLI of the vendor that sells it. Free,
-// local and gateway pools are not plan logins.
-var ownPlans = map[string][]string{
-	"claude": {"anthropic-max"}, "codex": {"openai-plus"}, "grok": {"xai-grok"},
-	"agy": {"antigravity-pool"}, "opencode": {}, "pi": {},
-}
 
 var (
 	reFrontier    = regexp.MustCompile(`astra|fable|mythos|daybreak|opus|gemini-4-carbon|gpt-6|(^|/)grok-4\.7$`)
@@ -482,22 +487,19 @@ func (r *Router) Select(in Input) Route {
 		if cclass == "api-metered" && !in.AllowMetered {
 			continue
 		}
-		if cclass == "subscription" && !contains(ownPlans[c.Harness], c.EntitlementPool) {
+		// Which CLI runs which model with which login is the user's
+		// choice; AFK doesn't police it. The limits left are technical:
+		// a gateway route runs on claude only, the one CLI AFK can point
+		// at a gateway with the gateway's own key, and a plan login is
+		// never sent to a gateway.
+		if !r.launchable(c) {
 			continue
 		}
-		// opencode: only its own free models.
-		if c.Harness == "opencode" && !(strings.HasPrefix(c.Model, "opencode/") && cclass == "free") {
-			continue
-		}
-		// Pi is never launched (it would use another vendor's plan login),
-		// so it never wins a route either.
-		if c.Harness == "pi" {
-			continue
-		}
-		viaGateway := strings.HasSuffix(c.LaunchClass, "-gateway")
-		// A plan never goes through a gateway, and a gateway route is
-		// launched only where AFK keeps the vendor login away (claude).
-		if viaGateway && (cclass == "subscription" || c.Harness != "claude") {
+		// A plan model on another vendor's CLI (OpenCode with xAI, Pi
+		// with ChatGPT, ...) is reachable only when that CLI is signed in
+		// to the plan. That is about what can run, not about whether it
+		// should.
+		if !probe.signedIn(c.Harness, c.EntitlementPool) {
 			continue
 		}
 		if pool.State == "exhausted" || pool.State == "offline" || pool.State == "auth_required" {
