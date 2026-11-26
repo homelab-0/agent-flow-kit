@@ -109,11 +109,11 @@ func (f *fake) deps() Deps {
 			f.outputs[id] = outs[1:]
 			return o
 		},
-		Next: func(_ context.Context, only []string) (engine.Route, bool) {
+		Next: func(_ context.Context, only []string, pool string) (engine.Route, bool) {
 			f.asked = append(f.asked, append([]string(nil), only...))
 			for i, r := range f.next {
 				for _, h := range only {
-					if r.Harness == h {
+					if r.Harness == h && (pool == "" || r.EntitlementPool == pool) {
 						f.next = append(f.next[:i], f.next[i+1:]...)
 						return r, true
 					}
@@ -320,4 +320,47 @@ func TestFailoverNeverEscalates(t *testing.T) {
 	if len(f.notes) == 0 || !strings.Contains(f.notes[0], "running in edits") {
 		t.Errorf("the downgrade was not noted: %v", f.notes)
 	}
+}
+
+func TestFailoverSetting(t *testing.T) {
+	spent := func() map[string][]Output {
+		return map[string][]Output{
+			"claude/opus":   {{Stdout: fixture(t, "claude-model.json"), Exit: 1}},
+			"claude/sonnet": {{Stdout: fixture(t, "claude-usage-limit.json")}},
+		}
+	}
+	first := route("claude", "opus", "anthropic-max")
+
+	// none: the failure is reported (and recorded), nothing else is asked.
+	f := &fake{outputs: spent(), next: []engine.Route{route("codex", "sol", "openai-plus")}}
+	res := Do(context.Background(), Request{First: first, Harnesses: all, Failover: "none"}, f.deps())
+	if res.OK || res.Attempts != 1 || len(f.asked) != 0 || len(f.marks) != 1 {
+		t.Fatalf("none: %+v asked %v marks %v", res, f.asked, f.marks)
+	}
+
+	// same-pool: another model on the same CLI and plan is tried, and the
+	// router is asked about that CLI only.
+	f = &fake{outputs: spent(), next: []engine.Route{route("codex", "sol", "openai-plus"), route("claude", "sonnet", "anthropic-max")}}
+	res = Do(context.Background(), Request{First: first, Harnesses: all, Failover: "same-pool"}, f.deps())
+	want(t, "same-pool tried", res.Tried, []string{"claude/opus", "claude/sonnet"})
+	for _, only := range f.asked {
+		want(t, "same-pool asked", only, []string{"claude"})
+	}
+	if res.OK || !res.NoOther {
+		t.Fatalf("same-pool: %+v", res)
+	}
+
+	// same-pool: a route on the same CLI through another pool (a gateway
+	// model run by claude) is not taken.
+	f = &fake{outputs: spent(), next: []engine.Route{route("claude", "qwen", "litellm-local")}}
+	res = Do(context.Background(), Request{First: first, Harnesses: all, Failover: "same-pool"}, f.deps())
+	if res.OK || !res.NoOther || res.Attempts != 1 {
+		t.Fatalf("same-pool, other pool: %+v", res)
+	}
+
+	// same-pool: a better ranked route through another pool doesn't hide
+	// a model the first plan still has.
+	f = &fake{outputs: spent(), next: []engine.Route{route("claude", "qwen", "litellm-local"), route("claude", "sonnet", "anthropic-max")}}
+	res = Do(context.Background(), Request{First: first, Harnesses: all, Failover: "same-pool"}, f.deps())
+	want(t, "same-pool past another pool", res.Tried, []string{"claude/opus", "claude/sonnet"})
 }

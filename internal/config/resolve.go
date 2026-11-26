@@ -151,7 +151,10 @@ func readLegacyUser(path string) (legacyUser, bool) {
 
 // Settings are the effective routing settings for one run.
 type Settings struct {
-	Prefer      string
+	Prefer string
+	// Failover is where a failed one-shot run may go next: any, same-pool
+	// or none.
+	Failover    string
 	GatewayURL  string
 	GatewayName string
 	GatewayKey  *SecretRef // the default gateway's key reference, if config names one
@@ -297,6 +300,15 @@ func Resolve(e Env) (Settings, error) {
 		s.Prefer = repo.Prefer
 	case c.Route.Prefer != "":
 		s.Prefer = c.Route.Prefer
+	}
+
+	// Where a failed one-shot run may go is yours to say, never a
+	// repository's. An unknown value in the environment is ignored.
+	s.Failover = "any"
+	if v := e.getenv("AFK_ROUTER_FAILOVER"); contains(Failovers, v) {
+		s.Failover = v
+	} else if c.Route.Failover != "" {
+		s.Failover = c.Route.Failover
 	}
 
 	s.TaskModes, s.RepoMode, s.DefaultMode = c.Permissions.Task, repo.Mode, c.Permissions.Default

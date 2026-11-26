@@ -363,3 +363,18 @@ func TestClaudeConfigDir(t *testing.T) {
 		t.Fatalf("after a new login under CLAUDE_CONFIG_DIR: %+v", s)
 	}
 }
+
+func TestOnlyPoolLimitsTheChoiceToThatPool(t *testing.T) {
+	probe := &Probe{Harnesses: map[string]HarnessState{"claude": {Installed: true}, "codex": {Installed: true}}, Pools: map[string]Pool{}}
+	r := &Router{Catalog: DefaultCatalog(), Probe: probe}
+	any := r.Select(Input{Stage: "build", Risk: "low"})
+	if any.IsFallback() || any.EntitlementPool == "" {
+		t.Fatalf("no pooled route to start from: %+v", any)
+	}
+	for _, pool := range []string{"anthropic-max", "openai-plus"} {
+		got := r.Select(Input{Stage: "build", Risk: "low", OnlyPool: pool})
+		if got.IsFallback() || got.EntitlementPool != pool {
+			t.Errorf("OnlyPool %s chose %s on pool %q", pool, got.CandidateID, got.EntitlementPool)
+		}
+	}
+}

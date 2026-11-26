@@ -158,6 +158,7 @@ func (e Errors) Error() string {
 var Defaults = map[string]any{
 	"version":                    Version,
 	"route.prefer":               "balanced",
+	"route.failover":             "any",
 	"route.prefer_free":          false,
 	"route.allow_metered":        false,
 	"route.allow_free_reviewers": false,
