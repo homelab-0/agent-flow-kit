@@ -1,0 +1,18 @@
+› fix the flaky renovate test in factory-router-tests
+╭─ Route ──────────────────────────────────────────────────────────────────╮
+│ GW gateway · qwen36-27b · effort —                                       │
+│   coding (guessed) · gateway key, no plan login · separate config dir    │
+│                                                                          │
+│   19.9 points behind claude on coding, and the score is a catalog        │
+│   estimate, not measured.                                                │
+│                                                                          │
+│   runs on  GW the gateway at factory · state n/e                         │
+╰──────────────────────────────────────────────────────────────────────────╯
+
+      route        model            effort score  headroom         cost
+   CL claude       claude-fable-5-2 high   78.1   ████████░░  78%  plan
+   CX codex        gpt-6.1-sol      high   76.4   █████░░░░░  52%  plan
+   GK grok         grok-4.7         medium 69.0   █████████░  91%  plan
+▌  GW gateway      qwen36-27b       —      58.2   GW factory        free
+
+ ↵ launch  ↑↓ pick  tab effort  w where: here  ? why  esc cancel

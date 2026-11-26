@@ -1,0 +1,4 @@
+  ✓ claude exited 0 · 23m 41s · pool 78% → 71% · 3 files changed
+  ✓ claude exited 0 · 23m 41s · pool 78% → 71% · 3 files changed · 2 commits
+  ! claude exited 1 · 23m 41s · pool 78% → n/e · files n/e · commits n/e
+  ! claude ended by SIGKILL · 23m 41s · pool 78% → n/e · files n/e · commits n/e
