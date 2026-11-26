@@ -269,7 +269,8 @@ installed_at = 2026-11-26T12:00:00Z
 
 | Variable | Meaning |
 |---|---|
-| `AFK_STATE_DIR` | where the separate Claude config for gateway routes lives (default `~/.local/state/agent-flow-kit`) |
+| `AFK_STATE_DIR` | where the separate Claude config for gateway routes lives, and the empty directory npm is run from (default `~/.local/state/agent-flow-kit`) |
+| `AFK_RELEASE_COOLDOWN_DAYS` | how many days a new release waits before `afk harness add` and `update` install it as latest (default 3, `0` for no wait) |
 | `NO_COLOR`, `TERM=dumb`, `AFK_MOTION=off` | no animation (and no colour for `NO_COLOR`) |
 | `XDG_CONFIG_HOME` | the base for `afk/config.toml` and `afk/state/runs` |
 | `XDG_STATE_HOME` | the base for `afk/` runtime state |
