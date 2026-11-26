@@ -40,7 +40,7 @@ func within(p, dir string) bool {
 		return true
 	}
 	rel, err := filepath.Rel(dir, p)
-	return err == nil && rel != "." && !strings.HasPrefix(rel, "..")
+	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // ErrNotTrusted is yolo asked for outside a trusted git repository.

@@ -24,7 +24,7 @@ Each flag was checked against the CLI's own `--help`; the version is in its [man
 | `auto` | `--permission-mode auto` | `--sandbox workspace-write --ask-for-approval never` | `--permission-mode auto` | `--mode auto` | can't: runs `ask` | can't: runs `edits` |
 | `yolo` | `--dangerously-skip-permissions` | `--dangerously-bypass-approvals-and-sandbox` | `--always-approve` | `--dangerously-skip-permissions` | one-shot runs only: `--auto` | none (all tools) |
 
-One-shot runs (`-p`) use the same table, except Codex (`codex exec` takes no `--ask-for-approval`: `read-only` is `--sandbox read-only`, `auto` is `--sandbox workspace-write`) and OpenCode (`opencode run` takes `--auto` for `yolo`).
+One-shot runs (`-p`) use the same table, except Codex (`codex exec` takes no `--ask-for-approval`, so it can't ask: `read-only` is `--sandbox read-only`, `ask` runs `read-only` and says so, `auto` is `--sandbox workspace-write`) and OpenCode (`opencode run` takes `--auto` for `yolo`).
 
 ## A CLI that can't do the mode
 
@@ -68,7 +68,7 @@ afk trust remove ~/repos
 
 On the route card, `y` twice turns yolo on (a red `yolo` tag shows it; `y` again turns it off, and it stays off when you edit the prompt and the card reroutes). Outside a trusted repository, `y` says why it can't. Trust is checked again each time a yolo launch is built, so removing trust while a card is open, or between a one-shot run's retries, stops the next yolo launch.
 
-A CLI's own skip-permissions flag given through `--pass` (for example `--pass --dangerously-skip-permissions`) counts as yolo: it needs a trusted repository, and the plan reports yolo.
+A CLI's own skip-permissions flag given through `--pass` (for example `--pass --dangerously-skip-permissions`) counts as yolo, and so does an alias such as Codex's `--yolo`: it needs a trusted repository, and the plan reports yolo. Turning yolo off on the route card drops such a flag from the launch. Because trust is checked for the directory AFK runs in, yolo refuses a `--pass` flag that moves the CLI elsewhere (Codex `--cd`/`-C`); run AFK from that directory instead.
 
 AFK passes the mode on each launch only. It never writes a mode into a CLI's own settings.
 

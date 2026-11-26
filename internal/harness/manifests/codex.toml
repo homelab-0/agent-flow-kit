@@ -25,9 +25,13 @@ ask = ["--sandbox", "read-only", "--ask-for-approval", "on-request"]
 # edits (edit freely, ask before commands) has no Codex equivalent.
 auto = ["--sandbox", "workspace-write", "--ask-for-approval", "never"]
 yolo = ["--dangerously-bypass-approvals-and-sandbox"]
+bypass_flags = ["--yolo"]
+dir_flags = ["--cd", "-C"]
 
+# codex exec can't ask (it has no --ask-for-approval), so one-shot runs
+# have no ask: ask runs read-only, pinned so ~/.codex/config.toml can't
+# loosen it, and AFK says so.
 [modes.print]
 read-only = ["--sandbox", "read-only"]
-ask = []
 auto = ["--sandbox", "workspace-write"]
 yolo = ["--dangerously-bypass-approvals-and-sandbox"]

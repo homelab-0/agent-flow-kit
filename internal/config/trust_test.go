@@ -150,3 +150,20 @@ func TestRelativeTrustRejected(t *testing.T) {
 		}
 	}
 }
+
+func TestWithinWholeComponents(t *testing.T) {
+	for _, c := range []struct {
+		p, dir string
+		want   bool
+	}{
+		{"/w/..app", "/w", true},
+		{"/w", "/w/..me", false},
+		{"/w/a", "/w", true},
+		{"/w", "/w/a", false},
+		{"/w", "/w", true},
+	} {
+		if got := within(c.p, c.dir); got != c.want {
+			t.Errorf("within(%s, %s) = %v", c.p, c.dir, got)
+		}
+	}
+}

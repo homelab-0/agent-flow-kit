@@ -11,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/harmonica"
 	"github.com/jlengelbrecht/agent-flow-kit/internal/engine"
+	"github.com/jlengelbrecht/agent-flow-kit/internal/harness"
 	"github.com/jlengelbrecht/agent-flow-kit/internal/launch"
 )
 
@@ -180,6 +181,13 @@ func (m *Model) poolsCmd() tea.Cmd {
 func (m *Model) planCmd() tea.Cmd {
 	perm := m.card.LaunchMode()
 	be, r, pass, p, parent := m.be, m.card.Route(m.card.Sel), m.opt.Pass, m.card.Prompt, m.ctx
+	// Turning yolo off with y also drops the CLI's own skip-permissions
+	// flag from --pass, which would turn it back on.
+	if m.yoloSet && !m.card.Yolo {
+		if man, ok := harness.ManifestFor(r.Harness); ok {
+			pass = man.StripYolo(pass)
+		}
+	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(parent, planTimeout)
 		defer cancel()
