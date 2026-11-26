@@ -37,11 +37,22 @@ Terminal front end (this afk):
   On the route card: ↵ launch · ↑↓/jk pick · tab effort · e edit the prompt ·
   y twice for yolo · ? why · esc cancel. Without a terminal, and with -p,
   --explain or --launch-plan, afk runs the engine directly.
+
+Commands:
+  afk harness [--all] [--json]   the agent CLIs found on this machine
 `
 
 func main() { os.Exit(run(os.Args[1:])) }
 
 func run(argv []string) int {
+	// Subcommands the Go front end answers itself, without the engine.
+	// A prompt that starts with one of these words needs "--" first.
+	if len(argv) > 0 {
+		switch argv[0] {
+		case "harness", "harnesses":
+			return harnessCmd(argv[1:], os.Stdout, os.Stderr)
+		}
+	}
 	args := cli.Parse(argv)
 	path, err := engine.Locate()
 	if err != nil {
