@@ -10,8 +10,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jlengelbrecht/agent-flow-kit/internal/config"
 	"github.com/jlengelbrecht/agent-flow-kit/internal/engine"
@@ -181,10 +183,11 @@ func (c *Core) DiscoveredWarning() string {
 	return c.discoveredPath() + " is more than 7 days old and nothing updates it any more, so it is ignored; delete it to drop this note"
 }
 
-// route asks the router for one task, limited to the given CLIs. A
-// fallback that names a CLI outside them means nothing here can do the
-// task (ok is false). A pool limits it further to routes that pool
-// serves; "" allows any.
+// route asks the router for one task, limited to the given CLIs. When no
+// route qualifies, ok is false: the router's fallback carries made-up
+// numbers (score 85, full headroom), so it is never launched or shown as
+// a pick. A pool limits it further to routes that pool serves; "" allows
+// any.
 func (st *state) route(task, prefer string, only []string, pool string) (router.Route, bool, error) {
 	stage, risk, err := router.TaskRoute(task, prefer)
 	if err != nil {
@@ -196,7 +199,7 @@ func (st *state) route(task, prefer string, only []string, pool string) (router.
 		OnlyHarnesses: only, OnlyPool: pool, GatewayURL: st.settings.GatewayURL, AllowMetered: st.settings.AllowMetered,
 		PreferFree: pf, AllowFreeReviewers: st.settings.AllowFreeReviewers, SecurityModels: st.settings.SecurityModels,
 	})
-	if r.IsFallback() && (!contains(only, r.Harness) || (pool != "" && r.EntitlementPool != pool)) {
+	if r.IsFallback() {
 		return r, false, nil
 	}
 	return r, true, nil
@@ -326,7 +329,7 @@ func (c *Core) decide(ctx context.Context, f engine.RouteFlags, prompt string) (
 		return nil, err
 	}
 	if !ok {
-		return nil, &NoRouteError{"the router found no usable model for this task on " + strings.Join(d.list, ",") + signInHint(st.r.Probe, d.list)}
+		return nil, &NoRouteError{"the router found no usable model for this task on " + strings.Join(d.list, ",") + signInHint(st.r.Probe, d.list) + poolHint(st.r, d.list, st.settings.GatewayURL != "")}
 	}
 	if f.Effort != "" {
 		r.Effort = f.Effort
@@ -513,6 +516,73 @@ func modesFor(clis []string, mode string) map[string]engine.ModeInfo {
 
 // signInHint says which of the CLIs asked for needs a sign-in, with the
 // command, when that is why nothing could be routed.
+// poolHint says, for each pool that the given CLIs draw on and that the
+// router set aside, why and what to do about it. A sign-in failure is left
+// to signInHint.
+func poolHint(r *router.Router, list []string, gateway bool) string {
+	if r == nil || r.Probe == nil || r.Catalog == nil {
+		return ""
+	}
+	var ids []string
+	seen := map[string]bool{}
+	for _, c := range r.Catalog.Candidates {
+		// Gateway routes count only when a gateway is set up.
+		if !gateway && strings.HasSuffix(c.LaunchClass, "-gateway") {
+			continue
+		}
+		if c.EntitlementPool != "" && contains(list, c.Harness) && !seen[c.EntitlementPool] {
+			seen[c.EntitlementPool] = true
+			ids = append(ids, c.EntitlementPool)
+		}
+	}
+	sort.Strings(ids)
+	var parts []string
+	for _, id := range ids {
+		p, ok := r.Probe.Pools[id]
+		if !ok {
+			continue
+		}
+		var msg string
+		switch p.State {
+		case "exhausted":
+			msg = id + " is exhausted"
+			if p.UsedPct != nil {
+				msg += fmt.Sprintf(" (%.0f%% used", *p.UsedPct)
+				if p.QuotaSource != "" {
+					msg += ", " + p.QuotaSource
+				}
+				msg += ")"
+			}
+			if p.ResetsAt != nil && *p.ResetsAt != "" {
+				msg += ", resets " + *p.ResetsAt
+			}
+		case "offline":
+			msg = id + " is offline"
+		default:
+			continue
+		}
+		if p.DegradedReason != nil && *p.DegradedReason != "" {
+			msg += fmt.Sprintf(": a run failed with %q; if that was wrong, run: afk pools clear %s", cutHint(*p.DegradedReason, 80), id)
+		}
+		parts = append(parts, msg)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "; " + strings.Join(parts, "; ") + ". To use a set-aside plan anyway, pin it with --harness and --model"
+}
+
+func cutHint(s string, n int) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "…"
+}
+
 func signInHint(p *router.Probe, list []string) string {
 	if p == nil {
 		return ""
