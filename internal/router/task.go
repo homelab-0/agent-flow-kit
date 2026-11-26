@@ -87,8 +87,8 @@ func TaskRoute(task, prefer string) (stage, risk string, err error) {
 }
 
 // TaskClass is the benchmark class a stage is scored on.
-func TaskClass(stage, risk, role string, surfaces []string, round, diffLines int) string {
-	if stage == "review-security" || strings.HasPrefix(stage, "security") || strings.HasPrefix(stage, "threat") || role == "security" {
+func TaskClass(stage, risk string, surfaces []string, round, diffLines int) string {
+	if stage == "review-security" || strings.HasPrefix(stage, "security") || strings.HasPrefix(stage, "threat") {
 		return "security"
 	}
 	if stage == "spec" || stage == "build" {
@@ -99,7 +99,7 @@ func TaskClass(stage, risk, role string, surfaces []string, round, diffLines int
 			}
 		}
 	}
-	planning := regexp.MustCompile(`^(spec|arch.*|prd|epics|stories|build)$`)
+	planning := regexp.MustCompile(`^(spec|arch.*|build)$`)
 	if risk == "critical" && planning.MatchString(stage) {
 		return "frontier_synthesis"
 	}
@@ -107,15 +107,12 @@ func TaskClass(stage, risk, role string, surfaces []string, round, diffLines int
 		return "frontier_synthesis"
 	}
 	switch {
-	case stage == "prd" || stage == "epics" || stage == "stories" || stage == "product-brief" || stage == "correct-course" || strings.HasPrefix(stage, "arch"):
+	case strings.HasPrefix(stage, "arch"):
 		return "architecture"
 	case stage == "spec":
 		if risk == "low" && diffLines < 80 {
 			return "coding_standard"
 		}
-		return "architecture"
-	}
-	if (role == "pm" || role == "architect") && stage != "intake" && stage != "research" && !strings.HasPrefix(stage, "review") {
 		return "architecture"
 	}
 	switch {

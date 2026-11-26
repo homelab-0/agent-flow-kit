@@ -8,7 +8,7 @@ Two commands give scripts and other front ends AFK's decisions without starting 
 afk --explain --json "fix the flaky retry test"
 ```
 
-One JSON object (schema `afk-route-explain/1`): the task and whether it was guessed, the preference, the chosen route, and `by_harness`, the best route on each installed CLI sorted by score. Each route is complete, so a front end can launch any row it offers. See [JSON formats](../reference/json.md#explain-afk-route-explain1).
+One JSON object (schema `afk-route-explain/2`, or `/1` with `AFK_BACKEND=bash`): the task and whether it was guessed, the preference, the chosen route, and `by_harness`, the best route on each installed CLI sorted by score. Each route is complete, so a front end can launch any row it offers. See [JSON formats](../reference/json.md#explain-afk-route-explain2).
 
 The same options as an interactive run apply: `--task`, `--prefer`, `--harness`, `--model`, `--effort`, `--repo`. With `--harness` and `--model` together the choice is pinned and `by_harness` is empty.
 

@@ -32,7 +32,3 @@ Anything not built yet is marked **Planned** and listed in the [roadmap](../READ
 
 - [Security and privacy](security.md): what AFK reads, what it never stores, and the login rules
 - [Development](development.md): architecture, tests and the parity fixtures
-
-## Legacy
-
-AFK grew out of a BMAD/Orca lifecycle kit and a Paperclip-driven factory. That code is still in the repository while it is retired; its documents are kept for reference: [legacy README](LEGACY-README.md), [factory](FACTORY.md), [lifecycle contract](LIFECYCLE-CONTRACT.md), [Paperclip](PAPERCLIP.md), [release update](RELEASE-UPDATE.md), [runtime experience](RUNTIME-EXPERIENCE.md). None of it is needed to use `afk`.
