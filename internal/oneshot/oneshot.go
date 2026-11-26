@@ -294,6 +294,11 @@ func Do(ctx context.Context, req Request, d Deps) Result {
 		// Even a run that stops here tells the router, so the next run
 		// does not walk into the same failure.
 		mark()
+		// Recording can wait on the signals lock; a Ctrl-C meanwhile
+		// ends the run as interrupted, whatever the route.
+		if ctx.Err() != nil {
+			return Result{Tried: tried, Attempts: attempt, Exit: 130, Error: "interrupted", Interrupted: true}
+		}
 		fail := Result{Tried: tried, Attempts: attempt, Exit: rc, Error: why}
 		if req.Pinned || route.Pinned || attempt >= MaxAttempts {
 			return fail

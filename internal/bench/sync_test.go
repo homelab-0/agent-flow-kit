@@ -238,6 +238,13 @@ func TestCarryZeroKeepsNothing(t *testing.T) {
 		Feeds: fixtures(t, FeedAgent, FeedWebdev)})
 	res := read(t, out).entry(t, "agy-carbon-native", "research")
 	want(t, "no carry", []any{res["basis"], res["score"]}, []any{"estimate", baseScore(t, "agy-carbon-native", "research")})
+
+	// Not even a score measured this same second.
+	sync(t, out, fixtures(t, allFeeds...), t0, 0)
+	Sync(context.Background(), Options{Base: router.DefaultCatalogJSON(), Out: out, Now: t0, Carry: 0,
+		Feeds: fixtures(t, FeedAgent, FeedWebdev)})
+	res = read(t, out).entry(t, "agy-carbon-native", "research")
+	want(t, "no carry in the same second", res["basis"], "estimate")
 }
 
 func TestWindowIsCarriedOnlyForTheSameModel(t *testing.T) {

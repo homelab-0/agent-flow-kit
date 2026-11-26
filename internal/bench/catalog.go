@@ -106,7 +106,8 @@ func (s *syncer) candidate(c map[string]any) map[string]any {
 	// name changed (a model upgrade under the same id) does not inherit
 	// the score of the model it replaced.
 	carried := func(e map[string]any) map[string]any {
-		if e == nil {
+		// A carry of 0 keeps nothing, even a score from this very second.
+		if e == nil || s.carry <= 0 {
 			return nil
 		}
 		basis := "estimate"

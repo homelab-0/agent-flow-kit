@@ -63,6 +63,28 @@ func TestMarksAreReadBackAsSignals(t *testing.T) {
 	}
 }
 
+func TestPoolFor(t *testing.T) {
+	r := &Router{
+		Catalog: &Catalog{Candidates: []Candidate{
+			{Harness: "claude", Model: "sonnet", LaunchClass: "claude-gateway", EntitlementPool: "litellm"},
+			{Harness: "claude", Model: "sonnet", LaunchClass: "claude-native", EntitlementPool: "anthropic-max"},
+		}},
+		Discovered: []DiscoveredModel{
+			{Harness: "opencode", Model: "zen/big-pickle", LaunchClass: "opencode-gateway", EntitlementPool: "gw"},
+			{Harness: "opencode", Model: "zen/big-pickle", LaunchClass: "opencode-native", EntitlementPool: "opencode-free"},
+		},
+	}
+	for _, tc := range [][3]string{
+		{"claude", "sonnet", "anthropic-max"},
+		{"opencode", "zen/big-pickle", "opencode-free"},
+		{"codex", "sonnet", ""},
+	} {
+		if got := r.PoolFor(tc[0], tc[1]); got != tc[2] {
+			t.Errorf("%s/%s: %q, want %q", tc[0], tc[1], got, tc[2])
+		}
+	}
+}
+
 func TestPoolFailureKind(t *testing.T) {
 	for reason, want := range map[string]string{
 		"please log in": "auth", "Please login again": "auth", "401": "auth",

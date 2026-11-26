@@ -125,12 +125,19 @@ func (r *Router) ServedBy(model string, installed []string, allowMetered bool) m
 // catalog ("" when the catalog doesn't list it). A pinned route carries no
 // pool of its own; this is the pool its failures are recorded against.
 func (r *Router) PoolFor(harness, model string) string {
-	if r.Catalog == nil {
-		return ""
+	var cands []Candidate
+	if r.Catalog != nil {
+		cands = r.Catalog.Candidates
 	}
-	for _, c := range r.Catalog.Candidates {
+	for _, c := range cands {
 		if c.Harness == harness && (c.Model == model || c.CanonicalModel == model) && !strings.HasSuffix(c.LaunchClass, "-gateway") {
 			return c.EntitlementPool
+		}
+	}
+	// A model only a CLI reported (opencode models, agy models).
+	for _, d := range r.Discovered {
+		if d.Harness == harness && (d.Model == model || d.CanonicalModel == model) && !strings.HasSuffix(d.LaunchClass, "-gateway") {
+			return d.EntitlementPool
 		}
 	}
 	return ""

@@ -268,6 +268,17 @@ func TestInterruptedRunStops(t *testing.T) {
 	}
 }
 
+func TestInterruptedWhileMarkingStops(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	f := &fake{outputs: map[string][]Output{"claude/a": {{Stdout: fixture(t, "claude-usage-limit.json")}}}}
+	d := f.deps()
+	d.Mark = func(Kind, string, string, string) { cancel() }
+	res := Do(ctx, Request{First: route("claude", "a", "p1"), Pinned: true, Harnesses: all}, d)
+	if !res.Interrupted || res.Exit != 130 {
+		t.Fatalf("result %+v", res)
+	}
+}
+
 func TestReasonIsShort(t *testing.T) {
 	long := strings.Repeat("é", 2000)
 	why := reason(Output{Exit: 1, Stderr: []byte(long)}, "", true)
