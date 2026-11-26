@@ -67,6 +67,18 @@ type Modes struct {
 	// DirFlags are the CLI's flags that choose another working directory;
 	// yolo refuses them in --pass, because trust is checked where afk runs.
 	DirFlags []string `toml:"dir_flags"`
+	// UserConfig are the flags that keep the CLI to your own settings, so
+	// it loads none from the directory it runs in (hooks, permission
+	// rules, environment, MCP servers). AFK adds them to a one-shot run
+	// in a directory you haven't trusted, where the CLI's own "trust this
+	// folder?" question is never asked.
+	UserConfig []string `toml:"user_config"`
+	// ProjectConfig says when the CLI loads settings from the directory
+	// it runs in: "trusted" when it does so only for a directory you
+	// trusted in the CLI itself, "never" when it has none. "unknown" (or
+	// nothing) means it may, and AFK says so when it can't stop it; an
+	// override spells it "unknown" to undo a built-in "trusted".
+	ProjectConfig string `toml:"project_config"`
 	// ModeFlags are the CLI's other flags that change what it may do
 	// without asking (its permission mode, sandbox, settings source or tool
 	// allowlist). AFK sets the mode itself, so --pass refuses them unless
@@ -334,6 +346,11 @@ func (m Manifest) validate(path string) error {
 			return fmt.Errorf("%s: an auth command needs a program", path)
 		}
 	}
+	switch m.Modes.ProjectConfig {
+	case "", "unknown", "trusted", "never":
+	default:
+		return fmt.Errorf("%s: modes.project_config must be trusted, never or unknown", path)
+	}
 	for _, t := range []ModeFlags{m.Modes.table(false), m.Modes.table(true)} {
 		for _, mode := range PermissionModes {
 			if f, ok := t.get(mode); ok {
@@ -379,6 +396,8 @@ func merge(base, over Manifest) Manifest {
 	set(&base.Modes.Verified, o.Verified)
 	list(&base.Modes.BypassFlags, o.BypassFlags)
 	list(&base.Modes.DirFlags, o.DirFlags)
+	list(&base.Modes.UserConfig, o.UserConfig)
+	set(&base.Modes.ProjectConfig, o.ProjectConfig)
 	list(&base.Modes.ModeFlags, o.ModeFlags)
 	list(&base.Modes.ConfigFlags, o.ConfigFlags)
 	list(&base.Modes.ConfigKeys, o.ConfigKeys)

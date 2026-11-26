@@ -18,6 +18,18 @@ These hold for every route, pinned or not, and are checked again when a launch p
 - **Gateway addresses in run records and messages are trimmed** to scheme, host and path: user info, the query string and the fragment are dropped, since some gateways take a key there.
 - **Secrets in config are references** (`env:NAME`, `file:`, `cmd:`, `op://`, `keychain:`), never values. A value that isn't one is refused without being repeated, and AFK resolves a reference only when the secret is used, never writing or printing it. `afk config migrate` won't copy a gateway address that carries user info.
 
+## A repository's own CLI settings
+
+Most agent CLIs load settings from the directory they run in: hooks, permission rules, environment variables, MCP servers. Started in a terminal they ask whether you trust the folder first. Started one-shot (`afk -p`), or with no terminal, they don't ask: Claude Code, for one, runs a project's hooks straight away.
+
+So for a one-shot run, or one without a terminal, outside a [trusted repository](guides/permissions.md):
+
+- **Claude Code** is started with `--setting-sources user`, so it loads `~/.claude` and nothing from the directory. Its hooks, permission rules and environment don't apply.
+- **Codex** needs nothing: it reads a project's config only for a project you trusted in Codex. That was checked on Codex 0.172.0; on an older Codex, set `project_config = "unknown"` in a [manifest override](reference/harness-manifests.md) to get AFK's note back.
+- **OpenCode, Grok, Antigravity and Pi** have no flag AFK knows for this, so AFK starts them and says it couldn't keep the directory's settings out.
+
+AFK prints one line on stderr for Claude Code and for the CLIs without such a flag, and the launch plan carries it as `config_note`. Codex gets no line. `afk trust add <repo>` lets Claude Code and those other CLIs load a repository's own settings in these runs, as well as allowing yolo there. It doesn't change Codex, which goes by the projects you trusted in Codex itself. Instruction files such as `CLAUDE.md` and `AGENTS.md` are still read: they are text for the model, not settings.
+
 ## AFK never opens a credential file
 
 AFK checks that each CLI's login file **exists and is larger than 4 bytes** (bigger than the empty `{}` a CLI can leave behind when you sign out), and when it last changed. A smaller file counts as signed out. It never opens one, so no token is ever read, sent, stored or printed. That includes Claude's `~/.claude/.credentials.json`, Codex's `auth.json`, and the login files of Grok, OpenCode, Pi, Devin, Gemini and Qwen. To tell whether Codex uses the ChatGPT plan or an API key, AFK runs Codex's own `codex login status` and looks only for those words.

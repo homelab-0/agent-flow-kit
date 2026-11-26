@@ -69,6 +69,14 @@ func CheckYolo(s Settings, home, dir string) error {
 	return &ErrNotTrusted{fmt.Sprintf("yolo runs only in a trusted repository; to allow it here run: afk trust add %s", root)}
 }
 
+// Trusted reports whether dir is inside a git repository that is, or is
+// under, a directory in trust.repos (the rule CheckYolo applies), and the
+// repository's root ("" outside one).
+func Trusted(s Settings, home, dir string) (root string, ok bool) {
+	root = GitRoot(dir)
+	return root, CheckYolo(s, home, dir) == nil
+}
+
 func expandHome(p, home string) string {
 	if p == "~" {
 		return home

@@ -27,6 +27,9 @@ auto = ["--sandbox", "workspace-write", "--ask-for-approval", "never"]
 yolo = ["--dangerously-bypass-approvals-and-sandbox"]
 bypass_flags = ["--yolo"]
 dir_flags = ["--cd", "-C"]
+# Codex reads a project's .codex/config.toml only for a project trusted in
+# ~/.codex/config.toml.
+project_config = "trusted"
 # Other ways to change the sandbox or approvals; --pass refuses them
 # outside yolo. -c sets any config key, so only the keys that matter are
 # refused.
