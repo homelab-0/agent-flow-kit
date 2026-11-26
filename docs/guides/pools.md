@@ -19,11 +19,10 @@ For each pool AFK takes the best source available, in this order:
 
 1. **A recent failure signal** (below), while it is still in force.
 2. **The provider's own figure**:
-   - **Claude**: Anthropic's usage endpoint for your plan login, the same figures Claude Code shows. AFK takes the larger of the 5-hour and weekly use; the Fable weekly quota is tracked separately. The answer is cached for two minutes.
    - **Codex**: the rate limits Codex writes into its own session files (`rollout-*.jsonl` under `$CODEX_HOME/sessions`, by default `~/.codex/sessions`). The newest reading wins, by when it was recorded. No network call.
-3. **Recent activity**: session files each CLI wrote in the last 5 hours, against the pool's capacity, capped at 98%. Codex sessions count against the ChatGPT plan only when Codex is signed in with the plan; with an API key they are metered usage, not plan usage.
+3. **Recent activity**: session files each CLI wrote in the last 5 hours, against the pool's capacity, capped at 98%. This is an estimate, and the route card and `--explain` say so (`estimated`). Claude's pool is always estimated this way: Anthropic's usage figures can only be read with your Claude login, and AFK never opens it. A rate-limit or quota failure from a real run still sets the pool aside (below). Codex sessions count against the ChatGPT plan only when Codex is signed in with the plan; with an API key they are metered usage, not plan usage.
 
-A third-party CLI signed in with a vendor plan shares that plan's pool: for example OpenCode signed in with xAI counts against `xai-grok`. If Grok is installed but no login for xAI exists anywhere, `xai-grok` is offline and AFK says to run `grok login`.
+Which plan Codex uses (ChatGPT or an API key) comes from `codex login status`; when it can't answer, Codex's sessions aren't counted against any pool rather than guessed. Claude's and Codex's folders follow `CLAUDE_CONFIG_DIR` and `CODEX_HOME` when they are set. Which vendor plans OpenCode or Pi are signed in to is written only inside their credential files, so AFK doesn't count them against those plans: OpenCode draws on its own free pool. If Grok is installed but no login for xAI exists anywhere, `xai-grok` is offline and AFK says to run `grok login`.
 
 ## Pool states
 
@@ -51,8 +50,8 @@ Signals are written by one-shot runs (`afk -p`) today, under a short lock so run
 
 ## Seeing it
 
-`afk --explain` shows each route's pool, headroom and state; `--explain --json` has every figure. The receipt shows the pool before and after a session.
+`afk --explain` shows each route's pool, headroom, state and, for an estimate, `estimated from recent sessions`; `--explain --json` has every figure, with the source in `pool_quota_source`. The receipt shows the pool before and after a session.
 
 ## Privacy
 
-The Claude check reads your Claude login to make the request and sends it only to Anthropic's own endpoint. The cache file (`~/.config/afk/live-quota-cache.json`, mode 600) holds usage percentages and a hash that identifies the login's current version (so a new login is never shown the old one's figures), never a token. Activity counting looks only at file names and times, not contents. See [security and privacy](../security.md).
+AFK never opens a credential file: sign-in checks look only at whether login files exist, their size and when they changed. Activity counting looks only at file names and times, not contents. See [security and privacy](../security.md).

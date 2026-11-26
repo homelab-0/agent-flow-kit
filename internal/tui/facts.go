@@ -277,6 +277,7 @@ func reasonText(rows []engine.Route, i int, task string, now time.Time) string {
 		}
 		if r.BenchmarkBasis == "estimate" {
 			b.WriteString(", and the score is a catalog estimate, not measured.")
+			b.WriteString(poolEstimateNote(r))
 			return b.String()
 		}
 	}
@@ -298,7 +299,17 @@ func reasonText(rows []engine.Route, i int, task string, now time.Time) string {
 	default:
 		fmt.Fprintf(&b, ", with %s of its 5-hour pool left.", pctText(r.PoolHeadroomPct))
 	}
+	b.WriteString(poolEstimateNote(r))
 	return b.String()
+}
+
+// poolEstimateNote says when a paid route's pool figure is an estimate
+// from recent sessions rather than a measurement.
+func poolEstimateNote(r engine.Route) string {
+	if r.PoolHeadroomPct != nil && r.CostClass != "free" && !r.IsGateway() && r.PoolQuotaSource == "local_5h_activity" {
+		return " Its pool figure is an estimate from recent sessions, not a measurement."
+	}
+	return ""
 }
 
 // effortCycle orders a route's supported efforts from low to high.

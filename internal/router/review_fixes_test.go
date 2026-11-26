@@ -37,10 +37,11 @@ func TestCodexSessionsFollowCodexHome(t *testing.T) {
 	for i := 0; i < 36; i++ {
 		put(t, ch, fmt.Sprintf("sessions/s%d.jsonl", i), "{}", 0)
 	}
-	put(t, home, ".codex/auth.json", `{"tokens":{"access_token":"x"}}`, 0)
+	put(t, ch, "auth.json", `{"tokens":{"access_token":"x"}}`, 0)
 	env := map[string]string{"CODEX_HOME": ch}
 	p := ProbePools(context.Background(), DefaultCatalog(), ProbeEnv{
 		Home: home, Getenv: func(k string) string { return env[k] }, Installed: func(h string) bool { return h == "codex" },
+		CodexLoginMode: func(context.Context) string { return "chatgpt" },
 	})
 	if got := *p.Pools["openai-plus"].UsedPct; got != 90 {
 		t.Fatalf("openai-plus used %v, want 90 (36 of 40 sessions under CODEX_HOME)", got)
@@ -53,7 +54,10 @@ func TestMeteredCodexIsNotChargedToThePlan(t *testing.T) {
 		put(t, home, fmt.Sprintf(".codex/sessions/s%d.jsonl", i), "{}", 0)
 	}
 	put(t, home, ".codex/auth.json", `{"OPENAI_API_KEY":"sk-x"}`, 0)
-	p := ProbePools(context.Background(), DefaultCatalog(), ProbeEnv{Home: home, Installed: func(h string) bool { return h == "codex" }})
+	// How Codex is signed in comes from `codex login status`, never from
+	// auth.json.
+	p := ProbePools(context.Background(), DefaultCatalog(), ProbeEnv{Home: home, Installed: func(h string) bool { return h == "codex" },
+		CodexLoginMode: func(context.Context) string { return "apikey" }})
 	if got := *p.Pools["openai-plus"].UsedPct; got != 0 {
 		t.Fatalf("API-key Codex sessions charged to the plan: %v%%", got)
 	}
@@ -76,34 +80,6 @@ func TestZeroCapacityIsSkipped(t *testing.T) {
 	g := p.Pools["xai-grok"]
 	if *g.Capacity5h != 50 || g.UsedPct == nil || *g.UsedPct != *g.UsedPct {
 		t.Fatalf("xai-grok %+v", g)
-	}
-}
-
-func TestClaudeUsageWithNoFiguresIsNotAReading(t *testing.T) {
-	if q := parseClaudeUsage([]byte(`{"five_hour":null,"seven_day":null}`)); q.OK {
-		t.Fatalf("nulls read as %v%% used", q.UsedPct)
-	}
-	if q := parseClaudeUsage([]byte(`{"five_hour":{"utilization":0},"seven_day":null}`)); !q.OK || q.UsedPct != 0 {
-		t.Fatalf("an explicit 0 is a reading: %+v", q)
-	}
-}
-
-func TestClaudeCacheBelongsToTheLogin(t *testing.T) {
-	calls := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
-		fmt.Fprintf(w, `{"five_hour":{"utilization":%d}}`, calls*10)
-	}))
-	defer srv.Close()
-	home := t.TempDir()
-	put(t, home, ".claude/.credentials.json", `{"claudeAiOauth":{"accessToken":"a"}}`, time.Minute)
-	e := ProbeEnv{Home: home, Live: true, ClaudeUsageURL: srv.URL, HTTP: srv.Client(), Now: time.Now()}
-	if q := probeClaudeQuota(context.Background(), e); q.UsedPct != 10 {
-		t.Fatalf("first %v", q.UsedPct)
-	}
-	put(t, home, ".claude/.credentials.json", `{"claudeAiOauth":{"accessToken":"someone-else"}}`, 0)
-	if q := probeClaudeQuota(context.Background(), e); q.UsedPct != 20 || calls != 2 {
-		t.Fatalf("after a new login: %v%% from %d calls; the old login's cache was reused", q.UsedPct, calls)
 	}
 }
 
@@ -287,5 +263,103 @@ func TestAnotherVendorsPlanNeedsThatCLIsLogin(t *testing.T) {
 	probe.Bindings["xai-grok"] = []string{"grok", "opencode"}
 	if got := r.Select(Input{Stage: "build", Risk: "low", OnlyHarnesses: []string{"opencode"}}); got.Model != "xai/grok-4.5" {
 		t.Fatalf("opencode signed in to xAI was not offered it: %+v", got)
+	}
+}
+
+// With CODEX_HOME set, the login file is $CODEX_HOME/auth.json: an
+// API-key login there keeps its sessions out of the ChatGPT plan pool.
+func TestMeteredCodexUnderCodexHome(t *testing.T) {
+	home := t.TempDir()
+	ch := filepath.Join(home, "elsewhere")
+	for i := 0; i < 40; i++ {
+		put(t, ch, fmt.Sprintf("sessions/s%d.jsonl", i), "{}", 0)
+	}
+	put(t, ch, "auth.json", `{"OPENAI_API_KEY":"sk-x"}`, 0)
+	env := map[string]string{"CODEX_HOME": ch}
+	probe := func(mode string) *Probe {
+		asked := false
+		p := ProbePools(context.Background(), DefaultCatalog(), ProbeEnv{
+			Home: home, Getenv: func(k string) string { return env[k] }, Installed: func(h string) bool { return h == "codex" },
+			CodexLoginMode: func(context.Context) string { asked = true; return mode },
+		})
+		if !asked {
+			t.Fatalf("codex login status was not asked with CODEX_HOME=%s", ch)
+		}
+		return p
+	}
+	if got := *probe("apikey").Pools["openai-plus"].UsedPct; got != 0 {
+		t.Fatalf("API-key sessions under CODEX_HOME charged to the plan: %v%%", got)
+	}
+	// Each probe asks again, so a new login is seen at once.
+	if got := *probe("chatgpt").Pools["openai-plus"].UsedPct; got != 98 {
+		t.Fatalf("a ChatGPT login under CODEX_HOME: %v%%, want 98 (40 sessions, capped)", got)
+	}
+}
+
+// When Codex can't say how it is signed in, its sessions are counted
+// against no pool and it is bound to neither the plan nor metered use.
+func TestUnknownCodexLoginIsNotTakenForThePlan(t *testing.T) {
+	home := t.TempDir()
+	for i := 0; i < 40; i++ {
+		put(t, home, fmt.Sprintf(".codex/sessions/s%d.jsonl", i), "{}", 0)
+	}
+	put(t, home, ".codex/auth.json", `{"tokens":{"access_token":"x"}}`, 0)
+	for _, mode := range []func(context.Context) string{nil, func(context.Context) string { return "" }} {
+		p := ProbePools(context.Background(), DefaultCatalog(), ProbeEnv{Home: home, Installed: func(h string) bool { return h == "codex" }, CodexLoginMode: mode})
+		if got := *p.Pools["openai-plus"].UsedPct; got != 0 {
+			t.Fatalf("sessions of an unknown Codex login charged to the plan: %v%%", got)
+		}
+		if contains(p.Bindings["openai-plus"], "codex") || contains(p.Bindings["api-metered"], "codex") {
+			t.Fatalf("an unknown Codex login was bound: %v", p.Bindings)
+		}
+	}
+}
+
+// Only a newer Codex login clears a sign-in signal on openai-plus; a newer
+// OpenCode login file doesn't.
+func TestOnlyACodexLoginClearsTheCodexAuthSignal(t *testing.T) {
+	home := t.TempDir()
+	put(t, home, ".codex/auth.json", `{"tokens":{"access_token":"x"}}`, time.Hour)
+	put(t, home, ".config/afk/pool-signals.json", fmt.Sprintf(`{"pools":{"openai-plus":{"degraded_reason":"401 unauthorized","updated_epoch":%d}}}`, time.Now().Unix()-60), 0)
+	put(t, home, ".local/share/opencode/auth.json", `{"openai":{"type":"oauth"}}`, 0)
+	probe := func() Pool {
+		return ProbePools(context.Background(), DefaultCatalog(), ProbeEnv{Home: home, Installed: func(h string) bool { return h == "codex" || h == "opencode" },
+			CodexLoginMode: func(context.Context) string { return "chatgpt" }}).Pools["openai-plus"]
+	}
+	if s := probe(); s.State != "auth_required" {
+		t.Fatalf("a newer OpenCode login cleared Codex's sign-in signal: %+v", s)
+	}
+	put(t, home, ".codex/auth.json", `{"tokens":{"access_token":"new"}}`, 0)
+	if s := probe(); s.State == "auth_required" {
+		t.Fatalf("a new Codex login did not clear the signal: %+v", s)
+	}
+}
+
+// CLAUDE_CONFIG_DIR is where Claude Code keeps its sessions and login.
+func TestClaudeConfigDir(t *testing.T) {
+	home := t.TempDir()
+	cd := filepath.Join(home, "claude-elsewhere")
+	for i := 0; i < 30; i++ {
+		put(t, cd, fmt.Sprintf("projects/a/s%d.jsonl", i), "{}", 0)
+	}
+	put(t, cd, ".credentials.json", `{"claudeAiOauth":{"accessToken":"x"}}`, 2*time.Hour)
+	put(t, home, ".config/afk/pool-signals.json", fmt.Sprintf(`{"pools":{"anthropic-max":{"degraded_reason":"401 unauthorized","updated_epoch":%d}}}`, time.Now().Unix()-3600), 0)
+	env := map[string]string{"CLAUDE_CONFIG_DIR": cd}
+	probe := func() *Probe {
+		return ProbePools(context.Background(), DefaultCatalog(), ProbeEnv{Home: home, Getenv: func(k string) string { return env[k] }, Installed: func(h string) bool { return h == "claude" }})
+	}
+	p := probe()
+	if !contains(p.Bindings["anthropic-max"], "claude") {
+		t.Fatalf("claude not bound with its login under CLAUDE_CONFIG_DIR: %v", p.Bindings)
+	}
+	if s := p.Pools["anthropic-max"]; s.State != "auth_required" {
+		t.Fatalf("signal: %+v", s)
+	}
+	// A new login in CLAUDE_CONFIG_DIR clears the sign-in signal, and the
+	// sessions there are counted: 30 of 60.
+	put(t, cd, ".credentials.json", `{"claudeAiOauth":{"accessToken":"y"}}`, 0)
+	s := probe().Pools["anthropic-max"]
+	if s.State == "auth_required" || *s.UsedPct != 50 {
+		t.Fatalf("after a new login under CLAUDE_CONFIG_DIR: %+v", s)
 	}
 }

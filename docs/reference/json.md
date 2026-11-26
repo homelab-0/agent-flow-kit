@@ -44,6 +44,7 @@ With `--harness` and `--model` together, `choice` is a pinned route (`harness`, 
 | `task_class`, `stage`, `risk`, `round` | what the task was scored as |
 | `cost_class`, `is_free` | `subscription`, `free` or `api-metered` |
 | `entitlement_pool`, `pool_state`, `pool_capacity_5h`, `pool_remaining_5h`, `pool_used_pct`, `pool_headroom_pct` | the [pool](../guides/pools.md) and its state when routed |
+| `pool_quota_source` | where the pool figures came from: `codex_rate_limits` (measured), `local_5h_activity` (estimated from recent sessions), `runtime_signal:<kind>`, `gateway_probe` or `unauthenticated` |
 | `benchmark_name`, `benchmark_score`, `benchmark_basis`, `benchmark_live`, `benchmark_synced_at` | the score used and where it came from (`measured`, `capped`, `estimate` or `stale`) |
 | `effective_score` | the score after adjustments; routes are ranked by it |
 | `window_tokens` | the model's context window |
@@ -92,7 +93,7 @@ Each entry: `name`, `display`, `vendor`, `installed`, `healthy`, `problem`, `bin
 
 ## Pools (`afk-router-pools/3`)
 
-`harnesses` (installed state per CLI, plus `litellm_gateway` with `online` and `models`), `auth_alerts`, `unavailable_models` (models set aside, with reason and time) and `pools`. Each pool: `pool_id`, `provider`, `pool_tier`, `cost_class`, `state`, `capacity_5h`, `remaining_units_5h`, `used_pct`, `headroom_pct`, `quota_source` (`anthropic_oauth_api`, `codex_rate_limits`, `local_5h_activity`, `gateway_probe`, `runtime_signal:<kind>` or `unauthenticated`), and when known `weekly_used_pct`, `five_hour_used_pct`, `fable_weekly_used_pct`, `resets_at`, `degraded_kind`, `degraded_reason`.
+`harnesses` (installed state per CLI, plus `litellm_gateway` with `online` and `models`), `auth_alerts`, `unavailable_models` (models set aside, with reason and time) and `pools`. Each pool: `pool_id`, `provider`, `pool_tier`, `cost_class`, `state`, `capacity_5h`, `remaining_units_5h`, `used_pct`, `headroom_pct`, `quota_source` (`codex_rate_limits`, `local_5h_activity`, `gateway_probe`, `runtime_signal:<kind>` or `unauthenticated`), and when known `weekly_used_pct`, `five_hour_used_pct`, `resets_at` (Codex only), `degraded_kind`, `degraded_reason`.
 
 ## One-shot answer (`afk -p --json`)
 

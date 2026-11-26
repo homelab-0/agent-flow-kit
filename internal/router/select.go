@@ -55,42 +55,47 @@ type DiscoveredModel struct {
 
 // Route is the router's decision.
 type Route struct {
-	Stage             string   `json:"stage"`
-	Round             int      `json:"round"`
-	TaskClass         string   `json:"task_class"`
-	Risk              string   `json:"risk"`
-	CandidateID       string   `json:"candidate_id,omitempty"`
-	Harness           string   `json:"harness"`
-	LaunchClass       string   `json:"launch_class"`
-	Model             string   `json:"model"`
-	CanonicalModel    string   `json:"canonical_model"`
-	ModelFamily       string   `json:"model_family"`
-	SpecialistDomain  *string  `json:"specialist_domain,omitempty"`
-	CostClass         string   `json:"cost_class"`
-	IsFree            bool     `json:"is_free"`
-	Effort            string   `json:"effort"`
-	BaseEffort        string   `json:"base_effort"`
-	EffortEscalated   bool     `json:"effort_escalated"`
-	EffortReason      string   `json:"effort_reason"`
-	SupportedEfforts  []string `json:"supported_efforts"`
-	WindowTokens      *float64 `json:"window_tokens"`
-	EntitlementPool   string   `json:"entitlement_pool"`
-	PoolState         string   `json:"pool_state,omitempty"`
-	PoolCapacity5h    *float64 `json:"pool_capacity_5h,omitempty"`
-	PoolRemaining5h   *float64 `json:"pool_remaining_5h,omitempty"`
-	PoolUsedPct       *float64 `json:"pool_used_pct,omitempty"`
-	PoolHeadroomPct   *float64 `json:"pool_headroom_pct"`
-	BenchmarkName     string   `json:"benchmark_name"`
-	BenchmarkScore    float64  `json:"benchmark_score"`
-	BenchmarkBasis    string   `json:"benchmark_basis"`
-	BenchmarkLive     bool     `json:"benchmark_live"`
-	BenchmarkSyncedAt *string  `json:"benchmark_synced_at"`
-	EffectiveScore    float64  `json:"effective_score"`
-	CrossFamilyReview *bool    `json:"cross_family_review,omitempty"`
-	RouterSource      string   `json:"router_source"`
-	LitellmBaseURL    *string  `json:"litellm_base_url"`
-	AuthAlerts        []any    `json:"auth_alerts"`
-	Reason            string   `json:"reason"`
+	Stage            string   `json:"stage"`
+	Round            int      `json:"round"`
+	TaskClass        string   `json:"task_class"`
+	Risk             string   `json:"risk"`
+	CandidateID      string   `json:"candidate_id,omitempty"`
+	Harness          string   `json:"harness"`
+	LaunchClass      string   `json:"launch_class"`
+	Model            string   `json:"model"`
+	CanonicalModel   string   `json:"canonical_model"`
+	ModelFamily      string   `json:"model_family"`
+	SpecialistDomain *string  `json:"specialist_domain,omitempty"`
+	CostClass        string   `json:"cost_class"`
+	IsFree           bool     `json:"is_free"`
+	Effort           string   `json:"effort"`
+	BaseEffort       string   `json:"base_effort"`
+	EffortEscalated  bool     `json:"effort_escalated"`
+	EffortReason     string   `json:"effort_reason"`
+	SupportedEfforts []string `json:"supported_efforts"`
+	WindowTokens     *float64 `json:"window_tokens"`
+	EntitlementPool  string   `json:"entitlement_pool"`
+	PoolState        string   `json:"pool_state,omitempty"`
+	PoolCapacity5h   *float64 `json:"pool_capacity_5h,omitempty"`
+	PoolRemaining5h  *float64 `json:"pool_remaining_5h,omitempty"`
+	PoolUsedPct      *float64 `json:"pool_used_pct,omitempty"`
+	PoolHeadroomPct  *float64 `json:"pool_headroom_pct"`
+	// PoolQuotaSource is where the pool figures came from: a measurement
+	// (codex_rate_limits), an estimate from recent sessions
+	// (local_5h_activity), a failure signal (runtime_signal:<kind>), the
+	// gateway probe, or unauthenticated.
+	PoolQuotaSource   string  `json:"pool_quota_source,omitempty"`
+	BenchmarkName     string  `json:"benchmark_name"`
+	BenchmarkScore    float64 `json:"benchmark_score"`
+	BenchmarkBasis    string  `json:"benchmark_basis"`
+	BenchmarkLive     bool    `json:"benchmark_live"`
+	BenchmarkSyncedAt *string `json:"benchmark_synced_at"`
+	EffectiveScore    float64 `json:"effective_score"`
+	CrossFamilyReview *bool   `json:"cross_family_review,omitempty"`
+	RouterSource      string  `json:"router_source"`
+	LitellmBaseURL    *string `json:"litellm_base_url"`
+	AuthAlerts        []any   `json:"auth_alerts"`
+	Reason            string  `json:"reason"`
 
 	// Set on the fallback route only.
 	NoEligibleCandidate  bool              `json:"no_eligible_candidate,omitempty"`
@@ -598,7 +603,7 @@ func (r *Router) Select(in Input) Route {
 			Effort: ef.effort, BaseEffort: ef.base, EffortEscalated: ef.escalated, EffortReason: ef.reason,
 			SupportedEfforts: sup, WindowTokens: c.WindowTokens, EntitlementPool: c.EntitlementPool,
 			PoolState: pool.State, PoolCapacity5h: pool.Capacity5h, PoolRemaining5h: pool.Remaining5h,
-			PoolUsedPct: pool.UsedPct, PoolHeadroomPct: pool.HeadroomPct,
+			PoolUsedPct: pool.UsedPct, PoolHeadroomPct: pool.HeadroomPct, PoolQuotaSource: pool.QuotaSource,
 			BenchmarkName: bname, BenchmarkScore: baseScore, BenchmarkBasis: basis,
 			BenchmarkLive:     basis == "measured" && bm.Live,
 			BenchmarkSyncedAt: bm.SyncedAt, EffectiveScore: eff, CrossFamilyReview: &cross,

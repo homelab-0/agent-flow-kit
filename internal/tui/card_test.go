@@ -218,3 +218,22 @@ func TestWidths(t *testing.T) {
 		}
 	}
 }
+
+// The Why panel of the chosen route says when its pool figure is an
+// estimate from recent sessions.
+func TestWhyPanelShowsAnEstimatedPool(t *testing.T) {
+	c := fixtureCard(t, -1)
+	r := c.Rows[c.Sel]
+	r.PoolQuotaSource = "local_5h_activity"
+	r.Raw = nil
+	c.Rows[c.Sel] = r
+	out := strings.Join(plainLines(join(NewTheme(true).WhyLines(c, 120))), "\n")
+	if !strings.Contains(out, "of 5h window left") || !strings.Contains(out, "(available) · estimated") {
+		t.Fatalf("no estimate in the Why panel:\n%s", out)
+	}
+	r.PoolQuotaSource = "codex_rate_limits"
+	c.Rows[c.Sel] = r
+	if out := strings.Join(plainLines(join(NewTheme(true).WhyLines(c, 120))), "\n"); !strings.Contains(out, "· measured") {
+		t.Fatalf("no basis for a measured pool:\n%s", out)
+	}
+}

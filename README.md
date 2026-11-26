@@ -160,7 +160,7 @@ The full reference is in the [command line reference](docs/reference/cli.md); ev
 For each installed CLI, AFK considers every model that CLI can run and scores it on:
 
 1. **Fit for the task.** Public benchmark results for that kind of work (coding, review, architecture, and so on).
-2. **Pool headroom.** How much is left in that subscription's window, from the provider's live usage where it reports one (Claude, Codex) and from recent session activity otherwise. A pool that just hit a quota or sign-in error is marked down for a while.
+2. **Pool headroom.** How much is left in that subscription's window, from the rate limits Codex records in its own session files, and estimated from recent session activity otherwise (Claude included: AFK never opens a login file to ask the provider). A pool that just hit a quota or sign-in error is marked down for a while.
 3. **Cost.** Subscription, free, local or metered. `--prefer cheap` favours free and local models; `--prefer best` ignores cost.
 
 Effort starts from the task kind and goes up for harder work, within what the CLI supports. Two rules are fixed: a review never goes to a free or local model, and a plan login is never sent through a gateway.
@@ -189,7 +189,7 @@ Press `?` on the route card to see the working:
 | Pi | `pi` | ✓ | ✓ |
 | Devin CLI | `devin` | ✓ | planned |
 
-Discovery reports each CLI's version, how it was installed (mise, npm, bun, pnpm, Homebrew, uv, pipx, cargo or self-managed), the command that updates it, its effort levels, and whether it looks signed in. The sign-in check looks for a login on disk. For Claude, Codex and a few others it opens the credential file to see which login fields are set, but it never decodes, prints, logs or stores a token's value. A file AFK can't read shows as `unknown`, not signed out. Where AFK can't tell, it says `unknown`.
+Discovery reports each CLI's version, how it was installed (mise, npm, bun, pnpm, Homebrew, uv, pipx, cargo or self-managed), the command that updates it, its effort levels, and whether it looks signed in. The sign-in check looks only at whether the CLI's login file exists and is larger than 4 bytes (an empty `{}` counts as signed out); AFK never opens a credential file. Where AFK can't tell, it says `unknown`.
 
 Adding a CLI means adding one entry to [`internal/harness/registry.go`](internal/harness/registry.go).
 
