@@ -19,6 +19,9 @@ const (
 // RouteFlags are the routing options the user gave.
 type RouteFlags struct {
 	Task, Prefer, Harness, Model, Effort, Repo string
+	// Perm is the permission mode from --mode or --yolo ("" when not
+	// given).
+	Perm string
 }
 
 // PlanError is a route AFK will not start, with its reason.

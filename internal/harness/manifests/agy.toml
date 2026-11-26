@@ -1,0 +1,19 @@
+# Antigravity CLI. Flags checked against agy 1.5.18 --help.
+name = "agy"
+display = "Antigravity CLI"
+vendor = "Google"
+bins = ["agy"]
+efforts = ["low", "medium", "high", "xhigh", "max"]
+effort_flag = "--effort <level>"
+self_update = "update"
+
+[auth]
+login = ["agy", "login"]
+
+[modes]
+verified = "1.5.18"
+read-only = ["--mode", "plan"]
+ask = []
+edits = ["--mode", "accept-edits"]
+auto = ["--mode", "auto"]
+yolo = ["--dangerously-skip-permissions"]

@@ -2,8 +2,9 @@
 // installed, what version it is, how it was installed and how to update it,
 // whether it looks signed in, and which effort levels it accepts.
 //
-// Each CLI is one Adapter in the registry below. Supporting a new CLI means
-// adding one entry; nothing else in AFK lists harness names.
+// Each CLI is one manifest (manifests/<name>.toml, overridable from
+// ~/.config/afk/harnesses/), plus, where a sign-in check needs code, an
+// entry in authChecks.
 package harness
 
 import (
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 )
 
 // Adapter describes one agent CLI.
@@ -36,6 +38,8 @@ type Adapter struct {
 	// SelfUpdate is the argument that makes a self-managed install update
 	// itself (for example "update"). Empty when the CLI cannot.
 	SelfUpdate string
+	// Manifest is everything else the manifest says.
+	Manifest Manifest
 	// auth reports whether the CLI looks signed in. Nil when AFK has no
 	// reliable way to tell; the answer is then "unknown", never a guess.
 	auth func(e Env) (AuthState, string)
@@ -44,89 +48,40 @@ type Adapter struct {
 // SupportsEffort reports whether the CLI takes an effort level.
 func (a Adapter) SupportsEffort() bool { return len(a.Efforts) > 0 }
 
-var registry = []Adapter{
-	{
-		Name: "claude", Display: "Claude Code", Vendor: "Anthropic",
-		Bins: []string{"claude"}, NPMPackage: "@anthropic-ai/claude-code",
-		Efforts: []string{"low", "medium", "high", "xhigh", "max"}, EffortFlag: "--effort <level>",
-		Login: "claude auth login", SelfUpdate: "update",
-		auth: claudeAuth,
-	},
-	{
-		Name: "codex", Display: "Codex CLI", Vendor: "OpenAI",
-		Bins: []string{"codex"}, NPMPackage: "@openai/codex",
-		Efforts: []string{"low", "medium", "high", "xhigh", "max", "ultra"}, EffortFlag: "-c model_reasoning_effort=<level>",
-		Login: "codex login",
-		auth:  codexAuth,
-	},
-	{
-		Name: "opencode", Display: "OpenCode", Vendor: "SST",
-		Bins: []string{"opencode"}, NPMPackage: "opencode-ai",
-		Efforts: []string{"low", "medium", "high"}, EffortFlag: "--variant <level>",
-		Login: "opencode auth login", SelfUpdate: "upgrade",
-		// OpenCode always has its free models, signed in or not.
-		auth: func(Env) (AuthState, string) { return AuthOK, "" },
-	},
-	{
-		Name: "grok", Display: "Grok CLI", Vendor: "xAI",
-		Bins:    []string{"grok"},
-		Efforts: []string{"low", "medium", "high", "xhigh"}, EffortFlag: "--effort <level>",
-		Login: "grok login", SelfUpdate: "update",
-		auth: nonEmptyFile(".grok", "auth.json"),
-	},
-	{
-		Name: "agy", Display: "Antigravity CLI", Vendor: "Google",
-		Bins:    []string{"agy"},
-		Efforts: []string{"low", "medium", "high", "xhigh", "max"}, EffortFlag: "--effort <level>",
-		Login: "agy login", SelfUpdate: "update",
-		auth: nonEmptyDir(".gemini", "antigravity-cli"),
-	},
-	{
-		Name: "gemini", Display: "Gemini CLI", Vendor: "Google",
-		Bins: []string{"gemini"}, NPMPackage: "@google/gemini-cli",
-		Login: "gemini",
-		auth:  fileOrEnv([]string{".gemini", "oauth_creds.json"}, "GEMINI_API_KEY", "GOOGLE_API_KEY"),
-	},
-	{
-		Name: "copilot", Display: "GitHub Copilot CLI", Vendor: "GitHub",
-		Bins: []string{"copilot"}, NPMPackage: "@github/copilot",
-		Login: "copilot (then /login)",
-	},
-	{
-		Name: "cursor", Display: "Cursor Agent", Vendor: "Cursor",
-		Bins:  []string{"cursor-agent"},
-		Login: "cursor-agent login", SelfUpdate: "update",
-	},
-	{
-		Name: "kiro", Display: "Kiro CLI", Vendor: "AWS",
-		Bins:  []string{"kiro-cli"},
-		Login: "kiro-cli login",
-	},
-	{
-		Name: "qwen", Display: "Qwen Code", Vendor: "Alibaba",
-		Bins: []string{"qwen"}, NPMPackage: "@qwen-code/qwen-code",
-		Login: "qwen",
-		auth:  fileOrEnv([]string{".qwen", "oauth_creds.json"}, "DASHSCOPE_API_KEY"),
-	},
-	{
-		Name: "kimi", Display: "Kimi Code", Vendor: "Moonshot AI",
-		Bins: []string{"kimi"}, NPMPackage: "@moonshot-ai/kimi-code",
-		Login: "kimi",
-	},
-	{
-		Name: "pi", Display: "Pi", Vendor: "Mario Zechner",
-		Bins: []string{"pi"}, NPMPackage: "@mariozechner/pi-coding-agent",
-		Efforts: []string{"low", "medium", "high", "xhigh", "max"}, EffortFlag: "--thinking <level>",
-		Login: "pi (then /login)",
-		auth:  nonEmptyFile(".pi", "agent", "auth.json"),
-	},
-	{
-		Name: "devin", Display: "Devin CLI", Vendor: "Cognition",
-		Bins:    []string{"devin"},
-		Efforts: []string{"low", "medium", "high", "xhigh", "max"}, EffortFlag: "--model <id>-<level>",
-		Login: "devin auth login",
-		auth:  nonEmptyFile(".local", "share", "devin", "credentials.toml"),
-	},
+// authChecks are the sign-in checks that need code, by harness. Every
+// other fact about a harness is in its manifest.
+var authChecks = map[string]func(e Env) (AuthState, string){
+	"claude": claudeAuth,
+	"codex":  codexAuth,
+	// OpenCode always has its free models, signed in or not.
+	"opencode": func(Env) (AuthState, string) { return AuthOK, "" },
+	"grok":     nonEmptyFile(".grok", "auth.json"),
+	"agy":      nonEmptyDir(".gemini", "antigravity-cli"),
+	"gemini":   fileOrEnv([]string{".gemini", "oauth_creds.json"}, "GEMINI_API_KEY", "GOOGLE_API_KEY"),
+	"qwen":     fileOrEnv([]string{".qwen", "oauth_creds.json"}, "DASHSCOPE_API_KEY"),
+	"pi":       nonEmptyFile(".pi", "agent", "auth.json"),
+	"devin":    nonEmptyFile(".local", "share", "devin", "credentials.toml"),
+}
+
+var registry []Adapter
+
+func init() { rebuild() }
+
+// rebuild makes the registry from the manifests.
+func rebuild() {
+	registry = registry[:0]
+	for _, n := range order {
+		m := manifests[n]
+		login := strings.Join(m.Auth.Login, " ")
+		if login == "" {
+			login = m.LoginNote
+		}
+		registry = append(registry, Adapter{
+			Name: m.Name, Display: m.Display, Vendor: m.Vendor, Bins: m.Bins, NPMPackage: m.NPMPackage,
+			Efforts: m.Efforts, EffortFlag: m.EffortFlag, Login: login, SelfUpdate: m.SelfUpdate,
+			Manifest: m, auth: authChecks[n],
+		})
+	}
 }
 
 // All returns every known adapter, in a stable order.

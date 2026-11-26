@@ -22,10 +22,14 @@ type Args struct {
 	LaunchPlan bool   // --launch-plan
 	Route      string // --route (JSON, or - for stdin)
 	Mode       string // --mode for --launch-plan
+	// BadMode is a --mode value that is neither a permission mode nor a
+	// launch-plan mode.
+	BadMode string
 	// Unknown is the first option this command line does not know.
 	Unknown string
 
 	unknown bool // an unknown option came before any -h
+	badMode bool // --mode had a value that is no mode (even an empty one)
 }
 
 // Options that take a value.
@@ -60,7 +64,19 @@ func Parse(argv []string) Args {
 		case "--route":
 			a.Route = v
 		case "--mode":
-			a.Mode = v
+			// --mode is a permission mode (read-only, ask, edits, auto,
+			// yolo) or, with --launch-plan, interactive or print.
+			// The last permission flag wins, so a later --mode ask
+			// turns an earlier --yolo off.
+			switch v {
+			case "read-only", "ask", "edits", "auto", "yolo":
+				a.Flags.Perm = v
+				a.Yolo = v == "yolo"
+			case "interactive", "print":
+				a.Mode = v
+			default:
+				a.BadMode, a.badMode = v, true
+			}
 		}
 	}
 	for i := 0; i < len(argv); i++ {
@@ -92,6 +108,7 @@ func Parse(argv []string) Args {
 			}
 		case x == "--yolo":
 			a.Yolo = true
+			a.Flags.Perm = "yolo"
 		case valued[x]:
 			v := ""
 			if i+1 < len(argv) {
@@ -123,3 +140,7 @@ func Parse(argv []string) Args {
 	}
 	return a
 }
+
+// HasBadMode reports whether --mode was given a value that is no mode,
+// including an empty or missing one.
+func (a Args) HasBadMode() bool { return a.badMode }

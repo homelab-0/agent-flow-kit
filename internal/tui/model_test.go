@@ -28,7 +28,7 @@ func (f *fake) Explain(context.Context, engine.RouteFlags, string) (*engine.Expl
 	return f.ex, nil
 }
 
-func (f *fake) LaunchPlan(_ context.Context, r engine.Route, _ string, _ bool, _ []string, _ string) (*engine.LaunchPlan, error) {
+func (f *fake) LaunchPlan(_ context.Context, r engine.Route, _ string, _ string, _ []string, _ string) (*engine.LaunchPlan, error) {
 	f.plans = append(f.plans, r)
 	if f.planErr != nil {
 		return nil, f.planErr
@@ -156,6 +156,95 @@ func TestYoloNeedsTwoPresses(t *testing.T) {
 	press(m, "y")
 	if m.card.Yolo {
 		t.Fatal("y again turns yolo off")
+	}
+}
+
+func TestYoloRefusedOutsideTrust(t *testing.T) {
+	f := fixtures(t)
+	m := New(f, Options{Prompt: framePrompt, Width: 80, FPS: 30, Dark: true, Now: func() time.Time { return frameNow }, Loc: time.UTC,
+		Environ: []string{"PATH=/bin"}, YoloBlock: "yolo runs only in a trusted repository; to allow it here run: afk trust add /src/app"})
+	m.Init()
+	m.Update(explainMsg{ex: f.ex})
+	press(m, "y", "y")
+	if m.card.Yolo || !strings.Contains(m.notice, "afk trust add /src/app") {
+		t.Fatalf("yolo=%v notice=%q", m.card.Yolo, m.notice)
+	}
+}
+
+func TestCardShowsTheModeAndDowngrade(t *testing.T) {
+	f := fixtures(t)
+	ex := *f.ex
+	ex.Mode = "auto"
+	ex.ModeByHarness = map[string]engine.ModeInfo{}
+	for _, r := range ex.ByHarness {
+		ex.ModeByHarness[r.Harness] = engine.ModeInfo{Mode: "edits", Note: r.Harness + ": can't run in auto, running in edits"}
+	}
+	ex.ModeByHarness[ex.Choice.Harness] = engine.ModeInfo{Mode: "edits", Note: ex.Choice.Harness + ": can't run in auto, running in edits"}
+	m := New(f, Options{Prompt: framePrompt, Width: 80, FPS: 30, Dark: true, Now: func() time.Time { return frameNow }, Loc: time.UTC, Environ: []string{"PATH=/bin"}})
+	m.Init()
+	m.Update(explainMsg{ex: &ex})
+	out := ansi.Strip(m.Render())
+	if !strings.Contains(out, "mode auto") || !strings.Contains(out, "can't run in auto, running in edits") {
+		t.Fatalf("mode not shown:\n%s", out)
+	}
+}
+
+// Turning a routed yolo off sticks: the header and the launch both say
+// ask, and a reroute doesn't turn it back on.
+func TestYoloOffSticksAcrossReroutes(t *testing.T) {
+	f := fixtures(t)
+	ex := *f.ex
+	ex.Mode = "yolo"
+	m := New(f, Options{Prompt: framePrompt, Width: 80, FPS: 30, Dark: true, Now: func() time.Time { return frameNow }, Loc: time.UTC, Environ: []string{"PATH=/bin"}})
+	m.Init()
+	m.Update(explainMsg{ex: &ex})
+	if !m.card.Yolo {
+		t.Fatal("a routed yolo turns the toggle on")
+	}
+	press(m, "y")
+	if m.card.Yolo || m.card.LaunchMode() != "ask" {
+		t.Fatalf("yolo off: toggle %v, launch mode %q", m.card.Yolo, m.card.LaunchMode())
+	}
+	if out := ansi.Strip(m.Render()); strings.Contains(out, "mode yolo") || strings.Contains(strings.Split(out, "\n")[2], "yolo") {
+		t.Errorf("the header still says yolo:\n%s", out)
+	}
+	m.Update(explainMsg{ex: &ex})
+	if m.card.Yolo {
+		t.Fatal("a reroute turned yolo back on")
+	}
+}
+
+// Until you press y, the toggle follows the routed mode: a reroute to a
+// stricter task mode turns a routed yolo off.
+func TestRoutedYoloFollowsTheMode(t *testing.T) {
+	f := fixtures(t)
+	yolo, ro := *f.ex, *f.ex
+	yolo.Mode, ro.Mode = "yolo", "read-only"
+	m := New(f, Options{Prompt: framePrompt, Width: 80, FPS: 30, Dark: true, Now: func() time.Time { return frameNow }, Loc: time.UTC, Environ: []string{"PATH=/bin"}})
+	m.Init()
+	m.Update(explainMsg{ex: &yolo})
+	m.Update(explainMsg{ex: &ro})
+	if m.card.Yolo || m.card.LaunchMode() != "read-only" {
+		t.Fatalf("toggle %v, launch mode %q", m.card.Yolo, m.card.LaunchMode())
+	}
+}
+
+func TestCompactCardShowsTheModeAndDowngrade(t *testing.T) {
+	f := fixtures(t)
+	ex := *f.ex
+	ex.Mode = "auto"
+	ex.ModeByHarness = map[string]engine.ModeInfo{ex.Choice.Harness: {Mode: "edits", Note: ex.Choice.Harness + ": can't run in auto, running in edits"}}
+	m := New(f, Options{Prompt: framePrompt, Width: 60, FPS: 30, Dark: true, Now: func() time.Time { return frameNow }, Loc: time.UTC, Environ: []string{"PATH=/bin"}})
+	m.Init()
+	m.Update(explainMsg{ex: &ex})
+	out := ansi.Strip(m.Render())
+	if !strings.Contains(out, "auto") || !strings.Contains(out, "running in edits") {
+		t.Fatalf("compact card lacks the mode:\n%s", out)
+	}
+	for _, l := range strings.Split(out, "\n") {
+		if ansi.StringWidth(l) > 60 {
+			t.Errorf("line wider than 60: %q", l)
+		}
 	}
 }
 

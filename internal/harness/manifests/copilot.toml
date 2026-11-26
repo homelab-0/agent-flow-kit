@@ -1,0 +1,7 @@
+# GitHub Copilot CLI. AFK doesn't launch it yet, so it has no mode table.
+name = "copilot"
+display = "GitHub Copilot CLI"
+vendor = "GitHub"
+bins = ["copilot"]
+npm_package = "@github/copilot"
+login_note = "copilot (then /login)"

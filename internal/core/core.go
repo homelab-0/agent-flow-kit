@@ -227,6 +227,8 @@ type decision struct {
 	// list is the CLIs the route may use.
 	list   []string
 	effort string
+	// mode is the permission mode asked for, and where it came from.
+	mode, modeSource string
 	// choice is the route: a router.Route, or the pinned route's map.
 	choice any
 }
@@ -296,9 +298,13 @@ func (c *Core) decide(ctx context.Context, f engine.RouteFlags, prompt string) (
 			return nil, &UsageError{fmt.Sprintf("%s is served by %s; choose one with --harness", pinM, strings.Join(hs, " and "))}
 		}
 	}
+	mode, modeSource, err := c.permMode(settings, f.Perm, task)
+	if err != nil {
+		return nil, err
+	}
 	d := &decision{
 		st: st, repo: repo, task: task, prefer: prefer, guessed: guessed, installed: installed,
-		pinH: pinH, pinM: pinM, list: installed, effort: f.Effort,
+		pinH: pinH, pinM: pinM, list: installed, effort: f.Effort, mode: mode, modeSource: modeSource,
 	}
 	if pinH != "" {
 		d.list = []string{pinH}
@@ -348,6 +354,7 @@ func (c *Core) Explain(ctx context.Context, f engine.RouteFlags, prompt string) 
 	doc := map[string]any{
 		"schema": engine.SchemaExplain, "task": d.task, "task_guessed": d.guessed, "prefer": d.prefer,
 		"choice": d.choice, "by_harness": alts,
+		"mode": d.mode, "mode_source": d.modeSource, "mode_by_harness": modesFor(d.installed, d.mode),
 	}
 	b, err := json.Marshal(doc)
 	if err != nil {
@@ -423,6 +430,80 @@ func ExitCode(err error) int {
 		return 4
 	}
 	return 1
+}
+
+// permMode is the permission mode for a run: --mode or --yolo, else
+// permissions.task.<kind>, else permissions.default, else ask, made
+// stricter (never looser) by the project's permissions.default. yolo is
+// refused outside a trusted git repository.
+func (c *Core) permMode(s Settings, flag, task string) (mode, source string, err error) {
+	if flag != "" {
+		mode, source = flag, "flag"
+	} else {
+		base, src := s.TaskModes[task], "permissions.task."+task
+		if base == "" {
+			base, src = s.DefaultMode, "permissions.default"
+		}
+		if base == "" {
+			base, src = "ask", "default"
+		}
+		mode, source = s.ModeFor(task), src
+		if mode != base {
+			source = "project"
+		}
+	}
+	if harness.ModeRank(mode) < 0 {
+		return "", "", &UsageError{"--mode must be read-only, ask, edits, auto or yolo"}
+	}
+	if mode == "yolo" {
+		if err := c.checkYoloWith(s); err != nil {
+			return "", "", err
+		}
+	}
+	return mode, source, nil
+}
+
+// checkYolo refuses yolo outside a trusted git repository, reading the
+// settings as they are now.
+func (c *Core) checkYolo() error {
+	s, err := c.LoadSettings(c.cwd())
+	if err != nil {
+		return err
+	}
+	return c.checkYoloWith(s)
+}
+
+func (c *Core) checkYoloWith(s Settings) error {
+	if err := config.CheckYolo(s, c.Home, c.cwd()); err != nil {
+		return &UsageError{err.Error()}
+	}
+	return nil
+}
+
+func (c *Core) cwd() string {
+	if c.Cwd != "" {
+		return c.Cwd
+	}
+	d, _ := os.Getwd()
+	return d
+}
+
+// modesFor is what each CLI runs a mode as.
+func modesFor(clis []string, mode string) map[string]engine.ModeInfo {
+	out := map[string]engine.ModeInfo{}
+	for _, h := range clis {
+		m, ok := harness.ManifestFor(h)
+		if !ok {
+			continue
+		}
+		_, ran, note, ok := m.ModeFlags(mode, false)
+		if !ok {
+			out[h] = engine.ModeInfo{Mode: "", Note: note}
+			continue
+		}
+		out[h] = engine.ModeInfo{Mode: ran, Note: note}
+	}
+	return out
 }
 
 // signInHint says which of the CLIs asked for needs a sign-in, with the

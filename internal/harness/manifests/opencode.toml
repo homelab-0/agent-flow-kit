@@ -1,0 +1,20 @@
+# OpenCode. Checked against opencode v2.4.2: only `opencode run` takes --auto.
+name = "opencode"
+display = "OpenCode"
+vendor = "SST"
+bins = ["opencode"]
+npm_package = "opencode-ai"
+efforts = ["low", "medium", "high"]
+effort_flag = "--variant <level>"
+self_update = "upgrade"
+
+[auth]
+login = ["opencode", "auth", "login"]
+
+[modes]
+verified = "2.4.2"
+ask = []
+
+[modes.print]
+ask = []
+yolo = ["--auto"]

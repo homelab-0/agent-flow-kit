@@ -103,7 +103,7 @@ afk -p --task review "review the last commit"
 | `↑` `↓` / `j` `k` | pick another row |
 | `tab` | change the effort, within what that CLI supports |
 | `e` | edit the prompt and route again |
-| `y` `y` | yolo: the CLI acts without asking for permission (press twice) |
+| `y` `y` | yolo: the CLI acts without asking for permission (press twice; only in a [trusted](docs/guides/permissions.md#yolo-stays-deliberate) git repository) |
 | `?` | why this route: benchmark, pool, cost and effort |
 | `esc` | cancel; nothing is started |
 
@@ -148,7 +148,8 @@ afk bench sync [--json]
 | `--effort <level>` | `low`, `medium`, `high`, or higher where the CLI supports it |
 | `--explain`, `--dry-run` | show the decision and the best route per CLI; start nothing |
 | `--json` | machine-readable output for `--explain` and `-p` |
-| `--yolo` | let the CLI act without asking, using its own skip-permissions flag |
+| `--mode <mode>` | the permission mode: `read-only`, `ask` (default), `edits`, `auto` or `yolo`, translated into each CLI's own flags ([permission modes](docs/guides/permissions.md)) |
+| `--yolo` | the same as `--mode yolo`; only in a trusted git repository (`afk trust add <dir>`) |
 | `--pass <arg>` | pass one argument through to the CLI unchanged (repeatable) |
 | `-y`, `--yes` | skip the route card |
 | `--` | everything after it is the prompt |
@@ -220,7 +221,10 @@ AFK is becoming a standalone tool. Work is tracked in pull requests against `mas
 - [x] Routing engine in Go: route selection, pool usage and launch plans
 - [x] `-p` one-shot answers with failover, and the benchmark sync (`afk bench sync`), in Go: no bash, `jq` or `yq`
 - [x] Remove the legacy bash engine and scripts (the last version is tagged `legacy-bash-final`)
-- [ ] `afk config`: one config file, managed from the CLI
+- [x] `afk config`: one config file, managed from the CLI
+- [x] Harness manifests and permission modes: five modes mapped per CLI, `afk trust` for yolo
+- [ ] `afk harness login/add/update/remove/doctor`, with installs recorded in `afk.lock`
+- [ ] One-shot runs (`-p`) in `auto` in their own git worktree
 - [ ] AI gateways: LiteLLM, OpenRouter and any OpenAI- or Anthropic-compatible endpoint, with keys held as references (env var, OS keychain, 1Password)
 - [ ] MCP servers and skills: define them once in AFK and sync them into every installed CLI's own config
 - [ ] Packaging: GoReleaser builds, npm with native binaries, Homebrew tap, install script, `afk update`

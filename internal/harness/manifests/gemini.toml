@@ -1,0 +1,7 @@
+# Gemini CLI. AFK doesn't launch it yet, so it has no mode table.
+name = "gemini"
+display = "Gemini CLI"
+vendor = "Google"
+bins = ["gemini"]
+npm_package = "@google/gemini-cli"
+login_note = "gemini"

@@ -16,7 +16,7 @@ Anything not built yet is marked **Planned** and listed in the [roadmap](../READ
 - [Agent CLIs (harnesses)](guides/harnesses.md): which CLIs AFK supports and what `afk harness` shows
 - [Subscription pools](guides/pools.md): how AFK knows how much of each plan is left
 - [Model gateways](guides/gateways.md): routing to a LiteLLM-style gateway without exposing a plan login
-- [Permissions](guides/permissions.md): asking versus yolo, and what is planned
+- [Permission modes](guides/permissions.md): read-only, ask, edits, auto and yolo, per CLI, and `afk trust`
 - [One-shot answers (`-p`)](guides/print-mode.md): headless runs with failover
 - [Run records and receipts](guides/runs.md): what is saved after each session
 - [Scripting AFK](guides/scripting.md): `--explain --json` and `--launch-plan` for scripts and front ends
@@ -26,6 +26,7 @@ Anything not built yet is marked **Planned** and listed in the [roadmap](../READ
 - [Command line](reference/cli.md): every command, option and exit code
 - [Configuration](reference/configuration.md): files, project settings and environment variables
 - [JSON formats](reference/json.md): explain, route, launch plan, harnesses, pools and run records
+- [Harness manifests](reference/harness-manifests.md): how each CLI is described, and overriding one
 - [Benchmark catalog](reference/benchmark-catalog.md): the format the router scores from, and `afk bench sync`
 
 ## More

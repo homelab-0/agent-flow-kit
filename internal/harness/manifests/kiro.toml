@@ -1,0 +1,6 @@
+# Kiro CLI. AFK doesn't launch it yet, so it has no mode table.
+name = "kiro"
+display = "Kiro CLI"
+vendor = "AWS"
+bins = ["kiro-cli"]
+login_note = "kiro-cli login"

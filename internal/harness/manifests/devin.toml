@@ -1,0 +1,10 @@
+# Devin CLI. AFK doesn't launch it yet, so it has no mode table.
+name = "devin"
+display = "Devin CLI"
+vendor = "Cognition"
+bins = ["devin"]
+efforts = ["low", "medium", "high", "xhigh", "max"]
+effort_flag = "--model <id>-<level>"
+
+[auth]
+login = ["devin", "auth", "login"]

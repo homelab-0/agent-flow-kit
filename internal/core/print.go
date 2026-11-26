@@ -19,9 +19,8 @@ import (
 
 // PrintRequest is one afk -p run.
 type PrintRequest struct {
-	Flags  engine.RouteFlags
+	Flags  engine.RouteFlags // Flags.Perm is --mode or --yolo
 	Prompt string
-	Yolo   bool
 	Pass   []string
 }
 
@@ -46,8 +45,8 @@ func (c *Core) Print(ctx context.Context, req PrintRequest, note func(string)) (
 	}
 	signals := router.ProbeEnv{Home: c.Home, Getenv: c.getenv}.SignalsPath()
 	deps := oneshot.Deps{
-		Run: func(ctx context.Context, r engine.Route) oneshot.Output {
-			return c.runHeadless(ctx, r, req)
+		Run: func(ctx context.Context, r engine.Route, mode string) oneshot.Output {
+			return c.runHeadless(ctx, r, mode, req)
 		},
 		Next: func(ctx context.Context, only []string) (engine.Route, bool) {
 			// Read the pools again: the failure just recorded is in them.
@@ -79,7 +78,7 @@ func (c *Core) Print(ctx context.Context, req PrintRequest, note func(string)) (
 	if first.EntitlementPool == "" {
 		firstPool = d.st.r.PoolFor(first.Harness, first.Model)
 	}
-	return oneshot.Do(ctx, oneshot.Request{First: first, Pinned: pinned, Harnesses: d.list, Effort: req.Flags.Effort, FirstPool: firstPool}, deps), nil
+	return oneshot.Do(ctx, oneshot.Request{First: first, Pinned: pinned, Harnesses: d.list, Effort: req.Flags.Effort, FirstPool: firstPool, Mode: d.mode}, deps), nil
 }
 
 func toEngineRoute(v any) (engine.Route, error) {
@@ -95,8 +94,8 @@ func toEngineRoute(v any) (engine.Route, error) {
 }
 
 // runHeadless plans one print-mode launch and runs it with stdin closed.
-func (c *Core) runHeadless(ctx context.Context, r engine.Route, req PrintRequest) oneshot.Output {
-	plan, err := c.LaunchPlan(ctx, r, "print", req.Yolo, req.Pass, req.Prompt)
+func (c *Core) runHeadless(ctx context.Context, r engine.Route, mode string, req PrintRequest) oneshot.Output {
+	plan, err := c.LaunchPlan(ctx, r, "print", mode, req.Pass, req.Prompt)
 	if err != nil {
 		reason := err.Error()
 		var pe *engine.PlanError
@@ -129,7 +128,7 @@ func (c *Core) runHeadless(ctx context.Context, r engine.Route, req PrintRequest
 		run = execHeadless
 	}
 	stdout, stderr, exit := run(ctx, plan.Argv, env, plan.Cwd)
-	out := oneshot.Output{Stdout: stdout, Stderr: stderr, Exit: exit}
+	out := oneshot.Output{Stdout: stdout, Stderr: stderr, Exit: exit, Mode: plan.Mode, ModeNote: plan.ModeNote}
 	if answerFile != "" {
 		if b, err := os.ReadFile(answerFile); err == nil {
 			out.Answer = b

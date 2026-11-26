@@ -1,0 +1,37 @@
+# Codex CLI. Flags checked against codex-cli 0.172.0 --help and exec --help:
+# --ask-for-approval takes on-request or never, and codex exec has no -a.
+name = "codex"
+display = "Codex CLI"
+vendor = "OpenAI"
+bins = ["codex"]
+npm_package = "@openai/codex"
+efforts = ["low", "medium", "high", "xhigh", "max", "ultra"]
+effort_flag = "-c model_reasoning_effort=<level>"
+
+[auth]
+login = ["codex", "login"]
+device_login = ["codex", "login", "--device-auth"]
+status = ["codex", "login", "status"]
+errors = ["refresh token", "not logged in", "401 unauthorized"]
+
+[modes]
+verified = "0.172.0"
+read-only = ["--sandbox", "read-only", "--ask-for-approval", "never"]
+# ask: a read-only sandbox that asks before anything beyond reading
+# (writes, commands outside the sandbox). Pinned, so a sandbox_mode or
+# approval_policy in ~/.codex/config.toml can't loosen it. read-only
+# never asks, so it can never write.
+ask = ["--sandbox", "read-only", "--ask-for-approval", "on-request"]
+# edits (edit freely, ask before commands) has no Codex equivalent.
+auto = ["--sandbox", "workspace-write", "--ask-for-approval", "never"]
+yolo = ["--dangerously-bypass-approvals-and-sandbox"]
+bypass_flags = ["--yolo"]
+dir_flags = ["--cd", "-C"]
+
+# codex exec can't ask (it has no --ask-for-approval), so one-shot runs
+# have no ask: ask runs read-only, pinned so ~/.codex/config.toml can't
+# loosen it, and AFK says so.
+[modes.print]
+read-only = ["--sandbox", "read-only"]
+auto = ["--sandbox", "workspace-write"]
+yolo = ["--dangerously-bypass-approvals-and-sandbox"]
