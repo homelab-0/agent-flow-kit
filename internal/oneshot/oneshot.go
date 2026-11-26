@@ -204,6 +204,11 @@ type Request struct {
 	Pinned bool
 	// Harnesses are the CLIs the run may use.
 	Harnesses []string
+	// Failover is where a failed run may go next: "any" (or empty) for
+	// the next best route, "same-pool" for another model on the same
+	// CLI and plan (so the prompt goes to no other account), "none" to
+	// report the failure.
+	Failover string
 	// Effort, when given on the command line, applies to every route.
 	Effort string
 	// Mode is the permission mode asked for. Each later attempt runs at
@@ -259,6 +264,10 @@ func Do(ctx context.Context, req Request, d Deps) Result {
 	var tried []string
 	triedSet := map[string]bool{}
 	var avoid []string
+	firstPool := req.First.EntitlementPool
+	if firstPool == "" {
+		firstPool = req.FirstPool
+	}
 	for attempt := 1; ; attempt++ {
 		out := d.Run(ctx, route, mode)
 		if out.ModeNote != "" && d.Note != nil {
@@ -318,13 +327,21 @@ func Do(ctx context.Context, req Request, d Deps) Result {
 			return Result{Tried: tried, Attempts: attempt, Exit: 130, Error: "interrupted", Interrupted: true}
 		}
 		fail := Result{Tried: tried, Attempts: attempt, Exit: rc, Error: why}
-		if req.Pinned || route.Pinned || attempt >= MaxAttempts {
+		if req.Pinned || route.Pinned || attempt >= MaxAttempts || req.Failover == "none" {
 			return fail
 		}
 		if kind == KindOther {
 			avoid = append(avoid, route.Harness)
 		}
+		if req.Failover == "same-pool" {
+			// The prompt stays with the CLI and plan the router chose
+			// first.
+			req.Harnesses = without([]string{req.First.Harness}, avoid)
+		}
 		next, found := nextRoute(ctx, req, d, avoid, triedSet)
+		if found && req.Failover == "same-pool" && next.EntitlementPool != firstPool {
+			found = false
+		}
 		if !found {
 			fail.NoOther = true
 			return fail

@@ -27,6 +27,7 @@ For each setting, the first of these that sets it wins:
 | Setting | Flag | Environment | Project | config.toml | Default |
 |---|---|---|---|---|---|
 | preference | `--prefer` | | `route.prefer` | `route.prefer` | `balanced` |
+| one-shot failover | | `AFK_ROUTER_FAILOVER` | never | `route.failover` | `any` |
 | free first for low-risk work | `--prefer cheap` | `AFK_ROUTER_PREFER_FREE` | `route.prefer_free`, `router.prefer_free_for_low_risk` | `route.prefer_free` | `false` |
 | metered API models | | `AFK_ROUTER_ALLOW_METERED_API` | never | `route.allow_metered` | `false` |
 | free reviewers | | `AFK_ROUTER_ALLOW_FREE_REVIEWERS` | never | `route.allow_free_reviewers` | `false` |
@@ -79,6 +80,7 @@ modelsdev = { enabled = true }
 | `prefer_free` | bool | `false` | prefer free and local models for low-risk work |
 | `allow_metered` | bool | `false` | allow pay-per-token API models |
 | `allow_free_reviewers` | bool | `false` | let free and local models take reviews |
+| `failover` | string | `any` | where a failed [one-shot run](../guides/print-mode.md#failover) may go next: `any` (the next best route), `same-pool` (another model on the same CLI and plan) or `none` (report the failure). A project file can't set it |
 | `security_models` | list | none | specialist security models you are entitled to (`mythos`, `daybreak-blue`, or `all`) |
 
 ### `[trust]`
@@ -237,6 +239,7 @@ installed_at = 2026-11-26T12:00:00Z
 | `AFK_ROUTER_ALLOW_FREE_REVIEWERS` | `1`/`true`: as `allow_free_reviewers` |
 | `AFK_ROUTER_ALLOW_METERED_API` | `1`/`true`: as `allow_metered_api` |
 | `AFK_SECURITY_MODELS` | comma-separated, as `security_models` |
+| `AFK_ROUTER_FAILOVER` | `any`, `same-pool` or `none`: as `route.failover` |
 | `AFK_ROUTER_BENCHMARKS_FILE` | use this benchmark catalog instead of the synced or built-in one |
 | `AFK_DISCOVERED_MODELS_FILE` | read models the CLIs reported from this file |
 

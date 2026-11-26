@@ -28,6 +28,18 @@ The run stops when:
 - no other installed CLI can do the task;
 - you press Ctrl-C (the CLI is interrupted and `afk` exits with 130).
 
+### Choosing where a failed run may go
+
+Failover can send your prompt, and what the CLI reads from the project, to a different vendor than the first route's. That is the point of it, and each move is announced on stderr, but in a script nobody may be reading. `route.failover` in your `config.toml` (or `AFK_ROUTER_FAILOVER`) sets the limit:
+
+| Value | A failed run |
+|---|---|
+| `any` (default) | goes to the next best route, on any CLI |
+| `same-pool` | tries another model on the same CLI and plan, so the prompt reaches no other account; a gateway model on the same CLI counts as another pool |
+| `none` | is reported, as with `--harness` or `--model` |
+
+A project's `.afk/config.json` can't set it. Failures are recorded for the router whatever the setting.
+
 Each CLI is run with JSON output, so errors reported with exit code 0 are still caught. Codex writes its answer to a temporary file, which AFK reads and removes.
 
 ## Output

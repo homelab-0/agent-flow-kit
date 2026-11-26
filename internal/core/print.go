@@ -78,7 +78,7 @@ func (c *Core) Print(ctx context.Context, req PrintRequest, note func(string)) (
 	if first.EntitlementPool == "" {
 		firstPool = d.st.r.PoolFor(first.Harness, first.Model)
 	}
-	return oneshot.Do(ctx, oneshot.Request{First: first, Pinned: pinned, Harnesses: d.list, Effort: req.Flags.Effort, FirstPool: firstPool, Mode: d.mode}, deps), nil
+	return oneshot.Do(ctx, oneshot.Request{First: first, Pinned: pinned, Harnesses: d.list, Effort: req.Flags.Effort, FirstPool: firstPool, Mode: d.mode, Failover: d.st.settings.Failover}, deps), nil
 }
 
 func toEngineRoute(v any) (engine.Route, error) {

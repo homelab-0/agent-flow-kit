@@ -321,3 +321,40 @@ func TestFailoverNeverEscalates(t *testing.T) {
 		t.Errorf("the downgrade was not noted: %v", f.notes)
 	}
 }
+
+func TestFailoverSetting(t *testing.T) {
+	spent := func() map[string][]Output {
+		return map[string][]Output{
+			"claude/opus":   {{Stdout: fixture(t, "claude-model.json"), Exit: 1}},
+			"claude/sonnet": {{Stdout: fixture(t, "claude-usage-limit.json")}},
+		}
+	}
+	first := route("claude", "opus", "anthropic-max")
+
+	// none: the failure is reported (and recorded), nothing else is asked.
+	f := &fake{outputs: spent(), next: []engine.Route{route("codex", "sol", "openai-plus")}}
+	res := Do(context.Background(), Request{First: first, Harnesses: all, Failover: "none"}, f.deps())
+	if res.OK || res.Attempts != 1 || len(f.asked) != 0 || len(f.marks) != 1 {
+		t.Fatalf("none: %+v asked %v marks %v", res, f.asked, f.marks)
+	}
+
+	// same-pool: another model on the same CLI and plan is tried, and the
+	// router is asked about that CLI only.
+	f = &fake{outputs: spent(), next: []engine.Route{route("codex", "sol", "openai-plus"), route("claude", "sonnet", "anthropic-max")}}
+	res = Do(context.Background(), Request{First: first, Harnesses: all, Failover: "same-pool"}, f.deps())
+	want(t, "same-pool tried", res.Tried, []string{"claude/opus", "claude/sonnet"})
+	for _, only := range f.asked {
+		want(t, "same-pool asked", only, []string{"claude"})
+	}
+	if res.OK || !res.NoOther {
+		t.Fatalf("same-pool: %+v", res)
+	}
+
+	// same-pool: a route on the same CLI through another pool (a gateway
+	// model run by claude) is not taken.
+	f = &fake{outputs: spent(), next: []engine.Route{route("claude", "qwen", "litellm-local")}}
+	res = Do(context.Background(), Request{First: first, Harnesses: all, Failover: "same-pool"}, f.deps())
+	if res.OK || !res.NoOther || res.Attempts != 1 {
+		t.Fatalf("same-pool, other pool: %+v", res)
+	}
+}
