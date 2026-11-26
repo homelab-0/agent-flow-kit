@@ -17,6 +17,7 @@ import (
 )
 
 const harnessHelp = `Usage: afk harness [list] [--all] [--json]
+       afk harness doctor|login|add|update|remove ...
 
 Shows the agent CLIs AFK found on this machine: version, how each was
 installed, the command that updates it, and whether it looks signed in.
@@ -31,6 +32,12 @@ has no reliable way to tell for that CLI; it is never a guess.
 
 // harnessCmd runs "afk harness ...". It needs no engine.
 func harnessCmd(argv []string, stdout, stderr io.Writer) int {
+	if len(argv) > 0 {
+		switch argv[0] {
+		case "doctor", "login", "add", "update", "remove":
+			return harnessOp(hostOps(), argv[0], argv[1:], stdout, stderr)
+		}
+	}
 	asJSON, all := false, false
 	for _, a := range argv {
 		switch a {
@@ -40,7 +47,7 @@ func harnessCmd(argv []string, stdout, stderr io.Writer) int {
 		case "--all", "-a":
 			all = true
 		case "-h", "--help", "help":
-			fmt.Fprint(stdout, harnessHelp)
+			fmt.Fprint(stdout, harnessHelp+harnessOpsHelp)
 			return 0
 		default:
 			fmt.Fprintf(stderr, "afk harness: unknown argument %q\n\n%s", a, harnessHelp)

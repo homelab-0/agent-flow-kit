@@ -223,7 +223,7 @@ AFK is becoming a standalone tool. Work is tracked in pull requests against `mas
 - [x] Remove the legacy bash engine and scripts (the last version is tagged `legacy-bash-final`)
 - [x] `afk config`: one config file, managed from the CLI
 - [x] Harness manifests and permission modes: five modes mapped per CLI, `afk trust` for yolo
-- [ ] `afk harness login/add/update/remove/doctor`, with installs recorded in `afk.lock`
+- [x] `afk harness login/add/update/remove/doctor`, with installs recorded in `afk.lock`
 - [ ] One-shot runs (`-p`) in `auto` in their own git worktree
 - [ ] AI gateways: LiteLLM, OpenRouter and any OpenAI- or Anthropic-compatible endpoint, with keys held as references (env var, OS keychain, 1Password)
 - [ ] MCP servers and skills: define them once in AFK and sync them into every installed CLI's own config
