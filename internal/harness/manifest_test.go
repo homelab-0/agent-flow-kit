@@ -35,9 +35,9 @@ func TestModeFlags(t *testing.T) {
 			"yolo":      {[]string{"--dangerously-skip-permissions"}, "yolo", ""},
 		},
 		"codex": {
-			"read-only": {[]string{"--sandbox", "read-only", "--ask-for-approval", "on-request"}, "read-only", ""},
-			"ask":       {[]string{"--sandbox", "workspace-write", "--ask-for-approval", "on-request"}, "ask", ""},
-			"edits":     {[]string{"--sandbox", "workspace-write", "--ask-for-approval", "on-request"}, "ask", "codex: can't run in edits, running in ask"},
+			"read-only": {[]string{"--sandbox", "read-only", "--ask-for-approval", "never"}, "read-only", ""},
+			"ask":       {[]string{"--sandbox", "read-only", "--ask-for-approval", "on-request"}, "ask", ""},
+			"edits":     {[]string{"--sandbox", "read-only", "--ask-for-approval", "on-request"}, "ask", "codex: can't run in edits, running in ask"},
 			"auto":      {[]string{"--sandbox", "workspace-write", "--ask-for-approval", "never"}, "auto", ""},
 			"yolo":      {[]string{"--dangerously-bypass-approvals-and-sandbox"}, "yolo", ""},
 		},
@@ -167,5 +167,27 @@ func TestPrintOverrideMerges(t *testing.T) {
 	}
 	if f, _, _, _ := m.ModeFlags("yolo", true); !reflect.DeepEqual(f, []string{"--dangerously-bypass-approvals-and-sandbox"}) {
 		t.Errorf("yolo lost: %q", f)
+	}
+}
+
+func TestYoloIn(t *testing.T) {
+	claude, _ := ManifestFor("claude")
+	grok, _ := ManifestFor("grok")
+	codex, _ := ManifestFor("codex")
+	pi, _ := ManifestFor("pi")
+	for _, c := range []struct {
+		m    Manifest
+		pass []string
+		want bool
+	}{
+		{claude, []string{"--dangerously-skip-permissions"}, true},
+		{claude, []string{"--verbose"}, false},
+		{grok, []string{"--always-approve"}, true},
+		{codex, []string{"--dangerously-bypass-approvals-and-sandbox"}, true},
+		{pi, []string{"--tools", "x"}, false},
+	} {
+		if got := c.m.YoloIn(c.pass); got != c.want {
+			t.Errorf("%s %q: %v", c.m.Name, c.pass, got)
+		}
 	}
 }

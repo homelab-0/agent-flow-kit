@@ -297,3 +297,20 @@ func TestYoloPlanChecksTrust(t *testing.T) {
 		t.Fatalf("untrusted: %v", err)
 	}
 }
+
+// A skip-permissions flag given through --pass is yolo: trust is checked
+// and the plan says so.
+func TestPassedBypassIsYolo(t *testing.T) {
+	c, _ := testCore(t)
+	r := engine.Route{Harness: "claude", Model: "opus", LaunchClass: "claude", CostClass: "subscription", EntitlementPool: "anthropic-max"}
+	_, err := c.LaunchPlan(context.Background(), r, "interactive", "ask", []string{"--dangerously-skip-permissions"}, "x")
+	var ue *UsageError
+	if !errors.As(err, &ue) {
+		t.Fatalf("untrusted: %v", err)
+	}
+	trustRepo(t, c)
+	p, err := c.LaunchPlan(context.Background(), r, "interactive", "ask", []string{"--dangerously-skip-permissions"}, "x")
+	if err != nil || p.Mode != "yolo" || !strings.Contains(p.ModeNote, "--pass") {
+		t.Fatalf("trusted: %+v %v", p, err)
+	}
+}

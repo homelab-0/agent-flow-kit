@@ -214,6 +214,21 @@ func TestYoloOffSticksAcrossReroutes(t *testing.T) {
 	}
 }
 
+// Until you press y, the toggle follows the routed mode: a reroute to a
+// stricter task mode turns a routed yolo off.
+func TestRoutedYoloFollowsTheMode(t *testing.T) {
+	f := fixtures(t)
+	yolo, ro := *f.ex, *f.ex
+	yolo.Mode, ro.Mode = "yolo", "read-only"
+	m := New(f, Options{Prompt: framePrompt, Width: 80, FPS: 30, Dark: true, Now: func() time.Time { return frameNow }, Loc: time.UTC, Environ: []string{"PATH=/bin"}})
+	m.Init()
+	m.Update(explainMsg{ex: &yolo})
+	m.Update(explainMsg{ex: &ro})
+	if m.card.Yolo || m.card.LaunchMode() != "read-only" {
+		t.Fatalf("toggle %v, launch mode %q", m.card.Yolo, m.card.LaunchMode())
+	}
+}
+
 func TestCompactCardShowsTheModeAndDowngrade(t *testing.T) {
 	f := fixtures(t)
 	ex := *f.ex

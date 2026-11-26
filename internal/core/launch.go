@@ -71,6 +71,16 @@ func (c *Core) LaunchPlan(_ context.Context, r engine.Route, mode string, perm s
 	if perm == "" {
 		perm = "ask"
 	}
+	man, ok := harness.ManifestFor(h)
+	if !ok {
+		return planError("no launch for " + h + " here (is it installed?)")
+	}
+	// The CLI's own skip-permissions flag given through --pass is yolo,
+	// so it gets the same trust check, and the plan says yolo.
+	passNote := ""
+	if perm != "yolo" && man.YoloIn(pass) {
+		perm, passNote = "yolo", "--pass gave "+h+"'s own skip-permissions flag, so this runs as yolo"
+	}
 	// Trust is checked again for every yolo plan (a retry, or a card
 	// left open while trust was removed), against the settings now.
 	if perm == "yolo" {
@@ -78,16 +88,15 @@ func (c *Core) LaunchPlan(_ context.Context, r engine.Route, mode string, perm s
 			return nil, err
 		}
 	}
-	man, ok := harness.ManifestFor(h)
-	if !ok {
-		return planError("no launch for " + h + " here (is it installed?)")
-	}
 	modeFlags, ran, modeNote, ok := man.ModeFlags(perm, mode == "print")
 	if !ok {
 		if modeNote == "" {
 			modeNote = perm + " is not a permission mode (read-only, ask, edits, auto or yolo)"
 		}
 		return planError(modeNote)
+	}
+	if passNote != "" {
+		modeNote = passNote
 	}
 
 	set, from, unset, err := c.launchEnv(r)

@@ -287,10 +287,11 @@ func (m *Model) onExplain(msg explainMsg) tea.Cmd {
 	for h, mi := range msg.ex.ModeByHarness {
 		m.card.ModeNotes[h] = mi.Note
 	}
-	// A routed yolo turns the toggle on, unless you already set it with
-	// y: a reroute never turns yolo back on after you turned it off.
-	if msg.ex.Mode == "yolo" && !m.yoloSet {
-		m.card.Yolo = true
+	// The toggle follows the routed mode (on for yolo, off for anything
+	// stricter) until you set it with y; after that a reroute never
+	// changes it.
+	if !m.yoloSet {
+		m.card.Yolo = msg.ex.Mode == "yolo"
 	}
 	m.card.Task, m.card.Guessed, m.card.Prefer = msg.ex.Task, msg.ex.TaskGuessed, msg.ex.Prefer
 	m.card.Rows, m.card.Sel, m.card.Efforts = rows, sel, map[int]string{}
