@@ -33,7 +33,7 @@ For each setting, the first of these that sets it wins:
 | free reviewers | | `AFK_ROUTER_ALLOW_FREE_REVIEWERS` | never | `route.allow_free_reviewers` | `false` |
 | security models | | `AFK_SECURITY_MODELS` | never | `route.security_models` | none |
 | gateway | | `AFK_LITELLM_BASE_URL` | never | `[gateway.<name>]` | none |
-| gateway key | | `AFK_GATEWAY_KEY_ENV` names the variable | never | the `key` of the gateway whose `url` the route uses | `$AFK_GATEWAY_KEY` |
+| gateway key | | `AFK_GATEWAY_KEY_ENV` names the variable | never | the `key` of the gateway whose `url` the route uses; a route to an address you didn't configure gets no key | `$AFK_GATEWAY_KEY` |
 | daily catalog refresh | | `AFK_SKIP_BENCHMARK_AUTOSYNC=1` | never | `bench.autosync` | on |
 
 The `router.prefer_free_for_low_risk` key in a project file is the older form of `route.prefer_free` and still works; the other `router.*` keys are ignored (below).
