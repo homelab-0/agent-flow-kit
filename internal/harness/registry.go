@@ -72,7 +72,7 @@ var registry = []Adapter{
 		Bins:    []string{"grok"},
 		Efforts: []string{"low", "medium", "high", "xhigh"}, EffortFlag: "--effort <level>",
 		Login: "grok login", SelfUpdate: "update",
-		auth: nonEmptyJSONObject(".grok", "auth.json"),
+		auth: nonEmptyFile(".grok", "auth.json"),
 	},
 	{
 		Name: "agy", Display: "Antigravity CLI", Vendor: "Google",
@@ -118,7 +118,7 @@ var registry = []Adapter{
 		Bins: []string{"pi"}, NPMPackage: "@mariozechner/pi-coding-agent",
 		Efforts: []string{"low", "medium", "high", "xhigh", "max"}, EffortFlag: "--thinking <level>",
 		Login: "pi (then /login)",
-		auth:  nonEmptyJSONObject(".pi", "agent", "auth.json"),
+		auth:  nonEmptyFile(".pi", "agent", "auth.json"),
 	},
 	{
 		Name: "devin", Display: "Devin CLI", Vendor: "Cognition",

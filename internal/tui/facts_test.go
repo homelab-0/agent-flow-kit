@@ -79,6 +79,29 @@ func TestRouteFacts(t *testing.T) {
 	}
 }
 
+func TestReasonTextNotesAnEstimatedPool(t *testing.T) {
+	now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
+	note := "Its pool figure is an estimate from recent sessions, not a measurement."
+	rows := []engine.Route{
+		route(t, `{"harness":"codex","effective_score":90,"pool_headroom_pct":50,"benchmark_basis":"measured","cost_class":"subscription","pool_quota_source":"codex_rate_limits"}`),
+		// Behind the best, with a catalog-estimate score: the score warning
+		// and the pool notice both show.
+		route(t, `{"harness":"claude","effective_score":80,"pool_headroom_pct":40,"benchmark_basis":"estimate","cost_class":"subscription","pool_quota_source":"local_5h_activity"}`),
+		// A free route gets no pool notice.
+		route(t, `{"harness":"opencode","effective_score":70,"pool_headroom_pct":30,"benchmark_basis":"estimate","cost_class":"free","pool_quota_source":"local_5h_activity"}`),
+	}
+	got := reasonText(rows, 1, "coding", now)
+	if !strings.Contains(got, "the score is a catalog estimate, not measured.") || !strings.HasSuffix(got, note) {
+		t.Errorf("estimated alternative: %q", got)
+	}
+	if got := reasonText(rows, 0, "coding", now); strings.Contains(got, note) {
+		t.Errorf("a measured pool got the notice: %q", got)
+	}
+	if got := reasonText(rows, 2, "coding", now); strings.Contains(got, note) {
+		t.Errorf("a free route got the notice: %q", got)
+	}
+}
+
 func TestReasonText(t *testing.T) {
 	now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
 	rows := []engine.Route{
