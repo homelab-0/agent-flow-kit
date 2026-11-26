@@ -6,10 +6,11 @@ afk -p [options] prompt...         print one answer and exit
 afk --explain [options] [prompt]   show the choice and the alternatives
 afk --launch-plan --route <json>   print the launch plan for a route
 afk harness [--all] [--json]       the agent CLIs found on this machine
+afk bench sync [--json]            refresh the benchmark catalog now
 afk --help
 ```
 
-A prompt that starts with the word `harness` needs `--` before it.
+A prompt that starts with the word `harness` or `bench` needs `--` before it.
 
 ## Options
 
@@ -41,6 +42,16 @@ Options that take a value also accept `--option=value`.
 | `--all`, `-a` | also list supported CLIs that are not installed |
 | `--json` | machine-readable output, schema `afk-harnesses/3` |
 
+## `afk bench sync`
+
+Refreshes `~/.config/afk/benchmarks.json` from the public leaderboards; see [refreshing the catalog](benchmark-catalog.md#refreshing-it).
+
+| Option | Meaning |
+|---|---|
+| `--json` | print the receipt, schema `afk-benchmark-sync/3` |
+
+It exits 0 when at least one leaderboard was read, 3 when none was reachable (the previous catalog is kept), and 1 when the catalog could not be written.
+
 ## Exit codes
 
 | Code | Meaning |
@@ -51,7 +62,7 @@ Options that take a value also accept `--option=value`.
 | 3 | the CLI asked for isn't installed, or none is |
 | 4 | nothing usable for this task, or the route can't be launched |
 | 5 | `-p`: every attempt failed |
-| 127 | the CLI (or, for `-p`, the bash engine) couldn't be started |
-| 130 | cancelled on the route card |
+| 127 | the CLI couldn't be started |
+| 130 | cancelled on the route card, or `-p` interrupted |
 
 After an interactive session, `afk` exits with the CLI's own exit code.

@@ -26,7 +26,7 @@ Anything not built yet is marked **Planned** and listed in the [roadmap](../READ
 - [Command line](reference/cli.md): every command, option and exit code
 - [Configuration](reference/configuration.md): files, project settings and environment variables
 - [JSON formats](reference/json.md): explain, route, launch plan, harnesses, pools and run records
-- [Benchmark catalog](reference/benchmark-catalog.md): the format the router scores from
+- [Benchmark catalog](reference/benchmark-catalog.md): the format the router scores from, and `afk bench sync`
 
 ## More
 

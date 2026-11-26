@@ -3,11 +3,14 @@
 ## Layout
 
 ```text
-cmd/afk/            the afk command: arguments, the Go engine paths, afk harness
+cmd/afk/            the afk command: arguments, the Go engine paths, afk harness, afk bench
 internal/cli/       command-line parsing
 internal/harness/   the agent CLI registry: discovery, versions, sign-in, install methods
 internal/router/    route selection, the benchmark catalog, pool probes
-internal/core/      the Go engine: explain, launch plans, pools
+internal/core/      the Go engine: explain, launch plans, pools, -p
+internal/oneshot/   -p: reading each CLI's answer, classifying failures, failover
+internal/bench/     the benchmark sync and its daily refresh
+internal/statefile/ the lock and atomic write shared with the bash engine's state files
 internal/tui/       the route card, Why panel, receipt and rating (Bubble Tea)
 internal/launch/    starting a plan as a foreground child
 internal/runrec/    run records
@@ -33,6 +36,8 @@ While the bash engine still exists, the Go engine is checked against it:
 - **Routing**: [`internal/router/testdata/gen-golden.sh`](../internal/router/testdata/gen-golden.sh) runs the bash router over every scenario in `scenarios.json`, with the pools in `probes.json` and the models in `discovered.json`, and writes `golden.json`. `TestGoldenMatchesBashRouter` requires the Go router to match every field. Add a scenario, rerun the script (needs `bash` and `jq`), and commit both files.
 - **Launch plans**: `internal/core/testdata/plans.json` holds the bash engine's plan for each case; `TestLaunchPlansMatchBash` compares them.
 - **Pool probe**: `TestProbePoolsMatchesBashProbe` rebuilds a home directory the bash probe was run against and asserts its figures.
+- **Benchmark sync**: `internal/bench/testdata/feeds` holds the leaderboard fixtures the bash sync's tests used, and `internal/bench` asserts the same scores. Run over the same base catalog and feeds, the two syncs write the same catalog apart from timestamps and the Artificial Analysis label.
+- **One-shot answers**: `internal/oneshot/testdata` holds what each CLI prints in JSON mode for an answer and for the failures `-p` reacts to.
 
 ### Deliberate differences from the bash engine
 
@@ -48,7 +53,9 @@ The Go engine fixes some things the bash engine gets wrong, so on these points t
 - The newest Codex rate-limit reading wins by when it was recorded, the last usable record in each file counts, and very long lines are skipped instead of ending the read.
 - A gateway that answers with an HTTP error is offline.
 - Without a terminal, `afk` never waits for a rating.
-- No plan-login policy: the bash engine kept each vendor's plan to its own CLI and OpenCode to its own free models, and never launched Pi. AFK routes to any installed CLI that is signed in to the model's plan, and launches Pi. `gen-golden.sh` removes those two rules from a copy of the bash router before comparing. `-p` still runs on the bash engine and keeps its rules until it is ported.
+- No plan-login policy: the bash engine kept each vendor's plan to its own CLI and OpenCode to its own free models, and never launched Pi. AFK routes to any installed CLI that is signed in to the model's plan, and launches Pi, in `-p` too. `gen-golden.sh` removes those two rules from a copy of the bash router before comparing.
+- `-p` never tries the same route twice in one run, even if the signals file couldn't be written; an `error` given as a plain string is read as the message.
+- The benchmark sync doesn't read Artificial Analysis: it needs an API key, and AFK never sends one. Its receipt reports that feed as `not_used`. With the key unset the bash sync gave the same scores.
 
 The parity fixtures don't cover these cases; each has its own test.
 
