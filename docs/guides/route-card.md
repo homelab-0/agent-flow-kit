@@ -8,7 +8,7 @@ afk "make the settings page responsive"
 
 <p align="center"><img src="../assets/route-card.png" alt="The route card" width="640"></p>
 
-The top box is the pick: the CLI, model and effort, the kind of task (and whether AFK guessed it), why this route, and how much of its 5-hour pool is left. Below it is the best route on every other installed CLI, with its model, effort, score, pool headroom and cost.
+The top box is the pick: the CLI, model and effort, the kind of task (and whether AFK guessed it), why this route, and how much of its pool is left in the current window (five hours, or a week when that is what the CLI reports; the reset shows its day when it is more than a day away). Below it is the best route on every other installed CLI, with its model, effort, score, pool headroom and cost.
 
 ## Keys
 
@@ -34,7 +34,8 @@ The top box is the pick: the CLI, model and effort, the kind of task (and whethe
 
 - **task class**: the benchmark class the task is scored on, with the stage and risk it came from
 - **benchmark**: the score used and its basis: `measured` (read from a public board), `capped`, `estimate` (a catalog figure) or `stale` (a measurement older than two weeks)
-- **pool factor**: how much of the 5-hour window is left, and the pool state
+- **pool factor**: how much of the pool's window (5h or weekly) is left, and the pool state
+- **pool figure**: how that figure was found: `measured (last -p)`, `measured`, `estimated` or `failed run`
 - **cost class**: subscription, free, local or metered
 - **effort**: the effort and, when it was raised, why
 - **effective**: the final score the routes are ranked by

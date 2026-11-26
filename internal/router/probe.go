@@ -131,6 +131,8 @@ func ProbePools(ctx context.Context, cat *Catalog, e ProbeEnv) *Probe {
 	}
 
 	sig := readSignals(e.SignalsPath())
+	// Claude's plan usage as its last one-shot run through AFK reported it.
+	claudeQ, _ := readPlanUsage(e.UsagePath(), "anthropic-max", e.Now)
 	// A newer login file clears a sign-in failure signal for its pool.
 	openaiMt := mtime(codexAuthPath(e))
 	claudeMt := mtime(claudeCredsPath(e))
@@ -138,7 +140,7 @@ func ProbePools(ctx context.Context, cat *Catalog, e ProbeEnv) *Probe {
 
 	pc := poolCalc{cat: cat, sig: sig, now: e.Now.Unix(), gatewayOn: gw.Online, harnesses: harnesses, binds: binds}
 	pools := map[string]Pool{
-		"anthropic-max":    pc.calc("anthropic-max", c5, false, []string{"claude"}, quota{}, claudeMt),
+		"anthropic-max":    pc.calc("anthropic-max", c5, false, []string{"claude"}, claudeQ, claudeMt),
 		"openai-plus":      pc.calc("openai-plus", x5, false, []string{"codex"}, codexQ, openaiMt),
 		"antigravity-pool": pc.calc("antigravity-pool", a5, false, []string{"agy"}, quota{}, 0),
 		"xai-grok":         pc.calc("xai-grok", xai5, false, []string{"grok", "opencode"}, quota{}, grokMt),
@@ -214,6 +216,7 @@ type quota struct {
 	FableWeeklyPct  *float64 `json:"fable_weekly_pct"`
 	ResetsAt        *string  `json:"resets_at"`
 	ResetsAtEpoch   *float64 `json:"resets_at_epoch,omitempty"`
+	Window          string   `json:"window,omitempty"`
 	PlanType        *string  `json:"plan_type,omitempty"`
 	ExtraUsageOn    bool     `json:"extra_usage_enabled,omitempty"`
 	FetchedEpochRaw int64    `json:"-"`
@@ -427,8 +430,19 @@ func (pc *poolCalc) calc(pid string, sessions int, local bool, defaultH []string
 	p := Pool{
 		PoolID: pid, Provider: provider, PoolTier: tier, CostClass: cc, State: state,
 		Capacity5h: f64(capacity), Remaining5h: f64(remaining), UsedPct: f64(used), HeadroomPct: f64(headroom),
-		QuotaSource: src, WeeklyUsedPct: live.SevenDayPct, FiveHourUsedPct: live.FiveHourPct,
-		FableWeeklyUsedPct: live.FableWeeklyPct, ResetsAt: live.ResetsAt,
+		QuotaSource: src,
+	}
+	// The reading's windows and reset time describe the pool only while the
+	// reading is what the figure comes from: under a failed run's signal they
+	// would contradict the state shown beside them.
+	if live.OK && src == live.Source {
+		p.WeeklyUsedPct, p.FiveHourUsedPct = live.SevenDayPct, live.FiveHourPct
+		p.FableWeeklyUsedPct, p.ResetsAt = live.FableWeeklyPct, live.ResetsAt
+		p.Window = live.Window
+	}
+	if p.ResetsAt == nil && live.OK && live.ResetsAtEpoch != nil && src == live.Source {
+		r := time.Unix(int64(*live.ResetsAtEpoch), 0).UTC().Format(time.RFC3339)
+		p.ResetsAt = &r
 	}
 	if active {
 		if kind != "" {

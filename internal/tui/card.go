@@ -186,17 +186,30 @@ func (t Theme) poolLine(c Card, r engine.Route) line {
 		}
 		return line{sg(t.Dim, "  runs on  "), sg(t.Badge("GW"), "GW"), sg(t.Plain, " "+where), sg(t.Dim, " · state "+unknownText)}
 	}
+	head, win, resets := c.poolFigure(r)
 	l := line{sg(t.Dim, "  pool  ")}
-	l = append(l, t.meter(r.PoolHeadroomPct, c.Prog)...)
-	if r.PoolHeadroomPct != nil {
-		l = append(l, sg(t.Plain, " "+pctText(r.PoolHeadroomPct)+" left"))
+	l = append(l, t.meter(head, c.Prog)...)
+	if head != nil {
+		l = append(l, sg(t.Plain, " "+pctText(head)+" left"))
 		if r.PoolQuotaSource == "local_5h_activity" {
 			l = append(l, sg(t.Dim, " (estimated)"))
 		}
 	} else {
 		l = append(l, sg(t.Dim, " "+unknownText))
 	}
-	return append(l, sg(t.Dim, " · 5h window "+resetsText(c.Pools, r.EntitlementPool, c.loc())))
+	return append(l, sg(t.Dim, " · "+win+" "+resets))
+}
+
+// poolFigure is a route's headroom with the window and reset time it is
+// for, all from one reading: the pools snapshot when it has the route's
+// pool (it may be newer than the row), else the row's own figure.
+func (c Card) poolFigure(r engine.Route) (*float64, string, string) {
+	if c.Pools != nil {
+		if p, ok := c.Pools.Pools[r.EntitlementPool]; ok && p.HeadroomPct != nil {
+			return p.HeadroomPct, windowText(c.Pools, r.EntitlementPool), resetsText(c.Pools, r.EntitlementPool, c.loc())
+		}
+	}
+	return r.PoolHeadroomPct, "5h window", "resets " + unknownText
 }
 
 func modelCol(w int) int { return max(17-(boxWidth-w), 8) }
@@ -330,21 +343,26 @@ func (t Theme) WhyLines(c Card, width int) []line {
 	if basis == "" {
 		basis = "basis " + unknownText
 	}
-	poolTxt := unknownText + " of 5h window left"
-	if orig.PoolHeadroomPct != nil {
-		poolTxt = pctText(orig.PoolHeadroomPct) + " of 5h window left"
+	head, win, _ := c.poolFigure(orig)
+	poolTxt := unknownText + " of " + win + " left"
+	if head != nil {
+		poolTxt = pctText(head) + " of " + win + " left"
 	}
 	if orig.PoolState != "" {
 		poolTxt += " (" + orig.PoolState + ")"
 	}
-	// How the pool figure was found, in a word (the box is narrow).
+	// How the pool figure was found, on its own row so the narrow box
+	// never cuts it.
+	var poolBasis string
 	switch b := orig.PoolBasis(); {
 	case strings.HasPrefix(b, "estimated"):
-		poolTxt += " · estimated"
+		poolBasis = "estimated"
 	case strings.HasPrefix(b, "set by"):
-		poolTxt += " · failed run"
-	case b != "":
-		poolTxt += " · " + b
+		poolBasis = "failed run"
+	case strings.HasPrefix(b, "measured at"):
+		poolBasis = "measured (last -p)"
+	default:
+		poolBasis = b
 	}
 	cost := orig.CostClass
 	if cost == "" {
@@ -374,10 +392,15 @@ func (t Theme) WhyLines(c Card, width int) []line {
 		taskLine,
 		row("benchmark", sg(t.Plain, bench+" "+scoreText(orig.BenchmarkScore)), sg(t.Dim, "   "+basis+synced)),
 		row("pool factor", sg(t.Plain, "× "+unknownText), sg(t.Dim, "   "+poolTxt)),
+	}
+	if poolBasis != "" {
+		lines = append(lines, row("pool figure", sg(t.Dim, poolBasis)))
+	}
+	lines = append(lines,
 		row("cost class", sg(t.Plain, cost), sg(t.Dim, costNote)),
 		row("effort", sg(t.Plain, effort), sg(t.Dim, effortNote)),
 		row("effective", sg(t.Plain, eff)),
-	}
+	)
 	if alerts := alertText(orig.AuthAlerts); alerts != "" {
 		lines = append(lines, row("sign-in", sg(t.Warn, "! "+alerts)))
 	}

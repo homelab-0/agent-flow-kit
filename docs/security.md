@@ -41,6 +41,7 @@ AFK checks that each CLI's login file **exists and is larger than 4 bytes** (big
 | Each CLI's login file | to show whether it looks signed in, and to clear a sign-in signal after a new login | whether it exists, its size and its modification time; never its contents |
 | `codex login status` | whether Codex uses the ChatGPT plan or an API key | only the words "ChatGPT" or "API key"; the rest of the answer is dropped |
 | Codex's session files | its rate-limit figures | the last line that mentions `rate_limits` in recent rollout files |
+| Claude's output in `afk -p` runs | its plan usage | the `rate_limit_event`'s utilization, status and reset times; the answer is read as before |
 | Session folders of each CLI | recent activity per pool | file names and modification times, not contents |
 | `<cli> --version` | whether a CLI is installed and working | the version text, capped at 4 KiB |
 | `~/.config/afk/config.toml` | your settings | the whole file; secrets in it are only references |

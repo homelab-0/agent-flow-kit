@@ -288,6 +288,7 @@ installed_at = 2026-11-26T12:00:00Z
 |---|---|
 | `~/.config/afk/state/runs/<id>.json` | [run records](../guides/runs.md) |
 | `~/.config/afk/pool-signals.json` | [failure signals](../guides/pools.md#failure-signals) |
+| `~/.config/afk/state/plan-usage.json` | the last plan usage a CLI reported in AFK's own runs (Claude's `rate_limit_event`), see [how usage is measured](../guides/pools.md#how-usage-is-measured); `AFK_PLAN_USAGE_FILE` names another file |
 | `~/.config/afk/harness-bin-cache.json` | which CLIs answered `--version`, five minutes |
 | `~/.config/afk/benchmarks.json` | the [synced benchmark catalog](benchmark-catalog.md#refreshing-it), used when present and current; `.sync-attempt` beside it marks the last attempt |
 | `~/.config/afk/discovered-models.json` | models the CLIs reported, written by older AFK versions; read while it is less than 7 days old and ignored (with a note) after that, since nothing updates it now. `AFK_DISCOVERED_MODELS_FILE` names a file that is always read |
