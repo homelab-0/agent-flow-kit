@@ -157,9 +157,21 @@ func (p Problem) String() string {
 		loc = fmt.Sprintf("%s:%d", p.File, p.Line)
 	}
 	if p.Key == "" {
-		return fmt.Sprintf("%s: %s", loc, p.Msg)
+		return plain(fmt.Sprintf("%s: %s", loc, p.Msg))
 	}
-	return fmt.Sprintf("%s: %s: %s", loc, p.Key, p.Msg)
+	return plain(fmt.Sprintf("%s: %s: %s", loc, p.Key, p.Msg))
+}
+
+// plain replaces control characters. A problem can quote a key or a value
+// from a repository's file, and a terminal would act on an escape sequence
+// in it (move the cursor, rewrite the line above, set the title).
+func plain(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) {
+			return '?'
+		}
+		return r
+	}, s)
 }
 
 // validate checks the values. lines maps a dotted key to its line.

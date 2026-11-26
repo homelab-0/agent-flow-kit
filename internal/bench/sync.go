@@ -288,6 +288,22 @@ func RankScore(top, rank float64) float64 {
 func r1(v float64) float64 { return math.Round(v*10) / 10 }
 
 // numText is a number as jq's tostring writes it.
+// dateText is a board's publish date for display. The feed is someone
+// else's data and the text ends up on the route card, so anything but a
+// short run of date characters is shown as "unknown".
+func dateText(v any) string {
+	s := numText(v)
+	if s == "" || len(s) > 32 {
+		return "unknown"
+	}
+	for _, r := range s {
+		if !(r >= '0' && r <= '9') && r != '-' && r != ':' && r != '.' && r != 'T' && r != 'Z' && r != '+' && r != ' ' {
+			return "unknown"
+		}
+	}
+	return s
+}
+
 func numText(v any) string {
 	switch n := v.(type) {
 	case float64:
@@ -335,7 +351,7 @@ func Sync(ctx context.Context, o Options) (Receipt, int) {
 		boards[f.name] = rows
 		date := "latest"
 		if rows[0].Date != nil {
-			date = numText(rows[0].Date)
+			date = dateText(rows[0].Date)
 		}
 		*f.state = "live_synced (" + date + ")"
 	}

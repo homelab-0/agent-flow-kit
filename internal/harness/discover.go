@@ -140,7 +140,15 @@ func Locate(e Env, a Adapter) string {
 	if e.BinDir != "" {
 		dirs = []string{e.BinDir}
 	} else {
-		dirs = filepath.SplitList(e.Path)
+		// A relative PATH entry ("." or an empty one) means "wherever I
+		// am", which for afk is a project that may ship a file named
+		// claude. Those are skipped; AFK_HARNESS_BIN_DIR is the way to
+		// point at a directory on purpose.
+		for _, d := range filepath.SplitList(e.Path) {
+			if filepath.IsAbs(d) {
+				dirs = append(dirs, d)
+			}
+		}
 		for _, d := range extraDirs {
 			dirs = append(dirs, filepath.Join(e.Home, d))
 		}
