@@ -49,7 +49,8 @@ Options:
                          with a dash)
   --launch-plan --route <json> [--mode interactive|print]
                          print the launch plan for a chosen route as JSON
-                         (for front ends); nothing is started
+                         (for front ends); nothing is started. --route -
+                         reads the route JSON from stdin
   -h, --help             this help
 EOF
 }
@@ -417,6 +418,9 @@ afk_cli_main() {
 
   # The launch plan for a route chosen elsewhere (the Go front end).
   if [[ "$launch_plan" == true ]]; then
+    # --route - reads the route from stdin, so it never shows on a command
+    # line (a gateway address can carry user info).
+    [[ "$route_in" == - ]] && route_in="$(cat)"
     case "$plan_mode" in interactive|print) ;; *) printf 'afk: --mode must be interactive or print\n' >&2; return 2 ;; esac
     if ! jq -e '.harness | strings' <<<"$route_in" >/dev/null 2>&1; then
       printf 'afk: --launch-plan needs --route with the chosen route JSON\n' >&2; return 2

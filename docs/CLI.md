@@ -33,7 +33,7 @@ The session itself is the chosen CLI's own interface. `afk` prints one line sayi
 | `--yolo` | let the CLI act without asking, using that CLI's own skip-permissions flag. Off by default. |
 | `--pass <arg>` | pass one argument to the CLI unchanged; repeat it for more, e.g. `afk --harness claude --pass --continue` |
 | `--` | ends the options: everything after it is the prompt, even if it starts with a dash |
-| `--launch-plan --route <json> [--mode interactive\|print]` | print the launch plan for a route chosen elsewhere (`afk-launch-plan/1`: argv, environment, answer format) and start nothing. Front ends use this. |
+| `--launch-plan --route <json> [--mode interactive\|print]` | print the launch plan for a route chosen elsewhere (`afk-launch-plan/1`: argv, environment, answer format) and start nothing. `--route -` reads the route from stdin, so it stays off the command line. Front ends use this. |
 
 Reviews never go to a free or local model, the same reviewer floor the factory uses.
 

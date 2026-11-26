@@ -121,6 +121,10 @@ assert_eq "A plan that cannot launch says why and exits 4" "$rcp:$(jq -r '"\(.ok
 CXP="$("$AFK" --launch-plan --json --route '{"harness":"codex","model":"m"}' --mode print -- "hi" 2>/dev/null)"
 assert_eq "A codex print plan names the file its answer is written to" "$(jq -r '"\(.answer.format)|\(.answer.file == .argv[(.argv | index("-o")) + 1])"' <<<"$CXP")" "text-file|true"
 rm -f "$(jq -r .answer.file <<<"$CXP")"
+SIP="$(printf '%s' '{"harness":"codex","model":"m"}' | "$AFK" --launch-plan --json --route - --mode print -- "hi" 2>/dev/null)"
+assert_eq "--route - reads the route from stdin, so it stays off the command line" \
+  "$(jq -r '"\(.ok)|\(.argv[0] | endswith("/codex"))|\(.argv[-1])"' <<<"$SIP")" "true|true|hi"
+rm -f "$(jq -r .answer.file <<<"$SIP")"
 P1="$("$AFK" --launch-plan --json --route '{"harness":"opencode","model":"openai/gpt-6.1-sol"}' -- hi 2>/dev/null)"; r1=$?
 P2="$("$AFK" --launch-plan --json --route '{"harness":"opencode","model":"opencode/glm-free"}' -- hi 2>/dev/null)"; r2=$?
 P3="$("$AFK" --launch-plan --json --route '{"harness":"codex","model":"m","cost_class":"subscription","entitlement_pool":"xai-grok"}' -- hi 2>/dev/null)"; r3=$?
