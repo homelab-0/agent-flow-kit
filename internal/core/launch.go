@@ -118,7 +118,18 @@ func (c *Core) launchEnv(r engine.Route) (set, from map[string]string, unset []s
 	if r.Harness != "claude" {
 		return nil, nil, nil, &UsageError{r.Harness + " cannot use the gateway without exposing its own plan login"}
 	}
+	// The key's variable: AFK_GATEWAY_KEY_ENV, else the default gateway's
+	// key = "env:NAME" in config.toml, else AFK_GATEWAY_KEY. Only the
+	// variable's name is in the plan; the value is copied at spawn time.
 	keyVar := c.getenv("AFK_GATEWAY_KEY_ENV")
+	if keyVar == "" {
+		if s, err := c.LoadSettings(""); err == nil && s.GatewayKey != nil {
+			if s.GatewayKey.Kind != "env" {
+				return nil, nil, nil, &UsageError{"gateway " + s.GatewayName + ": a key from " + s.GatewayKey.Kind + ": can't be used to launch yet; use key = \"env:NAME\""}
+			}
+			keyVar = s.GatewayKey.Arg
+		}
+	}
 	if keyVar == "" {
 		keyVar = "AFK_GATEWAY_KEY"
 	}

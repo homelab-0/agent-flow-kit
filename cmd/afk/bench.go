@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jlengelbrecht/agent-flow-kit/internal/bench"
+	"github.com/jlengelbrecht/agent-flow-kit/internal/config"
 	"github.com/jlengelbrecht/agent-flow-kit/internal/router"
 )
 
@@ -82,6 +83,10 @@ func runSync(ctx context.Context, home string) (bench.Receipt, int) {
 	if d := os.Getenv("AFK_BENCHMARK_FEED_DIR"); d != "" {
 		feeds = bench.DirFetcher{Dir: d}
 	}
+	// [bench.sources] in config.toml can turn a feed off.
+	if s, err := config.Resolve(config.Env{Home: home, Getenv: os.Getenv}); err == nil {
+		feeds = onlyEnabled{feeds, s}
+	}
 	carry := bench.DefaultCarry
 	if v, err := strconv.ParseInt(os.Getenv("AFK_BENCHMARK_CARRY_SEC"), 10, 64); err == nil && v >= 0 {
 		carry = time.Duration(v) * time.Second
@@ -89,6 +94,24 @@ func runSync(ctx context.Context, home string) (bench.Receipt, int) {
 	return bench.Sync(ctx, bench.Options{
 		Base: router.DefaultCatalogJSON(), Out: bench.CatalogPath(home), Now: time.Now(), Carry: carry, Feeds: feeds,
 	})
+}
+
+// onlyEnabled skips the feeds config.toml turns off: lmarena covers the
+// three LMArena boards, modelsdev the models.dev feed.
+type onlyEnabled struct {
+	next bench.Fetcher
+	s    config.Settings
+}
+
+func (o onlyEnabled) Fetch(ctx context.Context, name string) ([]byte, error) {
+	src := "lmarena"
+	if name == bench.FeedModelsDev {
+		src = "modelsdev"
+	}
+	if !o.s.BenchSourceOn(src) {
+		return nil, fmt.Errorf("%s is turned off in config.toml (bench.sources.%s)", name, src)
+	}
+	return o.next.Fetch(ctx, name)
 }
 
 // receiptText is the sync receipt for people.

@@ -195,11 +195,10 @@ Adding a CLI means adding one entry to [`internal/harness/registry.go`](internal
 
 ## Configuration
 
-Configuration is moving into AFK itself (`afk config`, `afk gateway`, `afk mcp`, `afk skills`) with one file at `~/.config/afk/`. Until then, these settings apply:
+Your settings live in `~/.config/afk/config.toml`, managed with `afk config get|set|edit|path|migrate` (`afk config set route.prefer cheap`). Secrets in it are references (`key = "env:LITELLM_KEY"`), never values. `afk config migrate` copies an older `~/.config/afk/router.json` into it. A project's `.afk/config.json` can set only its own routing preferences, never a gateway or a key. Precedence and every key are in the [configuration reference](docs/reference/configuration.md). These environment variables still apply, and win over the file:
 
 | Setting | Purpose |
 |---|---|
-| `.afk/config.json` in a project | per-project router settings (`--repo <dir>` picks the project) |
 | `AFK_LITELLM_BASE_URL` | address of a LiteLLM (or other Anthropic-compatible) gateway |
 | `AFK_GATEWAY_KEY` / `AFK_GATEWAY_KEY_ENV` | the gateway key, or the name of the variable that holds it |
 | `AFK_HARNESS_BIN_DIR` | look for CLIs only in this directory |
@@ -241,6 +240,7 @@ internal/router/    route selection, benchmark catalog, pool probes
 internal/core/      the Go engine: explain, launch plans, pools, -p
 internal/oneshot/   -p: reading the answer, failover
 internal/bench/     the benchmark sync
+internal/config/    config.toml, afk.lock, project settings, afk config
 internal/engine/    route, explain, launch-plan and pool types
 internal/launch/    foreground launch of the chosen CLI
 internal/runrec/    run records

@@ -10,6 +10,7 @@ internal/router/    route selection, the benchmark catalog, pool probes
 internal/core/      the Go engine: explain, launch plans, pools, -p
 internal/oneshot/   -p: reading each CLI's answer, classifying failures, failover
 internal/bench/     the benchmark sync and its daily refresh
+internal/config/    config.toml (schema, precedence, comment-keeping edits), afk.lock, project settings
 internal/statefile/ the lock and atomic write for the small state files
 internal/tui/       the route card, Why panel, receipt and rating (Bubble Tea)
 internal/launch/    starting a plan as a foreground child
@@ -44,7 +45,7 @@ The Go engine fixes some things the bash engine got wrong, so on these points th
 
 - Codex's sessions are read from `$CODEX_HOME/sessions` when set (and `AFK_CODEX_SESSIONS_DIR` first), for both rate limits and activity.
 - Codex signed in with an API key is metered usage: its sessions don't count against the ChatGPT plan pool.
-- A project's `.afk/config.json` can set the gateway only when the project is listed in `trusted_repos`.
+- A project's `.afk/config.json` can set the gateway (through its older `router` block) only when the project is listed in `trust.repos` (or `trusted_repos` in `router.json`).
 - A restricted model (Mythos, Daybreak Blue) that one CLI lists unlocks it for that CLI's account only.
 - "patch" counts as asking for a change when guessing the task.
 - A signals file that doesn't fully decode is ignored whole; a zero or negative pool capacity is skipped.

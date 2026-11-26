@@ -27,6 +27,7 @@ const usage = `afk — run the best agent CLI on this machine for the task
   afk --explain [options] [prompt]   show the choice and the alternatives
   afk harness [--all] [--json]       the agent CLIs found on this machine
   afk bench sync [--json]            refresh the benchmark catalog now
+  afk config get|set|edit|path|migrate   your settings (config.toml)
 
 Options:
   -p, --print            one-shot: run headless and print the answer
@@ -58,7 +59,8 @@ Options:
 On the route card: ↵ launch · ↑↓/jk pick · tab effort · e edit the prompt ·
 y twice for yolo · ? why · esc cancel.
 
-A prompt that starts with "harness" or "bench" needs "--" before it.
+A prompt that starts with "harness", "bench" or "config" needs "--"
+before it.
 `
 
 // runGo is afk on the Go engine.
@@ -73,7 +75,21 @@ func runGo(args cli.Args) int {
 	}
 	c := core.New()
 	if !args.LaunchPlan {
-		refreshBenchmarks(c.Home)
+		repo := args.Flags.Repo
+		if repo == "" {
+			repo = c.Cwd
+		}
+		s, err := c.LoadSettings(repo)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "afk:", err)
+			return 1
+		}
+		for _, w := range s.Warnings {
+			fmt.Fprintln(os.Stderr, "afk: warning:", w)
+		}
+		if s.BenchAutosync {
+			refreshBenchmarks(c.Home)
+		}
 	}
 	switch {
 	case args.LaunchPlan:

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jlengelbrecht/agent-flow-kit/internal/config"
 	"github.com/jlengelbrecht/agent-flow-kit/internal/engine"
 	"github.com/jlengelbrecht/agent-flow-kit/internal/harness"
 	"github.com/jlengelbrecht/agent-flow-kit/internal/router"
@@ -63,123 +64,28 @@ func (c *Core) now() time.Time {
 	return c.Now()
 }
 
-// Settings are the router settings: environment first, then the project's
-// .afk/config.json "router" block, then ~/.config/afk/router.json for the
-// security models.
-type Settings struct {
-	GatewayURL         string
-	AllowMetered       bool
-	PreferFree         bool
-	AllowFreeReviewers bool
-	SecurityModels     []string
-	// IgnoredRepoGateway is set when the project names a gateway that was
-	// not used because the project isn't trusted.
-	IgnoredRepoGateway bool
-}
+// Settings are the effective settings: see config.Resolve for where each
+// comes from.
+type Settings = config.Settings
 
-// userRouter is ~/.config/afk/router.json: settings that are yours, not a
-// project's.
-type userRouter struct {
-	GatewayURL   string   `json:"litellm_base_url"`
-	Security     []string `json:"security_models"`
-	TrustedRepos []string `json:"trusted_repos"`
-}
-
-func (c *Core) userRouterConfig() userRouter {
-	var u userRouter
-	if b, err := os.ReadFile(filepath.Join(c.Home, ".config", "afk", "router.json")); err == nil {
-		_ = json.Unmarshal(b, &u)
-	}
-	return u
-}
-
-// trusts reports whether a project directory is listed in trusted_repos
-// (compared after resolving symlinks).
-func (u userRouter) trusts(repo string) bool {
-	if repo == "" {
-		return false
-	}
-	real := func(p string) string {
-		if abs, err := filepath.Abs(p); err == nil {
-			p = abs
-		}
-		if r, err := filepath.EvalSymlinks(p); err == nil {
-			return r
-		}
-		return filepath.Clean(p)
-	}
-	want := real(repo)
-	for _, t := range u.TrustedRepos {
-		if t != "" && real(t) == want {
-			return true
-		}
-	}
-	return false
-}
-
-type projectConfig struct {
-	Router struct {
-		GatewayURL         *string  `json:"litellm_base_url"`
-		AllowMetered       *bool    `json:"allow_metered_api"`
-		PreferFree         *bool    `json:"prefer_free_for_low_risk"`
-		AllowFreeReviewers *bool    `json:"allow_free_reviewers"`
-		SecurityModels     []string `json:"security_models"`
-	} `json:"router"`
-}
-
-func truthy(v string) bool { return v == "true" || v == "1" }
-
-// LoadSettings reads the router settings for a project directory.
-func (c *Core) LoadSettings(repo string) Settings {
-	var pc projectConfig
-	if repo != "" {
-		if b, err := os.ReadFile(filepath.Join(repo, ".afk", "config.json")); err == nil {
-			_ = json.Unmarshal(b, &pc)
-		}
-	}
-	r := pc.Router
-	s := Settings{}
-	pick := func(env string, cfg *bool) bool {
-		if v := c.getenv(env); v != "" {
-			return truthy(v)
-		}
-		return cfg != nil && *cfg
-	}
-	user := c.userRouterConfig()
-	// The gateway gets the gateway key at launch, so its address must come
-	// from you: the environment, your own router.json, or a project you
-	// have listed as trusted there. A cloned repository can't point your
-	// key at its own server.
-	s.GatewayURL = c.getenv("AFK_LITELLM_BASE_URL")
-	if s.GatewayURL == "" {
-		s.GatewayURL = user.GatewayURL
-	}
-	if s.GatewayURL == "" && r.GatewayURL != nil && *r.GatewayURL != "" {
-		if user.trusts(repo) {
-			s.GatewayURL = *r.GatewayURL
-		} else {
-			s.IgnoredRepoGateway = true
-		}
-	}
-	s.AllowMetered = pick("AFK_ROUTER_ALLOW_METERED_API", r.AllowMetered)
-	s.PreferFree = pick("AFK_ROUTER_PREFER_FREE", r.PreferFree)
-	s.AllowFreeReviewers = pick("AFK_ROUTER_ALLOW_FREE_REVIEWERS", r.AllowFreeReviewers)
-	if v := c.getenv("AFK_SECURITY_MODELS"); v != "" {
-		s.SecurityModels = strings.Split(v, ",")
-	} else if len(r.SecurityModels) > 0 {
-		s.SecurityModels = r.SecurityModels
-	} else {
-		s.SecurityModels = user.Security
-	}
-	return s
+// LoadSettings reads the settings for a project directory: the
+// environment, the project's .afk/config.json, config.toml (or, while it
+// doesn't exist, ~/.config/afk/router.json), then defaults. A config.toml
+// that doesn't validate is an error naming the file, line and key.
+func (c *Core) LoadSettings(repo string) (Settings, error) {
+	return config.Resolve(config.Env{Home: c.Home, Getenv: c.getenv, Repo: repo})
 }
 
 // InstalledRoutable lists the routable CLIs found on this machine.
 func (c *Core) InstalledRoutable() []string {
 	var out []string
+	disabled := map[string]bool{}
+	if s, err := c.LoadSettings(""); err == nil {
+		disabled = s.Disabled
+	}
 	for _, h := range Routable {
 		a, ok := harness.Lookup(h)
-		if ok && harness.Locate(c.Harness, a) != "" {
+		if ok && !disabled[h] && harness.Locate(c.Harness, a) != "" {
 			out = append(out, h)
 		}
 	}
@@ -197,7 +103,10 @@ func (c *Core) load(ctx context.Context, repo string) (*state, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := c.LoadSettings(repo)
+	s, err := c.LoadSettings(repo)
+	if err != nil {
+		return nil, err
+	}
 	installed := c.Installed
 	if installed == nil {
 		installed = router.VerifyBinaries(ctx, c.Harness, c.getenv)
@@ -282,7 +191,19 @@ type decision struct {
 // decide routes a prompt: checks the flags, finds the installed CLIs and
 // asks the router.
 func (c *Core) decide(ctx context.Context, f engine.RouteFlags, prompt string) (*decision, error) {
+	repo := f.Repo
+	if repo == "" {
+		repo = c.Cwd
+	}
+	settings, err := c.LoadSettings(repo)
+	if err != nil {
+		return nil, err
+	}
+	// --prefer wins over the project's and your config's route.prefer.
 	prefer := f.Prefer
+	if prefer == "" {
+		prefer = settings.Prefer
+	}
 	if prefer == "" {
 		prefer = "balanced"
 	}
@@ -308,10 +229,6 @@ func (c *Core) decide(ctx context.Context, f engine.RouteFlags, prompt string) (
 	pinH, pinM := f.Harness, f.Model
 	if pinH != "" && !contains(installed, pinH) {
 		return nil, &NotInstalledError{fmt.Sprintf("%s is not installed here (found: %s)", pinH, strings.Join(installed, ","))}
-	}
-	repo := f.Repo
-	if repo == "" {
-		repo = c.Cwd
 	}
 	st, err := c.load(ctx, repo)
 	if err != nil {
@@ -402,7 +319,10 @@ func (c *Core) Pools(ctx context.Context) (*engine.Pools, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := c.LoadSettings(c.Cwd)
+	s, err := c.LoadSettings(c.Cwd)
+	if err != nil {
+		return nil, err
+	}
 	installed := c.Installed
 	if installed == nil {
 		installed = router.VerifyBinaries(ctx, c.Harness, c.getenv)

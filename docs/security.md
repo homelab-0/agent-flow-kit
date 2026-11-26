@@ -12,7 +12,8 @@ These hold for every route, pinned or not, and are checked again when a launch p
 
 - **A plan login never goes through a gateway.** A gateway route runs `claude` with the gateway's own key, from a separate config directory, with every Claude and Anthropic variable unset, so your plan login isn't loaded or sent.
 - **The gateway key comes from a plain variable that is not a vendor credential**, so AFK never picks up a plan token from a vendor's own variables. The check is on the variable's name: put only a gateway-issued key in it.
-- **The gateway address comes from you**, not from a repository: the environment, your own `~/.config/afk/router.json`, or a project you listed in `trusted_repos`. A repository you clone can't send your gateway key to its own server.
+- **The gateway address comes from you**, not from a repository: the environment, your own `config.toml` (or the older `router.json`), or, through the older `router` block, a project you listed in `trust.repos`. A repository you clone can't send your gateway key to its own server, and its `.afk/config.json` can't set a gateway, a key, an install, telemetry or a looser permission mode at all; those keys are ignored with a warning.
+- **Secrets in config are references** (`env:NAME`, `file:`, `cmd:`, `op://`, `keychain:`), never values. A value that isn't one is refused without being repeated, and AFK resolves a reference only when the secret is used, never writing or printing it. `afk config migrate` won't copy a gateway address that carries user info.
 
 ## What AFK reads
 
@@ -24,7 +25,8 @@ These hold for every route, pinned or not, and are checked again when a launch p
 | Session folders of each CLI | recent activity per pool | file names and modification times, not contents |
 | OpenCode's and Pi's auth files | which vendor plans they are signed in to | provider names and login types only |
 | `<cli> --version` | whether a CLI is installed and working | the version text, capped at 4 KiB |
-| `.afk/config.json` in your project | routing settings | the `router` block |
+| `~/.config/afk/config.toml` | your settings | the whole file; secrets in it are only references |
+| `.afk/config.json` in your project | routing settings | `route.prefer`, `route.prefer_free`, `permissions.default` and the older `router` block; anything else is ignored with a warning |
 
 ## What AFK writes
 
