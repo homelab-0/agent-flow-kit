@@ -100,7 +100,11 @@ func probeClaudeQuota(ctx context.Context, e ProbeEnv) quota {
 
 // loginGeneration identifies a credential file's current contents without
 // holding anything from them: a hash of its path, size and modification
-// time. It changes whenever the login is renewed or replaced.
+// time. It changes whenever the login is renewed or replaced. A rewrite to
+// the same size within one tick of the filesystem clock would look the
+// same; the cache lasts two minutes, so the worst case is one stale
+// reading. The file's contents are deliberately not hashed into the
+// cache, since they are the token.
 func loginGeneration(path string) string {
 	fi, err := os.Stat(path)
 	if err != nil {
@@ -296,6 +300,10 @@ func writeFileAtomic(path string, b []byte, mode os.FileMode) error {
 // wrote into its rollout files. No network.
 func probeCodexQuota(e ProbeEnv) quota {
 	dir := codexSessionsDir(e)
+	// WalkDir doesn't follow a symlinked root; resolve it first.
+	if r, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = r
+	}
 	var files []string
 	_ = filepath.WalkDir(dir, func(p string, de os.DirEntry, err error) error {
 		// Regular files only: opening a named pipe could block.

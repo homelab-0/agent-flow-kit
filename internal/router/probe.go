@@ -229,6 +229,9 @@ type modelSignal struct {
 type signals struct {
 	Pools       map[string]poolSignal  `json:"pools"`
 	Unavailable map[string]modelSignal `json:"unavailable_models"`
+	// fileTime is when the signals file was last written: the time given
+	// to a signal whose own timestamp can't be read.
+	fileTime int64
 }
 
 // readSignals reads the signals file. A missing, truncated or hand-edited
@@ -243,6 +246,9 @@ func readSignals(path string) signals {
 	// not quarantine a model or a pool.
 	if json.Unmarshal(b, &s) != nil {
 		return signals{}
+	}
+	if fi, err := os.Stat(path); err == nil {
+		s.fileTime = fi.ModTime().Unix()
 	}
 	return s
 }
@@ -267,7 +273,10 @@ func activeSignal(s signals, pid string, authMtime, now int64) (*poolSignal, str
 			v := t.Unix()
 			up = &v
 		} else {
-			v := int64(0)
+			// An unreadable timestamp is not "1970": the signal is dated
+			// when the file was last written, so it still expires, and a
+			// sign-in signal still clears when the login is renewed.
+			v := s.fileTime
 			up = &v
 		}
 	}
@@ -427,6 +436,10 @@ func jqRound(v float64) float64 { return math.Round(v) }
 // countRecent counts session files (.json, .jsonl) changed since the given
 // time, at most five directories deep, as the bash probe's find does.
 func countRecent(dir string, since time.Time) int {
+	// WalkDir doesn't follow a symlinked root; resolve it first.
+	if r, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = r
+	}
 	n := 0
 	base := strings.Count(filepath.Clean(dir), string(filepath.Separator))
 	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {

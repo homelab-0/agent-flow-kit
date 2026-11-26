@@ -110,6 +110,9 @@ type Route struct {
 func (r *Router) ServedBy(model string, installed []string, allowMetered bool) map[string]string {
 	out := map[string]string{}
 	for _, c := range r.candidates(allowMetered) {
+		if !r.launchable(c) {
+			continue
+		}
 		if (c.Model == model || c.CanonicalModel == model) && contains(installed, c.Harness) {
 			if _, seen := out[c.Harness]; !seen {
 				out[c.Harness] = c.Model
@@ -117,6 +120,30 @@ func (r *Router) ServedBy(model string, installed []string, allowMetered bool) m
 		}
 	}
 	return out
+}
+
+// launchable applies the rules no route can break, whatever the pools:
+// a plan login only in its own CLI and never through a gateway, OpenCode
+// only with its own free models, gateway routes only on claude.
+func (r *Router) launchable(c Candidate) bool {
+	cclass := c.CostClass
+	if cclass == "" && r.Catalog != nil {
+		cclass = r.Catalog.Pools[c.EntitlementPool].CostClass
+	}
+	if cclass == "" {
+		cclass = "subscription"
+	}
+	if cclass == "subscription" && !contains(ownPlans[c.Harness], c.EntitlementPool) {
+		return false
+	}
+	if c.Harness == "opencode" && !(strings.HasPrefix(c.Model, "opencode/") && (cclass == "free" || c.EntitlementPool == "opencode-free")) {
+		return false
+	}
+	if c.Harness == "pi" {
+		return false
+	}
+	viaGateway := strings.HasSuffix(c.LaunchClass, "-gateway")
+	return !viaGateway || (cclass != "subscription" && c.Harness == "claude")
 }
 
 // IsFallback reports whether nothing passed the eligibility rules.

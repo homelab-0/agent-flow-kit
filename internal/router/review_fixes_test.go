@@ -189,3 +189,73 @@ func TestServedByIncludesDiscoveredModels(t *testing.T) {
 		t.Fatalf("ServedBy = %v", got)
 	}
 }
+
+func TestServedByAppliesTheLoginRules(t *testing.T) {
+	tc := struct {
+		Reasoning bool `json:"reasoning"`
+		Toolcall  bool `json:"toolcall"`
+	}{Toolcall: true}
+	r := &Router{Catalog: DefaultCatalog(), Discovered: []DiscoveredModel{{
+		ID: "opencode:anthropic/claude-sonnet-5-5", Harness: "opencode", Model: "anthropic/claude-sonnet-5-5",
+		CanonicalModel: "anthropic/claude-sonnet-5-5", CostClass: "subscription", EntitlementPool: "anthropic-max",
+		Capabilities: tc,
+	}}}
+	got := r.ServedBy("anthropic/claude-sonnet-5-5", []string{"opencode", "claude"}, false)
+	if _, ok := got["opencode"]; ok {
+		t.Fatalf("a Claude plan model was offered on opencode: %v", got)
+	}
+	if got["claude"] != "sonnet" {
+		t.Fatalf("claude should serve it as sonnet: %v", got)
+	}
+	// The gateway model in the catalog stays pinnable on claude.
+	if got := r.ServedBy("qwen36-27b", []string{"claude"}, false); got["claude"] != "qwen36-27b" {
+		t.Fatalf("gateway model: %v", got)
+	}
+}
+
+func TestUnreadableSignalTimeUsesTheFileTime(t *testing.T) {
+	home := t.TempDir()
+	put(t, home, ".grok/auth.json", `{"a":1}`, 2*time.Hour)
+	put(t, home, ".config/afk/pool-signals.json", `{"pools":{"xai-grok":{"degraded_reason":"401 unauthorized","updated_at":"not a time"}}}`, time.Hour)
+	p := ProbePools(context.Background(), DefaultCatalog(), ProbeEnv{Home: home, Installed: func(h string) bool { return h == "grok" }})
+	if p.Pools["xai-grok"].State != "auth_required" {
+		t.Fatalf("a recent sign-in signal with a bad timestamp was dropped: %+v", p.Pools["xai-grok"])
+	}
+	// Renewing the login clears it.
+	put(t, home, ".grok/auth.json", `{"a":2}`, 0)
+	p = ProbePools(context.Background(), DefaultCatalog(), ProbeEnv{Home: home, Installed: func(h string) bool { return h == "grok" }})
+	if p.Pools["xai-grok"].State == "auth_required" {
+		t.Fatal("a renewed login did not clear the signal")
+	}
+	// A transient signal still expires.
+	put(t, home, ".config/afk/pool-signals.json", `{"pools":{"xai-grok":{"degraded_reason":"timeout","updated_at":"bad","used_pct":100}}}`, time.Hour)
+	p = ProbePools(context.Background(), DefaultCatalog(), ProbeEnv{Home: home, Installed: func(h string) bool { return h == "grok" }})
+	if p.Pools["xai-grok"].QuotaSource == "runtime_signal:transient" {
+		t.Fatal("an hour-old transient signal with a bad timestamp never expires")
+	}
+}
+
+func TestSymlinkedCodexSessions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks")
+	}
+	home := t.TempDir()
+	real := filepath.Join(home, "real-sessions")
+	put(t, real, "rollout-2026-11-26T01.jsonl", rollout(time.Now().Unix(), 44, ""), 0)
+	for i := 0; i < 4; i++ {
+		put(t, real, fmt.Sprintf("s%d.jsonl", i), "{}", 0)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, filepath.Join(home, ".codex", "sessions")); err != nil {
+		t.Fatal(err)
+	}
+	e := ProbeEnv{Home: home, Now: time.Now()}
+	if q := probeCodexQuota(e); !q.OK || q.UsedPct != 44 {
+		t.Fatalf("symlinked sessions: %+v", q)
+	}
+	if n := countRecent(codexSessionsDir(e), time.Now().Add(-time.Hour)); n != 5 {
+		t.Fatalf("countRecent through the symlink = %d, want 5", n)
+	}
+}
