@@ -195,7 +195,7 @@ func (s *syncer) candidate(c map[string]any) map[string]any {
 			rank := numText(agHit.Rank)
 			date := "live"
 			if agHit.Date != nil {
-				date = numText(agHit.Date)
+				date = dateText(agHit.Date)
 			}
 			set("coding_complex", measured("lmarena_agent", agHit, agScore, "LMArena Agent #"+rank+" ("+date+")"))
 			// A review is what an unattended merge rests on, so the
