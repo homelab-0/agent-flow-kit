@@ -29,6 +29,7 @@ type Args struct {
 	Unknown string
 
 	unknown bool // an unknown option came before any -h
+	badMode bool // --mode had a value that is no mode (even an empty one)
 }
 
 // Options that take a value.
@@ -74,7 +75,7 @@ func Parse(argv []string) Args {
 			case "interactive", "print":
 				a.Mode = v
 			default:
-				a.BadMode = v
+				a.BadMode, a.badMode = v, true
 			}
 		}
 	}
@@ -139,3 +140,7 @@ func Parse(argv []string) Args {
 	}
 	return a
 }
+
+// HasBadMode reports whether --mode was given a value that is no mode,
+// including an empty or missing one.
+func (a Args) HasBadMode() bool { return a.badMode }

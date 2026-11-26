@@ -189,6 +189,50 @@ func TestCardShowsTheModeAndDowngrade(t *testing.T) {
 	}
 }
 
+// Turning a routed yolo off sticks: the header and the launch both say
+// ask, and a reroute doesn't turn it back on.
+func TestYoloOffSticksAcrossReroutes(t *testing.T) {
+	f := fixtures(t)
+	ex := *f.ex
+	ex.Mode = "yolo"
+	m := New(f, Options{Prompt: framePrompt, Width: 80, FPS: 30, Dark: true, Now: func() time.Time { return frameNow }, Loc: time.UTC, Environ: []string{"PATH=/bin"}})
+	m.Init()
+	m.Update(explainMsg{ex: &ex})
+	if !m.card.Yolo {
+		t.Fatal("a routed yolo turns the toggle on")
+	}
+	press(m, "y")
+	if m.card.Yolo || m.card.LaunchMode() != "ask" {
+		t.Fatalf("yolo off: toggle %v, launch mode %q", m.card.Yolo, m.card.LaunchMode())
+	}
+	if out := ansi.Strip(m.Render()); strings.Contains(out, "mode yolo") || strings.Contains(strings.Split(out, "\n")[2], "yolo") {
+		t.Errorf("the header still says yolo:\n%s", out)
+	}
+	m.Update(explainMsg{ex: &ex})
+	if m.card.Yolo {
+		t.Fatal("a reroute turned yolo back on")
+	}
+}
+
+func TestCompactCardShowsTheModeAndDowngrade(t *testing.T) {
+	f := fixtures(t)
+	ex := *f.ex
+	ex.Mode = "auto"
+	ex.ModeByHarness = map[string]engine.ModeInfo{ex.Choice.Harness: {Mode: "edits", Note: ex.Choice.Harness + ": can't run in auto, running in edits"}}
+	m := New(f, Options{Prompt: framePrompt, Width: 60, FPS: 30, Dark: true, Now: func() time.Time { return frameNow }, Loc: time.UTC, Environ: []string{"PATH=/bin"}})
+	m.Init()
+	m.Update(explainMsg{ex: &ex})
+	out := ansi.Strip(m.Render())
+	if !strings.Contains(out, "auto") || !strings.Contains(out, "running in edits") {
+		t.Fatalf("compact card lacks the mode:\n%s", out)
+	}
+	for _, l := range strings.Split(out, "\n") {
+		if ansi.StringWidth(l) > 60 {
+			t.Errorf("line wider than 60: %q", l)
+		}
+	}
+}
+
 func TestLaterStepKeysSayLater(t *testing.T) {
 	m := cardModel(t, fixtures(t), 80, false)
 	press(m, "m")
