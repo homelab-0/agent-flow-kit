@@ -164,6 +164,12 @@ For each installed CLI, AFK considers every model that CLI can run and scores it
 
 Effort starts from the task kind and goes up for harder work, within what the CLI supports. Two rules are fixed: a review never goes to a free or local model, and a plan login is only used by its own vendor's CLI.
 
+Press `?` on the route card to see the working:
+
+<p align="center">
+  <img src="docs/assets/why.png" width="720" alt="The Why panel: task class, benchmark score and when it was measured, pool factor, cost class, effort change and its reason, the effective score, and which CLIs were skipped and why">
+</p>
+
 ## Supported CLIs
 
 | CLI | Command | Discovery | Routing |
