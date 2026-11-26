@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 	"time"
 
@@ -46,7 +47,9 @@ func (c *Core) Print(ctx context.Context, req PrintRequest, note func(string)) (
 	signals := router.ProbeEnv{Home: c.Home, Getenv: c.getenv}.SignalsPath()
 	deps := oneshot.Deps{
 		Run: func(ctx context.Context, r engine.Route, mode string) oneshot.Output {
-			return c.runHeadless(ctx, r, mode, req)
+			out := c.runHeadless(ctx, r, mode, req)
+			c.notePlanUsage(r, out.Stdout)
+			return out
 		},
 		Next: func(ctx context.Context, only []string, pool string) (engine.Route, bool) {
 			// Read the pools again: the failure just recorded is in them.
@@ -196,4 +199,25 @@ func (w *capped) Write(p []byte) (int, error) {
 		}
 	}
 	return len(p), nil
+}
+
+// notePlanUsage keeps the plan usage a run's own output reported, so the
+// next route card shows a measured figure. Only Claude on its plan login
+// reports it (a gateway route's limits aren't the plan's).
+func (c *Core) notePlanUsage(r engine.Route, stdout []byte) {
+	if r.Harness != "claude" || strings.HasSuffix(r.LaunchClass, "-gateway") {
+		return
+	}
+	pool := r.EntitlementPool
+	if pool == "" {
+		pool = "anthropic-max"
+	}
+	if pool != "anthropic-max" {
+		return
+	}
+	u, ok := router.ParseClaudeUsage(stdout, c.now())
+	if !ok {
+		return
+	}
+	_ = router.RecordPlanUsage(router.ProbeEnv{Home: c.Home, Getenv: c.getenv}.UsagePath(), pool, u)
 }

@@ -130,10 +130,24 @@ func taskText(task string, guessed bool) string {
 }
 
 // resetsText is when the pool's 5-hour window resets, in local time.
+// windowText is the window a pool's figure is for ("5h window").
+func windowText(pools *engine.Pools, id string) string {
+	if pools != nil {
+		if p, ok := pools.Pools[id]; ok {
+			return p.Window() + " window"
+		}
+	}
+	return "5h window"
+}
+
 func resetsText(pools *engine.Pools, id string, loc *time.Location) string {
 	if pools != nil {
 		if p, ok := pools.Pools[id]; ok {
 			if t, ok := p.Resets(); ok {
+				// A reset more than a day off needs its day.
+				if time.Until(t) > 20*time.Hour {
+					return "resets " + t.In(loc).Format("Mon 15:04")
+				}
 				return "resets " + t.In(loc).Format("15:04")
 			}
 		}

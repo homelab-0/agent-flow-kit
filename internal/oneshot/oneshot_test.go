@@ -364,3 +364,10 @@ func TestFailoverSetting(t *testing.T) {
 	res = Do(context.Background(), Request{First: first, Harnesses: all, Failover: "same-pool"}, f.deps())
 	want(t, "same-pool past another pool", res.Tried, []string{"claude/opus", "claude/sonnet"})
 }
+
+func TestAnswerFromAStreamIsTheResultOnly(t *testing.T) {
+	got, ok := Answer(fixture(t, "claude-stream-ok.jsonl"), nil)
+	if !ok || got != "ok" {
+		t.Errorf("got %q %v, want the result document's text only", got, ok)
+	}
+}

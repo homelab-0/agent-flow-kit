@@ -1,6 +1,6 @@
 # Subscription pools
 
-A pool is one source of model usage: a plan login, a free tier, or a gateway. AFK tracks how much of each is left in the current 5-hour window and uses it to spread work across your plans.
+A pool is one source of model usage: a plan login, a free tier, or a gateway. AFK tracks how much of each is left in the current window (five hours, or a week when that is all the CLI reports) and uses it to spread work across your plans.
 
 | Pool | Feeds | Default 5-hour capacity |
 |---|---|---|
@@ -19,8 +19,9 @@ For each pool AFK takes the best source available, in this order:
 
 1. **A recent failure signal** (below), while it is still in force.
 2. **The provider's own figure**:
-   - **Codex**: the rate limits Codex writes into its own session files (`rollout-*.jsonl` under `$CODEX_HOME/sessions`, by default `~/.codex/sessions`). The newest reading wins, by when it was recorded. No network call.
-3. **Recent activity**: session files each CLI wrote in the last 5 hours (for OpenCode, under its `storage/` folder; a sign-in rewriting its `auth.json` isn't activity), against the pool's capacity, capped at 98%. This is an estimate, and the route card and `--explain` say so (`estimated`). Claude's pool is always estimated this way: Anthropic's usage figures can only be read with your Claude login, and AFK never opens it. A rate-limit or quota failure from a real run still sets the pool aside (below). Codex sessions count against the ChatGPT plan only when Codex is signed in with the plan; with an API key they are metered usage, not plan usage.
+   - **Codex**: the rate limits Codex writes into its own session files (`rollout-*.jsonl` under `$CODEX_HOME/sessions`, by default `~/.codex/sessions`), with each window's reset time. The newest reading wins, by when it was recorded. No network call.
+   - **Claude**: the `rate_limit_event` that Claude Code prints in its stream-json output, which `afk -p` asks for (`--output-format stream-json --verbose`). It has the plan's utilization per window (five-hour and weekly; overage windows don't count) and when each resets. AFK keeps the last reading in `~/.config/afk/state/plan-usage.json` and uses it until its window resets, for at most 12 hours. Interactive Claude sessions don't print it, so the figure is as of the last `afk -p` run on Claude; the route card says `measured (last -p)`. No login is read and nothing extra is sent.
+3. **Recent activity**: session files each CLI wrote in the last 5 hours (for OpenCode, under its `storage/` folder; a sign-in rewriting its `auth.json` isn't activity), against the pool's capacity, capped at 98%. This is an estimate, and the route card and `--explain` say so (`estimated`). Claude falls back to it when there is no current reading; Grok and Antigravity always use it today (Grok's output reports only each call's tokens). A rate-limit or quota failure from a real run still sets the pool aside (below). Codex sessions count against the ChatGPT plan only when Codex is signed in with the plan; with an API key they are metered usage, not plan usage.
 
 Which plan Codex uses (ChatGPT or an API key) comes from `codex login status`; when it can't answer, Codex's sessions aren't counted against any pool rather than guessed. Claude's and Codex's folders follow `CLAUDE_CONFIG_DIR` and `CODEX_HOME` when they are set. Which vendor plans OpenCode or Pi are signed in to is written only inside their credential files, so AFK doesn't count them against those plans: OpenCode draws on its own free pool. If Grok is installed but no login for xAI exists anywhere, `xai-grok` is offline and AFK says to run `grok login`.
 

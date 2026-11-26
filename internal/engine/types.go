@@ -132,12 +132,16 @@ func redactURL(s string) string {
 
 // IsGateway reports a route that goes through a model gateway.
 // PoolBasis says how the pool figures were found, for people: "measured"
-// (the CLI's own rate-limit record), "estimated from recent sessions", "set
+// (the CLI's own rate-limit record), "measured at the last afk -p run"
+// (Claude's, read from a one-shot run's output), "estimated from recent
+// sessions", "set
 // by a failed run", or "" when the route doesn't say.
 func (r Route) PoolBasis() string {
 	switch {
 	case r.PoolQuotaSource == "codex_rate_limits":
 		return "measured"
+	case r.PoolQuotaSource == "claude_rate_limit_event":
+		return "measured at the last afk -p run"
 	case r.PoolQuotaSource == "local_5h_activity":
 		return "estimated from recent sessions"
 	case strings.HasPrefix(r.PoolQuotaSource, "runtime_signal:"):
@@ -248,6 +252,18 @@ type Pool struct {
 	HeadroomPct *float64 `json:"headroom_pct"`
 	UsedPct     *float64 `json:"used_pct"`
 	ResetsAt    string   `json:"resets_at"`
+	// The plan's own windows, when the CLI reports them.
+	FiveHourUsedPct *float64 `json:"five_hour_used_pct"`
+	WeeklyUsedPct   *float64 `json:"weekly_used_pct"`
+}
+
+// Window names the window a pool's figure is for: "weekly" when only a
+// weekly reading is known, else "5h".
+func (p Pool) Window() string {
+	if p.WeeklyUsedPct != nil && p.FiveHourUsedPct == nil {
+		return "weekly"
+	}
+	return "5h"
 }
 
 // Resets is when the pool's window resets, if the engine knows.

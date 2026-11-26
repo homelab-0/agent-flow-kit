@@ -131,6 +131,8 @@ func ProbePools(ctx context.Context, cat *Catalog, e ProbeEnv) *Probe {
 	}
 
 	sig := readSignals(e.SignalsPath())
+	// Claude's plan usage as its last one-shot run through AFK reported it.
+	claudeQ, _ := readPlanUsage(e.UsagePath(), "anthropic-max", e.Now)
 	// A newer login file clears a sign-in failure signal for its pool.
 	openaiMt := mtime(codexAuthPath(e))
 	claudeMt := mtime(claudeCredsPath(e))
@@ -138,7 +140,7 @@ func ProbePools(ctx context.Context, cat *Catalog, e ProbeEnv) *Probe {
 
 	pc := poolCalc{cat: cat, sig: sig, now: e.Now.Unix(), gatewayOn: gw.Online, harnesses: harnesses, binds: binds}
 	pools := map[string]Pool{
-		"anthropic-max":    pc.calc("anthropic-max", c5, false, []string{"claude"}, quota{}, claudeMt),
+		"anthropic-max":    pc.calc("anthropic-max", c5, false, []string{"claude"}, claudeQ, claudeMt),
 		"openai-plus":      pc.calc("openai-plus", x5, false, []string{"codex"}, codexQ, openaiMt),
 		"antigravity-pool": pc.calc("antigravity-pool", a5, false, []string{"agy"}, quota{}, 0),
 		"xai-grok":         pc.calc("xai-grok", xai5, false, []string{"grok", "opencode"}, quota{}, grokMt),
@@ -429,6 +431,10 @@ func (pc *poolCalc) calc(pid string, sessions int, local bool, defaultH []string
 		Capacity5h: f64(capacity), Remaining5h: f64(remaining), UsedPct: f64(used), HeadroomPct: f64(headroom),
 		QuotaSource: src, WeeklyUsedPct: live.SevenDayPct, FiveHourUsedPct: live.FiveHourPct,
 		FableWeeklyUsedPct: live.FableWeeklyPct, ResetsAt: live.ResetsAt,
+	}
+	if p.ResetsAt == nil && live.OK && live.ResetsAtEpoch != nil && src == live.Source {
+		r := time.Unix(int64(*live.ResetsAtEpoch), 0).UTC().Format(time.RFC3339)
+		p.ResetsAt = &r
 	}
 	if active {
 		if kind != "" {

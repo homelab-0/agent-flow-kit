@@ -196,7 +196,7 @@ func (t Theme) poolLine(c Card, r engine.Route) line {
 	} else {
 		l = append(l, sg(t.Dim, " "+unknownText))
 	}
-	return append(l, sg(t.Dim, " · 5h window "+resetsText(c.Pools, r.EntitlementPool, c.loc())))
+	return append(l, sg(t.Dim, " · "+windowText(c.Pools, r.EntitlementPool)+" "+resetsText(c.Pools, r.EntitlementPool, c.loc())))
 }
 
 func modelCol(w int) int { return max(17-(boxWidth-w), 8) }
@@ -330,9 +330,10 @@ func (t Theme) WhyLines(c Card, width int) []line {
 	if basis == "" {
 		basis = "basis " + unknownText
 	}
-	poolTxt := unknownText + " of 5h window left"
+	win := windowText(c.Pools, orig.EntitlementPool)
+	poolTxt := unknownText + " of " + win + " left"
 	if orig.PoolHeadroomPct != nil {
-		poolTxt = pctText(orig.PoolHeadroomPct) + " of 5h window left"
+		poolTxt = pctText(orig.PoolHeadroomPct) + " of " + win + " left"
 	}
 	if orig.PoolState != "" {
 		poolTxt += " (" + orig.PoolState + ")"
@@ -343,6 +344,8 @@ func (t Theme) WhyLines(c Card, width int) []line {
 		poolTxt += " · estimated"
 	case strings.HasPrefix(b, "set by"):
 		poolTxt += " · failed run"
+	case strings.HasPrefix(b, "measured at"):
+		poolTxt += " · measured (last -p)"
 	case b != "":
 		poolTxt += " · " + b
 	}

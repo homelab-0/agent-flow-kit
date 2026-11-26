@@ -110,3 +110,25 @@ func TestPrintUsageErrors(t *testing.T) {
 		t.Error("ran a CLI on a usage error")
 	}
 }
+
+func TestPrintKeepsClaudesReportedUsage(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell stubs")
+	}
+	stream, err := os.ReadFile("../oneshot/testdata/claude-stream-ok.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, ran, _ := printCore(t, func(argv []string) ([]byte, []byte, int) { return stream, nil, 0 })
+	res, err := c.Print(context.Background(), PrintRequest{Prompt: "hi", Flags: engine.RouteFlags{Harness: "claude"}}, nil)
+	if err != nil || !res.OK || res.Output != "ok" {
+		t.Fatalf("result %+v %v", res, err)
+	}
+	if got := strings.Join((*ran)[0], " "); !strings.Contains(got, "--output-format stream-json --verbose") {
+		t.Errorf("argv %s", got)
+	}
+	b, err := os.ReadFile(filepath.Join(c.Home, ".config", "afk", "state", "plan-usage.json"))
+	if err != nil || !strings.Contains(string(b), `"anthropic-max"`) || !strings.Contains(string(b), `"used_pct": 17`) {
+		t.Fatalf("plan usage %s %v", b, err)
+	}
+}

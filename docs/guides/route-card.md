@@ -8,7 +8,7 @@ afk "make the settings page responsive"
 
 <p align="center"><img src="../assets/route-card.png" alt="The route card" width="640"></p>
 
-The top box is the pick: the CLI, model and effort, the kind of task (and whether AFK guessed it), why this route, and how much of its 5-hour pool is left. Below it is the best route on every other installed CLI, with its model, effort, score, pool headroom and cost.
+The top box is the pick: the CLI, model and effort, the kind of task (and whether AFK guessed it), why this route, and how much of its pool is left in the current window (five hours, or a week when that is what the CLI reports; the reset shows its day when it is more than a day away). Below it is the best route on every other installed CLI, with its model, effort, score, pool headroom and cost.
 
 ## Keys
 
