@@ -125,6 +125,9 @@ unset _afk_lib
 # shellcheck source=lib/afk-factory.sh
 # shellcheck disable=SC1090,SC1091
 . "$AFK_LIB_DIR/afk-factory.sh"
+# shellcheck source=lib/afk-cli.sh
+# shellcheck disable=SC1090,SC1091
+. "$AFK_LIB_DIR/afk-cli.sh"
 
 if ! declare -F afk_cmd_status >/dev/null 2>&1 \
    || ! declare -F afk_render_human >/dev/null 2>&1 \
@@ -445,6 +448,12 @@ agent-flow-kit — lifecycle entry point
       intervals, and reaps a provably stale poll lock (AC-7b) before
       answering. macOS refuses with PAPERCLIP_TIMER_UNSUPPORTED_PLATFORM.
 
+  agent-flow-kit agent [options] [prompt...]      (also: afk)
+      Standalone route: start the best agent CLI installed here (claude,
+      codex, opencode, grok, agy) for the task, chosen by benchmark score,
+      usage left in each subscription and cost. -p prints one answer, with
+      failover; --explain shows the choice. See `afk --help`.
+
   agent-flow-kit factory <subcommand> [options]
       Autonomous multi-harness Software Factory orchestrator & Paperclip native
       execution plane:
@@ -657,6 +666,13 @@ afk_main() {
     afk_require_tools || return "$AFK_EXIT_USAGE"
     afk_require_declared_paths || return "$AFK_EXIT_USAGE"
     afk_cmd_paperclip_evidence "$@"
+    return $?
+  fi
+
+  # agent: the standalone route. Its options are its own (see afk --help).
+  if [[ "$cmd" == agent ]]; then
+    afk_require_tools || return "$AFK_EXIT_USAGE"
+    afk_cli_main "$@"
     return $?
   fi
 

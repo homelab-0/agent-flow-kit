@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# afk — AFK's standalone route: run the best agent CLI on this machine for the
+# task. Same as `agent-flow-kit agent`.
+set -uo pipefail
+src="${BASH_SOURCE[0]}"
+while [[ -L "$src" ]]; do
+  dir="$(cd -P "$(dirname -- "$src")" && pwd)"
+  src="$(readlink -- "$src")"
+  [[ "$src" == /* ]] || src="$dir/$src"
+done
+exec "$(cd -P "$(dirname -- "$src")" && pwd)/agent-flow-kit" agent "$@"

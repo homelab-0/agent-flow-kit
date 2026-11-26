@@ -396,6 +396,12 @@ R_OFF="$(AFK_ROUTER_LITELLM_ASSUME_ONLINE=1 AFK_ROUTER_LITELLM_MODELS='["some-ot
 assert_eq "A gateway model is routed to only while the gateway lists it" \
   "$(jq -r .model <<<"$R_ON"):$(jq -r '.model != "qwen36-27b"' <<<"$R_OFF")" "qwen36-27b:true"
 
+R_ALL="$(AFK_ROUTER_HARNESS_LIST="claude,codex" AFK_ROUTER_SIGNALS_FILE="$TMPROOT/signals-empty.json" afk_router_select_candidate "$ROUTE_REPO" build low "" dev 1 code 40)"
+R_SAME="$(AFK_ROUTER_ONLY_HARNESSES="$(jq -r .harness <<<"$R_ALL")" AFK_ROUTER_HARNESS_LIST="claude,codex" AFK_ROUTER_SIGNALS_FILE="$TMPROOT/signals-empty.json" afk_router_select_candidate "$ROUTE_REPO" build low "" dev 1 code 40)"
+R_NONE="$(AFK_ROUTER_ONLY_HARNESSES="not-a-cli" AFK_ROUTER_HARNESS_LIST="claude,codex" AFK_ROUTER_SIGNALS_FILE="$TMPROOT/signals-empty.json" afk_router_select_candidate "$ROUTE_REPO" build low "" dev 1 code 40)"
+assert_eq "AFK_ROUTER_ONLY_HARNESSES keeps the best allowed CLI, and allowing none leaves only the last-resort answer" \
+  "$(jq -r '"\(.harness)/\(.router_source)"' <<<"$R_SAME"):$(jq -r .router_source <<<"$R_NONE")" "$(jq -r .harness <<<"$R_ALL")/afk-benchmarks:fallback-default"
+
 chmod 644 "$OUT"; AFK_BENCHMARK_FEED_DIR="$FEEDS" afk_router_sync_benchmarks "$OUT" >/dev/null
 assert_eq "Rewriting the catalog keeps its file mode" "$(stat -c %a "$OUT" 2>/dev/null || stat -f %Lp "$OUT")" "644"
 
