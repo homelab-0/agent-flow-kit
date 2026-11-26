@@ -1,7 +1,6 @@
 // Package bench refreshes the benchmark catalog from public leaderboards
-// (afk bench sync). It replaces the bash engine's afk_router_sync_benchmarks
-// and writes the same catalog, so the bash engine and the Go router read
-// what either one wrote.
+// (afk bench sync). It replaced the bash engine's benchmark sync and
+// writes the same catalog format.
 //
 // Scores that can be measured come from the LMArena leaderboards (agent,
 // webdev, text); context windows come from models.dev. Every other score is

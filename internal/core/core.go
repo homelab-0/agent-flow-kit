@@ -1,8 +1,6 @@
 // Package core is AFK's routing and launch engine in Go: it decides the
 // route for a task (internal/router), builds the launch plan for the
-// chosen CLI, and reports pool usage. It answers the same questions, in
-// the same JSON, as the bash engine (agent-flow-kit agent), so the
-// terminal front end can use either.
+// chosen CLI, reports pool usage, and runs one-shot answers (-p).
 package core
 
 import (

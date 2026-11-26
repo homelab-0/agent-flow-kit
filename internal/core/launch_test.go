@@ -55,7 +55,9 @@ func testCore(t *testing.T) (*Core, string) {
 }
 
 // TestLaunchPlansMatchBash compares every plan with what the bash engine's
-// agent --launch-plan printed for the same route (testdata/plans.json).
+// agent --launch-plan printed for the same route (testdata/plans.json, a
+// frozen fixture: the bash engine was removed after the legacy-bash-final
+// tag).
 func TestLaunchPlansMatchBash(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell stubs")
