@@ -2,6 +2,7 @@ package engine
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 )
 
@@ -23,7 +24,7 @@ func TestRouteCarriesPacing(t *testing.T) {
 	var a, b map[string]any
 	_ = json.Unmarshal([]byte(in), &a)
 	_ = json.Unmarshal(out, &b)
-	if len(a) != len(b) {
+	if !reflect.DeepEqual(a, b) {
 		t.Fatalf("route changed: %s", out)
 	}
 }
