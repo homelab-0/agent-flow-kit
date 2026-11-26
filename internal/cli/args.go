@@ -23,6 +23,16 @@ type Args struct {
 	// Forward is the command line for the engine, without --yes.
 	Forward []string
 
+	// The non-interactive modes, for the Go engine.
+	Print      bool   // -p, --print
+	Explain    bool   // --explain, --dry-run
+	JSON       bool   // --json
+	LaunchPlan bool   // --launch-plan
+	Route      string // --route (JSON, or - for stdin)
+	Mode       string // --mode for --launch-plan
+	// Unknown is the first option this command line does not know.
+	Unknown string
+
 	unknown bool // an unknown option came before any -h
 }
 
@@ -55,8 +65,10 @@ func Parse(argv []string) Args {
 			a.Flags.Repo = v
 		case "--pass":
 			a.Pass = append(a.Pass, v)
-		case "--route", "--mode":
-			a.Engine = true
+		case "--route":
+			a.Engine, a.Route = true, v
+		case "--mode":
+			a.Engine, a.Mode = true, v
 		}
 	}
 	for i := 0; i < len(argv); i++ {
@@ -78,6 +90,16 @@ func Parse(argv []string) Args {
 			}
 		case x == "-p" || x == "--print" || x == "--explain" || x == "--dry-run" || x == "--launch-plan" || x == "--json":
 			a.Engine = true
+			switch x {
+			case "-p", "--print":
+				a.Print = true
+			case "--explain", "--dry-run":
+				a.Explain = true
+			case "--json":
+				a.JSON = true
+			case "--launch-plan":
+				a.LaunchPlan = true
+			}
 		case x == "--yolo":
 			a.Yolo = true
 		case valued[x]:
@@ -99,6 +121,9 @@ func Parse(argv []string) Args {
 			a.Engine = true
 			if !a.Help {
 				a.unknown = true
+				if a.Unknown == "" {
+					a.Unknown = x
+				}
 			}
 		default:
 			words = append(words, x)

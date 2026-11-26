@@ -293,7 +293,8 @@ func (r *Router) candidates(allowMetered bool) []Candidate {
 			if name == "" {
 				name = "Dynamic Eval"
 			}
-			bm[k] = Benchmark{Score: v.Score, Name: name}
+			// Only the score and its name carry over, as in the bash router.
+			bm[k] = Benchmark{Score: v.Score, Name: name, scoreText: v.scoreText}
 		}
 		free := d.IsFree
 		out = append(out, Candidate{
@@ -383,11 +384,13 @@ func (r *Router) Select(in Input) Route {
 		isFree := c.IsFree != nil && *c.IsFree
 		bm, hasBM := c.Benchmarks[tc]
 		var baseScore float64
+		scoreText := "75.0"
 		switch {
 		case hasBM && bm.Score != nil:
-			baseScore = *bm.Score
+			baseScore, scoreText = *bm.Score, bm.ScoreText()
 		case c.Benchmarks["coding_complex"].Score != nil:
-			baseScore = *c.Benchmarks["coding_complex"].Score
+			cc := c.Benchmarks["coding_complex"]
+			baseScore, scoreText = *cc.Score, cc.ScoreText()
 		default:
 			baseScore = 75.0
 		}
@@ -541,7 +544,7 @@ func (r *Router) Select(in Input) Route {
 			BenchmarkSyncedAt: bm.SyncedAt, EffectiveScore: eff, CrossFamilyReview: &cross,
 			MemoryMode: in.MemoryMode, RouterSource: source, LitellmBaseURL: gwURL, AuthAlerts: alerts,
 		}
-		route.Reason = reasonText(route, c, pool, ef, tc, cross, in.BuilderFamily)
+		route.Reason = reasonText(route, c, pool, ef, tc, cross, in.BuilderFamily, scoreText)
 		routes = append(routes, route)
 	}
 	sort.SliceStable(routes, func(i, j int) bool { return routes[i].EffectiveScore > routes[j].EffectiveScore })
@@ -590,7 +593,7 @@ func (r *Router) fallback(in Input, tc string, considered int, alerts []any, pro
 	}
 }
 
-func reasonText(rt Route, c Candidate, pool Pool, ef effortChoice, tc string, cross bool, bf string) string {
+func reasonText(rt Route, c Candidate, pool Pool, ef effortChoice, tc string, cross bool, bf, scoreText string) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Selected %s/%s [%s, effort=%s", c.Harness, c.Model, c.CanonicalModel, ef.effort)
 	if ef.escalated {
@@ -598,7 +601,7 @@ func reasonText(rt Route, c Candidate, pool Pool, ef effortChoice, tc string, cr
 	}
 	fmt.Fprintf(&sb, ", cost=%s] (pool=%s %s/%s free [%s%%], benchmark=%s via %s",
 		rt.CostClass, c.EntitlementPool, num(pool.Remaining5h), num(pool.Capacity5h), num(pool.HeadroomPct),
-		strconv.FormatFloat(rt.BenchmarkScore, 'f', -1, 64), rt.BenchmarkName)
+		scoreText, rt.BenchmarkName)
 	if c.SpecialistDomain == "security" && tc == "security" {
 		sb.WriteString(", specialist cybersecurity model")
 	}

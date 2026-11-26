@@ -1,9 +1,9 @@
-// afk is the terminal front end of AFK: it shows the route card for a task,
-// lets the user change the pick, starts the chosen CLI as a foreground
-// child, and prints a receipt when the CLI exits. Routing and launch rules
-// stay in the bash engine (agent-flow-kit agent); afk only reads its JSON.
-// Non-interactive use (-p, --explain, --launch-plan, no terminal) goes
-// straight to the engine with the same arguments.
+// afk is AFK's command: it shows the route card for a task, lets the user
+// change the pick, starts the chosen CLI as a foreground child, and prints
+// a receipt when the CLI exits. Routing and launch plans come from the Go
+// engine (internal/core). Only -p still runs the bash engine
+// (agent-flow-kit agent), until its failover is ported; AFK_BACKEND=bash
+// sends everything there, the way afk worked before.
 package main
 
 import (
@@ -54,6 +54,14 @@ func run(argv []string) int {
 		}
 	}
 	args := cli.Parse(argv)
+	if os.Getenv("AFK_BACKEND") == "bash" {
+		return runBash(args)
+	}
+	return runGo(args)
+}
+
+// runBash is afk over the bash engine, as before the Go engine.
+func runBash(args cli.Args) int {
 	path, err := engine.Locate()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "afk:", err)
@@ -66,11 +74,15 @@ func run(argv []string) int {
 	if args.Engine || !tty {
 		return handOver(path, args.Forward)
 	}
+	return interactive(&engine.Engine{Path: path}, args, termWidth())
+}
+
+func termWidth() int {
 	width, _, err := term.GetSize(os.Stdout.Fd())
 	if err != nil || width <= 0 {
 		width = 80
 	}
-	return interactive(&engine.Engine{Path: path}, args, width)
+	return width
 }
 
 // handOver replaces afk with the engine, same arguments (minus --yes).
@@ -94,7 +106,7 @@ func help(path string) int {
 	return 0
 }
 
-func interactive(eng *engine.Engine, args cli.Args, width int) int {
+func interactive(eng tui.Backend, args cli.Args, width int) int {
 	// Below 40 columns, or on a dumb terminal, there is no card and no
 	// Bubble Tea program: plain lines, the way the bash afk prints.
 	if width < 40 || strings.EqualFold(os.Getenv("TERM"), "dumb") {
@@ -153,7 +165,7 @@ func engineFailure(err error) int {
 }
 
 // plainRun is the narrow or dumb-terminal session: no card, no program.
-func plainRun(eng *engine.Engine, args cli.Args) int {
+func plainRun(eng tui.Backend, args cli.Args) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	ex, err := eng.Explain(ctx, args.Flags, args.Prompt)
 	cancel()
@@ -205,7 +217,7 @@ func plainRun(eng *engine.Engine, args cli.Args) int {
 
 // sessionInfo is one launch: what to start and what to measure.
 type sessionInfo struct {
-	eng    *engine.Engine
+	eng    tui.Backend
 	route  engine.Route
 	plan   *engine.LaunchPlan
 	before *float64 // pool headroom when the card opened

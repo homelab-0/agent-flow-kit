@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 )
 
 // CatalogSchema is the catalog version the router reads.
@@ -23,6 +24,38 @@ type Benchmark struct {
 	SyncedAt    *string  `json:"synced_at,omitempty"`
 	SyncedEpoch int64    `json:"synced_epoch,omitempty"`
 	Live        bool     `json:"live,omitempty"`
+
+	scoreText string
+}
+
+// UnmarshalJSON keeps the score's literal text too, so a reason reads
+// "95.0" when the catalog says 95.0, as the bash router's does.
+func (b *Benchmark) UnmarshalJSON(data []byte) error {
+	type plain Benchmark
+	var p plain
+	if err := json.Unmarshal(data, &p); err != nil {
+		return err
+	}
+	var raw struct {
+		Score json.RawMessage `json:"score"`
+	}
+	_ = json.Unmarshal(data, &raw)
+	*b = Benchmark(p)
+	if p.Score != nil {
+		b.scoreText = string(raw.Score)
+	}
+	return nil
+}
+
+// ScoreText is the score as the catalog wrote it.
+func (b Benchmark) ScoreText() string {
+	if b.scoreText != "" {
+		return b.scoreText
+	}
+	if b.Score == nil {
+		return ""
+	}
+	return strconv.FormatFloat(*b.Score, 'f', -1, 64)
 }
 
 // Candidate is one model a CLI can run, as the catalog describes it.

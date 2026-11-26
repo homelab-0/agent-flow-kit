@@ -1,0 +1,1849 @@
+[
+ {
+  "name": "claude-interactive-ask",
+  "route": {
+   "harness": "claude",
+   "model": "opus",
+   "effort": "high",
+   "entitlement_pool": "anthropic-max",
+   "cost_class": "subscription",
+   "launch_class": "claude-native"
+  },
+  "mode": "interactive",
+  "yolo": false,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": true,
+   "argv": [
+    "$BIN/claude",
+    "--model",
+    "opus",
+    "--effort",
+    "high",
+    "--verbose",
+    "--",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": null
+  }
+ },
+ {
+  "name": "claude-interactive-yolo",
+  "route": {
+   "harness": "claude",
+   "model": "opus",
+   "effort": "high",
+   "entitlement_pool": "anthropic-max",
+   "cost_class": "subscription",
+   "launch_class": "claude-native"
+  },
+  "mode": "interactive",
+  "yolo": true,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": true,
+   "argv": [
+    "$BIN/claude",
+    "--model",
+    "opus",
+    "--effort",
+    "high",
+    "--dangerously-skip-permissions",
+    "--verbose",
+    "--",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": null
+  }
+ },
+ {
+  "name": "claude-print-ask",
+  "route": {
+   "harness": "claude",
+   "model": "opus",
+   "effort": "high",
+   "entitlement_pool": "anthropic-max",
+   "cost_class": "subscription",
+   "launch_class": "claude-native"
+  },
+  "mode": "print",
+  "yolo": false,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": true,
+   "argv": [
+    "$BIN/claude",
+    "--model",
+    "opus",
+    "--effort",
+    "high",
+    "-p",
+    "--output-format",
+    "json",
+    "--verbose",
+    "--",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": {
+    "format": "json",
+    "file": null
+   }
+  }
+ },
+ {
+  "name": "claude-print-yolo",
+  "route": {
+   "harness": "claude",
+   "model": "opus",
+   "effort": "high",
+   "entitlement_pool": "anthropic-max",
+   "cost_class": "subscription",
+   "launch_class": "claude-native"
+  },
+  "mode": "print",
+  "yolo": true,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": true,
+   "argv": [
+    "$BIN/claude",
+    "--model",
+    "opus",
+    "--effort",
+    "high",
+    "--dangerously-skip-permissions",
+    "-p",
+    "--output-format",
+    "json",
+    "--verbose",
+    "--",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": {
+    "format": "json",
+    "file": null
+   }
+  }
+ },
+ {
+  "name": "codex-interactive-ask",
+  "route": {
+   "harness": "codex",
+   "model": "gpt-6.1-sol",
+   "effort": "medium",
+   "entitlement_pool": "openai-plus",
+   "cost_class": "subscription",
+   "launch_class": "codex-native"
+  },
+  "mode": "interactive",
+  "yolo": false,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": true,
+   "argv": [
+    "$BIN/codex",
+    "-m",
+    "gpt-6.1-sol",
+    "-c",
+    "model_reasoning_effort=\"medium\"",
+    "--verbose",
+    "--",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": null
+  }
+ },
+ {
+  "name": "codex-interactive-yolo",
+  "route": {
+   "harness": "codex",
+   "model": "gpt-6.1-sol",
+   "effort": "medium",
+   "entitlement_pool": "openai-plus",
+   "cost_class": "subscription",
+   "launch_class": "codex-native"
+  },
+  "mode": "interactive",
+  "yolo": true,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": true,
+   "argv": [
+    "$BIN/codex",
+    "-m",
+    "gpt-6.1-sol",
+    "-c",
+    "model_reasoning_effort=\"medium\"",
+    "--dangerously-bypass-approvals-and-sandbox",
+    "--verbose",
+    "--",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": null
+  }
+ },
+ {
+  "name": "codex-print-ask",
+  "route": {
+   "harness": "codex",
+   "model": "gpt-6.1-sol",
+   "effort": "medium",
+   "entitlement_pool": "openai-plus",
+   "cost_class": "subscription",
+   "launch_class": "codex-native"
+  },
+  "mode": "print",
+  "yolo": false,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": true,
+   "argv": [
+    "$BIN/codex",
+    "exec",
+    "--skip-git-repo-check",
+    "--json",
+    "-o",
+    "$CXOUT",
+    "-m",
+    "gpt-6.1-sol",
+    "-c",
+    "model_reasoning_effort=\"medium\"",
+    "--verbose",
+    "--",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": {
+    "format": "text-file",
+    "file": "$CXOUT"
+   }
+  }
+ },
+ {
+  "name": "codex-print-yolo",
+  "route": {
+   "harness": "codex",
+   "model": "gpt-6.1-sol",
+   "effort": "medium",
+   "entitlement_pool": "openai-plus",
+   "cost_class": "subscription",
+   "launch_class": "codex-native"
+  },
+  "mode": "print",
+  "yolo": true,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": true,
+   "argv": [
+    "$BIN/codex",
+    "exec",
+    "--skip-git-repo-check",
+    "--json",
+    "-o",
+    "$CXOUT",
+    "-m",
+    "gpt-6.1-sol",
+    "-c",
+    "model_reasoning_effort=\"medium\"",
+    "--dangerously-bypass-approvals-and-sandbox",
+    "--verbose",
+    "--",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": {
+    "format": "text-file",
+    "file": "$CXOUT"
+   }
+  }
+ },
+ {
+  "name": "opencode-interactive-ask",
+  "route": {
+   "harness": "opencode",
+   "model": "opencode/big-pickle",
+   "entitlement_pool": "opencode-free",
+   "cost_class": "free",
+   "launch_class": "opencode-native"
+  },
+  "mode": "interactive",
+  "yolo": false,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": true,
+   "argv": [
+    "$BIN/opencode",
+    "-m",
+    "opencode/big-pickle",
+    "--verbose",
+    "--prompt= -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": null
+  }
+ },
+ {
+  "name": "opencode-interactive-yolo",
+  "route": {
+   "harness": "opencode",
+   "model": "opencode/big-pickle",
+   "entitlement_pool": "opencode-free",
+   "cost_class": "free",
+   "launch_class": "opencode-native"
+  },
+  "mode": "interactive",
+  "yolo": true,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": true,
+   "argv": [
+    "$BIN/opencode",
+    "-m",
+    "opencode/big-pickle",
+    "--verbose",
+    "--prompt= -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": null
+  }
+ },
+ {
+  "name": "opencode-print-ask",
+  "route": {
+   "harness": "opencode",
+   "model": "opencode/big-pickle",
+   "entitlement_pool": "opencode-free",
+   "cost_class": "free",
+   "launch_class": "opencode-native"
+  },
+  "mode": "print",
+  "yolo": false,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": true,
+   "argv": [
+    "$BIN/opencode",
+    "run",
+    "--format",
+    "json",
+    "-m",
+    "opencode/big-pickle",
+    "--verbose",
+    "--",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": {
+    "format": "json",
+    "file": null
+   }
+  }
+ },
+ {
+  "name": "opencode-print-yolo",
+  "route": {
+   "harness": "opencode",
+   "model": "opencode/big-pickle",
+   "entitlement_pool": "opencode-free",
+   "cost_class": "free",
+   "launch_class": "opencode-native"
+  },
+  "mode": "print",
+  "yolo": true,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": true,
+   "argv": [
+    "$BIN/opencode",
+    "run",
+    "--format",
+    "json",
+    "-m",
+    "opencode/big-pickle",
+    "--auto",
+    "--verbose",
+    "--",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": {
+    "format": "json",
+    "file": null
+   }
+  }
+ },
+ {
+  "name": "opencode-plan-interactive-ask",
+  "route": {
+   "harness": "opencode",
+   "model": "xai/grok-4.5",
+   "entitlement_pool": "xai-grok",
+   "cost_class": "subscription",
+   "launch_class": "opencode-native"
+  },
+  "mode": "interactive",
+  "yolo": false,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": false,
+   "error": "opencode runs only its own free models here; xai/grok-4.5 would use another vendor plan login"
+  }
+ },
+ {
+  "name": "opencode-plan-interactive-yolo",
+  "route": {
+   "harness": "opencode",
+   "model": "xai/grok-4.5",
+   "entitlement_pool": "xai-grok",
+   "cost_class": "subscription",
+   "launch_class": "opencode-native"
+  },
+  "mode": "interactive",
+  "yolo": true,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": false,
+   "error": "opencode runs only its own free models here; xai/grok-4.5 would use another vendor plan login"
+  }
+ },
+ {
+  "name": "opencode-plan-print-ask",
+  "route": {
+   "harness": "opencode",
+   "model": "xai/grok-4.5",
+   "entitlement_pool": "xai-grok",
+   "cost_class": "subscription",
+   "launch_class": "opencode-native"
+  },
+  "mode": "print",
+  "yolo": false,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": false,
+   "error": "opencode runs only its own free models here; xai/grok-4.5 would use another vendor plan login"
+  }
+ },
+ {
+  "name": "opencode-plan-print-yolo",
+  "route": {
+   "harness": "opencode",
+   "model": "xai/grok-4.5",
+   "entitlement_pool": "xai-grok",
+   "cost_class": "subscription",
+   "launch_class": "opencode-native"
+  },
+  "mode": "print",
+  "yolo": true,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": false,
+   "error": "opencode runs only its own free models here; xai/grok-4.5 would use another vendor plan login"
+  }
+ },
+ {
+  "name": "opencode-priced-interactive-ask",
+  "route": {
+   "harness": "opencode",
+   "model": "opencode/pro",
+   "entitlement_pool": "x",
+   "cost_class": "api-metered",
+   "launch_class": "opencode-native"
+  },
+  "mode": "interactive",
+  "yolo": false,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": false,
+   "error": "opencode runs only its own free models here; opencode/pro is priced"
+  }
+ },
+ {
+  "name": "opencode-priced-interactive-yolo",
+  "route": {
+   "harness": "opencode",
+   "model": "opencode/pro",
+   "entitlement_pool": "x",
+   "cost_class": "api-metered",
+   "launch_class": "opencode-native"
+  },
+  "mode": "interactive",
+  "yolo": true,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": false,
+   "error": "opencode runs only its own free models here; opencode/pro is priced"
+  }
+ },
+ {
+  "name": "opencode-priced-print-ask",
+  "route": {
+   "harness": "opencode",
+   "model": "opencode/pro",
+   "entitlement_pool": "x",
+   "cost_class": "api-metered",
+   "launch_class": "opencode-native"
+  },
+  "mode": "print",
+  "yolo": false,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": false,
+   "error": "opencode runs only its own free models here; opencode/pro is priced"
+  }
+ },
+ {
+  "name": "opencode-priced-print-yolo",
+  "route": {
+   "harness": "opencode",
+   "model": "opencode/pro",
+   "entitlement_pool": "x",
+   "cost_class": "api-metered",
+   "launch_class": "opencode-native"
+  },
+  "mode": "print",
+  "yolo": true,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": false,
+   "error": "opencode runs only its own free models here; opencode/pro is priced"
+  }
+ },
+ {
+  "name": "grok-interactive-ask",
+  "route": {
+   "harness": "grok",
+   "model": "grok-4.7",
+   "effort": "high",
+   "entitlement_pool": "xai-grok",
+   "cost_class": "subscription",
+   "launch_class": "grok-native"
+  },
+  "mode": "interactive",
+  "yolo": false,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": true,
+   "argv": [
+    "$BIN/grok",
+    "-m",
+    "grok-4.7",
+    "--effort",
+    "high",
+    "--verbose",
+    "--",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": null
+  }
+ },
+ {
+  "name": "grok-interactive-yolo",
+  "route": {
+   "harness": "grok",
+   "model": "grok-4.7",
+   "effort": "high",
+   "entitlement_pool": "xai-grok",
+   "cost_class": "subscription",
+   "launch_class": "grok-native"
+  },
+  "mode": "interactive",
+  "yolo": true,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": true,
+   "argv": [
+    "$BIN/grok",
+    "-m",
+    "grok-4.7",
+    "--effort",
+    "high",
+    "--always-approve",
+    "--verbose",
+    "--",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": null
+  }
+ },
+ {
+  "name": "grok-print-ask",
+  "route": {
+   "harness": "grok",
+   "model": "grok-4.7",
+   "effort": "high",
+   "entitlement_pool": "xai-grok",
+   "cost_class": "subscription",
+   "launch_class": "grok-native"
+  },
+  "mode": "print",
+  "yolo": false,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": true,
+   "argv": [
+    "$BIN/grok",
+    "-m",
+    "grok-4.7",
+    "--effort",
+    "high",
+    "--output-format",
+    "json",
+    "--verbose",
+    "--single= -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": {
+    "format": "json",
+    "file": null
+   }
+  }
+ },
+ {
+  "name": "grok-print-yolo",
+  "route": {
+   "harness": "grok",
+   "model": "grok-4.7",
+   "effort": "high",
+   "entitlement_pool": "xai-grok",
+   "cost_class": "subscription",
+   "launch_class": "grok-native"
+  },
+  "mode": "print",
+  "yolo": true,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": true,
+   "argv": [
+    "$BIN/grok",
+    "-m",
+    "grok-4.7",
+    "--effort",
+    "high",
+    "--always-approve",
+    "--output-format",
+    "json",
+    "--verbose",
+    "--single= -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": {
+    "format": "json",
+    "file": null
+   }
+  }
+ },
+ {
+  "name": "agy-interactive-ask",
+  "route": {
+   "harness": "agy",
+   "model": "gemini-4-carbon-medium",
+   "effort": "high",
+   "entitlement_pool": "antigravity-pool",
+   "cost_class": "subscription",
+   "launch_class": "agy-native"
+  },
+  "mode": "interactive",
+  "yolo": false,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": true,
+   "argv": [
+    "$BIN/agy",
+    "--model",
+    "gemini-4-carbon-high",
+    "--effort",
+    "high",
+    "--verbose",
+    "-i",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": null
+  }
+ },
+ {
+  "name": "agy-interactive-yolo",
+  "route": {
+   "harness": "agy",
+   "model": "gemini-4-carbon-medium",
+   "effort": "high",
+   "entitlement_pool": "antigravity-pool",
+   "cost_class": "subscription",
+   "launch_class": "agy-native"
+  },
+  "mode": "interactive",
+  "yolo": true,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": true,
+   "argv": [
+    "$BIN/agy",
+    "--model",
+    "gemini-4-carbon-high",
+    "--effort",
+    "high",
+    "--dangerously-skip-permissions",
+    "--verbose",
+    "-i",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": null
+  }
+ },
+ {
+  "name": "agy-print-ask",
+  "route": {
+   "harness": "agy",
+   "model": "gemini-4-carbon-medium",
+   "effort": "high",
+   "entitlement_pool": "antigravity-pool",
+   "cost_class": "subscription",
+   "launch_class": "agy-native"
+  },
+  "mode": "print",
+  "yolo": false,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": true,
+   "argv": [
+    "$BIN/agy",
+    "--model",
+    "gemini-4-carbon-high",
+    "--effort",
+    "high",
+    "--output-format",
+    "json",
+    "--verbose",
+    "-p",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": {
+    "format": "json",
+    "file": null
+   }
+  }
+ },
+ {
+  "name": "agy-print-yolo",
+  "route": {
+   "harness": "agy",
+   "model": "gemini-4-carbon-medium",
+   "effort": "high",
+   "entitlement_pool": "antigravity-pool",
+   "cost_class": "subscription",
+   "launch_class": "agy-native"
+  },
+  "mode": "print",
+  "yolo": true,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": true,
+   "argv": [
+    "$BIN/agy",
+    "--model",
+    "gemini-4-carbon-high",
+    "--effort",
+    "high",
+    "--dangerously-skip-permissions",
+    "--output-format",
+    "json",
+    "--verbose",
+    "-p",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": {
+    "format": "json",
+    "file": null
+   }
+  }
+ },
+ {
+  "name": "agy-xhigh-interactive-ask",
+  "route": {
+   "harness": "agy",
+   "model": "gemini-4-carbon",
+   "effort": "xhigh",
+   "entitlement_pool": "antigravity-pool",
+   "cost_class": "subscription",
+   "launch_class": "agy-native"
+  },
+  "mode": "interactive",
+  "yolo": false,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": true,
+   "argv": [
+    "$BIN/agy",
+    "--model",
+    "gemini-4-carbon",
+    "--effort",
+    "xhigh",
+    "--verbose",
+    "-i",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": null
+  }
+ },
+ {
+  "name": "agy-xhigh-interactive-yolo",
+  "route": {
+   "harness": "agy",
+   "model": "gemini-4-carbon",
+   "effort": "xhigh",
+   "entitlement_pool": "antigravity-pool",
+   "cost_class": "subscription",
+   "launch_class": "agy-native"
+  },
+  "mode": "interactive",
+  "yolo": true,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": true,
+   "argv": [
+    "$BIN/agy",
+    "--model",
+    "gemini-4-carbon",
+    "--effort",
+    "xhigh",
+    "--dangerously-skip-permissions",
+    "--verbose",
+    "-i",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": null
+  }
+ },
+ {
+  "name": "agy-xhigh-print-ask",
+  "route": {
+   "harness": "agy",
+   "model": "gemini-4-carbon",
+   "effort": "xhigh",
+   "entitlement_pool": "antigravity-pool",
+   "cost_class": "subscription",
+   "launch_class": "agy-native"
+  },
+  "mode": "print",
+  "yolo": false,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": true,
+   "argv": [
+    "$BIN/agy",
+    "--model",
+    "gemini-4-carbon",
+    "--effort",
+    "xhigh",
+    "--output-format",
+    "json",
+    "--verbose",
+    "-p",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": {
+    "format": "json",
+    "file": null
+   }
+  }
+ },
+ {
+  "name": "agy-xhigh-print-yolo",
+  "route": {
+   "harness": "agy",
+   "model": "gemini-4-carbon",
+   "effort": "xhigh",
+   "entitlement_pool": "antigravity-pool",
+   "cost_class": "subscription",
+   "launch_class": "agy-native"
+  },
+  "mode": "print",
+  "yolo": true,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": true,
+   "argv": [
+    "$BIN/agy",
+    "--model",
+    "gemini-4-carbon",
+    "--effort",
+    "xhigh",
+    "--dangerously-skip-permissions",
+    "--output-format",
+    "json",
+    "--verbose",
+    "-p",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": {
+    "format": "json",
+    "file": null
+   }
+  }
+ },
+ {
+  "name": "pi-interactive-ask",
+  "route": {
+   "harness": "pi",
+   "model": "x",
+   "entitlement_pool": "openai-plus",
+   "cost_class": "subscription"
+  },
+  "mode": "interactive",
+  "yolo": false,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": false,
+   "error": "pi is not launched: it would use another vendor plan login"
+  }
+ },
+ {
+  "name": "pi-interactive-yolo",
+  "route": {
+   "harness": "pi",
+   "model": "x",
+   "entitlement_pool": "openai-plus",
+   "cost_class": "subscription"
+  },
+  "mode": "interactive",
+  "yolo": true,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": false,
+   "error": "pi is not launched: it would use another vendor plan login"
+  }
+ },
+ {
+  "name": "pi-print-ask",
+  "route": {
+   "harness": "pi",
+   "model": "x",
+   "entitlement_pool": "openai-plus",
+   "cost_class": "subscription"
+  },
+  "mode": "print",
+  "yolo": false,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": false,
+   "error": "pi is not launched: it would use another vendor plan login"
+  }
+ },
+ {
+  "name": "pi-print-yolo",
+  "route": {
+   "harness": "pi",
+   "model": "x",
+   "entitlement_pool": "openai-plus",
+   "cost_class": "subscription"
+  },
+  "mode": "print",
+  "yolo": true,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": false,
+   "error": "pi is not launched: it would use another vendor plan login"
+  }
+ },
+ {
+  "name": "codex-on-claude-pool-interactive-ask",
+  "route": {
+   "harness": "codex",
+   "model": "x",
+   "entitlement_pool": "anthropic-max",
+   "cost_class": "subscription",
+   "launch_class": "codex-native"
+  },
+  "mode": "interactive",
+  "yolo": false,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": false,
+   "error": "the anthropic-max plan login is not used by codex"
+  }
+ },
+ {
+  "name": "codex-on-claude-pool-interactive-yolo",
+  "route": {
+   "harness": "codex",
+   "model": "x",
+   "entitlement_pool": "anthropic-max",
+   "cost_class": "subscription",
+   "launch_class": "codex-native"
+  },
+  "mode": "interactive",
+  "yolo": true,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": false,
+   "error": "the anthropic-max plan login is not used by codex"
+  }
+ },
+ {
+  "name": "codex-on-claude-pool-print-ask",
+  "route": {
+   "harness": "codex",
+   "model": "x",
+   "entitlement_pool": "anthropic-max",
+   "cost_class": "subscription",
+   "launch_class": "codex-native"
+  },
+  "mode": "print",
+  "yolo": false,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": false,
+   "error": "the anthropic-max plan login is not used by codex"
+  }
+ },
+ {
+  "name": "codex-on-claude-pool-print-yolo",
+  "route": {
+   "harness": "codex",
+   "model": "x",
+   "entitlement_pool": "anthropic-max",
+   "cost_class": "subscription",
+   "launch_class": "codex-native"
+  },
+  "mode": "print",
+  "yolo": true,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": false,
+   "error": "the anthropic-max plan login is not used by codex"
+  }
+ },
+ {
+  "name": "claude-other-sub-interactive-ask",
+  "route": {
+   "harness": "claude",
+   "model": "x",
+   "entitlement_pool": "weird",
+   "cost_class": "subscription",
+   "launch_class": "claude-native"
+  },
+  "mode": "interactive",
+  "yolo": false,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": false,
+   "error": "no plan login of claude covers pool weird"
+  }
+ },
+ {
+  "name": "claude-other-sub-interactive-yolo",
+  "route": {
+   "harness": "claude",
+   "model": "x",
+   "entitlement_pool": "weird",
+   "cost_class": "subscription",
+   "launch_class": "claude-native"
+  },
+  "mode": "interactive",
+  "yolo": true,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": false,
+   "error": "no plan login of claude covers pool weird"
+  }
+ },
+ {
+  "name": "claude-other-sub-print-ask",
+  "route": {
+   "harness": "claude",
+   "model": "x",
+   "entitlement_pool": "weird",
+   "cost_class": "subscription",
+   "launch_class": "claude-native"
+  },
+  "mode": "print",
+  "yolo": false,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": false,
+   "error": "no plan login of claude covers pool weird"
+  }
+ },
+ {
+  "name": "claude-other-sub-print-yolo",
+  "route": {
+   "harness": "claude",
+   "model": "x",
+   "entitlement_pool": "weird",
+   "cost_class": "subscription",
+   "launch_class": "claude-native"
+  },
+  "mode": "print",
+  "yolo": true,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": false,
+   "error": "no plan login of claude covers pool weird"
+  }
+ },
+ {
+  "name": "gateway-interactive-ask",
+  "route": {
+   "harness": "claude",
+   "model": "qwen36-27b",
+   "entitlement_pool": "litellm-local",
+   "cost_class": "free",
+   "launch_class": "claude-gateway",
+   "litellm_base_url": "http://gw:4000"
+  },
+  "mode": "interactive",
+  "yolo": false,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": true,
+   "argv": [
+    "$BIN/claude",
+    "--model",
+    "qwen36-27b",
+    "--verbose",
+    "--",
+    " -fix the bug"
+   ],
+   "env_set": {
+    "ANTHROPIC_BASE_URL": "http://gw:4000",
+    "CLAUDE_CONFIG_DIR": "$HOME/.local/state/agent-flow-kit/gateway-claude"
+   },
+   "env_from": {
+    "ANTHROPIC_AUTH_TOKEN": "AFK_GATEWAY_KEY"
+   },
+   "env_unset": [
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_CUSTOM_HEADERS",
+    "ANTHROPIC_IDENTITY_TOKEN",
+    "ANTHROPIC_IDENTITY_TOKEN_FILE",
+    "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR",
+    "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
+    "CLAUDE_CODE_SESSIONS_OAUTH_TOKEN",
+    "CLAUDE_CODE_SESSION_ACCESS_TOKEN",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "CLAUDE_CODE_USE_VERTEX"
+   ],
+   "answer": null
+  }
+ },
+ {
+  "name": "gateway-interactive-yolo",
+  "route": {
+   "harness": "claude",
+   "model": "qwen36-27b",
+   "entitlement_pool": "litellm-local",
+   "cost_class": "free",
+   "launch_class": "claude-gateway",
+   "litellm_base_url": "http://gw:4000"
+  },
+  "mode": "interactive",
+  "yolo": true,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": true,
+   "argv": [
+    "$BIN/claude",
+    "--model",
+    "qwen36-27b",
+    "--dangerously-skip-permissions",
+    "--verbose",
+    "--",
+    " -fix the bug"
+   ],
+   "env_set": {
+    "ANTHROPIC_BASE_URL": "http://gw:4000",
+    "CLAUDE_CONFIG_DIR": "$HOME/.local/state/agent-flow-kit/gateway-claude"
+   },
+   "env_from": {
+    "ANTHROPIC_AUTH_TOKEN": "AFK_GATEWAY_KEY"
+   },
+   "env_unset": [
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_CUSTOM_HEADERS",
+    "ANTHROPIC_IDENTITY_TOKEN",
+    "ANTHROPIC_IDENTITY_TOKEN_FILE",
+    "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR",
+    "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
+    "CLAUDE_CODE_SESSIONS_OAUTH_TOKEN",
+    "CLAUDE_CODE_SESSION_ACCESS_TOKEN",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "CLAUDE_CODE_USE_VERTEX"
+   ],
+   "answer": null
+  }
+ },
+ {
+  "name": "gateway-print-ask",
+  "route": {
+   "harness": "claude",
+   "model": "qwen36-27b",
+   "entitlement_pool": "litellm-local",
+   "cost_class": "free",
+   "launch_class": "claude-gateway",
+   "litellm_base_url": "http://gw:4000"
+  },
+  "mode": "print",
+  "yolo": false,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": true,
+   "argv": [
+    "$BIN/claude",
+    "--model",
+    "qwen36-27b",
+    "-p",
+    "--output-format",
+    "json",
+    "--verbose",
+    "--",
+    " -fix the bug"
+   ],
+   "env_set": {
+    "ANTHROPIC_BASE_URL": "http://gw:4000",
+    "CLAUDE_CONFIG_DIR": "$HOME/.local/state/agent-flow-kit/gateway-claude"
+   },
+   "env_from": {
+    "ANTHROPIC_AUTH_TOKEN": "AFK_GATEWAY_KEY"
+   },
+   "env_unset": [
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_CUSTOM_HEADERS",
+    "ANTHROPIC_IDENTITY_TOKEN",
+    "ANTHROPIC_IDENTITY_TOKEN_FILE",
+    "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR",
+    "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
+    "CLAUDE_CODE_SESSIONS_OAUTH_TOKEN",
+    "CLAUDE_CODE_SESSION_ACCESS_TOKEN",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "CLAUDE_CODE_USE_VERTEX"
+   ],
+   "answer": {
+    "format": "json",
+    "file": null
+   }
+  }
+ },
+ {
+  "name": "gateway-print-yolo",
+  "route": {
+   "harness": "claude",
+   "model": "qwen36-27b",
+   "entitlement_pool": "litellm-local",
+   "cost_class": "free",
+   "launch_class": "claude-gateway",
+   "litellm_base_url": "http://gw:4000"
+  },
+  "mode": "print",
+  "yolo": true,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": true,
+   "argv": [
+    "$BIN/claude",
+    "--model",
+    "qwen36-27b",
+    "--dangerously-skip-permissions",
+    "-p",
+    "--output-format",
+    "json",
+    "--verbose",
+    "--",
+    " -fix the bug"
+   ],
+   "env_set": {
+    "ANTHROPIC_BASE_URL": "http://gw:4000",
+    "CLAUDE_CONFIG_DIR": "$HOME/.local/state/agent-flow-kit/gateway-claude"
+   },
+   "env_from": {
+    "ANTHROPIC_AUTH_TOKEN": "AFK_GATEWAY_KEY"
+   },
+   "env_unset": [
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_CUSTOM_HEADERS",
+    "ANTHROPIC_IDENTITY_TOKEN",
+    "ANTHROPIC_IDENTITY_TOKEN_FILE",
+    "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR",
+    "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
+    "CLAUDE_CODE_SESSIONS_OAUTH_TOKEN",
+    "CLAUDE_CODE_SESSION_ACCESS_TOKEN",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "CLAUDE_CODE_USE_VERTEX"
+   ],
+   "answer": {
+    "format": "json",
+    "file": null
+   }
+  }
+ },
+ {
+  "name": "gateway-no-url-interactive-ask",
+  "route": {
+   "harness": "claude",
+   "model": "qwen36-27b",
+   "entitlement_pool": "litellm-local",
+   "cost_class": "free",
+   "launch_class": "claude-gateway"
+  },
+  "mode": "interactive",
+  "yolo": false,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": false,
+   "error": "this route goes through the model gateway and none is configured (set AFK_LITELLM_BASE_URL)"
+  }
+ },
+ {
+  "name": "gateway-no-url-interactive-yolo",
+  "route": {
+   "harness": "claude",
+   "model": "qwen36-27b",
+   "entitlement_pool": "litellm-local",
+   "cost_class": "free",
+   "launch_class": "claude-gateway"
+  },
+  "mode": "interactive",
+  "yolo": true,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": false,
+   "error": "this route goes through the model gateway and none is configured (set AFK_LITELLM_BASE_URL)"
+  }
+ },
+ {
+  "name": "gateway-no-url-print-ask",
+  "route": {
+   "harness": "claude",
+   "model": "qwen36-27b",
+   "entitlement_pool": "litellm-local",
+   "cost_class": "free",
+   "launch_class": "claude-gateway"
+  },
+  "mode": "print",
+  "yolo": false,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": false,
+   "error": "this route goes through the model gateway and none is configured (set AFK_LITELLM_BASE_URL)"
+  }
+ },
+ {
+  "name": "gateway-no-url-print-yolo",
+  "route": {
+   "harness": "claude",
+   "model": "qwen36-27b",
+   "entitlement_pool": "litellm-local",
+   "cost_class": "free",
+   "launch_class": "claude-gateway"
+  },
+  "mode": "print",
+  "yolo": true,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": false,
+   "error": "this route goes through the model gateway and none is configured (set AFK_LITELLM_BASE_URL)"
+  }
+ },
+ {
+  "name": "gateway-plan-interactive-ask",
+  "route": {
+   "harness": "claude",
+   "model": "opus",
+   "entitlement_pool": "anthropic-max",
+   "cost_class": "subscription",
+   "launch_class": "claude-gateway",
+   "litellm_base_url": "http://gw"
+  },
+  "mode": "interactive",
+  "yolo": false,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": false,
+   "error": "the anthropic-max plan login is never sent through a gateway"
+  }
+ },
+ {
+  "name": "gateway-plan-interactive-yolo",
+  "route": {
+   "harness": "claude",
+   "model": "opus",
+   "entitlement_pool": "anthropic-max",
+   "cost_class": "subscription",
+   "launch_class": "claude-gateway",
+   "litellm_base_url": "http://gw"
+  },
+  "mode": "interactive",
+  "yolo": true,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": false,
+   "error": "the anthropic-max plan login is never sent through a gateway"
+  }
+ },
+ {
+  "name": "gateway-plan-print-ask",
+  "route": {
+   "harness": "claude",
+   "model": "opus",
+   "entitlement_pool": "anthropic-max",
+   "cost_class": "subscription",
+   "launch_class": "claude-gateway",
+   "litellm_base_url": "http://gw"
+  },
+  "mode": "print",
+  "yolo": false,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": false,
+   "error": "the anthropic-max plan login is never sent through a gateway"
+  }
+ },
+ {
+  "name": "gateway-plan-print-yolo",
+  "route": {
+   "harness": "claude",
+   "model": "opus",
+   "entitlement_pool": "anthropic-max",
+   "cost_class": "subscription",
+   "launch_class": "claude-gateway",
+   "litellm_base_url": "http://gw"
+  },
+  "mode": "print",
+  "yolo": true,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": false,
+   "error": "the anthropic-max plan login is never sent through a gateway"
+  }
+ },
+ {
+  "name": "pinned-interactive-ask",
+  "route": {
+   "harness": "claude",
+   "model": "sonnet",
+   "effort": null,
+   "entitlement_pool": null,
+   "pinned": true
+  },
+  "mode": "interactive",
+  "yolo": false,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": true,
+   "argv": [
+    "$BIN/claude",
+    "--model",
+    "sonnet",
+    "--verbose",
+    "--",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": null
+  }
+ },
+ {
+  "name": "pinned-interactive-yolo",
+  "route": {
+   "harness": "claude",
+   "model": "sonnet",
+   "effort": null,
+   "entitlement_pool": null,
+   "pinned": true
+  },
+  "mode": "interactive",
+  "yolo": true,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": true,
+   "argv": [
+    "$BIN/claude",
+    "--model",
+    "sonnet",
+    "--dangerously-skip-permissions",
+    "--verbose",
+    "--",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": null
+  }
+ },
+ {
+  "name": "pinned-print-ask",
+  "route": {
+   "harness": "claude",
+   "model": "sonnet",
+   "effort": null,
+   "entitlement_pool": null,
+   "pinned": true
+  },
+  "mode": "print",
+  "yolo": false,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": true,
+   "argv": [
+    "$BIN/claude",
+    "--model",
+    "sonnet",
+    "-p",
+    "--output-format",
+    "json",
+    "--verbose",
+    "--",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": {
+    "format": "json",
+    "file": null
+   }
+  }
+ },
+ {
+  "name": "pinned-print-yolo",
+  "route": {
+   "harness": "claude",
+   "model": "sonnet",
+   "effort": null,
+   "entitlement_pool": null,
+   "pinned": true
+  },
+  "mode": "print",
+  "yolo": true,
+  "pass": [
+   "--verbose"
+  ],
+  "prompt": "-fix the bug",
+  "want": {
+   "ok": true,
+   "argv": [
+    "$BIN/claude",
+    "--model",
+    "sonnet",
+    "--dangerously-skip-permissions",
+    "-p",
+    "--output-format",
+    "json",
+    "--verbose",
+    "--",
+    " -fix the bug"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": {
+    "format": "json",
+    "file": null
+   }
+  }
+ },
+ {
+  "name": "opencode-pass-model",
+  "route": {
+   "harness": "opencode",
+   "model": "opencode/big-pickle",
+   "entitlement_pool": "opencode-free",
+   "cost_class": "free",
+   "launch_class": "opencode-native"
+  },
+  "mode": "interactive",
+  "yolo": false,
+  "pass": [
+   "-m",
+   "x"
+  ],
+  "prompt": "hi",
+  "want": {
+   "ok": false,
+   "error": "opencode: choose the model with --model, not through --pass"
+  }
+ },
+ {
+  "name": "no-prompt",
+  "route": {
+   "harness": "claude",
+   "model": "opus",
+   "effort": "high",
+   "entitlement_pool": "anthropic-max",
+   "cost_class": "subscription",
+   "launch_class": "claude-native"
+  },
+  "mode": "interactive",
+  "yolo": false,
+  "pass": [],
+  "prompt": "",
+  "want": {
+   "ok": true,
+   "argv": [
+    "$BIN/claude",
+    "--model",
+    "opus",
+    "--effort",
+    "high"
+   ],
+   "env_set": {},
+   "env_from": {},
+   "env_unset": [],
+   "answer": null
+  }
+ }
+]

@@ -5,7 +5,6 @@ import (
 	"math"
 	"os"
 	"reflect"
-	"regexp"
 	"sort"
 	"testing"
 	"time"
@@ -40,10 +39,6 @@ func readJSON(t *testing.T, path string, v any) {
 		t.Fatalf("%s: %v", path, err)
 	}
 }
-
-// A JSON number literal like 95.0 reads back as 95 in Go; the scores are
-// the same, so the reason text is compared with ".0" dropped.
-var trailingZero = regexp.MustCompile(`\b(\d+)\.0\b`)
 
 // TestGoldenMatchesBashRouter runs every scenario through the Go router
 // and compares the decision, field by field, with what the bash router
@@ -102,7 +97,7 @@ func TestGoldenMatchesBashRouter(t *testing.T) {
 				if k == "reason" {
 					ws, _ := w.(string)
 					gs, _ := g.(string)
-					if trailingZero.ReplaceAllString(ws, "$1") != trailingZero.ReplaceAllString(gs, "$1") {
+					if ws != gs {
 						t.Errorf("reason:\n bash %s\n   go %s", ws, gs)
 					}
 					continue

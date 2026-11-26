@@ -41,10 +41,9 @@ Requires Go 1.26 or newer.
 git clone https://github.com/jlengelbrecht/agent-flow-kit.git
 cd agent-flow-kit
 CGO_ENABLED=0 go build -o ~/.local/bin/afk ./cmd/afk
-export AFK_ENGINE="$PWD/bin/agent-flow-kit"   # add this to your shell profile
 ```
 
-While the routing engine is being ported to Go, the route card still calls the bash engine in this repository (`bin/agent-flow-kit`), which needs `bash` 4+, `jq` and `curl`. AFK looks for it in `$AFK_ENGINE`, then next to the `afk` binary, then on `PATH`. `afk harness` already runs without it.
+That's all the route card, `--explain` and `afk harness` need: routing, pool usage and launch plans run in the Go binary. Only `-p` (one-shot answers with failover) still calls the bash engine in this repository while it is being ported; for it, set `AFK_ENGINE="$PWD/bin/agent-flow-kit"` (it needs `bash` 4+, `jq` and `curl`).
 
 ### Packaged (planned)
 
@@ -203,7 +202,8 @@ Configuration is moving into AFK itself (`afk config`, `afk gateway`, `afk mcp`,
 | `AFK_LITELLM_BASE_URL` | address of a LiteLLM (or other Anthropic-compatible) gateway |
 | `AFK_GATEWAY_KEY` / `AFK_GATEWAY_KEY_ENV` | the gateway key, or the name of the variable that holds it |
 | `AFK_HARNESS_BIN_DIR` | look for CLIs only in this directory |
-| `AFK_ENGINE` | path to the bash engine, while it is still needed |
+| `AFK_ENGINE` | path to the bash engine, for `-p` until it is ported |
+| `AFK_BACKEND=bash` | run everything on the bash engine, as before the Go engine |
 | `NO_COLOR`, `AFK_MOTION=off` | no colour; no animation |
 
 A gateway route launches `claude` with `ANTHROPIC_BASE_URL` pointed at the gateway and a separate config directory, so your Claude plan login is never loaded. AFK never prints the gateway key.
@@ -214,7 +214,8 @@ AFK is becoming a standalone tool. Work is tracked in pull requests against `mas
 
 - [x] Route card, launch and receipts in Go
 - [x] Harness discovery in Go (`afk harness`)
-- [ ] Routing engine in Go: one binary, no bash, `jq` or `yq`
+- [x] Routing engine in Go: route selection, pool usage and launch plans
+- [ ] `-p` one-shot answers with failover, and the benchmark sync, in Go (then no bash, `jq` or `yq` at all)
 - [ ] `afk config`: one config file, managed from the CLI
 - [ ] AI gateways: LiteLLM, OpenRouter and any OpenAI- or Anthropic-compatible endpoint, with keys held as references (env var, OS keychain, 1Password)
 - [ ] MCP servers and skills: define them once in AFK and sync them into every installed CLI's own config
@@ -229,7 +230,9 @@ AFK is becoming a standalone tool. Work is tracked in pull requests against `mas
 cmd/afk/            the afk binary
 internal/harness/   agent CLI registry and discovery
 internal/tui/       route card, why panel, receipts (Bubble Tea)
-internal/engine/    client for the bash engine (going away)
+internal/router/    route selection, benchmark catalog, pool probes
+internal/core/      the Go engine: explain, launch plans, pools
+internal/engine/    route and plan types; client for the bash engine (going away)
 internal/launch/    foreground launch of the chosen CLI
 internal/runrec/    run records
 internal/gitstat/   files changed and commits for receipts
