@@ -61,6 +61,10 @@ type Skills struct {
 	// "$NAME/..." uses that variable when it is set (else the rest
 	// after the first "|": "$CODEX_HOME/skills|~/.codex/skills").
 	Dir string `toml:"dir"`
+	// ProjectDir is where it reads a repository's own skills, relative
+	// to the repository root. ".agents/skills" means it reads AFK's
+	// project source itself, so nothing is copied.
+	ProjectDir string `toml:"project_dir"`
 	// Format is how a skill is laid out: "skill-md" (a folder with a
 	// SKILL.md), the only one so far.
 	Format string `toml:"format"`
@@ -385,6 +389,12 @@ func (m Manifest) validate(path string) error {
 	default:
 		return fmt.Errorf("%s: skills.format must be skill-md", path)
 	}
+	if d := m.Skills.ProjectDir; d != "" {
+		c := filepath.ToSlash(filepath.Clean(d))
+		if filepath.IsAbs(d) || strings.HasPrefix(d, "~") || c == "." || c == ".." || strings.HasPrefix(c, "../") {
+			return fmt.Errorf("%s: skills.project_dir must be a folder inside the repository", path)
+		}
+	}
 	if f := m.MCP.Format; f != "" {
 		ok := false
 		for _, x := range MCPFormats {
@@ -444,6 +454,7 @@ func merge(base, over Manifest) Manifest {
 	list(&base.Auth.Expiry, over.Auth.Expiry)
 	list(&base.Auth.Errors, over.Auth.Errors)
 	set(&base.Skills.Dir, over.Skills.Dir)
+	set(&base.Skills.ProjectDir, over.Skills.ProjectDir)
 	set(&base.Skills.Format, over.Skills.Format)
 	set(&base.Skills.Verified, over.Skills.Verified)
 	set(&base.MCP.File, over.MCP.File)

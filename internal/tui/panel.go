@@ -201,6 +201,7 @@ type Panel struct {
 	// skillCol is the selected CLI column on the Skills tab.
 	skillCol int
 	mcpCol   int
+	askScope string    // the project skill whose scope is being asked
 	data     panelData // what the tabs show: raw, narrowed by the filter
 	raw      panelData // what was loaded
 	filter   map[Tab]string
@@ -358,6 +359,9 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 
 func (p *Panel) key(k string) tea.Cmd {
 	p.notice = ""
+	if p.askScope != "" && p.tab == TabSkills {
+		return p.skillsKey(k) // the scope question takes the next key
+	}
 	if p.filterKey(k) {
 		return nil
 	}

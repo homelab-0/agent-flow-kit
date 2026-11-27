@@ -21,4 +21,6 @@ mode_flags = ["--tools"]
 [skills]
 # From Pi's documentation, not checked against an install.
 dir = "~/.pi/agent/skills"
+# Pi reads .agents/skills from the working directory up to the repository root (its documentation).
+project_dir = ".agents/skills"
 format = "skill-md"

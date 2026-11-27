@@ -70,7 +70,9 @@ func (fakePanel) Skills(context.Context) (*SkillsView, error) {
 			{Name: "humanizer", Central: true, Cells: map[string]string{"claude": "synced", "codex": "synced", "grok": "synced"}},
 			{Name: "gh-pr-triage", Central: true, Cells: map[string]string{"claude": "synced", "codex": "synced", "grok": "drifted"}},
 			{Name: "outline-notes", Central: true, Cells: map[string]string{"claude": "synced", "codex": "off", "grok": "pending"}},
+			{Name: "prox-ops-deploy", Central: true, Project: true, Cells: map[string]string{"claude": "ask", "codex": "native", "grok": "unsupported"}},
 		},
+		Project: "~/repos/prox-ops/.agents/skills", Undecided: 1,
 		Drift: []SkillDrift{{Skill: "gh-pr-triage", Harness: "grok", Dir: "~/.grok/skills", Modified: now.Add(-2 * time.Hour), Lines: 4}}}, nil
 }
 
@@ -131,7 +133,7 @@ func TestPanelTabs(t *testing.T) {
 		TabBench:  {"task   coding  quick", "source SWE-bench Verified", "claude-fable-5-2   CL", "78.1  measured  14✓ 2~", "CX OC", "qwen36-14b         OL", "Effective today", "CX 71.8 (52%)", "OL 51.0", "←→ task"},
 		TabRuns:   {"updated 03:31", "CL Claude plan", "71%", "GK SuperGrok", "[??????????] n/e", "agentgateway      up", "└ VL vLLM", "OL ollama", "this PC · RTX 5090 · 1 model", "r-7f3c", "✓ solved", "! exit 1", "23m · 30m ago"},
 		TabConfig: {"file ~/.config/afk/config.toml", "route.prefer                balanced", "e edit config.toml"},
-		TabSkills: {"3 skills · source ~/.config/afk/skills · 1 drifted · 1 to sync", "skill", "CL  CX  GK  AG", "gh-pr-triage", "↻", "╭─ gh-pr-triage changed in grok",
+		TabSkills: {"4 skills · source ~/.config/afk/skills · 1 drifted · 1 to sync · 1 to choose", "skill", "CL  CX  GK  AG", "gh-pr-triage", "↻", "╭─ gh-pr-triage changed in grok",
 			"Edited in ~/.grok/skills 2 hours ago. 4 lines differ from central.", "k keep grok's and update central", "space enable"},
 		TabMCP: {"3 servers · ~/.config/afk/mcp.toml · 360 tools · 1 drifted · 1 to sync", "server", "CL  CX  GK  PI  status", "openconnector",
 			"312", "up · 2h ago", "untested", "╭─ github changed in codex", "k keep codex's as its own", "t test"},
@@ -353,6 +355,43 @@ func TestMCPTabKeys(t *testing.T) {
 	}
 	if strings.Join(got, "|") != want {
 		t.Errorf("actions\n got %s\nwant %s", strings.Join(got, "|"), want)
+	}
+}
+
+func TestSkillsProjectScope(t *testing.T) {
+	src := &fakePanel{}
+	p := NewPanel(context.Background(), src, NewTheme(true), TabSkills, "", nil)
+	p.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	p.Update(p.Init()())
+	s := panelText(p)
+	for _, w := range []string{"1 to choose", "prox-ops-deploy", "project", "project: ~/repos/prox-ops/.agents/skills"} {
+		if !strings.Contains(s, w) {
+			t.Errorf("missing %q in\n%s", w, s)
+		}
+	}
+	for range 3 {
+		p.Update(key("down"))
+	}
+	// space on an undecided project skill asks where it goes; esc
+	// leaves the question for later without leaving the panel.
+	p.Update(key(" "))
+	if p.askScope != "prox-ops-deploy" {
+		t.Fatalf("space didn't ask: %q", p.askScope)
+	}
+	p.Update(key("esc"))
+	if p.askScope != "" || p.back {
+		t.Fatalf("esc: ask=%q back=%v", p.askScope, p.back)
+	}
+	p.Update(key(" "))
+	if !strings.Contains(panelText(p), "Install prox-ops-deploy") || !strings.Contains(panelText(p), "g every project") {
+		t.Fatalf("no scope question:\n%s", panelText(p))
+	}
+	if cmd := p.Update(key("g")); cmd != nil {
+		p.Update(cmd())
+	}
+	want := []string{"do", "project:scope", "prox-ops-deploy", "global"}
+	if len(src.ran) == 0 || strings.Join(src.ran[len(src.ran)-1], " ") != strings.Join(want, " ") {
+		t.Errorf("ran %v, want %v", src.ran, want)
 	}
 }
 

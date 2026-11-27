@@ -32,6 +32,8 @@ mode_flags = ["--permission-mode", "--allow-dangerously-skip-permissions", "--al
 # Claude Code reads ~/.claude/skills/<name>/SKILL.md (or under
 # CLAUDE_CONFIG_DIR).
 dir = "$CLAUDE_CONFIG_DIR/skills|~/.claude/skills"
+# A repository's skills go in .claude/skills (AFK copies them there).
+project_dir = ".claude/skills"
 format = "skill-md"
 
 [mcp]

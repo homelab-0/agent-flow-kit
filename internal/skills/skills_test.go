@@ -262,3 +262,58 @@ func TestDiff(t *testing.T) {
 		t.Errorf("changed %d", n)
 	}
 }
+
+func TestProjectScopes(t *testing.T) {
+	f := setup(t)
+	f.e.Ask = true
+	write(t, filepath.Join(f.e.Central, "deploy", "SKILL.md"), "---\nname: deploy\n---\nship it\n")
+	// Undecided: nothing is copied, every CLI asks.
+	if c := f.cells(t); c["claude/deploy"] != Ask || c["codex/deploy"] != Ask {
+		t.Fatalf("undecided cells %v", c)
+	}
+	if res, err := f.e.Sync(f.targets); err != nil || len(res.Done) != 0 {
+		t.Fatalf("an undecided skill was synced: %v %v", res, err)
+	}
+	// Project: copied into each CLI's folder.
+	if err := f.e.SetScope("deploy", ScopeProject); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.e.Sync(f.targets); err != nil {
+		t.Fatal(err)
+	}
+	if c := f.cells(t); c["claude/deploy"] != Synced {
+		t.Fatalf("project cells %v", c)
+	}
+	// Global: copied into the central folder; AFK's project copies go.
+	global := filepath.Join(f.root, "central")
+	if err := f.e.CopyInto("deploy", global); err != nil {
+		t.Fatal(err)
+	}
+	if read(t, filepath.Join(global, "deploy", "SKILL.md")) != "---\nname: deploy\n---\nship it\n" {
+		t.Error("global copy differs")
+	}
+	if err := f.e.SetScope("deploy", ScopeGlobal); err != nil {
+		t.Fatal(err)
+	}
+	if c := f.cells(t); c["claude/deploy"] != Orphan {
+		t.Fatalf("project copies of a global skill should be removed: %v", c)
+	}
+	if _, err := f.e.Sync(f.targets); err != nil {
+		t.Fatal(err)
+	}
+	if exists(filepath.Join(f.targets[0].Dir, "deploy")) {
+		t.Error("the project copy is still there")
+	}
+	if c := f.cells(t); c["claude/deploy"] != Global {
+		t.Fatalf("global cells %v", c)
+	}
+	// CopyInto never overwrites a different skill.
+	write(t, filepath.Join(global, "other", "SKILL.md"), "mine\n")
+	write(t, filepath.Join(f.e.Central, "other", "SKILL.md"), "theirs\n")
+	if err := f.e.CopyInto("other", global); err == nil || !strings.Contains(err.Error(), "different skill") {
+		t.Errorf("CopyInto over a different skill: %v", err)
+	}
+	if err := f.e.SetScope("deploy", "everywhere"); err == nil {
+		t.Error("a bad scope was accepted")
+	}
+}

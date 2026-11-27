@@ -44,6 +44,19 @@ afk skills new <name> [description] [--edit]   start a central skill
 
 AFK knows which copies it wrote from `~/.config/afk/state/skills.json`, which records each copy's content hash. Every change is made under a lock. A file or folder is first backed up under `~/.config/afk/state/backups/skills/<time>/`, the new copy is written beside the old one and moved into place, and its hash is checked. If any step fails, every change made so far is put back. The last 20 backups are kept.
 
+## A project's own skills
+
+A repository can keep its own skills in `.agents/skills/<name>/SKILL.md`. Most CLIs read that folder themselves: Codex, OpenCode, Pi, Copilot CLI and Gemini CLI, per their documentation. Claude Code reads `.claude/skills` instead, so AFK copies a project skill there. It lists each copy in the repository's `.git/info/exclude`, so git never sees it.
+
+AFK asks before it installs a project skill anywhere. You have two choices:
+
+- **This project only** (`p`): AFK copies the skill into the project folder of each CLI that needs one, for this repository only.
+- **Every project** (`g`): AFK copies the skill into `~/.config/afk/skills`. From then on it is a central skill, synced into every CLI's own folder. AFK removes its project copies.
+
+`afk skills sync` asks in a terminal, and Enter leaves a skill for later. `afk skills scope <skill> project|global` answers without a prompt. Add `--project` to `status`, `sync`, `diff`, `keep`, `restore`, `enable` or `disable` to work on the repository's skills only. In the Skills tab, a project skill waiting for an answer shows `?`, and `space` asks.
+
+Copying into central never overwrites a different skill with the same name; AFK tells you to rename one.
+
 ## The Skills tab
 
 Press `4` in the [control panel](control-panel.md) (or `/skills` in the composer) for the grid: one row per skill, one column per CLI.
@@ -60,4 +73,3 @@ Press `4` in the [control panel](control-panel.md) (or `/skills` in the composer
 
 `↑` `↓` pick a skill and `←` `→` pick a CLI. `space` turns the skill on or off for that CLI, `s` syncs everything, and `n` asks for a name, makes the skill and opens its `SKILL.md` in your editor. When a copy has drifted, a box says where and how many lines differ: `d` shows the diff, `k` keeps that CLI's copy and `c` restores central.
 
-**Not yet:** a project's own `.agents/skills` folder as a second source, and the `/` filter.

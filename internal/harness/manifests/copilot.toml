@@ -9,6 +9,8 @@ login_note = "copilot (then /login)"
 [skills]
 # From Copilot CLI's documentation, not checked against an install.
 dir = "~/.copilot/skills"
+# Copilot CLI reads .github/skills, .claude/skills and .agents/skills in a repository (its documentation).
+project_dir = ".agents/skills"
 format = "skill-md"
 
 [mcp]
