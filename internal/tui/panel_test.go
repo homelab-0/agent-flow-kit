@@ -81,6 +81,11 @@ func (p *fakePanel) ConfigSet(_ context.Context, key, value string) (string, err
 	return key + " = " + value + " saved", nil
 }
 
+func (p *fakePanel) ConfigRemove(_ context.Context, section string) (string, error) {
+	p.ran = append(p.ran, []string{"config-remove", section})
+	return section + " removed", nil
+}
+
 func (p *fakePanel) ClearMarks(context.Context) (string, error) {
 	p.ran = append(p.ran, []string{"clear-marks"})
 	return "Cleared xai-grok.", nil
@@ -697,6 +702,9 @@ func TestConfigTabEdits(t *testing.T) {
 
 	// A row with no form yet.
 	press(down)
+	if cmd := press(tea.KeyPressMsg{Code: 'x', Text: "x"}); cmd != nil || p.notice != "" {
+		t.Fatal("x on a row with nothing to remove did something")
+	}
 	if cmd := press(enter); cmd != nil || !strings.Contains(p.notice, "can't be changed here yet") {
 		t.Fatalf("notice %q", p.notice)
 	}
@@ -729,5 +737,36 @@ func TestComposerPanelGetsActionResults(t *testing.T) {
 		if !want[m.panel.notice] {
 			t.Fatalf("%T didn't reach the tab: notice %q", msg, m.panel.notice)
 		}
+	}
+}
+
+// x removes the gateway a row belongs to, only when pressed twice in a row.
+func TestConfigTabRemovesAGateway(t *testing.T) {
+	src := &fakePanel{}
+	p := NewPanel(context.Background(), src, NewTheme(true), TabConfig, "", time.Now)
+	p.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	p.Update(p.Init()())
+	p.raw.config = &ConfigView{Exists: true,
+		Rows: [][2]string{{"gateway.work.url", "gw.example"}, {"gateway.work.key", "env:K"}},
+		Edit: map[string]ConfigEdit{"gateway.work.url": {Value: "https://gw.example", Remove: "gateway.work"}, "gateway.work.key": {Value: "env:K", Remove: "gateway.work"}}}
+	p.data.config = p.raw.config
+	x := tea.KeyPressMsg{Code: 'x', Text: "x"}
+	if !strings.Contains(panelText(p), "x remove gateway.work") {
+		t.Fatalf("no remove key:\n%s", panelText(p))
+	}
+	if cmd := p.Update(x); cmd != nil || !strings.Contains(p.notice, "press x again") {
+		t.Fatalf("first x: notice %q", p.notice)
+	}
+	p.Update(tea.KeyPressMsg{Code: tea.KeyDown}) // anything else disarms it
+	if cmd := p.Update(x); cmd != nil || len(src.ran) != 0 {
+		t.Fatal("x after another key removed at once")
+	}
+	cmd := p.Update(x)
+	if cmd == nil {
+		t.Fatal("the second x did nothing")
+	}
+	p.Update(cmd())
+	if got := src.ran[len(src.ran)-1]; got[0] != "config-remove" || got[1] != "gateway.work" || p.notice != "gateway.work removed" {
+		t.Fatalf("ran %v, notice %q", got, p.notice)
 	}
 }

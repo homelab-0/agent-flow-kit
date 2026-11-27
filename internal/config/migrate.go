@@ -293,3 +293,29 @@ func unified(path, old, new string) string {
 }
 
 func writeFile(path string, b []byte) error { return statefile.WriteFile(path, b) }
+
+// RemoveSection takes one table (such as gateway.work) out of config.toml,
+// under its lock and only when the result is still a valid config. It
+// reports whether the table was there.
+func RemoveSection(paths Paths, table string) (bool, error) {
+	removed := false
+	err := withLock(paths.Config, func() error {
+		f, err := Load(paths.Config)
+		if err != nil {
+			return err
+		}
+		if !f.Exists {
+			return nil
+		}
+		after, ok, err := RemoveTable(f.Raw, table)
+		if err != nil || !ok {
+			return err
+		}
+		if _, err := Parse(paths.Config, after); err != nil {
+			return err
+		}
+		removed = true
+		return statefile.WriteFile(paths.Config, after)
+	})
+	return removed, err
+}

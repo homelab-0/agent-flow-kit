@@ -18,7 +18,7 @@ export MY_GATEWAY_KEY="..."
 export AFK_GATEWAY_KEY_ENV="MY_GATEWAY_KEY"
 ```
 
-The gateway can also go in your `~/.config/afk/config.toml` as a `[gateway.<name>]` with `url` and `key = "env:NAME"` (or, while config.toml doesn't exist, in `~/.config/afk/router.json` as `litellm_base_url`). A project's `.afk/config.json` can never set it: the gateway receives your gateway key, so a repository you clone can't choose where it goes. See [configuration](../reference/configuration.md#gatewayname).
+The gateway can also be added without leaving AFK: the Config tab has a `gateway (add)` row and a row for each field (see [the control panel](control-panel.md#gateways)). That writes a `[gateway.<name>]` to your `~/.config/afk/config.toml`, which you can also do by hand: a `[gateway.<name>]` with `url` and `key = "env:NAME"` (or, while config.toml doesn't exist, in `~/.config/afk/router.json` as `litellm_base_url`). A project's `.afk/config.json` can never set it: the gateway receives your gateway key, so a repository you clone can't choose where it goes. See [configuration](../reference/configuration.md#gatewayname).
 
 On the route card a gateway route is named after its `[gateway.<name>]` (an environment gateway is just "gateway"), and the headroom column says what serves it and where when the gateway sets `engine` and `host`, for example `[vLLM] vLLM · factory`:
 
