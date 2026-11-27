@@ -18,3 +18,8 @@ ask = []
 [modes.print]
 ask = []
 yolo = ["--auto"]
+
+[skills]
+# From OpenCode's documentation, not checked against an install.
+dir = "~/.config/opencode/skills"
+format = "skill-md"

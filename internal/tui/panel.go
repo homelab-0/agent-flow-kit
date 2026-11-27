@@ -61,6 +61,10 @@ type PanelSource interface {
 	Benchmarks(ctx context.Context, task string) (*BenchView, error)
 	Status(ctx context.Context) (*StatusView, error)
 	Config(ctx context.Context) (*ConfigView, error)
+	Skills(ctx context.Context) (*SkillsView, error)
+	// SkillsDo runs a quick skills action in place (sync, keep, restore,
+	// enable, disable) and returns what to tell the user.
+	SkillsDo(ctx context.Context, op string, args ...string) (string, error)
 	// Command is the argv that runs an afk subcommand (an update, a
 	// login, a sync) in the terminal, for the tabs' action keys.
 	Command(args ...string) []string
@@ -154,6 +158,7 @@ type panelData struct {
 	bench  *BenchView
 	status *StatusView
 	config *ConfigView
+	skills *SkillsView
 	err    map[Tab]string
 }
 
@@ -177,13 +182,15 @@ type Panel struct {
 	height  int
 	sel     map[Tab]int
 	taskIdx int
-	data    panelData
-	gen     int
-	loading map[Tab]bool
-	notice  string
-	ctx     context.Context
-	now     func() time.Time
-	version string
+	// skillCol is the selected CLI column on the Skills tab.
+	skillCol int
+	data     panelData
+	gen      int
+	loading  map[Tab]bool
+	notice   string
+	ctx      context.Context
+	now      func() time.Time
+	version  string
 	// standalone: Route quits rather than going back to a composer.
 	standalone bool
 	quit       bool
@@ -233,6 +240,8 @@ func (p *Panel) load(tab Tab) tea.Cmd {
 			v, err = src.Status(ctx)
 		case TabConfig:
 			v, err = src.Config(ctx)
+		case TabSkills:
+			v, err = src.Skills(ctx)
 		default:
 			return panelMsg{tab: tab, gen: gen}
 		}
@@ -264,7 +273,18 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			p.data.status = v
 		case *ConfigView:
 			p.data.config = v
+		case *SkillsView:
+			p.data.skills = v
+			if len(v.Cols) > 0 {
+				p.skillCol = min(p.skillCol, len(v.Cols)-1)
+			}
 		}
+	case skillsDoneMsg:
+		p.notice = msg.text
+		if msg.err != nil {
+			p.notice = msg.err.Error()
+		}
+		return p.load(TabSkills)
 	case panelExecMsg:
 		if msg.err != nil {
 			p.notice = msg.err.Error()
@@ -295,7 +315,12 @@ func (p *Panel) key(k string) tea.Cmd {
 		return p.switchTo(Tab((int(p.tab) + 1) % len(tabNames)))
 	case "shift+tab":
 		return p.switchTo(Tab((int(p.tab) + len(tabNames) - 1) % len(tabNames)))
-	case "up", "k":
+	case "k":
+		if p.tab == TabSkills {
+			return p.skillsKey(k) // k keeps a CLI's copy there
+		}
+		fallthrough
+	case "up":
 		if p.sel[p.tab] > 0 {
 			p.sel[p.tab]--
 		}
@@ -307,6 +332,9 @@ func (p *Panel) key(k string) tea.Cmd {
 		return nil
 	case "r":
 		return p.load(p.tab)
+	}
+	if p.tab == TabSkills {
+		return p.skillsKey(k)
 	}
 	switch p.tab {
 	case TabHarnesses:
@@ -389,6 +417,8 @@ func (p *Panel) loaded(t Tab) bool {
 		return p.data.status != nil
 	case TabConfig:
 		return p.data.config != nil
+	case TabSkills:
+		return p.data.skills != nil
 	}
 	return true
 }
@@ -411,6 +441,10 @@ func (p *Panel) rows() int {
 	case TabConfig:
 		if p.data.config != nil {
 			return len(p.data.config.Rows)
+		}
+	case TabSkills:
+		if p.data.skills != nil {
+			return len(p.data.skills.Rows)
 		}
 	}
 	return 0
@@ -438,7 +472,9 @@ func (p *Panel) Lines() []line {
 			body, hint = p.harnessLines(w)
 		case TabBench:
 			body, hint = p.benchLines(w)
-		case TabSkills, TabMCP:
+		case TabSkills:
+			body, hint = p.skillsLines(w)
+		case TabMCP:
 			body, hint = p.comingLines()
 		case TabRuns:
 			body, hint = p.statusLines(w)
@@ -666,8 +702,7 @@ func (p *Panel) benchLines(w int) ([]line, line) {
 func (p *Panel) comingLines() ([]line, line) {
 	t := p.theme
 	what := map[Tab]string{
-		TabSkills: "Skills: one central copy of every skill, synced into each CLI, with drift shown per CLI.",
-		TabMCP:    "MCP: your MCP servers, written into each CLI's own config, with a tools/list health check.",
+		TabMCP: "MCP: your MCP servers, written into each CLI's own config, with a tools/list health check.",
 	}[p.tab]
 	return []line{{sg(t.Plain, " "+what)}, nil, {sg(t.Dim, " Not built yet: it comes with AFK's skills and MCP sync.")}}, nil
 }

@@ -27,3 +27,9 @@ user_config = ["--setting-sources", "user"]
 # Other ways to change what Claude may do without asking; --pass refuses
 # them outside yolo.
 mode_flags = ["--permission-mode", "--allow-dangerously-skip-permissions", "--allowedTools", "--allowed-tools", "--settings", "--setting-sources"]
+
+[skills]
+# Claude Code reads ~/.claude/skills/<name>/SKILL.md (or under
+# CLAUDE_CONFIG_DIR).
+dir = "$CLAUDE_CONFIG_DIR/skills|~/.claude/skills"
+format = "skill-md"

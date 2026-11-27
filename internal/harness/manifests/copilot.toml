@@ -5,3 +5,8 @@ vendor = "GitHub"
 bins = ["copilot"]
 npm_package = "@github/copilot"
 login_note = "copilot (then /login)"
+
+[skills]
+# From Copilot CLI's documentation, not checked against an install.
+dir = "~/.copilot/skills"
+format = "skill-md"

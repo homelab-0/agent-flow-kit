@@ -44,3 +44,9 @@ config_keys = ["sandbox_mode", "approval_policy", "sandbox_workspace_write", "sa
 read-only = ["--sandbox", "read-only"]
 auto = ["--sandbox", "workspace-write"]
 yolo = ["--dangerously-bypass-approvals-and-sandbox"]
+
+[skills]
+# Codex reads $CODEX_HOME/skills (default ~/.codex/skills). From Codex's
+# documentation, not checked against an install.
+dir = "$CODEX_HOME/skills|~/.codex/skills"
+format = "skill-md"

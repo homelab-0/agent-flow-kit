@@ -5,3 +5,8 @@ vendor = "Google"
 bins = ["gemini"]
 npm_package = "@google/gemini-cli"
 login_note = "gemini"
+
+[skills]
+# From Gemini CLI's documentation, not checked against an install.
+dir = "~/.gemini/skills"
+format = "skill-md"

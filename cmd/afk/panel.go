@@ -19,12 +19,13 @@ import (
 	"github.com/homelab-0/agent-flow-kit/internal/harness"
 	"github.com/homelab-0/agent-flow-kit/internal/router"
 	"github.com/homelab-0/agent-flow-kit/internal/runrec"
+	"github.com/homelab-0/agent-flow-kit/internal/skills"
 	"github.com/homelab-0/agent-flow-kit/internal/tui"
 )
 
 // panelSource feeds the control panel's tabs from the engine, harness
-// discovery, the run records and config.toml. Nothing here changes
-// anything; the tabs' action keys run afk subcommands.
+// discovery, the run records and config.toml. Only SkillsDo changes
+// anything; the other action keys run afk subcommands.
 type panelSource struct {
 	c *core.Core
 	// discover finds the CLIs (harness.Discover; tests replace it).
@@ -471,4 +472,93 @@ func statusCmd(argv []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+func (s panelSource) skills() skillsDeps {
+	t, u := skillTargets(s.c.Harness)
+	return skillsDeps{env: skillsEnvFor(s.c.Home, s.getenv), targets: t, unsupported: u}
+}
+
+// Skills is the Skills tab.
+func (s panelSource) Skills(ctx context.Context) (*tui.SkillsView, error) {
+	d := s.skills()
+	st, err := d.env.Scan(d.targets)
+	if err != nil {
+		return nil, err
+	}
+	return skillsView(d, st, s.c.Home), nil
+}
+
+func skillsView(d skillsDeps, st *skills.Status, home string) *tui.SkillsView {
+	tilde := func(p string) string {
+		if home != "" && strings.HasPrefix(p, home+string(os.PathSeparator)) {
+			return "~" + strings.TrimPrefix(p, home)
+		}
+		return p
+	}
+	v := &tui.SkillsView{Source: tilde(st.Central), Cols: harnessNames(st.Targets), Unsupported: d.unsupported,
+		Pending: len(st.Actions), Problems: st.Problems}
+	for _, sk := range st.Skills {
+		r := tui.SkillRow{Name: sk.Name, Central: sk.Central, Cells: map[string]string{}}
+		for h, c := range sk.Cells {
+			r.Cells[h] = string(c)
+		}
+		v.Rows = append(v.Rows, r)
+	}
+	dirs := map[string]string{}
+	for _, t := range st.Targets {
+		dirs[t.Harness] = tilde(t.Dir)
+	}
+	for _, dr := range st.Drift {
+		v.Drift = append(v.Drift, tui.SkillDrift{Skill: dr.Skill, Harness: dr.Harness, Dir: dirs[dr.Harness],
+			Modified: dr.Modified, Lines: d.env.Changed(st.Targets, dr.Skill, dr.Harness)})
+	}
+	return v
+}
+
+// SkillsDo runs a skills action for the tab's keys.
+func (s panelSource) SkillsDo(ctx context.Context, op string, args ...string) (string, error) {
+	d := s.skills()
+	two := func() (string, string, error) {
+		if len(args) != 2 {
+			return "", "", fmt.Errorf("skills %s needs a skill and a CLI", op)
+		}
+		return args[0], args[1], nil
+	}
+	switch op {
+	case "sync":
+		res, err := d.env.Sync(d.targets)
+		if err != nil {
+			return "", err
+		}
+		if len(res.Done) == 0 {
+			return "Everything is in sync.", nil
+		}
+		return fmt.Sprintf("Synced %s.", plural(len(res.Done), "change")), nil
+	case "keep", "restore":
+		sk, h, err := two()
+		if err != nil {
+			return "", err
+		}
+		if op == "keep" {
+			if _, err := d.env.Keep(d.targets, sk, h); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("Central %s is now %s's copy. Press s to copy it into the other CLIs.", sk, h), nil
+		}
+		if _, err := d.env.Restore(d.targets, sk, h); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("Put central %s back in %s (its copy is backed up).", sk, h), nil
+	case "enable", "disable":
+		sk, h, err := two()
+		if err != nil {
+			return "", err
+		}
+		if err := d.env.SetEnabled(sk, h, op == "enable"); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("%s %sd for %s. Press s to apply it.", sk, op, h), nil
+	}
+	return "", fmt.Errorf("unknown skills action %q", op)
 }
