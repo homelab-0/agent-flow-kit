@@ -384,3 +384,51 @@ func TestSkillsProjectScope(t *testing.T) {
 		t.Errorf("ran %v, want %v", src.ran, want)
 	}
 }
+
+func TestPanelFilter(t *testing.T) {
+	p := panelAt(t, TabHarnesses)
+	keys := func(ks ...string) {
+		for _, k := range ks {
+			p.Update(key(k))
+		}
+	}
+	keys("down", "down") // grok selected
+	keys("/", "o", "d")
+	s := panelText(p)
+	if !strings.Contains(s, "codex") || !strings.Contains(s, "opencode") || strings.Contains(s, "grok") || strings.Contains(s, "claude ") {
+		t.Fatalf("filter od should keep codex and opencode:\n%s", s)
+	}
+	if !strings.Contains(s, "/ od") {
+		t.Errorf("the filter being typed is not shown:\n%s", s)
+	}
+	if p.sel[TabHarnesses] != 0 {
+		t.Errorf("selection %d, want the first match", p.sel[TabHarnesses])
+	}
+	// q and digits are typed into the filter, not acted on.
+	keys("q")
+	if p.quit || p.filter[TabHarnesses] != "odq" {
+		t.Fatalf("q while typing: quit=%v filter=%q", p.quit, p.filter[TabHarnesses])
+	}
+	keys("enter")
+	if !strings.Contains(panelText(p), "Nothing matches “odq”") {
+		t.Errorf("no-match message missing:\n%s", panelText(p))
+	}
+	// After enter the keys work again; the first esc clears the filter
+	// instead of leaving.
+	keys("esc")
+	if p.back || p.filter[TabHarnesses] != "" || !strings.Contains(panelText(p), "grok") {
+		t.Fatalf("esc should clear the filter: back=%v filter=%q", p.back, p.filter[TabHarnesses])
+	}
+	// A reload keeps the filter applied.
+	keys("/", "c", "l", "enter")
+	if cmd := p.load(TabHarnesses); cmd != nil {
+		p.Update(cmd())
+	}
+	if s := panelText(p); strings.Contains(s, "codex") || !strings.Contains(s, "claude") {
+		t.Errorf("filter lost on reload:\n%s", s)
+	}
+	keys("esc", "esc")
+	if !p.back {
+		t.Error("the second esc should leave the panel")
+	}
+}

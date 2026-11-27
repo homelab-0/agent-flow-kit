@@ -198,8 +198,11 @@ type Panel struct {
 	// skillCol is the selected CLI column on the Skills tab.
 	skillCol int
 	mcpCol   int
-	askScope string // the project skill whose scope is being asked
-	data     panelData
+	askScope string    // the project skill whose scope is being asked
+	data     panelData // what the tabs show: raw, narrowed by the filter
+	raw      panelData // what was loaded
+	filter   map[Tab]string
+	typing   bool // the filter is being typed
 	id       int
 	gens     map[Tab]int // the latest load of each tab
 	loading  map[Tab]bool
@@ -225,7 +228,7 @@ func NewPanel(ctx context.Context, src PanelSource, theme Theme, tab Tab, versio
 	ctx, stop := context.WithCancel(ctx)
 	panelIDs++
 	return &Panel{id: panelIDs, gens: map[Tab]int{}, src: src, theme: theme, tab: tab, sel: map[Tab]int{}, loading: map[Tab]bool{},
-		data: panelData{err: map[Tab]string{}}, ctx: ctx, stop: stop, now: now, version: version}
+		data: panelData{err: map[Tab]string{}}, filter: map[Tab]string{}, ctx: ctx, stop: stop, now: now, version: version}
 }
 
 // Close stops the loads still running.
@@ -291,26 +294,27 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 		delete(p.data.err, msg.tab)
 		switch v := msg.v.(type) {
 		case *HarnessesView:
-			p.data.harn = v
+			p.raw.harn = v
 		case *BenchView:
 			if msg.task == benchTasks[p.taskIdx%len(benchTasks)] {
-				p.data.bench = v
+				p.raw.bench = v
 			}
 		case *StatusView:
-			p.data.status = v
+			p.raw.status = v
 		case *ConfigView:
-			p.data.config = v
+			p.raw.config = v
 		case *SkillsView:
-			p.data.skills = v
+			p.raw.skills = v
 			if len(v.Cols) > 0 {
 				p.skillCol = min(p.skillCol, len(v.Cols)-1)
 			}
 		case *MCPView:
-			p.data.mcp = v
+			p.raw.mcp = v
 			if len(v.Cols) > 0 {
 				p.mcpCol = min(p.mcpCol, len(v.Cols)-1)
 			}
 		}
+		p.refilter(msg.tab)
 	case mcpDoneMsg:
 		p.notice = msg.text
 		if msg.err != nil {
@@ -341,6 +345,21 @@ func (p *Panel) key(k string) tea.Cmd {
 	p.notice = ""
 	if p.askScope != "" && p.tab == TabSkills {
 		return p.skillsKey(k) // the scope question takes the next key
+	}
+	if p.filterKey(k) {
+		return nil
+	}
+	switch k {
+	case "/":
+		if filterable(p.tab) {
+			p.typing = true
+			return nil
+		}
+	case "esc":
+		if p.filter[p.tab] != "" { // esc clears a filter before it leaves
+			p.setFilter("")
+			return nil
+		}
 	}
 	switch k {
 	case "q", "ctrl+c":
@@ -479,8 +498,10 @@ func (p *Panel) loaded(t Tab) bool {
 }
 
 // rows is how many selectable rows the tab has.
-func (p *Panel) rows() int {
-	switch p.tab {
+func (p *Panel) rows() int { return p.rowsOf(p.tab) }
+
+func (p *Panel) rowsOf(t Tab) int {
+	switch t {
 	case TabHarnesses:
 		if p.data.harn != nil {
 			return len(p.data.harn.Rows)
@@ -541,10 +562,17 @@ func (p *Panel) Lines() []line {
 			body, hint = p.configLines(w)
 		}
 	}
+	if f := p.filter[p.tab]; f != "" && p.loaded(p.tab) && p.rows() == 0 && p.data.err[p.tab] == "" {
+		body = []line{{sg(t.Dim, " Nothing matches “"+f+"”. "), sg(t.Key, "esc"), sg(t.Dim, " clears the filter.")}}
+	}
+	fl := p.filterLine()
 	if p.height > 0 {
 		// The tab bar and its gap, the notice and the hints keep their
 		// rows; the body scrolls to keep the selected row in view.
 		room := p.height - len(out) - 1
+		if fl != nil {
+			room--
+		}
 		if p.notice != "" {
 			room -= 2
 		}
@@ -556,16 +584,27 @@ func (p *Panel) Lines() []line {
 	if p.notice != "" {
 		out = append(out, nil, fitLine(line{sg(t.Warn, " "+p.notice)}, w))
 	}
-	// The hints sit on the last row when the height is known.
+	// The hints sit on the last row when the height is known, with the
+	// filter just above them.
+	end := p.height - 1
+	if fl != nil {
+		end--
+	}
 	if p.height > 0 {
-		for len(out) < p.height-1 {
+		for len(out) < end {
 			out = append(out, nil)
 		}
 	} else {
 		out = append(out, nil)
 	}
+	if fl != nil {
+		out = append(out, fitLine(fl, w))
+	}
 	keys := line{sg(t.Plain, " ")}
 	keys = append(keys, hint...)
+	if filterable(p.tab) {
+		keys = append(keys, sg(t.Key, "/"), sg(t.Dim, " filter  "))
+	}
 	keys = append(keys, sg(t.Key, "1-7"), sg(t.Dim, " tabs  "), sg(t.Key, "r"), sg(t.Dim, " refresh  "), sg(t.Key, "q"), sg(t.Dim, " quit"))
 	return append(out, fitLine(keys, w))
 }
