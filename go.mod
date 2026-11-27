@@ -1,4 +1,4 @@
-module github.com/jlengelbrecht/agent-flow-kit
+module github.com/homelab-0/agent-flow-kit
 
 go 1.26.0
 

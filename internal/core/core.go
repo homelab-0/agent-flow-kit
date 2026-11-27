@@ -15,11 +15,11 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/jlengelbrecht/agent-flow-kit/internal/config"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/engine"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/harness"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/router"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/runrec"
+	"github.com/homelab-0/agent-flow-kit/internal/config"
+	"github.com/homelab-0/agent-flow-kit/internal/engine"
+	"github.com/homelab-0/agent-flow-kit/internal/harness"
+	"github.com/homelab-0/agent-flow-kit/internal/router"
+	"github.com/homelab-0/agent-flow-kit/internal/runrec"
 )
 
 // Routable are the CLIs AFK routes to and launches, in the order the bash

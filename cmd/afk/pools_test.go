@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jlengelbrecht/agent-flow-kit/internal/router"
+	"github.com/homelab-0/agent-flow-kit/internal/router"
 )
 
 func TestPoolsClear(t *testing.T) {

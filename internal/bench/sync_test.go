@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jlengelbrecht/agent-flow-kit/internal/router"
+	"github.com/homelab-0/agent-flow-kit/internal/router"
 )
 
 // The fixtures in testdata/feeds are leaderboards in the shape the dataset

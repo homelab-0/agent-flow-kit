@@ -13,7 +13,7 @@ import (
 
 	toml "github.com/pelletier/go-toml/v2"
 
-	"github.com/jlengelbrecht/agent-flow-kit/internal/config"
+	"github.com/homelab-0/agent-flow-kit/internal/config"
 )
 
 const configUsage = `afk config — your settings, in config.toml

@@ -4,7 +4,7 @@ import (
 	"math"
 	"time"
 
-	"github.com/jlengelbrecht/agent-flow-kit/internal/engine"
+	"github.com/homelab-0/agent-flow-kit/internal/engine"
 )
 
 // Plan pacing: a flat-rate window that resets with quota left is quota

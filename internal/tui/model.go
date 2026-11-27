@@ -10,9 +10,9 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/harmonica"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/engine"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/harness"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/launch"
+	"github.com/homelab-0/agent-flow-kit/internal/engine"
+	"github.com/homelab-0/agent-flow-kit/internal/harness"
+	"github.com/homelab-0/agent-flow-kit/internal/launch"
 )
 
 // Backend is the engine as the card sees it.

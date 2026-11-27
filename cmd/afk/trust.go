@@ -5,7 +5,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/jlengelbrecht/agent-flow-kit/internal/config"
+	"github.com/homelab-0/agent-flow-kit/internal/config"
 )
 
 const trustUsage = `afk trust — the directories where yolo may run

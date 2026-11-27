@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jlengelbrecht/agent-flow-kit/internal/cli"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/core"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/engine"
+	"github.com/homelab-0/agent-flow-kit/internal/cli"
+	"github.com/homelab-0/agent-flow-kit/internal/core"
+	"github.com/homelab-0/agent-flow-kit/internal/engine"
 )
 
 func f(v float64) *float64 { return &v }

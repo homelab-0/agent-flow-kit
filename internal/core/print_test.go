@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jlengelbrecht/agent-flow-kit/internal/engine"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/oneshot"
+	"github.com/homelab-0/agent-flow-kit/internal/engine"
+	"github.com/homelab-0/agent-flow-kit/internal/oneshot"
 )
 
 // printCore is a Core whose CLIs are never run: Headless answers for them.

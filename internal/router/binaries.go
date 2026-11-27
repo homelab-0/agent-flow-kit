@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jlengelbrecht/agent-flow-kit/internal/harness"
+	"github.com/homelab-0/agent-flow-kit/internal/harness"
 )
 
 // VerifyBinaries returns an Installed function for ProbeEnv: a CLI counts

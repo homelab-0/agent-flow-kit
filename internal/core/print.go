@@ -12,11 +12,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jlengelbrecht/agent-flow-kit/internal/engine"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/gitstat"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/launch"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/oneshot"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/router"
+	"github.com/homelab-0/agent-flow-kit/internal/engine"
+	"github.com/homelab-0/agent-flow-kit/internal/gitstat"
+	"github.com/homelab-0/agent-flow-kit/internal/launch"
+	"github.com/homelab-0/agent-flow-kit/internal/oneshot"
+	"github.com/homelab-0/agent-flow-kit/internal/router"
 )
 
 // PrintRequest is one afk -p run.

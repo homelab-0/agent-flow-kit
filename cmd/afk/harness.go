@@ -12,8 +12,8 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/term"
 
-	"github.com/jlengelbrecht/agent-flow-kit/internal/harness"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/tui"
+	"github.com/homelab-0/agent-flow-kit/internal/harness"
+	"github.com/homelab-0/agent-flow-kit/internal/tui"
 )
 
 const harnessHelp = `Usage: afk harness [list] [--all] [--json]

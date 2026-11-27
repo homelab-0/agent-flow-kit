@@ -19,15 +19,15 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/term"
 
-	"github.com/jlengelbrecht/agent-flow-kit/internal/cli"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/config"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/core"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/engine"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/gitstat"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/harness"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/launch"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/runrec"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/tui"
+	"github.com/homelab-0/agent-flow-kit/internal/cli"
+	"github.com/homelab-0/agent-flow-kit/internal/config"
+	"github.com/homelab-0/agent-flow-kit/internal/core"
+	"github.com/homelab-0/agent-flow-kit/internal/engine"
+	"github.com/homelab-0/agent-flow-kit/internal/gitstat"
+	"github.com/homelab-0/agent-flow-kit/internal/harness"
+	"github.com/homelab-0/agent-flow-kit/internal/launch"
+	"github.com/homelab-0/agent-flow-kit/internal/runrec"
+	"github.com/homelab-0/agent-flow-kit/internal/tui"
 )
 
 func main() { os.Exit(run(os.Args[1:])) }

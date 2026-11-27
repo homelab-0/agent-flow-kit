@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/engine"
+	"github.com/homelab-0/agent-flow-kit/internal/engine"
 )
 
 // Unknown values are shown as unknown, never as a zero.
