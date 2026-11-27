@@ -1,0 +1,22 @@
+{
+  "name": "@homelab0/afk",
+  "version": "0.0.0",
+  "description": "Run the best agent CLI on this machine for the task",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/homelab-0/agent-flow-kit",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/homelab-0/agent-flow-kit.git",
+    "directory": "npm/afk"
+  },
+  "bin": {
+    "afk": "bin/afk.js"
+  },
+  "files": [
+    "bin/afk.js"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "optionalDependencies": {}
+}
