@@ -30,6 +30,9 @@ type panelSource struct {
 	c *core.Core
 	// discover finds the CLIs (harness.Discover; tests replace it).
 	discover func(ctx context.Context) harness.Report
+	// repo is the project routing uses (--repo); "" is the current
+	// directory.
+	repo string
 }
 
 func (s panelSource) getenv(k string) string {
@@ -39,8 +42,8 @@ func (s panelSource) getenv(k string) string {
 	return s.c.Getenv(k)
 }
 
-func newPanelSource(c *core.Core) panelSource {
-	return panelSource{c: c, discover: func(ctx context.Context) harness.Report {
+func newPanelSource(c *core.Core, repo string) panelSource {
+	return panelSource{c: c, repo: repo, discover: func(ctx context.Context) harness.Report {
 		return harness.Discover(ctx, c.Harness, harness.Options{})
 	}}
 }
@@ -56,7 +59,7 @@ var planName = map[string]string{
 
 func (s panelSource) Harnesses(ctx context.Context) (*tui.HarnessesView, error) {
 	rep := s.discover(ctx)
-	r, settings, err := s.c.Router(ctx)
+	r, settings, err := s.c.Router(ctx, s.repo)
 	if err != nil {
 		return nil, err
 	}
@@ -163,7 +166,7 @@ func usageText(p router.Pool) string {
 }
 
 func (s panelSource) Benchmarks(ctx context.Context, task string) (*tui.BenchView, error) {
-	r, settings, err := s.c.Router(ctx)
+	r, settings, err := s.c.Router(ctx, s.repo)
 	if err != nil {
 		return nil, err
 	}
@@ -174,8 +177,9 @@ func (s panelSource) Benchmarks(ctx context.Context, task string) (*tui.BenchVie
 	tc := router.TaskClass(stage, risk, []string{"code"}, 1, 0)
 	outcomes := core.Outcomes(runrec.Load(runrec.DirFor(s.c.Home, s.getenv), time.Now().Add(-core.OutcomeMaxAge)))
 	type acc struct {
-		row  tui.BenchRow
-		vias map[string]bool
+		row     tui.BenchRow
+		vias    map[string]bool
+		counted map[router.OutcomeKey]bool // outcome keys already in the row
 	}
 	rows := map[string]*acc{}
 	var order []string
@@ -186,6 +190,11 @@ func (s panelSource) Benchmarks(ctx context.Context, task string) (*tui.BenchVie
 		}
 		gw := strings.HasSuffix(c.LaunchClass, "-gateway")
 		if gw && !r.Probe.Harnesses["litellm_gateway"].Online {
+			continue
+		}
+		// The same pools routing skips: a spent or signed-out plan is
+		// no route today.
+		if p, ok := r.Probe.Pools[c.EntitlementPool]; ok && (p.State == "exhausted" || p.State == "offline" || p.State == "auth_required") {
 			continue
 		}
 		bm, ok := c.Benchmarks[tc]
@@ -200,7 +209,7 @@ func (s panelSource) Benchmarks(ctx context.Context, task string) (*tui.BenchVie
 				basis = "estimate"
 			}
 			sc := *bm.Score
-			a = &acc{row: tui.BenchRow{Model: c.Model, Score: &sc, Basis: basis}, vias: map[string]bool{}}
+			a = &acc{row: tui.BenchRow{Model: c.Model, Score: &sc, Basis: basis}, vias: map[string]bool{}, counted: map[router.OutcomeKey]bool{}}
 			rows[key] = a
 			order = append(order, key)
 			if bm.Name != "" {
@@ -220,7 +229,13 @@ func (s panelSource) Benchmarks(ctx context.Context, task string) (*tui.BenchVie
 			a.vias[vk] = true
 			a.row.Via = append(a.row.Via, via)
 		}
-		if st, ok := outcomes[router.OutcomeKeyFor(c.Harness, c.CanonicalModel, c.Model, tc)]; ok {
+		// Two endpoints serving one model share its ratings: count them once.
+		okey := router.OutcomeKeyFor(c.Harness, c.CanonicalModel, c.Model, tc)
+		if a.counted[okey] {
+			continue
+		}
+		a.counted[okey] = true
+		if st, found := outcomes[okey]; found {
 			a.row.Solved += st.Solved
 			a.row.Partly += st.Partly
 			a.row.Wrong += st.Wrong
@@ -253,7 +268,7 @@ func (s panelSource) Benchmarks(ctx context.Context, task string) (*tui.BenchVie
 		src += "catalog " + r.Catalog.UpdatedAt
 	}
 	v.Source = src
-	ex, err := s.c.Explain(ctx, engine.RouteFlags{Task: task}, "")
+	ex, err := s.c.Explain(ctx, engine.RouteFlags{Task: task, Repo: s.repo}, "")
 	if err != nil {
 		v.Problems = "effective scores: " + err.Error()
 	} else {
@@ -279,7 +294,7 @@ func gatewayKindFor(s core.Settings) string {
 }
 
 func (s panelSource) Status(ctx context.Context) (*tui.StatusView, error) {
-	r, settings, err := s.c.Router(ctx)
+	r, settings, err := s.c.Router(ctx, s.repo)
 	if err != nil {
 		return nil, err
 	}
@@ -296,6 +311,10 @@ func (s panelSource) Status(ctx context.Context) (*tui.StatusView, error) {
 		row := tui.PlanRow{Harness: h, Plan: planName[pid], SignIn: "ok"}
 		if p.Window == "weekly" {
 			row.Week = p.HeadroomPct
+			if p.FiveHourUsedPct != nil {
+				f := 100 - *p.FiveHourUsedPct
+				row.FiveHour = &f
+			}
 		} else {
 			row.FiveHour = p.HeadroomPct
 			if p.WeeklyUsedPct != nil {
@@ -369,7 +388,11 @@ func (s panelSource) Config(ctx context.Context) (*tui.ConfigView, error) {
 	if _, err := os.Stat(paths.Config); err == nil {
 		v.Exists = true
 	}
-	st, err := s.c.LoadSettings(s.c.Cwd)
+	repo := s.repo
+	if repo == "" {
+		repo = s.c.Cwd
+	}
+	st, err := s.c.LoadSettings(repo)
 	if err != nil {
 		return nil, err
 	}
@@ -466,7 +489,7 @@ func statusCmd(argv []string, stdout, stderr io.Writer) int {
 		logos, _ = tui.SendLogos(os.Stdout)
 	}
 	theme := tui.NewTheme(dark).WithLogos(logos)
-	p := tui.NewPanel(context.Background(), newPanelSource(core.New()), theme, tab, headerInfo().Version, nil).Standalone()
+	p := tui.NewPanel(context.Background(), newPanelSource(core.New(), ""), theme, tab, headerInfo().Version, nil).Standalone()
 	if _, err := tea.NewProgram(tui.PanelModel{P: p}).Run(); err != nil {
 		fmt.Fprintln(stderr, "afk:", err)
 		return 1

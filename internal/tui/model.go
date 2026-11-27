@@ -31,6 +31,9 @@ type Options struct {
 	// YoloBlock, when set, is why yolo can't be turned on here (this
 	// directory isn't trusted); y shows it instead.
 	YoloBlock string
+	// YoloCheck, when set, is asked at each y instead of YoloBlock, so
+	// trusting the directory elsewhere takes effect without a restart.
+	YoloCheck func() string
 	Yes       bool // --yes: launch the router's choice without the card
 	Width     int
 	Motion    bool
@@ -290,9 +293,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmd := m.panel.Update(msg)
 			switch {
 			case m.panel.quit:
+				m.panel.Close()
 				m.panel = nil
 				return m, m.finish(Decision{Cancelled: true})
 			case m.panel.back:
+				m.panel.Close()
 				m.panel = nil
 				return m, m.cin.Focus()
 			}
@@ -539,8 +544,8 @@ func (m *Model) cardKey(key string) tea.Cmd {
 		case m.card.Yolo:
 			m.card.Yolo, m.yoloSet = false, true
 			m.notice = "yolo is off: the CLI asks before it acts"
-		case m.opt.YoloBlock != "":
-			m.notice = m.opt.YoloBlock
+		case m.yoloBlock() != "":
+			m.notice = m.yoloBlock()
 		case armed:
 			m.card.Yolo, m.yoloSet = true, true
 		default:
@@ -566,6 +571,13 @@ func (m *Model) View() tea.View {
 		return m.panel.View()
 	}
 	return tea.NewView(m.Render())
+}
+
+func (m *Model) yoloBlock() string {
+	if m.opt.YoloCheck != nil {
+		return m.opt.YoloCheck()
+	}
+	return m.opt.YoloBlock
 }
 
 // openPanel opens the control panel on a tab, from the composer.

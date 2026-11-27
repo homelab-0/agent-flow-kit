@@ -34,7 +34,7 @@ func panelCore(t *testing.T) *core.Core {
 
 func TestPanelSource(t *testing.T) {
 	c := panelCore(t)
-	s := newPanelSource(c)
+	s := newPanelSource(c, "")
 	s.discover = func(context.Context) harness.Report {
 		return harness.Report{Harnesses: []harness.Info{
 			{Name: "codex", Installed: false},
@@ -57,8 +57,13 @@ func TestPanelSource(t *testing.T) {
 		t.Errorf("bench rows %+v", b.Rows)
 	}
 	for _, r := range b.Rows {
-		if r.Via[0].Harness != "claude" {
-			t.Errorf("a model on a CLI that isn't installed: %+v", r)
+		if len(r.Via) == 0 {
+			t.Errorf("a row with no route: %+v", r)
+		}
+		for _, v := range r.Via {
+			if v.Harness != "claude" {
+				t.Errorf("a model on a CLI that isn't installed: %+v", r)
+			}
 		}
 	}
 	if len(b.Routes) == 0 {
