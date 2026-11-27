@@ -1,8 +1,9 @@
 name: release
 
 # A pushed tag like v0.1.0 builds the six platform archives, writes the
-# SHA-256 checksums, signs them with keyless cosign, and publishes a
-# GitHub release.
+# SHA-256 checksums, signs them with keyless cosign, publishes a GitHub
+# release, and publishes @homelab0/afk to npm with provenance (when the
+# NPM_TOKEN secret is set).
 on:
   push:
     tags: ["v*"]
@@ -15,7 +16,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write   # create the GitHub release
-      id-token: write   # keyless cosign signing
+      id-token: write   # keyless cosign signing and npm provenance
+    env:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -33,3 +36,31 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Build npm packages
+        run: node npm/build.mjs "${GITHUB_REF_NAME#v}" dist npm/out
+      - name: Publish to npm
+        if: env.NPM_TOKEN != ''
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          tag=latest
+          case "$version" in *-*) tag=next ;; esac
+          # Platform packages first, so the wrapper never points at a
+          # missing one. A version that is already published is skipped,
+          # so a re-run picks up where a failed run stopped.
+          for dir in npm/out/afk-* npm/out/afk; do
+            name=$(node -p "require('./$dir/package.json').name")
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "$name@$version is already published"
+              continue
+            fi
+            npm publish "$dir" --provenance --access public --tag "$tag"
+          done
+      - name: Skip npm
+        if: env.NPM_TOKEN == ''
+        run: echo "::warning::NPM_TOKEN is not set, so nothing was published to npm"
