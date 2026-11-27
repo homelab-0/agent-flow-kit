@@ -13,7 +13,7 @@ AFK finds the agent CLIs you have installed (Claude Code, Codex, OpenCode, Grok,
 </div>
 
 > [!WARNING]
-> AFK is pre-release and under active development. The command-line interface and config format may change before 1.0. Packaged installs (`npx`, Homebrew) are not published yet; build from source for now.
+> AFK is pre-release and under active development. The command-line interface and config format may change before 1.0.
 
 <p align="center">
   <img src="docs/assets/demo.gif" width="800" alt="AFK in a terminal: Esc wakes up, the task is routed to Claude Code, the route card shows the alternatives, the session runs, and Esc returns with a receipt">
@@ -29,32 +29,28 @@ If you pay for more than one AI coding plan, or use a mix of plans, free models 
 - **Shows its work.** A route card shows the pick, the reason, the pool headroom, and the best option from every other installed CLI before anything starts. You can take it, pick another, or change the effort.
 - **Gets out of the way.** The session is the chosen CLI's own interface, with nothing wrapped around it. When it exits, AFK prints a receipt: time, exit status, pool before and after, files changed and commits.
 - **Your CLIs, your logins.** AFK routes to whatever you have installed and signed in, and never hands a plan login to a gateway: gateway routes run with a separate config and the gateway's own key.
-- **One binary.** AFK is written in Go and is moving to a single static binary with no runtime dependencies.
+- **One binary.** AFK is a single static Go binary with no runtime dependencies.
 
 ## Install
 
-### From source (today)
-
-Requires Go 1.26 or newer.
+With npm (Node 18 or newer):
 
 ```sh
-git clone https://github.com/homelab-0/agent-flow-kit.git
-cd agent-flow-kit
-CGO_ENABLED=0 go build -o ~/.local/bin/afk ./cmd/afk
+npm install -g @homelab0/afk   # installs the `afk` command
+npx @homelab0/afk              # or run it without installing
 ```
 
-That's all AFK needs: routing, pool usage, launch plans, one-shot answers (`-p`) and the benchmark sync all run in the Go binary, with no `bash`, `jq` or `yq`.
+The npm package carries a prebuilt binary for Linux, macOS and Windows (x64 and arm64). npm picks the one for your machine; nothing is downloaded by an install script. Release candidates are under the `next` tag (`@homelab0/afk@next`).
 
-### Packaged (planned)
+With Go 1.26 or newer:
 
 ```sh
-npx agent-flow-kit            # run without installing
-npm install -g agent-flow-kit # installs the `afk` command
-brew install jlengelbrecht/tap/afk
-curl -fsSL https://raw.githubusercontent.com/homelab-0/agent-flow-kit/master/install.sh | sh
+go install github.com/homelab-0/agent-flow-kit/cmd/afk@latest
 ```
 
-The npm package will ship prebuilt native binaries for Linux, macOS and Windows, with no postinstall download.
+Or download an archive from [GitHub releases](https://github.com/homelab-0/agent-flow-kit/releases). Each release has SHA-256 checksums signed with cosign; see [install](docs/getting-started/install.md) for how to verify them and for building from source.
+
+`afk version` shows which build you have. AFK needs no `bash`, `jq` or `yq`: everything runs in the one binary.
 
 ## Quick start
 
@@ -169,7 +165,7 @@ Effort starts from the task kind and goes up for harder work, within what the CL
 Press `?` on the route card to see the working:
 
 <p align="center">
-  <img src="docs/assets/why.png" width="720" alt="The Why panel: task class, benchmark score and when it was measured, pool factor, cost class, effort change and its reason, the effective score, and which CLIs were skipped and why">
+  <img src="docs/assets/why.png" width="720" alt="The Why panel: task class, benchmark score and when it was measured, pool factor, cost class, effort change and its reason, and the effective score">
 </p>
 
 ## Supported CLIs
@@ -227,7 +223,8 @@ AFK is becoming a standalone tool. Work is tracked in pull requests against `mas
 - [ ] One-shot runs (`-p`) in `auto` in their own git worktree
 - [ ] AI gateways: LiteLLM, OpenRouter and any OpenAI- or Anthropic-compatible endpoint, with keys held as references (env var, OS keychain, 1Password)
 - [ ] MCP servers and skills: define them once in AFK and sync them into every installed CLI's own config
-- [ ] Packaging: GoReleaser builds, npm with native binaries, Homebrew tap, install script, `afk update`
+- [x] Packaging: GoReleaser builds with signed checksums, npm with native binaries
+- [ ] Homebrew tap, install script, `afk update`
 - [ ] Routing for every discovered CLI
 - [ ] API keys and `afk serve`: router keys that let any LLM gateway route through AFK, and keys scoped to one harness or provider
 - [ ] Work sources: issue trackers and webhooks (GitHub Issues, Linear, Jira and others) that hand tasks to AFK through one runs API

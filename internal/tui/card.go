@@ -405,7 +405,6 @@ func (t Theme) WhyLines(c Card, width int) []line {
 	if alerts := alertText(orig.AuthAlerts); alerts != "" {
 		lines = append(lines, row("sign-in", sg(t.Warn, "! "+alerts)))
 	}
-	lines = append(lines, nil, line{sg(t.Dim, "  skipped  "), sg(t.Plain, "listed once the engine streams routing events (a later step)")})
 	out := []line{t.promptLine(c.Prompt, width), t.top("Why "+routeName(r)+" / "+r.Model, w, t.Border)}
 	for _, l := range lines {
 		out = append(out, t.boxLine(w, t.Border, l))
