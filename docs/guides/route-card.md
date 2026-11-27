@@ -10,6 +10,8 @@ Run `afk` on its own and Esc shuffles in and climbs into its hammock (about two 
 | `?` | shortcuts (on an empty input) |
 | `esc` | clear the input; on an empty input, quit |
 
+While AFK routes (when it takes more than a moment), Esc gets up and the routing screen lists every candidate CLI: each one ticks off with its model and benchmark score once it is scored, or says it has no usable route for the task.
+
 Run `afk` with a prompt and AFK skips the composer and shows the route card before anything starts:
 
 ```sh

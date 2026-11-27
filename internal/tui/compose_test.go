@@ -1,6 +1,10 @@
 package tui
 
 import (
+	"context"
+
+	tea "charm.land/bubbletea/v2"
+	"github.com/homelab-0/agent-flow-kit/internal/engine"
 	"os"
 	"path/filepath"
 	"strings"
@@ -161,4 +165,73 @@ func TestComposerNarrowAndNoMotion(t *testing.T) {
 	if m2.st != sCompose {
 		t.Error("without motion there is no intro")
 	}
+}
+
+// progressFake reports routing steps before answering.
+type progressFake struct {
+	*fake
+	steps []engine.Progress
+}
+
+func (f *progressFake) Explain(ctx context.Context, fl engine.RouteFlags, p string) (*engine.Explain, error) {
+	for _, s := range f.steps {
+		engine.ReportProgress(ctx, s)
+	}
+	return f.fake.Explain(ctx, fl, p)
+}
+
+func TestRoutingScreen(t *testing.T) {
+	f := fixtures(t)
+	rows, _ := f.ex.Rows()
+	m := New(f, Options{Prompt: framePrompt, Width: 80, FPS: 30, Dark: true, Now: func() time.Time { return frameNow }})
+	m.started = frameNow.Add(-400 * time.Millisecond)
+	m.st = sRouting
+	m.prog.add(engine.Progress{Kind: "start", Task: "coding", Guessed: true, Prefer: "balanced", Harnesses: []string{"claude", "codex", "grok", "opencode"}})
+	m.prog.add(engine.Progress{Kind: "route", Harness: "claude", Route: &rows[0]})
+	m.prog.add(engine.Progress{Kind: "route", Harness: "codex", Route: &rows[1]})
+	m.prog.add(engine.Progress{Kind: "skip", Harness: "opencode"})
+	got := plainLines(m.Render())
+	want := []string{
+		"› " + framePrompt,
+		"",
+		" · Routing  coding (guessed) · balanced · 4 routes",
+		"   ✓ CL claude       claude-fable-5-2 SWE-bench Verified 78.1 measured",
+		"   ✓ CX codex        gpt-6.1-sol      SWE-bench Verified 76.4 measured",
+		"   · GK grok                          probing pool usage…",
+		"   – OC opencode     no usable route for this task",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("routing screen\n--- got\n%s\n--- want\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+func TestRoutingStepsReachTheModel(t *testing.T) {
+	base := fixtures(t)
+	f := &progressFake{fake: base, steps: []engine.Progress{{Kind: "start", Task: "coding", Prefer: "balanced", Harnesses: []string{"claude"}}}}
+	m := New(f, Options{Prompt: framePrompt, Width: 80, FPS: 30, Dark: true})
+	cmd := m.explainCmd()
+	// Run the batch: the explain call and the listener.
+	msgs := runBatch(cmd)
+	var sawStart bool
+	for _, msg := range msgs {
+		if pm, ok := msg.(progressMsg); ok && !pm.done && pm.p.Kind == "start" {
+			sawStart = true
+		}
+	}
+	if !sawStart {
+		t.Errorf("the start step never reached the model: %#v", msgs)
+	}
+}
+
+// runBatch runs a command, and each command in a batch, once.
+func runBatch(cmd tea.Cmd) []tea.Msg {
+	msg := cmd()
+	if b, ok := msg.(tea.BatchMsg); ok {
+		var out []tea.Msg
+		for _, c := range b {
+			out = append(out, c())
+		}
+		return out
+	}
+	return []tea.Msg{msg}
 }
