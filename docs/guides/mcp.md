@@ -83,6 +83,6 @@ A CLI that is running may rewrite its own config (Claude Code does). Sync while 
 
 Press `5` in the [control panel](control-panel.md) (or `/mcp` in the composer): one row per server with how it's reached, its tool count and status from the last test, and a column per CLI with the same marks as the [Skills tab](skills.md#the-skills-tab), plus `?` for a file AFK can't read.
 
-`↑` `↓` pick a server and `←` `→` a CLI. `space` turns it on or off for that CLI, `s` syncs, `t` tests the server, and `a` opens `mcp.toml`. When an entry has drifted, a box names it: `k` keeps the CLI's entry and `c` restores AFK's.
+`↑` `↓` pick a server and `←` `→` a CLI. `space` turns it on or off for that CLI, `s` syncs, `t` tests the server, `↵` connects and lists its tools with their descriptions (`↑` `↓` scroll, `esc` goes back; it counts as a test), and `a` opens `mcp.toml`. When an entry has drifted, a box names it: `k` keeps the CLI's entry and `c` restores AFK's.
 
-**Not yet:** project-scope servers (`.mcp.json`), and `↵` to list a server's tools in the tab.
+**Not yet:** project-scope servers (`.mcp.json`).

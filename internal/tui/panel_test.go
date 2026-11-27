@@ -2,6 +2,8 @@ package tui
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -90,6 +92,14 @@ func (fakePanel) MCP(context.Context) (*MCPView, error) {
 func (p *fakePanel) MCPDo(_ context.Context, op string, args ...string) (string, error) {
 	p.ran = append(p.ran, append([]string{"mcp", op}, args...))
 	return "did " + op, nil
+}
+
+func (p *fakePanel) MCPTools(_ context.Context, server string) ([]MCPTool, error) {
+	p.ran = append(p.ran, []string{"mcp", "tools", server})
+	if server == "playwright" {
+		return nil, errors.New("playwright: exec: npx not found")
+	}
+	return []MCPTool{{"create_issue", "Create an issue\nin a repository."}, {"list_pulls", "List pull requests."}, {"search_code", ""}}, nil
 }
 
 func (p *fakePanel) Command(args ...string) []string { return append([]string{"afk"}, args...) }
@@ -391,5 +401,78 @@ func TestPanelFilter(t *testing.T) {
 	keys("esc", "esc")
 	if !p.back {
 		t.Error("the second esc should leave the panel")
+	}
+}
+
+func TestMCPToolsList(t *testing.T) {
+	src := &fakePanel{}
+	p := NewPanel(context.Background(), src, NewTheme(true), TabMCP, "", nil)
+	p.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	p.Update(p.Init()())
+	run := func(k string) {
+		if cmd := p.Update(key(k)); cmd != nil {
+			if c2 := p.Update(cmd()); c2 != nil {
+				p.Update(c2())
+			}
+		}
+	}
+	if !strings.Contains(panelText(p), "↵ tools") {
+		t.Error("the hints should offer ↵ tools")
+	}
+	run("down") // github
+	run("enter")
+	s := panelText(p)
+	if !strings.Contains(s, "github · 3 tools") || !strings.Contains(s, "create_issue") || !strings.Contains(s, "Create an issue in a repository.") {
+		t.Fatalf("tools list missing:\n%s", s)
+	}
+	if !strings.Contains(s, "▌ create_issue") {
+		t.Errorf("the first tool should be selected:\n%s", s)
+	}
+	run("down")
+	if !strings.Contains(panelText(p), "▌ list_pulls") {
+		t.Errorf("down should move to the next tool:\n%s", panelText(p))
+	}
+	run("esc")
+	if p.back || p.tools != nil || !strings.Contains(panelText(p), "openconnector") {
+		t.Fatalf("esc should go back to the servers: back=%v", p.back)
+	}
+	// A server that can't be reached says why and keeps the table.
+	run("down")
+	run("enter")
+	if p.tools != nil || !strings.Contains(panelText(p), "npx not found") {
+		t.Errorf("a failed listing should show its error:\n%s", panelText(p))
+	}
+}
+
+func TestMCPToolsEdges(t *testing.T) {
+	p := NewPanel(context.Background(), &fakePanel{}, NewTheme(true), TabMCP, "", nil)
+	p.Update(tea.WindowSizeMsg{Width: 60, Height: 14})
+	p.Update(p.Init()())
+	// q quit stays in sight on a narrow screen.
+	if s := panelText(p); !strings.Contains(s, "q quit") {
+		t.Errorf("q quit cut off at 60 columns:\n%s", s)
+	}
+	// Only the latest listing opens.
+	old := p.mcpListTools("github")
+	newer := p.mcpListTools("openconnector")
+	p.Update(newer())
+	p.Update(old())
+	if p.tools == nil || p.tools.server != "openconnector" {
+		t.Fatalf("a superseded listing replaced the newer one: %+v", p.tools)
+	}
+	// A long list scrolls to keep the selected tool in view.
+	var many []MCPTool
+	for i := range 40 {
+		many = append(many, MCPTool{Name: fmt.Sprintf("tool_%02d", i)})
+	}
+	p.tools = &toolsView{server: "big", tools: many}
+	p.Update(key("end"))
+	if s := panelText(p); !strings.Contains(s, "▌ tool_39") {
+		t.Errorf("the last tool is not in view:\n%s", s)
+	}
+	// The tab keys still change tabs.
+	p.Update(key("2"))
+	if p.tab != TabHarnesses || p.tools != nil {
+		t.Errorf("2 should leave the tools view for the Harnesses tab: tab=%v", p.tab)
 	}
 }
