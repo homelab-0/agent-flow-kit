@@ -8,8 +8,8 @@ import (
 	"github.com/charmbracelet/x/exp/teatest/v2"
 )
 
-// 08-back-5: the receipt, the rating prompt and the saved line. The frame's
-// "Esc flopped back into the hammock." is the mascot (a later step), so the
+// 08-back-5 without Esc: the receipt, the rating prompt and the saved line. The frame's
+// "Esc flopped back into the hammock." comes with Esc (handoff_test.go), so the
 // last line is compared up to "Saved.".
 func TestFrameReceipt(t *testing.T) {
 	m := NewRating(frameReceipt(t), nil, func(string) error { return nil }, true, false)

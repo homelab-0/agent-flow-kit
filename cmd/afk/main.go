@@ -114,6 +114,7 @@ func interactive(eng tui.Backend, args cli.Args, width int) int {
 		return 1
 	}
 	theme := tui.NewTheme(dark).WithLogos(logos)
+	art := opt.Header != nil && opt.Header.Art
 	s := sessionInfo{eng: eng, route: dec.Route, plan: dec.Plan, before: dec.Pools.Headroom(dec.Route.EntitlementPool)}
 	return s.run(func(id string) {
 		lipgloss.Println(theme.LaunchText(dec.Route, "here", id, dec.Yolo, width))
@@ -121,12 +122,14 @@ func interactive(eng tui.Backend, args cli.Args, width int) int {
 			lipgloss.Println(theme.Dim.Render("  " + dec.Plan.ModeNote))
 		}
 		lipgloss.Println()
+		lipgloss.Println(theme.HandoffText(dec.Route, art, width))
+		lipgloss.Println()
 		lipgloss.Println(theme.SessionRuleText(dec.Route))
 	}, func() {
 		lipgloss.Println(theme.EndRuleText())
 		lipgloss.Println()
 	}, func(receipt tui.Receipt, fill func() tui.Receipt, save func(string) error) {
-		rm := tui.NewRating(receipt, fill, save, dark, motion)
+		rm := tui.NewRating(receipt, fill, save, dark, motion).WithEsc(art, width, nil)
 		if _, err := tea.NewProgram(rm).Run(); err != nil {
 			fmt.Fprintln(os.Stderr, "afk:", err)
 		}
