@@ -22,6 +22,12 @@ type ProbeEnv struct {
 	Now    time.Time
 	// GatewayURL is the model gateway (LiteLLM or compatible); "" for none.
 	GatewayURL string
+	// LocalURLs are where to look for inference engines on this machine
+	// (none: don't look). Only loopback addresses are probed.
+	LocalURLs []string
+	// GPU names this machine's GPU ("" when it can't tell); nil skips it.
+	// It is asked only when a local engine answers.
+	GPU func(ctx context.Context) string
 	// Installed reports whether a CLI is installed and answers. Nil uses
 	// the cached --version check (VerifyBinaries).
 	Installed func(name string) bool
@@ -87,10 +93,12 @@ func ProbePools(ctx context.Context, cat *Catalog, e ProbeEnv) *Probe {
 		}()
 	}
 	var gw HarnessState
+	var local []LocalEngine
 	var codexQ quota
 	codexMode := ""
-	wg.Add(3)
+	wg.Add(4)
 	go func() { defer wg.Done(); gw = probeGateway(ctx, e) }()
+	go func() { defer wg.Done(); local = probeLocal(ctx, e) }()
 	go func() { defer wg.Done(); codexQ = probeCodexQuota(e) }()
 	go func() {
 		defer wg.Done()
@@ -100,6 +108,10 @@ func ProbePools(ctx context.Context, cat *Catalog, e ProbeEnv) *Probe {
 	}()
 	wg.Wait()
 	harnesses["litellm_gateway"] = gw
+	gpu := ""
+	if len(local) > 0 && e.GPU != nil {
+		gpu = e.GPU(ctx)
+	}
 
 	binds := accountBindings(e, harnesses, codexMode)
 	bound := func(h, pool string) bool { return contains(binds[pool], h) }
@@ -146,6 +158,7 @@ func ProbePools(ctx context.Context, cat *Catalog, e ProbeEnv) *Probe {
 		"xai-grok":         pc.calc("xai-grok", xai5, false, []string{"grok", "opencode"}, quota{}, grokMt),
 		"opencode-free":    pc.calc("opencode-free", o5, false, []string{"opencode"}, quota{}, 0),
 		"litellm-local":    pc.calc("litellm-local", 0, true, []string{"claude", "opencode"}, quota{}, 0),
+		LocalPool:          localPool(local),
 	}
 
 	for id, p := range pools {
@@ -194,7 +207,7 @@ func ProbePools(ctx context.Context, cat *Catalog, e ProbeEnv) *Probe {
 			unavailable[m] = v
 		}
 	}
-	return &Probe{Schema: PoolsSchema, Harnesses: harnesses, AuthAlerts: alerts, UnavailableModels: unavailable, Pools: pools, Bindings: binds, at: e.Now}
+	return &Probe{Schema: PoolsSchema, Harnesses: harnesses, AuthAlerts: alerts, UnavailableModels: unavailable, Pools: pools, Bindings: binds, Local: local, LocalGPU: gpu, at: e.Now}
 }
 
 func reauth(h string) string {

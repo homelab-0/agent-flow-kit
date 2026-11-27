@@ -39,21 +39,26 @@ type Route struct {
 	BenchmarkSyncedAt string   `json:"benchmark_synced_at"`
 	EffectiveScore    *float64 `json:"effective_score"`
 
-	CostClass      string   `json:"cost_class"`
-	LaunchClass    string   `json:"launch_class"`
-	RouterSource   string   `json:"router_source"`
-	AuthAlerts     []any    `json:"auth_alerts"`
-	Reason         string   `json:"reason"`
-	TaskClass      string   `json:"task_class"`
-	Stage          string   `json:"stage"`
-	Risk           string   `json:"risk"`
-	LitellmBaseURL string   `json:"litellm_base_url"`
-	GatewayName    string   `json:"gateway_name"`
-	GatewayKind    string   `json:"gateway_kind"`
-	Engine         string   `json:"engine"`
-	EngineHost     string   `json:"engine_host"`
-	Pinned         bool     `json:"pinned"`
-	WindowTokens   *float64 `json:"window_tokens"`
+	CostClass      string `json:"cost_class"`
+	LaunchClass    string `json:"launch_class"`
+	RouterSource   string `json:"router_source"`
+	AuthAlerts     []any  `json:"auth_alerts"`
+	Reason         string `json:"reason"`
+	TaskClass      string `json:"task_class"`
+	Stage          string `json:"stage"`
+	Risk           string `json:"risk"`
+	LitellmBaseURL string `json:"litellm_base_url"`
+	GatewayName    string `json:"gateway_name"`
+	GatewayKind    string `json:"gateway_kind"`
+	Engine         string `json:"engine"`
+	EngineHost     string `json:"engine_host"`
+	// A local model's engine address, this machine's GPU, and whether the
+	// engine has a model loaded ("idle", "loaded"; "" unknown).
+	EngineURL    string   `json:"engine_url"`
+	EngineGPU    string   `json:"engine_gpu"`
+	EngineState  string   `json:"engine_state"`
+	Pinned       bool     `json:"pinned"`
+	WindowTokens *float64 `json:"window_tokens"`
 	// Pacing is the route's pool projection; PacingAdjustment is what it
 	// moved the score, nil when route.pacing is off or it moved nothing.
 	Pacing           *Pacing  `json:"pacing"`
@@ -159,6 +164,9 @@ func (r Route) PoolBasis() string {
 }
 
 func (r Route) IsGateway() bool { return strings.HasSuffix(r.LaunchClass, "-gateway") }
+
+// IsLocal reports a route to a model running on this machine.
+func (r Route) IsLocal() bool { return r.LaunchClass == "claude-local" }
 
 // SameAs reports whether two routes start the same thing.
 func (r Route) SameAs(o Route) bool {

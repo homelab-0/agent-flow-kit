@@ -52,7 +52,11 @@ type Probe struct {
 	// Bindings lists, per pool, the CLIs signed in to it. Nil means
 	// unknown, and then no candidate is held back for want of a login.
 	Bindings map[string][]string `json:"bindings,omitempty"`
-	at       time.Time           // when the probe ran
+	// Local are the inference engines found on this machine, and LocalGPU
+	// its GPU ("" when it can't tell).
+	Local    []LocalEngine `json:"local,omitempty"`
+	LocalGPU string        `json:"local_gpu,omitempty"`
+	at       time.Time     // when the probe ran
 }
 
 // gateway is the probe's entry for the model gateway.

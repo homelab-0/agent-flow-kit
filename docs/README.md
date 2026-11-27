@@ -15,6 +15,7 @@ Anything not built yet is marked **Planned** and listed in the [roadmap](../READ
 - [How routing works](guides/routing.md): task kinds, scoring, the rules no route can break, effort
 - [Agent CLIs (harnesses)](guides/harnesses.md): which CLIs AFK supports and what `afk harness` shows
 - [Subscription pools](guides/pools.md): how AFK knows how much of each plan is left
+- [Local models](guides/local-models.md): Ollama, LM Studio, llama.cpp, vLLM and SGLang on this machine, found and routed to
 - [Model gateways](guides/gateways.md): routing to a LiteLLM-style gateway without exposing a plan login
 - [Permission modes](guides/permissions.md): read-only, ask, edits, auto and yolo, per CLI, and `afk trust`
 - [One-shot answers (`-p`)](guides/print-mode.md): headless runs with failover

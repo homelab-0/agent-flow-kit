@@ -24,6 +24,12 @@ var badgeCodes = map[string]string{
 
 // badge is the 2-cell text logo of a route (step 1 draws no images).
 func badge(r engine.Route) string {
+	if r.IsLocal() {
+		if c := engineCodes[r.Engine]; c != "" {
+			return c
+		}
+		return "LO"
+	}
 	if r.IsGateway() {
 		return "GW"
 	}
@@ -39,6 +45,12 @@ func badge(r engine.Route) string {
 
 // routeName is the display id: the CLI, or "gateway" for a gateway route.
 func routeName(r engine.Route) string {
+	if r.IsLocal() {
+		if r.Engine != "" {
+			return r.Engine
+		}
+		return "local"
+	}
 	if r.IsGateway() {
 		if r.GatewayName != "" && r.GatewayName != "default" {
 			return r.GatewayName
@@ -76,10 +88,39 @@ func costText(c string) string {
 	switch c {
 	case "subscription":
 		return "plan"
+	case "local":
+		return "free"
 	case "":
 		return unknownText
 	}
 	return c
+}
+
+// localEngineName is a local route's engine as it is written.
+func localEngineName(r engine.Route) string {
+	if r.Engine == "" {
+		return "a local engine"
+	}
+	return engineName(r.Engine)
+}
+
+// localWhere is where a local route runs: "this PC's RTX 5090", or "this
+// PC" when the GPU is unknown.
+func localWhere(r engine.Route) string {
+	if r.EngineGPU != "" {
+		return "this PC's " + r.EngineGPU
+	}
+	return "this PC"
+}
+
+// shortGPU is a GPU name for the table: "RTX 5090" is "5090".
+func shortGPU(g string) string {
+	for _, p := range []string{"RTX ", "GTX "} {
+		if strings.HasPrefix(g, p) {
+			return strings.TrimPrefix(g, p)
+		}
+	}
+	return g
 }
 
 // gatewayHost is the gateway's host name; never the rest of the URL, which
@@ -98,6 +139,9 @@ func gatewayHost(r engine.Route) string {
 // loginText says which sign-in a route uses. A plan login is only ever its
 // own vendor's CLI's.
 func loginText(r engine.Route) string {
+	if r.IsLocal() {
+		return localEngineName(r) + " on localhost · nothing leaves this PC"
+	}
 	if r.IsGateway() {
 		if n := routeName(r); n != "gateway" {
 			return n + " · gateway key, no plan login"
@@ -302,6 +346,8 @@ func reasonText(rows []engine.Route, i int, task string, now time.Time) string {
 		}
 	}
 	switch {
+	case r.IsLocal():
+		fmt.Fprintf(&b, "; free and private, running on %s with %s.", localWhere(r), localEngineName(r))
 	case r.IsGateway() && r.Engine != "":
 		fmt.Fprintf(&b, "; free, served by %s", engineName(r.Engine))
 		if h := engineHost(r); h != "" {

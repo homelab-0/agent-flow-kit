@@ -22,7 +22,7 @@ afk "make the settings page responsive"
 
 Above the card is the header: Esc, AFK's mascot, standing in front of its hammock, with the AFK version, the folder and git branch, and a status line. Esc gets up while AFK routes, suggests the router's pick on the card, and needs you when a launch fails. Below 70 columns the header is left out, and with `NO_COLOR` it shows the text without Esc.
 
-The top box is the pick: the CLI, model and effort, the kind of task (and whether AFK guessed it), why this route, and how much of its pool is left in the current window (five hours, or a week when that is what the CLI reports; the reset shows its day when it is more than a day away). Below it is the best route on every other installed CLI, with its model, effort, score, pool headroom and cost.
+The top box is the pick: the CLI, model and effort, the kind of task (and whether AFK guessed it), why this route, and how much of its pool is left in the current window (five hours, or a week when that is what the CLI reports; the reset shows its day when it is more than a day away). Below it is the best route on every other installed CLI, with its model, effort, score, pool headroom and cost, then the model gateway and each [local engine](local-models.md) as rows of their own (a local row's headroom column says `this PC` and its GPU).
 
 ## Keys
 

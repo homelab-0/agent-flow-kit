@@ -24,6 +24,10 @@ type Input struct {
 	// OnlyPool limits the choice to routes served by this pool; empty
 	// allows all.
 	OnlyPool string
+	// ExcludePools leaves out the routes these pools serve.
+	ExcludePools []string
+	// OnlyEngineURL limits the choice to the local engine at this address.
+	OnlyEngineURL string
 
 	GatewayURL         string
 	AllowMetered       bool
@@ -103,8 +107,13 @@ type Route struct {
 	GatewayKind string `json:"gateway_kind,omitempty"`
 	Engine      string `json:"engine,omitempty"`
 	EngineHost  string `json:"engine_host,omitempty"`
-	AuthAlerts  []any  `json:"auth_alerts"`
-	Reason      string `json:"reason"`
+	// A local model's engine address, this machine's GPU and whether a
+	// model is loaded.
+	EngineURL   *string `json:"engine_url,omitempty"`
+	EngineGPU   string  `json:"engine_gpu,omitempty"`
+	EngineState string  `json:"engine_state,omitempty"`
+	AuthAlerts  []any   `json:"auth_alerts"`
+	Reason      string  `json:"reason"`
 
 	// Your ratings of this CLI and model on this kind of task, when there
 	// are enough of them to count, and the points they moved the score.
@@ -292,6 +301,9 @@ type effortChoice struct {
 }
 
 func (in Input) resolveEffort(tc, candDefault string, supported []string) effortChoice {
+	if supported != nil && len(supported) == 0 {
+		return effortChoice{} // a model with no effort setting (local models)
+	}
 	st, rk, dl := in.Stage, in.Risk, in.DiffLines
 	var base int
 	switch {
@@ -455,7 +467,7 @@ func (r *Router) Select(in Input) Route {
 	subsUnderPressure := poolState("anthropic-max") != "available" &&
 		poolState("antigravity-pool") != "available" && poolState("xai-grok") != "available"
 
-	cands := r.candidates(in.AllowMetered)
+	cands := append(r.candidates(in.AllowMetered), r.localCandidates(probe)...)
 	var routes []Route
 	for _, c := range cands {
 		if !probe.Harnesses[c.Harness].Installed {
@@ -511,7 +523,7 @@ func (r *Router) Select(in Input) Route {
 		}
 		// Reviewer floor: no free or local model reviews work that may
 		// merge unattended.
-		if isReview && !in.AllowFreeReviewers && (isFree || cclass == "free" || c.RequiresGateway) {
+		if isReview && !in.AllowFreeReviewers && (isFree || cclass == "free" || cclass == "local" || c.RequiresGateway) {
 			continue
 		}
 		// Frontier models stay off known small edits and low/medium intake.
@@ -546,6 +558,12 @@ func (r *Router) Select(in Input) Route {
 			continue
 		}
 		if in.OnlyPool != "" && c.EntitlementPool != in.OnlyPool {
+			continue
+		}
+		if contains(in.ExcludePools, c.EntitlementPool) {
+			continue
+		}
+		if in.OnlyEngineURL != "" && c.engineURL != in.OnlyEngineURL {
 			continue
 		}
 		if c.RequiresGateway {
@@ -586,7 +604,7 @@ func (r *Router) Select(in Input) Route {
 		if cross {
 			adj += 6
 		}
-		if c.RequiresGateway && in.Risk == "low" && (tc == "research" || tc == "coding_standard") {
+		if (c.RequiresGateway || c.LaunchClass == LocalLaunch) && in.Risk == "low" && (tc == "research" || tc == "coding_standard") {
 			adj += 6.5
 		}
 		if isFree && in.Risk == "low" && (tc == "research" || tc == "coding_standard") && (in.PreferFree || subsUnderPressure) {
@@ -623,7 +641,12 @@ func (r *Router) Select(in Input) Route {
 			sup = defaultEffort
 		}
 		source := "afk-benchmarks"
-		var gwURL *string
+		var gwURL, engURL *string
+		if c.LaunchClass == LocalLaunch {
+			source = "afk-benchmarks+local"
+			u := c.engineURL
+			engURL = &u
+		}
 		if c.RequiresGateway {
 			source = "afk-benchmarks+litellm"
 			if in.GatewayURL != "" {
@@ -651,6 +674,10 @@ func (r *Router) Select(in Input) Route {
 			RouterSource: source, LitellmBaseURL: gwURL, AuthAlerts: alerts,
 			OutcomeRuns: outRuns, OutcomeAdjustment: outAdj,
 			Pacing: pool.Pacing, PacingAdjustment: paceAdj,
+		}
+		if engURL != nil {
+			le, _ := probe.localEngineAt(*engURL)
+			route.EngineURL, route.Engine, route.EngineHost, route.EngineGPU, route.EngineState = engURL, le.Engine, "this PC", probe.LocalGPU, le.State
 		}
 		route.Reason = reasonText(route, c, pool, ef, tc, cross, in.BuilderFamily, scoreText)
 		if outAdj != nil {

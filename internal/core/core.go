@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -133,15 +134,21 @@ func (c *Core) load(ctx context.Context, repo string) (*state, error) {
 	if installed == nil {
 		installed = router.VerifyBinaries(ctx, c.Harness, c.getenv)
 	}
-	probe := router.ProbePools(ctx, cat, router.ProbeEnv{
-		Home: c.Home, Getenv: c.getenv, Now: c.now(), GatewayURL: s.GatewayURL,
-		Installed: installed, Live: c.Live, CodexLoginMode: c.codexLoginMode(),
-	})
+	probe := router.ProbePools(ctx, cat, c.probeEnv(s, installed))
 	r := &router.Router{Catalog: cat, Probe: probe, Discovered: c.discovered(), Pacing: s.Pacing}
 	if s.Learn {
 		r.Outcomes = Outcomes(runrec.Load(runrec.DirFor(c.Home, c.getenv), c.now().Add(-OutcomeMaxAge)))
 	}
 	return &state{r: r, settings: s}, nil
+}
+
+// probeEnv is what the pool probe reads, for these settings.
+func (c *Core) probeEnv(s config.Settings, installed func(string) bool) router.ProbeEnv {
+	return router.ProbeEnv{
+		Home: c.Home, Getenv: c.getenv, Now: c.now(), GatewayURL: s.GatewayURL,
+		LocalURLs: s.LocalURLs, GPU: gpuName(s.LocalGPU),
+		Installed: installed, Live: c.Live, CodexLoginMode: c.codexLoginMode(),
+	}
 }
 
 // OutcomeMaxAge is how far back ratings count: models and CLIs change.
@@ -234,6 +241,12 @@ func (c *Core) DiscoveredWarning() string {
 // a pick. A pool limits it further to routes that pool serves; "" allows
 // any.
 func (st *state) route(task, prefer string, only []string, pool string) (router.Route, bool, error) {
+	return st.routeIn(task, prefer, router.Input{OnlyHarnesses: only, OnlyPool: pool})
+}
+
+// routeIn is route with the limits in lim (OnlyHarnesses, OnlyPool,
+// ExcludePools, OnlyEngineURL).
+func (st *state) routeIn(task, prefer string, lim router.Input) (router.Route, bool, error) {
 	stage, risk, err := router.TaskRoute(task, prefer)
 	if err != nil {
 		return router.Route{}, false, err
@@ -241,7 +254,8 @@ func (st *state) route(task, prefer string, only []string, pool string) (router.
 	pf := st.settings.PreferFree || prefer == "cheap" || task == "quick"
 	r := st.r.Select(router.Input{
 		Stage: stage, Risk: risk, Round: 1, Surfaces: []string{"code"},
-		OnlyHarnesses: only, OnlyPool: pool, GatewayURL: st.settings.GatewayURL, AllowMetered: st.settings.AllowMetered,
+		OnlyHarnesses: lim.OnlyHarnesses, OnlyPool: lim.OnlyPool, ExcludePools: lim.ExcludePools, OnlyEngineURL: lim.OnlyEngineURL,
+		GatewayURL: st.settings.GatewayURL, AllowMetered: st.settings.AllowMetered,
 		PreferFree: pf, AllowFreeReviewers: st.settings.AllowFreeReviewers, SecurityModels: st.settings.SecurityModels,
 	})
 	if r.IsFallback() {
@@ -413,17 +427,44 @@ func (c *Core) Explain(ctx context.Context, f engine.RouteFlags, prompt string) 
 	}
 	alts := []router.Route{}
 	if d.pinH == "" {
+		// One row per CLI on its own login, then the gateway and each
+		// local engine as rows of their own, so a free route is shown
+		// beside the plan routes rather than hiding them.
+		type row struct {
+			key string
+			lim router.Input
+		}
+		offPlan := []string{gatewayPool, router.LocalPool}
+		var rows []row
 		for _, h := range d.installed {
-			r, ok, err := d.st.route(d.task, d.prefer, []string{h}, "")
+			rows = append(rows, row{h, router.Input{OnlyHarnesses: []string{h}, ExcludePools: offPlan}})
+		}
+		var extra []string
+		if d.st.r.Probe != nil && d.st.r.Probe.Harnesses["litellm_gateway"].Online && contains(d.installed, "claude") {
+			rows = append(rows, row{"gateway", router.Input{OnlyHarnesses: []string{"claude"}, OnlyPool: gatewayPool}})
+			extra = append(extra, "gateway")
+		}
+		if d.st.r.Probe != nil && contains(d.installed, "claude") {
+			for _, le := range d.st.r.Probe.Local {
+				k := localKey(le, extra)
+				rows = append(rows, row{k, router.Input{OnlyHarnesses: []string{"claude"}, OnlyPool: router.LocalPool, OnlyEngineURL: le.URL}})
+				extra = append(extra, k)
+			}
+		}
+		if len(extra) > 0 {
+			engine.ReportProgress(ctx, engine.Progress{Kind: "add", Harnesses: extra})
+		}
+		for _, rw := range rows {
+			r, ok, err := d.st.routeIn(d.task, d.prefer, rw.lim)
 			if err != nil || !ok {
-				engine.ReportProgress(ctx, engine.Progress{Kind: "skip", Harness: h})
+				engine.ReportProgress(ctx, engine.Progress{Kind: "skip", Harness: rw.key})
 				continue
 			}
-			if f.Effort != "" {
+			if f.Effort != "" && len(r.SupportedEfforts) > 0 {
 				r.Effort = f.Effort
 			}
 			alts = append(alts, r)
-			reportRoute(ctx, h, r)
+			reportRoute(ctx, rw.key, r)
 		}
 		sortByScore(alts)
 	}
@@ -467,10 +508,53 @@ func (c *Core) Probe(ctx context.Context) (*router.Probe, error) {
 	if installed == nil {
 		installed = router.VerifyBinaries(ctx, c.Harness, c.getenv)
 	}
-	return router.ProbePools(ctx, cat, router.ProbeEnv{
-		Home: c.Home, Getenv: c.getenv, Now: c.now(), GatewayURL: s.GatewayURL, Installed: installed, Live: c.Live,
-		CodexLoginMode: c.codexLoginMode(),
-	}), nil
+	return router.ProbePools(ctx, cat, c.probeEnv(s, installed)), nil
+}
+
+// gatewayPool is the pool the model gateway's routes draw on.
+const gatewayPool = "litellm-local"
+
+// localKey names a local engine's row on the routing screen: the engine,
+// or its address when two engines share a name.
+func localKey(le router.LocalEngine, taken []string) string {
+	k := le.Engine
+	if k == "" {
+		k = "local"
+	}
+	if contains(taken, k) {
+		k = le.URL
+	}
+	return k
+}
+
+// gpuName names this machine's GPU: the label from config, else the first
+// one nvidia-smi lists, shortened ("NVIDIA GeForce RTX 5090" is "RTX
+// 5090"). "" when there is none it can tell.
+func gpuName(label string) func(context.Context) string {
+	return func(ctx context.Context) string {
+		if label != "" {
+			return label
+		}
+		ctx, cancel := context.WithTimeout(ctx, time.Second)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, "nvidia-smi", "--query-gpu=name", "--format=csv,noheader").Output()
+		if err != nil {
+			return ""
+		}
+		return shortGPU(string(out))
+	}
+}
+
+func shortGPU(s string) string {
+	s, _, _ = strings.Cut(strings.TrimSpace(s), "\n")
+	s = strings.TrimSpace(s)
+	for _, p := range []string{"NVIDIA ", "GeForce "} {
+		s = strings.TrimPrefix(s, p)
+	}
+	if len(s) > 40 || strings.ContainsAny(s, "\x00\x1b\r") {
+		return ""
+	}
+	return s
 }
 
 // reportRoute passes a scored route to the routing screen, in the shape

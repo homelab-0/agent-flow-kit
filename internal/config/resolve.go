@@ -164,7 +164,11 @@ type Settings struct {
 	GatewayKey  *SecretRef // the default gateway's key reference, if config names one
 	// Gateways are config.toml's gateways, by name, for matching a route's
 	// gateway URL to its own key.
-	Gateways           map[string]Gateway
+	Gateways map[string]Gateway
+	// LocalURLs are where to look for inference engines on this machine
+	// (none when local.engines is off); LocalGPU is local.gpu.
+	LocalURLs          []string
+	LocalGPU           string
 	AllowMetered       bool
 	PreferFree         bool
 	AllowFreeReviewers bool
@@ -289,6 +293,16 @@ func Resolve(e Env) (Settings, error) {
 		}
 		return false
 	}
+	// Local engines: the usual ports (unless local.engines is off) and
+	// local.urls. AFK_LOCAL_ENGINES=off turns both off.
+	switch m := e.getenv("AFK_LOCAL_ENGINES"); {
+	case m == "off":
+	case m == "" && c.Local.Engines == "off":
+		s.LocalURLs = append(s.LocalURLs, c.Local.URLs...)
+	default:
+		s.LocalURLs = append(DefaultLocalURLs(), c.Local.URLs...)
+	}
+	s.LocalGPU = c.Local.GPU
 	s.AllowMetered = pick("AFK_ROUTER_ALLOW_METERED_API", nil, nil, c.Route.AllowMetered)
 	s.PreferFree = pick("AFK_ROUTER_PREFER_FREE", repo.PreferFree, lr.PreferFree, c.Route.PreferFree)
 	s.AllowFreeReviewers = pick("AFK_ROUTER_ALLOW_FREE_REVIEWERS", nil, nil, c.Route.AllowFreeReviewers)
@@ -470,4 +484,17 @@ func hostOf(raw string) string {
 		return u.Host
 	}
 	return "(unreadable)"
+}
+
+// DefaultLocalPorts are where an inference engine usually listens:
+// Ollama, LM Studio, llama.cpp, vLLM and SGLang.
+var DefaultLocalPorts = []string{"11434", "1234", "8080", "8000", "30000"}
+
+// DefaultLocalURLs are the addresses AFK looks at for local engines.
+func DefaultLocalURLs() []string {
+	out := make([]string, 0, len(DefaultLocalPorts))
+	for _, p := range DefaultLocalPorts {
+		out = append(out, "http://127.0.0.1:"+p)
+	}
+	return out
 }

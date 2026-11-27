@@ -80,6 +80,9 @@ type Candidate struct {
 	ScopedQuota         string               `json:"scoped_quota,omitempty"`
 	BridgedOAuth        bool                 `json:"is_bridged_oauth,omitempty"`
 	Benchmarks          map[string]Benchmark `json:"benchmarks"`
+
+	// engineURL is the local engine a local model runs on.
+	engineURL string
 }
 
 // PoolMeta is what the catalog says about a subscription pool.
