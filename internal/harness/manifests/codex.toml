@@ -58,3 +58,5 @@ format = "skill-md"
 # not checked against an install.
 file = "$CODEX_HOME/config.toml|~/.codex/config.toml"
 format = "codex-toml"
+# A trusted project's .codex/config.toml, from Codex's documentation.
+project_file = ".codex/config.toml"

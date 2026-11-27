@@ -87,7 +87,9 @@ func (fakePanel) MCP(context.Context) (*MCPView, error) {
 			{Name: "openconnector", Via: "homelab", Listed: true, Tools: 312, Status: "up", Tested: "2h ago", Cells: map[string]string{"claude": "synced", "codex": "synced", "grok": "synced"}},
 			{Name: "github", Via: "homelab", Listed: true, Tools: 48, Status: "up", Tested: "2h ago", Cells: map[string]string{"claude": "synced", "codex": "drifted", "grok": "unsupported"}, Notes: map[string]string{"grok": "grok can't pass a token by name"}},
 			{Name: "playwright", Via: "stdio", Listed: true, Tools: -1, Status: "untested", Cells: map[string]string{"claude": "synced", "codex": "pending", "grok": "off"}},
+			{Name: "repo-db", Via: "stdio", Listed: true, Tools: -1, Status: "untested", Project: true, Cells: map[string]string{"claude": "native", "codex": "ask", "grok": "unsupported"}},
 		},
+		Project: "~/repos/prox-ops/.mcp.json", Undecided: 1,
 		Drift: []MCPDrift{{Server: "github", Harness: "codex", File: "~/.codex/config.toml"}}}, nil
 }
 
@@ -135,7 +137,7 @@ func TestPanelTabs(t *testing.T) {
 		TabConfig: {"file ~/.config/afk/config.toml", "route.prefer                balanced", "e edit config.toml"},
 		TabSkills: {"4 skills · source ~/.config/afk/skills · 1 drifted · 1 to sync · 1 to choose", "skill", "CL  CX  GK  AG", "gh-pr-triage", "↻", "╭─ gh-pr-triage changed in grok",
 			"Edited in ~/.grok/skills 2 hours ago. 4 lines differ from central.", "k keep grok's and update central", "space enable"},
-		TabMCP: {"3 servers · ~/.config/afk/mcp.toml · 360 tools · 1 drifted · 1 to sync", "server", "CL  CX  GK  PI  status", "openconnector",
+		TabMCP: {"4 servers · ~/.config/afk/mcp.toml · 360 tools · 1 drifted · 1 to sync", "server", "CL  CX  GK  PI  status", "openconnector",
 			"312", "up · 2h ago", "untested", "╭─ github changed in codex", "k keep codex's as its own", "t test"},
 	} {
 		s := panelText(panelAt(t, tab))
@@ -480,6 +482,48 @@ func TestMCPToolsList(t *testing.T) {
 	run("enter")
 	if p.tools != nil || !strings.Contains(panelText(p), "npx not found") {
 		t.Errorf("a failed listing should show its error:\n%s", panelText(p))
+	}
+}
+
+func TestMCPProjectScope(t *testing.T) {
+	src := &fakePanel{}
+	p := NewPanel(context.Background(), src, NewTheme(true), TabMCP, "", nil)
+	p.Update(tea.WindowSizeMsg{Width: 100, Height: 34})
+	p.Update(p.Init()())
+	s := panelText(p)
+	for _, w := range []string{"1 to choose", "repo-db", "project", "project: ~/repos/prox-ops/.mcp.json"} {
+		if !strings.Contains(s, w) {
+			t.Errorf("missing %q in\n%s", w, s)
+		}
+	}
+	for range 3 {
+		p.Update(key("down"))
+	}
+	p.Update(key("right")) // codex, which gets a copy
+	p.Update(key(" "))
+	if p.askScope != "repo-db" {
+		t.Fatalf("space didn't ask: %q", p.askScope)
+	}
+	if !strings.Contains(panelText(p), "Add repo-db") || !strings.Contains(panelText(p), "added to mcp.toml") {
+		t.Fatalf("no scope question:\n%s", panelText(p))
+	}
+	p.Update(key("esc"))
+	if p.askScope != "" || p.back {
+		t.Fatalf("esc: ask=%q back=%v", p.askScope, p.back)
+	}
+	p.Update(key(" "))
+	if cmd := p.Update(key("p")); cmd != nil {
+		p.Update(cmd())
+	}
+	want := []string{"mcp", "project:scope", "repo-db", "project"}
+	if len(src.ran) == 0 || strings.Join(src.ran[len(src.ran)-1], " ") != strings.Join(want, " ") {
+		t.Errorf("ran %v, want %v", src.ran, want)
+	}
+	// The CLI that reads .mcp.json itself says so.
+	p.mcpCol = 0
+	p.Update(key(" "))
+	if !strings.Contains(p.notice, "reads .mcp.json itself") {
+		t.Errorf("notice %q", p.notice)
 	}
 }
 

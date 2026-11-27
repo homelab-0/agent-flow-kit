@@ -680,7 +680,15 @@ func (s panelSource) mcp() (mcpDeps, error) {
 		return mcpDeps{}, err
 	}
 	t, u := mcpTargets(s.c.Harness)
-	return mcpDeps{env: mcpEnvFor(s.c.Home, s.getenv, st), targets: t, unsupported: u, getenv: s.getenv}, nil
+	d := mcpDeps{env: mcpEnvFor(s.c.Home, s.getenv, st), targets: t, unsupported: u, getenv: s.getenv}
+	user, he := d, s.c.Harness
+	d.project = func() *projectMCP {
+		if repo == "" {
+			return nil
+		}
+		return projectMCPFor(repoRoot(repo), he, s.getenv, user)
+	}
+	return d, nil
 }
 
 // MCP is the MCP tab.
@@ -693,7 +701,66 @@ func (s panelSource) MCP(ctx context.Context) (*tui.MCPView, error) {
 	if err != nil {
 		return nil, err
 	}
-	return mcpView(d, st, s.c.Home, time.Now()), nil
+	v := mcpView(d, st, s.c.Home, time.Now())
+	if p := d.project(); p != nil {
+		if err := addProjectMCP(v, p, s.c.Home, time.Now()); err != nil {
+			v.Problems = append(v.Problems, "project servers: "+err.Error())
+		}
+	}
+	return v, nil
+}
+
+// addProjectMCP adds the project's servers as rows under mcp.toml's, in
+// the same CLI columns.
+func addProjectMCP(v *tui.MCPView, p *projectMCP, home string, now time.Time) error {
+	st, err := p.deps.env.Scan(p.deps.targets)
+	if err != nil {
+		return err
+	}
+	pv := mcpView(p.deps, st, home, now)
+	v.Project = pv.Source
+	native := map[string]bool{}
+	for _, n := range p.native {
+		native[n] = true
+	}
+	for _, r := range pv.Rows {
+		r.Project = true
+		for _, sr := range st.Rows {
+			if sr.Name == r.Name {
+				r.Scope = sr.Scope
+			}
+		}
+		if r.Notes == nil {
+			r.Notes = map[string]string{}
+		}
+		for _, c := range v.Cols {
+			switch {
+			case native[c] && r.Listed:
+				r.Cells[c] = "native"
+			case native[c]:
+				r.Cells[c] = "unmanaged"
+			case r.Cells[c] == "":
+				r.Cells[c] = "unsupported"
+				r.Notes[c] = p.notes[c]
+				if r.Notes[c] == "" {
+					r.Notes[c] = c + " has no project MCP file AFK knows"
+				}
+			}
+		}
+		if r.Listed && r.Scope == "" {
+			v.Undecided++
+		}
+		v.Rows = append(v.Rows, r)
+	}
+	for _, dr := range pv.Drift {
+		dr.Project = true
+		v.Drift = append(v.Drift, dr)
+	}
+	v.Pending += pv.Pending
+	for _, pr := range pv.Problems {
+		v.Problems = append(v.Problems, "skipped "+pr)
+	}
+	return nil
 }
 
 func mcpView(d mcpDeps, st *mcp.Status, home string, now time.Time) *tui.MCPView {
@@ -759,16 +826,31 @@ func (s panelSource) MCPDo(ctx context.Context, op string, args ...string) (stri
 		}
 		return args[0], args[1], nil
 	}
+	if rest, ok := strings.CutPrefix(op, "project:"); ok {
+		p := d.project()
+		if p == nil {
+			return "", fmt.Errorf("this repository has no %s", mcp.ProjectFile)
+		}
+		return projectMCPDo(p, rest, args...)
+	}
 	switch op {
 	case "sync":
 		res, err := d.env.Sync(d.targets)
 		if err != nil {
 			return "", err
 		}
-		if len(res.Done) == 0 {
+		n := len(res.Done)
+		if p := d.project(); p != nil {
+			pres, err := p.sync()
+			if err != nil {
+				return "", err
+			}
+			n += len(pres.Done)
+		}
+		if n == 0 {
 			return "Everything is in sync.", nil
 		}
-		return fmt.Sprintf("Synced %s.", plural(len(res.Done), "change")), nil
+		return fmt.Sprintf("Synced %s.", plural(n, "change")), nil
 	case "test":
 		if len(args) != 1 {
 			return "", fmt.Errorf("mcp test needs a server")

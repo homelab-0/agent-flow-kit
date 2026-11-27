@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/x/term"
 	"github.com/homelab-0/agent-flow-kit/internal/config"
 	"github.com/homelab-0/agent-flow-kit/internal/harness"
 	"github.com/homelab-0/agent-flow-kit/internal/mcp"
@@ -22,6 +23,7 @@ const mcpHelp = `Usage: afk mcp [status] [--json]
        afk mcp test <server> [--json]
        afk mcp keep|restore <server> <cli>
        afk mcp enable|disable <server> <cli>
+       afk mcp scope <server> project|global
        afk mcp edit|path
 
 Keeps one list of MCP servers in ~/.config/afk/mcp.toml and writes each
@@ -33,6 +35,8 @@ into every installed CLI's own MCP config, in that CLI's format.
   keep      leave a CLI's edited entry as its own; AFK stops managing it
   restore   write AFK's entry back over a CLI's edited one
   enable    turn a server on or off for one CLI here (the next sync applies it)
+  scope     add a server from this repository's .mcp.json for this project
+            only, or for every project (adds it to mcp.toml)
   edit      open mcp.toml in your editor (a commented template when new)
   path      print where mcp.toml is
 
@@ -42,6 +46,14 @@ overwritten without "restore". Each file is backed up under
 ~/.config/afk/state/backups/mcp first, and every file is put back if any
 write fails. Tokens never pass through AFK: mcp.toml names the variable
 (bearer = "env:NAME"), and each CLI is told to read that variable.
+
+A repository's own servers live in its .mcp.json, which Claude Code and
+Copilot CLI read themselves. For the other CLIs AFK copies each server into
+the CLI's project file (gemini: .gemini/settings.json) and lists a file it
+created in .git/info/exclude; a file committed to the repository is never
+edited. AFK asks first, for each server: this project only, or every
+project. sync asks in a terminal; elsewhere use scope. A server whose env
+or headers hold values rather than ${NAME} references is not copied.
 `
 
 type mcpDeps struct {
@@ -49,6 +61,18 @@ type mcpDeps struct {
 	targets     []mcp.Target
 	unsupported []string
 	getenv      func(string) string
+	// project is this repository's .mcp.json (nil when it has none).
+	project func() *projectMCP
+	// interactive is whether sync may ask about project servers.
+	interactive bool
+	in          io.Reader
+}
+
+func (d mcpDeps) stdin() io.Reader {
+	if d.in != nil {
+		return d.in
+	}
+	return os.Stdin
 }
 
 // mcpTargets is every installed CLI with an MCP config AFK knows, and the
@@ -99,7 +123,11 @@ func hostMCP() (mcpDeps, error) {
 		return mcpDeps{}, err
 	}
 	t, u := mcpTargets(he)
-	return mcpDeps{env: mcpEnvFor(he.Home, os.Getenv, s), targets: t, unsupported: u, getenv: os.Getenv}, nil
+	d := mcpDeps{env: mcpEnvFor(he.Home, os.Getenv, s), targets: t, unsupported: u, getenv: os.Getenv,
+		interactive: term.IsTerminal(os.Stdin.Fd()) && term.IsTerminal(os.Stdout.Fd())}
+	user := d
+	d.project = func() *projectMCP { return projectMCPFor(repoRoot(cwd), he, os.Getenv, user) }
+	return d, nil
 }
 
 func mcpCmd(argv []string, stdout, stderr io.Writer) int {
@@ -146,9 +174,32 @@ func runMCP(d mcpDeps, argv []string, stdout, stderr io.Writer) int {
 		}
 		return true
 	}
+	var proj *projectMCP
+	if d.project != nil && (sub == "status" || sub == "list" || sub == "ls" || sub == "sync" || sub == "scope") {
+		proj = d.project()
+	}
 	switch sub {
 	case "help":
 		fmt.Fprint(stdout, mcpHelp)
+		return 0
+	case "scope":
+		if !need(2, "scope <server> project|global") {
+			return 2
+		}
+		if proj == nil {
+			return fail(fmt.Errorf("this repository has no %s", mcp.ProjectFile))
+		}
+		if err := proj.setScope(args[0], args[1]); err != nil {
+			return fail(err)
+		}
+		if _, err := proj.sync(); err != nil {
+			return fail(err)
+		}
+		if args[1] == mcp.ScopeGlobal {
+			fmt.Fprintf(stdout, "%s is in %s now. Run afk mcp sync to add it to every CLI.\n", args[0], tildePath(d.env.Config))
+			return 0
+		}
+		fmt.Fprintf(stdout, "%s is added for this project.\n", args[0])
 		return 0
 	case "path":
 		fmt.Fprintln(stdout, d.env.Config)
@@ -182,14 +233,25 @@ func runMCP(d mcpDeps, argv []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return fail(err)
 		}
+		var ps *mcp.Status
+		if proj != nil {
+			if ps, err = proj.deps.env.Scan(proj.deps.targets); err != nil {
+				return fail(err)
+			}
+		}
 		if asJSON {
 			return writeJSON(stdout, stderr, struct {
 				Schema string `json:"schema"`
 				*mcp.Status
-				Unsupported []string `json:"unsupported"`
-			}{"afk-mcp/1", s, nonNil(d.unsupported)})
+				Unsupported []string    `json:"unsupported"`
+				Project     *mcp.Status `json:"project,omitempty"`
+			}{"afk-mcp/1", s, nonNil(d.unsupported), ps})
 		}
 		fmt.Fprint(stdout, renderMCP(d, s))
+		if ps != nil {
+			fmt.Fprint(stdout, renderProjectMCP(proj, ps))
+			proj.noteUndecided(stdout)
+		}
 		return 0
 	case "sync":
 		if !need(0, "sync [--dry-run] [--json]") {
@@ -199,6 +261,13 @@ func runMCP(d mcpDeps, argv []string, stdout, stderr io.Writer) int {
 			s, err := d.env.Scan(d.targets)
 			if err != nil {
 				return fail(err)
+			}
+			if proj != nil {
+				ps, err := proj.deps.env.Scan(proj.deps.targets)
+				if err != nil {
+					return fail(err)
+				}
+				s.Actions = append(s.Actions, ps.Actions...)
 			}
 			if asJSON {
 				return writeJSON(stdout, stderr, map[string]any{"schema": "afk-mcp-sync/1", "dry_run": true, "actions": s.Actions})
@@ -211,33 +280,47 @@ func runMCP(d mcpDeps, argv []string, stdout, stderr io.Writer) int {
 			}
 			return 0
 		}
+		// Ask first: a server given to every project joins mcp.toml, and
+		// this sync then writes it.
+		if proj != nil && d.interactive && !asJSON {
+			if err := proj.ask(d.stdin(), stdout); err != nil {
+				return fail(err)
+			}
+		}
 		res, err := d.env.Sync(d.targets)
 		if err != nil {
 			return fail(err)
+		}
+		if proj != nil {
+			pres, err := proj.sync()
+			if err != nil {
+				return fail(err)
+			}
+			res.Done = append(res.Done, pres.Done...)
 		}
 		if asJSON {
 			return writeJSON(stdout, stderr, map[string]any{"schema": "afk-mcp-sync/1", "done": res.Done, "backup": res.Backup})
 		}
 		printMCPResult(stdout, res, "Nothing to sync.")
+		if proj != nil {
+			proj.noteUndecided(stdout)
+		}
 		return 0
 	case "test":
 		if !need(1, "test <server> [--json]") {
 			return 2
 		}
-		servers, err := mcp.Load(d.env.Config, d.env.Gateways)
+		s, env, ok, err := findMCPServer(d, args[0])
 		if err != nil {
 			return fail(err)
 		}
-		for _, s := range servers {
-			if s.Name != args[0] {
-				continue
-			}
+		if ok {
 			tools, err := mcp.ListTools(context.Background(), s, d.getenv)
 			rec := mcp.Tested{OK: err == nil, Tools: len(tools), At: time.Now().UTC()}
 			if err != nil {
 				rec.Error = err.Error()
 			}
-			_ = d.env.Record(s.Name, rec)
+			_ = env.Record(s.Name, rec)
 			if asJSON {
 				code := writeJSON(stdout, stderr, map[string]any{"schema": "afk-mcp-test/1", "server": s.Name, "ok": rec.OK, "tools": nonNilT(tools), "error": rec.Error})
 				if err != nil {
@@ -338,12 +421,12 @@ func mcpMark(c mcp.Cell) string {
 	case mcp.Unsupported:
 		return "–"
 	case mcp.Broken:
-		return "?"
+		return "✗"
 	}
 	return "·"
 }
 
-const mcpLegend = "✓ in sync  ↻ changed in that CLI  · not enabled  – not supported\n+ next sync adds it  - next sync removes it  ! your own entry, left alone  ? file unreadable"
+const mcpLegend = "✓ in sync  ↻ changed in that CLI  · not enabled  – not supported\n+ next sync adds it  - next sync removes it  ! your own entry, left alone  ✗ file unreadable"
 
 func renderMCP(d mcpDeps, s *mcp.Status) string {
 	var b strings.Builder
@@ -450,24 +533,36 @@ const mcpTemplate = `# MCP servers AFK writes into each agent CLI (afk mcp sync)
 // testMCPServer lists a server's tools and records the result as its last
 // test, for the tab's t and ↵.
 func testMCPServer(ctx context.Context, d mcpDeps, name string) ([]mcp.Tool, error) {
-	servers, err := mcp.Load(d.env.Config, d.env.Gateways)
+	sv, env, ok, err := findMCPServer(d, name)
 	if err != nil {
 		return nil, err
 	}
-	for _, sv := range servers {
-		if sv.Name != name {
-			continue
-		}
-		tools, err := mcp.ListTools(ctx, sv, d.getenv)
-		rec := mcp.Tested{OK: err == nil, Tools: len(tools), At: time.Now().UTC()}
-		if err != nil {
-			rec.Error = err.Error()
-		}
-		_ = d.env.Record(sv.Name, rec)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", sv.Name, err)
-		}
-		return tools, nil
+	if !ok {
+		return nil, fmt.Errorf("no server %q in mcp.toml or %s", name, mcp.ProjectFile)
 	}
-	return nil, fmt.Errorf("no server %q in mcp.toml", name)
+	tools, err := mcp.ListTools(ctx, sv, d.getenv)
+	rec := mcp.Tested{OK: err == nil, Tools: len(tools), At: time.Now().UTC()}
+	if err != nil {
+		rec.Error = err.Error()
+	}
+	_ = env.Record(sv.Name, rec)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", sv.Name, err)
+	}
+	return tools, nil
+}
+
+// findMCPServer is a server by name from mcp.toml, else from the
+// repository's .mcp.json, with the Env its test result is recorded in.
+func findMCPServer(d mcpDeps, name string) (mcp.Server, mcp.Env, bool, error) {
+	if sv, ok, err := d.env.Find(name); err != nil || ok {
+		return sv, d.env, ok, err
+	}
+	if d.project != nil {
+		if p := d.project(); p != nil {
+			sv, ok, err := p.deps.env.Find(name)
+			return sv, p.deps.env, ok, err
+		}
+	}
+	return mcp.Server{}, d.env, false, nil
 }

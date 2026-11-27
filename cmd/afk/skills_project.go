@@ -151,21 +151,41 @@ func (p *projectSkills) ask(in io.Reader, out io.Writer) error {
 }
 
 // excludeMark heads AFK's lines in .git/info/exclude.
-const excludeMark = "# afk: copies of this repository's .agents/skills"
+const excludeMark = "# afk: copies AFK made of this repository's skills and MCP servers"
 
 // exclude adds AFK's new copies to .git/info/exclude and drops the ones
 // it removed. Nothing happens outside a git repository.
 func (p *projectSkills) exclude(done []skills.Action) error {
-	if len(done) == 0 {
+	var add, drop []string
+	for _, a := range done {
+		rel, err := filepath.Rel(p.root, a.Path)
+		if err != nil || strings.HasPrefix(rel, "..") {
+			continue
+		}
+		pat := "/" + filepath.ToSlash(rel) + "/"
+		if a.Kind == "remove" {
+			drop = append(drop, pat)
+		} else {
+			add = append(add, pat)
+		}
+	}
+	return gitExclude(p.root, add, drop)
+}
+
+// gitExclude adds patterns to the repository's .git/info/exclude, under
+// AFK's mark, and takes others out. Nothing happens outside a git
+// repository.
+func gitExclude(root string, add, drop []string) error {
+	if len(add) == 0 && len(drop) == 0 {
 		return nil
 	}
-	out, err := exec.Command("git", "-C", p.root, "rev-parse", "--git-path", "info/exclude").Output()
+	out, err := exec.Command("git", "-C", root, "rev-parse", "--git-path", "info/exclude").Output()
 	if err != nil {
 		return nil // not a git repository
 	}
 	file := strings.TrimSpace(string(out))
 	if !filepath.IsAbs(file) {
-		file = filepath.Join(p.root, file)
+		file = filepath.Join(root, file)
 	}
 	b, err := os.ReadFile(file)
 	if err != nil && !os.IsNotExist(err) {
@@ -179,35 +199,30 @@ func (p *projectSkills) exclude(done []skills.Action) error {
 	for _, l := range lines {
 		has[l] = true
 	}
-	drop := map[string]bool{}
-	var add []string
-	for _, a := range done {
-		rel, err := filepath.Rel(p.root, a.Path)
-		if err != nil || strings.HasPrefix(rel, "..") {
-			continue
-		}
-		pat := "/" + filepath.ToSlash(rel) + "/"
-		switch a.Kind {
-		case "remove":
-			drop[pat] = true
-		default:
-			if !has[pat] {
-				add = append(add, pat)
-				has[pat] = true
-			}
-		}
+	gone := map[string]bool{}
+	for _, d := range drop {
+		gone[d] = true
 	}
-	var keep []string
+	var keep, fresh []string
 	for _, l := range lines {
-		if !drop[l] {
+		if !gone[l] {
 			keep = append(keep, l)
 		}
 	}
-	if len(add) > 0 {
+	for _, a := range add {
+		if !has[a] {
+			fresh = append(fresh, a)
+			has[a] = true
+		}
+	}
+	if len(fresh) == 0 && len(keep) == len(lines) {
+		return nil
+	}
+	if len(fresh) > 0 {
 		if !has[excludeMark] {
 			keep = append(keep, excludeMark)
 		}
-		keep = append(keep, add...)
+		keep = append(keep, fresh...)
 	}
 	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
 		return err
@@ -267,7 +282,7 @@ func renderProjectSkills(p *projectSkills, s *skills.Status) string {
 		b.WriteString("\n")
 	}
 	if len(p.native) > 0 {
-		fmt.Fprintf(&b, "%s read %s themselves.\n", strings.Join(p.native, ", "), projectSkillsDir)
+		fmt.Fprintf(&b, "%s %s %s %s.\n", strings.Join(p.native, ", "), map[bool]string{true: "reads", false: "read"}[len(p.native) == 1], projectSkillsDir, map[bool]string{true: "itself", false: "themselves"}[len(p.native) == 1])
 	}
 	return b.String()
 }

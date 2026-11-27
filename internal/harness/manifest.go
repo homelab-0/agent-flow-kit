@@ -49,6 +49,10 @@ type MCP struct {
 	// Verified is the CLI version the file and format were checked
 	// against ("" for one taken from the CLI's documentation).
 	Verified string `toml:"verified"`
+	// ProjectFile is where it reads a repository's own servers, relative
+	// to the repository, in the same format. ".mcp.json" means it reads
+	// the repository's .mcp.json itself.
+	ProjectFile string `toml:"project_file"`
 }
 
 // MCPFormats are the MCP config formats AFK can write.
@@ -395,6 +399,12 @@ func (m Manifest) validate(path string) error {
 			return fmt.Errorf("%s: skills.project_dir must be a folder inside the repository", path)
 		}
 	}
+	if f := m.MCP.ProjectFile; f != "" {
+		c := filepath.ToSlash(filepath.Clean(f))
+		if filepath.IsAbs(f) || strings.HasPrefix(f, "~") || c == "." || c == ".." || strings.HasPrefix(c, "../") {
+			return fmt.Errorf("%s: mcp.project_file must be a file inside the repository", path)
+		}
+	}
 	if f := m.MCP.Format; f != "" {
 		ok := false
 		for _, x := range MCPFormats {
@@ -460,6 +470,7 @@ func merge(base, over Manifest) Manifest {
 	set(&base.MCP.File, over.MCP.File)
 	set(&base.MCP.Format, over.MCP.Format)
 	set(&base.MCP.Verified, over.MCP.Verified)
+	set(&base.MCP.ProjectFile, over.MCP.ProjectFile)
 	o := over.Modes
 	set(&base.Modes.Verified, o.Verified)
 	list(&base.Modes.BypassFlags, o.BypassFlags)
