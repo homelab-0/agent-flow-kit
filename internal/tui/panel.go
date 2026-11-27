@@ -69,6 +69,9 @@ type PanelSource interface {
 	// MCPDo runs an MCP action in place (sync, test, keep, restore,
 	// enable, disable) and returns what to tell the user.
 	MCPDo(ctx context.Context, op string, args ...string) (string, error)
+	// MCPTools connects to a server, lists its tools and records the
+	// result as a test.
+	MCPTools(ctx context.Context, server string) ([]MCPTool, error)
 	// Command is the argv that runs an afk subcommand (an update, a
 	// login, a sync) in the terminal, for the tabs' action keys.
 	Command(args ...string) []string
@@ -202,6 +205,7 @@ type Panel struct {
 	raw      panelData // what was loaded
 	filter   map[Tab]string
 	typing   bool // the filter is being typed
+	tools    *toolsView // a server's tools, open over the MCP tab
 	id       int
 	gens     map[Tab]int // the latest load of each tab
 	loading  map[Tab]bool
@@ -314,6 +318,17 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			}
 		}
 		p.refilter(msg.tab)
+	case mcpToolsMsg:
+		if msg.panel != p.id {
+			return nil
+		}
+		if msg.err != nil {
+			p.notice = msg.err.Error()
+		} else {
+			p.notice = ""
+			p.tools = &toolsView{server: msg.server, tools: msg.tools}
+		}
+		return p.load(TabMCP) // the test updated its tool count and status
 	case mcpDoneMsg:
 		p.notice = msg.text
 		if msg.err != nil {
@@ -344,6 +359,9 @@ func (p *Panel) key(k string) tea.Cmd {
 	p.notice = ""
 	if p.filterKey(k) {
 		return nil
+	}
+	if p.tools != nil && p.tab == TabMCP {
+		return p.toolsKey(k)
 	}
 	switch k {
 	case "/":
@@ -551,7 +569,11 @@ func (p *Panel) Lines() []line {
 		case TabSkills:
 			body, hint = p.skillsLines(w)
 		case TabMCP:
-			body, hint = p.mcpLines(w)
+			if p.tools != nil {
+				body, hint = p.toolsLines(w)
+			} else {
+				body, hint = p.mcpLines(w)
+			}
 		case TabRuns:
 			body, hint = p.statusLines(w)
 		case TabConfig:
@@ -596,12 +618,32 @@ func (p *Panel) Lines() []line {
 	if fl != nil {
 		out = append(out, fitLine(fl, w))
 	}
-	keys := line{sg(t.Plain, " ")}
-	keys = append(keys, hint...)
-	if filterable(p.tab) {
-		keys = append(keys, sg(t.Key, "/"), sg(t.Dim, " filter  "))
+	// The panel's own keys follow the tab's; on a narrow screen r and /
+	// give way first so the tabs and quit stay in sight.
+	filter := filterable(p.tab) && !(p.tab == TabMCP && p.tools != nil)
+	refresh := true
+	var keys line
+	for {
+		keys = append(line{sg(t.Plain, " ")}, hint...)
+		if filter {
+			keys = append(keys, sg(t.Key, "/"), sg(t.Dim, " filter  "))
+		}
+		keys = append(keys, sg(t.Key, "1-7"), sg(t.Dim, " tabs  "))
+		if refresh {
+			keys = append(keys, sg(t.Key, "r"), sg(t.Dim, " refresh  "))
+		}
+		keys = append(keys, sg(t.Key, "q"), sg(t.Dim, " quit"))
+		switch {
+		case keys.width() <= w:
+		case refresh:
+			refresh = false
+			continue
+		case filter:
+			filter = false
+			continue
+		}
+		break
 	}
-	keys = append(keys, sg(t.Key, "1-7"), sg(t.Dim, " tabs  "), sg(t.Key, "r"), sg(t.Dim, " refresh  "), sg(t.Key, "q"), sg(t.Dim, " quit"))
 	return append(out, fitLine(keys, w))
 }
 

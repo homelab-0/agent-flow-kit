@@ -644,6 +644,23 @@ func mcpView(d mcpDeps, st *mcp.Status, home string, now time.Time) *tui.MCPView
 	return v
 }
 
+// MCPTools lists a server's tools for the MCP tab's ↵.
+func (s panelSource) MCPTools(ctx context.Context, server string) ([]tui.MCPTool, error) {
+	d, err := s.mcp()
+	if err != nil {
+		return nil, err
+	}
+	tools, err := testMCPServer(ctx, d, server)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]tui.MCPTool, 0, len(tools))
+	for _, t := range tools {
+		out = append(out, tui.MCPTool{Name: t.Name, Description: t.Description})
+	}
+	return out, nil
+}
+
 // MCPDo runs an MCP action for the tab's keys.
 func (s panelSource) MCPDo(ctx context.Context, op string, args ...string) (string, error) {
 	d, err := s.mcp()
@@ -670,26 +687,11 @@ func (s panelSource) MCPDo(ctx context.Context, op string, args ...string) (stri
 		if len(args) != 1 {
 			return "", fmt.Errorf("mcp test needs a server")
 		}
-		servers, err := mcp.Load(d.env.Config, d.env.Gateways)
+		tools, err := testMCPServer(ctx, d, args[0])
 		if err != nil {
 			return "", err
 		}
-		for _, sv := range servers {
-			if sv.Name != args[0] {
-				continue
-			}
-			tools, err := mcp.ListTools(ctx, sv, d.getenv)
-			rec := mcp.Tested{OK: err == nil, Tools: len(tools), At: time.Now().UTC()}
-			if err != nil {
-				rec.Error = err.Error()
-			}
-			_ = d.env.Record(sv.Name, rec)
-			if err != nil {
-				return "", fmt.Errorf("%s: %w", sv.Name, err)
-			}
-			return fmt.Sprintf("%s is up: %s.", sv.Name, plural(len(tools), "tool")), nil
-		}
-		return "", fmt.Errorf("no server %q in mcp.toml", args[0])
+		return fmt.Sprintf("%s is up: %s.", args[0], plural(len(tools), "tool")), nil
 	case "keep", "restore":
 		sv, h, err := two()
 		if err != nil {
