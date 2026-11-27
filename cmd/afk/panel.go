@@ -485,6 +485,15 @@ func (s panelSource) Config(ctx context.Context) (*tui.ConfigView, error) {
 	}
 	yes := map[bool]string{true: "on", false: "off"}
 	add := func(k, val string) { v.Rows = append(v.Rows, [2]string{k, val}) }
+	v.Edit = map[string]tui.ConfigEdit{
+		"route.prefer":        {Choices: []string{"balanced", "cheap", "best"}},
+		"route.failover":      {Choices: []string{"any", "same-pool", "none"}},
+		"permissions.default": {Choices: []string{"read-only", "ask", "edits", "auto"}},
+		"trust.repos":         {Value: strings.Join(st.TrustedDirs, ", "), Hint: "folders where yolo is allowed, separated by commas"},
+	}
+	for _, k := range []string{"route.learn", "route.pacing", "route.prefer_free", "route.allow_metered", "route.allow_free_reviewers", "bench.autosync"} {
+		v.Edit[k] = tui.ConfigEdit{Choices: []string{"on", "off"}}
+	}
 	add("route.prefer", st.Prefer)
 	add("route.failover", st.Failover)
 	add("route.learn", yes[st.Learn])
@@ -525,6 +534,39 @@ func (s panelSource) Config(ctx context.Context) (*tui.ConfigView, error) {
 		v.Warnings = append(v.Warnings, w.String())
 	}
 	return v, nil
+}
+
+// ConfigSet writes one setting to the user's config.toml, as afk config
+// set does: the file's comments and order are kept, and the value is
+// checked before anything is written.
+func (s panelSource) ConfigSet(_ context.Context, key, value string) (string, error) {
+	raw := value
+	if config.KeyType(key) == "bool" {
+		switch value {
+		case "on":
+			raw = "true"
+		case "off":
+			raw = "false"
+		}
+	}
+	paths := config.PathsFor(s.c.Home, s.getenv)
+	if _, err := config.SetKey(paths, key, raw, false); err != nil {
+		return "", err
+	}
+	msg := key + " = " + value + " · saved"
+	// The tab shows the setting in effect. When something else still
+	// decides it, say so instead of leaving the row looking unchanged.
+	repo := s.repo
+	if repo == "" {
+		repo = s.c.Cwd
+	}
+	if st, err := s.c.LoadSettings(repo); err == nil {
+		eff := map[string]string{"route.prefer": st.Prefer, "route.failover": st.Failover, "permissions.default": st.Mode}
+		if now, ok := eff[key]; ok && now != value {
+			msg += ", but " + now + " is still in effect here (an AFK_* variable or this project's .afk/config.json decides it)"
+		}
+	}
+	return msg, nil
 }
 
 func (s panelSource) Command(args ...string) []string {

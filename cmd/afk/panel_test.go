@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/homelab-0/agent-flow-kit/internal/config"
 	"github.com/homelab-0/agent-flow-kit/internal/core"
 	"github.com/homelab-0/agent-flow-kit/internal/engine"
 	"github.com/homelab-0/agent-flow-kit/internal/harness"
@@ -161,5 +162,64 @@ func TestPlanLabelAddsOnlyAReportedTier(t *testing.T) {
 		if got := planLabel(c.pid, c.reported); got != c.want {
 			t.Errorf("planLabel(%q, %q) = %q, want %q", c.pid, c.reported, got, c.want)
 		}
+	}
+}
+
+// The Config tab writes settings itself: a choice or a typed value goes
+// to config.toml, and a bad value is refused without touching the file.
+func TestConfigSetFromTheTab(t *testing.T) {
+	c := panelCore(t)
+	s := newPanelSource(c, "")
+	ctx := context.Background()
+	v, err := s.Config(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"route.prefer", "route.failover", "route.pacing", "permissions.default", "trust.repos", "bench.autosync"} {
+		if _, ok := v.Edit[k]; !ok {
+			t.Errorf("%s can't be changed from the tab", k)
+		}
+	}
+	if _, ok := v.Edit["gateway"]; ok {
+		t.Error("the gateway row has no form yet and must not claim one")
+	}
+	row := func(key string) string {
+		t.Helper()
+		v, err := s.Config(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range v.Rows {
+			if r[0] == key {
+				return r[1]
+			}
+		}
+		return ""
+	}
+	for _, c := range []struct{ key, value, want string }{
+		{"route.prefer", "cheap", "cheap"},
+		{"route.pacing", "on", "on"},
+		{"route.pacing", "off", "off"},
+		{"permissions.default", "edits", "edits"},
+		{"trust.repos", "~/src/app, ~/src/api", "2 trusted"},
+	} {
+		msg, err := s.ConfigSet(ctx, c.key, c.value)
+		if err != nil || !strings.Contains(msg, "saved") {
+			t.Fatalf("%s = %s: %q %v", c.key, c.value, msg, err)
+		}
+		if got := row(c.key); got != c.want {
+			t.Errorf("%s shows %q after saving %q, want %q", c.key, got, c.value, c.want)
+		}
+	}
+	path := config.PathsFor(c.Home, c.Getenv).Config
+	before, _ := os.ReadFile(path)
+	if _, err := s.ConfigSet(ctx, "trust.repos", "relative/path"); err == nil {
+		t.Error("a relative trusted folder was saved")
+	}
+	if _, err := s.ConfigSet(ctx, "no.such.key", "x"); err == nil {
+		t.Error("an unknown key was saved")
+	}
+	if after, _ := os.ReadFile(path); string(after) != string(before) {
+		t.Error("a refused value changed the file")
 	}
 }
