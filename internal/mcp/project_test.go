@@ -12,7 +12,9 @@ const projectJSON = `{
     "docs": {"type": "http", "url": "https://docs.example.com/mcp", "headers": {"Authorization": "Bearer ${DOCS_TOKEN}"}},
     "db": {"command": "npx", "args": ["db-mcp"], "env": {"DB_URL": "${DB_URL}"}},
     "leaky": {"command": "x", "env": {"API_KEY": "sk-123"}},
-    "stream": {"type": "sse", "url": "https://s.example.com/sse"}
+    "stream": {"type": "sse", "url": "https://s.example.com/sse"},
+    "creds": {"type": "http", "url": "https://bob:hunter2@c.example.com/mcp"},
+    "odd": {"type": "http", "url": "ftp://o.example.com/?token=abc123"}
   }
 }`
 
@@ -40,6 +42,11 @@ func TestLoadProject(t *testing.T) {
 	if strings.Contains(skipped["leaky"], "sk-123") {
 		t.Error("a skipped reason repeats the value")
 	}
+	for n, secret := range map[string]string{"creds": "hunter2", "odd": "abc123"} {
+		if skipped[n] == "" || strings.Contains(skipped[n], secret) {
+			t.Errorf("skipped[%s] = %q", n, skipped[n])
+		}
+	}
 	if s, sk, err := LoadProject(filepath.Join(t.TempDir(), "none.json")); err != nil || s != nil || len(sk) != 0 {
 		t.Errorf("missing file: %v %v %v", s, sk, err)
 	}
@@ -59,7 +66,7 @@ func TestProjectScopes(t *testing.T) {
 	if len(s.Actions) != 0 || s.Rows[0].Cells["gemini"] != Ask {
 		t.Fatalf("undecided servers must wait: %+v %+v", s.Actions, s.Rows)
 	}
-	if len(s.Problems) != 2 {
+	if len(s.Problems) != 4 {
 		t.Errorf("problems %v", s.Problems)
 	}
 	if err := env.SetScope("db", ScopeProject); err != nil {

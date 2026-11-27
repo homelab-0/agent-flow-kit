@@ -797,11 +797,28 @@ func mcpView(d mcpDeps, st *mcp.Status, home string, now time.Time) *tui.MCPView
 	return v
 }
 
-// MCPTools lists a server's tools for the MCP tab's ↵.
+// projectOnly is d working on the repository's .mcp.json alone, so a
+// project server is found even when mcp.toml has one of the same name.
+func projectOnly(d mcpDeps) (mcpDeps, error) {
+	p := d.project()
+	if p == nil {
+		return d, fmt.Errorf("this repository has no %s", mcp.ProjectFile)
+	}
+	return mcpDeps{env: p.deps.env, targets: p.deps.targets, getenv: d.getenv}, nil
+}
+
+// MCPTools lists a server's tools for the MCP tab's ↵. "project:" in
+// front of the name is the repository's own server.
 func (s panelSource) MCPTools(ctx context.Context, server string) ([]tui.MCPTool, error) {
 	d, err := s.mcp()
 	if err != nil {
 		return nil, err
+	}
+	if name, ok := strings.CutPrefix(server, "project:"); ok {
+		if d, err = projectOnly(d); err != nil {
+			return nil, err
+		}
+		server = name
 	}
 	tools, err := testMCPServer(ctx, d, server)
 	if err != nil {
@@ -826,12 +843,17 @@ func (s panelSource) MCPDo(ctx context.Context, op string, args ...string) (stri
 		}
 		return args[0], args[1], nil
 	}
-	if rest, ok := strings.CutPrefix(op, "project:"); ok {
+	if rest, ok := strings.CutPrefix(op, "project:"); ok && rest != "test" {
 		p := d.project()
 		if p == nil {
 			return "", fmt.Errorf("this repository has no %s", mcp.ProjectFile)
 		}
 		return projectMCPDo(p, rest, args...)
+	} else if ok {
+		if d, err = projectOnly(d); err != nil {
+			return "", err
+		}
+		op = rest
 	}
 	switch op {
 	case "sync":

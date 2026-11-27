@@ -21,8 +21,8 @@ import (
 const mcpHelp = `Usage: afk mcp [status] [--json]
        afk mcp sync [--dry-run] [--json]
        afk mcp test <server> [--json]
-       afk mcp keep|restore <server> <cli>
-       afk mcp enable|disable <server> <cli>
+       afk mcp keep|restore <server> <cli> [--project]
+       afk mcp enable|disable <server> <cli> [--project]
        afk mcp scope <server> project|global
        afk mcp edit|path
 
@@ -52,7 +52,8 @@ Copilot CLI read themselves. For the other CLIs AFK copies each server into
 the CLI's project file (gemini: .gemini/settings.json) and lists a file it
 created in .git/info/exclude; a file committed to the repository is never
 edited. AFK asks first, for each server: this project only, or every
-project. sync asks in a terminal; elsewhere use scope. A server whose env
+project. sync asks in a terminal; elsewhere use scope. --project makes
+keep, restore, enable and disable act on these servers. A server whose env
 or headers hold values rather than ${NAME} references is not copied.
 `
 
@@ -144,12 +145,14 @@ func runMCP(d mcpDeps, argv []string, stdout, stderr io.Writer) int {
 	if len(argv) > 0 && !strings.HasPrefix(argv[0], "-") {
 		sub, argv = argv[0], argv[1:]
 	}
-	asJSON, dry := false, false
+	asJSON, dry, inProject := false, false, false
 	var args []string
 	for _, a := range argv {
 		switch a {
 		case "--json":
 			asJSON = true
+		case "--project":
+			inProject = true
 		case "--dry-run", "-n":
 			dry = true
 		case "-h", "--help":
@@ -175,8 +178,22 @@ func runMCP(d mcpDeps, argv []string, stdout, stderr io.Writer) int {
 		return true
 	}
 	var proj *projectMCP
-	if d.project != nil && (sub == "status" || sub == "list" || sub == "ls" || sub == "sync" || sub == "scope") {
+	if d.project != nil && (sub == "status" || sub == "list" || sub == "ls" || sub == "sync" || sub == "scope" || inProject) {
 		proj = d.project()
+	}
+	if inProject {
+		// keep, restore, enable and disable on the repository's own
+		// servers rather than mcp.toml's.
+		switch sub {
+		case "keep", "restore", "enable", "disable":
+		default:
+			fmt.Fprintf(stderr, "afk mcp: --project goes with keep, restore, enable or disable\n")
+			return 2
+		}
+		if proj == nil {
+			return fail(fmt.Errorf("this repository has no %s", mcp.ProjectFile))
+		}
+		d.env, d.targets = proj.deps.env, proj.deps.targets
 	}
 	switch sub {
 	case "help":

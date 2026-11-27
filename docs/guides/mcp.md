@@ -82,12 +82,13 @@ AFK asks before it copies a project server anywhere. You have two choices:
 - **This project only** (`p`): AFK writes the server into those project files, in this repository only. A file AFK creates is listed in `.git/info/exclude`, so git never sees it.
 - **Every project** (`g`): AFK adds the server to `mcp.toml`. From then on it is synced into every CLI's own config like any other server, and AFK removes its project copies.
 
-`afk mcp sync` asks in a terminal, and Enter leaves a server for later. `afk mcp scope <server> project|global` answers without a prompt. `afk mcp status` shows the project's servers under the others.
+`afk mcp sync` asks in a terminal, and Enter leaves a server for later. `afk mcp scope <server> project|global` answers without a prompt. `afk mcp status` shows the project's servers under the others. Add `--project` to `keep`, `restore`, `enable` or `disable` to act on a project server's copies rather than on `mcp.toml`'s.
 
 Some servers are never copied:
 
 - **A project file that is committed to the repository.** AFK won't edit a file your team shares, so that CLI gets no copies.
-- **A server whose `env` or headers hold values.** AFK copies only variable references: `"env": {"DB_URL": "${DB_URL}"}`, and `"Authorization": "Bearer ${TOKEN}"` for an HTTP server. A server with any other value is skipped, and `status` says why without showing the value.
+- **A project file whose path leads out of the repository through a symlink.** AFK only writes inside the repository.
+- **A server whose `env` or headers hold values.** AFK copies only variable references: `"env": {"DB_URL": "${DB_URL}"}`, and `"Authorization": "Bearer ${TOKEN}"` for an HTTP server. A server with any other value is skipped, and `status` says why without showing the value. An HTTP server's url must be a plain `http(s)://host/...` with no user or password in it.
 - **SSE servers.** AFK copies only stdio and streamable HTTP servers.
 
 A server added for every project never overwrites a different server with the same name in `mcp.toml`; AFK tells you to rename one.

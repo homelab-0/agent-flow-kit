@@ -100,3 +100,73 @@ func TestProjectMCPTracked(t *testing.T) {
 		t.Error("tracked() is wrong")
 	}
 }
+
+func TestProjectMCPInsideRepo(t *testing.T) {
+	root, out := t.TempDir(), t.TempDir()
+	if err := os.Symlink(out, filepath.Join(root, ".gemini")); err != nil {
+		t.Skip("no symlinks:", err)
+	}
+	if insideRepo(root, filepath.Join(root, ".gemini", "settings.json")) {
+		t.Error("a link out of the repository counts as inside")
+	}
+	if !insideRepo(root, filepath.Join(root, ".codex", "config.toml")) || !insideRepo(root, filepath.Join(root, "opencode.json")) {
+		t.Error("a new file in the repository counts as outside")
+	}
+}
+
+func TestProjectMCPPendingExclude(t *testing.T) {
+	p, root := projectMCPFixture(t)
+	if err := p.setScope("db", mcp.ScopeProject); err != nil {
+		t.Fatal(err)
+	}
+	// .git/info as a file: writing the exclude fails.
+	info := filepath.Join(root, ".git", "info")
+	if err := os.RemoveAll(info); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(info, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.sync(); err == nil {
+		t.Fatal("sync didn't say the exclude failed")
+	}
+	if err := os.Remove(info); err != nil {
+		t.Fatal(err)
+	}
+	// The file exists now, so only the pending list knows to add it.
+	if _, err := p.sync(); err != nil {
+		t.Fatal(err)
+	}
+	ex, _ := os.ReadFile(filepath.Join(info, "exclude"))
+	if !strings.Contains(string(ex), "/.gemini/settings.json") {
+		t.Errorf("exclude after the retry:\n%s", ex)
+	}
+	if _, err := os.Stat(p.pendingExcludes()); !os.IsNotExist(err) {
+		t.Errorf("pending list left behind: %v", err)
+	}
+}
+
+func TestProjectMCPFlag(t *testing.T) {
+	p, _ := projectMCPFixture(t)
+	d := p.user
+	d.project = func() *projectMCP { return p }
+	if err := p.setScope("db", mcp.ScopeProject); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if code := runMCP(d, []string{"disable", "db", "gemini", "--project"}, &out, &errb); code != 0 {
+		t.Fatalf("disable --project: %d %s", code, errb.String())
+	}
+	st, err := p.deps.env.Scan(p.deps.targets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range st.Rows {
+		if r.Name == "db" && r.Cells["gemini"] != mcp.Off {
+			t.Errorf("db in gemini: %v", r.Cells["gemini"])
+		}
+	}
+	if code := runMCP(d, []string{"status", "--project"}, &out, &errb); code != 2 {
+		t.Errorf("status --project: %d", code)
+	}
+}

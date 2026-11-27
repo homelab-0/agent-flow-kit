@@ -380,6 +380,9 @@ func TestSkillsProjectScope(t *testing.T) {
 	if p.askScope != "prox-ops-deploy" {
 		t.Fatalf("space didn't ask: %q", p.askScope)
 	}
+	if strings.Contains(panelText(p), "github") {
+		t.Errorf("other rows push the question off screen:\n%s", panelText(p))
+	}
 	p.Update(key("esc"))
 	if p.askScope != "" || p.back {
 		t.Fatalf("esc: ask=%q back=%v", p.askScope, p.back)
@@ -519,6 +522,20 @@ func TestMCPProjectScope(t *testing.T) {
 	if len(src.ran) == 0 || strings.Join(src.ran[len(src.ran)-1], " ") != strings.Join(want, " ") {
 		t.Errorf("ran %v, want %v", src.ran, want)
 	}
+	// t and ↵ go to the project's server, not mcp.toml's.
+	if cmd := p.Update(key("t")); cmd != nil {
+		p.Update(cmd())
+	}
+	if got := strings.Join(src.ran[len(src.ran)-1], " "); got != "mcp project:test repo-db" {
+		t.Errorf("t ran %q", got)
+	}
+	if cmd := p.Update(key("enter")); cmd != nil {
+		p.Update(cmd())
+	}
+	if got := strings.Join(src.ran[len(src.ran)-1], " "); got != "mcp tools project:repo-db" {
+		t.Errorf("enter ran %q", got)
+	}
+	p.tools = nil
 	// The CLI that reads .mcp.json itself says so.
 	p.mcpCol = 0
 	p.Update(key(" "))

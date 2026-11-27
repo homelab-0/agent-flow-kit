@@ -5,10 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/homelab-0/agent-flow-kit/internal/statefile"
 )
@@ -95,6 +98,15 @@ func (pe projectEntry) server(name string) (Server, error) {
 		if strings.Contains(pe.URL, "${") {
 			return Server{}, errors.New("its url uses a variable; AFK copies plain urls")
 		}
+		// Checked here so that no reason shows the url, which may hold
+		// a token.
+		u, err := url.Parse(pe.URL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return Server{}, errors.New("its url is not http(s)://host/...")
+		}
+		if u.User != nil {
+			return Server{}, errors.New("its url holds a user or password")
+		}
 		c.URL = pe.URL
 		for k, v := range pe.Headers {
 			tok, ok := strings.CutPrefix(v, "Bearer ")
@@ -153,6 +165,15 @@ func (e Env) SetScope(server, scope string) error {
 // server of that name already in mcp.toml is left as it is: the same one
 // is no change, a different one is an error.
 func AddToConfig(config string, gateways map[string]string, s Server) error {
+	// Two AFKs adding at once must not each write over the other's.
+	if err := os.MkdirAll(filepath.Dir(config), 0o755); err != nil {
+		return err
+	}
+	l, err := statefile.Acquire(config+".lock", 10*time.Second, 5*time.Minute)
+	if err != nil {
+		return err
+	}
+	defer l.Release()
 	have, err := Load(config, gateways)
 	if err != nil {
 		return err

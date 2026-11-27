@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -53,6 +54,14 @@ func mcpOp(project bool, op string) string {
 	return op
 }
 
+// mcpSource is the file a row's server comes from.
+func mcpSource(project bool) string {
+	if project {
+		return ".mcp.json"
+	}
+	return "mcp.toml"
+}
+
 func mcpMark(c string) string {
 	switch c {
 	case "unsupported":
@@ -78,10 +87,13 @@ func (p *Panel) mcpDrift() (MCPDrift, bool) {
 	}
 	var first *MCPDrift
 	for i, d := range p.data.mcp.Drift {
-		if d.Server == r.Name && d.Harness == h {
+		if d.Server != r.Name || d.Project != r.Project {
+			continue
+		}
+		if d.Harness == h {
 			return d, true
 		}
-		if d.Server == r.Name && first == nil {
+		if first == nil {
 			first = &p.data.mcp.Drift[i]
 		}
 	}
@@ -100,7 +112,7 @@ func (p *Panel) mcpDo(op string, args ...string) tea.Cmd {
 	if src == nil {
 		return nil
 	}
-	if op == "test" && len(args) > 0 {
+	if strings.HasSuffix(op, "test") && len(args) > 0 {
 		p.notice = "Testing " + args[0] + "…"
 	}
 	return func() tea.Msg {
@@ -151,10 +163,10 @@ func (p *Panel) mcpKey(k string) tea.Cmd {
 		}
 	case "t":
 		if !r.Listed {
-			p.notice = r.Name + " is no longer in mcp.toml"
+			p.notice = r.Name + " is no longer in " + mcpSource(r.Project)
 			return nil
 		}
-		return p.mcpDo("test", r.Name)
+		return p.mcpDo(mcpOp(r.Project, "test"), r.Name)
 	case "space", " ":
 		switch c := r.Cells[h]; {
 		case c == "native":
@@ -178,10 +190,10 @@ func (p *Panel) mcpKey(k string) tea.Cmd {
 		}
 	case "enter":
 		if !r.Listed {
-			p.notice = r.Name + " is no longer in mcp.toml"
+			p.notice = r.Name + " is no longer in " + mcpSource(r.Project)
 			return nil
 		}
-		return p.mcpListTools(r.Name)
+		return p.mcpListTools(mcpOp(r.Project, r.Name))
 	case "k", "c":
 		d, ok := p.mcpDrift()
 		if !ok {
@@ -238,7 +250,11 @@ func (p *Panel) mcpLines(w int) ([]line, line) {
 	hdr = append(hdr, sg(t.Dim, "status"))
 	out = append(out, hdr)
 	sel := min(p.sel[TabMCP], len(v.Rows)-1)
+	asking := p.askScope != ""
 	for i, r := range v.Rows {
+		if asking && i != sel {
+			continue // the question box stays on screen: only its row shows
+		}
 		via := r.Via
 		switch {
 		case !r.Listed:
@@ -287,12 +303,14 @@ func (p *Panel) mcpLines(w int) ([]line, line) {
 		row = append(row, sg(stt, status))
 		out = append(out, p.selRow(row, i, w))
 	}
-	out = append(out, nil, line{sg(t.Dim, " ✓ in sync  ↻ changed in that CLI  · not enabled  – not supported")})
-	if v.Pending > 0 || mcpHas(v, "conflict") || mcpHas(v, "error") {
-		out = append(out, line{sg(t.Dim, " + next sync adds it  - next sync removes it  ! yours  ✗ unreadable")})
-	}
-	if v.Project != "" {
-		out = append(out, line{sg(t.Dim, " project: "+v.Project+"   ? choose where it goes  g every project")})
+	if !asking {
+		out = append(out, nil, line{sg(t.Dim, " ✓ in sync  ↻ changed in that CLI  · not enabled  – not supported")})
+		if v.Pending > 0 || mcpHas(v, "conflict") || mcpHas(v, "error") {
+			out = append(out, line{sg(t.Dim, " + next sync adds it  - next sync removes it  ! yours  ✗ unreadable")})
+		}
+		if v.Project != "" {
+			out = append(out, line{sg(t.Dim, " project: "+v.Project+"   ? choose where it goes  g every project")})
+		}
 	}
 	if name := p.askScope; name != "" {
 		bw := boxW(w)

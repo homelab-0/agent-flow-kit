@@ -63,12 +63,20 @@ func projectMCPFor(root string, he harness.Env, getenv func(string) string, user
 		case mcp.ProjectFile:
 			p.native = append(p.native, h.Name)
 		default:
-			if tracked(root, pf) {
-				p.notes[h.Name] = pf + " is committed to the repository; AFK won't edit it"
+			file := filepath.Join(root, filepath.FromSlash(pf))
+			why := ""
+			switch {
+			case tracked(root, pf):
+				why = pf + " is committed to the repository; AFK won't edit it"
+			case !insideRepo(root, file):
+				why = pf + " leads outside the repository through a link; AFK won't edit it"
+			}
+			if why != "" {
+				p.notes[h.Name] = why
 				p.deps.unsupported = append(p.deps.unsupported, h.Name)
 				continue
 			}
-			p.deps.targets = append(p.deps.targets, mcp.Target{Harness: h.Name, File: filepath.Join(root, filepath.FromSlash(pf)), Format: m.MCP.Format})
+			p.deps.targets = append(p.deps.targets, mcp.Target{Harness: h.Name, File: file, Format: m.MCP.Format})
 		}
 	}
 	return p
@@ -78,6 +86,38 @@ func projectMCPFor(root string, he harness.Env, getenv func(string) string, user
 func tracked(root, rel string) bool {
 	return exec.Command("git", "-C", root, "ls-files", "--error-unmatch", "--", filepath.ToSlash(rel)).Run() == nil
 }
+
+// insideRepo reports whether file, once its links are followed, is still
+// in the repository at root. A part of the path that doesn't exist yet
+// can't be a link, so the deepest one that exists is the one resolved.
+func insideRepo(root, file string) bool {
+	rr, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return false
+	}
+	dir, rest := file, ""
+	for {
+		if _, err := os.Lstat(dir); err == nil {
+			break
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		rest = filepath.Join(filepath.Base(dir), rest)
+		dir = parent
+	}
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return false // a dangling link
+	}
+	rel, err := filepath.Rel(rr, filepath.Join(real, rest))
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// pendingExcludes is where the files AFK created wait for
+// .git/info/exclude when writing it failed, so the next sync lists them.
+func (p *projectMCP) pendingExcludes() string { return p.deps.env.State + ".exclude" }
 
 // sync copies project-scoped servers into the CLIs' project files, and
 // lists each file AFK created in .git/info/exclude.
@@ -92,15 +132,24 @@ func (p *projectMCP) sync() (*mcp.Result, error) {
 		return nil, err
 	}
 	var add []string
+	if b, err := os.ReadFile(p.pendingExcludes()); err == nil {
+		add = strings.Fields(string(b))
+	}
 	for _, t := range p.deps.targets {
 		if _, err := os.Stat(t.File); err == nil && !had[t.File] {
 			rel, _ := filepath.Rel(p.root, t.File)
 			add = append(add, "/"+filepath.ToSlash(rel))
 		}
 	}
-	if err := gitExclude(p.root, add, nil); err != nil {
-		return res, fmt.Errorf("synced, but couldn't update .git/info/exclude: %w", err)
+	if len(add) == 0 {
+		return res, nil
 	}
+	if err := gitExclude(p.root, add, nil); err != nil {
+		_ = os.MkdirAll(filepath.Dir(p.pendingExcludes()), 0o755)
+		_ = os.WriteFile(p.pendingExcludes(), []byte(strings.Join(add, "\n")+"\n"), 0o644)
+		return res, fmt.Errorf("synced, but couldn't update .git/info/exclude (the next sync tries again): %w", err)
+	}
+	_ = os.Remove(p.pendingExcludes())
 	return res, nil
 }
 
