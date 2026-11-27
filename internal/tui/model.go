@@ -41,6 +41,8 @@ type Options struct {
 	Environ []string
 	Now     func() time.Time
 	Loc     *time.Location
+	// Header, when set, draws the header card with Esc above the card.
+	Header *Header
 }
 
 // Decision is how the card ended.
@@ -114,6 +116,7 @@ type Model struct {
 	nextBest  int
 	input     textinput.Model
 	yoloSet   bool // y has set the yolo toggle
+	pick      int  // the router's choice among the rows
 
 	dec Decision
 
@@ -296,6 +299,7 @@ func (m *Model) onExplain(msg explainMsg) tea.Cmd {
 	}
 	m.card.Task, m.card.Guessed, m.card.Prefer = msg.ex.Task, msg.ex.TaskGuessed, msg.ex.Prefer
 	m.card.Rows, m.card.Sel, m.card.Efforts = rows, sel, map[int]string{}
+	m.pick = sel
 	if m.opt.Yes {
 		m.st = sLaunching
 		return m.planCmd()
@@ -485,6 +489,22 @@ func (m *Model) View() tea.View {
 
 // Render is the view as a string (for tests and the final frame).
 func (m *Model) Render() string {
+	body := m.render()
+	if m.opt.Header == nil || (m.width > 0 && m.width < compactBelow) {
+		return body
+	}
+	if m.st == sDone && body == "" {
+		return ""
+	}
+	pose, status := m.escState()
+	head := join(m.theme.HeaderLines(*m.opt.Header, pose, status, m.width))
+	if body == "" {
+		return head
+	}
+	return head + "\n" + body
+}
+
+func (m *Model) render() string {
 	m.card.Now = m.opt.Now()
 	t, w := m.theme, m.width
 	compact := w > 0 && w < compactBelow

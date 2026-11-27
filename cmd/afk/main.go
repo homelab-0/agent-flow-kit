@@ -89,6 +89,7 @@ func interactive(eng tui.Backend, args cli.Args, width int) int {
 		Flags: args.Flags, Prompt: args.Prompt, Pass: args.Pass, Yolo: args.Yolo,
 		Yes: args.Yes, Width: width, Motion: motion, FPS: tui.FPS(os.Getenv), Dark: dark,
 		YoloBlock: yoloBlock(eng),
+		Header:    headerInfo(),
 	}
 	model := tui.New(eng, opt)
 	p := tea.NewProgram(model, tea.WithFPS(opt.FPS))
