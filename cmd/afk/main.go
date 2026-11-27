@@ -95,6 +95,8 @@ func interactive(eng tui.Backend, args cli.Args, width int) int {
 		YoloBlock: yoloBlock(eng),
 		Header:    headerInfo(),
 		Logos:     logos,
+		// Plain `afk` opens the composer; with a prompt it routes at once.
+		Compose: args.Prompt == "" && !args.Yes,
 	}
 	model := tui.New(eng, opt)
 	p := tea.NewProgram(model, tea.WithFPS(opt.FPS))

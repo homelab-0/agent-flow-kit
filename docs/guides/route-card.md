@@ -1,6 +1,18 @@
 # The route card
 
-Run `afk` with a prompt at a terminal and AFK shows the route card before anything starts:
+Run `afk` on its own and Esc shuffles in and climbs into its hammock (about two seconds; any key skips it, and what you type is kept). Then the composer opens: an input bar for the task, a status line with the prefer mode, the task kind and every route's headroom, and a hint line. In the composer:
+
+| Key | Does |
+|---|---|
+| `↵` | route the task (an empty one opens the CLI without a prompt) |
+| `tab` / `shift+tab` | step the task kind: auto, coding, quick, complex, review, architecture, webdev, research, security |
+| `/harness <cli>`, `/model <id>`, `/effort <level>`, `/prefer balanced\|cheap\|best` | pin a choice for this task (no argument unpins it); `/clear` unpins all |
+| `?` | shortcuts (on an empty input) |
+| `esc` | clear the input; on an empty input, quit |
+
+While AFK routes (when it takes more than a moment), Esc gets up and the routing screen lists every candidate CLI: each one ticks off with its model and benchmark score once it is scored, or says it has no usable route for the task.
+
+Run `afk` with a prompt and AFK skips the composer and shows the route card before anything starts:
 
 ```sh
 afk "make the settings page responsive"

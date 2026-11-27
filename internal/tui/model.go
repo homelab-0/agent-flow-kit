@@ -45,6 +45,9 @@ type Options struct {
 	Header *Header
 	// Logos are the route logos sent to the terminal (nil: text tags).
 	Logos Logos
+	// Compose opens with the startup animation and the composer instead
+	// of routing Prompt at once (plain `afk`).
+	Compose bool
 }
 
 // Decision is how the card ended.
@@ -69,6 +72,8 @@ const (
 	sLaunching
 	sError
 	sDone
+	sIntro   // Esc's startup animation
+	sCompose // the input bar, before routing
 )
 
 // Meter fill: a critically damped spring that settles in about 650ms.
@@ -120,6 +125,17 @@ type Model struct {
 	yoloSet   bool // y has set the yolo toggle
 	pick      int  // the router's choice among the rows
 
+	// The composer.
+	cin        textinput.Model
+	introStart time.Time
+	taskIdx    int
+	help       bool
+	preview    *engine.Explain // an empty task routed for the status line
+
+	// The live routing screen.
+	prog    routingProgress
+	progGen int
+
 	dec Decision
 
 	ctx    context.Context // cancelled when the card ends
@@ -153,6 +169,9 @@ func (m *Model) Decision() Decision { return m.dec }
 
 func (m *Model) Init() tea.Cmd {
 	m.started = m.opt.Now()
+	if m.opt.Compose {
+		return m.composeInit()
+	}
 	cmds := []tea.Cmd{m.explainCmd(), m.poolsCmd(), tea.RequestBackgroundColor}
 	if m.opt.Motion {
 		cmds = append(cmds, spinTick())
@@ -162,12 +181,23 @@ func (m *Model) Init() tea.Cmd {
 
 func (m *Model) explainCmd() tea.Cmd {
 	be, f, p, parent := m.be, m.opt.Flags, m.card.Prompt, m.ctx
-	return func() tea.Msg {
+	m.prog = routingProgress{}
+	m.progGen++
+	ch := make(chan engine.Progress, 64)
+	run := func() tea.Msg {
+		defer close(ch)
 		ctx, cancel := context.WithTimeout(parent, explainTimeout)
 		defer cancel()
+		ctx = engine.WithProgress(ctx, func(p engine.Progress) {
+			select {
+			case ch <- p:
+			default: // the screen is behind; the card is what matters
+			}
+		})
 		ex, err := be.Explain(ctx, f, p)
 		return explainMsg{ex, err}
 	}
+	return tea.Batch(run, listenProgress(ch, m.progGen))
 }
 
 func (m *Model) poolsCmd() tea.Cmd {
@@ -272,8 +302,24 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.animTick()
 		}
 		return m, nil
+	case progressMsg:
+		if msg.gen != m.progGen || msg.done {
+			return m, nil
+		}
+		m.prog.add(msg.p)
+		return m, listenProgress(msg.ch, msg.gen)
+	case previewMsg:
+		m.preview = msg.ex
+		return m, nil
+	case escMsg:
+		return m, m.onEscTick()
 	case tea.KeyPressMsg:
 		return m, m.onKey(msg)
+	}
+	if m.st == sIntro || m.st == sCompose {
+		var cmd tea.Cmd
+		m.cin, cmd = m.cin.Update(msg)
+		return m, cmd
 	}
 	if m.st == sEdit {
 		var cmd tea.Cmd
@@ -364,6 +410,8 @@ func (m *Model) onKey(k tea.KeyPressMsg) tea.Cmd {
 		return m.finish(Decision{Cancelled: true})
 	}
 	switch m.st {
+	case sIntro, sCompose:
+		return m.composeKey(k)
 	case sRouting, sLaunching:
 		if key == "esc" {
 			return m.finish(Decision{Cancelled: true})
@@ -511,11 +559,18 @@ func (m *Model) render() string {
 	t, w := m.theme, m.width
 	compact := w > 0 && w < compactBelow
 	switch m.st {
+	case sIntro:
+		return ""
+	case sCompose:
+		return join(m.composeLines())
 	case sRouting:
 		if m.opt.Now().Sub(m.started) < routingDelay && m.opt.Motion {
 			return join([]line{t.promptLine(m.card.Prompt, w)})
 		}
-		return join([]line{t.promptLine(m.card.Prompt, w), m.busyLine("Routing", m.card.Prefer)})
+		if compact {
+			return join([]line{t.promptLine(m.card.Prompt, w), m.busyLine("Routing", m.card.Prefer)})
+		}
+		return join(append([]line{t.promptLine(m.card.Prompt, w), nil}, m.routingLines()...))
 	case sEdit:
 		l := line{sg(t.Accent, "› "), sg(t.Plain, m.input.View())}
 		lines := []line{l}
