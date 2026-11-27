@@ -43,6 +43,8 @@ type Options struct {
 	Loc     *time.Location
 	// Header, when set, draws the header card with Esc above the card.
 	Header *Header
+	// Logos are the route logos sent to the terminal (nil: text tags).
+	Logos Logos
 }
 
 // Decision is how the card ended.
@@ -132,7 +134,7 @@ func New(be Backend, opt Options) *Model {
 	if opt.Now == nil {
 		opt.Now = time.Now
 	}
-	m := &Model{opt: opt, be: be, theme: NewTheme(opt.Dark), width: opt.Width}
+	m := &Model{opt: opt, be: be, theme: NewTheme(opt.Dark).WithLogos(opt.Logos), width: opt.Width}
 	m.ctx, m.cancel = context.WithCancel(context.Background())
 	m.spring = harmonica.NewSpring(harmonica.FPS(opt.FPS), springFreq, 1.0)
 	m.card = Card{Prompt: opt.Prompt, Yolo: opt.Yolo, Efforts: map[int]string{}, Loc: opt.Loc}
@@ -245,7 +247,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input.SetWidth(max(m.width-4, 10))
 		return m, nil
 	case tea.BackgroundColorMsg:
-		m.theme = NewTheme(msg.IsDark())
+		m.theme = NewTheme(msg.IsDark()).WithLogos(m.opt.Logos)
 		return m, nil
 	case spinMsg:
 		m.spin++

@@ -68,3 +68,7 @@ Values AFK can't know show as `n/e`, never as zero. Then it asks how it went: `1
 Below 40 columns, or with `TERM=dumb`, there is no card: AFK prints one line with its pick and starts it, then a plain receipt and the rating question. Without a terminal at all (a pipe, a redirect or a script), it starts the pick the same way, prints the receipt to stderr, and never waits for a rating; the run is saved without one.
 
 Colour and animation follow your terminal: `NO_COLOR`, `TERM=dumb` or `AFK_MOTION=off` turn animation off, and over SSH the card redraws less often.
+
+## Logos
+
+Each route shows its CLI's logo. In kitty and Ghostty the logos are small images (sent once with the kitty graphics protocol and drawn with its Unicode placeholders). Other terminals, tmux, and `NO_COLOR` show a two-letter tag in the CLI's colour instead (`CL` claude, `CX` codex, `GK` grok, `GW` a gateway). Set `AFK_LOGOS=text` to always use the tags, or `AFK_LOGOS=kitty` to force images in a terminal AFK doesn't recognise.
