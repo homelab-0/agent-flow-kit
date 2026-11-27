@@ -204,12 +204,8 @@ type Panel struct {
 	data     panelData // what the tabs show: raw, narrowed by the filter
 	raw      panelData // what was loaded
 	filter   map[Tab]string
-<<<<<<< HEAD
 	typing   bool       // the filter is being typed
 	tools    *toolsView // a server's tools, open over the MCP tab
-=======
-	typing   bool // the filter is being typed
->>>>>>> origin/master
 	id       int
 	gens     map[Tab]int // the latest load of each tab
 	loading  map[Tab]bool
@@ -322,7 +318,6 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			}
 		}
 		p.refilter(msg.tab)
-<<<<<<< HEAD
 	case mcpToolsMsg:
 		if msg.panel != p.id {
 			return nil
@@ -334,8 +329,6 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			p.tools = &toolsView{server: msg.server, tools: msg.tools}
 		}
 		return p.load(TabMCP) // the test updated its tool count and status
-=======
->>>>>>> origin/master
 	case mcpDoneMsg:
 		p.notice = msg.text
 		if msg.err != nil {
@@ -367,12 +360,9 @@ func (p *Panel) key(k string) tea.Cmd {
 	if p.filterKey(k) {
 		return nil
 	}
-<<<<<<< HEAD
 	if p.tools != nil && p.tab == TabMCP {
 		return p.toolsKey(k)
 	}
-=======
->>>>>>> origin/master
 	switch k {
 	case "/":
 		if filterable(p.tab) {
@@ -628,7 +618,6 @@ func (p *Panel) Lines() []line {
 	if fl != nil {
 		out = append(out, fitLine(fl, w))
 	}
-<<<<<<< HEAD
 	// The panel's own keys follow the tab's; on a narrow screen r and /
 	// give way first so the tabs and quit stay in sight.
 	filter := filterable(p.tab) && !(p.tab == TabMCP && p.tools != nil)
@@ -655,14 +644,6 @@ func (p *Panel) Lines() []line {
 		}
 		break
 	}
-=======
-	keys := line{sg(t.Plain, " ")}
-	keys = append(keys, hint...)
-	if filterable(p.tab) {
-		keys = append(keys, sg(t.Key, "/"), sg(t.Dim, " filter  "))
-	}
-	keys = append(keys, sg(t.Key, "1-7"), sg(t.Dim, " tabs  "), sg(t.Key, "r"), sg(t.Dim, " refresh  "), sg(t.Key, "q"), sg(t.Dim, " quit"))
->>>>>>> origin/master
 	return append(out, fitLine(keys, w))
 }
 
