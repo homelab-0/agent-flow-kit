@@ -61,11 +61,11 @@ If the chosen route can't be launched (for example a gateway route with no key s
 
 ## During the session
 
-The chosen CLI runs as a child of `afk` and owns the terminal: you are in its own interface, with nothing wrapped around it. AFK waits until it exits.
+Just before the CLI starts, AFK prints the launch line and Esc's empty hammock ("Esc is afk. claude has the terminal."); nothing is animated here, so the CLI starts at once. The chosen CLI runs as a child of `afk` and owns the terminal: you are in its own interface, with nothing wrapped around it. AFK waits until it exits.
 
 ## The receipt
 
-When the CLI exits, Esc comes back with a receipt:
+When the CLI exits, Esc shuffles back in from the right and climbs into the hammock (about two seconds, while AFK reads pool usage and git; any key brings it home at once), then the receipt shows. Below 76 columns or with `NO_COLOR` there is no Esc, just the receipt:
 
 <p align="center"><img src="../assets/receipt.png" alt="The receipt" width="640"></p>
 
