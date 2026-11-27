@@ -1,7 +1,7 @@
 › fix the flaky renovate test in factory-router-tests
 ╭─ Route ──────────────────────────────────────────────────────────────────╮
 │ GK grok · grok-4.7 · effort medium                                       │
-│   coding (guessed) · SuperGrok sign-in · grok’s own auth                 │
+│   coding (guessed) · Grok sign-in · grok’s own auth                      │
 │                                                                          │
 │   Most headroom left, but 9.1 points lower on coding than claude, and    │
 │   the score is a catalog estimate, not measured.                         │

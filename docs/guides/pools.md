@@ -7,9 +7,11 @@ A pool is one source of model usage: a plan login, a free tier, or a gateway. AF
 | `anthropic-max` | `claude` (Claude Pro/Max) |
 | `openai-plus` | `codex` (ChatGPT plans) |
 | `antigravity-pool` | `agy` |
-| `xai-grok` | `grok` (SuperGrok) |
+| `xai-grok` | `grok` |
 | `opencode-free` | `opencode` free models |
 | `litellm-local` | a model gateway, see [gateways](gateways.md) |
+
+AFK doesn't know which tier of a plan you pay for, and doesn't guess. The Runs tab names a plan in general ("Claude plan", "Grok plan") and adds the tier only when the CLI itself reported it, as Codex does ("ChatGPT plan · pro").
 
 ## How usage is measured
 

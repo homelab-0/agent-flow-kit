@@ -382,7 +382,7 @@ var signInPools = map[string]string{"xai-grok": "grok", "antigravity-pool": "agy
 func (pc *poolCalc) calc(pid string, local bool, defaultH []string, live quota, authMtime int64) Pool {
 	meta, ok := pc.cat.Pools[pid]
 	if !ok && pid == "opencode-free" {
-		meta = PoolMeta{Provider: "OpenCode Free Tier", CostClass: "free", PoolTier: "free"}
+		meta = PoolMeta{Provider: "OpenCode", CostClass: "free"}
 	}
 	sg, kind, active := activeSignal(pc.sig, pid, authMtime, pc.now)
 	bound := pc.binds[pid]
@@ -448,15 +448,11 @@ func (pc *poolCalc) calc(pid string, local bool, defaultH []string, live quota, 
 	if provider == "" {
 		provider = pid
 	}
-	tier := meta.PoolTier
-	if tier == "" {
-		tier = "standard"
-	}
 	cc := meta.CostClass
 	if cc == "" {
 		cc = "subscription"
 	}
-	p := Pool{PoolID: pid, Provider: provider, PoolTier: tier, CostClass: cc, State: state, QuotaSource: src}
+	p := Pool{PoolID: pid, Provider: provider, CostClass: cc, State: state, QuotaSource: src}
 	if used != nil {
 		p.UsedPct, p.HeadroomPct = used, f64(100-*used)
 	}
@@ -467,6 +463,9 @@ func (pc *poolCalc) calc(pid string, local bool, defaultH []string, live quota, 
 		p.WeeklyUsedPct, p.FiveHourUsedPct = live.SevenDayPct, live.FiveHourPct
 		p.FableWeeklyUsedPct, p.ResetsAt = live.FableWeeklyPct, live.ResetsAt
 		p.Window = live.Window
+		if live.PlanType != nil {
+			p.Plan = strings.TrimSpace(*live.PlanType)
+		}
 		if live.FetchedEpochRaw > 0 {
 			p.observed = time.Unix(live.FetchedEpochRaw, 0)
 		}

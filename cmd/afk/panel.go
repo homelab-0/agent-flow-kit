@@ -55,7 +55,21 @@ var planPool = map[string]string{
 }
 
 var planName = map[string]string{
-	"anthropic-max": "Claude plan", "openai-plus": "ChatGPT plan", "xai-grok": "SuperGrok", "antigravity-pool": "Google AI plan",
+	"anthropic-max": "Claude plan", "openai-plus": "ChatGPT plan", "xai-grok": "Grok plan", "antigravity-pool": "Google plan",
+}
+
+// planLabel names a plan pool. AFK doesn't know which tier of a plan
+// someone pays for, so it names the vendor's plan in general and adds the
+// tier only when the CLI itself reported one.
+func planLabel(pid, reported string) string {
+	name := planName[pid]
+	if reported == "" {
+		return name
+	}
+	if name == "" {
+		return reported
+	}
+	return name + " · " + reported
 }
 
 // signInText is a CLI's sign-in state in words. "signed in" is kept for
@@ -371,7 +385,7 @@ func (s panelSource) Status(ctx context.Context) (*tui.StatusView, error) {
 		}
 		// Sign-in is what the CLI itself (or, failing that, its login on
 		// disk) says: never "ok" by default.
-		row := tui.PlanRow{Harness: h, Plan: planName[pid], SignIn: "unknown"}
+		row := tui.PlanRow{Harness: h, Plan: planLabel(pid, p.Plan), SignIn: "unknown"}
 		if in, ok := found[h]; ok {
 			row.SignIn = signInText(in)
 		}

@@ -108,6 +108,11 @@ func TestProbePoolsMatchesBashProbe(t *testing.T) {
 		if got != w {
 			t.Errorf("%s:\n got  %+v\n want %+v", id, got, w)
 		}
+		// A plan name is shown only when the CLI reported one (Codex
+		// does, with its rate limits); it is never filled in from a guess.
+		if wantPlan := map[string]string{"openai-plus": "pro"}[id]; g.Plan != wantPlan {
+			t.Errorf("%s: plan %q, want %q", id, g.Plan, wantPlan)
+		}
 		if (g.UsedPct == nil) != (g.HeadroomPct == nil) {
 			t.Errorf("%s: used %v but headroom %v", id, g.UsedPct, g.HeadroomPct)
 		}

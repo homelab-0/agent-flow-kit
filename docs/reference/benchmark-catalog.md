@@ -43,7 +43,7 @@ For offline use and tests, `AFK_BENCHMARK_FEED_DIR` reads each feed from a file 
   "schema": "afk-benchmark-catalog/3",
   "updated_at": "...",
   "entitlement_pools": {
-    "anthropic-max": { "provider": "Anthropic", "cost_class": "subscription", "pool_tier": "max-20x" }
+    "anthropic-max": { "provider": "Anthropic", "cost_class": "subscription" }
   },
   "candidates": [
     {
