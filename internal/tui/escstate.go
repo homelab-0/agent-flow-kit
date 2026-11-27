@@ -15,6 +15,10 @@ func (m *Model) escState() (Pose, line) {
 	t := m.theme
 	stand := Pose{Stand: true, X: escStandX, Eyes: "lidded"}
 	switch m.st {
+	case sIntro:
+		return m.introPose()
+	case sCompose:
+		return m.composePose()
 	case sRouting:
 		if !m.opt.Motion {
 			return stand, line{sg(t.Dim, "Esc is checking the options")}
