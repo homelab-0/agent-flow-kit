@@ -180,11 +180,22 @@ func (t Theme) routeBox(c Card, w int) []line {
 
 func (t Theme) poolLine(c Card, r engine.Route) line {
 	if r.IsGateway() {
+		if r.Engine != "" {
+			where := engineName(r.Engine)
+			if h := engineHost(r); h != "" {
+				where += " on " + h
+			}
+			l := line{sg(t.Dim, "  runs on  "), t.engineLogo(r.Engine), sg(t.Plain, " "+where)}
+			if r.GatewayName != "" {
+				l = append(l, sg(t.Dim, " · through "+r.GatewayName))
+			}
+			return append(l, sg(t.Dim, " · state "+unknownText))
+		}
 		where := "the model gateway"
 		if h := gatewayHost(r); h != "" {
 			where = "the gateway at " + h
 		}
-		return line{sg(t.Dim, "  runs on  "), sg(t.Badge("GW"), "GW"), sg(t.Plain, " "+where), sg(t.Dim, " · state "+unknownText)}
+		return line{sg(t.Dim, "  runs on  "), t.logo(r), sg(t.Plain, " "+where), sg(t.Dim, " · state "+unknownText)}
 	}
 	head, win, resets := c.poolFigure(r)
 	l := line{sg(t.Dim, "  pool  ")}
@@ -229,11 +240,19 @@ func (t Theme) tableRow(c Card, i int, w int) line {
 	row = append(row, sg(scoreSt, col(scoreText(r.EffectiveScore), 4)), sg(t.Plain, "   "))
 	switch {
 	case r.IsGateway():
+		if r.Engine != "" {
+			where := engineName(r.Engine)
+			if h := engineHost(r); h != "" {
+				where += " · " + h
+			}
+			row = append(row, t.engineLogo(r.Engine), sg(t.Dim, " "+col(where, 14)))
+			break
+		}
 		host := gatewayHost(r)
 		if host == "" {
 			host = "gateway"
 		}
-		row = append(row, sg(t.Badge("GW"), "GW"), sg(t.Dim, " "+col(host, 14)))
+		row = append(row, t.logo(r), sg(t.Dim, " "+col(host, 14)))
 	case r.PoolHeadroomPct == nil:
 		row = append(row, sg(t.Dim, unknownMeter), sg(t.Dim, " "+unknownText))
 	default:

@@ -48,6 +48,10 @@ type Route struct {
 	Stage          string   `json:"stage"`
 	Risk           string   `json:"risk"`
 	LitellmBaseURL string   `json:"litellm_base_url"`
+	GatewayName    string   `json:"gateway_name"`
+	GatewayKind    string   `json:"gateway_kind"`
+	Engine         string   `json:"engine"`
+	EngineHost     string   `json:"engine_host"`
 	Pinned         bool     `json:"pinned"`
 	WindowTokens   *float64 `json:"window_tokens"`
 	// Pacing is the route's pool projection; PacingAdjustment is what it
