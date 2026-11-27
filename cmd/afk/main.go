@@ -85,11 +85,16 @@ func interactive(eng tui.Backend, args cli.Args, width int) int {
 	if os.Getenv("NO_COLOR") == "" {
 		dark = lipgloss.HasDarkBackground(os.Stdin, os.Stdout)
 	}
+	var logos tui.Logos
+	if tui.DetectLogos(os.Getenv) == tui.LogosKitty {
+		logos, _ = tui.SendLogos(os.Stdout)
+	}
 	opt := tui.Options{
 		Flags: args.Flags, Prompt: args.Prompt, Pass: args.Pass, Yolo: args.Yolo,
 		Yes: args.Yes, Width: width, Motion: motion, FPS: tui.FPS(os.Getenv), Dark: dark,
 		YoloBlock: yoloBlock(eng),
 		Header:    headerInfo(),
+		Logos:     logos,
 	}
 	model := tui.New(eng, opt)
 	p := tea.NewProgram(model, tea.WithFPS(opt.FPS))
@@ -108,7 +113,7 @@ func interactive(eng tui.Backend, args cli.Args, width int) int {
 	case !dec.Launch:
 		return 1
 	}
-	theme := tui.NewTheme(dark)
+	theme := tui.NewTheme(dark).WithLogos(logos)
 	s := sessionInfo{eng: eng, route: dec.Route, plan: dec.Plan, before: dec.Pools.Headroom(dec.Route.EntitlementPool)}
 	return s.run(func(id string) {
 		lipgloss.Println(theme.LaunchText(dec.Route, "here", id, dec.Yolo, width))

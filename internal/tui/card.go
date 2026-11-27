@@ -147,7 +147,7 @@ func (t Theme) yoloTag() seg { return sg(t.YoloTag, " yolo ") }
 // routeBox is the box for the selected row.
 func (t Theme) routeBox(c Card, w int) []line {
 	r := c.Route(c.Sel)
-	head := line{sg(t.Badge(badge(r)), badge(r)), sg(t.Bold, " "+routeName(r)), sg(t.Dim, " · "), sg(t.Plain, r.Model),
+	head := line{t.logo(r), sg(t.Bold, " "+routeName(r)), sg(t.Dim, " · "), sg(t.Plain, r.Model),
 		sg(t.Dim, " · effort "), sg(t.Plain, effortText(r.Effort))}
 	if r.EffortEscalated && r.Effort == c.Rows[c.Sel].Effort {
 		head = append(head, sg(t.Dim, "      "), sg(t.Warn, "↑ escalated"))
@@ -220,8 +220,7 @@ func (t Theme) tableHeader(w int) line {
 
 func (t Theme) tableRow(c Card, i int, w int) line {
 	r := c.Route(i)
-	b := badge(r)
-	row := line{sg(t.Plain, "  "), sg(t.Badge(b), b),
+	row := line{sg(t.Plain, "  "), t.logo(r),
 		sg(t.Plain, " "+col(routeName(r), 13)+col(r.Model, modelCol(w))+col(effortText(r.Effort), 7))}
 	scoreSt := t.Plain
 	if i == 0 {
@@ -275,9 +274,8 @@ func (t Theme) CardLines(c Card, width int, hints bool) []line {
 // CompactLines is the card below 70 columns.
 func (t Theme) CompactLines(c Card, width int, hints bool) []line {
 	r := c.Route(c.Sel)
-	b := badge(r)
 	out := []line{t.promptLine(c.Prompt, width)}
-	head := line{sg(t.Accent, "▸ "), sg(t.Badge(b), b), sg(t.Bold, " "+routeName(r)), sg(t.Plain, " "+shortModel(r)), sg(t.Dim, " · "), sg(t.Plain, effortText(r.Effort))}
+	head := line{sg(t.Accent, "▸ "), t.logo(r), sg(t.Bold, " "+routeName(r)), sg(t.Plain, " "+shortModel(r)), sg(t.Dim, " · "), sg(t.Plain, effortText(r.Effort))}
 	if c.Yolo {
 		head = append(head, sg(t.Plain, " "), t.yoloTag())
 	} else if m := c.LaunchMode(); m != "ask" {
@@ -476,8 +474,7 @@ func (t Theme) ErrorLines(c Card, width int, reason string, next int) []line {
 // LaunchLine is the receipt line printed when the CLI starts:
 // ▸ CL claude · claude-fable-5-2 · high · here    run r-7f3c
 func (t Theme) LaunchLine(r engine.Route, where, id string, yolo bool, width int) line {
-	b := badge(r)
-	l := line{sg(t.Accent, "▸ "), sg(t.Badge(b), b), sg(t.Bold, " "+routeName(r)), sg(t.Dim, " · "+r.Model+" · "+effortText(r.Effort)+" · "+where)}
+	l := line{sg(t.Accent, "▸ "), t.logo(r), sg(t.Bold, " "+routeName(r)), sg(t.Dim, " · "+r.Model+" · "+effortText(r.Effort)+" · "+where)}
 	if yolo {
 		l = append(l, sg(t.Plain, "  "), t.yoloTag())
 	}
@@ -495,10 +492,9 @@ func (t Theme) LaunchLine(r engine.Route, where, id string, yolo bool, width int
 
 // SessionRule is printed just before the CLI takes the terminal.
 func (t Theme) SessionRule(r engine.Route) line {
-	b := badge(r)
 	label := " " + routeName(r) + " session "
 	right := 45 - lenCells(label) // the rule is 77 cells wide
-	return line{sg(t.Dim, "  "+strings.Repeat("─", 27)+" "), sg(t.Badge(b), b), sg(t.Dim, label+strings.Repeat("─", max(right, 3)))}
+	return line{sg(t.Dim, "  "+strings.Repeat("─", 27)+" "), t.logo(r), sg(t.Dim, label+strings.Repeat("─", max(right, 3)))}
 }
 
 // EndRule closes the session in scrollback.

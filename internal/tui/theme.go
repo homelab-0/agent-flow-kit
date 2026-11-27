@@ -56,6 +56,7 @@ type Theme struct {
 	accent, ok, warn, bad, dim, border color.Color
 	selbg                              color.Color
 	badges                             map[string]color.Color
+	logos                              Logos
 }
 
 // NewTheme resolves the palette for a dark or light background.
