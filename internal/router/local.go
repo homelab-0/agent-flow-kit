@@ -380,3 +380,16 @@ func (p *Probe) localEngineAt(u string) (LocalEngine, bool) {
 
 // taskClasses are the classes a task is scored on.
 var taskClasses = []string{"frontier_synthesis", "architecture", "coding_complex", "coding_standard", "coding_review", "research", "security", "webdev"}
+
+// AllCandidates is every model the router can choose from with this
+// probe: the catalog, the models CLIs reported, and the local engines'.
+func (r *Router) AllCandidates(allowMetered bool) []Candidate {
+	probe := r.Probe
+	if probe == nil {
+		probe = &Probe{}
+	}
+	return append(r.candidates(allowMetered), r.localCandidates(probe)...)
+}
+
+// EngineURL is the local engine a local candidate runs on.
+func (c Candidate) EngineURL() string { return c.engineURL }

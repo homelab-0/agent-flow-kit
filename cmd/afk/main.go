@@ -59,6 +59,8 @@ func run(argv []string) int {
 			return trustCmd(argv[1:], os.Stdout, os.Stderr)
 		case "pools":
 			return poolsCmd(argv[1:], os.Stdout, os.Stderr)
+		case "status":
+			return statusCmd(argv[1:], os.Stdout, os.Stderr)
 		case "version", "--version":
 			return versionCmd(argv[1:], os.Stdout, os.Stderr)
 		}
@@ -97,6 +99,12 @@ func interactive(eng tui.Backend, args cli.Args, width int) int {
 		Logos:     logos,
 		// Plain `afk` opens the composer; with a prompt it routes at once.
 		Compose: args.Prompt == "" && !args.Yes,
+	}
+	if c, ok := eng.(*core.Core); ok {
+		opt.Panel = newPanelSource(c)
+	}
+	if opt.Header != nil {
+		opt.Version = opt.Header.Version
 	}
 	model := tui.New(eng, opt)
 	p := tea.NewProgram(model, tea.WithFPS(opt.FPS))

@@ -8,6 +8,7 @@ Run `afk` on its own and Esc shuffles in and climbs into its hammock (about two 
 | `tab` / `shift+tab` | step the task kind: auto, coding, quick, complex, review, architecture, webdev, research, security |
 | `/harness <cli>`, `/model <id>`, `/effort <level>`, `/prefer balanced\|cheap\|best` | pin a choice for this task (no argument unpins it); `/clear` unpins all |
 | `?` | shortcuts (on an empty input) |
+| `2`–`7`, `/harnesses`, `/bench`, `/skills`, `/mcp`, `/runs`, `/config` | open the [control panel](control-panel.md) on that tab (the digits on an empty input) |
 | `esc` | clear the input; on an empty input, quit |
 
 While AFK routes (when it takes more than a moment), Esc gets up and the routing screen lists every candidate CLI: each one ticks off with its model and benchmark score once it is scored, or says it has no usable route for the task.

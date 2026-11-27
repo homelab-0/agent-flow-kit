@@ -48,6 +48,10 @@ type Options struct {
 	// Compose opens with the startup animation and the composer instead
 	// of routing Prompt at once (plain `afk`).
 	Compose bool
+	// Panel is the control panel's data; nil leaves the tabs out.
+	Panel PanelSource
+	// Version is shown at the right of the tab bar.
+	Version string
 }
 
 // Decision is how the card ended.
@@ -103,10 +107,13 @@ type (
 
 // Model is the route card program.
 type Model struct {
-	opt   Options
-	be    Backend
-	theme Theme
-	width int
+	opt    Options
+	be     Backend
+	theme  Theme
+	width  int
+	height int
+	// panel is the open control panel (nil: the card or composer).
+	panel *Panel
 	st    state
 	card  Card
 
@@ -271,6 +278,27 @@ func (m *Model) finish(d Decision) tea.Cmd {
 }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if ws, ok := msg.(tea.WindowSizeMsg); ok {
+		m.height = ws.Height
+		if m.panel != nil {
+			m.panel.Update(ws)
+		}
+	}
+	if m.panel != nil {
+		switch msg.(type) {
+		case tea.KeyPressMsg, panelMsg, panelExecMsg:
+			cmd := m.panel.Update(msg)
+			switch {
+			case m.panel.quit:
+				m.panel = nil
+				return m, m.finish(Decision{Cancelled: true})
+			case m.panel.back:
+				m.panel = nil
+				return m, m.cin.Focus()
+			}
+			return m, cmd
+		}
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -534,7 +562,21 @@ func (m *Model) cardKey(key string) tea.Cmd {
 
 // View draws the current state inline.
 func (m *Model) View() tea.View {
+	if m.panel != nil {
+		return m.panel.View()
+	}
 	return tea.NewView(m.Render())
+}
+
+// openPanel opens the control panel on a tab, from the composer.
+func (m *Model) openPanel(tab Tab) tea.Cmd {
+	if m.opt.Panel == nil || tab == TabRoute {
+		return nil
+	}
+	m.panel = NewPanel(m.ctx, m.opt.Panel, m.theme, tab, m.opt.Version, m.opt.Now)
+	m.panel.width, m.panel.height = m.width, m.height
+	m.cin.Blur()
+	return m.panel.Init()
 }
 
 // Render is the view as a string (for tests and the final frame).

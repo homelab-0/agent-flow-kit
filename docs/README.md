@@ -12,6 +12,7 @@ Anything not built yet is marked **Planned** and listed in the [roadmap](../READ
 ## Guides
 
 - [The route card](guides/route-card.md): the interactive session, the keys, the Why panel, the receipt
+- [The control panel](guides/control-panel.md): the Harnesses, Benchmarks, Runs and Config tabs, and `afk status`
 - [How routing works](guides/routing.md): task kinds, scoring, the rules no route can break, effort
 - [Agent CLIs (harnesses)](guides/harnesses.md): which CLIs AFK supports and what `afk harness` shows
 - [Subscription pools](guides/pools.md): how AFK knows how much of each plan is left

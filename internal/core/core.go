@@ -796,3 +796,13 @@ func signInHint(p *router.Probe, list []string) string {
 	}
 	return "; " + strings.Join(parts, "; ")
 }
+
+// Router loads what routing reads (catalog, pool probe, ratings) and the
+// settings, for views such as the control panel's.
+func (c *Core) Router(ctx context.Context) (*router.Router, Settings, error) {
+	st, err := c.load(ctx, c.Cwd)
+	if err != nil {
+		return nil, Settings{}, err
+	}
+	return st.r, st.settings, nil
+}
