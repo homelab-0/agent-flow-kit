@@ -132,6 +132,10 @@ type Model struct {
 	help       bool
 	preview    *engine.Explain // an empty task routed for the status line
 
+	// The live routing screen.
+	prog    routingProgress
+	progGen int
+
 	dec Decision
 
 	ctx    context.Context // cancelled when the card ends
@@ -177,12 +181,23 @@ func (m *Model) Init() tea.Cmd {
 
 func (m *Model) explainCmd() tea.Cmd {
 	be, f, p, parent := m.be, m.opt.Flags, m.card.Prompt, m.ctx
-	return func() tea.Msg {
+	m.prog = routingProgress{}
+	m.progGen++
+	ch := make(chan engine.Progress, 64)
+	run := func() tea.Msg {
+		defer close(ch)
 		ctx, cancel := context.WithTimeout(parent, explainTimeout)
 		defer cancel()
+		ctx = engine.WithProgress(ctx, func(p engine.Progress) {
+			select {
+			case ch <- p:
+			default: // the screen is behind; the card is what matters
+			}
+		})
 		ex, err := be.Explain(ctx, f, p)
 		return explainMsg{ex, err}
 	}
+	return tea.Batch(run, listenProgress(ch, m.progGen))
 }
 
 func (m *Model) poolsCmd() tea.Cmd {
@@ -287,6 +302,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.animTick()
 		}
 		return m, nil
+	case progressMsg:
+		if msg.gen != m.progGen || msg.done {
+			return m, nil
+		}
+		m.prog.add(msg.p)
+		return m, listenProgress(msg.ch, msg.gen)
 	case previewMsg:
 		m.preview = msg.ex
 		return m, nil
@@ -546,7 +567,10 @@ func (m *Model) render() string {
 		if m.opt.Now().Sub(m.started) < routingDelay && m.opt.Motion {
 			return join([]line{t.promptLine(m.card.Prompt, w)})
 		}
-		return join([]line{t.promptLine(m.card.Prompt, w), m.busyLine("Routing", m.card.Prefer)})
+		if compact {
+			return join([]line{t.promptLine(m.card.Prompt, w), m.busyLine("Routing", m.card.Prefer)})
+		}
+		return join(append([]line{t.promptLine(m.card.Prompt, w), nil}, m.routingLines()...))
 	case sEdit:
 		l := line{sg(t.Accent, "› "), sg(t.Plain, m.input.View())}
 		lines := []line{l}
