@@ -1,0 +1,77 @@
+# GoReleaser config for AFK releases. A tag push (v*) runs it from
+# .github/workflows/release.yml; `goreleaser release --snapshot --clean`
+# builds the same artifacts locally without publishing.
+version: 2
+
+project_name: afk
+
+before:
+  hooks:
+    - go mod tidy -diff
+
+builds:
+  - id: afk
+    main: ./cmd/afk
+    binary: afk
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .FullCommit }}
+      - -X main.date={{ .CommitDate }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: afk
+    ids: [afk]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
+  algorithm: sha256
+
+# Keyless signing: cosign gets a short-lived certificate from the
+# workflow's GitHub OIDC token, so there is no signing key to keep.
+# Verify with:
+#   cosign verify-blob --bundle afk_<v>_checksums.txt.sigstore.json \
+#     --certificate-identity-regexp '^https://github.com/homelab-0/agent-flow-kit/' \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+#     afk_<v>_checksums.txt
+signs:
+  - cmd: cosign
+    artifacts: checksum
+    signature: "${artifact}.sigstore.json"
+    args:
+      - sign-blob
+      - --bundle=${signature}
+      - ${artifact}
+      - --yes
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^Merge "
+
+release:
+  github:
+    owner: homelab-0
+    name: agent-flow-kit
+  draft: false
+  prerelease: auto

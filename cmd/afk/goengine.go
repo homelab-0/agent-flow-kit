@@ -31,6 +31,7 @@ const usage = `afk — run the best agent CLI on this machine for the task
   afk config get|set|edit|path|migrate   your settings (config.toml)
   afk trust add|list|remove [dir]    where yolo may run
   afk pools clear [pool...]          forget recorded pool failures
+  afk version                        the version of this build
 
 Options:
   -p, --print            one-shot: run headless and print the answer
@@ -58,12 +59,13 @@ Options:
                          print the launch plan for a chosen route as JSON;
                          nothing is started. --route - reads it from stdin
   -h, --help             this help
+  --version              same as afk version
 
 On the route card: ↵ launch · ↑↓/jk pick · tab effort · e edit the prompt ·
 y twice for yolo · ? why · esc cancel.
 
-A prompt that starts with "harness", "bench" or "config" needs "--"
-before it.
+A prompt that starts with "harness", "bench", "config", "trust", "pools"
+or "version" needs "--" before it.
 `
 
 // runGo is afk on the Go engine.

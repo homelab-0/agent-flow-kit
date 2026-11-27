@@ -59,6 +59,8 @@ func run(argv []string) int {
 			return trustCmd(argv[1:], os.Stdout, os.Stderr)
 		case "pools":
 			return poolsCmd(argv[1:], os.Stdout, os.Stderr)
+		case "version", "--version":
+			return versionCmd(argv[1:], os.Stdout, os.Stderr)
 		}
 	}
 	return runGo(cli.Parse(argv))
