@@ -148,8 +148,75 @@ func TestComposerCommandsAndKeys(t *testing.T) {
 		t.Error("esc clears the input first")
 	}
 	m.Update(key("esc"))
-	if !m.Decision().Cancelled || m.Render() != "" {
-		t.Errorf("esc on an empty input quits and leaves nothing: %+v %q", m.Decision(), m.Render())
+	if m.st != sCompose || m.Decision().Cancelled || !strings.Contains(ansi.Strip(m.Render()), "ctrl+c twice") {
+		t.Errorf("esc on an empty input stays in AFK and says how to leave: %+v", m.Decision())
+	}
+}
+
+var ctrlC = tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
+
+// AFK is left on purpose: ctrl+c clears the input, a second one asks, and
+// only a third in a row (or ctrl+d on an empty input) ends it.
+func TestComposerLeavesOnlyOnPurpose(t *testing.T) {
+	m, _ := composeModel(t, 100, false)
+	typeText(m, "fix it")
+	m.Update(ctrlC)
+	if m.cin.Value() != "" || m.st != sCompose {
+		t.Fatal("ctrl+c clears the input first")
+	}
+	m.Update(ctrlC)
+	if m.st != sCompose || !strings.Contains(ansi.Strip(m.Render()), exitHint) {
+		t.Fatal("one ctrl+c on an empty input only asks")
+	}
+	typeText(m, "a")
+	m.Update(ctrlC) // clears "a"; the earlier ctrl+c no longer counts
+	m.Update(ctrlC)
+	if m.st != sCompose {
+		t.Fatal("typing in between starts the count again")
+	}
+	m.Update(ctrlC)
+	if d := m.Decision(); !d.Cancelled || !d.Exit || m.Render() != "" {
+		t.Errorf("ctrl+c twice exits and leaves nothing: %+v %q", d, m.Render())
+	}
+
+	m, _ = composeModel(t, 100, false)
+	typeText(m, "a")
+	m.Update(tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
+	if m.Decision().Cancelled {
+		t.Error("ctrl+d with text typed does not exit")
+	}
+	m.Update(ctrlC)
+	m.Update(tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
+	if d := m.Decision(); !d.Exit {
+		t.Errorf("ctrl+d on an empty input exits: %+v", d)
+	}
+}
+
+// Dropping a prompt's card is not leaving AFK, and the slash-command pins
+// come back with the decision so the next composer keeps them.
+func TestCancelledCardIsNotAnExit(t *testing.T) {
+	m, _ := composeModel(t, 100, false)
+	typeText(m, "/harness codex")
+	m.Update(key("enter"))
+	typeText(m, "fix it")
+	m.Update(key("enter"))
+	m.Update(ctrlC)
+	d := m.Decision()
+	if !d.Cancelled || d.Exit || d.Prompt != "fix it" || d.Flags.Harness != "codex" {
+		t.Errorf("got %+v", d)
+	}
+}
+
+// Back from a session: no startup animation, the dropped prompt in the
+// input, and a notice under it.
+func TestComposerResumed(t *testing.T) {
+	f := fixtures(t)
+	h := designHeader
+	m := New(f, Options{Width: 100, Motion: true, FPS: 30, Dark: true, Compose: true, Resumed: true,
+		Draft: "fix it", Notice: "back in AFK", Now: func() time.Time { return frameNow }, Loc: time.UTC, Header: &h})
+	m.Init()
+	if m.st != sCompose || m.cin.Value() != "fix it" || !strings.Contains(ansi.Strip(m.Render()), "back in AFK") {
+		t.Errorf("state %v, input %q", m.st, m.cin.Value())
 	}
 }
 

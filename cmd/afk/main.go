@@ -107,23 +107,91 @@ func interactive(eng tui.Backend, args cli.Args, width int) int {
 	if opt.Header != nil {
 		opt.Version = opt.Header.Version
 	}
-	model := tui.New(eng, opt)
-	p := tea.NewProgram(tui.WithKittyLogos(tui.WithOverlay(model, overlay), logos), tea.WithFPS(opt.FPS))
-	_, err := p.Run()
-	model.Close()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "afk:", err)
-		return 1
+	// AFK is the place you work from: when a CLI session ends, the
+	// composer comes back for the next prompt. It ends only when asked to
+	// (ctrl+c twice or ctrl+d in the composer). --yes is the exception: it
+	// runs the one prompt and reports the CLI's exit code, for scripts.
+	sessions, last := 0, 0
+	for {
+		model := tui.New(eng, opt)
+		p := tea.NewProgram(tui.WithKittyLogos(tui.WithOverlay(model, overlay), logos), tea.WithFPS(opt.FPS))
+		_, err := p.Run()
+		model.Close()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "afk:", err)
+			return 1
+		}
+		dec := model.Decision()
+		next, done, code := afterCard(dec, opt.Compose, sessions, last)
+		if done {
+			if dec.Err != nil {
+				return engineFailure(dec.Err)
+			}
+			return code
+		}
+		if dec.Launch {
+			last = openCLI(eng, dec, opt, dark, motion, width, logos)
+			sessions++
+			if args.Yes {
+				return last
+			}
+			next = resumeNote(dec.Route, last)
+		}
+		// Back to the composer, keeping what the slash commands pinned.
+		// The task kind is per prompt, so it goes back to what afk was
+		// started with.
+		task := opt.Flags.Task
+		opt.Flags = dec.Flags
+		opt.Flags.Task = task
+		opt.Compose, opt.Resumed, opt.Prompt = true, true, ""
+		opt.Draft, opt.Notice = "", next
+		if !dec.Launch {
+			opt.Draft = dec.Prompt
+		}
 	}
-	dec := model.Decision()
+}
+
+// afterCard says what follows a finished card: leave afk with code (done),
+// or go back to the composer with a notice. A launch is neither: the
+// caller opens the CLI first. composer is whether this card came from the
+// composer; sessions and last are the CLI sessions so far and the last
+// one's exit code.
+func afterCard(dec tui.Decision, composer bool, sessions, last int) (notice string, done bool, code int) {
 	switch {
 	case dec.Err != nil:
-		return engineFailure(dec.Err)
-	case dec.Cancelled:
-		return 130
-	case !dec.Launch:
-		return 1
+		return "", true, 4
+	case dec.Launch:
+		return "", false, 0
+	case !dec.Cancelled:
+		return "", true, 1
+	case dec.Exit, !composer:
+		// Asked to leave, or `afk "prompt"` cancelled on its card.
+		if sessions > 0 && dec.Exit {
+			return "", true, 0
+		}
+		return "", true, 130
 	}
+	return "cancelled; nothing was started", false, 0
+}
+
+// resumeNote is the composer's notice after a CLI session.
+func resumeNote(r engine.Route, code int) string {
+	name := r.Harness
+	if name == "" {
+		name = "the CLI"
+	}
+	switch code {
+	case 0:
+		return "back in AFK · " + name + " session ended"
+	case 4, 127:
+		return "back in AFK · " + name + " did not start (see above)"
+	}
+	return fmt.Sprintf("back in AFK · %s session ended (exit %d)", name, code)
+}
+
+// openCLI gives the terminal to the chosen CLI, then prints the receipt
+// and asks for a rating. It returns the CLI's exit code.
+func openCLI(eng tui.Backend, dec tui.Decision, opt tui.Options, dark, motion bool, width int, logos tui.Logos) int {
 	theme := tui.NewTheme(dark).WithLogos(logos)
 	art := opt.Header != nil && opt.Header.Art
 	s := sessionInfo{eng: eng, route: dec.Route, plan: dec.Plan, before: dec.Pools.Headroom(dec.Route.EntitlementPool)}

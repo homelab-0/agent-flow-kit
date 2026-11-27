@@ -9,7 +9,11 @@ Run `afk` on its own and Esc shuffles in and climbs into its hammock (about two 
 | `/harness <cli>`, `/model <id>`, `/effort <level>`, `/prefer balanced\|cheap\|best` | pin a choice for this task (no argument unpins it); `/clear` unpins all |
 | `?` | shortcuts (on an empty input) |
 | `2`–`7`, `/harnesses`, `/bench`, `/skills`, `/mcp`, `/runs`, `/config` | open the [control panel](control-panel.md) on that tab (the digits on an empty input) |
-| `esc` | clear the input; on an empty input, quit |
+| `esc` | clear the input |
+| `ctrl+c` | clear the input; on an empty input press it twice to exit AFK |
+| `ctrl+d` | exit AFK (on an empty input) |
+
+AFK stays open. When the CLI you launched ends, however it ends, AFK prints the receipt, asks for a rating and brings the composer back for the next prompt, which is routed again. Inside the CLI, `ctrl+c` belongs to the CLI: it never closes AFK. Pins set with the slash commands are kept between prompts.
 
 While AFK routes (when it takes more than a moment), Esc gets up and the routing screen lists every candidate CLI: each one ticks off with its model and benchmark score once it is scored, or says it has no usable route for the task.
 
@@ -35,11 +39,11 @@ The top box is the pick: the CLI, model and effort, the kind of task (and whethe
 | `e` | edit the prompt; `↵` routes it again, `esc` goes back |
 | `y` `y` | yolo: the CLI acts without asking (press twice; a red tag shows it is on, `y` again turns it off). Only in a [trusted](permissions.md#yolo-stays-deliberate) git repository; an interactive OpenCode session keeps its own prompts. The box shows the [permission mode](permissions.md) when it isn't `ask`, and a line when the selected CLI runs a stricter one |
 | `?` | the Why panel; `?` again closes it |
-| `esc` or `ctrl+c` | cancel; nothing is started (exit code 130) |
+| `esc` or `ctrl+c` | cancel; nothing is started. From the composer you go back to it with the prompt still in the input; with `afk "prompt"` AFK exits with code 130 |
 
 `w` (where to run) only offers this terminal for now, and says so when pressed.
 
-`-y` or `--yes` skips the card and starts the router's pick.
+`-y` or `--yes` skips the card and starts the router's pick. It is the one-shot form: when the CLI ends, AFK exits with the CLI's exit code.
 
 ## The Why panel
 

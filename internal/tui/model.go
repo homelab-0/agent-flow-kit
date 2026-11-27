@@ -51,6 +51,13 @@ type Options struct {
 	// Compose opens with the startup animation and the composer instead
 	// of routing Prompt at once (plain `afk`).
 	Compose bool
+	// Resumed opens the composer straight away, without the startup
+	// animation: AFK is coming back from a session, not starting.
+	Resumed bool
+	// Draft is put in the composer's input (a prompt whose card was
+	// cancelled), and Notice under it.
+	Draft  string
+	Notice string
 	// Panel is the control panel's data; nil leaves the tabs out.
 	Panel PanelSource
 	// Version is shown at the right of the tab bar.
@@ -66,7 +73,12 @@ type Decision struct {
 	Prompt    string
 	Pools     *engine.Pools // pool usage when the card opened (nil if unknown)
 	Cancelled bool
-	Err       error // the engine failed; nothing to launch
+	// Exit is set with Cancelled when the person asked to leave AFK (from
+	// the composer or a tab), not just to drop one prompt's card.
+	Exit bool
+	// Flags are the route flags as the composer's slash commands left them.
+	Flags engine.RouteFlags
+	Err   error // the engine failed; nothing to launch
 }
 
 type state int
@@ -140,6 +152,7 @@ type Model struct {
 	introStart time.Time
 	taskIdx    int
 	help       bool
+	exitArmed  bool            // ctrl+c was pressed once on an empty input
 	preview    *engine.Explain // an empty task routed for the status line
 
 	// The live routing screen.
@@ -274,6 +287,7 @@ func (m *Model) stepFill() bool {
 func (m *Model) finish(d Decision) tea.Cmd {
 	d.Pools = m.card.Pools
 	d.Prompt = m.card.Prompt
+	d.Flags = m.opt.Flags
 	m.dec = d
 	m.st = sDone
 	m.cancel()
@@ -295,7 +309,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case m.panel.quit:
 				m.panel.Close()
 				m.panel = nil
-				return m, m.finish(Decision{Cancelled: true})
+				return m, m.finish(Decision{Cancelled: true, Exit: true})
 			case m.panel.back:
 				m.panel.Close()
 				m.panel = nil
@@ -439,7 +453,9 @@ func (m *Model) nextRow() int {
 
 func (m *Model) onKey(k tea.KeyPressMsg) tea.Cmd {
 	key := k.String()
-	if key == "ctrl+c" {
+	// In the composer ctrl+c clears the input, and leaves AFK only when
+	// pressed twice; anywhere else it drops the prompt in hand.
+	if key == "ctrl+c" && m.st != sIntro && m.st != sCompose {
 		return m.finish(Decision{Cancelled: true})
 	}
 	switch m.st {
