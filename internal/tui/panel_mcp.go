@@ -141,6 +141,12 @@ func (p *Panel) mcpKey(k string) tea.Cmd {
 		default:
 			return p.mcpDo("disable", r.Name, h)
 		}
+	case "enter":
+		if !r.Listed {
+			p.notice = r.Name + " is no longer in mcp.toml"
+			return nil
+		}
+		return p.mcpListTools(r.Name)
 	case "k", "c":
 		d, ok := p.mcpDrift()
 		if !ok {
@@ -158,7 +164,7 @@ func (p *Panel) mcpKey(k string) tea.Cmd {
 func (p *Panel) mcpLines(w int) ([]line, line) {
 	t := p.theme
 	v := p.data.mcp
-	hint := line{sg(t.Key, "space"), sg(t.Dim, " enable  "), sg(t.Key, "s"), sg(t.Dim, " sync  "), sg(t.Key, "t"), sg(t.Dim, " test  "), sg(t.Key, "a"), sg(t.Dim, " add server  ")}
+	hint := line{sg(t.Key, "space"), sg(t.Dim, " enable  "), sg(t.Key, "s"), sg(t.Dim, " sync  "), sg(t.Key, "t"), sg(t.Dim, " test  "), sg(t.Key, "↵"), sg(t.Dim, " tools  "), sg(t.Key, "a"), sg(t.Dim, " add  ")}
 	tools := 0
 	for _, r := range v.Rows {
 		tools += max(r.Tools, 0)

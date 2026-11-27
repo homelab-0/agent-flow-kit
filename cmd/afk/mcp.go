@@ -446,3 +446,28 @@ const mcpTemplate = `# MCP servers AFK writes into each agent CLI (afk mcp sync)
 # command = ["npx", "@playwright/mcp@latest"]
 # harnesses = ["claude", "codex"]   # default: all
 `
+
+// testMCPServer lists a server's tools and records the result as its last
+// test, for the tab's t and ↵.
+func testMCPServer(ctx context.Context, d mcpDeps, name string) ([]mcp.Tool, error) {
+	servers, err := mcp.Load(d.env.Config, d.env.Gateways)
+	if err != nil {
+		return nil, err
+	}
+	for _, sv := range servers {
+		if sv.Name != name {
+			continue
+		}
+		tools, err := mcp.ListTools(ctx, sv, d.getenv)
+		rec := mcp.Tested{OK: err == nil, Tools: len(tools), At: time.Now().UTC()}
+		if err != nil {
+			rec.Error = err.Error()
+		}
+		_ = d.env.Record(sv.Name, rec)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", sv.Name, err)
+		}
+		return tools, nil
+	}
+	return nil, fmt.Errorf("no server %q in mcp.toml", name)
+}
