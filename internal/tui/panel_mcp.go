@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -15,6 +16,10 @@ type MCPView struct {
 	Drift       []MCPDrift
 	Pending     int
 	Problems    []string
+	// Project is the repository's .mcp.json ("" when it has none); its
+	// servers are the rows with Project set.
+	Project   string
+	Undecided int // project servers waiting for a scope
 }
 
 // MCPRow is one server. Cells holds the mcp package's cell names by CLI:
@@ -29,17 +34,40 @@ type MCPRow struct {
 	Tested string // "2h ago"
 	Cells  map[string]string
 	Notes  map[string]string // why a cell is unsupported, by CLI
+	// Project is a server from the repository's .mcp.json; Scope is
+	// "project", "global" or "" (not chosen yet).
+	Project bool
+	Scope   string
 }
 
 // MCPDrift is an entry edited in a CLI since AFK wrote it.
-type MCPDrift struct{ Server, Harness, File string }
+type MCPDrift struct {
+	Server, Harness, File string
+	Project               bool
+}
+
+// mcpOp is op for the project's servers when project is set.
+func mcpOp(project bool, op string) string {
+	if project {
+		return "project:" + op
+	}
+	return op
+}
+
+// mcpSource is the file a row's server comes from.
+func mcpSource(project bool) string {
+	if project {
+		return ".mcp.json"
+	}
+	return "mcp.toml"
+}
 
 func mcpMark(c string) string {
 	switch c {
 	case "unsupported":
 		return "–"
 	case "error":
-		return "?"
+		return "✗" // ? asks where a project server goes
 	}
 	return skillMark(c)
 }
@@ -59,10 +87,13 @@ func (p *Panel) mcpDrift() (MCPDrift, bool) {
 	}
 	var first *MCPDrift
 	for i, d := range p.data.mcp.Drift {
-		if d.Server == r.Name && d.Harness == h {
+		if d.Server != r.Name || d.Project != r.Project {
+			continue
+		}
+		if d.Harness == h {
 			return d, true
 		}
-		if d.Server == r.Name && first == nil {
+		if first == nil {
 			first = &p.data.mcp.Drift[i]
 		}
 	}
@@ -81,7 +112,7 @@ func (p *Panel) mcpDo(op string, args ...string) tea.Cmd {
 	if src == nil {
 		return nil
 	}
-	if op == "test" && len(args) > 0 {
+	if strings.HasSuffix(op, "test") && len(args) > 0 {
 		p.notice = "Testing " + args[0] + "…"
 	}
 	return func() tea.Msg {
@@ -97,6 +128,16 @@ type mcpDoneMsg struct {
 
 func (p *Panel) mcpKey(k string) tea.Cmd {
 	v := p.data.mcp
+	if name := p.askScope; name != "" {
+		p.askScope = ""
+		switch k {
+		case "p":
+			return p.mcpDo("project:scope", name, "project")
+		case "g":
+			return p.mcpDo("project:scope", name, "global")
+		}
+		return nil // any other key: decide later
+	}
 	switch k {
 	case "a":
 		return p.run("mcp", "edit")
@@ -122,12 +163,18 @@ func (p *Panel) mcpKey(k string) tea.Cmd {
 		}
 	case "t":
 		if !r.Listed {
-			p.notice = r.Name + " is no longer in mcp.toml"
+			p.notice = r.Name + " is no longer in " + mcpSource(r.Project)
 			return nil
 		}
-		return p.mcpDo("test", r.Name)
+		return p.mcpDo(mcpOp(r.Project, "test"), r.Name)
 	case "space", " ":
 		switch c := r.Cells[h]; {
+		case c == "native":
+			p.notice = h + " reads .mcp.json itself, so it always has " + r.Name + " in this project"
+		case r.Project && r.Listed && (r.Scope == "" || c == "ask" || c == "global"):
+			p.askScope = r.Name
+		case !r.Listed && r.Project:
+			p.notice = r.Name + " is no longer in .mcp.json; s removes AFK's old copies"
 		case !r.Listed:
 			p.notice = r.Name + " is no longer in mcp.toml; s removes AFK's old entries"
 		case c == "conflict":
@@ -137,16 +184,16 @@ func (p *Panel) mcpKey(k string) tea.Cmd {
 		case c == "error":
 			p.notice = h + "'s MCP config can't be read"
 		case c == "off" || c == "removing":
-			return p.mcpDo("enable", r.Name, h)
+			return p.mcpDo(mcpOp(r.Project, "enable"), r.Name, h)
 		default:
-			return p.mcpDo("disable", r.Name, h)
+			return p.mcpDo(mcpOp(r.Project, "disable"), r.Name, h)
 		}
 	case "enter":
 		if !r.Listed {
-			p.notice = r.Name + " is no longer in mcp.toml"
+			p.notice = r.Name + " is no longer in " + mcpSource(r.Project)
 			return nil
 		}
-		return p.mcpListTools(r.Name)
+		return p.mcpListTools(mcpOp(r.Project, r.Name))
 	case "k", "c":
 		d, ok := p.mcpDrift()
 		if !ok {
@@ -154,9 +201,9 @@ func (p *Panel) mcpKey(k string) tea.Cmd {
 			return nil
 		}
 		if k == "k" {
-			return p.mcpDo("keep", d.Server, d.Harness)
+			return p.mcpDo(mcpOp(d.Project, "keep"), d.Server, d.Harness)
 		}
-		return p.mcpDo("restore", d.Server, d.Harness)
+		return p.mcpDo(mcpOp(d.Project, "restore"), d.Server, d.Harness)
 	}
 	return nil
 }
@@ -179,6 +226,9 @@ func (p *Panel) mcpLines(w int) ([]line, line) {
 	if v.Pending > 0 {
 		head = append(head, sg(t.Dim, " · "), sg(t.Accent, fmt.Sprintf("%d to sync", v.Pending)))
 	}
+	if v.Undecided > 0 {
+		head = append(head, sg(t.Dim, " · "), sg(t.Accent, fmt.Sprintf("%d to choose", v.Undecided)))
+	}
 	out := []line{head, nil}
 	if len(v.Cols) == 0 {
 		return append(out, line{sg(t.Dim, " None of your installed CLIs has an MCP config AFK knows.")}), hint
@@ -200,10 +250,19 @@ func (p *Panel) mcpLines(w int) ([]line, line) {
 	hdr = append(hdr, sg(t.Dim, "status"))
 	out = append(out, hdr)
 	sel := min(p.sel[TabMCP], len(v.Rows)-1)
+	asking := p.askScope != ""
 	for i, r := range v.Rows {
+		if asking && i != sel {
+			continue // the question box stays on screen: only its row shows
+		}
 		via := r.Via
-		if !r.Listed {
+		switch {
+		case !r.Listed:
 			via = "(removed)"
+		case r.Project && r.Scope == "global":
+			via = "project → all"
+		case r.Project:
+			via = "project"
 		}
 		tl := "–"
 		if r.Tools >= 0 {
@@ -214,11 +273,11 @@ func (p *Panel) mcpLines(w int) ([]line, line) {
 			cell := r.Cells[c]
 			st := t.Dim
 			switch cell {
-			case "synced":
+			case "synced", "native":
 				st = t.OK
 			case "drifted", "conflict", "error":
 				st = t.Warn
-			case "pending", "removing", "orphan":
+			case "pending", "removing", "orphan", "ask":
 				st = t.Accent
 			}
 			if i == sel && j == p.mcpCol {
@@ -244,11 +303,23 @@ func (p *Panel) mcpLines(w int) ([]line, line) {
 		row = append(row, sg(stt, status))
 		out = append(out, p.selRow(row, i, w))
 	}
-	out = append(out, nil, line{sg(t.Dim, " ✓ in sync  ↻ changed in that CLI  · not enabled  – not supported")})
-	if v.Pending > 0 || mcpHas(v, "conflict") || mcpHas(v, "error") {
-		out = append(out, line{sg(t.Dim, " + next sync adds it  - next sync removes it  ! yours  ? unreadable")})
+	if !asking {
+		out = append(out, nil, line{sg(t.Dim, " ✓ in sync  ↻ changed in that CLI  · not enabled  – not supported")})
+		if v.Pending > 0 || mcpHas(v, "conflict") || mcpHas(v, "error") {
+			out = append(out, line{sg(t.Dim, " + next sync adds it  - next sync removes it  ! yours  ✗ unreadable")})
+		}
+		if v.Project != "" {
+			out = append(out, line{sg(t.Dim, " project: "+v.Project+"   ? choose where it goes  g every project")})
+		}
 	}
-	if d, ok := p.mcpDrift(); ok {
+	if name := p.askScope; name != "" {
+		bw := boxW(w)
+		out = append(out, nil,
+			t.top("Add "+name, bw, t.Accent),
+			t.boxLine(bw, t.Accent, line{sg(t.Plain, "From this project's .mcp.json. Where should it go?")}),
+			t.boxLine(bw, t.Accent, line{sg(t.Key, "p"), sg(t.Dim, " this project only   "), sg(t.Key, "g"), sg(t.Dim, " every project (added to mcp.toml)   "), sg(t.Key, "esc"), sg(t.Dim, " later")}),
+			t.bottom(bw, t.Accent))
+	} else if d, ok := p.mcpDrift(); ok {
 		bw := boxW(w)
 		out = append(out, nil,
 			t.top(d.Server+" changed in "+d.Harness, bw, t.Warn),
@@ -262,6 +333,12 @@ func (p *Panel) mcpLines(w int) ([]line, line) {
 			text = r.Notes[h]
 		case "conflict":
 			text = "an entry of your own with this name; AFK never touches it"
+		case "native":
+			text = "reads .mcp.json itself"
+		case "ask":
+			text = "a project server: space chooses this project or every project"
+		case "global":
+			text = "added for every project from mcp.toml"
 		}
 		out = append(out, nil, line{sg(t.Plain, " "), harnessLogo(t, h), sg(t.Bold, " "+r.Name), sg(t.Dim, " in "+h+": "+text)})
 	}

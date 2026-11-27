@@ -31,3 +31,5 @@ format = "skill-md"
 # checked against an install.
 file = "~/.config/opencode/opencode.json"
 format = "opencode-json"
+# opencode.json in the project root, from OpenCode's documentation.
+project_file = "opencode.json"

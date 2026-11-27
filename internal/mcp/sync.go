@@ -30,6 +30,11 @@ type Env struct {
 	Gateways map[string]string // gateway id → its MCP endpoint, from config.toml
 	State    string            // ~/.config/afk/state/mcp.json
 	Now      func() time.Time
+	// Project, when set, is a repository's .mcp.json: its servers are
+	// synced instead of mcp.toml's, into the CLIs' project files.
+	Project string
+	// Ask holds each server back until it is given a scope (SetScope).
+	Ask bool
 }
 
 func (e Env) now() time.Time {
@@ -57,9 +62,10 @@ const (
 
 type state struct {
 	Schema  string              `json:"schema"`
-	Managed map[string]managed  `json:"managed"` // by "harness/server"
-	Off     map[string][]string `json:"off"`     // per server, CLIs turned off here
-	Tested  map[string]Tested   `json:"tested"`  // last test per server
+	Managed map[string]managed  `json:"managed"`         // by "harness/server"
+	Off     map[string][]string `json:"off"`             // per server, CLIs turned off here
+	Tested  map[string]Tested   `json:"tested"`          // last test per server
+	Scope   map[string]string   `json:"scope,omitempty"` // project servers: project or global
 }
 
 type managed struct {
@@ -80,7 +86,7 @@ func key(h, n string) string { return h + "/" + n }
 func (e Env) backupDir() string { return filepath.Join(filepath.Dir(e.State), "backups", "mcp") }
 
 func (e Env) load() (state, error) {
-	st := state{Schema: Schema, Managed: map[string]managed{}, Off: map[string][]string{}, Tested: map[string]Tested{}}
+	st := state{Schema: Schema, Managed: map[string]managed{}, Off: map[string][]string{}, Tested: map[string]Tested{}, Scope: map[string]string{}}
 	b, err := os.ReadFile(e.State)
 	if errors.Is(err, fs.ErrNotExist) {
 		return st, nil
@@ -99,6 +105,9 @@ func (e Env) load() (state, error) {
 	}
 	if st.Tested == nil {
 		st.Tested = map[string]Tested{}
+	}
+	if st.Scope == nil {
+		st.Scope = map[string]string{}
 	}
 	return st, nil
 }
@@ -137,6 +146,7 @@ type Row struct {
 	Name   string            `json:"name"`
 	Listed bool              `json:"listed"` // false: only AFK's old entries are left
 	Cells  map[string]Cell   `json:"cells"`
+	Scope  string            `json:"scope,omitempty"` // a project server's scope ("" not chosen)
 	Notes  map[string]string `json:"notes,omitempty"` // why a cell is unsupported or broken
 }
 
@@ -199,12 +209,16 @@ func (e Env) Scan(targets []Target) (*Status, error) {
 }
 
 func (e Env) scan(st state, targets []Target) (*Status, error) {
-	servers, err := Load(e.Config, e.Gateways)
+	servers, probs, err := e.servers()
 	if err != nil {
 		return nil, err
 	}
-	s := &Status{Config: e.Config, Servers: servers, Targets: targets, Rows: []Row{}, Actions: []Action{},
-		Tested: st.Tested, plan: map[string]*action{}}
+	cfg := e.Config
+	if e.Project != "" {
+		cfg = e.Project
+	}
+	s := &Status{Config: cfg, Servers: servers, Targets: targets, Rows: []Row{}, Actions: []Action{},
+		Tested: st.Tested, Problems: probs, plan: map[string]*action{}}
 	if s.Servers == nil {
 		s.Servers = []Server{}
 	}
@@ -234,8 +248,19 @@ func (e Env) scan(st state, targets []Target) (*Status, error) {
 	for _, n := range order {
 		sv, listed := byName[n]
 		row := Row{Name: n, Listed: listed, Cells: map[string]Cell{}, Notes: map[string]string{}}
+		if e.Ask {
+			row.Scope = st.Scope[n]
+		}
 		for _, t := range targets {
 			c, note := e.cell(st, s, t, files[t.Harness], sv, listed, n)
+			if e.Ask && listed && c == Off && !contains(st.Off[n], t.Harness) {
+				switch st.Scope[n] {
+				case "":
+					c = Ask
+				case ScopeGlobal:
+					c = Global
+				}
+			}
 			row.Cells[t.Harness] = c
 			if note != "" {
 				row.Notes[t.Harness] = note
@@ -270,7 +295,8 @@ func (e Env) cell(st state, s *Status, t Target, f fileState, sv Server, listed 
 		return Broken, f.err.Error()
 	}
 	fm, _ := formatFor(t.Format)
-	wanted := listed && sv.For(t.Harness) && !contains(st.Off[n], t.Harness)
+	wanted := listed && sv.For(t.Harness) && !contains(st.Off[n], t.Harness) &&
+		(!e.Ask || st.Scope[n] == ScopeProject)
 	var desired map[string]any
 	var why string
 	if wanted {
@@ -570,7 +596,7 @@ func (e Env) Restore(targets []Target, server, h string) (*Result, error) {
 	if _, ok := st.Managed[key(h, server)]; !ok {
 		return nil, fmt.Errorf("%s in %s isn't an entry AFK wrote, so AFK won't replace it", server, h)
 	}
-	servers, err := Load(e.Config, e.Gateways)
+	servers, _, err := e.servers()
 	if err != nil {
 		return nil, err
 	}
