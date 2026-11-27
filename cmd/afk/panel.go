@@ -886,6 +886,20 @@ func (s panelSource) SkillsDo(ctx context.Context, op string, args ...string) (s
 		}
 		return fmt.Sprintf("%s %sd for %s. Press s to apply it.", sk, op, h), nil
 	}
+	if op == "new" {
+		if len(args) < 1 {
+			return "", errors.New("a new skill needs a name")
+		}
+		desc := ""
+		if len(args) > 1 {
+			desc = args[1]
+		}
+		p, err := d.env.New(args[0], desc)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("Created %s. Press e on it to write its steps, then s to copy it into your CLIs.", tildePath(p)), nil
+	}
 	return "", fmt.Errorf("unknown skills action %q", op)
 }
 
@@ -1125,6 +1139,16 @@ func (s panelSource) MCPDo(ctx context.Context, op string, args ...string) (stri
 			return "", err
 		}
 		return fmt.Sprintf("%s %sd for %s. Press s to apply it.", sv, op, h), nil
+	}
+	if op == "add" {
+		if len(args) != 1 {
+			return "", errors.New("a new server needs a name and where it is")
+		}
+		name, err := addMCPServer(d, args[0])
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("%s is in %s. Press s to add it to your CLIs, t to test it.", name, tildePath(d.env.Config)), nil
 	}
 	return "", fmt.Errorf("unknown mcp action %q", op)
 }

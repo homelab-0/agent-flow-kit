@@ -240,6 +240,7 @@ type Panel struct {
 	// A setting's value being typed on the Config tab.
 	cfgKey, cfgText, cfgHint string
 	cfgRemove                string // the section x was pressed on once
+	ask                      *panelAsk
 	id                       int
 	gens                     map[Tab]int // the latest load of each tab
 	loading                  map[Tab]bool
@@ -411,6 +412,9 @@ func (p *Panel) key(k string) tea.Cmd {
 	}
 	if p.cfgKey != "" {
 		return p.configTyping(k)
+	}
+	if p.ask != nil {
+		return p.askKey(k)
 	}
 	armed := p.cfgRemove
 	p.cfgRemove = ""
@@ -670,6 +674,15 @@ func (p *Panel) Lines() []line {
 			body, hint = p.configLines(w)
 		}
 	}
+	if a := p.ask; a != nil && a.tab == p.tab && p.loaded(p.tab) && p.data.err[p.tab] == "" {
+		// The input sits above the rows, so it never scrolls out of view.
+		in := []line{{sg(t.Key, " "+a.label+" "), sg(t.Plain, a.text), sg(t.Accent, "▏")}}
+		for _, l := range wrap(a.hint, max(w-4, 20)) {
+			in = append(in, line{sg(t.Dim, "  "+l)})
+		}
+		body = append(append(in, nil), body...)
+		hint = line{sg(t.Key, "↵"), sg(t.Dim, " save  "), sg(t.Key, "esc"), sg(t.Dim, " cancel  ")}
+	}
 	if f := p.filter[p.tab]; f != "" && p.loaded(p.tab) && p.rows() == 0 && p.data.err[p.tab] == "" {
 		body = []line{{sg(t.Dim, " Nothing matches “"+f+"”. "), sg(t.Key, "esc"), sg(t.Dim, " clears the filter.")}}
 	}
@@ -716,7 +729,7 @@ func (p *Panel) Lines() []line {
 	// give way first so the tabs and quit stay in sight.
 	filter := filterable(p.tab) && !(p.tab == TabMCP && p.tools != nil)
 	refresh := true
-	typingValue := p.tab == TabConfig && p.cfgKey != ""
+	typingValue := p.tab == TabConfig && p.cfgKey != "" || p.ask != nil && p.ask.tab == p.tab
 	if typingValue {
 		filter, refresh = false, false // every key is text for now
 	}
@@ -1142,6 +1155,42 @@ func (p *Panel) configLines(w int) ([]line, line) {
 	}
 	hint = append(hint, sg(t.Key, "e"), sg(t.Dim, " edit config.toml  "))
 	return out, hint
+}
+
+// panelAsk is a line being typed for an action on a tab (a new server, a
+// new skill). done gets the text on enter.
+type panelAsk struct {
+	tab               Tab
+	label, text, hint string
+	done              func(text string) tea.Cmd
+}
+
+// askKey takes a key while a panelAsk is open.
+func (p *Panel) askKey(k string) tea.Cmd {
+	a := p.ask
+	switch k {
+	case "enter":
+		p.ask = nil
+		if text := strings.TrimSpace(a.text); text != "" {
+			return a.done(text)
+		}
+	case "esc":
+		p.ask = nil
+	case "backspace":
+		if a.text != "" {
+			_, n := utf8.DecodeLastRuneInString(a.text)
+			a.text = a.text[:len(a.text)-n]
+		}
+	case "space":
+		a.text += " "
+	case "ctrl+u":
+		a.text = ""
+	default:
+		if utf8.RuneCountInString(k) == 1 {
+			a.text += k
+		}
+	}
+	return nil
 }
 
 // configSavedMsg is what saving a setting said.

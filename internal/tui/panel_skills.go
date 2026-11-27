@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -147,7 +148,19 @@ func (p *Panel) skillsKey(k string) tea.Cmd {
 	}
 	switch k {
 	case "n":
-		return p.run("skills", "new", "--edit")
+		p.ask = &panelAsk{tab: TabSkills, label: "new skill",
+			hint: "A name (lowercase letters, digits, . _ -), then when to use it. For example: pr-triage Use when asked to review or sort pull requests.",
+			done: func(text string) tea.Cmd {
+				name, desc, _ := strings.Cut(text, " ")
+				return p.skillDo("new", name, strings.TrimSpace(desc))
+			}}
+		return nil
+	case "e":
+		// The skill's own text is written in an editor.
+		if v != nil && p.sel[TabSkills] < len(v.Rows) && len(v.Rows) > 0 {
+			return p.run("skills", "edit", v.Rows[p.sel[TabSkills]].Name)
+		}
+		return nil
 	case "s":
 		if v != nil && v.Pending == 0 {
 			p.notice = "Everything is in sync."
@@ -211,7 +224,7 @@ func (p *Panel) skillsKey(k string) tea.Cmd {
 func (p *Panel) skillsLines(w int) ([]line, line) {
 	t := p.theme
 	v := p.data.skills
-	hint := line{sg(t.Key, "space"), sg(t.Dim, " enable  "), sg(t.Key, "s"), sg(t.Dim, " sync all  "), sg(t.Key, "n"), sg(t.Dim, " new skill  ")}
+	hint := line{sg(t.Key, "space"), sg(t.Dim, " enable  "), sg(t.Key, "s"), sg(t.Dim, " sync all  "), sg(t.Key, "n"), sg(t.Dim, " new skill  "), sg(t.Key, "e"), sg(t.Dim, " edit its text  ")}
 	head := line{sg(t.Plain, " "+plural(len(v.Rows), "skill", "skills")), sg(t.Dim, " · source "+v.Source)}
 	if n := len(v.Drift); n > 0 {
 		head = append(head, sg(t.Dim, " · "), sg(t.Warn, fmt.Sprintf("%d drifted", n)))

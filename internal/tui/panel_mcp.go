@@ -140,6 +140,11 @@ func (p *Panel) mcpKey(k string) tea.Cmd {
 	}
 	switch k {
 	case "a":
+		p.ask = &panelAsk{tab: TabMCP, label: "new server",
+			hint: "A name, then where it is. An address: github https://api.example/mcp env:GITHUB_MCP_TOKEN (the last part names the variable holding its token; leave it out for none). A command: playwright npx @playwright/mcp@latest. Through a gateway: tools via:work.",
+			done: func(text string) tea.Cmd { return p.mcpDo("add", text) }}
+		return nil
+	case "e":
 		return p.run("mcp", "edit")
 	case "s":
 		if v != nil && v.Pending == 0 {
@@ -211,7 +216,7 @@ func (p *Panel) mcpKey(k string) tea.Cmd {
 func (p *Panel) mcpLines(w int) ([]line, line) {
 	t := p.theme
 	v := p.data.mcp
-	hint := line{sg(t.Key, "space"), sg(t.Dim, " enable  "), sg(t.Key, "s"), sg(t.Dim, " sync  "), sg(t.Key, "t"), sg(t.Dim, " test  "), sg(t.Key, "↵"), sg(t.Dim, " tools  "), sg(t.Key, "a"), sg(t.Dim, " add  ")}
+	hint := line{sg(t.Key, "space"), sg(t.Dim, " enable  "), sg(t.Key, "s"), sg(t.Dim, " sync  "), sg(t.Key, "t"), sg(t.Dim, " test  "), sg(t.Key, "↵"), sg(t.Dim, " tools  "), sg(t.Key, "a"), sg(t.Dim, " add  "), sg(t.Key, "e"), sg(t.Dim, " edit mcp.toml  ")}
 	tools := 0
 	for _, r := range v.Rows {
 		tools += max(r.Tools, 0)

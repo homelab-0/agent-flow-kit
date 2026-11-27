@@ -2,13 +2,16 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -546,6 +549,94 @@ const mcpTemplate = `# MCP servers AFK writes into each agent CLI (afk mcp sync)
 # command = ["npx", "@playwright/mcp@latest"]
 # harnesses = ["claude", "codex"]   # default: all
 `
+
+// addMCPServer appends one server to mcp.toml from a line typed in the
+// MCP tab: a name, then an address (with an optional env:NAME for its
+// token), a command, or via:<gateway>. The file is checked as a whole
+// before it is written; a line that doesn't make a valid server changes
+// nothing.
+func addMCPServer(d mcpDeps, spec string) (string, error) {
+	f := strings.Fields(spec)
+	if len(f) < 2 {
+		return "", errors.New("type a name, then an address, a command, or via:<gateway>")
+	}
+	name, rest := f[0], f[1:]
+	if !mcp.ValidName(name) {
+		return "", fmt.Errorf("the name %q must be lowercase letters, digits, - and _", name)
+	}
+	q := func(s string) string { return strconv.Quote(s) }
+	var b strings.Builder
+	b.WriteString("\n[[server]]\nname = " + q(name) + "\n")
+	switch {
+	case strings.HasPrefix(rest[0], "via:"):
+		if len(rest) != 1 || rest[0] == "via:" {
+			return "", errors.New("through a gateway is just: name via:<gateway>")
+		}
+		b.WriteString("via = " + q(strings.TrimPrefix(rest[0], "via:")) + "\n")
+	case strings.HasPrefix(rest[0], "http://"), strings.HasPrefix(rest[0], "https://"):
+		u, err := url.Parse(rest[0])
+		if err != nil || u.Host == "" {
+			return "", errors.New("that address doesn't parse")
+		}
+		if u.User != nil {
+			return "", errors.New("leave the password out of the address; name the variable holding the token after it (env:NAME)")
+		}
+		b.WriteString("url = " + q(rest[0]) + "\n")
+		switch {
+		case len(rest) == 1:
+		case len(rest) == 2 && strings.HasPrefix(rest[1], "env:") && len(rest[1]) > 4:
+			b.WriteString("bearer = " + q(rest[1]) + "\n")
+		default:
+			return "", errors.New("after the address comes only env:NAME, the variable holding its token (never the token)")
+		}
+	default:
+		parts := make([]string, len(rest))
+		for i, a := range rest {
+			parts[i] = q(a)
+		}
+		b.WriteString("command = [" + strings.Join(parts, ", ") + "]\n")
+	}
+	old, err := os.ReadFile(d.env.Config)
+	if err != nil && !os.IsNotExist(err) {
+		return "", err
+	}
+	if os.IsNotExist(err) {
+		old = []byte(mcpTemplate)
+	}
+	if have, err := mcp.Load(d.env.Config, d.env.Gateways); err == nil {
+		for _, s := range have {
+			if s.Name == name {
+				return "", fmt.Errorf("there is already a server called %s", name)
+			}
+		}
+	}
+	doc := append(bytes.TrimRight(old, "\n"), '\n')
+	doc = append(doc, b.String()...)
+	// Check the whole file as it would be, in a scratch copy beside it.
+	if err := os.MkdirAll(filepath.Dir(d.env.Config), 0o755); err != nil {
+		return "", err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(d.env.Config), ".mcp-*.toml")
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(doc); err != nil {
+		tmp.Close()
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		return "", err
+	}
+	if _, err := mcp.Load(tmp.Name(), d.env.Gateways); err != nil {
+		// The message names the scratch file; say it about mcp.toml.
+		return "", errors.New(strings.ReplaceAll(err.Error(), tmp.Name(), "mcp.toml"))
+	}
+	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
+		return "", err
+	}
+	return name, os.Rename(tmp.Name(), d.env.Config)
+}
 
 // testMCPServer lists a server's tools and records the result as its last
 // test, for the tab's t and ↵.

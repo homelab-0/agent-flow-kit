@@ -770,3 +770,68 @@ func TestConfigTabRemovesAGateway(t *testing.T) {
 		t.Fatalf("ran %v, notice %q", got, p.notice)
 	}
 }
+
+// a on the MCP tab and n on the Skills tab ask for one line and hand it
+// to the action; esc drops it, and every key is text while it is open.
+func TestTabsAskForANewServerAndSkill(t *testing.T) {
+	src := &fakePanel{}
+	p := NewPanel(context.Background(), src, NewTheme(true), TabMCP, "", time.Now)
+	p.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	p.Update(p.Init()())
+	typ := func(s string) {
+		for _, r := range s {
+			k := tea.KeyPressMsg{Code: r, Text: string(r)}
+			if r == ' ' {
+				k = tea.KeyPressMsg{Code: tea.KeySpace, Text: " "}
+			}
+			p.Update(k)
+		}
+	}
+	p.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	if p.ask == nil {
+		t.Fatal("a didn't ask for the server")
+	}
+	typ("docs https://docs.example/mcp q")
+	if p.quit {
+		t.Fatal("q quit while typing")
+	}
+	if s := panelText(p); !strings.Contains(s, "new server docs https://docs.example/mcp q▏") || !strings.Contains(s, "↵ save") || !strings.Contains(s, "via:work") || strings.Contains(s, "q quit") {
+		t.Fatalf("the input:\n%s", s)
+	}
+	p.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
+	p.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
+	cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil || p.ask != nil {
+		t.Fatal("enter didn't hand the line on")
+	}
+	cmd()
+	if got := src.ran[len(src.ran)-1]; got[1] != "add" || got[2] != "docs https://docs.example/mcp" {
+		t.Fatalf("ran %v", got)
+	}
+	n := len(src.ran)
+	p.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	typ("x")
+	if p.Update(tea.KeyPressMsg{Code: tea.KeyEscape}); p.ask != nil || p.back || p.quit || len(src.ran) != n {
+		t.Fatal("esc while typing cancels only the typing")
+	}
+
+	p = NewPanel(context.Background(), src, NewTheme(true), TabSkills, "", time.Now)
+	p.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	p.Update(p.Init()())
+	p.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
+	for _, r := range "pr-triage Use when sorting pull requests." {
+		k := tea.KeyPressMsg{Code: r, Text: string(r)}
+		if r == ' ' {
+			k = tea.KeyPressMsg{Code: tea.KeySpace, Text: " "}
+		}
+		p.Update(k)
+	}
+	cmd = p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("enter didn't make the skill")
+	}
+	cmd()
+	if got := src.ran[len(src.ran)-1]; got[1] != "new" || got[2] != "pr-triage" || got[3] != "Use when sorting pull requests." {
+		t.Fatalf("ran %v", got)
+	}
+}

@@ -29,6 +29,7 @@ afk skills keep <skill> <cli>         make a CLI's edited copy the central one
 afk skills restore <skill> <cli>      put the central copy back over a CLI's edit
 afk skills enable|disable <skill> <cli>   turn a skill on or off for one CLI
 afk skills new <name> [description] [--edit]   start a central skill
+afk skills edit <name>                open a central skill's SKILL.md in your editor
 ```
 
 `enable` and `disable` only record the choice; the next `sync` adds or removes the copy.
@@ -71,5 +72,5 @@ Press `4` in the [control panel](control-panel.md) (or `/skills` in the composer
 | `-` | the next sync removes AFK's copy |
 | `!` | a skill of your own with that name; AFK leaves it alone |
 
-`↑` `↓` pick a skill and `←` `→` pick a CLI. `space` turns the skill on or off for that CLI, `s` syncs everything, and `n` asks for a name, makes the skill and opens its `SKILL.md` in your editor. When a copy has drifted, a box says where and how many lines differ: `d` shows the diff, `k` keeps that CLI's copy and `c` restores central.
+`↑` `↓` pick a skill and `←` `→` pick a CLI. `space` turns the skill on or off for that CLI, `s` syncs everything, and `n` asks, in the tab, for a name and when to use the skill (`pr-triage Use when sorting pull requests.`) and makes it. `e` opens the selected skill's `SKILL.md` in your editor to write its steps. When a copy has drifted, a box says where and how many lines differ: `d` shows the diff, `k` keeps that CLI's copy and `c` restores central.
 

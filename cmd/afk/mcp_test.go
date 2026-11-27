@@ -80,3 +80,63 @@ bearer = "env:GH"
 		t.Error("usage")
 	}
 }
+
+// A server typed into the MCP tab lands in mcp.toml as a [[server]]; a
+// line that doesn't make a valid one changes nothing.
+func TestAddMCPServerFromALine(t *testing.T) {
+	dir := t.TempDir()
+	d := mcpDeps{env: mcp.Env{Config: filepath.Join(dir, "afk", "mcp.toml"), Gateways: map[string]string{"work": "https://gw.example/mcp"}}}
+	for _, bad := range []string{
+		"github",                                   // nothing after the name
+		"GitHub https://api.example/mcp",           // not a server name
+		"gh https://user:pw@api.example/mcp",       // a password in the address
+		"gh https://api.example/mcp ghp_secret123", // a token, not a reference
+		"gh https://api.example/mcp env:",          // no variable name
+		"tools via:nowhere",                        // not a gateway in config.toml
+		"tools via:work extra",
+	} {
+		if _, err := addMCPServer(d, bad); err == nil {
+			t.Errorf("%q was accepted", bad)
+		}
+	}
+	if _, err := os.Stat(d.env.Config); err == nil {
+		t.Fatal("a refused line created mcp.toml")
+	}
+	for _, good := range []string{
+		"github https://api.example/mcp env:GITHUB_MCP_TOKEN",
+		"docs https://docs.example/mcp",
+		"playwright npx @playwright/mcp@latest --headless",
+		"tools via:work",
+	} {
+		if _, err := addMCPServer(d, good); err != nil {
+			t.Fatalf("%q: %v", good, err)
+		}
+	}
+	if _, err := addMCPServer(d, "github https://other.example/mcp"); err == nil {
+		t.Error("a second server with the same name was accepted")
+	}
+	got, err := mcp.Load(d.env.Config, d.env.Gateways)
+	if err != nil || len(got) != 4 {
+		t.Fatalf("%d servers, %v", len(got), err)
+	}
+	by := map[string]mcp.Server{}
+	for _, s := range got {
+		by[s.Name] = s
+	}
+	if s := by["github"]; s.Kind != "http" || s.URL != "https://api.example/mcp" || s.BearerEnv != "GITHUB_MCP_TOKEN" {
+		t.Errorf("github: %+v", s)
+	}
+	if s := by["playwright"]; s.Kind != "stdio" || s.Command != "npx" || len(s.Args) != 2 || s.Args[1] != "--headless" {
+		t.Errorf("playwright: %+v", s)
+	}
+	if s := by["tools"]; s.Via != "work" || s.URL != "https://gw.example/mcp" {
+		t.Errorf("tools: %+v", s)
+	}
+	raw, _ := os.ReadFile(d.env.Config)
+	if strings.Contains(string(raw), "ghp_secret123") || !strings.Contains(string(raw), "# MCP servers AFK writes") {
+		t.Errorf("mcp.toml:\n%s", raw)
+	}
+	if left, _ := filepath.Glob(filepath.Join(dir, "afk", ".mcp-*")); len(left) != 0 {
+		t.Errorf("scratch files left behind: %v", left)
+	}
+}
