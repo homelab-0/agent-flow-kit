@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -19,6 +20,12 @@ type RatingModel struct {
 	saveErr error
 	spin    int
 	motion  bool
+
+	// Esc walking back in (WithEsc).
+	art       bool
+	now       func() time.Time
+	backStart time.Time
+	skipped   bool // a key ended the walk
 }
 
 type receiptMsg struct{ r Receipt }
@@ -30,6 +37,10 @@ func NewRating(rec Receipt, fill func() Receipt, save func(string) error, dark, 
 
 func (m *RatingModel) Init() tea.Cmd {
 	cmds := []tea.Cmd{tea.RequestBackgroundColor}
+	m.backStart = m.clock()
+	if m.art && m.motion {
+		cmds = append(cmds, backTick(30))
+	}
 	if m.fill != nil {
 		f := m.fill
 		cmds = append(cmds, func() tea.Msg { return receiptMsg{f()} })
@@ -49,12 +60,20 @@ func (m *RatingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.ready {
 			return m, spinTick()
 		}
+	case backMsg:
+		if m.clock().Sub(m.backStart) < backDoze+4*backZEach && !m.skipped && !m.done {
+			return m, backTick(30)
+		}
 	case receiptMsg:
 		m.rec, m.ready = msg.r, true
 		if m.Save != nil {
 			m.saveErr = m.Save("")
 		}
 	case tea.KeyPressMsg:
+		if !m.home() {
+			m.skipped = true // any key brings Esc home; the next one rates
+			return m, nil
+		}
 		if !m.ready {
 			return m, nil
 		}
@@ -77,6 +96,17 @@ func (m *RatingModel) View() tea.View { return tea.NewView(m.Render()) }
 
 // Render is the receipt block.
 func (m *RatingModel) Render() string {
+	if !m.art {
+		return m.receipt()
+	}
+	scene, say := m.escBack()
+	if !m.home() {
+		return join(append(scene, say))
+	}
+	return join(scene) + "\n" + m.receipt()
+}
+
+func (m *RatingModel) receipt() string {
 	t := m.theme
 	if !m.ready {
 		g := "·"
@@ -93,7 +123,11 @@ func (m *RatingModel) Render() string {
 		case m.Outcome == "":
 			lines = append(lines, line{sg(t.Dim, "    Skipped. The run is saved without a rating.")})
 		default:
-			lines = append(lines, line{sg(t.OK, "    Saved.")})
+			l := line{sg(t.OK, "    Saved.")}
+			if m.art {
+				l = append(l, sg(t.Dim, " Esc flopped back into the hammock."))
+			}
+			lines = append(lines, l)
 		}
 	}
 	return join(lines)

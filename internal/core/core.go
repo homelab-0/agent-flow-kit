@@ -344,6 +344,11 @@ func (c *Core) decide(ctx context.Context, f engine.RouteFlags, prompt string) (
 	if pinH != "" && !contains(installed, pinH) {
 		return nil, &NotInstalledError{fmt.Sprintf("%s is not installed here (found: %s)", pinH, strings.Join(installed, ","))}
 	}
+	cands := installed
+	if pinH != "" {
+		cands = []string{pinH}
+	}
+	engine.ReportProgress(ctx, engine.Progress{Kind: "start", Task: task, Guessed: guessed, Prefer: prefer, Harnesses: cands})
 	st, err := c.load(ctx, repo)
 	if err != nil {
 		return nil, err
@@ -411,12 +416,14 @@ func (c *Core) Explain(ctx context.Context, f engine.RouteFlags, prompt string) 
 		for _, h := range d.installed {
 			r, ok, err := d.st.route(d.task, d.prefer, []string{h}, "")
 			if err != nil || !ok {
+				engine.ReportProgress(ctx, engine.Progress{Kind: "skip", Harness: h})
 				continue
 			}
 			if f.Effort != "" {
 				r.Effort = f.Effort
 			}
 			alts = append(alts, r)
+			reportRoute(ctx, h, r)
 		}
 		sortByScore(alts)
 	}
@@ -464,6 +471,20 @@ func (c *Core) Probe(ctx context.Context) (*router.Probe, error) {
 		Home: c.Home, Getenv: c.getenv, Now: c.now(), GatewayURL: s.GatewayURL, Installed: installed, Live: c.Live,
 		CodexLoginMode: c.codexLoginMode(),
 	}), nil
+}
+
+// reportRoute passes a scored route to the routing screen, in the shape
+// the explain payload has.
+func reportRoute(ctx context.Context, h string, r router.Route) {
+	b, err := json.Marshal(r)
+	if err != nil {
+		return
+	}
+	var er engine.Route
+	if json.Unmarshal(b, &er) != nil {
+		return
+	}
+	engine.ReportProgress(ctx, engine.Progress{Kind: "route", Harness: h, Route: &er})
 }
 
 func sortByScore(rs []router.Route) {
