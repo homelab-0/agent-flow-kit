@@ -40,7 +40,7 @@ npm install -g @homelab0/afk   # installs the `afk` command
 npx @homelab0/afk              # or run it without installing
 ```
 
-The npm package carries a prebuilt binary for Linux, macOS and Windows (x64 and arm64). npm picks the one for your machine; nothing is downloaded by an install script.
+The npm package carries a prebuilt binary for Linux, macOS and Windows (x64 and arm64). npm picks the one for your machine; nothing is downloaded by an install script. Release candidates are under the `next` tag (`@homelab0/afk@next`).
 
 With Go 1.26 or newer:
 
