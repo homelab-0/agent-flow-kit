@@ -8,6 +8,7 @@ Open it from the composer (plain `afk`): on an empty input press `2` to `7`, or 
 |---|---|
 | `1`–`7`, `tab` / `shift+tab` | switch tabs (`1` is Route) |
 | `↑` `↓` or `j` `k` | pick a row |
+| `/` | filter the tab's rows by name: type, then `↵` to keep the filter or `esc` to clear it. Each tab keeps its own filter, and `esc` clears it before it leaves the panel. |
 | `r` | load the tab again |
 | `q` | quit |
 
