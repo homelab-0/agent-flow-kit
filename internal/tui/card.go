@@ -179,6 +179,17 @@ func (t Theme) routeBox(c Card, w int) []line {
 }
 
 func (t Theme) poolLine(c Card, r engine.Route) line {
+	if r.IsLocal() {
+		where := localEngineName(r) + " on this PC"
+		if r.EngineGPU != "" {
+			where += " (" + r.EngineGPU + ")"
+		}
+		state := r.EngineState
+		if state == "" {
+			state = "state " + unknownText
+		}
+		return line{sg(t.Dim, "  runs on  "), t.engineLogo(r.Engine), sg(t.Plain, " "+where), sg(t.Dim, " · "+state)}
+	}
 	if r.IsGateway() {
 		if r.Engine != "" {
 			where := engineName(r.Engine)
@@ -239,6 +250,12 @@ func (t Theme) tableRow(c Card, i int, w int) line {
 	}
 	row = append(row, sg(scoreSt, col(scoreText(r.EffectiveScore), 4)), sg(t.Plain, "   "))
 	switch {
+	case r.IsLocal():
+		where := "this PC"
+		if r.EngineGPU != "" {
+			where += " · " + shortGPU(r.EngineGPU)
+		}
+		row = append(row, t.engineLogo(r.Engine), sg(t.Dim, " "+col(where, 14)))
 	case r.IsGateway():
 		if r.Engine != "" {
 			where := engineName(r.Engine)
@@ -260,7 +277,7 @@ func (t Theme) tableRow(c Card, i int, w int) line {
 		row = append(row, sg(t.Plain, " "+fmt.Sprintf("%4s", pctText(r.PoolHeadroomPct))+" "))
 	}
 	costSt := t.Dim
-	if r.CostClass == "free" {
+	if r.CostClass == "free" || r.CostClass == "local" {
 		costSt = t.OK
 	}
 	row = append(row, sg(costSt, " "+costText(r.CostClass)))
@@ -307,6 +324,9 @@ func (t Theme) CompactLines(c Card, width int, hints bool) []line {
 	pool := "pool " + pctText(r.PoolHeadroomPct)
 	if r.IsGateway() {
 		pool = "gateway"
+	}
+	if r.IsLocal() {
+		pool = "this PC"
 	}
 	out = append(out, fitLine(line{sg(t.Plain, "  "+scoreText(r.EffectiveScore)), sg(t.Dim, " · "+pool+" · "+costText(r.CostClass))}, width))
 	var also []string
@@ -388,6 +408,9 @@ func (t Theme) WhyLines(c Card, width int) []line {
 	costNote := ""
 	if cost == "subscription" || cost == "free" {
 		costNote = "   no pay-per-use spend"
+	}
+	if cost == "local" {
+		costNote = "   runs on this PC, no spend"
 	}
 	effort := effortText(r.Effort)
 	var effortNote string

@@ -9,6 +9,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"path/filepath"
 	"reflect"
@@ -27,6 +28,7 @@ type Config struct {
 	Trust       Trust                `toml:"trust"`
 	Harness     map[string]Harness   `toml:"harness"`
 	Gateway     map[string]Gateway   `toml:"gateway"`
+	Local       Local                `toml:"local"`
 	Bench       Bench                `toml:"bench"`
 	Serve       Serve                `toml:"serve"`
 	Telemetry   map[string]Telemetry `toml:"telemetry"`
@@ -91,6 +93,20 @@ type Gateway struct {
 	Host   string `toml:"host,omitempty"`
 }
 
+// Local is the inference engines on this machine (Ollama, LM Studio,
+// llama.cpp, vLLM, SGLang, ...).
+type Local struct {
+	// Engines is "auto" (default: look on the usual ports) or "off" (only
+	// at URLs).
+	Engines string `toml:"engines,omitempty"`
+	// URLs are more addresses on this machine to look at, for an engine
+	// on a port of its own. Only loopback addresses are allowed.
+	URLs []string `toml:"urls,omitempty"`
+	// GPU names this machine's GPU for the route card, in place of what
+	// nvidia-smi reports.
+	GPU string `toml:"gpu,omitempty"`
+}
+
 // Bench is the benchmark catalog's sources.
 type Bench struct {
 	// Autosync false stops the daily background refresh.
@@ -132,14 +148,15 @@ type Source struct {
 
 // Allowed values.
 var (
-	Prefers   = []string{"balanced", "cheap", "best"}
-	Failovers = []string{"any", "same-pool", "none"}
-	Modes     = []string{"read-only", "ask", "edits", "auto", "yolo"}
-	Gateways  = []string{"litellm", "openrouter", "portkey", "agentgateway", "envoy", "kong", "cloudflare", "vercel", "openai", "anthropic", "ollama", "lmstudio", "vllm", "llamacpp", "localai"}
-	Costs     = []string{"metered", "free"}
-	Engines   = []string{"vllm", "ollama", "llamacpp", "lmstudio", "sglang", "tgi", "localai", "mlx"}
-	Formats   = []string{"openai-chat", "openai-responses", "anthropic-messages"}
-	BenchSrcs = []string{"lmarena", "modelsdev", "swebench", "artificialanalysis", "own"}
+	Prefers    = []string{"balanced", "cheap", "best"}
+	Failovers  = []string{"any", "same-pool", "none"}
+	Modes      = []string{"read-only", "ask", "edits", "auto", "yolo"}
+	Gateways   = []string{"litellm", "openrouter", "portkey", "agentgateway", "envoy", "kong", "cloudflare", "vercel", "openai", "anthropic", "ollama", "lmstudio", "vllm", "llamacpp", "localai"}
+	Costs      = []string{"metered", "free"}
+	LocalModes = []string{"auto", "off"}
+	Engines    = []string{"vllm", "ollama", "llamacpp", "lmstudio", "sglang", "tgi", "localai", "mlx"}
+	Formats    = []string{"openai-chat", "openai-responses", "anthropic-messages"}
+	BenchSrcs  = []string{"lmarena", "modelsdev", "swebench", "artificialanalysis", "own"}
 )
 
 // ModeRank orders the permission modes from strictest to loosest.
@@ -204,6 +221,17 @@ func (c *Config) validate(file string, lines map[string]int) []Problem {
 	oneOf("permissions.default", c.Permissions.Default, Modes)
 	for _, t := range sortedKeys(c.Permissions.Task) {
 		oneOf("permissions.task."+t, c.Permissions.Task[t], Modes)
+	}
+	oneOf("local.engines", c.Local.Engines, LocalModes)
+	for _, u := range c.Local.URLs {
+		if !loopback(u) {
+			// Not quoted: it may carry user info.
+			bad("local.urls", "each must be an http address on this machine (localhost, 127.0.0.1 or ::1), without user info; an engine on another machine is a [gateway]")
+			break
+		}
+	}
+	if len(c.Local.GPU) > 40 || plain(c.Local.GPU) != c.Local.GPU {
+		bad("local.gpu", "a short label, without control characters")
 	}
 	defaults := 0
 	for _, n := range sortedKeys(c.Gateway) {
@@ -357,4 +385,18 @@ func sortedKeys[V any](m map[string]V) []string {
 	}
 	sort.Strings(ks)
 	return ks
+}
+
+// loopback reports whether u is an http(s) URL on this machine.
+func loopback(u string) bool {
+	p, err := url.Parse(u)
+	if err != nil || (p.Scheme != "http" && p.Scheme != "https") || p.User != nil || p.Host == "" {
+		return false
+	}
+	h := p.Hostname()
+	if h == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
 }

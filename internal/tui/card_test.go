@@ -338,3 +338,56 @@ func TestGatewayLogoByKind(t *testing.T) {
 		t.Error("an agentgateway route should show the agentgateway logo, and vLLM behind it")
 	}
 }
+
+// withLocal adds the frame's Ollama row to the gateway fixture.
+func withLocal(t *testing.T, sel int) Card {
+	c := namedGateway(t, sel)
+	score := 51.0
+	c.Rows = append(c.Rows, engine.Route{
+		Harness: "claude", LaunchClass: "claude-local", Model: "qwen36-14b", CostClass: "local",
+		EntitlementPool: "local", EffectiveScore: &score, BenchmarkScore: &score, BenchmarkBasis: "estimate",
+		Engine: "ollama", EngineHost: "this PC", EngineGPU: "RTX 5090", EngineState: "idle",
+		EngineURL: "http://127.0.0.1:11434", SupportedEfforts: []string{},
+	})
+	if sel < 0 {
+		c.Sel = 0
+	}
+	return c
+}
+
+func TestFrameLocalRow(t *testing.T) {
+	got := plainLines(renderCard(withLocal(t, -1), 80))
+	want := frameLine(t, "04-card-2-t1600ms.txt", 24)
+	for _, l := range got {
+		if strings.HasPrefix(l, "   OL ") {
+			if l != want {
+				t.Errorf("local row\n got %q\nwant %q", l, want)
+			}
+			return
+		}
+	}
+	t.Fatalf("no local row in\n%s", strings.Join(got, "\n"))
+}
+
+func TestLocalBox(t *testing.T) {
+	c := withLocal(t, -1)
+	c.Sel = len(c.Rows) - 1
+	s := strings.Join(plainLines(renderCard(c, 80)), "\n")
+	for _, want := range []string{
+		"│ OL ollama · qwen36-14b · effort —",
+		"Ollama on localhost · nothing leaves this PC",
+		"runs on  OL Ollama on this PC (RTX 5090) · idle",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("missing %q in\n%s", want, s)
+		}
+	}
+	// No GPU known: just this PC, and an engine with no logo has a tag.
+	c.Rows[c.Sel].EngineGPU, c.Rows[c.Sel].Engine = "", "sglang"
+	s = strings.Join(plainLines(renderCard(c, 80)), "\n")
+	for _, want := range []string{"SG sglang", "SG this PC ", "runs on  SG SGLang on this PC · idle"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("missing %q in\n%s", want, s)
+		}
+	}
+}

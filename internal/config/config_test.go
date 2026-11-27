@@ -549,3 +549,25 @@ func TestKeyType(t *testing.T) {
 		}
 	}
 }
+
+func TestLocalEngines(t *testing.T) {
+	f := newEnv(t)
+	s := resolve(t, f)
+	if strings.Join(s.LocalURLs, ",") != strings.Join(DefaultLocalURLs(), ",") || len(s.LocalURLs) != 5 {
+		t.Errorf("default local urls %v", s.LocalURLs)
+	}
+	f.config(t, "version = 1\n[local]\nengines = \"off\"\nurls = [\"http://localhost:9000\"]\ngpu = \"RTX 5090\"\n")
+	s = resolve(t, f)
+	if strings.Join(s.LocalURLs, ",") != "http://localhost:9000" || s.LocalGPU != "RTX 5090" {
+		t.Errorf("off with urls: %v %q", s.LocalURLs, s.LocalGPU)
+	}
+	f.vars["AFK_LOCAL_ENGINES"] = "off"
+	if s = resolve(t, f); len(s.LocalURLs) != 0 {
+		t.Errorf("AFK_LOCAL_ENGINES=off kept %v", s.LocalURLs)
+	}
+	f.config(t, "version = 1\n[local]\nengines = \"maybe\"\nurls = [\"http://u:secret@10.0.0.5:11434\"]\n")
+	_, err := Resolve(f.env())
+	if err == nil || !strings.Contains(err.Error(), "local.engines") || !strings.Contains(err.Error(), "local.urls") || strings.Contains(err.Error(), "secret") {
+		t.Errorf("bad [local]: %v", err)
+	}
+}

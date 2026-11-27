@@ -13,6 +13,7 @@ import (
 	"github.com/homelab-0/agent-flow-kit/internal/config"
 	"github.com/homelab-0/agent-flow-kit/internal/engine"
 	"github.com/homelab-0/agent-flow-kit/internal/harness"
+	"github.com/homelab-0/agent-flow-kit/internal/router"
 )
 
 var (
@@ -67,6 +68,9 @@ func (c *Core) LaunchPlan(_ context.Context, r engine.Route, mode string, perm s
 	// server).
 	if strings.HasSuffix(r.LaunchClass, "-gateway") && (cclass == "subscription" || planPoolRE.MatchString(pool)) {
 		return planError("the " + pool + " plan login is never sent through a gateway")
+	}
+	if r.IsLocal() && (cclass == "subscription" || planPoolRE.MatchString(pool)) {
+		return planError("the " + pool + " plan login is never used for a local model")
 	}
 
 	if perm == "" {
@@ -203,6 +207,9 @@ func (c *Core) projectConfig(man harness.Manifest) (flags []string, note string)
 // copied from at spawn time; no secret value is ever in the plan.
 func (c *Core) launchEnv(r engine.Route) (set, from map[string]string, unset []string, err error) {
 	set, from, unset = map[string]string{}, map[string]string{}, []string{}
+	if r.IsLocal() {
+		return c.localEnv(r)
+	}
 	if !strings.HasSuffix(r.LaunchClass, "-gateway") {
 		return set, from, unset, nil
 	}
@@ -261,10 +268,22 @@ func (c *Core) launchEnv(r engine.Route) (set, from map[string]string, unset []s
 	if c.getenv(keyVar) == "" {
 		return nil, nil, nil, &UsageError{"the gateway needs its key in $" + keyVar + " (export it, or name another variable in AFK_GATEWAY_KEY_ENV)"}
 	}
-	state := c.getenv("AFK_STATE_DIR")
-	if state == "" {
-		state = filepath.Join(c.Home, ".local", "state", "agent-flow-kit")
+	set["ANTHROPIC_BASE_URL"] = r.LitellmBaseURL
+	set["CLAUDE_CONFIG_DIR"] = filepath.Join(c.stateDir(), "gateway-claude")
+	from["ANTHROPIC_AUTH_TOKEN"] = keyVar
+	return set, from, c.vendorUnset(set, from), nil
+}
+
+func (c *Core) stateDir() string {
+	if s := c.getenv("AFK_STATE_DIR"); s != "" {
+		return s
 	}
+	return filepath.Join(c.Home, ".local", "state", "agent-flow-kit")
+}
+
+// vendorUnset is every Claude/Anthropic variable, known or in the
+// environment, except the ones the launch sets itself.
+func (c *Core) vendorUnset(set, from map[string]string) []string {
 	names := map[string]bool{}
 	for _, n := range knownVendorVars {
 		names[n] = true
@@ -279,16 +298,46 @@ func (c *Core) launchEnv(r engine.Route) (set, from map[string]string, unset []s
 			names[n] = true
 		}
 	}
-	delete(names, "ANTHROPIC_BASE_URL")
-	delete(names, "ANTHROPIC_AUTH_TOKEN")
+	unset := []string{}
 	for n := range names {
+		if _, ok := set[n]; ok {
+			continue
+		}
+		if _, ok := from[n]; ok {
+			continue
+		}
 		unset = append(unset, n)
 	}
 	sort.Strings(unset)
-	set["ANTHROPIC_BASE_URL"] = r.LitellmBaseURL
-	set["CLAUDE_CONFIG_DIR"] = filepath.Join(state, "gateway-claude")
-	from["ANTHROPIC_AUTH_TOKEN"] = keyVar
-	return set, from, unset, nil
+	return unset
+}
+
+// localEnv runs claude against a local engine's Anthropic Messages API,
+// from a config directory of its own with every Claude/Anthropic variable
+// unset, so no plan login is involved. The engine needs no key; the token
+// is a placeholder the API requires. Every model Claude Code would ask for
+// (its fast model, subagents) is the local one, since the engine has no
+// other.
+func (c *Core) localEnv(r engine.Route) (set, from map[string]string, unset []string, err error) {
+	if r.Harness != "claude" {
+		return nil, nil, nil, &UsageError{r.Harness + " can't run a local model here; only claude can"}
+	}
+	if !router.IsLoopbackURL(r.EngineURL) {
+		return nil, nil, nil, &UsageError{"a local route runs only on an engine on this machine, not " + redactedURL(r.EngineURL) + "; an engine elsewhere is a [gateway]"}
+	}
+	if r.Model == "" {
+		return nil, nil, nil, &UsageError{"a local route needs a model"}
+	}
+	set = map[string]string{
+		"ANTHROPIC_BASE_URL": strings.TrimRight(r.EngineURL, "/"), "ANTHROPIC_AUTH_TOKEN": "local",
+		"CLAUDE_CONFIG_DIR": filepath.Join(c.stateDir(), "local-claude"),
+	}
+	for _, n := range []string{"ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_SMALL_FAST_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL"} {
+		set[n] = r.Model
+	}
+	from = map[string]string{}
+	return set, from, c.vendorUnset(set, from), nil
 }
 
 func sortedNames(m map[string]config.Gateway) []string {

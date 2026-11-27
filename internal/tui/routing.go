@@ -49,6 +49,8 @@ func (r *routingProgress) add(p engine.Progress) {
 		r.task, r.guessed, r.prefer, r.harnesses = p.Task, p.Guessed, p.Prefer, p.Harnesses
 	case "route":
 		r.routes[p.Harness] = p.Route
+	case "add":
+		r.harnesses = append(r.harnesses, p.Harnesses...)
 	case "skip":
 		r.skipped[p.Harness] = true
 	}
@@ -79,6 +81,9 @@ func (m *Model) routingLines() []line {
 	out := []line{append(head, sg(t.Dim, "  "+info))}
 	for _, h := range pr.harnesses {
 		r := engine.Route{Harness: h}
+		if _, ok := engineCodes[h]; ok {
+			r = engine.Route{LaunchClass: "claude-local", Engine: h}
+		}
 		switch {
 		case pr.routes[h] != nil:
 			x := *pr.routes[h]
@@ -89,6 +94,15 @@ func (m *Model) routingLines() []line {
 			bench += " " + scoreText(x.BenchmarkScore)
 			if x.BenchmarkBasis != "" {
 				bench += " " + x.BenchmarkBasis
+			}
+			if x.IsLocal() {
+				bench = "local"
+				if x.EngineGPU != "" {
+					bench += " · " + x.EngineGPU
+				}
+				if x.EngineState != "" {
+					bench += " " + x.EngineState
+				}
 			}
 			out = append(out, fitLine(line{sg(t.OK, "   ✓ "), t.logo(x), sg(t.Plain, " "+col(routeName(x), 13)+col(x.Model, 17)), sg(t.Dim, bench)}, boxW(m.width)))
 		case pr.skipped[h]:

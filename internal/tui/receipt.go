@@ -39,7 +39,7 @@ func (t Theme) ReceiptLine(r Receipt) line {
 		what = fmt.Sprintf("%s ended by %s", routeName(r.Route), r.Signal)
 	}
 	detail := " · " + duration(r.Duration)
-	if !r.Route.IsGateway() || r.Route.EntitlementPool != "" {
+	if !r.Route.IsLocal() && (!r.Route.IsGateway() || r.Route.EntitlementPool != "") {
 		detail += " · pool " + pctText(r.PoolBefore) + " → " + pctText(r.PoolAfter)
 	}
 	switch {

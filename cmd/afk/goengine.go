@@ -198,7 +198,14 @@ func explainText(ex *engine.Explain) string {
 	if len(ex.ByHarness) > 0 {
 		b.WriteString("best per installed CLI:\n")
 		for _, a := range ex.ByHarness {
-			h := (a.Harness + "         ")[:9]
+			name, where := a.Harness, ""
+			if a.IsLocal() {
+				name, where = a.Engine, ", on this PC ("+a.EngineURL+") through claude"
+				if name == "" {
+					name = "local"
+				}
+			}
+			h := (name + "         ")[:max(9, len(name))]
 			state := a.PoolState
 			if pb := a.PoolBasis(); pb != "" {
 				state += ", " + pb
@@ -207,8 +214,8 @@ func explainText(ex *engine.Explain) string {
 			if mi, ok := ex.ModeByHarness[a.Harness]; ok && mi.Mode != "" && mi.Mode != ex.Mode {
 				mode = ", runs in " + mi.Mode
 			}
-			fmt.Fprintf(&b, "  %s %s — score %s, pool %s %s%% left (%s), %s%s\n",
-				h, a.Model, num(a.EffectiveScore), a.EntitlementPool, num(a.PoolHeadroomPct), state, a.CostClass, mode)
+			fmt.Fprintf(&b, "  %s %s — score %s, pool %s %s%% left (%s), %s%s%s\n",
+				h, a.Model, num(a.EffectiveScore), a.EntitlementPool, num(a.PoolHeadroomPct), state, a.CostClass, where, mode)
 		}
 	}
 	return b.String()

@@ -110,6 +110,16 @@ A model gateway; see [gateways](../guides/gateways.md). The one with `default = 
 
 A gateway can only be set by you (here or in the environment), never by a cloned project, because AFK sends the gateway its key.
 
+### `[local]`
+
+Inference engines on this machine; see [local models](../guides/local-models.md).
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `engines` | string | `auto` | `auto` looks on the usual ports (11434, 1234, 8080, 8000, 30000); `off` looks only at `urls` |
+| `urls` | list | | more engines to look at; each an `http(s)` address on this machine (`localhost`, `127.0.0.1`, `::1`) with no user info |
+| `gpu` | string | what `nvidia-smi` reports | this machine's GPU, a short label for the route card |
+
 ### `[harness.<name>]`
 
 | Key | Type | Meaning |
@@ -264,6 +274,7 @@ installed_at = 2026-11-26T12:00:00Z
 | `AFK_CLAUDE_CREDS_FILE`, `AFK_CODEX_AUTH_FILE`, `AFK_GROK_AUTH_FILE`, `AFK_OPENCODE_AUTH_FILE`, `AFK_PI_AUTH_FILE` | check for a CLI's login file here instead of its default place (only that it exists and is larger than 4 bytes; it is never opened). Codex's defaults to `$CODEX_HOME/auth.json` when `CODEX_HOME` is set |
 | `AFK_CODEX_SESSIONS_DIR` | read Codex's rate limits from here |
 | `CLAUDE_CONFIG_DIR`, `CODEX_HOME` | honoured as the CLIs themselves honour them |
+| `AFK_LOCAL_ENGINES` | `off` looks for no [local engines](../guides/local-models.md) |
 | `AFK_ROUTER_SIGNALS_FILE` | use this [signals file](../guides/pools.md#failure-signals) instead of `~/.config/afk/pool-signals.json` |
 
 ### Benchmark sync

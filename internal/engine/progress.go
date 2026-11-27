@@ -5,13 +5,14 @@ import "context"
 // Progress is one step of routing, for the live routing screen.
 type Progress struct {
 	// Kind is "start" (the candidates are known and pool usage is being
-	// read), "route" (a CLI's best route is scored) or "skip" (a CLI has
-	// no usable route for the task).
+	// read), "add" (more candidates found by the probe: the gateway, local
+	// engines), "route" (a candidate's best route is scored) or "skip" (a
+	// candidate has no usable route for the task).
 	Kind      string
 	Task      string
 	Guessed   bool
 	Prefer    string
-	Harnesses []string // on start: every candidate CLI, in order
+	Harnesses []string // on start: every candidate CLI, in order; on add: the new ones
 	Harness   string   // on route and skip
 	Route     *Route   // on route
 }

@@ -145,6 +145,9 @@ func (t Theme) logoName(r engine.Route) string {
 // logo is a route's 2-cell logo: the image when the terminal shows them,
 // else the text tag.
 func (t Theme) logo(r engine.Route) seg {
+	if r.IsLocal() {
+		return t.engineLogo(r.Engine)
+	}
 	if id, ok := t.logos[t.logoName(r)]; ok {
 		return sg(lipgloss.NewStyle().Foreground(lipgloss.Color(fmt.Sprintf("#%06x", id))), placeholderCells)
 	}
@@ -163,7 +166,7 @@ func (t Theme) engineLogo(engine string) seg {
 	}
 	code := engineCodes[engine]
 	if code == "" {
-		code = "EN"
+		code = "LO"
 	}
 	return sg(t.Badge(code), code)
 }
