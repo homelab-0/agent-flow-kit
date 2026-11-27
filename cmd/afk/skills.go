@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/charmbracelet/x/term"
 	"github.com/homelab-0/agent-flow-kit/internal/config"
 	"github.com/homelab-0/agent-flow-kit/internal/harness"
 	"github.com/homelab-0/agent-flow-kit/internal/skills"
@@ -23,6 +24,8 @@ const skillsHelp = `Usage: afk skills [status] [--json]
        afk skills restore <skill> <cli>
        afk skills enable|disable <skill> <cli>
        afk skills new <name> [description] [--edit]
+       afk skills scope <skill> project|global
+       (any of the above with --project: this repository's .agents/skills)
 
 Keeps one copy of every skill in ~/.config/afk/skills/<name>/SKILL.md and
 copies it into each installed CLI's own skills folder.
@@ -34,6 +37,14 @@ copies it into each installed CLI's own skills folder.
   restore   put the central copy back over a CLI's edited one
   enable    turn a skill on or off for one CLI (the next sync applies it)
   new       start a central skill and print its SKILL.md path (--edit opens it)
+  scope     install a project skill for this project only, or for every
+            project (copies it into ~/.config/afk/skills)
+
+A repository's own skills live in .agents/skills. Most CLIs read that
+folder themselves; for the others (claude) AFK copies each skill into
+the CLI's project folder and lists the copy in .git/info/exclude. AFK
+asks before it installs a project skill: sync asks in a terminal, and
+the Skills tab shows ? until you choose.
 
 AFK only touches the copies it wrote. A skill you made yourself with the
 same name is shown as a conflict and left alone, and an edit inside a CLI
@@ -71,6 +82,10 @@ type skillsDeps struct {
 	targets     []skills.Target
 	unsupported []string
 	in          io.Reader // stdin (tests)
+	// project is this repository's skills (nil when it has none).
+	project func() *projectSkills
+	// interactive is whether sync may ask about project skills.
+	interactive bool
 }
 
 func (d skillsDeps) stdin() io.Reader {
@@ -83,7 +98,15 @@ func (d skillsDeps) stdin() io.Reader {
 func hostSkills() skillsDeps {
 	he := harness.HostEnv()
 	t, u := skillTargets(he)
-	return skillsDeps{env: skillsEnvFor(he.Home, os.Getenv), targets: t, unsupported: u}
+	return skillsDeps{env: skillsEnvFor(he.Home, os.Getenv), targets: t, unsupported: u,
+		interactive: term.IsTerminal(os.Stdin.Fd()) && term.IsTerminal(os.Stdout.Fd()),
+		project: func() *projectSkills {
+			cwd, err := os.Getwd()
+			if err != nil {
+				return nil
+			}
+			return projectSkillsFor(repoRoot(cwd), he, os.Getenv)
+		}}
 }
 
 func skillsCmd(argv []string, stdout, stderr io.Writer) int {
@@ -95,7 +118,7 @@ func runSkills(d skillsDeps, argv []string, stdout, stderr io.Writer) int {
 	if len(argv) > 0 && !strings.HasPrefix(argv[0], "-") {
 		sub, argv = argv[0], argv[1:]
 	}
-	asJSON, dry, wait, edit := false, false, false, false
+	asJSON, dry, wait, edit, project := false, false, false, false, false
 	var args []string
 	for _, a := range argv {
 		switch a {
@@ -107,6 +130,8 @@ func runSkills(d skillsDeps, argv []string, stdout, stderr io.Writer) int {
 			wait = true
 		case "--edit":
 			edit = true
+		case "--project":
+			project = true
 		case "-h", "--help":
 			fmt.Fprint(stdout, skillsHelp)
 			return 0
@@ -129,7 +154,48 @@ func runSkills(d skillsDeps, argv []string, stdout, stderr io.Writer) int {
 		}
 		return true
 	}
+	// --project (and scope) work on this repository's skills instead.
+	var proj *projectSkills
+	if d.project != nil {
+		proj = d.project()
+	}
+	if project || sub == "scope" {
+		if proj == nil {
+			return fail(fmt.Errorf("this repository has no %s folder", projectSkillsDir))
+		}
+		if sub == "new" {
+			return fail(fmt.Errorf("make a project skill as a folder in %s", projectSkillsDir))
+		}
+		in := d.in
+		d = proj.deps
+		d.in = in
+	} else {
+		proj = nil // plain commands only look at the project in status and sync
+		if sub == "status" || sub == "list" || sub == "ls" || sub == "sync" {
+			if d.project != nil {
+				proj = d.project()
+			}
+		}
+	}
 	switch sub {
+	case "scope":
+		if !need(2, "scope <skill> project|global") {
+			return 2
+		}
+		if err := proj.setScope(args[0], args[1]); err != nil {
+			return fail(err)
+		}
+		res, err := proj.sync()
+		if err != nil {
+			return fail(err)
+		}
+		if args[1] == skills.ScopeGlobal {
+			fmt.Fprintf(stdout, "%s is now a central skill too. Run afk skills sync to copy it into every CLI.\n", args[0])
+		} else {
+			fmt.Fprintf(stdout, "%s is installed for this project.\n", args[0])
+		}
+		printSkillsResult(stdout, res, "")
+		return 0
 	case "help":
 		fmt.Fprint(stdout, skillsHelp)
 		return 0
@@ -146,6 +212,14 @@ func runSkills(d skillsDeps, argv []string, stdout, stderr io.Writer) int {
 			return writeJSON(stdout, stderr, skillsJSON{Schema: "afk-skills/1", Status: s, Unsupported: nonNil(d.unsupported)})
 		}
 		fmt.Fprint(stdout, renderSkills(d, s))
+		if proj != nil && !project {
+			ps, err := proj.deps.env.Scan(proj.deps.targets)
+			if err != nil {
+				return fail(err)
+			}
+			fmt.Fprintf(stdout, "\nThis project (%s):\n", tildePath(ps.Central))
+			fmt.Fprint(stdout, renderProjectSkills(proj, ps))
+		}
 		return 0
 	case "sync":
 		if len(args) > 0 {
@@ -168,6 +242,23 @@ func runSkills(d skillsDeps, argv []string, stdout, stderr io.Writer) int {
 			}
 			return 0
 		}
+		if project {
+			if d.interactive && !asJSON {
+				if err := proj.ask(d.stdin(), stdout); err != nil {
+					return fail(err)
+				}
+			}
+			res, err := proj.sync()
+			if err != nil {
+				return fail(err)
+			}
+			if asJSON {
+				return writeJSON(stdout, stderr, map[string]any{"schema": "afk-skills-sync/1", "done": nonNilA(res.Done), "backup": res.Backup})
+			}
+			printSkillsResult(stdout, res, "Nothing to sync.")
+			proj.noteUndecided(stdout)
+			return 0
+		}
 		res, err := d.env.Sync(d.targets)
 		if err != nil {
 			return fail(err)
@@ -176,6 +267,22 @@ func runSkills(d skillsDeps, argv []string, stdout, stderr io.Writer) int {
 			return writeJSON(stdout, stderr, map[string]any{"schema": "afk-skills-sync/1", "done": nonNilA(res.Done), "backup": res.Backup})
 		}
 		printSkillsResult(stdout, res, "Nothing to sync.")
+		if proj != nil {
+			if d.interactive {
+				if err := proj.ask(d.stdin(), stdout); err != nil {
+					return fail(err)
+				}
+			}
+			pres, err := proj.sync()
+			if err != nil {
+				return fail(err)
+			}
+			if len(pres.Done) > 0 {
+				fmt.Fprintln(stdout, "This project:")
+				printSkillsResult(stdout, pres, "")
+			}
+			proj.noteUndecided(stdout)
+		}
 		return 0
 	case "diff":
 		if !need(2, "diff <skill> <cli>") {

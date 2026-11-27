@@ -9,6 +9,8 @@ login_note = "gemini"
 [skills]
 # From Gemini CLI's documentation, not checked against an install.
 dir = "~/.gemini/skills"
+# Gemini CLI reads .agents/skills (and .gemini/skills) in a workspace (its documentation).
+project_dir = ".agents/skills"
 format = "skill-md"
 
 [mcp]

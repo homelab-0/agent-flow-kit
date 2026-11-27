@@ -22,6 +22,8 @@ yolo = ["--auto"]
 [skills]
 # From OpenCode's documentation, not checked against an install.
 dir = "~/.config/opencode/skills"
+# OpenCode reads .opencode/skills, .claude/skills and .agents/skills in a repository (its documentation).
+project_dir = ".agents/skills"
 format = "skill-md"
 
 [mcp]

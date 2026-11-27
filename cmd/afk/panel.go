@@ -507,7 +507,77 @@ func (s panelSource) Skills(ctx context.Context) (*tui.SkillsView, error) {
 	if err != nil {
 		return nil, err
 	}
-	return skillsView(d, st, s.c.Home), nil
+	v := skillsView(d, st, s.c.Home)
+	if p := s.projectSkills(); p != nil {
+		if err := addProjectSkills(v, p, s.c.Home); err != nil {
+			v.Problems = append(v.Problems, "project skills: "+err.Error())
+		}
+	}
+	return v, nil
+}
+
+// projectSkills is the repository's .agents/skills, if it has one.
+func (s panelSource) projectSkills() *projectSkills {
+	repo := s.repo
+	if repo == "" {
+		repo = s.c.Cwd
+	}
+	if repo == "" {
+		return nil
+	}
+	return projectSkillsFor(repoRoot(repo), s.c.Harness, s.getenv)
+}
+
+// addProjectSkills adds the project's skills as rows under the central
+// ones, in the same CLI columns.
+func addProjectSkills(v *tui.SkillsView, p *projectSkills, home string) error {
+	st, err := p.deps.env.Scan(p.deps.targets)
+	if err != nil {
+		return err
+	}
+	tilde := func(x string) string {
+		if home != "" && strings.HasPrefix(x, home+string(os.PathSeparator)) {
+			return "~" + strings.TrimPrefix(x, home)
+		}
+		return x
+	}
+	v.Project = tilde(st.Central)
+	native := map[string]bool{}
+	for _, n := range p.native {
+		native[n] = true
+	}
+	for _, sk := range st.Skills {
+		r := tui.SkillRow{Name: sk.Name, Central: sk.Central, Project: true, Scope: sk.Scope, Cells: map[string]string{}}
+		for _, c := range v.Cols {
+			switch {
+			case native[c] && sk.Central:
+				r.Cells[c] = "native"
+			case native[c]:
+				r.Cells[c] = "unmanaged"
+			default:
+				if cell, ok := sk.Cells[c]; ok {
+					r.Cells[c] = string(cell)
+				} else {
+					r.Cells[c] = "unsupported"
+				}
+			}
+		}
+		if sk.Central && sk.Scope == "" {
+			v.Undecided++
+		}
+		v.Rows = append(v.Rows, r)
+	}
+	v.Pending += len(st.Actions)
+	v.Problems = append(v.Problems, st.Problems...)
+	dirs := map[string]string{}
+	for _, t := range st.Targets {
+		dirs[t.Harness] = tilde(t.Dir)
+	}
+	for _, dr := range st.Drift {
+		v.Drift = append(v.Drift, tui.SkillDrift{Skill: dr.Skill, Harness: dr.Harness, Dir: dirs[dr.Harness], Project: true,
+			Modified: dr.Modified, Lines: p.deps.env.Changed(st.Targets, dr.Skill, dr.Harness)})
+	}
+	return nil
 }
 
 func skillsView(d skillsDeps, st *skills.Status, home string) *tui.SkillsView {
@@ -537,9 +607,17 @@ func skillsView(d skillsDeps, st *skills.Status, home string) *tui.SkillsView {
 	return v
 }
 
-// SkillsDo runs a skills action for the tab's keys.
+// SkillsDo runs a skills action for the tab's keys. "project:" in front
+// of op runs it on the repository's own skills.
 func (s panelSource) SkillsDo(ctx context.Context, op string, args ...string) (string, error) {
 	d := s.skills()
+	if rest, ok := strings.CutPrefix(op, "project:"); ok {
+		p := s.projectSkills()
+		if p == nil {
+			return "", fmt.Errorf("this repository has no %s folder", projectSkillsDir)
+		}
+		return projectSkillsDo(p, rest, args...)
+	}
 	two := func() (string, string, error) {
 		if len(args) != 2 {
 			return "", "", fmt.Errorf("skills %s needs a skill and a CLI", op)
@@ -552,10 +630,18 @@ func (s panelSource) SkillsDo(ctx context.Context, op string, args ...string) (s
 		if err != nil {
 			return "", err
 		}
-		if len(res.Done) == 0 {
+		n := len(res.Done)
+		if p := s.projectSkills(); p != nil {
+			pres, err := p.sync()
+			if err != nil {
+				return "", err
+			}
+			n += len(pres.Done)
+		}
+		if n == 0 {
 			return "Everything is in sync.", nil
 		}
-		return fmt.Sprintf("Synced %s.", plural(len(res.Done), "change")), nil
+		return fmt.Sprintf("Synced %s.", plural(n, "change")), nil
 	case "keep", "restore":
 		sk, h, err := two()
 		if err != nil {

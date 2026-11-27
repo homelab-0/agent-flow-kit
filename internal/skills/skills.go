@@ -47,7 +47,18 @@ type Env struct {
 	// directory also holds the lock and the backups.
 	State string
 	Now   func() time.Time
+	// Ask is set for a project's .agents/skills: each skill waits for a
+	// choice (SetScope) before AFK copies it anywhere. "project" copies
+	// it into the CLIs' project folders; "global" leaves that to the
+	// central skills it was copied into.
+	Ask bool
 }
+
+// Scopes a project skill can be given.
+const (
+	ScopeProject = "project"
+	ScopeGlobal  = "global"
+)
 
 func (e Env) now() time.Time {
 	if e.Now == nil {
@@ -68,6 +79,8 @@ const (
 	Removing  Cell = "removing"  // a sync will remove AFK's copy (turned off)
 	Orphan    Cell = "orphan"    // AFK's copy of a skill no longer central
 	Unmanaged Cell = "unmanaged" // nothing here, and nothing to do
+	Ask       Cell = "ask"       // a project skill waiting for its scope
+	Global    Cell = "global"    // a project skill installed for every project
 )
 
 // state is the state file.
@@ -78,6 +91,8 @@ type state struct {
 	Managed map[string]managed `json:"managed"`
 	// Off lists, per skill, the CLIs it is turned off for.
 	Off map[string][]string `json:"off"`
+	// Scope is each project skill's scope (Env.Ask only).
+	Scope map[string]string `json:"scope,omitempty"`
 }
 
 type managed struct {
@@ -91,7 +106,7 @@ func (e Env) lockDir() string   { return e.State + ".lock" }
 func (e Env) backupDir() string { return filepath.Join(filepath.Dir(e.State), "backups", "skills") }
 
 func (e Env) load() (state, error) {
-	st := state{Schema: Schema, Managed: map[string]managed{}, Off: map[string][]string{}}
+	st := state{Schema: Schema, Managed: map[string]managed{}, Off: map[string][]string{}, Scope: map[string]string{}}
 	b, err := os.ReadFile(e.State)
 	if errors.Is(err, fs.ErrNotExist) {
 		return st, nil
@@ -107,6 +122,9 @@ func (e Env) load() (state, error) {
 	}
 	if st.Off == nil {
 		st.Off = map[string][]string{}
+	}
+	if st.Scope == nil {
+		st.Scope = map[string]string{}
 	}
 	return st, nil
 }
@@ -209,6 +227,9 @@ type SkillStatus struct {
 	Name    string          `json:"name"`
 	Central bool            `json:"central"` // false: only AFK's old copies are left
 	Cells   map[string]Cell `json:"cells"`   // by harness
+	// Scope is a project skill's scope: project, global, or "" (not
+	// chosen yet). Empty for central skills.
+	Scope string `json:"scope,omitempty"`
 }
 
 // DriftInfo says what changed in a CLI's copy.
@@ -273,8 +294,22 @@ func (e Env) scan(st state, targets []Target) (*Status, error) {
 	for _, n := range order {
 		ch, central := hashes[n]
 		ss := SkillStatus{Name: n, Central: central, Cells: map[string]Cell{}}
+		// A project skill is only copied once it is scoped to the project;
+		// until then (and once global) AFK's old copies are cleaned up as
+		// if it were gone.
+		copyIt := central
+		if e.Ask && central {
+			ss.Scope = st.Scope[n]
+			copyIt = ss.Scope == ScopeProject
+		}
 		for _, t := range targets {
-			c := e.cell(st, s, t, n, ch, central)
+			c := e.cell(st, s, t, n, ch, copyIt)
+			if central && !copyIt && c == Unmanaged {
+				c = Ask
+				if ss.Scope == ScopeGlobal {
+					c = Global
+				}
+			}
 			ss.Cells[t.Harness] = c
 		}
 		if !central {
@@ -669,6 +704,69 @@ func (e Env) Restore(targets []Target, skill, harness string) (*Result, error) {
 
 // SetEnabled turns a skill on or off for a CLI. Nothing is written into
 // the CLI until the next sync.
+// SetScope records a project skill's scope (Env.Ask). Sync then copies a
+// project-scoped skill into the CLIs' project folders, and removes AFK's
+// copies of one made global.
+func (e Env) SetScope(skill, scope string) error {
+	if !ValidName(skill) {
+		return fmt.Errorf("%q is not a skill name", skill)
+	}
+	if scope != ScopeProject && scope != ScopeGlobal {
+		return fmt.Errorf("scope is project or global, not %q", scope)
+	}
+	lock, err := e.lock()
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+	st, err := e.load()
+	if err != nil {
+		return err
+	}
+	st.Scope[skill] = scope
+	return e.save(st)
+}
+
+// CopyInto copies a skill into another skills folder (a project skill
+// into the central one, to make it global). It never overwrites: if the
+// folder already has a different skill of that name, it says so.
+func (e Env) CopyInto(skill, dir string) error {
+	if !ValidName(skill) {
+		return fmt.Errorf("%q is not a skill name", skill)
+	}
+	src, dst := filepath.Join(e.Central, skill), filepath.Join(dir, skill)
+	h, err := Hash(src)
+	if err != nil {
+		return err
+	}
+	if exists(dst) {
+		if h2, err := Hash(dst); err == nil && h2 == h {
+			return nil // already there
+		}
+		return fmt.Errorf("%s already has a different skill called %s; rename one of them", dir, skill)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.MkdirTemp(dir, "."+skill+".afk-")
+	if err != nil {
+		return err
+	}
+	if err := copyDir(src, tmp); err != nil {
+		os.RemoveAll(tmp)
+		return err
+	}
+	if err := os.Chmod(tmp, 0o755); err != nil {
+		os.RemoveAll(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		os.RemoveAll(tmp)
+		return err
+	}
+	return nil
+}
+
 func (e Env) SetEnabled(skill, harness string, on bool) error {
 	if !ValidName(skill) {
 		return fmt.Errorf("%q is not a skill name", skill)
