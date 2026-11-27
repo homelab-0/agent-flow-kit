@@ -108,7 +108,7 @@ func interactive(eng tui.Backend, args cli.Args, width int) int {
 		opt.Version = opt.Header.Version
 	}
 	model := tui.New(eng, opt)
-	p := tea.NewProgram(tui.WithOverlay(model, overlay), tea.WithFPS(opt.FPS))
+	p := tea.NewProgram(tui.WithKittyLogos(tui.WithOverlay(model, overlay), logos), tea.WithFPS(opt.FPS))
 	_, err := p.Run()
 	model.Close()
 	if err != nil {

@@ -171,6 +171,30 @@ func TestOverlaySixel(t *testing.T) {
 	}
 }
 
+// xterm answers DA1 but not CSI 16 t unless allowWindowOps is on: the
+// cell size then comes from the tty's window size.
+func TestOverlayCellSizeFallback(t *testing.T) {
+	old := cellSize
+	defer func() { cellSize = old }()
+	cellSize = func() (int, int) { return 8, 17 }
+	o := NewOverlay(envOf("TERM", "xterm"))
+	o.holding, o.top, o.rows, o.cols = false, 1, 24, 80
+	m := &overlayModel{inner: PanelModel{P: NewPanel(context.Background(), &fakePanel{}, NewTheme(true), TabHarnesses, "", nil)}, o: o}
+	m.Update(uv.PrimaryDeviceAttributesEvent{63, 1, 2, 4, 6})
+	if !strings.Contains(o.frame(tea.NewView(markSeg(pixelMarks()["claude"]).s)), "\x1bP0;1;0q\"1;1;16;12") {
+		t.Errorf("no image from the fallback cell size (%d×%d)", o.cellW, o.cellH)
+	}
+	// An answer to CSI 16 t wins over the fallback.
+	o2 := NewOverlay(envOf("TERM", "xterm"))
+	m2 := &overlayModel{inner: m.inner, o: o2}
+	m2.Update(uv.CellSizeEvent{Width: 10, Height: 22})
+	m2.Update(uv.PrimaryDeviceAttributesEvent{63, 4})
+	m2.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	if o2.cellW != 10 || o2.cellH != 22 {
+		t.Errorf("cell %d×%d, want the terminal's 10×22", o2.cellW, o2.cellH)
+	}
+}
+
 // decodeSixel turns sixelImage's output back into pixels.
 func decodeSixel(t *testing.T, s string) *image.RGBA {
 	t.Helper()

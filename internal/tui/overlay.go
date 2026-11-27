@@ -41,6 +41,7 @@ type Overlay struct {
 	da1          bool // the terminal answered DA1
 	sixel        bool // ... and listed Sixel
 	cellW, cellH int
+	cellAsked    bool // the terminal answered CSI 16 t
 	bg           color.Color
 
 	needles map[string]string // a pixel mark as rendered → logo name
@@ -95,6 +96,9 @@ func NewOverlay(getenv func(string) string) *Overlay {
 	return o
 }
 
+// cellSize is the fallback for a cell's size in pixels; tests replace it.
+var cellSize = ttyCellSize
+
 // Proto is how the overlay draws.
 func (o *Overlay) Proto() ImageProto { return o.proto }
 
@@ -138,7 +142,7 @@ func (m *overlayModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case overlayRelease:
 		o.holding = false
 	case uv.CellSizeEvent:
-		o.cellW, o.cellH = msg.Width, msg.Height
+		o.cellW, o.cellH, o.cellAsked = msg.Width, msg.Height, true
 		return m, m.schedule()
 	case uv.PrimaryDeviceAttributesEvent:
 		o.da1 = true
@@ -146,6 +150,10 @@ func (m *overlayModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			o.sixel = o.sixel || a == 4
 		}
 		o.probing = false
+		if !o.cellAsked && o.cellW == 0 {
+			// DA1 comes after CSI 16 t, so that went unanswered.
+			o.cellW, o.cellH = cellSize()
+		}
 		return m, m.schedule()
 	case tea.BackgroundColorMsg:
 		o.bg = msg.Color
@@ -156,6 +164,9 @@ func (m *overlayModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			o.imgs = map[string]string{}
 		}
 		o.rows, o.cols, o.sized = msg.Height, msg.Width, true
+		if !o.cellAsked && o.da1 {
+			o.cellW, o.cellH = cellSize() // a font change resizes too
+		}
 	case overlayTick:
 		if msg.gen != o.gen {
 			return m, nil // a newer frame is coming
