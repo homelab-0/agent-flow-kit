@@ -21,6 +21,7 @@ func TestAfterCard(t *testing.T) {
 		code     int
 	}{
 		{"launch", tui.Decision{Launch: true}, true, 0, false, 0},
+		{"run here", tui.Decision{RunHere: true}, true, 0, false, 0},
 		{"card cancelled from the composer", tui.Decision{Cancelled: true}, true, 0, false, 0},
 		{"card cancelled for afk \"prompt\"", tui.Decision{Cancelled: true}, false, 0, true, 130},
 		{"exit before any session", tui.Decision{Cancelled: true, Exit: true}, true, 0, true, 130},

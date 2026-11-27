@@ -131,7 +131,13 @@ func (m *Model) composeKey(k tea.KeyPressMsg) tea.Cmd {
 			return m.finish(Decision{Cancelled: true, Exit: true})
 		}
 	case "enter":
-		return m.submit()
+		return m.submit(m.opt.RunHere)
+	case "ctrl+o":
+		// The route card: pick the CLI, model and effort, and open the
+		// CLI's own screen.
+		if m.opt.RunHere {
+			return m.submit(false)
+		}
 	case "tab":
 		m.taskIdx = (m.taskIdx + 1) % len(taskKinds)
 		return nil
@@ -167,7 +173,8 @@ func (m *Model) composeKey(k tea.KeyPressMsg) tea.Cmd {
 }
 
 // submit runs a slash command, or routes the task.
-func (m *Model) submit() tea.Cmd {
+// here is whether a task runs inside AFK; otherwise it goes to the card.
+func (m *Model) submit(here bool) tea.Cmd {
 	text := strings.TrimSpace(m.cin.Value())
 	// /harness (one) pins a CLI; /harnesses opens its tab.
 	if tab, ok := TabFor(text); ok && tab != TabRoute && strings.HasPrefix(text, "/") && text != "/harness" && m.opt.Panel != nil {
@@ -184,6 +191,9 @@ func (m *Model) submit() tea.Cmd {
 	}
 	m.cin.Blur()
 	m.card.Prompt = text
+	if here && text != "" {
+		return m.finish(Decision{RunHere: true})
+	}
 	return m.reroute()
 }
 
@@ -205,11 +215,39 @@ func (m *Model) command(text string) string {
 			return "prefer is balanced, cheap or best"
 		}
 		dst = &f.Prefer
+	case "mode":
+		// The permission mode for turns run here and CLIs opened from
+		// here. yolo stays a deliberate y y on the route card.
+		switch arg {
+		case "":
+			f.Perm = ""
+			return "mode: back to your configured default"
+		case "read-only", "ask", "edits", "auto":
+			f.Perm = arg
+			return "mode: " + arg + " for the rest of this AFK session"
+		}
+		return "mode is read-only, ask, edits or auto (yolo: y y on the route card)"
+	case "rate":
+		if m.opt.Rate == nil {
+			return "nothing to rate yet"
+		}
+		o, ok := Ratings[arg]
+		if !ok {
+			for _, v := range Ratings {
+				if v == arg {
+					o, ok = v, true
+				}
+			}
+		}
+		if !ok {
+			return "rate the last run: /rate 1 (solved), 2 (partly) or 3 (wrong pick)"
+		}
+		return m.opt.Rate(o)
 	case "clear":
 		f.Harness, f.Model, f.Effort, f.Prefer = "", "", "", ""
 		return ""
 	default:
-		s := "unknown command /" + name + ": try /harness, /model, /effort, /prefer, /clear"
+		s := "unknown command /" + name + ": try /harness, /model, /effort, /prefer, /mode, /rate, /clear"
 		if m.opt.Panel != nil {
 			s += ", or a tab: /harnesses /bench /skills /mcp /runs /config"
 		}
@@ -219,6 +257,15 @@ func (m *Model) command(text string) string {
 	return ""
 }
 
+// enterHelp is the shortcut line for enter.
+func (m *Model) enterHelp() line {
+	t := m.theme
+	if m.opt.RunHere {
+		return line{sg(t.Key, "  ↵"), sg(t.Dim, " route the task and run it here  "), sg(t.Key, "ctrl+o"), sg(t.Dim, " route card: pick the route, open the CLI  "), sg(t.Key, "/rate"), sg(t.Dim, " the last run")}
+	}
+	return line{sg(t.Key, "  ↵"), sg(t.Dim, " route the task (empty: open the CLI without one)")}
+}
+
 // composeLines is the composer under the header: the input bar, the
 // status line and the hint line (or the shortcuts).
 func (m *Model) composeLines() []line {
@@ -226,7 +273,7 @@ func (m *Model) composeLines() []line {
 	out := []line{nil, m.inputBar(w), m.statusLine(w)}
 	if m.help {
 		for _, l := range []line{
-			{sg(t.Key, "  ↵"), sg(t.Dim, " route the task (empty: open the CLI without one)")},
+			m.enterHelp(),
 			{sg(t.Key, "  tab"), sg(t.Dim, " task kind: "+strings.Join(taskKinds, ", "))},
 			{sg(t.Key, "  /harness /model /effort /prefer"), sg(t.Dim, " pin a choice  "), sg(t.Key, "/clear"), sg(t.Dim, " unpin")},
 			{sg(t.Key, "  esc"), sg(t.Dim, " clear the input  "), sg(t.Key, "ctrl+c"), sg(t.Dim, " twice, or "), sg(t.Key, "ctrl+d"), sg(t.Dim, ", exit")},
@@ -235,7 +282,11 @@ func (m *Model) composeLines() []line {
 		}
 		return out
 	}
-	hint := line{sg(t.Dim, "  "), sg(t.Key, "tab"), sg(t.Dim, " task · "), sg(t.Key, "/"), sg(t.Dim, " commands · "), sg(t.Key, "?"), sg(t.Dim, " for shortcuts")}
+	hint := line{sg(t.Dim, "  ")}
+	if m.opt.RunHere {
+		hint = append(hint, sg(t.Key, "↵"), sg(t.Dim, " run · "), sg(t.Key, "ctrl+o"), sg(t.Dim, " route card · "))
+	}
+	hint = append(hint, sg(t.Key, "tab"), sg(t.Dim, " task · "), sg(t.Key, "/"), sg(t.Dim, " commands · "), sg(t.Key, "?"), sg(t.Dim, " for shortcuts"))
 	out = append(out, hint)
 	if m.notice != "" {
 		out = append(out, fitLine(line{sg(t.Warn, "  "+m.notice)}, w))

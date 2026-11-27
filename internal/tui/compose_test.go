@@ -302,3 +302,86 @@ func runBatch(cmd tea.Cmd) []tea.Msg {
 	}
 	return []tea.Msg{msg}
 }
+
+// With RunHere, enter hands the prompt back to be run inside AFK, ctrl+o
+// takes it to the route card, and an empty enter still goes to the card.
+func TestComposerRunsHere(t *testing.T) {
+	f := fixtures(t)
+	h := designHeader
+	mk := func() *Model {
+		m := New(f, Options{Width: 100, FPS: 30, Dark: true, Compose: true, RunHere: true,
+			Now: func() time.Time { return frameNow }, Loc: time.UTC, Environ: []string{"PATH=/bin"}, Header: &h})
+		m.Init()
+		return m
+	}
+	m := mk()
+	if !strings.Contains(ansi.Strip(m.Render()), "↵ run · ctrl+o route card") {
+		t.Errorf("the hint line:\n%s", ansi.Strip(m.Render()))
+	}
+	m.Update(key("tab")) // coding
+	typeText(m, "fix it")
+	m.Update(key("enter"))
+	d := m.Decision()
+	if !d.RunHere || d.Launch || d.Cancelled || d.Prompt != "fix it" || d.Flags.Task != "coding" {
+		t.Fatalf("enter: %+v", d)
+	}
+	if last := plainLines(m.Render()); len(last) < 2 || !strings.Contains(strings.Join(last, "\n"), "› fix it") {
+		t.Errorf("the prompt stays as the turn's first line:\n%s", strings.Join(last, "\n"))
+	}
+
+	m = mk()
+	typeText(m, "fix it")
+	m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
+	if m.st != sRouting || m.Decision().RunHere {
+		t.Errorf("ctrl+o goes to the route card: state %v", m.st)
+	}
+
+	m = mk()
+	m.Update(key("enter"))
+	if m.st != sRouting {
+		t.Errorf("an empty enter still routes to the card: state %v", m.st)
+	}
+}
+
+func TestModeCommand(t *testing.T) {
+	m, _ := composeModel(t, 100, false)
+	typeText(m, "/mode edits")
+	m.Update(key("enter"))
+	if m.opt.Flags.Perm != "edits" || !strings.Contains(ansi.Strip(m.Render()), "mode: edits") {
+		t.Errorf("perm %q", m.opt.Flags.Perm)
+	}
+	typeText(m, "/mode yolo")
+	m.Update(key("enter"))
+	if m.opt.Flags.Perm != "edits" || !strings.Contains(ansi.Strip(m.Render()), "y y on the route card") {
+		t.Error("yolo is not set from /mode")
+	}
+	typeText(m, "/mode")
+	m.Update(key("enter"))
+	if m.opt.Flags.Perm != "" {
+		t.Error("/mode alone goes back to the default")
+	}
+}
+
+func TestRateCommand(t *testing.T) {
+	m, _ := composeModel(t, 100, false)
+	typeText(m, "/rate 1")
+	m.Update(key("enter"))
+	if !strings.Contains(ansi.Strip(m.Render()), "nothing to rate yet") {
+		t.Error("no run yet")
+	}
+	var got string
+	m.opt.Rate = func(o string) string { got = o; return "rated r-1: " + o }
+	for in, want := range map[string]string{"/rate 2": "partly", "/rate solved": "solved", "/rate 3": "wrong-pick"} {
+		typeText(m, in)
+		m.Update(key("enter"))
+		if got != want || !strings.Contains(ansi.Strip(m.Render()), "rated r-1: "+want) {
+			t.Errorf("%s: got %q", in, got)
+		}
+	}
+	got = ""
+	typeText(m, "/rate great")
+	m.Update(key("enter"))
+	if got != "" || !strings.Contains(ansi.Strip(m.Render()), "/rate 1 (solved)") {
+		t.Error("a bad rating is explained, not saved")
+	}
+}

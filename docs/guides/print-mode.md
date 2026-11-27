@@ -8,7 +8,7 @@ echo "summarise this" | afk -p --task research
 afk -p --json "list the TODOs in cmd/"
 ```
 
-The prompt comes from the arguments, or from stdin when there are none. The CLI runs with stdin closed, in the current directory, and nothing is recorded as a [run](runs.md).
+The prompt comes from the arguments, or from stdin when there are none. The CLI runs with stdin closed, in the current directory, and nothing is recorded as a [run](runs.md). The composer runs a task the same way when you press `↵` (see [running a task here](route-card.md#running-a-task-here)), and there each turn is recorded.
 
 ## Failover
 
