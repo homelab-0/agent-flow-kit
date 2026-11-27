@@ -23,3 +23,9 @@ yolo = ["--auto"]
 # From OpenCode's documentation, not checked against an install.
 dir = "~/.config/opencode/skills"
 format = "skill-md"
+
+[mcp]
+# The "mcp" object in opencode.json. From OpenCode's documentation, not
+# checked against an install.
+file = "~/.config/opencode/opencode.json"
+format = "opencode-json"

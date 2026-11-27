@@ -10,3 +10,9 @@ login_note = "copilot (then /login)"
 # From Copilot CLI's documentation, not checked against an install.
 dir = "~/.copilot/skills"
 format = "skill-md"
+
+[mcp]
+# "mcpServers" in mcp-config.json. From Copilot CLI's documentation, not
+# checked against an install.
+file = "~/.copilot/mcp-config.json"
+format = "copilot-json"
