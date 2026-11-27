@@ -16,9 +16,10 @@ import (
 )
 
 // Claude has no usage figure AFK can read without the Claude login, and
-// AFK never opens a credential file, so the Claude pool is estimated from
-// recent local sessions (see ProbePools). Codex writes its own rate limits
-// into its session files, which hold no credential; those are read below.
+// AFK never opens a credential file, so the Claude pool has a figure only
+// from a one-shot run's own output (see planusage.go) and none otherwise.
+// Codex writes its own rate limits into its session files, which hold no
+// credential; those are read below.
 
 func maxOf(v []float64) float64 {
 	m := math.Inf(-1)

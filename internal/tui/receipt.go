@@ -39,7 +39,8 @@ func (t Theme) ReceiptLine(r Receipt) line {
 		what = fmt.Sprintf("%s ended by %s", routeName(r.Route), r.Signal)
 	}
 	detail := " · " + duration(r.Duration)
-	if !r.Route.IsLocal() && (!r.Route.IsGateway() || r.Route.EntitlementPool != "") {
+	// A change in the pool is shown only between two reported readings.
+	if r.PoolBefore != nil && r.PoolAfter != nil && !r.Route.IsLocal() {
 		detail += " · pool " + pctText(r.PoolBefore) + " → " + pctText(r.PoolAfter)
 	}
 	switch {

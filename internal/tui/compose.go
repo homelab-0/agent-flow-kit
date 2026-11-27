@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 
@@ -241,7 +240,8 @@ func (m *Model) inputBar(w int) line {
 }
 
 // statusLine is the prefer mode, the task kind, any pinned choices, and
-// every route's logo with its headroom.
+// every route's logo with what is left of its plan, as its CLI reported
+// it ("usage unknown" when it hasn't).
 func (m *Model) statusLine(w int) line {
 	t := m.theme
 	f := m.opt.Flags
@@ -267,11 +267,11 @@ func (m *Model) statusLine(w int) line {
 		l = append(l, sg(t.Plain, " "), t.logo(r))
 		switch {
 		case r.PoolHeadroomPct != nil:
-			l = append(l, sg(t.style(t.headroom(r.PoolHeadroomPct)), fmt.Sprintf(" %s", pctText(r.PoolHeadroomPct))))
+			l = append(l, sg(t.style(t.headroom(r.PoolHeadroomPct)), " "+poolLeft(r)))
 		case r.CostClass == "free" || r.CostClass == "local":
 			l = append(l, sg(t.OK, " free"))
 		default:
-			l = append(l, sg(t.Dim, " "+unknownText))
+			l = append(l, sg(t.Dim, " "+poolLeft(r)))
 		}
 		l = append(l, sg(t.Plain, " "))
 	}

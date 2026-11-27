@@ -133,7 +133,7 @@ func TestPanelTabs(t *testing.T) {
 		TabHarnesses: {"Route   Harnesses   Benchmarks   Skills   MCP   Runs   Config", "afk 0.2.0", "CL claude    2.1.332  signed in      plan+gw  u",
 			"OC opencode  1.4.0    signed out", "PI pi        —        not installed", "models  claude-fable-5-2, sonnet, +2 via gateway", "usage   5h 71% left · week 64% left", "u update"},
 		TabBench:  {"task   coding  quick", "source SWE-bench Verified", "claude-fable-5-2   CL", "78.1  measured  14✓ 2~", "CX OC", "qwen36-14b         OL", "Effective today", "CX 71.8 (52%)", "OL 51.0", "←→ task"},
-		TabRuns:   {"updated 03:31", "CL Claude plan", "71%", "GK SuperGrok", "[??????????] n/e", "agentgateway      up", "└ VL vLLM", "OL ollama", "this PC · RTX 5090 · 1 model", "r-7f3c", "✓ solved", "! exit 1", "23m · 30m ago"},
+		TabRuns:   {"updated 03:31", "CL Claude plan", "71%", "GK SuperGrok", "GK SuperGrok          █████████░ 91%     unknown", "agentgateway      up", "└ VL vLLM", "OL ollama", "this PC · RTX 5090 · 1 model", "r-7f3c", "✓ solved", "! exit 1", "23m · 30m ago"},
 		TabConfig: {"file ~/.config/afk/config.toml", "route.prefer                balanced", "e edit config.toml"},
 		TabSkills: {"4 skills · source ~/.config/afk/skills · 1 drifted · 1 to sync · 1 to choose", "skill", "CL  CX  GK  AG", "gh-pr-triage", "↻", "╭─ gh-pr-triage changed in grok",
 			"Edited in ~/.grok/skills 2 hours ago. 4 lines differ from central.", "k keep grok's and update central", "space enable"},

@@ -341,7 +341,6 @@ func reasonText(rows []engine.Route, i int, task string, now time.Time) string {
 		}
 		if r.BenchmarkBasis == "estimate" {
 			b.WriteString(", and the score is a catalog estimate, not measured.")
-			b.WriteString(poolEstimateNote(r))
 			return b.String()
 		}
 	}
@@ -366,25 +365,31 @@ func reasonText(rows []engine.Route, i int, task string, now time.Time) string {
 	case r.CostClass == "free":
 		b.WriteString(", and free.")
 	case r.PoolHeadroomPct == nil:
-		b.WriteString("; its pool usage is not known.")
+		b.WriteString("; " + r.Harness + " hasn't reported its plan usage.")
 	case hasMost && len(rows) > 1 && (best == i):
-		b.WriteString(" and the most 5-hour headroom left.")
+		b.WriteString(" and the most reported headroom left.")
 	case hasMost:
 		b.WriteString(".")
 	default:
-		fmt.Fprintf(&b, ", with %s of its 5-hour pool left.", pctText(r.PoolHeadroomPct))
+		fmt.Fprintf(&b, ", with %s of its plan left.", pctText(r.PoolHeadroomPct))
 	}
-	b.WriteString(poolEstimateNote(r))
 	return b.String()
 }
 
-// poolEstimateNote says when a paid route's pool figure is an estimate
-// from recent sessions rather than a measurement.
-func poolEstimateNote(r engine.Route) string {
-	if r.PoolHeadroomPct != nil && r.CostClass != "free" && !r.IsGateway() && r.PoolQuotaSource == "local_5h_activity" {
-		return " Its pool figure is an estimate from recent sessions, not a measurement."
+// usageUnknown is what stands where a plan's usage figure would be when
+// its CLI hasn't reported one. AFK shows no estimate in its place.
+const usageUnknown = "usage unknown"
+
+// poolLeft is a route's plan usage in words: the reported figure, or why
+// there is none.
+func poolLeft(r engine.Route) string {
+	switch {
+	case r.PoolHeadroomPct != nil:
+		return pctText(r.PoolHeadroomPct) + " left"
+	case r.PoolQuotaSource == "unauthenticated":
+		return "not signed in"
 	}
-	return ""
+	return usageUnknown
 }
 
 // effortCycle orders a route's supported efforts from low to high.

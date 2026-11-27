@@ -1,39 +1,37 @@
 # Subscription pools
 
-A pool is one source of model usage: a plan login, a free tier, or a gateway. AFK tracks how much of each is left in the current window (five hours, or a week when that is all the CLI reports) and uses it to spread work across your plans.
+A pool is one source of model usage: a plan login, a free tier, or a gateway. AFK shows how much of each plan is left in its current window (five hours or a week) **only when the plan's own CLI reported it**, and uses that to spread work across your plans. When no CLI has reported a figure, AFK shows `usage unknown`. It never estimates one.
 
-| Pool | Feeds | Default 5-hour capacity |
-|---|---|---|
-| `anthropic-max` | `claude` (Claude Pro/Max) | 60 sessions |
-| `openai-plus` | `codex` (ChatGPT plans) | 40 |
-| `antigravity-pool` | `agy` | 50 |
-| `xai-grok` | `grok` (SuperGrok) | 50 |
-| `opencode-free` | `opencode` free models | 200 |
-| `litellm-local` | a model gateway, see [gateways](gateways.md) | 9999 |
-
-Capacities come from the [benchmark catalog](../reference/benchmark-catalog.md).
+| Pool | Feeds |
+|---|---|
+| `anthropic-max` | `claude` (Claude Pro/Max) |
+| `openai-plus` | `codex` (ChatGPT plans) |
+| `antigravity-pool` | `agy` |
+| `xai-grok` | `grok` (SuperGrok) |
+| `opencode-free` | `opencode` free models |
+| `litellm-local` | a model gateway, see [gateways](gateways.md) |
 
 ## How usage is measured
 
-For each pool AFK takes the best source available, in this order:
+A pool has a usage figure only from the provider's own report:
 
-1. **A recent failure signal** (below), while it is still in force.
-2. **The provider's own figure**:
-   - **Codex**: the rate limits Codex writes into its own session files (`rollout-*.jsonl` under `$CODEX_HOME/sessions`, by default `~/.codex/sessions`), with each window's reset time. The newest reading wins, by when it was recorded. No network call.
-   - **Claude**: the `rate_limit_event` that Claude Code prints in its stream-json output, which `afk -p` asks for (`--output-format stream-json --verbose`). It has the plan's utilization per window (five-hour and weekly; overage windows don't count) and when each resets. AFK keeps the last reading in `~/.config/afk/state/plan-usage.json` and uses it until its window resets, for at most 12 hours. Interactive Claude sessions don't print it, so the figure is as of the last `afk -p` run on Claude; the route card says `measured (last -p)` and names the fuller window (5h or weekly). If Claude refused the call, the limit it named counts as full until the reset time Claude gave. While a failed run's mark stands for the pool, the mark is what the card shows, not the reading. No login is read and nothing extra is sent.
-3. **Recent activity**: session files each CLI wrote in the last 5 hours (for OpenCode, under its `storage/` folder; a sign-in rewriting its `auth.json` isn't activity), against the pool's capacity, capped at 98%. This is an estimate, and the route card and `--explain` say so (`estimated`). Claude falls back to it when there is no current reading; Grok and Antigravity always use it today (Grok's output reports only each call's tokens). A rate-limit or quota failure from a real run still sets the pool aside (below). Codex sessions count against the ChatGPT plan only when Codex is signed in with the plan; with an API key they are metered usage, not plan usage.
+- **Codex**: the rate limits Codex writes into its own session files (`rollout-*.jsonl` under `$CODEX_HOME/sessions`, by default `~/.codex/sessions`), with each window's reset time. The newest reading wins, by when it was recorded. No network call.
+- **Claude**: the `rate_limit_event` that Claude Code prints in its stream-json output, which `afk -p` asks for (`--output-format stream-json --verbose`). It has the plan's utilization per window (five-hour and weekly; overage windows don't count) and when each resets. AFK keeps the last reading in `~/.config/afk/state/plan-usage.json` and uses it until its window resets, for at most 12 hours. Interactive Claude sessions don't print it, so the figure is as of the last `afk -p` run on Claude; the route card says `measured (last -p)` and names the fuller window (5h or weekly). If Claude refused the call, the limit it named counts as full until the reset time Claude gave. No login is read and nothing extra is sent.
+- **Everything else** (Grok, Antigravity, OpenCode, and Claude or Codex with no current reading): `usage unknown`. Those CLIs don't report plan usage in anything AFK reads, and AFK doesn't guess from session files or anything else. An unknown plan still routes; its usage just doesn't count for or against it.
 
-Which plan Codex uses (ChatGPT or an API key) comes from `codex login status`; when it can't answer, Codex's sessions aren't counted against any pool rather than guessed. Claude's and Codex's folders follow `CLAUDE_CONFIG_DIR` and `CODEX_HOME` when they are set. Which vendor plans OpenCode or Pi are signed in to is written only inside their credential files, so AFK doesn't count them against those plans: OpenCode draws on its own free pool. If Grok is installed but no login for xAI exists anywhere, `xai-grok` is offline and AFK says to run `grok login`.
+A [failure signal](#failure-signals) from a real run sets a pool aside for a while. That is a state, not a figure: the pool shows as set aside, with no percentage made up for it.
+
+Which plan Codex uses (ChatGPT or an API key) comes from `codex login status`; when it can't answer, Codex is bound to neither rather than guessed. Claude's and Codex's folders follow `CLAUDE_CONFIG_DIR` and `CODEX_HOME` when they are set. Which vendor plans OpenCode or Pi are signed in to is written only inside their credential files, so AFK doesn't count them against those plans: OpenCode draws on its own free pool. If Grok or Antigravity is installed but has no login on disk, its pool is offline, shows `not signed in`, and AFK says to run `grok login` or `agy login`. Being installed is not being signed in.
 
 ## Pool states
 
-| State | Used | Effect on routing |
+| State | Reported use | Effect on routing |
 |---|---|---|
-| `available` | under 75% | normal |
+| `available` | under 75%, or unknown | normal |
 | `warning` | 75–90% | −15 on low and medium-risk work, so other plans take it |
-| `exhausted` | 90% or more | not used |
+| `exhausted` | 90% or more, or set aside by a failed run | not used |
 | `auth_required` | a sign-in failure was recorded | not used; AFK prints the sign-in command |
-| `offline` | the gateway is down, or OpenCode isn't installed | not used |
+| `offline` | the gateway is down, OpenCode isn't installed, or the plan's CLI isn't signed in | not used |
 
 ## Failure signals
 
@@ -55,10 +53,12 @@ Signals are written by one-shot runs (`afk -p`) today, under a short lock so run
 
 ## Seeing it
 
-`afk pools` lists every pool with its state, how much is left and how that was found. Under a measured pool with a 5-hour or weekly window it shows where the window is heading at the rate so far, projected from when the reading was taken (in the first 10% of a window it says it is too early), for example `weekly window resets in 9h with ~58% unused at this rate` or `5h window runs out 16:40 at this rate, before it resets in 3h`, and, with [plan pacing](routing.md#plan-pacing) on, how much that moves routing. `afk pools --json` prints the [pools document](../reference/json.md#pools-afk-router-pools3), with `pacing` per pool.
+`afk pools` lists every pool with its state and, when its CLI reported one, how much is left and how that was found; otherwise `usage unknown`, `not signed in` or `set aside by a failed run`. Under a measured pool with a 5-hour or weekly window it shows where the window is heading at the rate so far, projected from when the reading was taken (in the first 10% of a window it says it is too early), for example `weekly window resets in 9h with ~58% unused at this rate` or `5h window runs out 16:40 at this rate, before it resets in 3h`, and, with [plan pacing](routing.md#plan-pacing) on, how much that moves routing. `afk pools --json` prints the [pools document](../reference/json.md#pools-afk-router-pools4), with `pacing` per pool.
 
-`afk --explain` shows each route's pool, headroom, state and, for an estimate, `estimated from recent sessions`; `--explain --json` has every figure, with the source in `pool_quota_source`. The receipt shows the pool before and after a session.
+`afk --explain` shows each route's pool, its state and its headroom when reported (`usage unknown` otherwise); `--explain --json` has every figure, with the source in `pool_quota_source`. The receipt shows the pool before and after a session only when both are reported readings.
+
+In the TUI, the status line under the input shows each route's logo with `NN% left` or `usage unknown`, and the Runs tab lists each plan's 5-hour and weekly figures the same way.
 
 ## Privacy
 
-AFK never opens a credential file: sign-in checks look only at whether login files exist, their size and when they changed. Activity counting looks only at file names and times, not contents. See [security and privacy](../security.md).
+AFK never opens a credential file: sign-in checks look only at whether login files exist, their size and when they changed. See [security and privacy](../security.md).

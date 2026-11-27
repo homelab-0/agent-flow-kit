@@ -7,7 +7,7 @@ Every machine-readable output carries a `schema` field with a name and a version
 | `afk-route-explain/2` | `afk --explain --json` |
 | `afk-launch-plan/1` | `afk --launch-plan` |
 | `afk-harnesses/3` | `afk harness --json` |
-| `afk-router-pools/3` | pool usage (used by the receipt) |
+| `afk-router-pools/4` | pool usage (used by the receipt) |
 | `afk-run/1` | run records |
 | `afk-benchmark-catalog/3` | the [benchmark catalog](benchmark-catalog.md) |
 | `afk-benchmark-sync/3` | `afk bench sync --json` |
@@ -45,8 +45,8 @@ With `--harness` and `--model` together, `choice` is a pinned route (`harness`, 
 | `effort`, `base_effort`, `effort_escalated`, `effort_reason`, `supported_efforts` | the effort chosen, before any escalation, why, and what the CLI accepts |
 | `task_class`, `stage`, `risk`, `round` | what the task was scored as |
 | `cost_class`, `is_free` | `subscription`, `free` or `api-metered` |
-| `entitlement_pool`, `pool_state`, `pool_capacity_5h`, `pool_remaining_5h`, `pool_used_pct`, `pool_headroom_pct` | the [pool](../guides/pools.md) and its state when routed |
-| `pool_quota_source` | where the pool figures came from: `codex_rate_limits` (measured), `local_5h_activity` (estimated from recent sessions), `runtime_signal:<kind>`, `gateway_probe` or `unauthenticated` |
+| `entitlement_pool`, `pool_state`, `pool_used_pct`, `pool_headroom_pct` | the [pool](../guides/pools.md) and its state when routed. The two figures are `null` or absent unless the plan's CLI reported them |
+| `pool_quota_source` | where the pool figures came from: `codex_rate_limits` or `claude_rate_limit_event` (reported by the CLI; the only sources with figures), `runtime_signal:<kind>`, `gateway_probe`, `unauthenticated` or `unknown` |
 | `benchmark_name`, `benchmark_score`, `benchmark_basis`, `benchmark_live`, `benchmark_synced_at` | the score used and where it came from (`measured`, `capped`, `estimate` or `stale`) |
 | `effective_score` | the score after adjustments; routes are ranked by it |
 | `outcome_runs`, `outcome_adjustment` | when your ratings count for this route: how many, and the points they added or took away (absent otherwise) |
@@ -97,9 +97,9 @@ A refused plan is `{"schema":"afk-launch-plan/1","ok":false,"error":"<reason>"}`
 
 Each entry: `name`, `display`, `vendor`, `installed`, `healthy`, `problem`, `binary`, `resolved_path`, `version`, `install_method`, `package`, `update_command` (a list of words, never a shell string), `auth` (`authenticated`, `signed_out`, `unknown`, `not_installed`), `auth_note`, `login`, `efforts` (always a list), `effort_flag`. Without `--all`, only installed CLIs are listed.
 
-## Pools (`afk-router-pools/3`)
+## Pools (`afk-router-pools/4`)
 
-`harnesses` (installed state per CLI, plus `litellm_gateway` with `online` and `models`), `auth_alerts`, `unavailable_models` (models set aside, with reason and time) and `pools`. Each pool: `pool_id`, `provider`, `pool_tier`, `cost_class`, `state`, `capacity_5h`, `remaining_units_5h`, `used_pct`, `headroom_pct`, `quota_source` (`codex_rate_limits`, `claude_rate_limit_event`, `local_5h_activity`, `gateway_probe`, `runtime_signal:<kind>` or `unauthenticated`), and when known `weekly_used_pct`, `five_hour_used_pct`, `resets_at` and `window` (`5h` or `weekly`, the window the figure and reset are for; `other` for a length AFK doesn't project), `degraded_kind`, `degraded_reason`, and for a measured pool `pacing`: `window`, `resets_at`, `elapsed_pct`, `unused_at_reset_pct` or `runs_out_at` (the projection at the rate so far, when there is one) and `adjustment` (the points it gives routes on the pool with pacing on).
+`harnesses` (installed state per CLI, plus `litellm_gateway` with `online` and `models`), `auth_alerts`, `unavailable_models` (models set aside, with reason and time) and `pools`. Each pool: `pool_id`, `provider`, `pool_tier`, `cost_class`, `state`, `used_pct` and `headroom_pct` (`null` unless the plan's CLI reported them), `quota_source` (`codex_rate_limits`, `claude_rate_limit_event`, `gateway_probe`, `local_probe`, `runtime_signal:<kind>`, `unauthenticated` or `unknown`), and when known `weekly_used_pct`, `five_hour_used_pct`, `resets_at` and `window` (`5h` or `weekly`, the window the figure and reset are for; `other` for a length AFK doesn't project), `degraded_kind`, `degraded_reason`, and for a measured pool `pacing`: `window`, `resets_at`, `elapsed_pct`, `unused_at_reset_pct` or `runs_out_at` (the projection at the rate so far, when there is one) and `adjustment` (the points it gives routes on the pool with pacing on).
 
 ## One-shot answer (`afk -p --json`)
 

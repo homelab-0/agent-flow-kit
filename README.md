@@ -157,7 +157,7 @@ The full reference is in the [command line reference](docs/reference/cli.md); ev
 For each installed CLI, AFK considers every model that CLI can run and scores it on:
 
 1. **Fit for the task.** Public benchmark results for that kind of work (coding, review, architecture, and so on).
-2. **Pool headroom.** How much is left in that subscription's window, from the rate limits Codex records in its own session files, and estimated from recent session activity otherwise (Claude included: AFK never opens a login file to ask the provider). A pool that just hit a quota or sign-in error is marked down for a while.
+2. **Pool headroom.** How much is left in that subscription's window, as each plan's own CLI reported it: the rate limits Codex records in its session files, and the usage Claude Code prints in a one-shot run. A plan nothing has reported shows `usage unknown` and counts neither for nor against a route; AFK never estimates usage and never opens a login file to ask the provider. A pool that just hit a quota or sign-in error is marked down for a while.
 3. **Cost.** Subscription, free, local or metered. `--prefer cheap` favours free and local models; `--prefer best` ignores cost.
 
 Effort starts from the task kind and goes up for harder work, within what the CLI supports. Two rules are fixed: a review never goes to a free or local model, and a plan login is never sent through a gateway.

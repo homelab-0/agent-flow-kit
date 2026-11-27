@@ -121,7 +121,13 @@ func poolsText(p *router.Probe, now time.Time, loc *time.Location, pacing bool) 
 	var b strings.Builder
 	for _, id := range ids {
 		pl := p.Pools[id]
-		left := "?"
+		left := "usage unknown"
+		switch pl.QuotaSource {
+		case router.SourceSignedOut:
+			left = "not signed in"
+		case "gateway_probe", "local_probe":
+			left = "no quota" // a gateway or a local engine has none
+		}
 		if pl.HeadroomPct != nil {
 			left = fmt.Sprintf("%.0f%% left", *pl.HeadroomPct)
 		}
@@ -131,10 +137,8 @@ func poolsText(p *router.Probe, now time.Time, loc *time.Location, pacing bool) 
 			basis = ", measured"
 		case pl.QuotaSource == "claude_rate_limit_event":
 			basis = ", measured at the last afk -p run"
-		case pl.QuotaSource == "local_5h_activity":
-			basis = ", estimated"
 		case strings.HasPrefix(pl.QuotaSource, "runtime_signal:"):
-			basis = ", set by a failed run"
+			left, basis = "set aside", " by a failed run"
 		}
 		fmt.Fprintf(&b, "%-17s %-13s %s%s\n", id, pl.State, left, basis)
 		if t := router.PaceText(pl.Pacing, now, loc); t != "" {

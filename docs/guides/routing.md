@@ -49,8 +49,8 @@ Each remaining model starts from its benchmark score for the task class (see the
 
 | Adjustment | Amount |
 |---|---|
-| Pool headroom | + headroom % × 0.02 (up to +2) |
-| Pool size left | + min(sessions left in the 5-hour window, 60) × 0.025 (up to +1.5) |
+| Pool headroom, as the plan's CLI reported it | + headroom % × 0.0325 (up to +3.25) |
+| Pool headroom not reported | + 1.625 (the middle: unknown is never treated as full or as empty) |
 | Pool in warning (75–90% used), low or medium risk | −15 |
 | Free model, low-risk coding or research, when cheap is preferred or every plan is under pressure | +14 |
 | Local or gateway model, low-risk coding or research | +6.5 |
@@ -77,7 +77,7 @@ A flat-rate window that resets with quota left is quota you paid for and didn't 
 
 - **Heading for unused quota**: routes on that plan gain up to +4, more the closer the reset and the more would be lost (full weight at half the window unused).
 - **Running out before the reset**: routes on that plan lose up to −4, more the longer the plan would sit empty.
-- Nothing is projected in the first 10% of a window, for an estimated pool, or for a spent one (its state already rules it out).
+- Nothing is projected in the first 10% of a window, for a pool with no reported figure, or for a spent one (its state already rules it out).
 
 `afk pools` shows the projection per pool (`weekly window resets in 9h with ~58% unused at this rate`). `--explain` adds it to the reason line (`pacing: ...; +3.8`), and `--explain --json` has `pacing` and `pacing_adjustment`. Set `route.pacing = false` (or `AFK_ROUTER_PACING=0`) to keep the projection on show without it moving scores. A project can't change it.
 

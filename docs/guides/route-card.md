@@ -50,7 +50,7 @@ The top box is the pick: the CLI, model and effort, the kind of task (and whethe
 - **task class**: the benchmark class the task is scored on, with the stage and risk it came from
 - **benchmark**: the score used and its basis: `measured` (read from a public board), `capped`, `estimate` (a catalog figure) or `stale` (a measurement older than two weeks)
 - **pool factor**: how much of the pool's window (5h or weekly) is left, and the pool state
-- **pool figure**: how that figure was found: `measured (last -p)`, `measured`, `estimated` or `failed run`
+- **pool figure**: how that figure was found: `measured (last -p)`, `measured` or `failed run` (a pool nothing reported says `usage unknown` and has no figure)
 - **pacing**: for a measured plan window, where it is heading at the rate so far (left unused at the reset, or running out before it) and what [plan pacing](routing.md#plan-pacing) did to the score; `not applied` when `route.pacing` is off
 - **cost class**: subscription, free, local or metered
 - **effort**: the effort and, when it was raised, why

@@ -79,26 +79,17 @@ func TestRouteFacts(t *testing.T) {
 	}
 }
 
-func TestReasonTextNotesAnEstimatedPool(t *testing.T) {
+// A route whose plan usage nobody reported says so, and is never called
+// the one with the most headroom.
+func TestReasonTextForAnUnknownPool(t *testing.T) {
 	now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
-	note := "Its pool figure is an estimate from recent sessions, not a measurement."
 	rows := []engine.Route{
-		route(t, `{"harness":"codex","effective_score":90,"pool_headroom_pct":50,"benchmark_basis":"measured","cost_class":"subscription","pool_quota_source":"codex_rate_limits"}`),
-		// Behind the best, with a catalog-estimate score: the score warning
-		// and the pool notice both show.
-		route(t, `{"harness":"claude","effective_score":80,"pool_headroom_pct":40,"benchmark_basis":"estimate","cost_class":"subscription","pool_quota_source":"local_5h_activity"}`),
-		// A free route gets no pool notice.
-		route(t, `{"harness":"opencode","effective_score":70,"pool_headroom_pct":30,"benchmark_basis":"estimate","cost_class":"free","pool_quota_source":"local_5h_activity"}`),
+		route(t, `{"harness":"grok","effective_score":90,"benchmark_basis":"measured","cost_class":"subscription","pool_quota_source":"unknown"}`),
+		route(t, `{"harness":"codex","effective_score":80,"pool_headroom_pct":40,"benchmark_basis":"measured","cost_class":"subscription","pool_quota_source":"codex_rate_limits"}`),
 	}
-	got := reasonText(rows, 1, "coding", now)
-	if !strings.Contains(got, "the score is a catalog estimate, not measured.") || !strings.HasSuffix(got, note) {
-		t.Errorf("estimated alternative: %q", got)
-	}
-	if got := reasonText(rows, 0, "coding", now); strings.Contains(got, note) {
-		t.Errorf("a measured pool got the notice: %q", got)
-	}
-	if got := reasonText(rows, 2, "coding", now); strings.Contains(got, note) {
-		t.Errorf("a free route got the notice: %q", got)
+	got := reasonText(rows, 0, "coding", now)
+	if !strings.Contains(got, "grok hasn't reported its plan usage") || strings.Contains(got, "headroom") || strings.Contains(got, "%") {
+		t.Errorf("unknown pool: %q", got)
 	}
 }
 
@@ -113,5 +104,19 @@ func TestReasonText(t *testing.T) {
 	}
 	if got := reasonText(rows, 1, "coding", now); !strings.Contains(got, "Most headroom left, but 9.1 points lower on coding than claude") {
 		t.Errorf("other row: %q", got)
+	}
+}
+
+// What stands for a plan's usage: the reported figure, or why there is none.
+func TestPoolLeft(t *testing.T) {
+	for in, want := range map[string]string{
+		`{"pool_headroom_pct":62,"pool_quota_source":"codex_rate_limits"}`: "62% left",
+		`{"pool_quota_source":"unknown"}`:                                  "usage unknown",
+		`{"pool_quota_source":"unauthenticated"}`:                          "not signed in",
+		`{}`: "usage unknown",
+	} {
+		if got := poolLeft(route(t, in)); got != want {
+			t.Errorf("%s: %q, want %q", in, got, want)
+		}
 	}
 }

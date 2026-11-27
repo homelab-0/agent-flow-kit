@@ -42,8 +42,9 @@ func TestCodexSessionsFollowCodexHome(t *testing.T) {
 		Home: home, Getenv: func(k string) string { return env[k] }, Installed: func(h string) bool { return h == "codex" },
 		CodexLoginMode: func(context.Context) string { return "chatgpt" },
 	})
-	if got := *p.Pools["openai-plus"].UsedPct; got != 90 {
-		t.Fatalf("openai-plus used %v, want 90 (36 of 40 sessions under CODEX_HOME)", got)
+	// Session files are never turned into a usage figure.
+	if g := p.Pools["openai-plus"]; g.UsedPct != nil || g.HeadroomPct != nil || g.QuotaSource != SourceUnknown {
+		t.Fatalf("openai-plus has a figure with no reading: %+v", g)
 	}
 }
 
@@ -57,8 +58,8 @@ func TestMeteredCodexIsNotChargedToThePlan(t *testing.T) {
 	// auth.json.
 	p := ProbePools(context.Background(), DefaultCatalog(), ProbeEnv{Home: home, Installed: func(h string) bool { return h == "codex" },
 		CodexLoginMode: func(context.Context) string { return "apikey" }})
-	if got := *p.Pools["openai-plus"].UsedPct; got != 0 {
-		t.Fatalf("API-key Codex sessions charged to the plan: %v%%", got)
+	if g := p.Pools["openai-plus"]; g.UsedPct != nil {
+		t.Fatalf("API-key Codex sessions charged to the plan: %v%%", *g.UsedPct)
 	}
 }
 
@@ -71,13 +72,13 @@ func TestBrokenSignalsAreIgnoredWhole(t *testing.T) {
 	}
 }
 
-func TestZeroCapacityIsSkipped(t *testing.T) {
+func TestAStrayCapacitySignalChangesNothing(t *testing.T) {
 	home := t.TempDir()
 	put(t, home, ".config/afk/pool-signals.json", `{"pools":{"xai-grok":{"capacity_5h":0}}}`, 0)
 	put(t, home, ".grok/auth.json", `{"a":1}`, 0)
 	p := ProbePools(context.Background(), DefaultCatalog(), ProbeEnv{Home: home, Installed: func(h string) bool { return h == "grok" }})
 	g := p.Pools["xai-grok"]
-	if *g.Capacity5h != 50 || g.UsedPct == nil || *g.UsedPct != *g.UsedPct {
+	if g.State != "available" || g.UsedPct != nil {
 		t.Fatalf("xai-grok %+v", g)
 	}
 }
@@ -208,9 +209,6 @@ func TestSymlinkedCodexSessions(t *testing.T) {
 	if q := probeCodexQuota(e); !q.OK || q.UsedPct != 44 {
 		t.Fatalf("symlinked sessions: %+v", q)
 	}
-	if n := countRecent(codexSessionsDir(e), time.Now().Add(-time.Hour)); n != 5 {
-		t.Fatalf("countRecent through the symlink = %d, want 5", n)
-	}
 }
 
 func TestPiCanWinARoute(t *testing.T) {
@@ -265,12 +263,12 @@ func TestMeteredCodexUnderCodexHome(t *testing.T) {
 		}
 		return p
 	}
-	if got := *probe("apikey").Pools["openai-plus"].UsedPct; got != 0 {
-		t.Fatalf("API-key sessions under CODEX_HOME charged to the plan: %v%%", got)
+	if b := probe("apikey").Bindings; contains(b["openai-plus"], "codex") || !contains(b["api-metered"], "codex") {
+		t.Fatalf("API-key Codex under CODEX_HOME bound to the plan: %v", b)
 	}
 	// Each probe asks again, so a new login is seen at once.
-	if got := *probe("chatgpt").Pools["openai-plus"].UsedPct; got != 98 {
-		t.Fatalf("a ChatGPT login under CODEX_HOME: %v%%, want 98 (40 sessions, capped)", got)
+	if b := probe("chatgpt").Bindings; !contains(b["openai-plus"], "codex") {
+		t.Fatalf("plan Codex under CODEX_HOME not bound to the plan: %v", b)
 	}
 }
 
@@ -284,8 +282,8 @@ func TestUnknownCodexLoginIsNotTakenForThePlan(t *testing.T) {
 	put(t, home, ".codex/auth.json", `{"tokens":{"access_token":"x"}}`, 0)
 	for _, mode := range []func(context.Context) string{nil, func(context.Context) string { return "" }} {
 		p := ProbePools(context.Background(), DefaultCatalog(), ProbeEnv{Home: home, Installed: func(h string) bool { return h == "codex" }, CodexLoginMode: mode})
-		if got := *p.Pools["openai-plus"].UsedPct; got != 0 {
-			t.Fatalf("sessions of an unknown Codex login charged to the plan: %v%%", got)
+		if g := p.Pools["openai-plus"]; g.UsedPct != nil {
+			t.Fatalf("sessions of an unknown Codex login charged to the plan: %v%%", *g.UsedPct)
 		}
 		if contains(p.Bindings["openai-plus"], "codex") || contains(p.Bindings["api-metered"], "codex") {
 			t.Fatalf("an unknown Codex login was bound: %v", p.Bindings)
@@ -333,11 +331,11 @@ func TestClaudeConfigDir(t *testing.T) {
 	if s := p.Pools["anthropic-max"]; s.State != "auth_required" {
 		t.Fatalf("signal: %+v", s)
 	}
-	// A new login in CLAUDE_CONFIG_DIR clears the sign-in signal, and the
-	// sessions there are counted: 30 of 60.
+	// A new login in CLAUDE_CONFIG_DIR clears the sign-in signal. The
+	// sessions there are not a usage figure.
 	put(t, cd, ".credentials.json", `{"claudeAiOauth":{"accessToken":"y"}}`, 0)
 	s := probe().Pools["anthropic-max"]
-	if s.State == "auth_required" || *s.UsedPct != 50 {
+	if s.State != "available" || s.UsedPct != nil {
 		t.Fatalf("after a new login under CLAUDE_CONFIG_DIR: %+v", s)
 	}
 }

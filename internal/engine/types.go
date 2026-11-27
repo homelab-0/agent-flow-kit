@@ -29,8 +29,6 @@ type Route struct {
 	PoolState       string   `json:"pool_state"`
 	PoolHeadroomPct *float64 `json:"pool_headroom_pct"`
 	PoolUsedPct     *float64 `json:"pool_used_pct"`
-	PoolCapacity5h  *float64 `json:"pool_capacity_5h"`
-	PoolRemaining5h *float64 `json:"pool_remaining_5h"`
 	PoolQuotaSource string   `json:"pool_quota_source"`
 
 	BenchmarkName     string   `json:"benchmark_name"`
@@ -146,17 +144,16 @@ func redactURL(s string) string {
 // IsGateway reports a route that goes through a model gateway.
 // PoolBasis says how the pool figures were found, for people: "measured"
 // (the CLI's own rate-limit record), "measured at the last afk -p run"
-// (Claude's, read from a one-shot run's output), "estimated from recent
-// sessions", "set
-// by a failed run", or "" when the route doesn't say.
+// (Claude's, read from a one-shot run's output), "set by a failed run",
+// "not signed in", or "" when nothing reported the pool's usage.
 func (r Route) PoolBasis() string {
 	switch {
 	case r.PoolQuotaSource == "codex_rate_limits":
 		return "measured"
 	case r.PoolQuotaSource == "claude_rate_limit_event":
 		return "measured at the last afk -p run"
-	case r.PoolQuotaSource == "local_5h_activity":
-		return "estimated from recent sessions"
+	case r.PoolQuotaSource == "unauthenticated":
+		return "not signed in"
 	case strings.HasPrefix(r.PoolQuotaSource, "runtime_signal:"):
 		return "set by a failed run"
 	}
@@ -267,7 +264,10 @@ type Pool struct {
 	State       string   `json:"state"`
 	HeadroomPct *float64 `json:"headroom_pct"`
 	UsedPct     *float64 `json:"used_pct"`
-	ResetsAt    string   `json:"resets_at"`
+	// QuotaSource is where the figures came from; "unknown" and
+	// "unauthenticated" carry none.
+	QuotaSource string `json:"quota_source"`
+	ResetsAt    string `json:"resets_at"`
 	// The plan's own windows, when the CLI reports them.
 	FiveHourUsedPct *float64 `json:"five_hour_used_pct"`
 	WeeklyUsedPct   *float64 `json:"weekly_used_pct"`
@@ -304,7 +304,7 @@ func (p Pool) Resets() (time.Time, bool) {
 	return t, err == nil
 }
 
-// Pools is the afk-router-pools/3 payload (the parts read here).
+// Pools is the afk-router-pools/4 payload (the parts read here).
 type Pools struct {
 	Schema string          `json:"schema"`
 	Pools  map[string]Pool `json:"pools"`
