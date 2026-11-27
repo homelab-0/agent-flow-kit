@@ -29,6 +29,9 @@ type Pool struct {
 	// Pacing is where the window is heading at the rate so far, when the
 	// figures are measured.
 	Pacing *Pacing `json:"pacing,omitempty"`
+	// ObservedAt is when the CLI reported the figure, when it is a
+	// reported one: a reading can be hours old, and is shown as such.
+	ObservedAt *string `json:"observed_at,omitempty"`
 	// observed is when the measured reading was taken.
 	observed time.Time
 	// SetAside says a failed run, not a usage reading, is why this pool

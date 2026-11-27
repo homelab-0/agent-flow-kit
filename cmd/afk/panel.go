@@ -404,6 +404,10 @@ func (s panelSource) Status(ctx context.Context) (*tui.StatusView, error) {
 		}
 		if p.SetAside {
 			row.SetAside, row.Note = true, setAsideNote(p, v.Updated)
+		} else if p.ObservedAt != nil && p.HeadroomPct != nil {
+			if a := engine.ReadAgo(*p.ObservedAt, v.Updated); a != "" {
+				row.Note = "as " + h + " reported it " + a
+			}
 		}
 		switch p.QuotaSource {
 		case router.SourceSignedOut:

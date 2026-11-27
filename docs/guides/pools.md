@@ -13,6 +13,8 @@ A pool is one source of model usage: a plan login, a free tier, or a gateway. AF
 
 AFK doesn't know which tier of a plan you pay for, and doesn't guess. The Runs tab names a plan in general ("Claude plan", "Grok plan") and adds the tier only when the CLI itself reported it, as Codex does ("ChatGPT plan · pro").
 
+A reported figure is as old as the last time the CLI reported it. When that is more than 15 minutes ago AFK says so beside it (`read 3h ago` on the route card, a line under the plan on the Runs tab, and in `afk pools`), so an old reading is not taken for the plan's state right now.
+
 ## How usage is measured
 
 A pool has a usage figure only from the provider's own report:

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/homelab-0/agent-flow-kit/internal/core"
+	"github.com/homelab-0/agent-flow-kit/internal/engine"
 	"github.com/homelab-0/agent-flow-kit/internal/router"
 )
 
@@ -134,11 +135,16 @@ func poolsText(p *router.Probe, now time.Time, loc *time.Location, pacing bool) 
 		basis := ""
 		switch {
 		case pl.QuotaSource == "codex_rate_limits":
-			basis = ", measured"
+			basis = ", reported by codex"
 		case pl.QuotaSource == "claude_rate_limit_event":
-			basis = ", measured at the last afk -p run"
+			basis = ", reported by claude at the last afk -p run"
 		case strings.HasPrefix(pl.QuotaSource, "runtime_signal:"):
 			left, basis = "set aside", " by a failed run"
+		}
+		if pl.ObservedAt != nil && pl.HeadroomPct != nil {
+			if a := engine.ReadAgo(*pl.ObservedAt, now); a != "" {
+				basis += " " + a
+			}
 		}
 		fmt.Fprintf(&b, "%-17s %-13s %s%s\n", id, pl.State, left, basis)
 		if t := router.PaceText(pl.Pacing, now, loc); t != "" {

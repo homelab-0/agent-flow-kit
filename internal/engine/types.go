@@ -276,6 +276,40 @@ type Pool struct {
 	UsageWindow string `json:"window"`
 	// Pacing is where a measured window is heading, when projected.
 	Pacing *Pacing `json:"pacing"`
+	// ObservedAt is when the CLI reported the figure (RFC 3339); "" when
+	// there is no reported figure.
+	ObservedAt string `json:"observed_at"`
+}
+
+// StaleReading is how old a reported figure gets before its age is shown
+// beside it.
+const StaleReading = 15 * time.Minute
+
+// ReadAgo is how long ago the pool's figure was reported, when it is old
+// enough to say so: "3h ago", "25m ago". "" for a fresh reading or none.
+func (p Pool) ReadAgo(now time.Time) string {
+	return ReadAgo(p.ObservedAt, now)
+}
+
+// ReadAgo is Pool.ReadAgo for a bare observed_at value.
+func ReadAgo(observedAt string, now time.Time) string {
+	if observedAt == "" {
+		return ""
+	}
+	t, err := time.Parse(time.RFC3339, observedAt)
+	if err != nil {
+		return ""
+	}
+	d := now.Sub(t)
+	switch {
+	case d < StaleReading:
+		return ""
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d/time.Minute))
+	case d < 48*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d/time.Hour))
+	}
+	return fmt.Sprintf("%dd ago", int(d/(24*time.Hour)))
 }
 
 // Window names the window a pool's figure is for: the one the reading
