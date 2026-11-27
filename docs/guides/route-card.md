@@ -22,7 +22,7 @@ The top box is the pick: the CLI, model and effort, the kind of task (and whethe
 | `?` | the Why panel; `?` again closes it |
 | `esc` or `ctrl+c` | cancel; nothing is started (exit code 130) |
 
-`w` (where to run) only offers this terminal for now, and `m` (a model picker) is not there yet; both say so when pressed.
+`w` (where to run) only offers this terminal for now, and says so when pressed.
 
 `-y` or `--yes` skips the card and starts the router's pick.
 

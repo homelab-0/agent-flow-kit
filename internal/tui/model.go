@@ -469,8 +469,6 @@ func (m *Model) cardKey(key string) tea.Cmd {
 		m.st = sWhy
 	case "w":
 		m.notice = "where: only this terminal for now; background and remote runs come later"
-	case "m":
-		m.notice = "model picker comes in a later step"
 	case "esc":
 		return m.finish(Decision{Cancelled: true})
 	case "enter":

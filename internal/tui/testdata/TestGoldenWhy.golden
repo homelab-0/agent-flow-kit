@@ -6,7 +6,5 @@
 │   cost class     subscription   no pay-per-use spend                     │
 │   effort         medium → high   flaky test keywords                     │
 │   effective      78.10                                                   │
-│                                                                          │
-│   skipped  listed once the engine streams routing events (a later step)  │
 ╰──────────────────────────────────────────────────────────────────────────╯
  ? close   e edit prompt   y yolo   esc cancel
