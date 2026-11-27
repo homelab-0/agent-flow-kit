@@ -89,7 +89,7 @@ Each route shows its CLI's logo, drawn the best way the terminal allows:
 - **kitty and Ghostty:** small images, sent once with the kitty graphics protocol and drawn with its Unicode placeholders.
 - **kitty or Ghostty inside tmux:** the same images, if tmux passes them through. That needs `set -g allow-passthrough on` and 24-bit colour (`set -as terminal-features ',*:RGB'`). If either is missing, AFK says so once and draws pixel marks.
 - **iTerm2 and WezTerm:** the same images, as iTerm2 inline images.
-- **Terminals that draw Sixel** (foot, Windows Terminal, Konsole, xterm with Sixel, mlterm and others): the same images, as Sixel. AFK asks the terminal when it starts, and uses Sixel only when the terminal says it draws it and how big a cell is.
+- **Terminals that draw Sixel** (foot, Windows Terminal, Konsole, xterm with Sixel, mlterm and others): the same images, as Sixel. AFK asks the terminal when it starts, and uses Sixel only when the terminal says it draws it. The size of a cell comes from the terminal's answer, or else from the window size the terminal reports to the system. xterm draws Sixel only when started as a VT340 (`xterm -ti vt340`, or `XTerm*decTerminalID: vt340`).
 - **Every other terminal with colour, and tmux:** a pixel mark, the same logo cut down to two cells of block characters in its own colours.
 - **`NO_COLOR`, and logos too thin to make a mark** (grok, ollama, opencode, pi): a two-letter tag in the CLI's colour (`CL` claude, `CX` codex, `GK` grok, `GW` a gateway).
 
