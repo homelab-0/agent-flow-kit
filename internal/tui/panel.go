@@ -161,9 +161,9 @@ type panelMsg struct {
 	panel int // the opening it belongs to
 	tab   Tab
 	gen   int
-	v    any
-	err  error
-	task string
+	v     any
+	err   error
+	task  string
 }
 
 type panelExecMsg struct {
