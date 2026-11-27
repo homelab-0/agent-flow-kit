@@ -31,6 +31,7 @@ var (
 	cDim    = adaptive{"#5f6672", "#7d8594"}
 	cBorder = adaptive{"#a3a9b3", "#59616f"}
 	cSelBG  = adaptive{"#e3e8f1", "#1f2633"}
+	cInBar  = adaptive{"#eef1f6", "#222936"}
 )
 
 // Brand colours of the 2-cell text badges.
@@ -54,7 +55,7 @@ type Theme struct {
 	Accent, OK, Warn, Bad, Dim, Border lipgloss.Style
 	Bold, Key, Plain, SelBG, YoloTag   lipgloss.Style
 	accent, ok, warn, bad, dim, border color.Color
-	selbg                              color.Color
+	selbg, inbar                       color.Color
 	badges                             map[string]color.Color
 	logos                              Logos
 }
@@ -64,6 +65,7 @@ func NewTheme(dark bool) Theme {
 	t := Theme{Dark: dark}
 	t.accent, t.ok, t.warn, t.bad = cAccent.pick(dark), cOK.pick(dark), cWarn.pick(dark), cBad.pick(dark)
 	t.dim, t.border, t.selbg = cDim.pick(dark), cBorder.pick(dark), cSelBG.pick(dark)
+	t.inbar = cInBar.pick(dark)
 	s := lipgloss.NewStyle()
 	t.Plain = s
 	t.Accent = s.Foreground(t.accent)
