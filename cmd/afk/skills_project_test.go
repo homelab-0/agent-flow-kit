@@ -93,7 +93,7 @@ func TestProjectSkillsAsk(t *testing.T) {
 		t.Fatal(err)
 	}
 	g := renderProjectSkills(p, s)
-	if !strings.Contains(g, "global") || !strings.Contains(g, "codex read .agents/skills themselves") {
+	if !strings.Contains(g, "global") || !strings.Contains(g, "codex reads .agents/skills itself") {
 		t.Errorf("grid:\n%s", g)
 	}
 }

@@ -42,3 +42,5 @@ format = "skill-md"
 file = "$CLAUDE_CONFIG_DIR/.claude.json|~/.claude.json"
 format = "claude-json"
 verified = "2.1.332"
+# A repository's own servers: Claude Code reads .mcp.json itself.
+project_file = ".mcp.json"

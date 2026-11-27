@@ -18,3 +18,5 @@ format = "skill-md"
 # checked against an install.
 file = "~/.gemini/settings.json"
 format = "gemini-json"
+# A project's .gemini/settings.json, from Gemini CLI's documentation.
+project_file = ".gemini/settings.json"

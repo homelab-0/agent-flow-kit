@@ -17,4 +17,6 @@ format = "skill-md"
 # "mcpServers" in mcp-config.json. From Copilot CLI's documentation, not
 # checked against an install.
 file = "~/.copilot/mcp-config.json"
+# Copilot CLI reads a repository's .mcp.json itself (in trusted folders).
+project_file = ".mcp.json"
 format = "copilot-json"

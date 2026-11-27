@@ -32,10 +32,11 @@ func (p *Panel) mcpListTools(server string) tea.Cmd {
 	}
 	p.toolsGen++
 	gen := p.toolsGen
-	p.notice = "Listing " + server + "'s tools…"
+	name := strings.TrimPrefix(server, "project:") // "project:" asks for the .mcp.json server
+	p.notice = "Listing " + name + "'s tools…"
 	return func() tea.Msg {
 		tools, err := src.MCPTools(ctx, server)
-		return mcpToolsMsg{panel: id, gen: gen, server: server, tools: tools, err: err}
+		return mcpToolsMsg{panel: id, gen: gen, server: name, tools: tools, err: err}
 	}
 }
 
