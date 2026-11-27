@@ -31,7 +31,7 @@ afk harness --json    # machine-readable (schema afk-harnesses/3)
 For each installed CLI it shows:
 
 - **Version**, from `<cli> --version`. All CLIs are asked at once, five seconds each at most, so one that hangs can't stall the rest. A CLI that fails or hangs is reported as unhealthy with the first line of its error.
-- **Sign-in**: whether the CLI looks signed in.
+- **Sign-in**: `signed in` or `signed out` when the CLI's own status command says so (`claude auth status`, `codex login status`; only the exit code counts). A CLI with no status command shows `login on disk` when a login file is there, which AFK can't confirm still works, `signed out` when none is, or `unknown`. The same state is in `afk harness --json` as `auth` and `auth_checked` (`status_command` or `login_file`).
 - **Installed with**: mise, npm, bun, pnpm, Homebrew, uv, pipx, cargo or self-managed, and the package name.
 - **Effort**: the effort levels it accepts.
 - **Update with**: the command that updates it. For a mise shim, which doesn't say which tool backs it, AFK says "via mise" instead of suggesting `mise upgrade`, which would upgrade everything.

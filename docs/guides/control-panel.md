@@ -19,7 +19,7 @@ Nothing changes until you press an action key. Each action runs the matching `af
 Every agent CLI AFK supports, installed ones first, with:
 
 - its version
-- whether it looks signed in (AFK checks that a login exists, never what's in it)
+- its sign-in: `signed in` or `signed out` from the CLI's own status command where it has one, else `login on disk` (a login file exists; AFK never reads what's in it and can't confirm it still works)
 - what it can be routed to: `plan`, `gw` (the model gateway), `local` (a [local engine](local-models.md))
 - the command that updates it
 
@@ -42,7 +42,7 @@ The models you can reach for one kind of task, best first. Each row shows:
 
 ## Runs
 
-- **Plans**: each installed CLI's plan, with what is left of the 5-hour window and the week. `n/e` means the CLI doesn't report that figure.
+- **Plans**: each installed CLI's plan, with what is left of the 5-hour window and the week as the CLI reported it (`unknown` when it hasn't: AFK never estimates), and its sign-in as on the Harnesses tab. A plan a failed run set aside says so, why, and for how long; `c` clears those marks.
 - **Gateway and local engines**: the model gateway (up or down, its models, the engine behind it from config) and every local engine found, with its state and GPU.
 - **Runs**: the last 15 sessions from the [run records](runs.md), with where they ran, the CLI, the outcome and how long they took.
 

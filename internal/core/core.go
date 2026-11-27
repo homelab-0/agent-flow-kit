@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -46,6 +47,12 @@ type Core struct {
 	// CodexLogin reports how Codex is signed in (tests; nil asks Codex's
 	// own status command when Live).
 	CodexLogin func(ctx context.Context) string
+	// SignIn reports whether a CLI's own status command says it is signed
+	// in (tests; nil asks the CLI when Live).
+	SignIn func(ctx context.Context, harness string) (signedIn, known bool)
+
+	signMu   sync.Mutex
+	signMemo map[string]signAnswer
 	// NoTerminal says afk's output is not a terminal. A CLI started that
 	// way skips its own "trust this folder?" question, as a one-shot run
 	// does.
@@ -71,6 +78,45 @@ func (c *Core) codexLoginMode() func(ctx context.Context) string {
 		return nil
 	}
 	return func(ctx context.Context) string { return harness.CodexLoginMode(ctx, c.Harness) }
+}
+
+// signedIn is how the pool probe asks a CLI's own status command whether
+// it is signed in. An answer is kept for half a minute, so the few probes
+// one afk makes at startup ask each CLI once.
+func (c *Core) signedIn() func(ctx context.Context, h string) (bool, bool) {
+	if c.SignIn != nil {
+		return c.SignIn
+	}
+	if !c.Live {
+		return nil
+	}
+	return func(ctx context.Context, h string) (bool, bool) {
+		c.signMu.Lock()
+		if hit, ok := c.signMemo[h]; ok && time.Since(hit.at) < 30*time.Second {
+			c.signMu.Unlock()
+			return hit.in, hit.known
+		}
+		c.signMu.Unlock()
+		a, ok := harness.Lookup(h)
+		if !ok {
+			return false, false
+		}
+		st, known := harness.StatusSignIn(ctx, c.Harness, a, 5*time.Second)
+		if ctx.Err() == nil {
+			c.signMu.Lock()
+			if c.signMemo == nil {
+				c.signMemo = map[string]signAnswer{}
+			}
+			c.signMemo[h] = signAnswer{in: st == harness.AuthOK, known: known, at: time.Now()}
+			c.signMu.Unlock()
+		}
+		return st == harness.AuthOK, known
+	}
+}
+
+type signAnswer struct {
+	in, known bool
+	at        time.Time
 }
 
 func (c *Core) getenv(k string) string {
@@ -147,7 +193,7 @@ func (c *Core) probeEnv(s config.Settings, installed func(string) bool) router.P
 	return router.ProbeEnv{
 		Home: c.Home, Getenv: c.getenv, Now: c.now(), GatewayURL: s.GatewayURL,
 		LocalURLs: s.LocalURLs, GPU: gpuName(s.LocalGPU),
-		Installed: installed, Live: c.Live, CodexLoginMode: c.codexLoginMode(),
+		Installed: installed, Live: c.Live, CodexLoginMode: c.codexLoginMode(), SignedIn: c.signedIn(),
 	}
 }
 

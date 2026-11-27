@@ -47,9 +47,9 @@ func (fakePanel) Status(context.Context) (*StatusView, error) {
 	now := time.Date(2026, 11, 27, 3, 31, 0, 0, time.UTC)
 	return &StatusView{Updated: now,
 		Plans: []PlanRow{
-			{Harness: "claude", Plan: "Claude plan", FiveHour: f(71), Week: f(64), SignIn: "ok"},
-			{Harness: "codex", Plan: "ChatGPT plan", FiveHour: f(52), Week: f(80), SignIn: "ok"},
-			{Harness: "grok", Plan: "SuperGrok", FiveHour: f(91), SignIn: "ok"},
+			{Harness: "claude", Plan: "Claude plan", FiveHour: f(71), Week: f(64), SignIn: "signed in"},
+			{Harness: "codex", Plan: "ChatGPT plan", FiveHour: f(52), Week: f(80), SignIn: "signed in"},
+			{Harness: "grok", Plan: "SuperGrok", FiveHour: f(91), SignIn: "login on disk"},
 		},
 		Gateway: &GatewayRow{Name: "agentgateway", Kind: "agentgateway", State: "up", Detail: "gw.lan · 3 models", Engine: "vllm", EngineHost: "factory"},
 		Engines: []EngineRow{{Engine: "ollama", State: "idle", Where: "this PC · RTX 5090", Models: []string{"qwen36-14b"}}},
@@ -74,6 +74,11 @@ func (fakePanel) Skills(context.Context) (*SkillsView, error) {
 		},
 		Project: "~/repos/prox-ops/.agents/skills", Undecided: 1,
 		Drift: []SkillDrift{{Skill: "gh-pr-triage", Harness: "grok", Dir: "~/.grok/skills", Modified: now.Add(-2 * time.Hour), Lines: 4}}}, nil
+}
+
+func (p *fakePanel) ClearMarks(context.Context) (string, error) {
+	p.ran = append(p.ran, []string{"clear-marks"})
+	return "Cleared xai-grok.", nil
 }
 
 func (p *fakePanel) SkillsDo(_ context.Context, op string, args ...string) (string, error) {
@@ -574,5 +579,35 @@ func TestMCPToolsEdges(t *testing.T) {
 	p.Update(key("2"))
 	if p.tab != TabHarnesses || p.tools != nil {
 		t.Errorf("2 should leave the tools view for the Harnesses tab: tab=%v", p.tab)
+	}
+}
+
+// A plan a failed run set aside says so on the Runs tab, and c clears the
+// mark in place. With nothing set aside there is no c.
+func TestRunsTabClearsFailedRunMarks(t *testing.T) {
+	src := &fakePanel{}
+	now := func() time.Time { return time.Date(2026, 11, 27, 3, 31, 0, 0, time.UTC) }
+	p := NewPanel(context.Background(), src, NewTheme(true), TabRuns, "", now)
+	p.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	p.Update(p.Init()())
+	if strings.Contains(panelText(p), "clear failed-run marks") {
+		t.Fatalf("a clear key with nothing set aside:\n%s", panelText(p))
+	}
+	if cmd := p.Update(tea.KeyPressMsg{Code: 'c', Text: "c"}); cmd != nil || len(src.ran) != 0 {
+		t.Fatalf("c ran %v with nothing set aside", src.ran)
+	}
+	p.data.status.Plans[2].SetAside = true
+	p.data.status.Plans[2].Note = "set aside after a run failed with a rate-limit or quota error, for another 42m; this is not a usage reading"
+	s := panelText(p)
+	if !strings.Contains(s, "for another 42m") || !strings.Contains(s, "c clear failed-run marks") {
+		t.Fatalf("no set-aside note or key:\n%s", s)
+	}
+	cmd := p.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
+	if cmd == nil {
+		t.Fatal("c did nothing")
+	}
+	p.Update(cmd())
+	if len(src.ran) != 1 || src.ran[0][0] != "clear-marks" || p.notice != "Cleared xai-grok." {
+		t.Fatalf("ran %v, notice %q", src.ran, p.notice)
 	}
 }

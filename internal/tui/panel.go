@@ -72,6 +72,9 @@ type PanelSource interface {
 	// MCPTools connects to a server, lists its tools and records the
 	// result as a test.
 	MCPTools(ctx context.Context, server string) ([]MCPTool, error)
+	// ClearMarks removes every failed-run mark that set a plan aside and
+	// returns what to tell the user.
+	ClearMarks(ctx context.Context) (string, error)
 	// Command is the argv that runs an afk subcommand (an update, a
 	// login, a sync) in the terminal, for the tabs' action keys.
 	Command(args ...string) []string
@@ -129,6 +132,9 @@ type PlanRow struct {
 	Week          *float64
 	SignIn        string
 	Note          string
+	// SetAside says a failed run set this plan aside (Note says why and
+	// for how long); c on the tab clears it.
+	SetAside bool
 }
 
 // GatewayRow is the model gateway.
@@ -337,6 +343,12 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			p.notice = msg.err.Error()
 		}
 		return p.load(TabMCP)
+	case marksClearedMsg:
+		p.notice = msg.text
+		if msg.err != nil {
+			p.notice = msg.err.Error()
+		}
+		return p.load(TabRuns)
 	case skillsDoneMsg:
 		p.notice = msg.text
 		if msg.err != nil {
@@ -466,6 +478,14 @@ func (p *Panel) key(k string) tea.Cmd {
 	case TabConfig:
 		if k == "e" {
 			return p.run("config", "edit")
+		}
+	case TabRuns:
+		if k == "c" && p.anySetAside() {
+			src, ctx := p.src, p.ctx
+			return func() tea.Msg {
+				text, err := src.ClearMarks(ctx)
+				return marksClearedMsg{text, err}
+			}
 		}
 	}
 	return nil
@@ -758,7 +778,9 @@ func (p *Panel) harnessLines(w int) ([]line, line) {
 		switch {
 		case strings.Contains(sign, "signed out") || strings.Contains(sign, "expired"):
 			signSt = t.Warn
-		case sign == "unknown" || !h.Installed:
+		case sign == "unknown" || sign == "login on disk" || !h.Installed:
+			// "login on disk" is not the CLI's own word that it is
+			// signed in, so it isn't shown as confirmed.
 			signSt = t.Dim
 		}
 		row := line{sg(t.Plain, " "), harnessLogo(t, h.Name), sg(st, " "+col(h.Name, 10)), sg(st, col(ver, 9)), sg(signSt, col(sign, 15)), sg(st, col(routes, 9)), sg(t.Dim, upd)}
@@ -890,6 +912,25 @@ func (p *Panel) benchLines(w int) ([]line, line) {
 	return out, hint
 }
 
+// marksClearedMsg is what clearing the failed-run marks said.
+type marksClearedMsg struct {
+	text string
+	err  error
+}
+
+// anySetAside reports a plan a failed run set aside.
+func (p *Panel) anySetAside() bool {
+	if p.data.status == nil || p.src == nil {
+		return false
+	}
+	for _, pl := range p.data.status.Plans {
+		if pl.SetAside {
+			return true
+		}
+	}
+	return false
+}
+
 func (p *Panel) statusLines(w int) ([]line, line) {
 	t := p.theme
 	v := p.data.status
@@ -911,9 +952,13 @@ func (p *Panel) statusLines(w int) ([]line, line) {
 		row := line{sg(t.Plain, " "), harnessLogo(t, pl.Harness), sg(t.Plain, " "+col(pl.Plan, 19))}
 		row = append(row, cell(pl.FiveHour)...)
 		row = append(row, cell(pl.Week)...)
-		signSt := t.OK
-		if pl.SignIn != "ok" {
-			signSt = t.Warn
+		signSt := t.Warn
+		switch pl.SignIn {
+		case "signed in":
+			signSt = t.OK
+		case "login on disk", "unknown":
+			// Not confirmed by the CLI itself: neither good nor bad.
+			signSt = t.Dim
 		}
 		row = append(row, sg(signSt, pl.SignIn))
 		out = append(out, row)
@@ -970,6 +1015,9 @@ func (p *Panel) statusLines(w int) ([]line, line) {
 		}
 		row := line{sg(t.Dim, " "+col(r.ID, 8)), sg(t.Plain, col(r.Model, 22)), sg(t.Plain, col(r.Where, 10)), sg(t.Plain, col(r.CLI, 10)), sg(st, col(state, 13)), sg(t.Dim, ago(r.Duration)+when)}
 		out = append(out, p.selRow(row, i, w))
+	}
+	if p.anySetAside() {
+		return out, line{sg(t.Key, "c"), sg(t.Dim, " clear failed-run marks  ")}
 	}
 	return out, nil
 }

@@ -58,6 +58,65 @@ var planName = map[string]string{
 	"anthropic-max": "Claude plan", "openai-plus": "ChatGPT plan", "xai-grok": "SuperGrok", "antigravity-pool": "Google AI plan",
 }
 
+// signInText is a CLI's sign-in state in words. "signed in" is kept for
+// the CLI's own status command saying so; a login file that is merely
+// there is "login on disk".
+func signInText(h harness.Info) string {
+	switch {
+	case h.Auth == harness.AuthOK && h.AuthChecked == harness.AuthByStatus:
+		return "signed in"
+	case h.Auth == harness.AuthOK:
+		return "login on disk"
+	case h.Auth == harness.AuthSignedOut:
+		return "signed out"
+	}
+	return "unknown"
+}
+
+// setAsideNote says why a failed run set a plan aside and for how long.
+func setAsideNote(p router.Pool, now time.Time) string {
+	why := "an error"
+	if p.DegradedKind != nil {
+		switch *p.DegradedKind {
+		case "quota":
+			why = "a rate-limit or quota error"
+		case "auth":
+			why = "a sign-in error"
+		}
+	}
+	s := "set aside after a run failed with " + why
+	if p.SetAsideUntil != nil {
+		if t, err := time.Parse(time.RFC3339, *p.SetAsideUntil); err == nil && t.After(now) {
+			s += ", for another " + shortSpan(t.Sub(now))
+		}
+	}
+	return s + "; this is not a usage reading"
+}
+
+// shortSpan is a rough length of time: 40s, 12m, 3h.
+func shortSpan(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d/time.Second))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d/time.Minute))
+	}
+	return fmt.Sprintf("%dh", int(d/time.Hour))
+}
+
+// ClearMarks removes every failed-run mark, as afk pools clear does.
+func (s panelSource) ClearMarks(context.Context) (string, error) {
+	path := router.ProbeEnv{Home: s.c.Home, Getenv: s.getenv}.SignalsPath()
+	removed, err := router.ClearSignals(path, nil, false)
+	if err != nil {
+		return "", err
+	}
+	if len(removed) == 0 {
+		return "No failed-run mark to clear.", nil
+	}
+	return "Cleared " + strings.Join(removed, ", ") + ".", nil
+}
+
 func (s panelSource) Harnesses(ctx context.Context) (*tui.HarnessesView, error) {
 	rep := s.discover(ctx)
 	r, settings, err := s.c.Router(ctx, s.repo)
@@ -73,13 +132,9 @@ func (s panelSource) Harnesses(ctx context.Context) (*tui.HarnessesView, error) 
 		if h.Problem != "" {
 			row.Note = h.Problem
 		}
-		switch h.Auth {
-		case harness.AuthOK:
-			row.SignIn = "signed in"
-		case harness.AuthSignedOut:
-			row.SignIn = "signed out"
-		default:
-			row.SignIn = "unknown"
+		row.SignIn = signInText(h)
+		if h.Auth == harness.AuthOK && h.AuthChecked == harness.AuthByFile && row.Note == "" {
+			row.Note = "a login is on disk; " + h.Name + " has no status command, so AFK can't confirm it still works"
 		}
 		if settings.Disabled[h.Name] {
 			row.Routes = "off"
@@ -301,6 +356,10 @@ func (s panelSource) Status(ctx context.Context) (*tui.StatusView, error) {
 		return nil, err
 	}
 	v := &tui.StatusView{Updated: time.Now()}
+	found := map[string]harness.Info{}
+	for _, h := range s.discover(ctx).Harnesses {
+		found[h.Name] = h
+	}
 	for _, h := range []string{"claude", "codex", "grok", "agy"} {
 		if !r.Probe.Harnesses[h].Installed {
 			continue
@@ -310,7 +369,12 @@ func (s panelSource) Status(ctx context.Context) (*tui.StatusView, error) {
 		if !ok {
 			continue
 		}
-		row := tui.PlanRow{Harness: h, Plan: planName[pid], SignIn: "ok"}
+		// Sign-in is what the CLI itself (or, failing that, its login on
+		// disk) says: never "ok" by default.
+		row := tui.PlanRow{Harness: h, Plan: planName[pid], SignIn: "unknown"}
+		if in, ok := found[h]; ok {
+			row.SignIn = signInText(in)
+		}
 		if p.Window == "weekly" {
 			row.Week = p.HeadroomPct
 			if p.FiveHourUsedPct != nil {
@@ -324,15 +388,12 @@ func (s panelSource) Status(ctx context.Context) (*tui.StatusView, error) {
 				row.Week = &w
 			}
 		}
-		switch p.State {
-		case "auth_required":
-			row.SignIn = "sign in"
-		case "offline":
-			row.SignIn = "offline"
+		if p.SetAside {
+			row.SetAside, row.Note = true, setAsideNote(p, v.Updated)
 		}
 		switch p.QuotaSource {
 		case router.SourceSignedOut:
-			row.SignIn = "not signed in"
+			row.SignIn = "signed out"
 		case router.SourceUnknown:
 			row.Note = h + " hasn't reported its plan usage, so AFK shows none"
 			if h == "claude" {

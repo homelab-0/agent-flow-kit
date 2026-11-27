@@ -85,7 +85,7 @@ func TestDiscoverInstalledAndMissing(t *testing.T) {
 	}
 	e, bin := testEnv(t)
 	writeExe(t, filepath.Join(bin, "claude"), `echo "2.1.332 (Claude Code)"`)
-	writeExe(t, filepath.Join(bin, "codex"), `echo "codex-cli 0.172.0"`)
+	writeExe(t, filepath.Join(bin, "codex"), `[ "$1" = login ] && exit 1; echo "codex-cli 0.172.0"`)
 	writeFile(t, filepath.Join(e.Home, ".claude", ".credentials.json"), `{"claudeAiOauth":{"accessToken":"x"}}`)
 
 	r := Discover(context.Background(), e, Options{Now: func() time.Time { return time.Unix(0, 0) }})
@@ -423,5 +423,45 @@ func TestFileOrEnvUsesTheLoginSizeRule(t *testing.T) {
 		if st, _ := a.auth(env); st != AuthOK {
 			t.Errorf("%s with %s: %s", c.name, c.key, st)
 		}
+	}
+}
+
+// A CLI's own status command decides its sign-in state: it wins over a
+// login file that is there (signed out all the same) and over one that
+// isn't (a login AFK can't see). Without an answer, the file check stands.
+func TestStatusCommandDecidesSignIn(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell scripts")
+	}
+	e, bin := testEnv(t)
+	// A login file, but the CLI says it isn't signed in.
+	writeExe(t, filepath.Join(bin, "claude"), `[ "$1" = auth ] && exit 1; echo "2.1.332 (Claude Code)"`)
+	writeFile(t, filepath.Join(e.Home, ".claude", ".credentials.json"), `{"claudeAiOauth":{"accessToken":"x"}}`)
+	// No login file, but the CLI says it is signed in.
+	writeExe(t, filepath.Join(bin, "codex"), `echo "codex-cli 0.172.0"`)
+	// No status command in its manifest: the login on disk is all there is.
+	writeExe(t, filepath.Join(bin, "grok"), `echo "grok 1.0.92"`)
+	writeFile(t, filepath.Join(e.Home, ".grok", "auth.json"), `{"x":{"t":1}}`)
+
+	r := Discover(context.Background(), e, Options{})
+	if cl := find(r, "claude"); cl.Auth != AuthSignedOut || cl.AuthChecked != AuthByStatus || cl.AuthNote == "" {
+		t.Errorf("claude %+v", cl)
+	}
+	if cx := find(r, "codex"); cx.Auth != AuthOK || cx.AuthChecked != AuthByStatus {
+		t.Errorf("codex %+v", cx)
+	}
+	if gk := find(r, "grok"); gk.Auth != AuthOK || gk.AuthChecked != AuthByFile {
+		t.Errorf("grok %+v", gk)
+	}
+	// Nothing is run with SkipVersion, so the file check stands.
+	r = Discover(context.Background(), e, Options{SkipVersion: true})
+	if cl := find(r, "claude"); cl.Auth != AuthOK && runtime.GOOS != "darwin" || cl.AuthChecked != AuthByFile {
+		t.Errorf("claude without running anything %+v", cl)
+	}
+	// A status command that doesn't answer in time decides nothing.
+	writeExe(t, filepath.Join(bin, "claude"), `[ "$1" = auth ] && sleep 5; echo "2.1.332 (Claude Code)"`)
+	r = Discover(context.Background(), e, Options{StatusTimeout: 200 * time.Millisecond})
+	if cl := find(r, "claude"); cl.AuthChecked != AuthByFile {
+		t.Errorf("claude with a hung status command %+v", cl)
 	}
 }

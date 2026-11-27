@@ -32,7 +32,7 @@ AFK prints one line on stderr for Claude Code and for the CLIs without such a fl
 
 ## AFK never opens a credential file
 
-AFK checks that each CLI's login file **exists and is larger than 4 bytes** (bigger than the empty `{}` a CLI can leave behind when you sign out), and when it last changed. A smaller file counts as signed out. It never opens one, so no token is ever read, sent, stored or printed. That includes Claude's `~/.claude/.credentials.json`, Codex's `auth.json`, and the login files of Grok, OpenCode, Pi, Devin, Gemini and Qwen. To tell whether Codex uses the ChatGPT plan or an API key, AFK runs Codex's own `codex login status` and looks only for those words.
+AFK checks that each CLI's login file **exists and is larger than 4 bytes** (bigger than the empty `{}` a CLI can leave behind when you sign out), and when it last changed. A smaller file counts as signed out. It never opens one, so no token is ever read, sent, stored or printed. That includes Claude's `~/.claude/.credentials.json`, Codex's `auth.json`, and the login files of Grok, OpenCode, Pi, Devin, Gemini and Qwen. Where a CLI has a sign-in status command of its own (`claude auth status`, `codex login status`), AFK runs it and takes its exit code as the answer, ahead of the file check; the output is dropped unread. To tell whether Codex uses the ChatGPT plan or an API key, AFK runs Codex's own `codex login status` and looks only for those words.
 
 ## What AFK reads
 
