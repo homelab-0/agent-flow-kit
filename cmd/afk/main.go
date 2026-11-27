@@ -59,6 +59,8 @@ func run(argv []string) int {
 			return trustCmd(argv[1:], os.Stdout, os.Stderr)
 		case "pools":
 			return poolsCmd(argv[1:], os.Stdout, os.Stderr)
+		case "status":
+			return statusCmd(argv[1:], os.Stdout, os.Stderr)
 		case "version", "--version":
 			return versionCmd(argv[1:], os.Stdout, os.Stderr)
 		}
@@ -92,11 +94,17 @@ func interactive(eng tui.Backend, args cli.Args, width int) int {
 	opt := tui.Options{
 		Flags: args.Flags, Prompt: args.Prompt, Pass: args.Pass, Yolo: args.Yolo,
 		Yes: args.Yes, Width: width, Motion: motion, FPS: tui.FPS(os.Getenv), Dark: dark,
-		YoloBlock: yoloBlock(eng),
+		YoloCheck: func() string { return yoloBlock(eng, args.Flags.Repo) },
 		Header:    headerInfo(),
 		Logos:     logos,
 		// Plain `afk` opens the composer; with a prompt it routes at once.
 		Compose: args.Prompt == "" && !args.Yes,
+	}
+	if c, ok := eng.(*core.Core); ok {
+		opt.Panel = newPanelSource(c, args.Flags.Repo)
+	}
+	if opt.Header != nil {
+		opt.Version = opt.Header.Version
 	}
 	model := tui.New(eng, opt)
 	p := tea.NewProgram(model, tea.WithFPS(opt.FPS))
@@ -340,12 +348,15 @@ func lookArgv0(name string, env []string) (string, error) {
 }
 
 // yoloBlock is why yolo can't be turned on in this directory, or "".
-func yoloBlock(eng tui.Backend) string {
+func yoloBlock(eng tui.Backend, repo string) string {
 	c, ok := eng.(*core.Core)
 	if !ok {
 		return ""
 	}
-	s, err := c.LoadSettings(c.Cwd)
+	if repo == "" {
+		repo = c.Cwd
+	}
+	s, err := c.LoadSettings(repo)
 	if err != nil {
 		return err.Error()
 	}

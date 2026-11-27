@@ -127,6 +127,10 @@ func (m *Model) composeKey(k tea.KeyPressMsg) tea.Cmd {
 			m.help = !m.help
 			return nil
 		}
+	case "2", "3", "4", "5", "6", "7":
+		if m.cin.Value() == "" && m.opt.Panel != nil {
+			return m.openPanel(Tab(key[0] - '1'))
+		}
 	}
 	m.help = false
 	var cmd tea.Cmd
@@ -137,6 +141,11 @@ func (m *Model) composeKey(k tea.KeyPressMsg) tea.Cmd {
 // submit runs a slash command, or routes the task.
 func (m *Model) submit() tea.Cmd {
 	text := strings.TrimSpace(m.cin.Value())
+	// /harness (one) pins a CLI; /harnesses opens its tab.
+	if tab, ok := TabFor(text); ok && tab != TabRoute && strings.HasPrefix(text, "/") && text != "/harness" && m.opt.Panel != nil {
+		m.cin.SetValue("")
+		return m.openPanel(tab)
+	}
 	if strings.HasPrefix(text, "/") {
 		m.notice = m.command(text)
 		m.cin.SetValue("")
@@ -172,7 +181,11 @@ func (m *Model) command(text string) string {
 		f.Harness, f.Model, f.Effort, f.Prefer = "", "", "", ""
 		return ""
 	default:
-		return "unknown command /" + name + ": try /harness, /model, /effort, /prefer or /clear"
+		s := "unknown command /" + name + ": try /harness, /model, /effort, /prefer, /clear"
+		if m.opt.Panel != nil {
+			s += ", or a tab: /harnesses /bench /skills /mcp /runs /config"
+		}
+		return s
 	}
 	*dst = arg // an empty argument unpins it
 	return ""
