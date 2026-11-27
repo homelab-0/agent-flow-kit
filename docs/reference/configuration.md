@@ -9,6 +9,7 @@ AFK works with no configuration: it finds your CLIs, reads their pools and route
 | `~/.config/afk/config.toml` | your settings (`$XDG_CONFIG_HOME/afk/config.toml` when `XDG_CONFIG_HOME` is set; `AFK_CONFIG` names another file) |
 | `~/.config/afk/afk.lock` | what AFK installed (see [afk.lock](#afklock)); beside `config.toml` |
 | `~/.local/state/afk/` | where runtime state is moving (`$XDG_STATE_HOME/afk`); today's caches stay where they are, under `~/.config/afk/` (below) |
+| `~/.config/afk/skills/`, `~/.config/afk/mcp.toml` | your [skills](../guides/skills.md) and [MCP servers](../guides/mcp.md), synced into each CLI |
 | `<project>/.afk/config.json` | the few [routing preferences a project may set](#what-a-project-can-set) |
 | `~/.config/afk/router.json` | the older settings file, read only while `config.toml` doesn't exist (see [migrating](#migrating-from-routerjson)) |
 
@@ -106,6 +107,7 @@ A model gateway; see [gateways](../guides/gateways.md). The one with `default = 
 | `cost` | string | `metered` or `free` (validated; not used yet) |
 | `default` | bool | the gateway to use; at most one |
 | `engine` | string | what serves the gateway's models: `vllm`, `ollama`, `llamacpp`, `lmstudio`, `sglang`, `tgi`, `localai` or `mlx`. A label for the route card (its logo and name in the headroom column), not used for routing |
+| `mcp` | string | the gateway's MCP endpoint, for [MCP servers](../guides/mcp.md) with `via` set to this gateway (default: `/mcp` on the gateway's host) |
 | `host` | string | where that engine runs, such as `factory`; a short label for the route card (default: the gateway's host name) |
 
 A gateway can only be set by you (here or in the environment), never by a cloned project, because AFK sends the gateway its key.
@@ -309,6 +311,7 @@ installed_at = 2026-11-26T12:00:00Z
 | `~/.config/afk/harness-bin-cache.json` | which CLIs answered `--version`, five minutes |
 | `~/.config/afk/benchmarks.json` | the [synced benchmark catalog](benchmark-catalog.md#refreshing-it), used when present and current; `.sync-attempt` beside it marks the last attempt |
 | `~/.config/afk/discovered-models.json` | models the CLIs reported, written by older AFK versions; read while it is less than 7 days old and ignored (with a note) after that, since nothing updates it now. `AFK_DISCOVERED_MODELS_FILE` names a file that is always read |
+| `~/.config/afk/state/skills.json`, `~/.config/afk/state/mcp.json` | which skill copies and MCP entries AFK wrote, so it never touches yours; backups of what a sync replaced are under `state/backups/` (the last 20 of each) |
 | `~/.local/state/agent-flow-kit/gateway-claude/` | the separate Claude config for gateway routes |
 
-All of them can be deleted; AFK recreates what it needs.
+All of them can be deleted; AFK recreates what it needs. Without `state/skills.json` or `state/mcp.json`, AFK no longer knows which copies it wrote, so it treats them as yours and leaves them alone.

@@ -9,6 +9,7 @@ afk harness [--all] [--json]       the agent CLIs found on this machine
 afk harness doctor|login|add|update|remove <name>   check, sign in, install
 afk bench sync [--json]            refresh the benchmark catalog now
 afk skills status|sync|diff|keep|restore|enable|disable|new   your skills in every CLI
+afk mcp status|sync|test|keep|restore|enable|disable|edit|path   your MCP servers in every CLI
 afk status [--tab <tab>]           the control panel on its own
 afk config get|set|edit|path|migrate   your settings (config.toml)
 afk trust add|list|remove [dir]    where yolo may run
@@ -17,7 +18,7 @@ afk pools clear [pool...]          forget recorded pool failures
 afk --help
 ```
 
-A prompt that starts with the word `harness`, `bench`, `config`, `trust`, `pools`, `skills` or `status` needs `--` before it.
+A prompt that starts with the word `harness`, `bench`, `config`, `trust`, `pools`, `skills`, `mcp` or `status` needs `--` before it.
 
 ## Options
 
@@ -81,6 +82,10 @@ It exits 0 when at least one leaderboard was read, 3 when none was reachable (th
 ## `afk skills`
 
 See [Skills](../guides/skills.md#commands). `status` and `sync` take `--json` (schemas `afk-skills/1` and `afk-skills-sync/1`), and `sync` takes `--dry-run`. Exit status: 0 done, 1 a change failed (everything it made was put back), 2 a usage error.
+
+## `afk mcp`
+
+See [MCP servers](../guides/mcp.md#commands). `status`, `sync` and `test` take `--json` (schemas `afk-mcp/1`, `afk-mcp-sync/1` and `afk-mcp-test/1`), and `sync` takes `--dry-run`. Exit status: 0 done, 1 a change or test failed (a failed sync puts every file back), 2 a usage error.
 
 ## Exit codes
 

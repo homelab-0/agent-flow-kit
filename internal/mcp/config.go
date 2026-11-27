@@ -41,7 +41,7 @@ type ServerConfig struct {
 	// config.toml whose MCP endpoint serves it.
 	Via string `toml:"via"`
 	// URL is the server's address (via = "http"). Through a gateway it
-	// may be left out: the gateway's URL plus Path.
+	// may be left out: the gateway's MCP endpoint, or Path on its host.
 	URL  string `toml:"url"`
 	Path string `toml:"path"`
 	// Command runs a stdio server: program and arguments.
@@ -93,7 +93,7 @@ var (
 func ValidName(s string) bool { return reName.MatchString(s) }
 
 // Load reads mcp.toml. A missing file is an empty list. gateways maps a
-// gateway id to its base URL, for servers reached through one.
+// gateway id to its MCP endpoint, for servers reached through one.
 func Load(path string, gateways map[string]string) ([]Server, error) {
 	b, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -164,11 +164,14 @@ func resolve(c ServerConfig, defVia string, gateways map[string]string) (Server,
 				return s, fmt.Errorf("via %q is not stdio, http or a gateway in config.toml", s.Via)
 			}
 			if u == "" {
-				p := c.Path
-				if p == "" {
-					p = "/mcp"
+				u = base
+				if c.Path != "" {
+					// The path replaces the endpoint's, on the same host.
+					if bu, err := url.Parse(base); err == nil {
+						bu.Path, bu.RawQuery = "/"+strings.TrimLeft(c.Path, "/"), ""
+						u = bu.String()
+					}
 				}
-				u = strings.TrimRight(base, "/") + "/" + strings.TrimLeft(p, "/")
 			}
 		}
 		pu, err := url.Parse(u)

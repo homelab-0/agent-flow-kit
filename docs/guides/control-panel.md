@@ -55,4 +55,4 @@ Every central skill in every CLI, with drift shown per CLI. See [Skills](skills.
 
 ## MCP
 
-This tab shows a placeholder for now. Syncing MCP servers into each CLI comes next.
+Every server in `mcp.toml` in every CLI, with its tools and health from the last test. See [MCP servers](mcp.md#the-mcp-tab).
