@@ -84,6 +84,11 @@ type Gateway struct {
 	Formats []string `toml:"formats,omitempty"`
 	Cost    string   `toml:"cost,omitempty"`
 	Default bool     `toml:"default,omitempty"`
+	// Engine and Host say what serves the gateway's models and where
+	// (for example "vllm" on "factory"). They are labels for the route
+	// card only.
+	Engine string `toml:"engine,omitempty"`
+	Host   string `toml:"host,omitempty"`
 }
 
 // Bench is the benchmark catalog's sources.
@@ -132,6 +137,7 @@ var (
 	Modes     = []string{"read-only", "ask", "edits", "auto", "yolo"}
 	Gateways  = []string{"litellm", "openrouter", "portkey", "agentgateway", "envoy", "kong", "cloudflare", "vercel", "openai", "anthropic", "ollama", "lmstudio", "vllm", "llamacpp", "localai"}
 	Costs     = []string{"metered", "free"}
+	Engines   = []string{"vllm", "ollama", "llamacpp", "lmstudio", "sglang", "tgi", "localai", "mlx"}
 	Formats   = []string{"openai-chat", "openai-responses", "anthropic-messages"}
 	BenchSrcs = []string{"lmarena", "modelsdev", "swebench", "artificialanalysis", "own"}
 )
@@ -205,6 +211,13 @@ func (c *Config) validate(file string, lines map[string]int) []Problem {
 		p := "gateway." + n
 		oneOf(p+".kind", g.Kind, Gateways)
 		oneOf(p+".cost", g.Cost, Costs)
+		oneOf(p+".engine", g.Engine, Engines)
+		if len(n) > 40 || plain(n) != n {
+			bad("gateway", "a gateway name is a short label, without control characters")
+		}
+		if len(g.Host) > 40 || plain(g.Host) != g.Host {
+			bad(p+".host", "a short label, without control characters")
+		}
 		for _, f := range g.Formats {
 			oneOf(p+".formats", f, Formats)
 		}

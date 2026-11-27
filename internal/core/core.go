@@ -247,7 +247,23 @@ func (st *state) route(task, prefer string, only []string, pool string) (router.
 	if r.IsFallback() {
 		return r, false, nil
 	}
+	st.labelGateway(&r)
 	return r, true, nil
+}
+
+// labelGateway names the gateway a gateway route goes through, and the
+// engine and host behind it, from your config.
+func (st *state) labelGateway(r *router.Route) {
+	if !strings.HasSuffix(r.LaunchClass, "-gateway") || r.LitellmBaseURL == nil {
+		return
+	}
+	if name, g, ok := st.settings.GatewayFor(*r.LitellmBaseURL); ok {
+		r.GatewayName, r.GatewayKind, r.Engine, r.EngineHost = name, g.Kind, g.Engine, g.Host
+		return
+	}
+	if *r.LitellmBaseURL == st.settings.GatewayURL {
+		r.GatewayName = st.settings.GatewayName
+	}
 }
 
 // UsageError is a request that can't be routed as asked (exit 2).

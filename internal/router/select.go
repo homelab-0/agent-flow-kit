@@ -97,8 +97,14 @@ type Route struct {
 	CrossFamilyReview *bool   `json:"cross_family_review,omitempty"`
 	RouterSource      string  `json:"router_source"`
 	LitellmBaseURL    *string `json:"litellm_base_url"`
-	AuthAlerts        []any   `json:"auth_alerts"`
-	Reason            string  `json:"reason"`
+	// The gateway a gateway route goes through, as config names it, and
+	// the engine and host behind it (labels from config).
+	GatewayName string `json:"gateway_name,omitempty"`
+	GatewayKind string `json:"gateway_kind,omitempty"`
+	Engine      string `json:"engine,omitempty"`
+	EngineHost  string `json:"engine_host,omitempty"`
+	AuthAlerts  []any  `json:"auth_alerts"`
+	Reason      string `json:"reason"`
 
 	// Your ratings of this CLI and model on this kind of task, when there
 	// are enough of them to count, and the points they moved the score.

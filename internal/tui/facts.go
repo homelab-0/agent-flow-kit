@@ -40,6 +40,9 @@ func badge(r engine.Route) string {
 // routeName is the display id: the CLI, or "gateway" for a gateway route.
 func routeName(r engine.Route) string {
 	if r.IsGateway() {
+		if r.GatewayName != "" && r.GatewayName != "default" {
+			return r.GatewayName
+		}
 		return "gateway"
 	}
 	return r.Harness
@@ -96,6 +99,9 @@ func gatewayHost(r engine.Route) string {
 // own vendor's CLI's.
 func loginText(r engine.Route) string {
 	if r.IsGateway() {
+		if n := routeName(r); n != "gateway" {
+			return n + " · gateway key, no plan login"
+		}
 		return "gateway key, no plan login · separate config dir"
 	}
 	switch r.Harness {
@@ -296,6 +302,15 @@ func reasonText(rows []engine.Route, i int, task string, now time.Time) string {
 		}
 	}
 	switch {
+	case r.IsGateway() && r.Engine != "":
+		fmt.Fprintf(&b, "; free, served by %s", engineName(r.Engine))
+		if h := engineHost(r); h != "" {
+			fmt.Fprintf(&b, " on %s", h)
+		}
+		if n := routeName(r); n != "gateway" {
+			fmt.Fprintf(&b, " through %s", n)
+		}
+		b.WriteString(".")
 	case r.IsGateway():
 		if h := gatewayHost(r); h != "" {
 			fmt.Fprintf(&b, "; free, through the gateway at %s.", h)

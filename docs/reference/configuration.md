@@ -101,10 +101,12 @@ A model gateway; see [gateways](../guides/gateways.md). The one with `default = 
 |---|---|---|
 | `url` | string | required; `http` or `https`, with no user info in it |
 | `key` | string | a [secret reference](#secrets) to the gateway key; launching takes only `env:NAME` today. It is sent only to this gateway's own `url`: a route whose gateway address no gateway here declares is refused rather than given another gateway's key |
-| `kind` | string | `litellm`, `openrouter`, `portkey`, `agentgateway`, `envoy`, `kong`, `cloudflare`, `vercel`, `openai`, `anthropic`, `ollama`, `lmstudio`, `vllm`, `llamacpp` or `localai` (validated; not used for routing yet) |
+| `kind` | string | `litellm`, `openrouter`, `portkey`, `agentgateway`, `envoy`, `kong`, `cloudflare`, `vercel`, `openai`, `anthropic`, `ollama`, `lmstudio`, `vllm`, `llamacpp` or `localai` (validated; not used for routing yet; `agentgateway` shows its logo on the route card) |
 | `formats` | list | `openai-chat`, `openai-responses`, `anthropic-messages` (validated; not used yet) |
 | `cost` | string | `metered` or `free` (validated; not used yet) |
 | `default` | bool | the gateway to use; at most one |
+| `engine` | string | what serves the gateway's models: `vllm`, `ollama`, `llamacpp`, `lmstudio`, `sglang`, `tgi`, `localai` or `mlx`. A label for the route card (its logo and name in the headroom column), not used for routing |
+| `host` | string | where that engine runs, such as `factory`; a short label for the route card (default: the gateway's host name) |
 
 A gateway can only be set by you (here or in the environment), never by a cloned project, because AFK sends the gateway its key.
 

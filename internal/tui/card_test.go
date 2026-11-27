@@ -286,3 +286,55 @@ func TestWhyPanelShowsPacing(t *testing.T) {
 		t.Fatalf("pacing row with no projection:\n%s", out)
 	}
 }
+
+// namedGateway is the fixture card with the gateway named in config, with
+// the engine and host behind it (as in the design frames).
+func namedGateway(t *testing.T, sel int) Card {
+	c := fixtureCard(t, sel)
+	for i := range c.Rows {
+		if c.Rows[i].IsGateway() {
+			c.Rows[i].GatewayName, c.Rows[i].GatewayKind = "agentgateway", "agentgateway"
+			c.Rows[i].Engine, c.Rows[i].EngineHost = "vllm", "factory"
+		}
+	}
+	return c
+}
+
+func TestFrameGatewayRow(t *testing.T) {
+	got := plainLines(renderCard(namedGateway(t, -1), 80))
+	want := frameLine(t, "04-card-2-t1600ms.txt", 23)
+	for _, l := range got {
+		if strings.HasPrefix(l, "   GW ") {
+			if l != want {
+				t.Errorf("gateway row\n got %q\nwant %q", l, want)
+			}
+			return
+		}
+	}
+	t.Fatalf("no gateway row in\n%s", strings.Join(got, "\n"))
+}
+
+func TestNamedGatewayBox(t *testing.T) {
+	c := namedGateway(t, 3)
+	c.Rows[3].BenchmarkBasis = "measured"
+	s := strings.Join(plainLines(renderCard(c, 80)), "\n")
+	for _, want := range []string{
+		"│ GW agentgateway · qwen36-27b · effort —",
+		"agentgateway · gateway key, no plan login",
+		"runs on  VL vLLM on factory · through agentgateway",
+		"served by vLLM on factory",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("missing %q in\n%s", want, s)
+		}
+	}
+}
+
+func TestGatewayLogoByKind(t *testing.T) {
+	c := namedGateway(t, -1)
+	th := NewTheme(true).WithLogos(Logos{"agentgateway": logoBase, "vllm": logoBase + 1})
+	s := join(th.CardLines(c, 80, true))
+	if !strings.Contains(s, "38;2;175;75;0m"+placeholderCells) || !strings.Contains(s, "38;2;175;75;1m"+placeholderCells) {
+		t.Error("an agentgateway route should show the agentgateway logo, and vLLM behind it")
+	}
+}

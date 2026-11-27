@@ -125,7 +125,10 @@ const placeholderCells = placeholder + diac0 + diac0 + placeholder + diac0 + dia
 // logoName is the embedded logo for a route, or "" for none.
 func (t Theme) logoName(r engine.Route) string {
 	if r.IsGateway() {
-		return "" // which gateway it is comes with gateway names in the engine
+		if r.GatewayKind == "agentgateway" {
+			return "agentgateway"
+		}
+		return "" // gateways without a logo keep the GW tag
 	}
 	switch r.Harness {
 	case "claude", "codex", "vllm", "copilot", "agy", "devin":
@@ -147,6 +150,42 @@ func (t Theme) logo(r engine.Route) seg {
 	}
 	b := badge(r)
 	return sg(t.Badge(b), b)
+}
+
+// engineLogo is the logo of the engine serving a model.
+func (t Theme) engineLogo(engine string) seg {
+	name := engine
+	if engine == "ollama" {
+		name = map[bool]string{true: "ollama-light", false: "ollama-dark"}[t.Dark]
+	}
+	if id, ok := t.logos[name]; ok {
+		return sg(lipgloss.NewStyle().Foreground(lipgloss.Color(fmt.Sprintf("#%06x", id))), placeholderCells)
+	}
+	code := engineCodes[engine]
+	if code == "" {
+		code = "EN"
+	}
+	return sg(t.Badge(code), code)
+}
+
+var engineCodes = map[string]string{"vllm": "VL", "ollama": "OL", "llamacpp": "LC", "lmstudio": "LM", "sglang": "SG", "tgi": "TG", "localai": "LA", "mlx": "MX"}
+
+// engineName is how an engine is written.
+func engineName(e string) string {
+	if n, ok := map[string]string{"vllm": "vLLM", "ollama": "Ollama", "llamacpp": "llama.cpp", "lmstudio": "LM Studio",
+		"sglang": "SGLang", "tgi": "TGI", "localai": "LocalAI", "mlx": "MLX"}[e]; ok {
+		return n
+	}
+	return e
+}
+
+// engineHost is where the engine runs: the label from config, else the
+// gateway's host.
+func engineHost(r engine.Route) string {
+	if r.EngineHost != "" {
+		return r.EngineHost
+	}
+	return gatewayHost(r)
 }
 
 // WithLogos returns the theme drawing these images.
