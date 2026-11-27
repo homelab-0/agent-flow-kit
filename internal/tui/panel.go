@@ -204,7 +204,7 @@ type Panel struct {
 	data     panelData // what the tabs show: raw, narrowed by the filter
 	raw      panelData // what was loaded
 	filter   map[Tab]string
-	typing   bool // the filter is being typed
+	typing   bool       // the filter is being typed
 	tools    *toolsView // a server's tools, open over the MCP tab
 	id       int
 	gens     map[Tab]int // the latest load of each tab
