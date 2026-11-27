@@ -91,7 +91,7 @@ func interactive(eng tui.Backend, args cli.Args, width int) int {
 	if os.Getenv("NO_COLOR") == "" {
 		dark = lipgloss.HasDarkBackground(os.Stdin, os.Stdout)
 	}
-	logos := setupLogos()
+	logos, overlay := setupLogos()
 	opt := tui.Options{
 		Flags: args.Flags, Prompt: args.Prompt, Pass: args.Pass, Yolo: args.Yolo,
 		Yes: args.Yes, Width: width, Motion: motion, FPS: tui.FPS(os.Getenv), Dark: dark,
@@ -108,7 +108,7 @@ func interactive(eng tui.Backend, args cli.Args, width int) int {
 		opt.Version = opt.Header.Version
 	}
 	model := tui.New(eng, opt)
-	p := tea.NewProgram(model, tea.WithFPS(opt.FPS))
+	p := tea.NewProgram(tui.WithOverlay(model, overlay), tea.WithFPS(opt.FPS))
 	_, err := p.Run()
 	model.Close()
 	if err != nil {

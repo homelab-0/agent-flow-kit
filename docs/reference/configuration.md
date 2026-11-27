@@ -296,7 +296,7 @@ installed_at = 2026-11-26T12:00:00Z
 | `AFK_STATE_DIR` | where the separate Claude config for gateway routes lives, and the empty directory npm is run from (default `~/.local/state/agent-flow-kit`) |
 | `AFK_RELEASE_COOLDOWN_DAYS` | how many days a new release waits before `afk harness add` and `update` install it as latest (default 3, `0` for no wait) |
 | `NO_COLOR`, `TERM=dumb`, `AFK_MOTION=off` | no animation (and no colour for `NO_COLOR`) |
-| `AFK_LOGOS=text`, `pixel` or `kitty` | route logos as text tags, as two-cell pixel marks (the default in most terminals), or as images through the kitty graphics protocol (the default in kitty and Ghostty) |
+| `AFK_LOGOS=text`, `pixel`, `kitty`, `iterm` or `sixel` | route logos as text tags, as two-cell pixel marks (the default where no images work), as images through the kitty graphics protocol (the default in kitty and Ghostty), as iTerm2 inline images (the default in iTerm2 and WezTerm), or as Sixel (the default where the terminal says it draws Sixel) |
 | `XDG_CONFIG_HOME` | the base for `afk/config.toml` and `afk/state/runs` |
 | `XDG_STATE_HOME` | the base for `afk/` runtime state |
 | `AFK_CONFIG` | use this config.toml instead |

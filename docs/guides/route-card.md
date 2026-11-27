@@ -88,7 +88,11 @@ Each route shows its CLI's logo, drawn the best way the terminal allows:
 
 - **kitty and Ghostty:** small images, sent once with the kitty graphics protocol and drawn with its Unicode placeholders.
 - **kitty or Ghostty inside tmux:** the same images, if tmux passes them through. That needs `set -g allow-passthrough on` and 24-bit colour (`set -as terminal-features ',*:RGB'`). If either is missing, AFK says so once and draws pixel marks.
-- **Every other terminal with colour** (iTerm2, WezTerm, Konsole, foot, Windows Terminal, xterm, tmux): a pixel mark, the same logo cut down to two cells of block characters in its own colours.
+- **iTerm2 and WezTerm:** the same images, as iTerm2 inline images.
+- **Terminals that draw Sixel** (foot, Windows Terminal, Konsole, xterm with Sixel, mlterm and others): the same images, as Sixel. AFK asks the terminal when it starts, and uses Sixel only when the terminal says it draws it and how big a cell is.
+- **Every other terminal with colour, and tmux:** a pixel mark, the same logo cut down to two cells of block characters in its own colours.
 - **`NO_COLOR`, and logos too thin to make a mark** (grok, ollama, opencode, pi): a two-letter tag in the CLI's colour (`CL` claude, `CX` codex, `GK` grok, `GW` a gateway).
 
-Set `AFK_LOGOS=text`, `pixel` or `kitty` to choose one yourself.
+Bubble Tea's renderer can't carry iTerm2 or Sixel images, so AFK draws them over the pixel marks a moment after each frame. A logo the images can't safely reach, such as one on the bottom row or one after you resize the window during the route card, stays a pixel mark.
+
+Set `AFK_LOGOS=text`, `pixel`, `kitty`, `iterm` or `sixel` to choose one yourself.
