@@ -16,8 +16,9 @@ import (
 // starts, and a logo in a row is then two ordinary text cells (U+10EEEE
 // with diacritics for the row and column) whose foreground colour is the
 // image id. The cells move, scroll and redraw like any text, so the card
-// renderer needs no special handling. Terminals without placeholders get
-// the 2-letter text tag in brand colours.
+// renderer needs no special handling. Inside tmux the images go through
+// tmux's passthrough. Terminals without placeholders get a pixel mark cut
+// from the same image (logo_pixel.go), and NO_COLOR gets the 2-letter tag.
 
 //go:embed logos/*.png
 var logoFS embed.FS
@@ -26,28 +27,88 @@ var logoFS embed.FS
 type LogoMode string
 
 const (
-	LogosText  LogoMode = "text"  // 2-letter tags in brand colours
-	LogosKitty LogoMode = "kitty" // images through kitty Unicode placeholders
+	LogosText      LogoMode = "text"       // 2-letter tags in brand colours
+	LogosPixel     LogoMode = "pixel"      // 2-cell quadrant-block marks
+	LogosKitty     LogoMode = "kitty"      // images through kitty Unicode placeholders
+	LogosKittyTmux LogoMode = "kitty-tmux" // the same, inside tmux, if tmux lets them through
 )
 
-// DetectLogos picks the logo mode from the environment: kitty and Ghostty
-// show images; everything else, tmux (which needs passthrough) and
-// NO_COLOR get text. AFK_LOGOS=text or AFK_LOGOS=kitty overrides it.
+// DetectLogos picks the logo mode from the environment. kitty and Ghostty
+// show images; inside tmux they still can, if tmux passes them through
+// (SetupLogos checks). Every other terminal gets pixel marks, and NO_COLOR
+// gets text. AFK_LOGOS=text, pixel or kitty overrides it.
 func DetectLogos(getenv func(string) string) LogoMode {
 	switch strings.ToLower(getenv("AFK_LOGOS")) {
 	case "text", "off":
 		return LogosText
+	case "pixel", "blocks":
+		return LogosPixel
 	case "kitty":
 		return LogosKitty
 	}
-	if getenv("NO_COLOR") != "" || getenv("TMUX") != "" || strings.HasPrefix(getenv("TERM"), "screen") {
+	if getenv("NO_COLOR") != "" {
 		return LogosText
 	}
 	term, prog := strings.ToLower(getenv("TERM")), strings.ToLower(getenv("TERM_PROGRAM"))
-	if term == "xterm-kitty" || getenv("KITTY_WINDOW_ID") != "" || term == "xterm-ghostty" || prog == "ghostty" {
+	tmux := getenv("TMUX") != ""
+	// Under tmux, TERM and TERM_PROGRAM name tmux; the outer terminal shows
+	// in the variables it set before tmux started.
+	kitty := getenv("KITTY_WINDOW_ID") != "" || getenv("GHOSTTY_RESOURCES_DIR") != ""
+	if !tmux {
+		kitty = kitty || term == "xterm-kitty" || term == "xterm-ghostty" || prog == "ghostty"
+	}
+	switch {
+	case kitty && tmux:
+		return LogosKittyTmux
+	case kitty:
 		return LogosKitty
 	}
-	return LogosText
+	return LogosPixel
+}
+
+// SetupLogos gets the logos ready for the terminal on w and returns them,
+// with a hint for the user when tmux is holding images back. In kitty
+// mode it sends every image; inside tmux it first checks tmux passes them
+// through and keeps 24-bit colour (the image id is the cells' colour).
+func SetupLogos(w io.Writer, getenv func(string) string, tmuxShow func(format string) string) (Logos, string) {
+	switch DetectLogos(getenv) {
+	case LogosText:
+		return nil, ""
+	case LogosKitty:
+		if l, err := SendLogos(w); err == nil {
+			return l, ""
+		}
+	case LogosKittyTmux:
+		if tmuxShow == nil {
+			break
+		}
+		pass := tmuxShow("#{allow-passthrough}")
+		if pass != "on" && pass != "all" {
+			return PixelLogos(), "logos: run `tmux set -g allow-passthrough on` to see them as images"
+		}
+		if !strings.Contains(tmuxShow("#{client_termfeatures}"), "RGB") {
+			return PixelLogos(), "logos: turn on 24-bit colour in tmux (set -as terminal-features ',*:RGB') to see them as images"
+		}
+		if l, err := sendLogos(w, tmuxWrap); err == nil {
+			return l, ""
+		}
+	}
+	return PixelLogos(), ""
+}
+
+// PixelLogos draws every logo as its pixel mark.
+func PixelLogos() Logos {
+	l := Logos{}
+	for name := range pixelMarks() {
+		l[name] = 0
+	}
+	return l
+}
+
+// tmuxWrap passes an escape sequence through tmux to the outer terminal:
+// inside tmux's own DCS, with every ESC doubled.
+func tmuxWrap(seq string) string {
+	return "\x1bPtmux;" + strings.ReplaceAll(seq, "\x1b", "\x1b\x1b") + "\x1b\\"
 }
 
 // logoBase is the first image id. Ids are 24-bit (they are sent as a
@@ -55,7 +116,9 @@ func DetectLogos(getenv func(string) string) LogoMode {
 // programs tend to use.
 const logoBase = 0xAF4B00
 
-// Logos is the set of images sent to the terminal: logo name → image id.
+// Logos are the logos the terminal draws: logo name → the kitty image id
+// sent for it, or 0 to draw its pixel mark. A logo not in the map, or a
+// nil map, is drawn as its text tag.
 type Logos map[string]uint32
 
 // logoNames are the embedded logos, in a fixed order so ids are stable.
@@ -72,7 +135,9 @@ func logoNames() []string {
 
 // SendLogos writes every logo to the terminal as a kitty image with a
 // virtual placement 2 cells wide and 1 row high, and returns their ids.
-func SendLogos(w io.Writer) (Logos, error) {
+func SendLogos(w io.Writer) (Logos, error) { return sendLogos(w, nil) }
+
+func sendLogos(w io.Writer, wrap func(string) string) (Logos, error) {
 	ids := Logos{}
 	for i, name := range logoNames() {
 		png, err := logoFS.ReadFile("logos/" + name + ".png")
@@ -80,7 +145,18 @@ func SendLogos(w io.Writer) (Logos, error) {
 			return nil, err
 		}
 		id := uint32(logoBase + i)
-		if _, err := io.WriteString(w, kittyImage(id, png)); err != nil {
+		seq := kittyImage(id, png)
+		if wrap != nil {
+			// Each chunk goes through on its own: tmux caps one passthrough.
+			var b strings.Builder
+			for _, part := range strings.SplitAfter(seq, "\x1b\\") {
+				if part != "" {
+					b.WriteString(wrap(part))
+				}
+			}
+			seq = b.String()
+		}
+		if _, err := io.WriteString(w, seq); err != nil {
 			return nil, err
 		}
 		ids[name] = id
@@ -148,11 +224,28 @@ func (t Theme) logo(r engine.Route) seg {
 	if r.IsLocal() {
 		return t.engineLogo(r.Engine)
 	}
-	if id, ok := t.logos[t.logoName(r)]; ok {
-		return sg(lipgloss.NewStyle().Foreground(lipgloss.Color(fmt.Sprintf("#%06x", id))), placeholderCells)
+	if s, ok := t.drawLogo(t.logoName(r)); ok {
+		return s
 	}
 	b := badge(r)
 	return sg(t.Badge(b), b)
+}
+
+// drawLogo is a named logo as the terminal draws it: placeholder cells
+// for a kitty image, else its pixel mark.
+func (t Theme) drawLogo(name string) (seg, bool) {
+	id, ok := t.logos[name]
+	switch {
+	case !ok || name == "":
+		return seg{}, false
+	case id != 0:
+		return sg(lipgloss.NewStyle().Foreground(lipgloss.Color(fmt.Sprintf("#%06x", id))), placeholderCells), true
+	}
+	m, ok := pixelMarks()[name]
+	if !ok {
+		return seg{}, false
+	}
+	return markSeg(m), true
 }
 
 // engineLogo is the logo of the engine serving a model.
@@ -161,8 +254,8 @@ func (t Theme) engineLogo(engine string) seg {
 	if engine == "ollama" {
 		name = map[bool]string{true: "ollama-light", false: "ollama-dark"}[t.Dark]
 	}
-	if id, ok := t.logos[name]; ok {
-		return sg(lipgloss.NewStyle().Foreground(lipgloss.Color(fmt.Sprintf("#%06x", id))), placeholderCells)
+	if s, ok := t.drawLogo(name); ok {
+		return s
 	}
 	code := engineCodes[engine]
 	if code == "" {

@@ -84,4 +84,11 @@ Colour and animation follow your terminal: `NO_COLOR`, `TERM=dumb` or `AFK_MOTIO
 
 ## Logos
 
-Each route shows its CLI's logo. In kitty and Ghostty the logos are small images (sent once with the kitty graphics protocol and drawn with its Unicode placeholders). Other terminals, tmux, and `NO_COLOR` show a two-letter tag in the CLI's colour instead (`CL` claude, `CX` codex, `GK` grok, `GW` a gateway). Set `AFK_LOGOS=text` to always use the tags, or `AFK_LOGOS=kitty` to force images in a terminal AFK doesn't recognise.
+Each route shows its CLI's logo, drawn the best way the terminal allows:
+
+- **kitty and Ghostty:** small images, sent once with the kitty graphics protocol and drawn with its Unicode placeholders.
+- **kitty or Ghostty inside tmux:** the same images, if tmux passes them through. That needs `set -g allow-passthrough on` and 24-bit colour (`set -as terminal-features ',*:RGB'`). If either is missing, AFK says so once and draws pixel marks.
+- **Every other terminal with colour** (iTerm2, WezTerm, Konsole, foot, Windows Terminal, xterm, tmux): a pixel mark, the same logo cut down to two cells of block characters in its own colours.
+- **`NO_COLOR`, and logos too thin to make a mark** (grok, ollama, opencode, pi): a two-letter tag in the CLI's colour (`CL` claude, `CX` codex, `GK` grok, `GW` a gateway).
+
+Set `AFK_LOGOS=text`, `pixel` or `kitty` to choose one yourself.

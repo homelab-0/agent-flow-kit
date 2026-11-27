@@ -91,10 +91,7 @@ func interactive(eng tui.Backend, args cli.Args, width int) int {
 	if os.Getenv("NO_COLOR") == "" {
 		dark = lipgloss.HasDarkBackground(os.Stdin, os.Stdout)
 	}
-	var logos tui.Logos
-	if tui.DetectLogos(os.Getenv) == tui.LogosKitty {
-		logos, _ = tui.SendLogos(os.Stdout)
-	}
+	logos := setupLogos()
 	opt := tui.Options{
 		Flags: args.Flags, Prompt: args.Prompt, Pass: args.Pass, Yolo: args.Yolo,
 		Yes: args.Yes, Width: width, Motion: motion, FPS: tui.FPS(os.Getenv), Dark: dark,
