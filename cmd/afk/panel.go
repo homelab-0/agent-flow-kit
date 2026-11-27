@@ -485,10 +485,7 @@ func statusCmd(argv []string, stdout, stderr io.Writer) int {
 	if os.Getenv("NO_COLOR") == "" {
 		dark = lipgloss.HasDarkBackground(os.Stdin, os.Stdout)
 	}
-	var logos tui.Logos
-	if tui.DetectLogos(os.Getenv) == tui.LogosKitty {
-		logos, _ = tui.SendLogos(os.Stdout)
-	}
+	logos := setupLogos()
 	theme := tui.NewTheme(dark).WithLogos(logos)
 	p := tui.NewPanel(context.Background(), newPanelSource(core.New(), ""), theme, tab, headerInfo().Version, nil).Standalone()
 	if _, err := tea.NewProgram(tui.PanelModel{P: p}).Run(); err != nil {
