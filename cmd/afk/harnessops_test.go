@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jlengelbrecht/agent-flow-kit/internal/config"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/harness"
+	"github.com/homelab-0/agent-flow-kit/internal/config"
+	"github.com/homelab-0/agent-flow-kit/internal/harness"
 )
 
 // fakeOps is a machine where nothing real runs: commands are answered from

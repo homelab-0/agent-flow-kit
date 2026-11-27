@@ -7,7 +7,7 @@ import (
 	"os/exec"
 	"syscall"
 
-	"github.com/jlengelbrecht/agent-flow-kit/internal/bench"
+	"github.com/homelab-0/agent-flow-kit/internal/bench"
 )
 
 // refreshBenchmarks starts the daily catalog refresh in the background

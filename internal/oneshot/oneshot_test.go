@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jlengelbrecht/agent-flow-kit/internal/engine"
+	"github.com/homelab-0/agent-flow-kit/internal/engine"
 )
 
 // The fixtures in testdata are what each CLI prints in JSON mode, for an

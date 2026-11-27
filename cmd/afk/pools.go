@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jlengelbrecht/agent-flow-kit/internal/core"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/router"
+	"github.com/homelab-0/agent-flow-kit/internal/core"
+	"github.com/homelab-0/agent-flow-kit/internal/router"
 )
 
 const poolsUsage = `afk pools — plan and gateway pools

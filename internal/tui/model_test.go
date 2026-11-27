@@ -13,7 +13,7 @@ import (
 	"github.com/charmbracelet/x/exp/golden"
 	"github.com/charmbracelet/x/exp/teatest/v2"
 
-	"github.com/jlengelbrecht/agent-flow-kit/internal/engine"
+	"github.com/homelab-0/agent-flow-kit/internal/engine"
 )
 
 // fake is the engine for tests: the fixtures, no processes.

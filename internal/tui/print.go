@@ -2,7 +2,7 @@ package tui
 
 import (
 	"github.com/charmbracelet/x/ansi"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/engine"
+	"github.com/homelab-0/agent-flow-kit/internal/engine"
 )
 
 // Styled strings for the lines afk prints straight to scrollback around

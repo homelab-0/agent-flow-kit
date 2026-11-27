@@ -35,7 +35,7 @@ On Windows, `internal/launch` starts the CLI on afk's own console without unix j
 
 ## Parity fixtures
 
-AFK started as a bash engine and lifecycle scripts, and the Go code was ported from them and checked against them. The bash code is gone; its last version is at the [`legacy-bash-final`](https://github.com/jlengelbrecht/agent-flow-kit/tree/legacy-bash-final) tag, for anyone who needs the old scripts. What it decided is kept as frozen fixtures, which can't be regenerated:
+AFK started as a bash engine and lifecycle scripts, and the Go code was ported from them and checked against them. The bash code is gone; its last version is at the [`legacy-bash-final`](https://github.com/homelab-0/agent-flow-kit/tree/legacy-bash-final) tag, for anyone who needs the old scripts. What it decided is kept as frozen fixtures, which can't be regenerated:
 
 - **Routing**: `internal/router/testdata/golden.json` is the bash router's decision for every scenario in `scenarios.json`, with the pools in `probes.json` and the models in `discovered.json`. `TestGoldenMatchesBashRouter` requires the Go router to match every field. A new scenario needs its expected decision written by hand and checked.
 - **Launch plans**: `internal/core/testdata/plans.json` holds the bash engine's plan for each case; `TestLaunchPlansMatchBash` compares them.

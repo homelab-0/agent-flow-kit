@@ -10,8 +10,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/jlengelbrecht/agent-flow-kit/internal/failsig"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/statefile"
+	"github.com/homelab-0/agent-flow-kit/internal/failsig"
+	"github.com/homelab-0/agent-flow-kit/internal/statefile"
 )
 
 // PoolFailureKind classifies a pool failure reason: auth (24 h, or until

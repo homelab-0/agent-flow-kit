@@ -38,7 +38,7 @@ If you pay for more than one AI coding plan, or use a mix of plans, free models 
 Requires Go 1.26 or newer.
 
 ```sh
-git clone https://github.com/jlengelbrecht/agent-flow-kit.git
+git clone https://github.com/homelab-0/agent-flow-kit.git
 cd agent-flow-kit
 CGO_ENABLED=0 go build -o ~/.local/bin/afk ./cmd/afk
 ```
@@ -51,7 +51,7 @@ That's all AFK needs: routing, pool usage, launch plans, one-shot answers (`-p`)
 npx agent-flow-kit            # run without installing
 npm install -g agent-flow-kit # installs the `afk` command
 brew install jlengelbrecht/tap/afk
-curl -fsSL https://raw.githubusercontent.com/jlengelbrecht/agent-flow-kit/master/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/homelab-0/agent-flow-kit/master/install.sh | sh
 ```
 
 The npm package will ship prebuilt native binaries for Linux, macOS and Windows, with no postinstall download.

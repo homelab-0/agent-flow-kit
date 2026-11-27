@@ -3,7 +3,7 @@ package core
 import (
 	"sort"
 
-	"github.com/jlengelbrecht/agent-flow-kit/internal/config"
+	"github.com/homelab-0/agent-flow-kit/internal/config"
 )
 
 // ownSecretVars are the variables that hold AFK's own secrets and are set

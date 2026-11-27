@@ -14,11 +14,11 @@ import (
 
 	"github.com/charmbracelet/x/term"
 
-	"github.com/jlengelbrecht/agent-flow-kit/internal/cli"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/config"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/core"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/engine"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/oneshot"
+	"github.com/homelab-0/agent-flow-kit/internal/cli"
+	"github.com/homelab-0/agent-flow-kit/internal/config"
+	"github.com/homelab-0/agent-flow-kit/internal/core"
+	"github.com/homelab-0/agent-flow-kit/internal/engine"
+	"github.com/homelab-0/agent-flow-kit/internal/oneshot"
 )
 
 const usage = `afk — run the best agent CLI on this machine for the task

@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jlengelbrecht/agent-flow-kit/internal/bench"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/config"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/router"
+	"github.com/homelab-0/agent-flow-kit/internal/bench"
+	"github.com/homelab-0/agent-flow-kit/internal/config"
+	"github.com/homelab-0/agent-flow-kit/internal/router"
 )
 
 const benchUsage = `afk bench — the benchmark catalog the router scores models with

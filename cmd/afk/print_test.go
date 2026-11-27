@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jlengelbrecht/agent-flow-kit/internal/engine"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/oneshot"
+	"github.com/homelab-0/agent-flow-kit/internal/engine"
+	"github.com/homelab-0/agent-flow-kit/internal/oneshot"
 )
 
 func TestPrintResult(t *testing.T) {

@@ -8,7 +8,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/jlengelbrecht/agent-flow-kit/internal/engine"
+	"github.com/homelab-0/agent-flow-kit/internal/engine"
 )
 
 func TestDurations(t *testing.T) {

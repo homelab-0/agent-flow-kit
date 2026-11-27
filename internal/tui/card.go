@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/engine"
+	"github.com/homelab-0/agent-flow-kit/internal/engine"
 )
 
 // Layout widths: the card is designed for 80 columns and draws a 76-cell

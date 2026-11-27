@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jlengelbrecht/agent-flow-kit/internal/engine"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/router"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/runrec"
+	"github.com/homelab-0/agent-flow-kit/internal/engine"
+	"github.com/homelab-0/agent-flow-kit/internal/router"
+	"github.com/homelab-0/agent-flow-kit/internal/runrec"
 )
 
 func rated(h, model, tc, outcome string, pinned bool) runrec.Record {

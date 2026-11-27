@@ -7,7 +7,7 @@ AFK is a single Go program, `afk`. It needs at least one supported agent CLI ins
 You need Go 1.26 or newer.
 
 ```sh
-git clone https://github.com/jlengelbrecht/agent-flow-kit.git
+git clone https://github.com/homelab-0/agent-flow-kit.git
 cd agent-flow-kit
 CGO_ENABLED=0 go build -o ~/.local/bin/afk ./cmd/afk
 ```

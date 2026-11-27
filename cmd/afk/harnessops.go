@@ -18,9 +18,9 @@ import (
 
 	"github.com/charmbracelet/x/term"
 
-	"github.com/jlengelbrecht/agent-flow-kit/internal/config"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/harness"
-	"github.com/jlengelbrecht/agent-flow-kit/internal/launch"
+	"github.com/homelab-0/agent-flow-kit/internal/config"
+	"github.com/homelab-0/agent-flow-kit/internal/harness"
+	"github.com/homelab-0/agent-flow-kit/internal/launch"
 )
 
 const harnessOpsHelp = `
