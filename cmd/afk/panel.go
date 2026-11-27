@@ -17,6 +17,7 @@ import (
 	"github.com/homelab-0/agent-flow-kit/internal/core"
 	"github.com/homelab-0/agent-flow-kit/internal/engine"
 	"github.com/homelab-0/agent-flow-kit/internal/harness"
+	"github.com/homelab-0/agent-flow-kit/internal/mcp"
 	"github.com/homelab-0/agent-flow-kit/internal/router"
 	"github.com/homelab-0/agent-flow-kit/internal/runrec"
 	"github.com/homelab-0/agent-flow-kit/internal/skills"
@@ -584,4 +585,138 @@ func (s panelSource) SkillsDo(ctx context.Context, op string, args ...string) (s
 		return fmt.Sprintf("%s %sd for %s. Press s to apply it.", sk, op, h), nil
 	}
 	return "", fmt.Errorf("unknown skills action %q", op)
+}
+
+func (s panelSource) mcp() (mcpDeps, error) {
+	repo := s.repo
+	if repo == "" {
+		repo = s.c.Cwd
+	}
+	st, err := s.c.LoadSettings(repo)
+	if err != nil {
+		return mcpDeps{}, err
+	}
+	t, u := mcpTargets(s.c.Harness)
+	return mcpDeps{env: mcpEnvFor(s.c.Home, s.getenv, st), targets: t, unsupported: u, getenv: s.getenv}, nil
+}
+
+// MCP is the MCP tab.
+func (s panelSource) MCP(ctx context.Context) (*tui.MCPView, error) {
+	d, err := s.mcp()
+	if err != nil {
+		return nil, err
+	}
+	st, err := d.env.Scan(d.targets)
+	if err != nil {
+		return nil, err
+	}
+	return mcpView(d, st, s.c.Home, time.Now()), nil
+}
+
+func mcpView(d mcpDeps, st *mcp.Status, home string, now time.Time) *tui.MCPView {
+	tilde := func(p string) string {
+		if home != "" && strings.HasPrefix(p, home+string(os.PathSeparator)) {
+			return "~" + strings.TrimPrefix(p, home)
+		}
+		return p
+	}
+	v := &tui.MCPView{Source: tilde(st.Config), Unsupported: d.unsupported, Pending: len(st.Actions), Problems: st.Problems}
+	for _, t := range st.Targets {
+		v.Cols = append(v.Cols, t.Harness)
+	}
+	via := map[string]string{}
+	for _, sv := range st.Servers {
+		via[sv.Name] = sv.Via
+	}
+	for _, r := range st.Rows {
+		row := tui.MCPRow{Name: r.Name, Via: via[r.Name], Listed: r.Listed, Tools: -1, Status: "untested", Cells: map[string]string{}, Notes: r.Notes}
+		if tr, ok := st.Tested[r.Name]; ok && !tr.At.IsZero() {
+			row.Status, row.Tested = "down", ago(now.Sub(tr.At))
+			if tr.OK {
+				row.Status, row.Tools = "up", tr.Tools
+			}
+		}
+		for h, c := range r.Cells {
+			row.Cells[h] = string(c)
+		}
+		v.Rows = append(v.Rows, row)
+	}
+	for _, dr := range st.Drift {
+		v.Drift = append(v.Drift, tui.MCPDrift{Server: dr.Server, Harness: dr.Harness, File: tilde(dr.File)})
+	}
+	return v
+}
+
+// MCPDo runs an MCP action for the tab's keys.
+func (s panelSource) MCPDo(ctx context.Context, op string, args ...string) (string, error) {
+	d, err := s.mcp()
+	if err != nil {
+		return "", err
+	}
+	two := func() (string, string, error) {
+		if len(args) != 2 {
+			return "", "", fmt.Errorf("mcp %s needs a server and a CLI", op)
+		}
+		return args[0], args[1], nil
+	}
+	switch op {
+	case "sync":
+		res, err := d.env.Sync(d.targets)
+		if err != nil {
+			return "", err
+		}
+		if len(res.Done) == 0 {
+			return "Everything is in sync.", nil
+		}
+		return fmt.Sprintf("Synced %s.", plural(len(res.Done), "change")), nil
+	case "test":
+		if len(args) != 1 {
+			return "", fmt.Errorf("mcp test needs a server")
+		}
+		servers, err := mcp.Load(d.env.Config, d.env.Gateways)
+		if err != nil {
+			return "", err
+		}
+		for _, sv := range servers {
+			if sv.Name != args[0] {
+				continue
+			}
+			tools, err := mcp.ListTools(ctx, sv, d.getenv)
+			rec := mcp.Tested{OK: err == nil, Tools: len(tools), At: time.Now().UTC()}
+			if err != nil {
+				rec.Error = err.Error()
+			}
+			_ = d.env.Record(sv.Name, rec)
+			if err != nil {
+				return "", fmt.Errorf("%s: %w", sv.Name, err)
+			}
+			return fmt.Sprintf("%s is up: %s.", sv.Name, plural(len(tools), "tool")), nil
+		}
+		return "", fmt.Errorf("no server %q in mcp.toml", args[0])
+	case "keep", "restore":
+		sv, h, err := two()
+		if err != nil {
+			return "", err
+		}
+		if op == "keep" {
+			if _, err := d.env.Keep(d.targets, sv, h); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("%s in %s is now yours; AFK won't change it again.", sv, h), nil
+		}
+		if _, err := d.env.Restore(d.targets, sv, h); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("Wrote AFK's %s back into %s (the file is backed up).", sv, h), nil
+	case "enable", "disable":
+		sv, h, err := two()
+		if err != nil {
+			return "", err
+		}
+		if err := d.env.SetEnabled(sv, h, op == "enable"); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("%s %sd for %s. Press s to apply it.", sv, op, h), nil
+	}
+	return "", fmt.Errorf("unknown mcp action %q", op)
 }

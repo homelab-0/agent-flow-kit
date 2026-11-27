@@ -52,6 +52,16 @@ auto = ["--permission-mode", "auto"]
 
 See [Skills](../guides/skills.md).
 
+### MCP
+
+| Field | Meaning |
+|---|---|
+| `mcp.file` | the CLI's user-level MCP config file, with the same `~/`, `$NAME/rest` and `\|` rules as `skills.dir` |
+| `mcp.format` | how servers are stored: `claude-json`, `codex-toml`, `opencode-json`, `gemini-json` or `copilot-json`. Leave it out when the CLI has no MCP config AFK can write |
+| `mcp.verified` | the CLI version the file and format were checked against |
+
+See [MCP servers](../guides/mcp.md).
+
 AFK only ever runs the `auth` commands and reads their exit code or output words. It never reads the credentials a CLI writes.
 
 `afk harness login` runs `auth.login` (or `auth.device_login` with `--device`) in your terminal, and `afk harness doctor` and `login` run `auth.status`. `auth.expiry` and `auth.errors` are recorded but not used yet.

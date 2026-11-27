@@ -34,7 +34,25 @@ type Manifest struct {
 	Auth      Auth     `toml:"auth"`
 	Modes     Modes    `toml:"modes"`
 	Skills    Skills   `toml:"skills"`
+	MCP       MCP      `toml:"mcp"`
 }
+
+// MCP is where a harness reads its user-level MCP servers. AFK writes the
+// servers in mcp.toml there; an empty file means AFK doesn't manage them.
+type MCP struct {
+	// File is the config file, with the same "~/", "$NAME/..." and "|"
+	// rules as Skills.Dir.
+	File string `toml:"file"`
+	// Format is how the file holds servers: claude-json, codex-toml,
+	// opencode-json, gemini-json or copilot-json.
+	Format string `toml:"format"`
+	// Verified is the CLI version the file and format were checked
+	// against ("" for one taken from the CLI's documentation).
+	Verified string `toml:"verified"`
+}
+
+// MCPFormats are the MCP config formats AFK can write.
+var MCPFormats = []string{"claude-json", "codex-toml", "opencode-json", "gemini-json", "copilot-json"}
 
 // Skills is where a harness reads its user-level skills. AFK syncs its
 // central skills there; an empty dir means AFK doesn't manage them.
@@ -367,6 +385,18 @@ func (m Manifest) validate(path string) error {
 	default:
 		return fmt.Errorf("%s: skills.format must be skill-md", path)
 	}
+	if f := m.MCP.Format; f != "" {
+		ok := false
+		for _, x := range MCPFormats {
+			ok = ok || f == x
+		}
+		if !ok {
+			return fmt.Errorf("%s: mcp.format must be one of %s", path, strings.Join(MCPFormats, ", "))
+		}
+		if m.MCP.File == "" {
+			return fmt.Errorf("%s: mcp.format needs mcp.file", path)
+		}
+	}
 	switch m.Modes.ProjectConfig {
 	case "", "unknown", "trusted", "never":
 	default:
@@ -416,6 +446,9 @@ func merge(base, over Manifest) Manifest {
 	set(&base.Skills.Dir, over.Skills.Dir)
 	set(&base.Skills.Format, over.Skills.Format)
 	set(&base.Skills.Verified, over.Skills.Verified)
+	set(&base.MCP.File, over.MCP.File)
+	set(&base.MCP.Format, over.MCP.Format)
+	set(&base.MCP.Verified, over.MCP.Verified)
 	o := over.Modes
 	set(&base.Modes.Verified, o.Verified)
 	list(&base.Modes.BypassFlags, o.BypassFlags)
@@ -505,8 +538,20 @@ func ManifestFor(name string) (Manifest, bool) {
 
 // SkillsDir is where a harness reads its skills on this machine ("" when
 // AFK doesn't manage them).
-func (m Manifest) SkillsDir(e Env) string {
-	for _, alt := range strings.Split(m.Skills.Dir, "|") {
+func (m Manifest) SkillsDir(e Env) string { return e.expandPath(m.Skills.Dir) }
+
+// MCPFile is the file a harness reads its MCP servers from on this
+// machine ("" when AFK doesn't manage them).
+func (m Manifest) MCPFile(e Env) string {
+	if m.MCP.Format == "" {
+		return ""
+	}
+	return e.expandPath(m.MCP.File)
+}
+
+// expandPath picks the first alternative of "a|b" that applies here.
+func (e Env) expandPath(spec string) string {
+	for _, alt := range strings.Split(spec, "|") {
 		alt = strings.TrimSpace(alt)
 		switch {
 		case alt == "":

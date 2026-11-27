@@ -10,3 +10,9 @@ login_note = "gemini"
 # From Gemini CLI's documentation, not checked against an install.
 dir = "~/.gemini/skills"
 format = "skill-md"
+
+[mcp]
+# "mcpServers" in settings.json. From Gemini CLI's documentation, not
+# checked against an install.
+file = "~/.gemini/settings.json"
+format = "gemini-json"

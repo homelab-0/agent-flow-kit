@@ -33,3 +33,10 @@ mode_flags = ["--permission-mode", "--allow-dangerously-skip-permissions", "--al
 # CLAUDE_CONFIG_DIR).
 dir = "$CLAUDE_CONFIG_DIR/skills|~/.claude/skills"
 format = "skill-md"
+
+[mcp]
+# User-scope servers live under "mcpServers" in ~/.claude.json (or
+# $CLAUDE_CONFIG_DIR/.claude.json). Checked with `claude mcp add --scope user`.
+file = "$CLAUDE_CONFIG_DIR/.claude.json|~/.claude.json"
+format = "claude-json"
+verified = "2.1.332"

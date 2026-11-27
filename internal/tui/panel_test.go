@@ -77,6 +77,21 @@ func (p *fakePanel) SkillsDo(_ context.Context, op string, args ...string) (stri
 	return "did " + op, nil
 }
 
+func (fakePanel) MCP(context.Context) (*MCPView, error) {
+	return &MCPView{Source: "~/.config/afk/mcp.toml", Cols: []string{"claude", "codex", "grok"}, Unsupported: []string{"pi"}, Pending: 1,
+		Rows: []MCPRow{
+			{Name: "openconnector", Via: "homelab", Listed: true, Tools: 312, Status: "up", Tested: "2h ago", Cells: map[string]string{"claude": "synced", "codex": "synced", "grok": "synced"}},
+			{Name: "github", Via: "homelab", Listed: true, Tools: 48, Status: "up", Tested: "2h ago", Cells: map[string]string{"claude": "synced", "codex": "drifted", "grok": "unsupported"}, Notes: map[string]string{"grok": "grok can't pass a token by name"}},
+			{Name: "playwright", Via: "stdio", Listed: true, Tools: -1, Status: "untested", Cells: map[string]string{"claude": "synced", "codex": "pending", "grok": "off"}},
+		},
+		Drift: []MCPDrift{{Server: "github", Harness: "codex", File: "~/.codex/config.toml"}}}, nil
+}
+
+func (p *fakePanel) MCPDo(_ context.Context, op string, args ...string) (string, error) {
+	p.ran = append(p.ran, append([]string{"mcp", op}, args...))
+	return "did " + op, nil
+}
+
 func (p *fakePanel) Command(args ...string) []string { return append([]string{"afk"}, args...) }
 
 // panelAt opens a panel on a tab and loads it.
@@ -108,7 +123,8 @@ func TestPanelTabs(t *testing.T) {
 		TabConfig: {"file ~/.config/afk/config.toml", "route.prefer                balanced", "e edit config.toml"},
 		TabSkills: {"3 skills · source ~/.config/afk/skills · 1 drifted · 1 to sync", "skill", "CL  CX  GK  AG", "gh-pr-triage", "↻", "╭─ gh-pr-triage changed in grok",
 			"Edited in ~/.grok/skills 2 hours ago. 4 lines differ from central.", "k keep grok's and update central", "space enable"},
-		TabMCP: {"Not built yet"},
+		TabMCP: {"3 servers · ~/.config/afk/mcp.toml · 360 tools · 1 drifted · 1 to sync", "server", "CL  CX  GK  PI  status", "openconnector",
+			"312", "up · 2h ago", "untested", "╭─ github changed in codex", "k keep codex's as its own", "t test"},
 	} {
 		s := panelText(panelAt(t, tab))
 		for _, w := range want {
@@ -290,5 +306,42 @@ func TestBenchHidesAnotherTasksScores(t *testing.T) {
 	p.Update(key("right")) // quick, still loading
 	if s := panelText(p); !strings.Contains(s, "loading") {
 		t.Errorf("coding's scores showed under quick:\n%s", s)
+	}
+}
+
+func TestMCPTabKeys(t *testing.T) {
+	src := &fakePanel{}
+	p := NewPanel(context.Background(), src, NewTheme(true), TabMCP, "", nil)
+	p.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	p.Update(p.Init()())
+	do := func(k tea.KeyPressMsg) {
+		if cmd := p.Update(k); cmd != nil {
+			if msg := cmd(); msg != nil {
+				if c2 := p.Update(msg); c2 != nil {
+					p.Update(c2())
+				}
+			}
+		}
+	}
+	do(tea.KeyPressMsg{Code: 't', Text: "t"})
+	do(tea.KeyPressMsg{Code: tea.KeyDown})
+	do(tea.KeyPressMsg{Code: tea.KeyRight})
+	do(tea.KeyPressMsg{Code: tea.KeyRight})
+	do(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "}) // grok can't take github: a notice
+	if !strings.Contains(panelText(p), "can't pass a token") {
+		t.Errorf("no reason shown:\n%s", panelText(p))
+	}
+	do(tea.KeyPressMsg{Code: 'k', Text: "k"})
+	do(tea.KeyPressMsg{Code: 'c', Text: "c"})
+	do(tea.KeyPressMsg{Code: tea.KeyDown})
+	do(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "}) // playwright in grok: off, so enable
+	do(tea.KeyPressMsg{Code: 's', Text: "s"})
+	want := "mcp test openconnector|mcp keep github codex|mcp restore github codex|mcp enable playwright grok|mcp sync"
+	var got []string
+	for _, r := range src.ran {
+		got = append(got, strings.Join(r, " "))
+	}
+	if strings.Join(got, "|") != want {
+		t.Errorf("actions\n got %s\nwant %s", strings.Join(got, "|"), want)
 	}
 }

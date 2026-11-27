@@ -91,6 +91,9 @@ type Gateway struct {
 	// card only.
 	Engine string `toml:"engine,omitempty"`
 	Host   string `toml:"host,omitempty"`
+	// MCP is the gateway's MCP endpoint, for servers in mcp.toml with
+	// via = this gateway (default: /mcp on the gateway's host).
+	MCP string `toml:"mcp,omitempty"`
 }
 
 // Local is the inference engines on this machine (Ollama, LM Studio,
@@ -256,6 +259,13 @@ func (c *Config) validate(file string, lines map[string]int) []Problem {
 		} else if u.User != nil {
 			// Never echo it: user info in a URL is a credential.
 			bad(p+".url", "the URL carries user info (a credential); put the key in key = \"env:NAME\" instead")
+		}
+		if g.MCP != "" {
+			if u, err := url.Parse(g.MCP); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+				bad(p+".mcp", "not an http(s) URL")
+			} else if u.User != nil {
+				bad(p+".mcp", "the URL carries user info (a credential); use bearer = \"env:NAME\" in mcp.toml instead")
+			}
 		}
 		if g.Key != "" {
 			if _, err := ParseSecretRef(g.Key); err != nil {
