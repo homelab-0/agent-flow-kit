@@ -206,6 +206,7 @@ type Panel struct {
 	filter   map[Tab]string
 	typing   bool       // the filter is being typed
 	tools    *toolsView // a server's tools, open over the MCP tab
+	toolsGen int        // the latest tools listing
 	id       int
 	gens     map[Tab]int // the latest load of each tab
 	loading  map[Tab]bool
@@ -319,8 +320,8 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 		}
 		p.refilter(msg.tab)
 	case mcpToolsMsg:
-		if msg.panel != p.id {
-			return nil
+		if msg.panel != p.id || msg.gen != p.toolsGen {
+			return nil // a newer listing replaced this one
 		}
 		if msg.err != nil {
 			p.notice = msg.err.Error()
@@ -361,7 +362,12 @@ func (p *Panel) key(k string) tea.Cmd {
 		return nil
 	}
 	if p.tools != nil && p.tab == TabMCP {
-		return p.toolsKey(k)
+		switch k {
+		case "1", "2", "3", "4", "5", "6", "7", "tab", "shift+tab":
+			p.tools = nil // the tab keys still change tabs
+		default:
+			return p.toolsKey(k)
+		}
 	}
 	switch k {
 	case "/":
@@ -640,6 +646,9 @@ func (p *Panel) Lines() []line {
 			continue
 		case filter:
 			filter = false
+			continue
+		case len(hint) > 2: // then the tab's own hints, from the last
+			hint = hint[:len(hint)-2]
 			continue
 		}
 		break

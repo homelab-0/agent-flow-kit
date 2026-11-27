@@ -18,6 +18,7 @@ type toolsView struct {
 
 type mcpToolsMsg struct {
 	panel  int
+	gen    int // only the latest listing opens
 	server string
 	tools  []MCPTool
 	err    error
@@ -29,10 +30,12 @@ func (p *Panel) mcpListTools(server string) tea.Cmd {
 	if src == nil {
 		return nil
 	}
+	p.toolsGen++
+	gen := p.toolsGen
 	p.notice = "Listing " + server + "'s tools…"
 	return func() tea.Msg {
 		tools, err := src.MCPTools(ctx, server)
-		return mcpToolsMsg{panel: id, server: server, tools: tools, err: err}
+		return mcpToolsMsg{panel: id, gen: gen, server: server, tools: tools, err: err}
 	}
 }
 
@@ -80,12 +83,12 @@ func (p *Panel) toolsLines(w int) ([]line, line) {
 	}
 	for i, x := range v.tools {
 		desc := strings.Join(strings.Fields(x.Description), " ") // one line
-		mark := sg(t.Plain, "  ")
+		mark := sg(t.Plain, " ")                                 // scrollTo finds the selected row by its ▌
 		name := sg(t.Plain, col(x.Name, nw))
 		if i == v.sel {
-			mark, name = sg(t.Accent, "▌ "), sg(t.Bold, col(x.Name, nw))
+			mark, name = sg(t.Accent, "▌"), sg(t.Bold, col(x.Name, nw))
 		}
-		out = append(out, line{mark, name, sg(t.Dim, desc)})
+		out = append(out, line{mark, sg(t.Plain, " "), name, sg(t.Dim, desc)})
 	}
 	return out, hint
 }

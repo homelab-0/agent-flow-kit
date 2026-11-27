@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -440,5 +441,38 @@ func TestMCPToolsList(t *testing.T) {
 	run("enter")
 	if p.tools != nil || !strings.Contains(panelText(p), "npx not found") {
 		t.Errorf("a failed listing should show its error:\n%s", panelText(p))
+	}
+}
+
+func TestMCPToolsEdges(t *testing.T) {
+	p := NewPanel(context.Background(), &fakePanel{}, NewTheme(true), TabMCP, "", nil)
+	p.Update(tea.WindowSizeMsg{Width: 60, Height: 14})
+	p.Update(p.Init()())
+	// q quit stays in sight on a narrow screen.
+	if s := panelText(p); !strings.Contains(s, "q quit") {
+		t.Errorf("q quit cut off at 60 columns:\n%s", s)
+	}
+	// Only the latest listing opens.
+	old := p.mcpListTools("github")
+	newer := p.mcpListTools("openconnector")
+	p.Update(newer())
+	p.Update(old())
+	if p.tools == nil || p.tools.server != "openconnector" {
+		t.Fatalf("a superseded listing replaced the newer one: %+v", p.tools)
+	}
+	// A long list scrolls to keep the selected tool in view.
+	var many []MCPTool
+	for i := range 40 {
+		many = append(many, MCPTool{Name: fmt.Sprintf("tool_%02d", i)})
+	}
+	p.tools = &toolsView{server: "big", tools: many}
+	p.Update(key("end"))
+	if s := panelText(p); !strings.Contains(s, "▌ tool_39") {
+		t.Errorf("the last tool is not in view:\n%s", s)
+	}
+	// The tab keys still change tabs.
+	p.Update(key("2"))
+	if p.tab != TabHarnesses || p.tools != nil {
+		t.Errorf("2 should leave the tools view for the Harnesses tab: tab=%v", p.tab)
 	}
 }
