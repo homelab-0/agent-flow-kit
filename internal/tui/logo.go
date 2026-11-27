@@ -36,13 +36,13 @@ const (
 // DetectLogos picks the logo mode from the environment. kitty and Ghostty
 // show images; inside tmux they still can, if tmux passes them through
 // (SetupLogos checks). Every other terminal gets pixel marks, and NO_COLOR
-// gets text. AFK_LOGOS=text, pixel or kitty overrides it.
+// gets text. AFK_LOGOS=text, pixel, kitty, iterm or sixel overrides it.
 func DetectLogos(getenv func(string) string) LogoMode {
 	switch strings.ToLower(getenv("AFK_LOGOS")) {
 	case "text", "off":
 		return LogosText
-	case "pixel", "blocks":
-		return LogosPixel
+	case "pixel", "blocks", "iterm", "sixel":
+		return LogosPixel // iterm and sixel draw over the marks (overlay.go)
 	case "kitty":
 		return LogosKitty
 	}
