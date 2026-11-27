@@ -61,6 +61,22 @@ func (fakePanel) Config(context.Context) (*ConfigView, error) {
 	return &ConfigView{Path: "~/.config/afk/config.toml", Exists: true, Rows: [][2]string{{"route.prefer", "balanced"}, {"gateway", "agentgateway · gw.lan"}}}, nil
 }
 
+func (fakePanel) Skills(context.Context) (*SkillsView, error) {
+	now := time.Date(2026, 11, 27, 3, 31, 0, 0, time.UTC)
+	return &SkillsView{Source: "~/.config/afk/skills", Cols: []string{"claude", "codex", "grok"}, Unsupported: []string{"agy"}, Pending: 1,
+		Rows: []SkillRow{
+			{Name: "humanizer", Central: true, Cells: map[string]string{"claude": "synced", "codex": "synced", "grok": "synced"}},
+			{Name: "gh-pr-triage", Central: true, Cells: map[string]string{"claude": "synced", "codex": "synced", "grok": "drifted"}},
+			{Name: "outline-notes", Central: true, Cells: map[string]string{"claude": "synced", "codex": "off", "grok": "pending"}},
+		},
+		Drift: []SkillDrift{{Skill: "gh-pr-triage", Harness: "grok", Dir: "~/.grok/skills", Modified: now.Add(-2 * time.Hour), Lines: 4}}}, nil
+}
+
+func (p *fakePanel) SkillsDo(_ context.Context, op string, args ...string) (string, error) {
+	p.ran = append(p.ran, append([]string{"do", op}, args...))
+	return "did " + op, nil
+}
+
 func (p *fakePanel) Command(args ...string) []string { return append([]string{"afk"}, args...) }
 
 // panelAt opens a panel on a tab and loads it.
@@ -90,7 +106,9 @@ func TestPanelTabs(t *testing.T) {
 		TabBench:  {"task   coding  quick", "source SWE-bench Verified", "claude-fable-5-2   CL", "78.1  measured  14✓ 2~", "CX OC", "qwen36-14b         OL", "Effective today", "CX 71.8 (52%)", "OL 51.0", "←→ task"},
 		TabRuns:   {"updated 03:31", "CL Claude plan", "71%", "GK SuperGrok", "[??????????] n/e", "agentgateway      up", "└ VL vLLM", "OL ollama", "this PC · RTX 5090 · 1 model", "r-7f3c", "✓ solved", "! exit 1", "23m · 30m ago"},
 		TabConfig: {"file ~/.config/afk/config.toml", "route.prefer                balanced", "e edit config.toml"},
-		TabSkills: {"Not built yet"},
+		TabSkills: {"3 skills · source ~/.config/afk/skills · 1 drifted · 1 to sync", "skill", "CL  CX  GK  AG", "gh-pr-triage", "↻", "╭─ gh-pr-triage changed in grok",
+			"Edited in ~/.grok/skills 2 hours ago. 4 lines differ from central.", "k keep grok's and update central", "space enable"},
+		TabMCP: {"Not built yet"},
 	} {
 		s := panelText(panelAt(t, tab))
 		for _, w := range want {
@@ -133,6 +151,51 @@ func TestPanelKeys(t *testing.T) {
 	s.Update(tea.KeyPressMsg{Code: '1', Text: "1"})
 	if !s.quit {
 		t.Error("1 didn't quit afk status")
+	}
+}
+
+func TestSkillsTabKeys(t *testing.T) {
+	src := &fakePanel{}
+	now := func() time.Time { return time.Date(2026, 11, 27, 3, 31, 0, 0, time.UTC) }
+	p := NewPanel(context.Background(), src, NewTheme(true), TabSkills, "", now)
+	p.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	p.Update(p.Init()())
+	do := func(k tea.KeyPressMsg) {
+		if cmd := p.Update(k); cmd != nil {
+			if msg := cmd(); msg != nil {
+				if c2 := p.Update(msg); c2 != nil {
+					p.Update(c2())
+				}
+			}
+		}
+	}
+	// Row 0, column 0 (claude): synced, so space turns it off.
+	do(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
+	// Down to outline-notes, right to codex (off): space turns it on.
+	do(tea.KeyPressMsg{Code: tea.KeyDown})
+	do(tea.KeyPressMsg{Code: tea.KeyDown})
+	do(tea.KeyPressMsg{Code: tea.KeyRight})
+	do(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
+	// Up to gh-pr-triage: k keeps grok's copy, c restores central.
+	do(tea.KeyPressMsg{Code: tea.KeyUp})
+	do(tea.KeyPressMsg{Code: 'k', Text: "k"})
+	do(tea.KeyPressMsg{Code: 'c', Text: "c"})
+	do(tea.KeyPressMsg{Code: 's', Text: "s"})
+	want := "do disable humanizer claude|do enable outline-notes codex|do keep gh-pr-triage grok|do restore gh-pr-triage grok|do sync"
+	var got []string
+	for _, r := range src.ran {
+		got = append(got, strings.Join(r, " "))
+	}
+	if strings.Join(got, "|") != want {
+		t.Errorf("actions\n got %s\nwant %s", strings.Join(got, "|"), want)
+	}
+	if !strings.Contains(panelText(p), "did sync") {
+		t.Errorf("the action's notice isn't shown:\n%s", panelText(p))
+	}
+	// The box stays on the drift when another skill is picked.
+	do(tea.KeyPressMsg{Code: tea.KeyUp})
+	if !strings.Contains(panelText(p), "╭─ gh-pr-triage changed in grok") {
+		t.Error("the drift box went away")
 	}
 }
 

@@ -8,6 +8,8 @@ afk --launch-plan --route <json>   print the launch plan for a route
 afk harness [--all] [--json]       the agent CLIs found on this machine
 afk harness doctor|login|add|update|remove <name>   check, sign in, install
 afk bench sync [--json]            refresh the benchmark catalog now
+afk skills status|sync|diff|keep|restore|enable|disable|new   your skills in every CLI
+afk status [--tab <tab>]           the control panel on its own
 afk config get|set|edit|path|migrate   your settings (config.toml)
 afk trust add|list|remove [dir]    where yolo may run
 afk pools [--json]                 each pool's state, what's left, and its pacing
@@ -15,7 +17,7 @@ afk pools clear [pool...]          forget recorded pool failures
 afk --help
 ```
 
-A prompt that starts with the word `harness`, `bench`, `config`, `trust` or `pools` needs `--` before it.
+A prompt that starts with the word `harness`, `bench`, `config`, `trust`, `pools`, `skills` or `status` needs `--` before it.
 
 ## Options
 
@@ -75,6 +77,10 @@ Refreshes `~/.config/afk/benchmarks.json` from the public leaderboards; see [ref
 | `--json` | print the receipt, schema `afk-benchmark-sync/3` |
 
 It exits 0 when at least one leaderboard was read, 3 when none was reachable (the previous catalog is kept), and 1 when the catalog could not be written.
+
+## `afk skills`
+
+See [Skills](../guides/skills.md#commands). `status` and `sync` take `--json` (schemas `afk-skills/1` and `afk-skills-sync/1`), and `sync` takes `--dry-run`. Exit status: 0 done, 1 a change failed (everything it made was put back), 2 a usage error.
 
 ## Exit codes
 

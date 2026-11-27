@@ -17,3 +17,8 @@ edits = ["--tools", "read,grep,find,ls,edit,write"]
 yolo = []
 # Pi's modes are its tool allowlist.
 mode_flags = ["--tools"]
+
+[skills]
+# From Pi's documentation, not checked against an install.
+dir = "~/.pi/agent/skills"
+format = "skill-md"

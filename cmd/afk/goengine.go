@@ -31,6 +31,7 @@ const usage = `afk — run the best agent CLI on this machine for the task
   afk config get|set|edit|path|migrate   your settings (config.toml)
   afk trust add|list|remove [dir]    where yolo may run
   afk pools clear [pool...]          forget recorded pool failures
+  afk skills [status|sync|diff ...]  one copy of every skill, in every CLI
   afk status [--tab <tab>]           the control panel: plans, engines, runs
   afk version                        the version of this build
 
@@ -66,7 +67,7 @@ On the route card: ↵ launch · ↑↓/jk pick · tab effort · e edit the prom
 y twice for yolo · ? why · esc cancel.
 
 A prompt that starts with "harness", "bench", "config", "trust", "pools",
-"status" or "version" needs "--" before it.
+"skills", "status" or "version" needs "--" before it.
 `
 
 // runGo is afk on the Go engine.

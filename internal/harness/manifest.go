@@ -33,6 +33,22 @@ type Manifest struct {
 	Models    []string `toml:"models"` // hints, not a list AFK routes from
 	Auth      Auth     `toml:"auth"`
 	Modes     Modes    `toml:"modes"`
+	Skills    Skills   `toml:"skills"`
+}
+
+// Skills is where a harness reads its user-level skills. AFK syncs its
+// central skills there; an empty dir means AFK doesn't manage them.
+type Skills struct {
+	// Dir is the skills directory: "~/" is the home directory, and
+	// "$NAME/..." uses that variable when it is set (else the rest
+	// after the first "|": "$CODEX_HOME/skills|~/.codex/skills").
+	Dir string `toml:"dir"`
+	// Format is how a skill is laid out: "skill-md" (a folder with a
+	// SKILL.md), the only one so far.
+	Format string `toml:"format"`
+	// Verified is the CLI version the directory was checked against
+	// ("" for one taken from the CLI's documentation).
+	Verified string `toml:"verified"`
 }
 
 // Auth is how a harness signs in. AFK only runs these commands and reads
@@ -346,6 +362,11 @@ func (m Manifest) validate(path string) error {
 			return fmt.Errorf("%s: an auth command needs a program", path)
 		}
 	}
+	switch m.Skills.Format {
+	case "", "skill-md":
+	default:
+		return fmt.Errorf("%s: skills.format must be skill-md", path)
+	}
 	switch m.Modes.ProjectConfig {
 	case "", "unknown", "trusted", "never":
 	default:
@@ -392,6 +413,9 @@ func merge(base, over Manifest) Manifest {
 	list(&base.Auth.Status, over.Auth.Status)
 	list(&base.Auth.Expiry, over.Auth.Expiry)
 	list(&base.Auth.Errors, over.Auth.Errors)
+	set(&base.Skills.Dir, over.Skills.Dir)
+	set(&base.Skills.Format, over.Skills.Format)
+	set(&base.Skills.Verified, over.Skills.Verified)
 	o := over.Modes
 	set(&base.Modes.Verified, o.Verified)
 	list(&base.Modes.BypassFlags, o.BypassFlags)
@@ -477,4 +501,25 @@ var manifests = loadEmbedded()
 func ManifestFor(name string) (Manifest, bool) {
 	m, ok := manifests[name]
 	return m, ok
+}
+
+// SkillsDir is where a harness reads its skills on this machine ("" when
+// AFK doesn't manage them).
+func (m Manifest) SkillsDir(e Env) string {
+	for _, alt := range strings.Split(m.Skills.Dir, "|") {
+		alt = strings.TrimSpace(alt)
+		switch {
+		case alt == "":
+		case strings.HasPrefix(alt, "~/"):
+			return e.home(strings.TrimPrefix(alt, "~/"))
+		case strings.HasPrefix(alt, "$"):
+			name, rest, _ := strings.Cut(alt[1:], "/")
+			if v := e.getenv(name); v != "" && filepath.IsAbs(v) {
+				return filepath.Join(v, rest)
+			}
+		case filepath.IsAbs(alt):
+			return alt
+		}
+	}
+	return ""
 }

@@ -259,16 +259,22 @@ func printMigration(m *config.Migration, dryRun bool, stdout io.Writer) {
 	}
 }
 
-// configEdit opens a copy of config.toml in the editor and saves it only
-// if it validates, so a typo never leaves a broken file in place.
-func configEdit(p config.Paths, stdout, stderr io.Writer) error {
+// editorCmd opens a file in $VISUAL or $EDITOR (vi when neither is set).
+func editorCmd(path string) *exec.Cmd {
 	editor := os.Getenv("VISUAL")
 	if editor == "" {
 		editor = os.Getenv("EDITOR")
 	}
-	if editor == "" {
-		editor = "vi"
+	words := strings.Fields(editor)
+	if len(words) == 0 {
+		words = []string{"vi"}
 	}
+	return exec.Command(words[0], append(words[1:], path)...)
+}
+
+// configEdit opens a copy of config.toml in the editor and saves it only
+// if it validates, so a typo never leaves a broken file in place.
+func configEdit(p config.Paths, stdout, stderr io.Writer) error {
 	cur, err := os.ReadFile(p.Config)
 	base := cur // what the file held; nil when it doesn't exist yet
 	if errors.Is(err, os.ErrNotExist) {
@@ -299,8 +305,7 @@ func configEdit(p config.Paths, stdout, stderr io.Writer) error {
 		os.Remove(name)
 		return fmt.Errorf("could not make the copy to edit: %w", err)
 	}
-	words := strings.Fields(editor)
-	cmd := exec.Command(words[0], append(words[1:], name)...)
+	cmd := editorCmd(name)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("the editor failed (%v); your edits are in %s", err, name)

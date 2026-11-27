@@ -49,6 +49,10 @@ The models you can reach for one kind of task, best first. Each row shows:
 
 The settings in effect and the path of `config.toml`. `e` opens it in your editor (`afk config edit`). Warnings from the file show at the bottom.
 
-## Skills and MCP
+## Skills
 
-These two tabs show a placeholder for now. Syncing skills and MCP servers into each CLI comes in the next releases.
+Every central skill in every CLI, with drift shown per CLI. See [Skills](skills.md#the-skills-tab).
+
+## MCP
+
+This tab shows a placeholder for now. Syncing MCP servers into each CLI comes next.

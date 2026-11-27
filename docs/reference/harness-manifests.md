@@ -42,6 +42,16 @@ auto = ["--permission-mode", "auto"]
 | `modes.config_flags`, `modes.config_keys` | flags that take a `key=value` setting (Codex `-c`), and the keys among them that change the mode; `--pass` refuses those keys, and any key below them, unless the run is yolo |
 | `modes.print.*` | the same table for one-shot (`-p`) runs, when it differs; an override changes only the entries it sets |
 
+### Skills
+
+| Field | Meaning |
+|---|---|
+| `skills.dir` | where the CLI reads skills. `~/` is your home folder; `$NAME/rest` uses that variable when it is set to an absolute path. Alternatives are separated by `\|` and the first that applies wins: `"$CODEX_HOME/skills\|~/.codex/skills"`. Leave it out when the CLI has no skills folder |
+| `skills.format` | `skill-md`: one folder per skill with a `SKILL.md` |
+| `skills.verified` | the CLI version the folder was checked against |
+
+See [Skills](../guides/skills.md).
+
 AFK only ever runs the `auth` commands and reads their exit code or output words. It never reads the credentials a CLI writes.
 
 `afk harness login` runs `auth.login` (or `auth.device_login` with `--device`) in your terminal, and `afk harness doctor` and `login` run `auth.status`. `auth.expiry` and `auth.errors` are recorded but not used yet.
