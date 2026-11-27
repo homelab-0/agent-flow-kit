@@ -798,9 +798,13 @@ func signInHint(p *router.Probe, list []string) string {
 }
 
 // Router loads what routing reads (catalog, pool probe, ratings) and the
-// settings, for views such as the control panel's.
-func (c *Core) Router(ctx context.Context) (*router.Router, Settings, error) {
-	st, err := c.load(ctx, c.Cwd)
+// settings of a project ("" for the current directory), for views such as
+// the control panel's.
+func (c *Core) Router(ctx context.Context, repo string) (*router.Router, Settings, error) {
+	if repo == "" {
+		repo = c.Cwd
+	}
+	st, err := c.load(ctx, repo)
 	if err != nil {
 		return nil, Settings{}, err
 	}

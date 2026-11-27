@@ -158,14 +158,22 @@ type panelData struct {
 }
 
 type panelMsg struct {
-	tab  Tab
-	gen  int
+	panel int // the opening it belongs to
+	tab   Tab
+	gen   int
 	v    any
 	err  error
 	task string
 }
 
-type panelExecMsg struct{ err error }
+type panelExecMsg struct {
+	panel int
+	err   error
+}
+
+// panelIDs numbers each opening of the panel, so a load started by one
+// that was closed never reaches the next.
+var panelIDs int
 
 // Panel is the full-screen tabs. It runs on its own (`afk status`) or
 // inside the card's Model (from the composer).
@@ -178,10 +186,12 @@ type Panel struct {
 	sel     map[Tab]int
 	taskIdx int
 	data    panelData
-	gen     int
+	id      int
+	gens    map[Tab]int // the latest load of each tab
 	loading map[Tab]bool
 	notice  string
 	ctx     context.Context
+	stop    context.CancelFunc
 	now     func() time.Time
 	version string
 	// standalone: Route quits rather than going back to a composer.
@@ -198,9 +208,14 @@ func NewPanel(ctx context.Context, src PanelSource, theme Theme, tab Tab, versio
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return &Panel{src: src, theme: theme, tab: tab, sel: map[Tab]int{}, loading: map[Tab]bool{},
-		data: panelData{err: map[Tab]string{}}, ctx: ctx, now: now, version: version}
+	ctx, stop := context.WithCancel(ctx)
+	panelIDs++
+	return &Panel{id: panelIDs, gens: map[Tab]int{}, src: src, theme: theme, tab: tab, sel: map[Tab]int{}, loading: map[Tab]bool{},
+		data: panelData{err: map[Tab]string{}}, ctx: ctx, stop: stop, now: now, version: version}
 }
+
+// Close stops the loads still running.
+func (p *Panel) Close() { p.stop() }
 
 // Standalone makes Route (1) and q end the program: `afk status`.
 func (p *Panel) Standalone() *Panel { p.standalone = true; return p }
@@ -215,8 +230,8 @@ func (p *Panel) load(tab Tab) tea.Cmd {
 	if p.src == nil {
 		return nil
 	}
-	p.gen++
-	gen, src, ctx := p.gen, p.src, p.ctx
+	p.gens[tab]++
+	gen, id, src, ctx := p.gens[tab], p.id, p.src, p.ctx
 	p.loading[tab] = true
 	task := benchTasks[p.taskIdx%len(benchTasks)]
 	return func() tea.Msg {
@@ -234,9 +249,9 @@ func (p *Panel) load(tab Tab) tea.Cmd {
 		case TabConfig:
 			v, err = src.Config(ctx)
 		default:
-			return panelMsg{tab: tab, gen: gen}
+			return panelMsg{panel: id, tab: tab, gen: gen}
 		}
-		return panelMsg{tab: tab, gen: gen, v: v, err: err, task: task}
+		return panelMsg{panel: id, tab: tab, gen: gen, v: v, err: err, task: task}
 	}
 }
 
@@ -247,6 +262,9 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 	case tea.WindowSizeMsg:
 		p.width, p.height = msg.Width, msg.Height
 	case panelMsg:
+		if msg.panel != p.id || msg.gen != p.gens[msg.tab] {
+			return nil // a newer load of this tab is on its way
+		}
 		p.loading[msg.tab] = false
 		if msg.err != nil {
 			p.data.err[msg.tab] = msg.err.Error()
@@ -266,6 +284,9 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			p.data.config = v
 		}
 	case panelExecMsg:
+		if msg.panel != p.id {
+			return nil
+		}
 		if msg.err != nil {
 			p.notice = msg.err.Error()
 		}
@@ -357,7 +378,8 @@ func (p *Panel) run(args ...string) tea.Cmd {
 		return nil
 	}
 	c := exec.Command(argv[0], argv[1:]...)
-	return tea.ExecProcess(c, func(err error) tea.Msg { return panelExecMsg{err} })
+	id := p.id
+	return tea.ExecProcess(c, func(err error) tea.Msg { return panelExecMsg{panel: id, err: err} })
 }
 
 func (p *Panel) switchTo(t Tab) tea.Cmd {
@@ -384,7 +406,9 @@ func (p *Panel) loaded(t Tab) bool {
 	case TabHarnesses:
 		return p.data.harn != nil
 	case TabBench:
-		return p.data.bench != nil
+		// Only the selected task's scores: another task's would show
+		// under the wrong label while the new one loads.
+		return p.data.bench != nil && p.data.bench.Task == benchTasks[p.taskIdx%len(benchTasks)]
 	case TabRuns:
 		return p.data.status != nil
 	case TabConfig:
@@ -446,6 +470,15 @@ func (p *Panel) Lines() []line {
 			body, hint = p.configLines(w)
 		}
 	}
+	if p.height > 0 {
+		// The tab bar and its gap, the notice and the hints keep their
+		// rows; the body scrolls to keep the selected row in view.
+		room := p.height - len(out) - 1
+		if p.notice != "" {
+			room -= 2
+		}
+		body = scrollTo(body, max(room, 1))
+	}
 	for _, l := range body {
 		out = append(out, fitLine(l, w))
 	}
@@ -473,13 +506,43 @@ func (p *Panel) View() tea.View {
 	return v
 }
 
+// scrollTo cuts body to n lines, moving the window down far enough to
+// show the selected row (the one selRow marks with ▌).
+func scrollTo(body []line, n int) []line {
+	if len(body) <= n {
+		return body
+	}
+	sel := -1
+	for i, l := range body {
+		if len(l) > 0 && l[0].s == "▌" {
+			sel = i
+		}
+	}
+	start := 0
+	if sel >= n {
+		start = min(sel-n+2, len(body)-n) // one row of what follows, when there is one
+	}
+	return body[start : start+n]
+}
+
 func (p *Panel) tabBar(w int) line {
 	t := p.theme
+	// Every label, when they fit; else numbers, with the open tab named.
+	full := 1
+	for _, n := range tabNames {
+		full += lenCells(n) + 3
+	}
 	l := line{sg(t.Plain, " ")}
 	for i, n := range tabNames {
 		if Tab(i) == p.tab {
+			if full > w {
+				n = fmt.Sprintf("%d %s", i+1, n)
+			}
 			l = append(l, sg(t.Accent.Bold(true).Background(t.selbg), " "+n+" "))
 		} else {
+			if full > w {
+				n = fmt.Sprint(i + 1)
+			}
 			l = append(l, sg(t.Dim, " "+n+" "))
 		}
 		l = append(l, sg(t.Plain, " "))

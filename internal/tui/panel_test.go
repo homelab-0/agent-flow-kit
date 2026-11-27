@@ -183,3 +183,49 @@ func TestComposerOpensTabs(t *testing.T) {
 		t.Errorf("a digit in a task opened a tab: %q", m.cin.Value())
 	}
 }
+
+func TestPanelIgnoresStaleLoads(t *testing.T) {
+	p := panelAt(t, TabConfig)
+	old := p.load(TabConfig)
+	newer := p.load(TabConfig)
+	p.Update(newer())
+	p.data.config.Path = "newer"
+	msg := old().(panelMsg)
+	msg.err = context.Canceled
+	p.Update(msg)
+	if p.data.err[TabConfig] != "" || p.data.config.Path != "newer" {
+		t.Error("an older load replaced a newer one")
+	}
+	// A load from a panel that was closed never reaches the next one.
+	q := panelAt(t, TabConfig)
+	msg.panel, msg.gen = p.id, q.gens[TabConfig]
+	q.Update(msg)
+	if q.data.err[TabConfig] != "" {
+		t.Error("another opening's load reached this panel")
+	}
+}
+
+func TestPanelScrollsAndNarrowTabs(t *testing.T) {
+	p := panelAt(t, TabRuns)
+	p.Update(tea.WindowSizeMsg{Width: 80, Height: 12})
+	for range 10 {
+		p.Update(key("down"))
+	}
+	s := panelText(p)
+	if n := strings.Count(s, "\n") + 1; n != 12 || !strings.Contains(s, "▌") || !strings.Contains(s, "1-7 tabs") {
+		t.Errorf("a short terminal should scroll to the selected run (%d lines):\n%s", n, s)
+	}
+	p.Update(tea.WindowSizeMsg{Width: 50, Height: 24})
+	p.Update(key("7"))
+	if bar := strings.Split(panelText(p), "\n")[0]; !strings.Contains(bar, "7 Config") || lenCells(bar) > 50 {
+		t.Errorf("narrow tab bar %q", bar)
+	}
+}
+
+func TestBenchHidesAnotherTasksScores(t *testing.T) {
+	p := panelAt(t, TabBench)
+	p.Update(key("right")) // quick, still loading
+	if s := panelText(p); !strings.Contains(s, "loading") {
+		t.Errorf("coding's scores showed under quick:\n%s", s)
+	}
+}
