@@ -149,16 +149,17 @@ func harnessRoutes(r *router.Router, h string) (string, []string) {
 // usageText is a pool's headroom in words.
 func usageText(p router.Pool) string {
 	var parts []string
-	if p.HeadroomPct != nil {
+	switch {
+	case p.HeadroomPct != nil:
 		w := "5h"
 		if p.Window == "weekly" {
 			w = "week"
 		}
-		s := fmt.Sprintf("%s %.0f%% left", w, *p.HeadroomPct)
-		if p.QuotaSource == "local_5h_activity" {
-			s += " (estimated)"
-		}
-		parts = append(parts, s)
+		parts = append(parts, fmt.Sprintf("%s %.0f%% left", w, *p.HeadroomPct))
+	case p.QuotaSource == router.SourceSignedOut:
+		return "not signed in"
+	case p.QuotaSource == router.SourceUnknown:
+		return "usage unknown"
 	}
 	if p.WeeklyUsedPct != nil && p.Window != "weekly" {
 		parts = append(parts, fmt.Sprintf("week %.0f%% left", 100-*p.WeeklyUsedPct))
@@ -329,8 +330,14 @@ func (s panelSource) Status(ctx context.Context) (*tui.StatusView, error) {
 		case "offline":
 			row.SignIn = "offline"
 		}
-		if p.QuotaSource == "local_5h_activity" {
-			row.Note = "estimated from recent sessions; " + h + " doesn't report its usage outside a one-shot run"
+		switch p.QuotaSource {
+		case router.SourceSignedOut:
+			row.SignIn = "not signed in"
+		case router.SourceUnknown:
+			row.Note = h + " hasn't reported its plan usage, so AFK shows none"
+			if h == "claude" {
+				row.Note = "claude reports its plan usage only in a one-shot run (afk -p), so AFK shows none yet"
+			}
 		}
 		v.Plans = append(v.Plans, row)
 	}

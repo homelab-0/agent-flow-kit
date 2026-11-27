@@ -83,14 +83,12 @@ type Route struct {
 	WindowTokens     *float64 `json:"window_tokens"`
 	EntitlementPool  string   `json:"entitlement_pool"`
 	PoolState        string   `json:"pool_state,omitempty"`
-	PoolCapacity5h   *float64 `json:"pool_capacity_5h,omitempty"`
-	PoolRemaining5h  *float64 `json:"pool_remaining_5h,omitempty"`
 	PoolUsedPct      *float64 `json:"pool_used_pct,omitempty"`
 	PoolHeadroomPct  *float64 `json:"pool_headroom_pct"`
-	// PoolQuotaSource is where the pool figures came from: a measurement
-	// (codex_rate_limits), an estimate from recent sessions
-	// (local_5h_activity), a failure signal (runtime_signal:<kind>), the
-	// gateway probe, or unauthenticated.
+	// PoolQuotaSource is where the pool figures came from: a reading the
+	// CLI reported (codex_rate_limits, claude_rate_limit_event), a failure
+	// signal (runtime_signal:<kind>), the gateway probe, unauthenticated,
+	// or unknown. Only a reading carries figures.
 	PoolQuotaSource   string  `json:"pool_quota_source,omitempty"`
 	BenchmarkName     string  `json:"benchmark_name"`
 	BenchmarkScore    float64 `json:"benchmark_score"`
@@ -208,6 +206,11 @@ func (p *Probe) signedIn(harness, pool string) bool {
 	}
 	return contains(p.Bindings[pool], harness)
 }
+
+// headroomWeight is how many score points one percent of reported plan
+// headroom is worth: a full plan leads an almost spent one by about three
+// points, enough to move work off a plan that is running out.
+const headroomWeight = 0.0325
 
 // IsFallback reports whether nothing passed the eligibility rules.
 func (r Route) IsFallback() bool { return r.RouterSource == "fallback-default" }
@@ -577,16 +580,13 @@ func (r *Router) Select(in Input) Route {
 		if pool.State == "warning" && (in.Risk == "low" || in.Risk == "medium") {
 			adj -= 15
 		}
+		// Headroom counts only when the plan's CLI reported it. Unknown is
+		// neutral (the middle), never "full".
 		headroom := 50.0
 		if pool.HeadroomPct != nil {
 			headroom = *pool.HeadroomPct
 		}
-		adj += headroom * 0.02
-		remaining := 25.0
-		if pool.Remaining5h != nil {
-			remaining = *pool.Remaining5h
-		}
-		adj += math.Min(remaining, 60) * 0.025
+		adj += headroom * headroomWeight
 		if c.BridgedOAuth {
 			adj -= 0.5
 		}
@@ -666,7 +666,7 @@ func (r *Router) Select(in Input) Route {
 			CostClass: cclass, IsFree: isFree || cclass == "free",
 			Effort: ef.effort, BaseEffort: ef.base, EffortEscalated: ef.escalated, EffortReason: ef.reason,
 			SupportedEfforts: sup, WindowTokens: c.WindowTokens, EntitlementPool: c.EntitlementPool,
-			PoolState: pool.State, PoolCapacity5h: pool.Capacity5h, PoolRemaining5h: pool.Remaining5h,
+			PoolState:   pool.State,
 			PoolUsedPct: pool.UsedPct, PoolHeadroomPct: pool.HeadroomPct, PoolQuotaSource: pool.QuotaSource,
 			BenchmarkName: bname, BenchmarkScore: baseScore, BenchmarkBasis: basis,
 			BenchmarkLive:     basis == "measured" && bm.Live,
@@ -726,9 +726,9 @@ func (r *Router) fallback(in Input, tc string, considered int, alerts []any, pro
 		Harness: "claude", LaunchClass: "claude-native", Model: "sonnet",
 		CanonicalModel: "anthropic/claude-sonnet-5-5", ModelFamily: "anthropic",
 		CostClass: "subscription", Effort: "medium", BaseEffort: "medium", EffortReason: "fallback_default",
-		SupportedEfforts: defaultEffort, WindowTokens: f64(1000000), EntitlementPool: "anthropic-max",
-		PoolHeadroomPct: f64(100), BenchmarkName: "Fallback Default", BenchmarkScore: 85,
-		BenchmarkBasis: "estimate", EffectiveScore: 85,
+		SupportedEfforts: defaultEffort, EntitlementPool: "anthropic-max",
+		// No pool figure and no score: nothing was measured or picked.
+		BenchmarkName: "Fallback Default", BenchmarkBasis: "estimate",
 		RouterSource: "fallback-default", NoEligibleCandidate: true, CandidatesConsidered: &considered,
 		InstalledHarnesses: &installed, PoolStates: states, LitellmBaseURL: gw, AuthAlerts: alerts,
 		Reason: "Fallback route (no eligible candidate matched)",
@@ -741,9 +741,12 @@ func reasonText(rt Route, c Candidate, pool Pool, ef effortChoice, tc string, cr
 	if ef.escalated {
 		fmt.Fprintf(&sb, " (%s)", ef.reason)
 	}
-	fmt.Fprintf(&sb, ", cost=%s] (pool=%s %s/%s free [%s%%], benchmark=%s via %s",
-		rt.CostClass, c.EntitlementPool, num(pool.Remaining5h), num(pool.Capacity5h), num(pool.HeadroomPct),
-		scoreText, rt.BenchmarkName)
+	left := "usage unknown"
+	if pool.HeadroomPct != nil {
+		left = num(pool.HeadroomPct) + "% left"
+	}
+	fmt.Fprintf(&sb, ", cost=%s] (pool=%s [%s], benchmark=%s via %s",
+		rt.CostClass, c.EntitlementPool, left, scoreText, rt.BenchmarkName)
 	if c.SpecialistDomain == "security" && tc == "security" {
 		sb.WriteString(", specialist cybersecurity model")
 	}

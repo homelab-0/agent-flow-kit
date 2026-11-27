@@ -52,7 +52,7 @@ The Go engine fixes some things the bash engine got wrong, so on these points th
 - A project's `.afk/config.json` can't set a gateway, metered models, free reviewers or security models at all, not even through its older `router` block.
 - A restricted model (Mythos, Daybreak Blue) that one CLI lists unlocks it for that CLI's account only.
 - "patch" counts as asking for a change when guessing the task.
-- A signals file that doesn't fully decode is ignored whole; a zero or negative pool capacity is skipped.
+- A signals file that doesn't fully decode is ignored whole.
 - A Claude usage answer with no figures isn't taken as 0%; the cached answer is tied to the login it was made with.
 - The newest Codex rate-limit reading wins by when it was recorded, the last usable record in each file counts, and very long lines are skipped instead of ending the read.
 - A gateway that answers with an HTTP error is offline.

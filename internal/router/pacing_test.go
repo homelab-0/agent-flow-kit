@@ -49,7 +49,7 @@ func TestPace(t *testing.T) {
 
 	// An estimate, or a spent pool, has no pace to lean on.
 	est := measured(40, "weekly", 9*time.Hour, now)
-	est.QuotaSource = "local_5h_activity"
+	est.QuotaSource = SourceUnknown
 	if pace(est, now) != nil {
 		t.Error("an estimate was projected")
 	}

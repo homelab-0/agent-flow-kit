@@ -87,10 +87,9 @@ type Candidate struct {
 
 // PoolMeta is what the catalog says about a subscription pool.
 type PoolMeta struct {
-	Provider        string   `json:"provider"`
-	CostClass       string   `json:"cost_class"`
-	PoolTier        string   `json:"pool_tier"`
-	FiveHourSession *float64 `json:"five_hour_session_capacity"`
+	Provider  string `json:"provider"`
+	CostClass string `json:"cost_class"`
+	PoolTier  string `json:"pool_tier"`
 }
 
 // Catalog is the benchmark catalog: candidates and their pools.

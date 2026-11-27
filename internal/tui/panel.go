@@ -897,9 +897,14 @@ func (p *Panel) statusLines(w int) ([]line, line) {
 	if !v.Updated.IsZero() {
 		out = append(out, line{sg(t.Dim, " updated "+v.Updated.Format("15:04")+" · "), sg(t.Key, "r"), sg(t.Dim, " refresh")}, nil)
 	}
-	out = append(out, line{sg(t.Bold, " Plans"), sg(t.Dim, strings.Repeat(" ", 17)+col("5h window", 19)+col("week", 19)+"sign-in")})
+	out = append(out, line{sg(t.Bold, " Plans"), sg(t.Dim, strings.Repeat(" ", 17)+col("5h left", 19)+col("week left", 19)+"sign-in")})
+	// A window with no reported figure says "unknown": no empty meter
+	// that could be read as a spent plan.
 	cell := func(pct *float64) line {
-		l := append(t.meter(pct, 1), sg(t.Plain, " "+pctText(pct)))
+		l := line{sg(t.Dim, "unknown")}
+		if pct != nil {
+			l = append(t.meter(pct, 1), sg(t.Plain, " "+pctText(pct)))
+		}
 		return append(l, sg(t.Plain, strings.Repeat(" ", max(1, 19-l.width()))))
 	}
 	for _, pl := range v.Plans {

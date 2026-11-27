@@ -211,13 +211,14 @@ func (t Theme) poolLine(c Card, r engine.Route) line {
 	head, win, resets := c.poolFigure(r)
 	l := line{sg(t.Dim, "  pool  ")}
 	l = append(l, t.meter(head, c.Prog)...)
-	if head != nil {
-		l = append(l, sg(t.Plain, " "+pctText(head)+" left"))
-		if r.PoolQuotaSource == "local_5h_activity" {
-			l = append(l, sg(t.Dim, " (estimated)"))
-		}
-	} else {
-		l = append(l, sg(t.Dim, " "+unknownText))
+	if head == nil {
+		// Nothing reported this plan's usage: say so, with no window or
+		// reset time made up beside it.
+		return append(l, sg(t.Dim, " "+poolLeft(r)))
+	}
+	l = append(l, sg(t.Plain, " "+pctText(head)+" left"))
+	if win == "" {
+		return l
 	}
 	return append(l, sg(t.Dim, " · "+win+" "+resets))
 }
@@ -231,7 +232,8 @@ func (c Card) poolFigure(r engine.Route) (*float64, string, string) {
 			return p.HeadroomPct, windowText(c.Pools, r.EntitlementPool), resetsText(c.Pools, r.EntitlementPool, c.loc())
 		}
 	}
-	return r.PoolHeadroomPct, "5h window", "resets " + unknownText
+	// No snapshot: the row doesn't say which window, so none is named.
+	return r.PoolHeadroomPct, "", ""
 }
 
 func modelCol(w int) int { return max(17-(boxWidth-w), 8) }
@@ -381,9 +383,12 @@ func (t Theme) WhyLines(c Card, width int) []line {
 		basis = "basis " + unknownText
 	}
 	head, win, _ := c.poolFigure(orig)
-	poolTxt := unknownText + " of " + win + " left"
+	poolTxt := poolLeft(orig)
 	if head != nil {
-		poolTxt = pctText(head) + " of " + win + " left"
+		poolTxt = pctText(head) + " left"
+		if win != "" {
+			poolTxt = pctText(head) + " of " + win + " left"
+		}
 	}
 	if orig.PoolState != "" {
 		poolTxt += " (" + orig.PoolState + ")"
@@ -392,8 +397,6 @@ func (t Theme) WhyLines(c Card, width int) []line {
 	// never cuts it.
 	var poolBasis string
 	switch b := orig.PoolBasis(); {
-	case strings.HasPrefix(b, "estimated"):
-		poolBasis = "estimated"
 	case strings.HasPrefix(b, "set by"):
 		poolBasis = "failed run"
 	case strings.HasPrefix(b, "measured at"):

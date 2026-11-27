@@ -81,22 +81,20 @@ func TestProbePoolsMatchesBashProbe(t *testing.T) {
 		Home: home, Getenv: func(k string) string { return env[k] }, Installed: func(h string) bool { return installed[h] },
 	})
 	type want struct {
-		state, src        string
-		used, cap, remain float64
-		week, five, fable float64 // -1: none
+		state, src              string
+		used, week, five, fable float64 // -1: none
 	}
 	wants := map[string]want{
-		// Two figures differ from the bash probe on purpose: Claude's pool
-		// is estimated from its 7 recent sessions (AFK no longer asks the
-		// usage API, which needs the Claude login), and opencode's xai
-		// login no longer adds its sessions to xai-grok (which provider
-		// opencode is signed in to is only inside its credential file).
-		"anthropic-max":    {"available", "local_5h_activity", 12, 60, 52, -1, -1, -1},
-		"openai-plus":      {"available", "codex_rate_limits", 62, 40, 15, 62, 42, -1},
-		"antigravity-pool": {"exhausted", "runtime_signal:quota", 100, 50, 0, -1, -1, -1},
-		"xai-grok":         {"available", "local_5h_activity", 2, 50, 49, -1, -1, -1},
-		"opencode-free":    {"available", "local_5h_activity", 2, 200, 196, -1, -1, -1},
-		"litellm-local":    {"offline", "gateway_probe", 100, 9999, 0, -1, -1, -1},
+		// A pool has figures only when its CLI reported them: Codex's
+		// rate limits here. Claude, Grok and OpenCode have recent session
+		// files in this home, and still show no figure: AFK never
+		// estimates usage from activity.
+		"anthropic-max":    {"available", "unknown", -1, -1, -1, -1},
+		"openai-plus":      {"available", "codex_rate_limits", 62, 62, 42, -1},
+		"antigravity-pool": {"exhausted", "runtime_signal:quota", -1, -1, -1, -1},
+		"xai-grok":         {"available", "unknown", -1, -1, -1, -1},
+		"opencode-free":    {"available", "unknown", -1, -1, -1, -1},
+		"litellm-local":    {"offline", "gateway_probe", -1, -1, -1, -1},
 	}
 	opt := func(v *float64) float64 {
 		if v == nil {
@@ -106,9 +104,12 @@ func TestProbePoolsMatchesBashProbe(t *testing.T) {
 	}
 	for id, w := range wants {
 		g := p.Pools[id]
-		got := want{g.State, g.QuotaSource, *g.UsedPct, *g.Capacity5h, *g.Remaining5h, opt(g.WeeklyUsedPct), opt(g.FiveHourUsedPct), opt(g.FableWeeklyUsedPct)}
+		got := want{g.State, g.QuotaSource, opt(g.UsedPct), opt(g.WeeklyUsedPct), opt(g.FiveHourUsedPct), opt(g.FableWeeklyUsedPct)}
 		if got != w {
 			t.Errorf("%s:\n got  %+v\n want %+v", id, got, w)
+		}
+		if (g.UsedPct == nil) != (g.HeadroomPct == nil) {
+			t.Errorf("%s: used %v but headroom %v", id, g.UsedPct, g.HeadroomPct)
 		}
 	}
 	if len(p.AuthAlerts) != 0 {
@@ -197,7 +198,8 @@ func TestCredentialFilesAreNeverOpened(t *testing.T) {
 	}
 	for id, b := range before.Pools {
 		a := after.Pools[id]
-		if a.State != b.State || *a.UsedPct != *b.UsedPct || a.QuotaSource != b.QuotaSource {
+		same := (a.UsedPct == nil) == (b.UsedPct == nil) && (a.UsedPct == nil || *a.UsedPct == *b.UsedPct)
+		if a.State != b.State || !same || a.QuotaSource != b.QuotaSource {
 			t.Errorf("%s changed when the credential files became unreadable: %+v -> %+v", id, b, a)
 		}
 	}
@@ -212,20 +214,48 @@ func TestCredentialFilesAreNeverOpened(t *testing.T) {
 	}
 }
 
-// OpenCode's auth.json changing (a sign-in) is not activity.
-func TestOpenCodeLoginIsNotActivity(t *testing.T) {
+// Session files are never turned into a usage figure: a plan whose CLI
+// reported nothing shows none, however busy its folder is.
+func TestActivityIsNeverAUsageFigure(t *testing.T) {
 	home := t.TempDir()
-	put(t, home, ".local/share/opencode/auth.json", `{"openai":{"type":"oauth"}}`, 0)
-	put(t, home, ".local/share/opencode/storage/session/s1.json", "{}", 0)
-	p := ProbePools(context.Background(), DefaultCatalog(), ProbeEnv{Home: home, Installed: func(h string) bool { return h == "opencode" }})
-	// One session of 200: 0.5%, rounded to 1. With auth.json counted it
-	// would be 1%, rounded to 1 too, so check with only the login file.
-	if got := *p.Pools["opencode-free"].UsedPct; got != 1 {
-		t.Fatalf("one session: %v%%", got)
+	for i := 0; i < 30; i++ {
+		put(t, home, fmt.Sprintf(".claude/projects/a/s%d.jsonl", i), "{}", 0)
+		put(t, home, fmt.Sprintf(".grok/sessions/s%d.json", i), "{}", 0)
+		put(t, home, fmt.Sprintf(".local/share/opencode/storage/session/s%d.json", i), "{}", 0)
 	}
-	_ = os.Remove(filepath.Join(home, ".local/share/opencode/storage/session/s1.json"))
-	p = ProbePools(context.Background(), DefaultCatalog(), ProbeEnv{Home: home, Installed: func(h string) bool { return h == "opencode" }})
-	if got := *p.Pools["opencode-free"].UsedPct; got != 0 {
-		t.Fatalf("auth.json counted as activity: %v%%", got)
+	put(t, home, ".grok/auth.json", `{"x":{"t":1}}`, 0)
+	put(t, home, ".gemini/antigravity-cli/brain/one/x.json", "{}", 0)
+	p := ProbePools(context.Background(), DefaultCatalog(), ProbeEnv{Home: home, Installed: func(string) bool { return true }})
+	for _, id := range []string{"anthropic-max", "xai-grok", "antigravity-pool", "opencode-free", "openai-plus"} {
+		g := p.Pools[id]
+		if g.UsedPct != nil || g.HeadroomPct != nil || g.QuotaSource != SourceUnknown || g.State != "available" {
+			t.Errorf("%s: %+v, want available with no figure (source unknown)", id, g)
+		}
+	}
+}
+
+// Antigravity installed but never signed in is not a signed-in plan with
+// everything left: it is offline, with a sign-in alert and no figure.
+func TestInstalledAgyIsNotSignedIn(t *testing.T) {
+	home := t.TempDir()
+	p := ProbePools(context.Background(), DefaultCatalog(), ProbeEnv{Home: home, Installed: func(h string) bool { return h == "agy" }})
+	g := p.Pools["antigravity-pool"]
+	if g.State != "offline" || g.QuotaSource != SourceSignedOut || g.HeadroomPct != nil || len(p.Bindings["antigravity-pool"]) != 0 {
+		t.Fatalf("agy with no login: %+v, bound %v", g, p.Bindings["antigravity-pool"])
+	}
+	found := false
+	for _, a := range p.AuthAlerts {
+		if m, _ := a.(map[string]any); m["pool"] == "antigravity-pool" && m["reauth_command"] == "agy login" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no sign-in alert for agy: %v", p.AuthAlerts)
+	}
+	// Once it has signed in, it is a plan with unknown usage.
+	put(t, home, ".gemini/antigravity-cli/state.json", "{}", 0)
+	p = ProbePools(context.Background(), DefaultCatalog(), ProbeEnv{Home: home, Installed: func(h string) bool { return h == "agy" }})
+	if g := p.Pools["antigravity-pool"]; g.State != "available" || g.QuotaSource != SourceUnknown || g.HeadroomPct != nil {
+		t.Fatalf("signed-in agy: %+v", g)
 	}
 }

@@ -215,21 +215,38 @@ func TestWidths(t *testing.T) {
 	}
 }
 
-// The Why panel of the chosen route says when its pool figure is an
-// estimate from recent sessions.
-func TestWhyPanelShowsAnEstimatedPool(t *testing.T) {
+// A plan whose CLI reported no usage shows "usage unknown" on the card
+// and in the Why panel: no figure, window or reset time stands in for it.
+func TestUnknownPoolShowsNoFigure(t *testing.T) {
 	c := fixtureCard(t, -1)
 	r := c.Rows[c.Sel]
-	r.PoolQuotaSource = "local_5h_activity"
+	r.PoolHeadroomPct, r.PoolQuotaSource = nil, "unknown"
 	r.Raw = nil
 	c.Rows[c.Sel] = r
-	out := strings.Join(plainLines(join(NewTheme(true).WhyLines(c, 120))), "\n")
-	if !strings.Contains(out, "of 5h window left") || !strings.Contains(out, "pool figure    estimated") {
-		t.Fatalf("no estimate in the Why panel:\n%s", out)
+	c.Pools = nil
+	th := NewTheme(true)
+	why := strings.Join(plainLines(join(th.WhyLines(c, 120))), "\n")
+	if !strings.Contains(why, "usage unknown") || strings.Contains(why, "window left") {
+		t.Fatalf("the Why panel of an unknown pool:\n%s", why)
 	}
-	r.PoolQuotaSource = "codex_rate_limits"
+	card := strings.Join(plainLines(renderCard(c, 120)), "\n")
+	found := false
+	for _, l := range strings.Split(card, "\n") {
+		if !strings.Contains(l, "pool  ") {
+			continue
+		}
+		found = true
+		if !strings.Contains(l, "usage unknown") || strings.Contains(l, "window") || strings.Contains(l, "resets") || strings.Contains(l, "%") {
+			t.Fatalf("the pool line of an unknown pool: %q", l)
+		}
+	}
+	if !found {
+		t.Fatalf("no pool line:\n%s", card)
+	}
+	// A measured pool still says how it was measured.
+	r.PoolHeadroomPct, r.PoolQuotaSource = c.Rows[1].PoolHeadroomPct, "codex_rate_limits"
 	c.Rows[c.Sel] = r
-	if out := strings.Join(plainLines(join(NewTheme(true).WhyLines(c, 120))), "\n"); !strings.Contains(out, "pool figure    measured") {
+	if out := strings.Join(plainLines(join(th.WhyLines(c, 120))), "\n"); !strings.Contains(out, "pool figure    measured") {
 		t.Fatalf("no basis for a measured pool:\n%s", out)
 	}
 }
@@ -249,7 +266,8 @@ func TestPoolFigureComesFromOneReading(t *testing.T) {
 		t.Fatalf("got %v %q, want the snapshot's 60%% of the weekly window", head, win)
 	}
 	c.Pools = nil
-	if head, win, resets := c.poolFigure(r); head == nil || *head != 90 || win != "5h window" || resets != "resets "+unknownText {
+	// With no snapshot the row doesn't say which window, so none is named.
+	if head, win, resets := c.poolFigure(r); head == nil || *head != 90 || win != "" || resets != "" {
 		t.Fatalf("no snapshot: %v %q %q", head, win, resets)
 	}
 }

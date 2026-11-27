@@ -38,48 +38,36 @@
       "provider": "Anthropic",
       "cost_class": "subscription",
       "pool_tier": "max-20x",
-      "five_hour_session_capacity": 60,
-      "seven_day_session_capacity": 600,
       "description": "Claude Code Max flat-rate OAuth subscription pool"
     },
     "openai-plus": {
       "provider": "OpenAI",
       "cost_class": "subscription",
       "pool_tier": "pro",
-      "five_hour_session_capacity": 40,
-      "seven_day_session_capacity": 400,
       "description": "OpenAI Codex flat-rate OAuth subscription pool"
     },
     "antigravity-pool": {
       "provider": "Google DeepMind",
       "cost_class": "subscription",
       "pool_tier": "pro",
-      "five_hour_session_capacity": 50,
-      "seven_day_session_capacity": 500,
       "description": "Google Antigravity (agy) subscription allowance pool"
     },
     "xai-grok": {
       "provider": "xAI (Grok CLI / OpenCode)",
       "cost_class": "subscription",
       "pool_tier": "standard",
-      "five_hour_session_capacity": 50,
-      "seven_day_session_capacity": 500,
       "description": "xAI Grok CLI (grok.com) & OpenCode subscription pool"
     },
     "opencode-free": {
       "provider": "OpenCode Free Tier",
       "cost_class": "free",
       "pool_tier": "free",
-      "five_hour_session_capacity": 200,
-      "seven_day_session_capacity": 2000,
       "description": "Zero-cost OpenCode community & open-weights inference models"
     },
     "litellm-local": {
       "provider": "Homelab Local AI Cluster (via LiteLLM)",
       "cost_class": "free",
       "pool_tier": "unlimited-local",
-      "five_hour_session_capacity": 9999,
-      "seven_day_session_capacity": 99999,
       "description": "Self-hosted homelab GPU cluster fronted by LiteLLM smart router"
     }
   },

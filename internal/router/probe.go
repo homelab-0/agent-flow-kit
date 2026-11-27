@@ -3,8 +3,6 @@ package router
 import (
 	"context"
 	"encoding/json"
-	"io/fs"
-	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -66,9 +64,9 @@ func (e ProbeEnv) SignalsPath() string {
 // probeHarnesses are the CLIs the pool probe looks for.
 var probeHarnesses = []string{"claude", "codex", "agy", "grok", "opencode", "pi", "devin"}
 
-// ProbePools works out the state of every subscription pool now: live
-// usage where the provider reports it, recent session activity otherwise,
-// and recent failure signals on top.
+// ProbePools works out the state of every subscription pool now: usage
+// where the plan's own CLI reported it, no figure at all otherwise, and
+// recent failure signals on top.
 func ProbePools(ctx context.Context, cat *Catalog, e ProbeEnv) *Probe {
 	if e.Now.IsZero() {
 		e.Now = time.Now()
@@ -114,33 +112,6 @@ func ProbePools(ctx context.Context, cat *Catalog, e ProbeEnv) *Probe {
 	}
 
 	binds := accountBindings(e, harnesses, codexMode)
-	bound := func(h, pool string) bool { return contains(binds[pool], h) }
-
-	since := e.Now.Add(-300 * time.Minute)
-	c5 := countRecent(filepath.Join(claudeDir(e), "projects"), since)
-	// Codex sessions count against the ChatGPT plan only when Codex says it
-	// is signed in with the plan. With an API key they are metered usage;
-	// when Codex couldn't say, they are not counted rather than guessed.
-	x5 := 0
-	if bound("codex", "openai-plus") {
-		x5 = countRecent(codexSessionsDir(e), since)
-	}
-	a5 := countRecentDirs(filepath.Join(e.Home, ".gemini", "antigravity-cli", "brain"), since)
-	// OpenCode's sessions and messages live under storage/; its auth.json
-	// beside it changes on sign-in, which is not activity.
-	o5 := countRecent(filepath.Join(e.Home, ".local", "share", "opencode", "storage"), since)
-	p5 := countRecent(filepath.Join(e.Home, ".pi", "agent", "sessions"), since)
-	g5 := countRecent(filepath.Join(e.Home, ".grok"), since)
-	xai5 := g5
-	if bound("opencode", "xai-grok") {
-		xai5 += o5
-	}
-	if bound("opencode", "openai-plus") {
-		x5 += o5
-	}
-	if bound("pi", "openai-plus") {
-		x5 += p5
-	}
 
 	sig := readSignals(e.SignalsPath())
 	// Claude's plan usage as its last one-shot run through AFK reported it.
@@ -152,12 +123,12 @@ func ProbePools(ctx context.Context, cat *Catalog, e ProbeEnv) *Probe {
 
 	pc := poolCalc{cat: cat, sig: sig, now: e.Now.Unix(), gatewayOn: gw.Online, harnesses: harnesses, binds: binds}
 	pools := map[string]Pool{
-		"anthropic-max":    pc.calc("anthropic-max", c5, false, []string{"claude"}, claudeQ, claudeMt),
-		"openai-plus":      pc.calc("openai-plus", x5, false, []string{"codex"}, codexQ, openaiMt),
-		"antigravity-pool": pc.calc("antigravity-pool", a5, false, []string{"agy"}, quota{}, 0),
-		"xai-grok":         pc.calc("xai-grok", xai5, false, []string{"grok", "opencode"}, quota{}, grokMt),
-		"opencode-free":    pc.calc("opencode-free", o5, false, []string{"opencode"}, quota{}, 0),
-		"litellm-local":    pc.calc("litellm-local", 0, true, []string{"claude", "opencode"}, quota{}, 0),
+		"anthropic-max":    pc.calc("anthropic-max", false, []string{"claude"}, claudeQ, claudeMt),
+		"openai-plus":      pc.calc("openai-plus", false, []string{"codex"}, codexQ, openaiMt),
+		"antigravity-pool": pc.calc("antigravity-pool", false, []string{"agy"}, quota{}, 0),
+		"xai-grok":         pc.calc("xai-grok", false, []string{"grok", "opencode"}, quota{}, grokMt),
+		"opencode-free":    pc.calc("opencode-free", false, []string{"opencode"}, quota{}, 0),
+		"litellm-local":    pc.calc("litellm-local", true, []string{"claude", "opencode"}, quota{}, 0),
 		LocalPool:          localPool(local),
 	}
 
@@ -190,10 +161,14 @@ func ProbePools(ctx context.Context, cat *Catalog, e ProbeEnv) *Probe {
 			"pool": id, "pool_id": id, "harnesses": feeding, "reason": reason, "reauth_command": reauth(primary),
 		})
 	}
-	if harnesses["grok"].Installed && pools["xai-grok"].QuotaSource == "unauthenticated" {
+	for _, id := range ids {
+		h := signInPools[id]
+		if h == "" || !harnesses[h].Installed || pools[id].QuotaSource != SourceSignedOut {
+			continue
+		}
 		alerts = append(alerts, map[string]any{
-			"pool": "xai-grok", "pool_id": "xai-grok", "harnesses": []string{"grok"},
-			"reason": "grok CLI installed on disk but not signed in", "reauth_command": "grok login",
+			"pool": id, "pool_id": id, "harnesses": []string{h},
+			"reason": h + " CLI installed on disk but not signed in", "reauth_command": reauth(h),
 		})
 	}
 
@@ -244,7 +219,6 @@ type quota struct {
 
 type poolSignal struct {
 	UsedPct        *float64 `json:"used_pct"`
-	Capacity5h     *float64 `json:"capacity_5h"`
 	DegradedReason *string  `json:"degraded_reason"`
 	DegradedKind   *string  `json:"degraded_kind"`
 	UpdatedAt      *string  `json:"updated_at"`
@@ -364,66 +338,74 @@ type poolCalc struct {
 	feeding   map[string][]string
 }
 
-func (pc *poolCalc) calc(pid string, sessions int, local bool, defaultH []string, live quota, authMtime int64) Pool {
+// Where a pool's figures come from when no CLI reported them.
+const (
+	// SourceUnknown: nothing reported this plan's usage, so there is no
+	// figure. AFK never estimates one.
+	SourceUnknown = "unknown"
+	// SourceSignedOut: the plan's own CLI is installed but not signed in.
+	SourceSignedOut = "unauthenticated"
+)
+
+// signInPools are the plan pools whose own CLI AFK can tell is signed out
+// from what that CLI keeps on disk, and that CLI.
+var signInPools = map[string]string{"xai-grok": "grok", "antigravity-pool": "agy"}
+
+// calc works out one pool. The used and headroom figures are set only
+// from a reading the plan's own CLI reported (live); without one they are
+// nil and the source says why. Nothing here is estimated.
+func (pc *poolCalc) calc(pid string, local bool, defaultH []string, live quota, authMtime int64) Pool {
 	meta, ok := pc.cat.Pools[pid]
 	if !ok && pid == "opencode-free" {
-		meta = PoolMeta{Provider: "OpenCode Free Tier", CostClass: "free", PoolTier: "free", FiveHourSession: f64(200)}
+		meta = PoolMeta{Provider: "OpenCode Free Tier", CostClass: "free", PoolTier: "free"}
 	}
 	sg, kind, active := activeSignal(pc.sig, pid, authMtime, pc.now)
 	bound := pc.binds[pid]
+	_, signIn := signInPools[pid]
+	unauth := signIn && !active && len(bound) == 0
 
-	// The first positive capacity wins; zero or negative would divide by
-	// zero below, so it is skipped.
-	capacity := 50.0
-	pos := func(v *float64) bool { return v != nil && *v > 0 }
-	switch {
-	case active && pos(sg.Capacity5h):
-		capacity = *sg.Capacity5h
-	case pos(pc.sig.Pools[pid].Capacity5h):
-		capacity = *pc.sig.Pools[pid].Capacity5h
-	case pos(meta.FiveHourSession):
-		capacity = *meta.FiveHourSession
-	}
-	unauth := pid == "xai-grok" && !active && len(bound) == 0
-
-	var used float64
+	var used *float64
 	var src string
+	state := "available"
 	switch {
-	case active && sg.UsedPct != nil:
+	case active && (kind == "auth" || sg.UsedPct != nil):
+		// A failed run set this pool aside. That is a state, not a usage
+		// figure: how much of the plan is used is still whatever was
+		// last reported, which a failure doesn't tell.
 		k := kind
 		if k == "" {
 			k = "manual"
 		}
-		used, src = *sg.UsedPct, "runtime_signal:"+k
-	case unauth:
-		used, src = 100, "unauthenticated"
-	case live.OK:
-		used, src = live.UsedPct, live.Source
-	case local:
-		used, src = 100, "gateway_probe"
-		if pc.gatewayOn {
-			used = 0
+		src = "runtime_signal:" + k
+		switch {
+		case kind == "auth":
+			state = "auth_required"
+		case sg.UsedPct == nil || *sg.UsedPct >= 90:
+			state = "exhausted"
+		case *sg.UsedPct >= 75:
+			state = "warning"
 		}
+	case unauth:
+		src, state = SourceSignedOut, "offline"
+	case live.OK:
+		u := live.UsedPct
+		used, src = &u, live.Source
+		switch {
+		case u >= 90:
+			state = "exhausted"
+		case u >= 75:
+			state = "warning"
+		}
+	case local:
+		src = "gateway_probe"
 	default:
-		used = math.Min(jqRound(float64(sessions)*100/capacity), 98)
-		src = "local_5h_activity"
+		src = SourceUnknown
 	}
-	headroom := 100 - used
-	remaining := math.Floor(capacity * headroom / 100)
-	state := "available"
 	switch {
 	case local && !pc.gatewayOn:
 		state = "offline"
 	case pid == "opencode-free" && !pc.harnesses["opencode"].Installed:
 		state = "offline"
-	case unauth:
-		state = "offline"
-	case active && kind == "auth":
-		state = "auth_required"
-	case used >= 90:
-		state = "exhausted"
-	case used >= 75:
-		state = "warning"
 	}
 	if pc.feeding == nil {
 		pc.feeding = map[string][]string{}
@@ -445,10 +427,9 @@ func (pc *poolCalc) calc(pid string, sessions int, local bool, defaultH []string
 	if cc == "" {
 		cc = "subscription"
 	}
-	p := Pool{
-		PoolID: pid, Provider: provider, PoolTier: tier, CostClass: cc, State: state,
-		Capacity5h: f64(capacity), Remaining5h: f64(remaining), UsedPct: f64(used), HeadroomPct: f64(headroom),
-		QuotaSource: src,
+	p := Pool{PoolID: pid, Provider: provider, PoolTier: tier, CostClass: cc, State: state, QuotaSource: src}
+	if used != nil {
+		p.UsedPct, p.HeadroomPct = used, f64(100-*used)
 	}
 	// The reading's windows and reset time describe the pool only while the
 	// reading is what the figure comes from: under a failed run's signal they
@@ -473,63 +454,6 @@ func (pc *poolCalc) calc(pid string, sessions int, local bool, defaultH []string
 		p.DegradedReason = sg.DegradedReason
 	}
 	return p
-}
-
-// jqRound rounds half away from zero, as jq does.
-func jqRound(v float64) float64 { return math.Round(v) }
-
-// --- local activity -----------------------------------------------------------
-
-// countRecent counts session files (.json, .jsonl) changed since the given
-// time, at most five directories deep, as the bash probe's find does.
-func countRecent(dir string, since time.Time) int {
-	// WalkDir doesn't follow a symlinked root; resolve it first.
-	if r, err := filepath.EvalSymlinks(dir); err == nil {
-		dir = r
-	}
-	n := 0
-	base := strings.Count(filepath.Clean(dir), string(filepath.Separator))
-	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		depth := strings.Count(filepath.Clean(p), string(filepath.Separator)) - base
-		if d.IsDir() {
-			if depth >= 5 {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		if depth > 5 || !d.Type().IsRegular() {
-			return nil
-		}
-		if !strings.HasSuffix(p, ".jsonl") && !strings.HasSuffix(p, ".json") {
-			return nil
-		}
-		if fi, err := d.Info(); err == nil && fi.ModTime().After(since) {
-			n++
-		}
-		return nil
-	})
-	return n
-}
-
-// countRecentDirs counts the subdirectories changed since the given time.
-func countRecentDirs(dir string, since time.Time) int {
-	ents, err := os.ReadDir(dir)
-	if err != nil {
-		return 0
-	}
-	n := 0
-	for _, d := range ents {
-		if !d.IsDir() {
-			continue
-		}
-		if fi, err := d.Info(); err == nil && fi.ModTime().After(since) {
-			n++
-		}
-	}
-	return n
 }
 
 func mtime(p string) int64 {
@@ -572,7 +496,7 @@ func accountBindings(e ProbeEnv, h map[string]HarnessState, codexMode string) ma
 		// Three answers: the plan, an API key, or Codex couldn't say (slow,
 		// missing or unfamiliar output). The last binds Codex to neither:
 		// its sessions are counted against no pool and its plan pool shows
-		// as estimated, so a metered login is never taken for the plan.
+		// no figure, so a metered login is never taken for the plan.
 		// Codex still routes; only the pool arithmetic waits for an answer.
 		switch codexMode {
 		case "chatgpt":
@@ -581,7 +505,9 @@ func accountBindings(e ProbeEnv, h map[string]HarnessState, codexMode string) ma
 			add("api-metered", "codex")
 		}
 	}
-	if h["agy"].Installed {
+	// Antigravity keeps its sign-in under its own folder; installed with
+	// nothing there is not signed in.
+	if h["agy"].Installed && dirHasEntries(filepath.Join(e.Home, ".gemini", "antigravity-cli")) {
 		add("antigravity-pool", "agy")
 	}
 	if nonEmpty(e.path("AFK_GROK_AUTH_FILE", ".grok/auth.json")) {
@@ -614,6 +540,12 @@ func readJSONFile(path string, v any) bool {
 func exists(p string) bool {
 	fi, err := os.Stat(p)
 	return err == nil && fi.Mode().IsRegular()
+}
+
+// dirHasEntries: a directory with anything in it. Nothing is opened.
+func dirHasEntries(p string) bool {
+	ents, err := os.ReadDir(p)
+	return err == nil && len(ents) > 0
 }
 
 func isDir(p string) bool {

@@ -176,7 +176,7 @@ func explainText(ex *engine.Explain) string {
 	if pool == "" {
 		pool = "-"
 	}
-	head := ""
+	head := "(usage unknown, " + r.PoolState + ")"
 	if r.PoolHeadroomPct != nil {
 		head = fmt.Sprintf("(%s%% left, %s)", num(r.PoolHeadroomPct), r.PoolState)
 		if b := r.PoolBasis(); b != "" {
@@ -217,8 +217,12 @@ func explainText(ex *engine.Explain) string {
 			if mi, ok := ex.ModeByHarness[a.Harness]; ok && mi.Mode != "" && mi.Mode != ex.Mode {
 				mode = ", runs in " + mi.Mode
 			}
-			fmt.Fprintf(&b, "  %s %s — score %s, pool %s %s%% left (%s), %s%s%s\n",
-				h, a.Model, num(a.EffectiveScore), a.EntitlementPool, num(a.PoolHeadroomPct), state, a.CostClass, where, mode)
+			left := "usage unknown"
+			if a.PoolHeadroomPct != nil {
+				left = num(a.PoolHeadroomPct) + "% left"
+			}
+			fmt.Fprintf(&b, "  %s %s — score %s, pool %s %s (%s), %s%s%s\n",
+				h, a.Model, num(a.EffectiveScore), a.EntitlementPool, left, state, a.CostClass, where, mode)
 		}
 	}
 	return b.String()

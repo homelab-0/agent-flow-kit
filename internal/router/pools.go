@@ -3,17 +3,17 @@ package router
 import "time"
 
 // PoolsSchema is the version of the pool probe document.
-const PoolsSchema = "afk-router-pools/3"
+const PoolsSchema = "afk-router-pools/4"
 
 // Pool is how much is left in one subscription pool.
 type Pool struct {
-	PoolID             string   `json:"pool_id,omitempty"`
-	Provider           string   `json:"provider,omitempty"`
-	PoolTier           string   `json:"pool_tier,omitempty"`
-	CostClass          string   `json:"cost_class,omitempty"`
-	State              string   `json:"state"`
-	Capacity5h         *float64 `json:"capacity_5h"`
-	Remaining5h        *float64 `json:"remaining_units_5h"`
+	PoolID    string `json:"pool_id,omitempty"`
+	Provider  string `json:"provider,omitempty"`
+	PoolTier  string `json:"pool_tier,omitempty"`
+	CostClass string `json:"cost_class,omitempty"`
+	State     string `json:"state"`
+	// UsedPct and HeadroomPct are set only from a reading the plan's own
+	// CLI reported; null means AFK doesn't know (see QuotaSource).
 	UsedPct            *float64 `json:"used_pct"`
 	HeadroomPct        *float64 `json:"headroom_pct"`
 	QuotaSource        string   `json:"quota_source,omitempty"`
@@ -69,10 +69,7 @@ func defaultPool(costClass string) Pool {
 	if costClass == "" {
 		costClass = "subscription"
 	}
-	return Pool{
-		State: "available", HeadroomPct: f64(100), UsedPct: f64(0),
-		Capacity5h: f64(50), Remaining5h: f64(50), CostClass: costClass,
-	}
+	return Pool{State: "available", CostClass: costClass, QuotaSource: SourceUnknown}
 }
 
 // now is when the probe ran (the clock, for a probe built by hand).
