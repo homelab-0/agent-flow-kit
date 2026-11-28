@@ -338,3 +338,46 @@ func TestNpmRunsInItsOwnDirectory(t *testing.T) {
 		t.Fatalf("not empty: %v", es)
 	}
 }
+
+func TestHarnessUpdateAll(t *testing.T) {
+	f := newFake(t, map[string]string{"claude": "--permission-mode", "grok": "--help"})
+	o := f.ops()
+	// Shown first, nothing run.
+	code, out, errs := hrun(t, o, "update", "--all", "--dry-run")
+	if code != 0 || !strings.Contains(out, "will update") || !strings.Contains(out, "claude update") || !strings.Contains(out, "dry run") {
+		t.Fatalf("dry run: %d %s %s", code, out, errs)
+	}
+	for _, r := range f.ran {
+		if strings.Contains(strings.Join(r, " "), " update") {
+			t.Fatalf("a dry run ran %v", r)
+		}
+	}
+	// Nobody to ask: nothing runs without -y.
+	o.isTTY = false
+	if code, _, errs := hrun(t, o, "update", "all"); code != 2 || !strings.Contains(errs, "-y") {
+		t.Fatalf("no terminal: %d %s", code, errs)
+	}
+	// With -y every planned update runs, one after another.
+	f.ran = nil
+	if code, out, errs := hrun(t, o, "update", "--all", "-y"); code != 0 || !strings.Contains(out, "Updating claude") {
+		t.Fatalf("update all: %d %s %s", code, out, errs)
+	}
+	var ranClaude bool
+	for _, r := range f.ran {
+		if strings.HasSuffix(strings.Join(r, " "), "claude update") {
+			ranClaude = true
+		}
+	}
+	if !ranClaude {
+		t.Fatalf("claude update didn't run: %v", f.ran)
+	}
+	// A CLI AFK installed that is already on npm's newest is left alone.
+	l := &config.Lock{Installs: []config.Install{{Name: "claude", Kind: "harness", Version: "2.1.332", Source: "npm:@anthropic-ai/claude-code@2.1.332", Integrity: "sha512-AAAA", Harnesses: []string{"claude"}}}}
+	if err := config.WriteLock(o.lock, l); err != nil {
+		t.Fatal(err)
+	}
+	f.answer["npm view"] = npmView("2.1.332")
+	if _, out, _ := hrun(t, o, "update", "--all", "--dry-run"); !strings.Contains(out, "claude: already on 2.1.332") {
+		t.Fatalf("an up-to-date CLI was planned: %s", out)
+	}
+}

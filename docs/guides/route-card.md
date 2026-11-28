@@ -1,15 +1,18 @@
 # The route card
 
-Run `afk` on its own and Esc shuffles in and climbs into its hammock (about two seconds; any key skips it, and what you type is kept). Then the composer opens: an input bar for the task, a status line with the prefer mode, the task kind and every route's headroom, and a hint line. In the composer:
+Run `afk` on its own and Esc shuffles in and climbs into its hammock (about two seconds; any key skips it, and what you type is kept). Then the composer opens: the tabs (`1 Route  2 Harnesses … 7 Config`) under the header, an input bar for the task, a status line with the prefer mode, the task kind and every route's headroom, and a hint line. In the composer:
 
 | Key | Does |
 |---|---|
 | `↵` | route the task and run it here, inside AFK (an empty one opens the route card for a CLI without a prompt) |
 | `ctrl+o` | the route card for this task: pick the CLI, model and effort, then open the CLI's own screen |
 | `tab` / `shift+tab` | step the task kind: auto, coding, quick, complex, review, architecture, webdev, research, security |
+| `/` or `ctrl+p` | the command menu: every command with what it does, narrowed as you type. `↑` `↓` pick, `tab` completes, `↵` runs, `esc` closes it. Once a command that takes a value is complete (`/harness `, `/effort `), the menu lists its values |
 | `/harness <cli>`, `/model <id>`, `/effort <level>`, `/prefer balanced\|cheap\|best` | pin a choice (no argument unpins it); `/clear` unpins all |
 | `/mode read-only\|ask\|edits\|auto` | the [permission mode](permissions.md) for the rest of this AFK session (no argument: your configured default) |
 | `/rate 1\|2\|3` | rate the last run: solved, partly, wrong pick |
+| `/update [all\|<cli>\|afk]` | update the agent CLIs: every installed one with something newer (asks once), one of them, or AFK itself. AFK hands the terminal to `afk harness update` (or `afk update`) and comes back when it's done |
+| `/exit` | exit AFK |
 | `/open` | reopen the last run's session in its CLI's own screen; exit the CLI to come back |
 | `?` | shortcuts (on an empty input) |
 | `2`–`7`, `/harnesses`, `/bench`, `/skills`, `/mcp`, `/runs`, `/config` | open the [control panel](control-panel.md) on that tab (the digits on an empty input) |

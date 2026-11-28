@@ -35,6 +35,9 @@ const harnessOpsHelp = `
                                             afk.lock
   afk harness update <name> [-y] [--dry-run] [--json]
                                             update it the way it was installed
+  afk harness update --all [-y] [--dry-run] [--json]
+                                            update every installed CLI that has
+                                            something newer; asks once
   afk harness remove <name> [-y] [--dry-run] [--json]
                                             remove a CLI that AFK installed
 
@@ -103,6 +106,7 @@ func hostOps() hops {
 
 type hflags struct {
 	json, yes, dryRun, device bool
+	all                       bool
 	version                   string
 	args                      []string
 }
@@ -113,6 +117,8 @@ func parseHFlags(argv []string) (hflags, error) {
 		switch a := argv[i]; {
 		case a == "--json":
 			f.json = true
+		case a == "--all" || a == "-a":
+			f.all = true
 		case a == "-y" || a == "--yes":
 			f.yes = true
 		case a == "--dry-run":
@@ -165,6 +171,9 @@ func harnessOp(o hops, verb string, argv []string, stdout, stderr io.Writer) int
 		}
 		return login(o, a, f, stdout, stderr)
 	case "add", "update", "remove":
+		if verb == "update" && (f.all || len(f.args) == 1 && f.args[0] == "all") {
+			return updateAll(ctx, o, f, stdout, stderr)
+		}
 		a, ok := needOne()
 		if !ok {
 			return fail(2, "needs the name of a CLI AFK knows (afk harness --all)")
@@ -446,8 +455,11 @@ func planUpdate(ctx context.Context, o hops, a harness.Adapter, in harness.Info)
 	if len(in.UpdateCommand) == 0 {
 		return nil, fmt.Errorf("AFK doesn't know how %s was installed here (%s); update it that way", a.Name, in.ResolvedPath)
 	}
-	return &plan{Verb: "update", Harness: a.Name, Command: in.UpdateCommand,
-		Notes: []string{"installed with " + in.InstallMethod + ", so it is updated the same way"}}, nil
+	note := "installed with " + in.InstallMethod + ", so it is updated the same way"
+	if in.InstallMethod == "self-managed" {
+		note = "it updates itself"
+	}
+	return &plan{Verb: "update", Harness: a.Name, Command: in.UpdateCommand, Notes: []string{note}}, nil
 }
 
 func planRemove(o hops, a harness.Adapter, in harness.Info) (*plan, error) {
@@ -557,7 +569,7 @@ func carryOut(ctx context.Context, o hops, p *plan, f hflags, stdout, stderr io.
 		return printHJSON(stdout, stderr, map[string]any{"plan": p, "dry_run": false, "done": true})
 	}
 	fmt.Fprintf(stdout, "Done.")
-	if a, ok := harness.Lookup(p.Harness); ok && p.Verb != "remove" && a.Login != "" {
+	if a, ok := harness.Lookup(p.Harness); ok && p.Verb == "add" && a.Login != "" {
 		fmt.Fprintf(stdout, " Sign in with: afk harness login %s", p.Harness)
 	}
 	fmt.Fprintln(stdout)
