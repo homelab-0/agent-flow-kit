@@ -181,7 +181,9 @@ func serveCmd(argv []string, stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	hs := &http.Server{
-		Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute,
+		// A request is small and arrives at once; the answer may take as
+		// long as the run does, so only reading is timed.
+		Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: time.Minute, IdleTimeout: 2 * time.Minute,
 		BaseContext: func(net.Listener) context.Context { return ctx },
 	}
 
