@@ -2,8 +2,10 @@ package router
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -66,6 +68,24 @@ func TestACLIIsRoutedOnlyToTheModelsItReported(t *testing.T) {
 	}
 	if agy.PoolUsageNote == "" || agy.PoolHeadroomPct != nil {
 		t.Errorf("no usage figure, and the reason why: got %q / %v", agy.PoolUsageNote, agy.PoolHeadroomPct)
+	}
+	// The default an unrated model ranks at never leaves the router as a
+	// score, in the JSON or in the reason.
+	b, err := json.Marshal(agy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"benchmark_score", "effective_score"} {
+		if v, ok := out[k]; !ok || v != nil {
+			t.Errorf("%s = %v, want null for an unrated model", k, v)
+		}
+	}
+	if strings.Contains(agy.Reason, "75") || strings.Contains(agy.Reason, "[,") {
+		t.Errorf("reason shows a score or an empty name: %s", agy.Reason)
 	}
 	// A listed catalog model keeps its catalog entry and score.
 	grok := routeFor(t, p, "grok")

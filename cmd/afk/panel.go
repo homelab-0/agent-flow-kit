@@ -9,6 +9,7 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1171,7 +1172,16 @@ func extraText(x *harness.Extra) string {
 	case x.Unlimited:
 		return "extra usage: unlimited"
 	case x.Balance != "":
-		return "extra usage: credits " + x.Balance
+		return "extra usage: credits " + balanceText(x.Balance)
 	}
 	return "extra usage: on"
+}
+
+// balanceText is a credit balance for people: a plain number is shown to
+// two places ("56656.9766350000" is "56656.98"); anything else as it came.
+func balanceText(b string) string {
+	if f, err := strconv.ParseFloat(b, 64); err == nil && !strings.ContainsAny(b, "eE") {
+		return strconv.FormatFloat(f, 'f', 2, 64)
+	}
+	return b
 }

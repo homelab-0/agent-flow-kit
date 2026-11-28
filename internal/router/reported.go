@@ -104,7 +104,7 @@ func withReported(cands []Candidate, probe *Probe) []Candidate {
 			}
 			c := Candidate{
 				ID: h + ":" + b, Harness: h, LaunchClass: h + "-native", EntitlementPool: pool,
-				Model: b, ModelFamily: familyOf(b), Effort: "medium", SupportedEfforts: efforts[b],
+				Model: b, CanonicalModel: b, ModelFamily: familyOf(b), Effort: "medium", SupportedEfforts: efforts[b],
 				Benchmarks: map[string]Benchmark{}, unrated: true,
 			}
 			if pool == "opencode-free" {

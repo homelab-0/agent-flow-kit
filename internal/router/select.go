@@ -1,6 +1,7 @@
 package router
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"regexp"
@@ -67,6 +68,21 @@ const BasisUnrated = "unrated"
 
 // UnratedScore is where an unrated model ranks.
 const UnratedScore = 75.0
+
+// MarshalJSON writes an unrated route's scores as null: the default it
+// ranks at is a place in the order, and a reader of the JSON must not
+// take it for a measurement.
+func (r Route) MarshalJSON() ([]byte, error) {
+	type plain Route
+	if r.BenchmarkBasis != BasisUnrated {
+		return json.Marshal(plain(r))
+	}
+	return json.Marshal(struct {
+		plain
+		BenchmarkScore *float64 `json:"benchmark_score"`
+		EffectiveScore *float64 `json:"effective_score"`
+	}{plain: plain(r)})
+}
 
 // Route is the router's decision.
 type Route struct {
@@ -648,7 +664,7 @@ func (r *Router) Select(in Input) Route {
 		if c.unrated {
 			// Reported by the CLI, not in the catalog: there is no score
 			// for it, and the default it ranks at is not shown as one.
-			basis, bname = BasisUnrated, "no benchmark"
+			basis, bname, scoreText = BasisUnrated, "no benchmark", "none"
 		} else if bm.Score == nil {
 			basis = "estimate"
 		} else if (basis == "measured" || basis == "capped") && in.Now.Unix()-bm.SyncedEpoch > in.CarrySec {
