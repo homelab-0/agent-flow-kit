@@ -58,6 +58,31 @@ func withReported(cands []Candidate, probe *Probe) []Candidate {
 	if probe == nil {
 		return cands
 	}
+	// What each CLI listed: its models without their effort tier, in
+	// order, and the tiers listed for each.
+	type listed struct {
+		order   []string
+		efforts map[string][]string
+	}
+	lists := map[string]listed{}
+	for _, h := range probeHarnesses {
+		hs := probe.Harnesses[h]
+		if !hs.ModelsKnown {
+			continue
+		}
+		l := listed{efforts: map[string][]string{}}
+		for _, m := range hs.Models {
+			b, e := baseModel(m)
+			if _, seen := l.efforts[b]; !seen {
+				l.order = append(l.order, b)
+				l.efforts[b] = nil
+			}
+			if e != "" && !contains(l.efforts[b], e) {
+				l.efforts[b] = append(l.efforts[b], e)
+			}
+		}
+		lists[h] = l
+	}
 	out := make([]Candidate, 0, len(cands))
 	covered := map[string]bool{} // harness + "\x00" + base model
 	for _, c := range cands {
@@ -68,27 +93,21 @@ func withReported(cands []Candidate, probe *Probe) []Candidate {
 		if native(c) {
 			b, _ := baseModel(c.Model)
 			covered[c.Harness+"\x00"+b] = true
+			// A catalog model is offered only at the tiers its CLI
+			// listed for it, never at one the plan doesn't have.
+			if tiers := lists[c.Harness].efforts[b]; len(tiers) > 0 {
+				c = atListedTiers(c, tiers)
+			}
 		}
 		out = append(out, c)
 	}
 	for _, h := range probeHarnesses {
-		hs := probe.Harnesses[h]
 		pool := planPool[h]
-		if !hs.ModelsKnown || pool == "" {
+		l, ok := lists[h]
+		if !ok || pool == "" {
 			continue
 		}
-		efforts := map[string][]string{}
-		var order []string
-		for _, m := range hs.Models {
-			b, e := baseModel(m)
-			if _, seen := efforts[b]; !seen {
-				order = append(order, b)
-				efforts[b] = nil
-			}
-			if e != "" {
-				efforts[b] = append(efforts[b], e)
-			}
-		}
+		efforts, order := l.efforts, l.order
 		// A CLI that names effort tiers in its model names sets the
 		// effort that way only: its models without a tier have none.
 		tiered := false
@@ -97,6 +116,13 @@ func withReported(cands []Candidate, probe *Probe) []Candidate {
 		}
 		for _, b := range order {
 			if covered[h+"\x00"+b] {
+				continue
+			}
+			// OpenCode lists the models of every provider it is set up
+			// with, and its list carries no price. Only its own free
+			// models are known to be free; the rest are not offered,
+			// since AFK can't tell what they cost.
+			if h == "opencode" && !(strings.HasPrefix(b, "opencode/") && strings.HasSuffix(b, "-free")) {
 				continue
 			}
 			if tiered && efforts[b] == nil {
@@ -121,6 +147,32 @@ func withReported(cands []Candidate, probe *Probe) []Candidate {
 		}
 	}
 	return out
+}
+
+// atListedTiers narrows a candidate's efforts to the tiers its CLI
+// listed, and moves its default effort onto one of them.
+func atListedTiers(c Candidate, tiers []string) Candidate {
+	sup := c.SupportedEfforts
+	if sup == nil {
+		sup = defaultEffort
+	}
+	var keep []string
+	for _, e := range sup {
+		if contains(tiers, e) {
+			keep = append(keep, e)
+		}
+	}
+	if len(keep) == 0 {
+		keep = append(keep, tiers...)
+	}
+	c.SupportedEfforts = keep
+	if !contains(keep, c.Effort) {
+		c.Effort = keep[0]
+		if contains(keep, "medium") {
+			c.Effort = "medium"
+		}
+	}
+	return c
 }
 
 // familyOf guesses a model's maker from its name, for cross-family

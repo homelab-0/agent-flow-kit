@@ -21,7 +21,10 @@ type Account struct {
 	Plan string `json:"plan,omitempty"`
 	// Models are the models this account can run, in the CLI's order.
 	// ModelsKnown is false when the CLI gave no list: that is "AFK
-	// doesn't know", not "it has none".
+	// doesn't know", not "it has none". An answer with no model in it
+	// counts as no list too: the text formats can't tell an empty list
+	// from a notice or an error, and "known, none" would take the CLI
+	// out of routing.
 	Models       []string `json:"models,omitempty"`
 	ModelsKnown  bool     `json:"models_known,omitempty"`
 	DefaultModel string   `json:"default_model,omitempty"`

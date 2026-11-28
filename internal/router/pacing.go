@@ -33,6 +33,7 @@ const PaceMaxAdjustment = 4.0
 // measuredSources are the quota sources a pace can be projected from.
 var measuredSources = map[string]bool{
 	"codex_rate_limits":       true,
+	"codex_app_server":        true,
 	"claude_rate_limit_event": true,
 }
 

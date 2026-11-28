@@ -145,3 +145,71 @@ func TestCodexUsageComesFromItsOwnReport(t *testing.T) {
 		}
 	}
 }
+
+// A catalog model is offered only at the effort tiers its CLI listed.
+func TestACatalogModelIsOfferedOnlyAtItsListedTiers(t *testing.T) {
+	p := reportedProbe(t, map[string]harness.Account{
+		"agy": {ModelsKnown: true, Models: []string{"gemini-4-argon-low"}},
+	})
+	in := []Candidate{{
+		ID: "agy:gemini-4-argon", Harness: "agy", LaunchClass: "agy-native", EntitlementPool: "antigravity-pool",
+		Model: "gemini-4-argon", Effort: "high", SupportedEfforts: []string{"low", "medium", "high"},
+	}}
+	out := withReported(in, p)
+	if len(out) != 1 || len(out[0].SupportedEfforts) != 1 || out[0].SupportedEfforts[0] != "low" || out[0].Effort != "low" {
+		t.Fatalf("candidates = %+v", out)
+	}
+	if in[0].Effort != "high" {
+		t.Error("the catalog's own candidate was changed")
+	}
+}
+
+// OpenCode lists every provider's models with no price: only its own
+// free models are offered from that list.
+func TestOnlyOpenCodesFreeModelsComeFromItsList(t *testing.T) {
+	p := reportedProbe(t, nil)
+	st := p.Harnesses["opencode"]
+	st.account(harness.Account{ModelsKnown: true, Models: []string{"opencode/beam-free", "anthropic/claude-opus-5-5", "opencode/paid-pro"}})
+	p.Harnesses["opencode"] = st
+	var got []string
+	for _, c := range withReported(nil, p) {
+		if c.Harness == "opencode" {
+			got = append(got, c.Model)
+			if c.IsFree == nil || !*c.IsFree {
+				t.Errorf("%s isn't marked free", c.Model)
+			}
+		}
+	}
+	if len(got) != 1 || got[0] != "opencode/beam-free" {
+		t.Errorf("offered from OpenCode's list: %v", got)
+	}
+}
+
+// A model with no benchmark never outranks a rated one, however low the
+// rated one scores.
+func TestAnUnratedModelRanksBelowEveryRatedOne(t *testing.T) {
+	p := reportedProbe(t, map[string]harness.Account{
+		"grok": {ModelsKnown: true, Models: []string{"grok-9-new", "grok-4.7"}},
+	})
+	if r := routeFor(t, p, "grok"); r.Model != "grok-4.7" || r.BenchmarkBasis == BasisUnrated {
+		t.Errorf("grok route = %s (%s)", r.Model, r.BenchmarkBasis)
+	}
+	a := Route{BenchmarkBasis: BasisUnrated, EffectiveScore: 76}
+	b := Route{BenchmarkBasis: "measured", EffectiveScore: 40}
+	routes := []Route{a, b}
+	sortRoutes(routes)
+	if routes[0].BenchmarkBasis != "measured" {
+		t.Error("an unrated route sorted above a rated one")
+	}
+}
+
+func TestOnlyExactWindowLengthsAreTheFiveHourAndWeeklyFigures(t *testing.T) {
+	q, ok := accountQuota(HarnessState{Windows: []harness.Window{{Minutes: 60, UsedPct: 10}, {Minutes: 1440, UsedPct: 30}}}, "x", 0)
+	if !ok || q.FiveHourPct != nil || q.SevenDayPct != nil || q.UsedPct != 30 || q.Window != "other" {
+		t.Errorf("quota = %+v", q)
+	}
+	q, _ = accountQuota(HarnessState{Windows: []harness.Window{{Minutes: 300, UsedPct: 10}, {Minutes: 10080, UsedPct: 30}}}, "x", 0)
+	if q.FiveHourPct == nil || *q.FiveHourPct != 10 || q.SevenDayPct == nil || *q.SevenDayPct != 30 {
+		t.Errorf("quota = %+v", q)
+	}
+}

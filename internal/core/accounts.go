@@ -75,6 +75,10 @@ func (c *Core) account() func(ctx context.Context, h string) (harness.Account, b
 			if b, err := os.ReadFile(c.accountsPath()); err == nil {
 				_ = json.Unmarshal(b, &c.acctMemo)
 			}
+			if c.acctMemo == nil {
+				// A file holding null decodes to a nil map.
+				c.acctMemo = map[string]accountEntry{}
+			}
 		}
 		hit, found := c.acctMemo[h]
 		c.acctMu.Unlock()

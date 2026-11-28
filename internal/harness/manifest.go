@@ -409,6 +409,18 @@ func (m Manifest) validate(path string) error {
 		if strings.TrimSpace(m.ModelList.Command[0]) == "" {
 			return fmt.Errorf("%s: model_list.command needs a program", path)
 		}
+		// The command is run on the CLI AFK located, with the words after
+		// the first as its arguments. Another program is never run for it.
+		if len(m.ModelList.Command) < 2 {
+			return fmt.Errorf("%s: model_list.command needs the CLI and at least one argument", path)
+		}
+		own := false
+		for _, b := range m.Bins {
+			own = own || b == m.ModelList.Command[0]
+		}
+		if !own {
+			return fmt.Errorf("%s: model_list.command must start with one of this CLI's own names (%s)", path, strings.Join(m.Bins, ", "))
+		}
 		ok := false
 		for _, f := range ModelListFormats {
 			ok = ok || f == m.ModelList.Format

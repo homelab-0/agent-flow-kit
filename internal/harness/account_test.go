@@ -162,3 +162,19 @@ echo '{"type":"control_response","response":{"subtype":"success","response":{"mo
 		t.Error("pi isn't installed here")
 	}
 }
+
+// The model list command runs on the CLI itself: an override can't name
+// another program, or leave the arguments out.
+func TestModelListCommandMustBeTheCLIsOwn(t *testing.T) {
+	a, _ := Lookup("grok")
+	for _, cmd := range [][]string{{"grok"}, {"model-helper", "--list"}} {
+		m := a.Manifest
+		m.ModelList.Command = cmd
+		if err := m.validate("grok.toml"); err == nil {
+			t.Errorf("model_list.command %v was accepted", cmd)
+		}
+	}
+	if err := a.Manifest.validate("grok.toml"); err != nil {
+		t.Errorf("grok's own manifest: %v", err)
+	}
+}

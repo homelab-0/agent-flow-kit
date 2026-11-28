@@ -93,10 +93,12 @@ func accountQuota(st HarnessState, source string, now int64) (quota, bool) {
 			continue
 		}
 		used := math.Max(0, math.Min(100, math.Round(w.UsedPct)))
-		if w.Minutes > 0 && w.Minutes < 1000 && q.FiveHourPct == nil {
+		// Only a window of that exact length is the 5-hour or the weekly
+		// figure; another length still counts for the pool's main figure.
+		if w.Minutes == 300 && q.FiveHourPct == nil {
 			q.FiveHourPct = f64(used)
 		}
-		if w.Minutes >= 1000 && q.SevenDayPct == nil {
+		if w.Minutes == 10080 && q.SevenDayPct == nil {
 			q.SevenDayPct = f64(used)
 		}
 		if w.UsedPct <= fullest {

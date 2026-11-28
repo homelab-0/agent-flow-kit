@@ -723,7 +723,7 @@ func (r *Router) Select(in Input) Route {
 		}
 		routes = append(routes, route)
 	}
-	sort.SliceStable(routes, func(i, j int) bool { return routes[i].EffectiveScore > routes[j].EffectiveScore })
+	sortRoutes(routes)
 	if len(routes) > 0 {
 		return routes[0]
 	}
@@ -815,4 +815,17 @@ func contains(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// sortRoutes orders routes best first. A model with no benchmark ranks
+// below every rated one: its default places it among the unrated, never
+// above a measurement.
+func sortRoutes(routes []Route) {
+	sort.SliceStable(routes, func(i, j int) bool {
+		ui, uj := routes[i].BenchmarkBasis == BasisUnrated, routes[j].BenchmarkBasis == BasisUnrated
+		if ui != uj {
+			return uj
+		}
+		return routes[i].EffectiveScore > routes[j].EffectiveScore
+	})
 }

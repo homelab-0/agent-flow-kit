@@ -21,7 +21,11 @@ type codexReporter struct{}
 func init() { registerReporter("codex", codexReporter{}) }
 
 func (codexReporter) Report(ctx context.Context, _ Env, bin string) Account {
-	rep, _ := codexAppServer(ctx, bin)
+	// The app server gets part of the time, so that `codex debug models`
+	// can still run when it doesn't answer.
+	actx, cancel := context.WithTimeout(ctx, codexAppServerLimit)
+	rep, _ := codexAppServer(actx, bin)
+	cancel()
 	if !rep.ModelsKnown {
 		a, _ := Lookup("codex")
 		rep.Models, rep.ModelsKnown = listModels(ctx, bin, a.Manifest.ModelList)
@@ -31,6 +35,10 @@ func (codexReporter) Report(ctx context.Context, _ Env, bin string) Account {
 	}
 	return rep
 }
+
+// codexAppServerLimit is how long the app server may take, inside
+// ReportLimit.
+const codexAppServerLimit = 5 * time.Second
 
 // codexAppServer asks the app server for the rate limits and the models.
 func codexAppServer(ctx context.Context, bin string) (Account, bool) {

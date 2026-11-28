@@ -152,8 +152,19 @@ const BasisUnrated = "unrated"
 // ranks it at a default, which is a place in the order and not a
 // measurement, so no number is shown for it.
 func (r *Route) dropUnratedScore() {
-	if r.BenchmarkBasis == BasisUnrated {
-		r.BenchmarkScore, r.EffectiveScore = nil, nil
+	if r.BenchmarkBasis != BasisUnrated {
+		return
+	}
+	r.BenchmarkScore, r.EffectiveScore = nil, nil
+	// Raw is what MarshalJSON writes; a score left there would come out
+	// in --explain --json.
+	if r.Raw != nil {
+		raw := make(map[string]any, len(r.Raw))
+		for k, v := range r.Raw {
+			raw[k] = v
+		}
+		raw["benchmark_score"], raw["effective_score"] = nil, nil
+		r.Raw = raw
 	}
 }
 
