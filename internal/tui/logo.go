@@ -207,9 +207,9 @@ func (t Theme) logoName(r engine.Route) string {
 		return "" // gateways without a logo keep the GW tag
 	}
 	switch r.Harness {
-	case "claude", "codex", "vllm", "copilot", "agy", "devin":
+	case "claude", "codex", "vllm", "copilot", "agy", "devin", "kiro", "qwen", "gemini":
 		return r.Harness
-	case "grok", "ollama", "opencode", "pi":
+	case "grok", "ollama", "opencode", "pi", "cursor", "kimi":
 		if t.Dark {
 			return r.Harness + "-light"
 		}

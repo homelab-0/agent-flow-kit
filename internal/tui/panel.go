@@ -89,6 +89,9 @@ type PanelSource interface {
 // HarnessesView is the Harnesses tab.
 type HarnessesView struct {
 	Rows []HarnessRow
+	// AutoDiscover is discovery.auto: AFK asks each CLI again when its
+	// last answer is five minutes old.
+	AutoDiscover bool
 }
 
 // HarnessRow is one CLI.
@@ -386,6 +389,9 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 		if msg.err != nil {
 			p.notice = "not saved: " + msg.err.Error()
 		}
+		if p.tab != TabConfig {
+			return tea.Batch(p.load(TabConfig), p.load(p.tab))
+		}
 		return p.load(TabConfig)
 	case marksClearedMsg:
 		p.notice = msg.text
@@ -520,6 +526,10 @@ func (p *Panel) key(k string) tea.Cmd {
 		}
 		h := p.data.harn.Rows[min(p.sel[p.tab], len(p.data.harn.Rows)-1)]
 		switch k {
+		case "D":
+			return p.run("harness", "scan")
+		case "A":
+			return p.configSave("discovery.auto", map[bool]string{true: "off", false: "on"}[p.data.harn.AutoDiscover])
 		case "u":
 			if h.Update == "" {
 				p.notice = h.Name + " has no update command AFK knows"
@@ -845,65 +855,161 @@ func harnessLogo(t Theme, name string) seg { return t.logo(engine.Route{Harness:
 func (p *Panel) harnessLines(w int) ([]line, line) {
 	t := p.theme
 	v := p.data.harn
-	var out []line
+	hint := line{sg(t.Key, "↑↓"), sg(t.Dim, " pick  "), sg(t.Key, "D"), sg(t.Dim, " discover now  "), sg(t.Key, "u"), sg(t.Dim, " update  "), sg(t.Key, "U"), sg(t.Dim, " update all  "), sg(t.Key, "l"), sg(t.Dim, " sign in  "), sg(t.Key, "d"), sg(t.Dim, " doctor  ")}
 	if len(v.Rows) == 0 {
-		return []line{{sg(t.Dim, " No agent CLI found on this machine. Install claude, codex, grok, opencode, agy or pi.")}}, nil
+		return []line{{sg(t.Dim, " No agent CLI found on this machine. Install claude, codex, grok, opencode, agy or pi, then press "), sg(t.Key, "D"), sg(t.Dim, ".")}}, hint
 	}
-	out = append(out, line{sg(t.Dim, "   "+col("harness", 13)+col("version", 9)+col("sign-in", 15)+col("routes", 9)+"updates via")})
+	// The key that flips it is on this line, so the footer stays short.
+	auto := line{sg(t.Dim, " auto discovery  ")}
+	if v.AutoDiscover {
+		auto = append(auto, t.dot("ok"), sg(t.Plain, " on   "), sg(t.Key, "A"), sg(t.Dim, " turn off"))
+	} else {
+		auto = append(auto, t.dot(""), sg(t.Plain, " off  "), sg(t.Key, "A"), sg(t.Dim, " turn on · AFK keeps the last answer until you press D"))
+	}
+	head := []line{auto}
+	sel := min(p.sel[TabHarnesses], len(v.Rows)-1)
+	if w < twoPaneMin {
+		list := p.harnessList(w)
+		return append(append(append(head, list...), nil), p.harnessDetail(v.Rows[sel], w-2)...), hint
+	}
+	lw := 50
+	head = append(head, nil)
+	return append(head, t.twoPane(p.harnessList(lw), lw, p.harnessDetail(v.Rows[sel], w-lw-3), w)...), hint
+}
+
+// harnessList is the CLIs, installed ones first, each group headed.
+func (p *Panel) harnessList(w int) []line {
+	t := p.theme
+	v := p.data.harn
+	installed := 0
+	for _, h := range v.Rows {
+		if h.Installed {
+			installed++
+		}
+	}
+	var out []line
 	for i, h := range v.Rows {
-		ver, sign, routes, upd := h.Version, h.SignIn, h.Routes, "·"
-		if ver == "" {
-			ver = unknownText
-		}
-		if !h.Installed {
-			ver, sign, routes = "—", "not installed", "—"
-		}
-		if h.Update != "" && h.Installed {
-			upd = h.Method
-			if upd == "" {
-				upd = "yes"
+		switch {
+		case i == 0 && h.Installed:
+			// The column names line up with the rows: logo, space, name.
+			out = append(out, append(t.groupHead("Installed", installed).pad(2+1+14, t.Plain), sg(t.Dim, col("version", 10)+"sign-in")))
+		case !h.Installed && (i == 0 || v.Rows[i-1].Installed):
+			if i > 0 {
+				out = append(out, nil)
 			}
+			out = append(out, t.groupHead("Not installed", len(v.Rows)-installed))
+		}
+		name := h.Display
+		if name == "" {
+			name = h.Name
 		}
 		st := t.Plain
+		if i == p.sel[TabHarnesses] {
+			st = t.Bold
+		}
+		row := line{harnessLogo(t, h.Name), sg(st, " "+col(name, 14))}
 		if !h.Installed {
-			st = t.Dim
+			row = line{harnessLogo(t, h.Name), sg(t.Dim, " "+name)}
+		} else {
+			ver := h.Version
+			if ver == "" {
+				ver = unknownText
+			}
+			state, text := signInState(h)
+			textSt := t.Plain
+			if state != "ok" {
+				textSt = t.Dim
+			}
+			if state == "bad" {
+				textSt = t.Warn
+			}
+			row = append(row, sg(t.Plain, col(ver, 10)), t.dot(state), sg(textSt, " "+text))
 		}
-		signSt := t.Plain
-		switch {
-		case strings.Contains(sign, "signed out") || strings.Contains(sign, "expired"):
-			signSt = t.Warn
-		case sign == "unknown" || sign == "login on disk" || !h.Installed:
-			// "login on disk" is not the CLI's own word that it is
-			// signed in, so it isn't shown as confirmed.
-			signSt = t.Dim
-		}
-		row := line{sg(t.Plain, " "), harnessLogo(t, h.Name), sg(st, " "+col(h.Name, 10)), sg(st, col(ver, 9)), sg(signSt, col(sign, 15)), sg(st, col(routes, 9)), sg(t.Dim, upd)}
 		out = append(out, p.selRow(row, i, w))
 	}
-	h := v.Rows[min(p.sel[p.tab], len(v.Rows)-1)]
-	out = append(out, nil)
-	head := line{sg(t.Plain, " "), harnessLogo(t, h.Name), sg(t.Bold, " "+h.Name)}
-	if h.Path != "" {
-		head = append(head, sg(t.Dim, " · "+h.Path))
+	return out
+}
+
+// signInState is a CLI's sign-in as a dot state and the words beside it.
+func signInState(h HarnessRow) (string, string) {
+	s := h.SignIn
+	switch {
+	case s == "" || s == "unknown":
+		return "", "not reported"
+	case strings.Contains(s, "signed out") || strings.Contains(s, "expired"):
+		return "bad", s
+	case s == "login on disk":
+		// A login file exists, but the CLI hasn't said it still works.
+		return "partly", s
 	}
+	return "ok", s
+}
+
+// harnessDetail is the selected CLI in full.
+func (p *Panel) harnessDetail(h HarnessRow, w int) []line {
+	t := p.theme
+	name := h.Display
+	if name == "" {
+		name = h.Name
+	}
+	head := line{harnessLogo(t, h.Name), sg(t.Bold, " "+name)}
+	if name != h.Name {
+		head = append(head, sg(t.Dim, "   "+h.Name))
+	}
+	out := []line{
+		head,
+		{sg(t.Border, strings.Repeat("─", max(min(w, 60), 10)))},
+	}
+	if !h.Installed {
+		out = append(out, line{sg(t.Dim, "Not installed on this machine.")})
+		if h.Note != "" {
+			for _, l := range wrap(h.Note, max(w, 20)) {
+				out = append(out, line{sg(t.Dim, l)})
+			}
+		}
+		return out
+	}
+	ver := h.Version
+	if ver == "" {
+		ver = unknownText
+	}
+	out = append(out, t.field("Version", sg(t.Plain, ver)))
+	inst := line{}
 	if h.Method != "" {
-		head = append(head, sg(t.Dim, " · "+h.Method))
+		inst = append(inst, sg(t.Plain, h.Method))
 	}
-	out = append(out, head)
+	if h.Path != "" {
+		if len(inst) > 0 {
+			inst = append(inst, sg(t.Dim, " · "))
+		}
+		inst = append(inst, sg(t.Dim, h.Path))
+	}
+	if len(inst) > 0 {
+		out = append(out, t.field("Installed", inst...))
+	}
+	state, text := signInState(h)
+	out = append(out, t.field("Sign-in", t.dot(state), sg(t.Plain, " "+text)))
+	if h.Routes != "" {
+		out = append(out, t.field("Routes", sg(t.Plain, h.Routes)))
+	}
 	if h.Note != "" {
-		out = append(out, line{sg(t.Dim, "   "+h.Note)})
+		for _, l := range wrap(h.Note, max(w-10, 20)) {
+			out = append(out, line{sg(t.Dim, strings.Repeat(" ", 10)+l)})
+		}
 	}
+	out = append(out, nil)
+	usage := strings.TrimPrefix(h.Usage, "usage ")
+	if usage == "" || usage == "unknown" {
+		usage = "not reported by " + h.Name
+	}
+	out = append(out, t.wrapField("Usage", usage, w)...)
 	if len(h.Models) > 0 {
-		out = append(out, line{sg(t.Dim, "   models  "), sg(t.Plain, strings.Join(h.Models, ", "))})
-	}
-	if h.Usage != "" {
-		out = append(out, line{sg(t.Dim, "   usage   "), sg(t.Plain, h.Usage)})
+		out = append(out, t.wrapField("Models", strings.Join(h.Models, ", "), w)...)
 	}
 	if h.Update != "" {
-		out = append(out, line{sg(t.Dim, "   update  "), sg(t.Plain, h.Update)})
+		out = append(out, t.wrapField("Updates", h.Update, w)...)
 	}
-	hint := line{sg(t.Key, "↑↓"), sg(t.Dim, " pick  "), sg(t.Key, "u"), sg(t.Dim, " update  "), sg(t.Key, "U"), sg(t.Dim, " update all  "), sg(t.Key, "l"), sg(t.Dim, " login  "), sg(t.Key, "d"), sg(t.Dim, " doctor  ")}
-	return out, hint
+	return out
 }
 
 // scoreBar is a score out of 100 as a 10-cell bar with eighth blocks.

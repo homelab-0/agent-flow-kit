@@ -29,6 +29,7 @@ var cfgKnown = map[string]cfgMeta{
 	"gateway (add)":              {"Gateways", "Add a gateway", "A name and its address, for example: work https://gw.example:4000"},
 	"local.engines":              {"Local models", "Find local engines", "auto looks for Ollama, vLLM, llama.cpp, LM Studio and others on this PC; off skips them."},
 	"local.gpu":                  {"Local models", "GPU", "The GPU local models run on, as shown on the route card."},
+	"discovery.auto":             {"Agent CLIs", "Auto discovery", "Ask each CLI again for its plan, models and usage when the last answer is five minutes old. Off keeps the last answer until you press D on the Harnesses tab or run afk harness scan."},
 	"harness (off)":              {"Agent CLIs", "Turned off", "CLIs AFK leaves out of routing. Turn them on again from the Harnesses tab."},
 	"bench.autosync":             {"Benchmarks", "Daily refresh", "Fetch new benchmark scores in the background when the catalog is a day old."},
 }
