@@ -245,7 +245,12 @@ func npmVersion(ctx context.Context, o hops, pkg, want string) (npmInfo, error) 
 		Scripts   map[string]string `json:"scripts"`
 		Time      map[string]string `json:"time"`
 	}
-	if err := json.Unmarshal(out, &v); err != nil || v.Version == "" {
+	// npm's notices (a new npm is out, a warning) share the output with
+	// the answer: read the one JSON object and leave the rest.
+	if i := bytes.IndexByte(out, '{'); i > 0 {
+		out = out[i:]
+	}
+	if err := json.NewDecoder(bytes.NewReader(out)).Decode(&v); err != nil || v.Version == "" {
 		return npmInfo{}, fmt.Errorf("npm's answer for %s@%s wasn't one version (give an exact one with --version)", pkg, want)
 	}
 	in := npmInfo{Version: v.Version, Integrity: v.Integrity, Times: map[string]time.Time{}}

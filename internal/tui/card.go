@@ -246,6 +246,10 @@ func (c Card) poolFigure(r engine.Route) (*float64, string, string) {
 
 func modelCol(w int) int { return max(17-(boxWidth-w), 8) }
 
+// gapCol is col with a space always left before the next column, so a
+// value as wide as the column doesn't run into its neighbour.
+func gapCol(s string, w int) string { return col(truncate(s, w-1), w) }
+
 func (t Theme) tableHeader(w int) line {
 	return line{sg(t.Dim, "      "+col("route", 13)+col("model", modelCol(w))+col("effort", 7)+col("score", 7)+col("headroom", 17)+"cost")}
 }
@@ -253,7 +257,7 @@ func (t Theme) tableHeader(w int) line {
 func (t Theme) tableRow(c Card, i int, w int) line {
 	r := c.Route(i)
 	row := line{sg(t.Plain, "  "), t.logo(r),
-		sg(t.Plain, " "+col(routeName(r), 13)+col(r.Model, modelCol(w))+col(effortText(r.Effort), 7))}
+		sg(t.Plain, " "+col(routeName(r), 13)+gapCol(r.Model, modelCol(w))+col(effortText(r.Effort), 7))}
 	scoreSt := t.Plain
 	if i == 0 {
 		scoreSt = t.Bold

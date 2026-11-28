@@ -48,6 +48,9 @@ func run(argv []string) int {
 	}
 	// Subcommands the Go front end answers itself, without the engine.
 	// A prompt that starts with one of these words needs "--" first.
+	if isUpdateCommand(argv) {
+		return updateCmd(argv[1:], os.Stdout, os.Stderr)
+	}
 	if len(argv) > 0 {
 		switch argv[0] {
 		case "harness", "harnesses":
