@@ -328,6 +328,9 @@ type printOK struct {
 	Effort   *string `json:"effort"`
 	Attempts int     `json:"attempts"`
 	Output   string  `json:"output"`
+	// Session is the CLI's own id for the run, when it printed one; the
+	// CLI can reopen the session with it.
+	Session string `json:"session,omitempty"`
 }
 
 type printFailed struct {
@@ -345,7 +348,7 @@ func printResult(res oneshot.Result, asJSON bool, stdout, stderr io.Writer) int 
 		return 130
 	case res.OK && asJSON:
 		b, _ := json.Marshal(printOK{OK: true, Harness: res.Route.Harness, Model: strPtr(res.Route.Model),
-			Effort: strPtr(res.Route.Effort), Attempts: res.Attempts, Output: res.Output})
+			Effort: strPtr(res.Route.Effort), Attempts: res.Attempts, Output: res.Output, Session: res.Session})
 		fmt.Fprintln(stdout, string(b))
 		return 0
 	case res.OK:

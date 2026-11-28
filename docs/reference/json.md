@@ -114,6 +114,7 @@ Each entry: `name`, `display`, `vendor`, `installed`, `healthy`, `problem`, `bin
 | `harness`, `model`, `effort` | the route that answered; `effort` is `null` for the CLI's default |
 | `attempts` | how many routes were tried, at most 3 |
 | `output` | the answer text |
+| `session` | the CLI's own id for the run, when it printed one. The CLI reopens the session with it (`codex resume <id>`, `claude --resume <id>`). Left out when the CLI printed none |
 | `tried` | every route tried, as `harness/model`, comma-separated in order |
 | `exit` | the last CLI's exit status (1 when it exited 0 but its JSON reported an error, 127 when it could not be started) |
 | `error` | the last failure's text, at most 600 bytes |

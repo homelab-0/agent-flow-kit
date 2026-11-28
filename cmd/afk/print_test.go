@@ -12,6 +12,8 @@ import (
 func TestPrintResult(t *testing.T) {
 	ok := oneshot.Result{OK: true, Route: engine.Route{Harness: "claude", Model: "sonnet"}, Attempts: 2, Output: "hi", Tried: []string{"codex/sol", "claude/sonnet"}}
 	failed := oneshot.Result{Tried: []string{"claude/sonnet", "codex/sol"}, Exit: 1, Error: "boom", Attempts: 2}
+	withID := ok
+	withID.Session = "0199-abc"
 	noOther := failed
 	noOther.NoOther = true
 	cases := []struct {
@@ -23,6 +25,7 @@ func TestPrintResult(t *testing.T) {
 	}{
 		{"answer", ok, false, 0, "hi\n", ""},
 		{"answer json", ok, true, 0, `{"ok":true,"harness":"claude","model":"sonnet","effort":null,"attempts":2,"output":"hi"}` + "\n", ""},
+		{"answer json with the session", withID, true, 0, `{"ok":true,"harness":"claude","model":"sonnet","effort":null,"attempts":2,"output":"hi","session":"0199-abc"}` + "\n", ""},
 		{"failed", failed, false, 5, "", "afk: claude/sonnet, codex/sol failed (exit 1): boom\n"},
 		{"failed json", failed, true, 5, `{"ok":false,"tried":"claude/sonnet, codex/sol","exit":1,"error":"boom"}` + "\n", ""},
 		{"no other", noOther, false, 5, "", "afk: claude/sonnet, codex/sol failed and no other model is usable: boom\n"},
