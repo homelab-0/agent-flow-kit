@@ -33,6 +33,7 @@ auto = ["--permission-mode", "auto"]
 | `auth.expiry` | a command that reports when the login expires, if the CLI has one |
 | `auth.errors` | words in a failed run's output that mean the login is gone |
 | `session.resume`, `session.verified` | the command that reopens one of the CLI's sessions in its own screen, with `{id}` where the session id goes, and the CLI version it was checked against |
+| `model_list.command`, `model_list.format`, `model_list.verified` | the command that prints the models this account can use, how to read its output (`codex-json`, `grok-text`, `tsv` for `id<TAB>name` lines, or `lines` for one name per line), and the CLI version it was checked against. AFK then [routes only to those models](../guides/harnesses.md#what-afk-asks-each-cli) |
 | `modes.verified` | the CLI version the mode flags were checked against |
 | `modes.read-only`, `modes.ask`, `modes.edits`, `modes.auto`, `modes.yolo` | the flags for each mode; leave a mode out when the CLI can't do it, and AFK runs the next stricter one |
 | `modes.bypass_flags` | other spellings of the yolo flag (Codex `--yolo`); given through `--pass`, they make the run yolo |

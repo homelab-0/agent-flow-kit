@@ -28,14 +28,15 @@ type Manifest struct {
 	SelfUpdate string   `toml:"self_update"`
 	// LoginNote is shown instead of a login command when signing in has
 	// no single command ("pi (then /login)").
-	LoginNote string   `toml:"login_note"`
-	PolicyURL string   `toml:"policy_url"`
-	Models    []string `toml:"models"` // hints, not a list AFK routes from
-	Auth      Auth     `toml:"auth"`
-	Session   Session  `toml:"session"`
-	Modes     Modes    `toml:"modes"`
-	Skills    Skills   `toml:"skills"`
-	MCP       MCP      `toml:"mcp"`
+	LoginNote string    `toml:"login_note"`
+	PolicyURL string    `toml:"policy_url"`
+	Models    []string  `toml:"models"` // hints, not a list AFK routes from
+	Auth      Auth      `toml:"auth"`
+	ModelList ModelList `toml:"model_list"`
+	Session   Session   `toml:"session"`
+	Modes     Modes     `toml:"modes"`
+	Skills    Skills    `toml:"skills"`
+	MCP       MCP       `toml:"mcp"`
 }
 
 // MCP is where a harness reads its user-level MCP servers. AFK writes the
@@ -87,6 +88,19 @@ type Session struct {
 	Verified string `toml:"verified"`
 }
 
+// ModelList is how a harness says which models this account can use. AFK
+// runs the command and reads the model names from its output; a harness
+// with none is routed from the catalog alone.
+type ModelList struct {
+	// Command prints the models (the first word is the program).
+	Command []string `toml:"command"`
+	// Format is how to read the output: codex-json, grok-text, tsv or
+	// lines.
+	Format string `toml:"format"`
+	// Verified is the CLI version the command was checked against.
+	Verified string `toml:"verified"`
+}
+
 // ResumeArgv is the command that reopens session id, without the program
 // name; nil when the harness has none.
 func (m Manifest) ResumeArgv(id string) []string {
@@ -99,6 +113,9 @@ func (m Manifest) ResumeArgv(id string) []string {
 	}
 	return out
 }
+
+// ModelListFormats are the model list outputs AFK can read.
+var ModelListFormats = []string{"codex-json", "grok-text", "tsv", "lines"}
 
 // Auth is how a harness signs in. AFK only runs these commands and reads
 // their exit code; it never reads the credentials they write.
@@ -416,6 +433,30 @@ func (m Manifest) validate(path string) error {
 			return fmt.Errorf("%s: session.resume needs a program and {id}", path)
 		}
 	}
+	if len(m.ModelList.Command) > 0 {
+		if strings.TrimSpace(m.ModelList.Command[0]) == "" {
+			return fmt.Errorf("%s: model_list.command needs a program", path)
+		}
+		// The command is run on the CLI AFK located, with the words after
+		// the first as its arguments. Another program is never run for it.
+		if len(m.ModelList.Command) < 2 {
+			return fmt.Errorf("%s: model_list.command needs the CLI and at least one argument", path)
+		}
+		own := false
+		for _, b := range m.Bins {
+			own = own || b == m.ModelList.Command[0]
+		}
+		if !own {
+			return fmt.Errorf("%s: model_list.command must start with one of this CLI's own names (%s)", path, strings.Join(m.Bins, ", "))
+		}
+		ok := false
+		for _, f := range ModelListFormats {
+			ok = ok || f == m.ModelList.Format
+		}
+		if !ok {
+			return fmt.Errorf("%s: model_list.format must be one of %s", path, strings.Join(ModelListFormats, ", "))
+		}
+	}
 	switch m.Skills.Format {
 	case "", "skill-md":
 	default:
@@ -493,6 +534,9 @@ func merge(base, over Manifest) Manifest {
 	list(&base.Auth.Errors, over.Auth.Errors)
 	list(&base.Session.Resume, over.Session.Resume)
 	set(&base.Session.Verified, over.Session.Verified)
+	list(&base.ModelList.Command, over.ModelList.Command)
+	set(&base.ModelList.Format, over.ModelList.Format)
+	set(&base.ModelList.Verified, over.ModelList.Verified)
 	set(&base.Skills.Dir, over.Skills.Dir)
 	set(&base.Skills.ProjectDir, over.Skills.ProjectDir)
 	set(&base.Skills.Format, over.Skills.Format)

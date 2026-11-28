@@ -222,7 +222,7 @@ func (t Theme) poolLine(c Card, r engine.Route) line {
 	if head == nil {
 		// Nothing reported this plan's usage: say so, with no window or
 		// reset time made up beside it.
-		return append(l, sg(t.Dim, " "+poolLeft(r)))
+		return append(l, sg(t.Dim, " "+poolWhy(r)))
 	}
 	l = append(l, sg(t.Plain, " "+pctText(head)+" left"))
 	if win == "" {

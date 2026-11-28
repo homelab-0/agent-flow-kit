@@ -2,6 +2,9 @@ package router
 
 import (
 	"context"
+
+	"github.com/homelab-0/agent-flow-kit/internal/harness"
+
 	"encoding/json"
 	"net/http"
 	"os"
@@ -44,6 +47,10 @@ type ProbeEnv struct {
 	// known is false when the CLI has no such command or didn't answer;
 	// what is on disk decides then. Nil asks nothing.
 	SignedIn func(ctx context.Context, harness string) (signedIn, known bool)
+	// Account asks an installed CLI what this account has: its plan, its
+	// models and its usage (see harness.Account). Nil asks nothing, and
+	// routing then knows only the catalog.
+	Account func(ctx context.Context, harness string) (harness.Account, bool)
 }
 
 func (e ProbeEnv) getenv(k string) string {
@@ -89,8 +96,14 @@ func ProbePools(ctx context.Context, cat *Catalog, e ProbeEnv) *Probe {
 			if e.Installed != nil {
 				ok = e.Installed(h)
 			}
+			st := HarnessState{Installed: ok}
+			if ok && e.Account != nil {
+				if a, asked := e.Account(ctx, h); asked {
+					st.account(a)
+				}
+			}
 			mu.Lock()
-			harnesses[h] = HarnessState{Installed: ok}
+			harnesses[h] = st
 			mu.Unlock()
 		}()
 	}
@@ -131,6 +144,14 @@ func ProbePools(ctx context.Context, cat *Catalog, e ProbeEnv) *Probe {
 		gpu = e.GPU(ctx)
 	}
 
+	// What Codex itself just reported beats what it last wrote into a
+	// session file.
+	// The newer of the two wins: a run since the last report writes a
+	// newer figure into its session file.
+	if q, ok := accountQuota(harnesses["codex"], "codex_app_server", e.Now.Unix()); ok && (!codexQ.OK || q.FetchedEpochRaw >= codexQ.FetchedEpochRaw) {
+		codexQ = q
+	}
+
 	binds := accountBindings(e, harnesses, codexMode, signedOut)
 
 	sig := readSignals(e.SignalsPath())
@@ -154,6 +175,17 @@ func ProbePools(ctx context.Context, cat *Catalog, e ProbeEnv) *Probe {
 
 	for id, p := range pools {
 		p.Pacing = pace(p, e.Now)
+		// The plan's own CLI names the plan, the usage beyond it, and
+		// why it has no figure when it has none.
+		if hs, ok := harnesses[planHome[id]]; ok && planHome[id] != "" {
+			if p.Plan == "" {
+				p.Plan = hs.Plan
+			}
+			p.Extra = hs.Extra
+			if p.UsedPct == nil && p.QuotaSource == SourceUnknown {
+				p.UsageNote = hs.UsageNote
+			}
+		}
 		pools[id] = p
 	}
 

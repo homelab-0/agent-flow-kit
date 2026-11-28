@@ -51,6 +51,12 @@ type Core struct {
 	// in (tests; nil asks the CLI when Live).
 	SignIn func(ctx context.Context, harness string) (signedIn, known bool)
 
+	// Accounts asks a CLI what this account has (tests; nil asks the CLI
+	// through its module in internal/harness).
+	Accounts func(ctx context.Context, harness string) (harness.Account, bool)
+
+	acctMu   sync.Mutex
+	acctMemo map[string]accountEntry
 	signMu   sync.Mutex
 	signMemo map[string]signAnswer
 	// NoTerminal says afk's output is not a terminal. A CLI started that
@@ -193,7 +199,7 @@ func (c *Core) probeEnv(s config.Settings, installed func(string) bool) router.P
 	return router.ProbeEnv{
 		Home: c.Home, Getenv: c.getenv, Now: c.now(), GatewayURL: s.GatewayURL,
 		LocalURLs: s.LocalURLs, GPU: gpuName(s.LocalGPU),
-		Installed: installed, Live: c.Live, CodexLoginMode: c.codexLoginMode(), SignedIn: c.signedIn(),
+		Installed: installed, Live: c.Live, CodexLoginMode: c.codexLoginMode(), SignedIn: c.signedIn(), Account: c.account(),
 	}
 }
 

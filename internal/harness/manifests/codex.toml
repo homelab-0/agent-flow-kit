@@ -17,6 +17,11 @@ errors = ["refresh token", "not logged in", "401 unauthorized"]
 # Reopens a session, including one `codex exec` started.
 [session]
 resume = ["codex", "resume", "{id}"]
+
+# The models this account can use, refreshed by Codex itself.
+[model_list]
+command = ["codex", "debug", "models"]
+format = "codex-json"
 verified = "0.172.0"
 
 [modes]

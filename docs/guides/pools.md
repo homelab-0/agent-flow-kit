@@ -19,9 +19,15 @@ A reported figure is as old as the last time the CLI reported it. When that is m
 
 A pool has a usage figure only from the provider's own report:
 
-- **Codex**: the rate limits Codex writes into its own session files (`rollout-*.jsonl` under `$CODEX_HOME/sessions`, by default `~/.codex/sessions`), with each window's reset time. The newest reading wins, by when it was recorded. No network call.
-- **Claude**: the `rate_limit_event` that Claude Code prints in its stream-json output, which `afk -p` asks for (`--output-format stream-json --verbose`). It has the plan's utilization per window (five-hour and weekly; overage windows don't count) and when each resets. AFK keeps the last reading in `~/.config/afk/state/plan-usage.json` and uses it until its window resets, for at most 12 hours. Interactive Claude sessions don't print it, so the figure is as of the last `afk -p` run on Claude; the route card says `measured (last -p)` and names the fuller window (5h or weekly). If Claude refused the call, the limit it named counts as full until the reset time Claude gave. No login is read and nothing extra is sent.
-- **Everything else** (Grok, Antigravity, OpenCode, and Claude or Codex with no current reading): `usage unknown`. Those CLIs don't report plan usage in anything AFK reads, and AFK doesn't guess from session files or anything else. An unknown plan still routes; its usage just doesn't count for or against it.
+- **Codex**: Codex's own app server (`codex app-server`, asked for `account/rateLimits/read`), which gives the plan, each usage window with its reset time, and the credit balance. It starts no session and spends nothing. Codex also writes its limits into its session files (`rollout-*.jsonl` under `$CODEX_HOME/sessions`); AFK reads those too and uses whichever reading is newer.
+- **Claude**: `claude auth status` gives the plan name. Usage comes from the `rate_limit_event` that Claude Code prints in its stream-json output, which `afk -p` asks for (`--output-format stream-json --verbose`). It has the plan's utilization per window (five-hour and weekly; overage windows don't count) and when each resets. AFK keeps the last reading in `~/.config/afk/state/plan-usage.json` and uses it until its window resets, for at most 12 hours. Claude Code has no command that prints usage, so the figure is as of the last `afk -p` run on Claude; the route card says `measured (last -p)` and names the fuller window (5h or weekly). If Claude refused the call, the limit it named counts as full until the reset time Claude gave.
+- **Grok**: `grok usage` answers only inside Grok's own screen, so there is no figure. The pool says so: `usage unknown (Grok shows plan usage only inside grok, with /usage)`.
+- **Antigravity**: it keeps its quota in memory and has no command that prints it. `usage unknown (Antigravity doesn't report plan usage)`.
+- **Anything else**: `usage unknown`.
+
+AFK never sends a prompt to find out usage, never opens a login file for it, and never guesses. An unknown plan still routes; its usage just doesn't count for or against it. When a CLI reports usage beyond the plan's windows (Codex's credit balance), the pool shows it as `extra usage`.
+
+Each CLI is asked through [its own module](harnesses.md#what-afk-asks-each-cli), and the answer is reused for five minutes (`~/.config/afk/state/accounts.json`).
 
 A [failure signal](#failure-signals) from a real run sets a pool aside for a while. That is a state, not a figure: the pool shows as set aside, with no percentage made up for it.
 

@@ -30,6 +30,9 @@ type Route struct {
 	PoolHeadroomPct *float64 `json:"pool_headroom_pct"`
 	PoolUsedPct     *float64 `json:"pool_used_pct"`
 	PoolQuotaSource string   `json:"pool_quota_source"`
+	// PoolUsageNote says why the pool has no usage figure, when its CLI
+	// reports none ("Grok shows plan usage only inside grok (/usage)").
+	PoolUsageNote string `json:"pool_usage_note"`
 
 	BenchmarkName     string   `json:"benchmark_name"`
 	BenchmarkScore    *float64 `json:"benchmark_score"`
@@ -141,14 +144,37 @@ func redactURL(s string) string {
 	return u.String()
 }
 
-// IsGateway reports a route that goes through a model gateway.
+// BasisUnrated is the benchmark basis of a model its CLI reported that
+// the catalog has no score for.
+const BasisUnrated = "unrated"
+
+// dropUnratedScore removes the scores of an unrated route: the router
+// ranks it at a default, which is a place in the order and not a
+// measurement, so no number is shown for it.
+func (r *Route) dropUnratedScore() {
+	if r.BenchmarkBasis != BasisUnrated {
+		return
+	}
+	r.BenchmarkScore, r.EffectiveScore = nil, nil
+	// Raw is what MarshalJSON writes; a score left there would come out
+	// in --explain --json.
+	if r.Raw != nil {
+		raw := make(map[string]any, len(r.Raw))
+		for k, v := range r.Raw {
+			raw[k] = v
+		}
+		raw["benchmark_score"], raw["effective_score"] = nil, nil
+		r.Raw = raw
+	}
+}
+
 // PoolBasis says how the pool figures were found, for people: "measured"
 // (the CLI's own rate-limit record), "measured at the last afk -p run"
 // (Claude's, read from a one-shot run's output), "set by a failed run",
 // "not signed in", or "" when nothing reported the pool's usage.
 func (r Route) PoolBasis() string {
 	switch {
-	case r.PoolQuotaSource == "codex_rate_limits":
+	case r.PoolQuotaSource == "codex_rate_limits", r.PoolQuotaSource == "codex_app_server":
 		return "measured"
 	case r.PoolQuotaSource == "claude_rate_limit_event":
 		return "measured at the last afk -p run"
@@ -203,6 +229,10 @@ func ParseExplain(b []byte) (*Explain, error) {
 	}
 	if e.Choice.Harness == "" {
 		return nil, fmt.Errorf("the routing decision names no harness")
+	}
+	e.Choice.dropUnratedScore()
+	for i := range e.ByHarness {
+		e.ByHarness[i].dropUnratedScore()
 	}
 	return &e, nil
 }

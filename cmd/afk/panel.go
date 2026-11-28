@@ -9,6 +9,7 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -417,9 +418,16 @@ func (s panelSource) Status(ctx context.Context) (*tui.StatusView, error) {
 			row.SignIn = "signed out"
 		case router.SourceUnknown:
 			row.Note = h + " hasn't reported its plan usage, so AFK shows none"
-			if h == "claude" {
-				row.Note = "claude reports its plan usage only in a one-shot run (afk -p), so AFK shows none yet"
+			if p.UsageNote != "" {
+				// The CLI's own module says why it has no figure.
+				row.Note = p.UsageNote + ", so AFK shows none"
 			}
+		}
+		if x := extraText(p.Extra); x != "" {
+			if row.Note != "" {
+				row.Note += " · "
+			}
+			row.Note += x
 		}
 		v.Plans = append(v.Plans, row)
 	}
@@ -1151,4 +1159,29 @@ func (s panelSource) MCPDo(ctx context.Context, op string, args ...string) (stri
 		return fmt.Sprintf("%s is in %s. Press s to add it to your CLIs, t to test it.", name, tildePath(d.env.Config)), nil
 	}
 	return "", fmt.Errorf("unknown mcp action %q", op)
+}
+
+// extraText is a plan's usage beyond its windows, as its CLI reported it:
+// "extra usage: credits 56656.97". "" when it reported none.
+func extraText(x *harness.Extra) string {
+	switch {
+	case x == nil:
+		return ""
+	case !x.Enabled:
+		return "extra usage: off"
+	case x.Unlimited:
+		return "extra usage: unlimited"
+	case x.Balance != "":
+		return "extra usage: credits " + balanceText(x.Balance)
+	}
+	return "extra usage: on"
+}
+
+// balanceText is a credit balance for people: a plain number is shown to
+// two places ("56656.9766350000" is "56656.98"); anything else as it came.
+func balanceText(b string) string {
+	if f, err := strconv.ParseFloat(b, 64); err == nil && !strings.ContainsAny(b, "eE") {
+		return strconv.FormatFloat(f, 'f', 2, 64)
+	}
+	return b
 }
