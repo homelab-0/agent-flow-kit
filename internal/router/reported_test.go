@@ -92,7 +92,7 @@ func TestACLIIsRoutedOnlyToTheModelsItReported(t *testing.T) {
 	if grok.Model != "grok-4.7" || grok.BenchmarkBasis == BasisUnrated {
 		t.Errorf("grok route = %s (%s)", grok.Model, grok.BenchmarkBasis)
 	}
-	// Claude Code lists nothing: it is routed from the catalog, as before.
+	// A CLI that listed nothing is routed from the catalog, as before.
 	if c := routeFor(t, p, "claude"); c.IsFallback() || c.Harness != "claude" {
 		t.Errorf("claude route = %+v", c)
 	}

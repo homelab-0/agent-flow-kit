@@ -129,9 +129,17 @@ func listModels(ctx context.Context, bin string, ml ModelList) ([]string, bool) 
 // run runs a CLI command with stdin closed and returns its stdout. ok is
 // false when it failed or ran out of time.
 func run(ctx context.Context, bin string, args ...string) ([]byte, bool) {
+	return runIn(ctx, bin, nil, args...)
+}
+
+// runIn is run with stdin: the CLI reads in, then sees the end of input.
+func runIn(ctx context.Context, bin string, in []byte, args ...string) ([]byte, bool) {
 	cmd := exec.CommandContext(ctx, bin, args...)
 	var out bytes.Buffer
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, &out, nil
+	cmd.Stdout, cmd.Stderr = &out, nil
+	if in != nil {
+		cmd.Stdin = bytes.NewReader(in)
+	}
 	// Node CLIs can leave children holding the pipe; don't wait on them.
 	cmd.WaitDelay = time.Second
 	if err := cmd.Run(); err != nil || ctx.Err() != nil {

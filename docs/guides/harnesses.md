@@ -80,7 +80,7 @@ Finding a CLI is the first step. AFK then asks each installed CLI what this acco
 | | Plan | Models | Usage |
 |---|---|---|---|
 | Codex | `codex app-server` (`account/rateLimits/read`) | `model/list` on the same connection, else `codex debug models` | windows, reset times and credit balance from the same call |
-| Claude Code | `claude auth status` | none (it has no list command; AFK uses the aliases in the catalog) | only with a run, see [pools](pools.md#how-usage-is-measured) |
+| Claude Code | `claude auth status` | a `list_models` control request to `claude -p --input-format stream-json`: no message is sent, so no turn runs. It does start Claude Code, so your SessionStart hooks run | only with a run, see [pools](pools.md#how-usage-is-measured) |
 | Grok | not reported | `grok models` | not reported outside Grok's own screen |
 | Antigravity | not reported | `agy models` | not reported |
 | OpenCode | n/a | `opencode models` | n/a |
@@ -90,7 +90,7 @@ Two rules follow from the model list:
 - **A CLI that listed its models is routed only to those.** If your Antigravity plan doesn't include a model, `agy models` leaves it out and AFK never offers it, whatever the benchmark catalog says.
 - **A listed model with no benchmark is still offered**, marked `no benchmark`. It ranks below rated models and no score is shown for it.
 
-A CLI that lists nothing (Claude Code, or one whose command failed) is routed from the catalog, as before.
+A CLI that lists nothing (its command failed, or it has none) is routed from the catalog, as before.
 
 None of this sends a prompt or opens a login file. `afk pools --json` shows what each CLI reported under `harnesses`.
 

@@ -41,7 +41,7 @@ func TestManifestsNameAModelList(t *testing.T) {
 		}
 	}
 	if a, _ := Lookup("claude"); len(a.Manifest.ModelList.Command) != 0 {
-		t.Error("claude has no model list command; its manifest must not name one")
+		t.Error("claude lists its models over the control channel; its manifest must not name a command")
 	}
 }
 
@@ -125,7 +125,16 @@ func TestAskSaysWhyThereIsNoUsage(t *testing.T) {
 	dir := t.TempDir()
 	stub(t, dir, "grok", `echo "Available models:"; echo "* grok-4.7 (default)"; echo "  grok-4.6"`)
 	stub(t, dir, "agy", `printf 'gemini-4-hydrogen-high\tGemini 4 Hydrogen (High)\n'`)
-	stub(t, dir, "claude", `echo '{"loggedIn":true,"planTier":"max_20x","email":"someone@example.com"}'`)
+	// Claude Code answers the plan from a command, and its models over
+	// print mode's control channel: a request on stdin, no message.
+	stub(t, dir, "claude", `if [ "$1" = auth ]; then
+  echo '{"loggedIn":true,"planTier":"max_20x","email":"someone@example.com"}'; exit 0
+fi
+read -r line
+case "$line" in *'"subtype":"list_models"'*) ;; *) exit 3;; esac
+if read -r more; then exit 4; fi
+echo '{"type":"system","subtype":"hook_started","session_id":"s1"}'
+echo '{"type":"control_response","response":{"subtype":"success","response":{"models":[{"value":"default","resolvedModel":"claude-opus-5-5","displayName":"Default (recommended)"},{"value":"opus","resolvedModel":"claude-opus-5-5"},{"value":"claude-fable-5-2"},{"value":"sonnet","resolvedModel":"claude-sonnet-5-5"}]}}}'`)
 	stub(t, dir, "opencode", `exit 1`)
 	e := Env{BinDir: dir}
 	grok, _ := Ask(context.Background(), e, "grok")
@@ -137,8 +146,12 @@ func TestAskSaysWhyThereIsNoUsage(t *testing.T) {
 		t.Errorf("agy = %+v", agy)
 	}
 	claude, _ := Ask(context.Background(), e, "claude")
-	if claude.Plan != "max_20x" || claude.ModelsKnown || claude.UsageNote == "" {
+	if claude.Plan != "max_20x" || claude.UsageNote == "" {
 		t.Errorf("claude = %+v", claude)
+	}
+	// "default" is what Claude Code picks, not a model of its own.
+	if !reflect.DeepEqual(claude.Models, []string{"opus", "claude-fable-5-2", "sonnet"}) || !claude.ModelsKnown || claude.DefaultModel != "claude-opus-5-5" {
+		t.Errorf("claude models = %v (known %v, default %q)", claude.Models, claude.ModelsKnown, claude.DefaultModel)
 	}
 	// A CLI whose list command fails is "unknown", never "no models".
 	oc, ok := Ask(context.Background(), e, "opencode")
