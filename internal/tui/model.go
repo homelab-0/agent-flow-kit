@@ -167,6 +167,8 @@ type Model struct {
 	introStart time.Time
 	taskIdx    int
 	help       bool
+	menuSel    int             // the selected row of the command menu
+	menuOff    bool            // esc closed the menu until the input changes
 	exitArmed  bool            // ctrl+c was pressed once on an empty input
 	preview    *engine.Explain // an empty task routed for the status line
 
@@ -376,6 +378,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case previewMsg:
 		m.preview = msg.ex
 		return m, nil
+	case updateDoneMsg:
+		m.notice = "back from the update"
+		if msg.err != nil {
+			m.notice = "the update didn't finish: " + msg.err.Error()
+		}
+		return m, tea.Batch(m.previewCmd(), m.cin.Focus())
 	case escMsg:
 		return m, m.onEscTick()
 	case tea.KeyPressMsg:

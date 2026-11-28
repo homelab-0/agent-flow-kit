@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"os/exec"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -247,6 +246,7 @@ type Panel struct {
 	// A switch waiting for its yes: the key, and what is asked.
 	cfgAskKey, cfgAsk string
 	ask               *panelAsk
+	pal               *palette // the command palette, when open
 	id                int
 	gens              map[Tab]int // the latest load of each tab
 	loading           map[Tab]bool
@@ -346,6 +346,7 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 		case *StatusView:
 			p.raw.status = v
 		case *ConfigView:
+			sortConfig(v)
 			p.raw.config = v
 		case *SkillsView:
 			p.raw.skills = v
@@ -410,6 +411,9 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 
 func (p *Panel) key(k string) tea.Cmd {
 	p.notice = ""
+	if p.pal != nil {
+		return p.palKey(k)
+	}
 	if p.askScope != "" && p.tab == TabSkills {
 		return p.skillsKey(k) // the scope question takes the next key
 	}
@@ -434,6 +438,11 @@ func (p *Panel) key(k string) tea.Cmd {
 	armed := p.cfgRemove
 	p.cfgRemove = ""
 	if p.filterKey(k) {
+		return nil
+	}
+	if k == "ctrl+p" || k == ":" {
+		p.pal = &palette{}
+		p.tools = nil
 		return nil
 	}
 	if p.tools != nil && p.tab == TabMCP {
@@ -513,6 +522,8 @@ func (p *Panel) key(k string) tea.Cmd {
 				return nil
 			}
 			return p.run("harness", "update", h.Name)
+		case "U":
+			return p.run("harness", "update", "--all")
 		case "l":
 			return p.run("harness", "login", h.Name)
 		case "d":
@@ -576,9 +587,9 @@ func (p *Panel) run(args ...string) tea.Cmd {
 	if len(argv) == 0 {
 		return nil
 	}
-	c := exec.Command(argv[0], argv[1:]...)
 	id := p.id
-	return tea.ExecProcess(c, func(err error) tea.Msg { return panelExecMsg{panel: id, err: err} })
+	editor := len(args) > 1 && args[1] == "edit" // config, mcp or skills edit: the editor was the point
+	return execPaused(argv, editor, func(err error) tea.Msg { return panelExecMsg{panel: id, err: err} })
 }
 
 func (p *Panel) switchTo(t Tab) tea.Cmd {
@@ -660,7 +671,8 @@ func (p *Panel) Lines() []line {
 	if w <= 0 {
 		w = 80
 	}
-	out := []line{p.tabBar(w), nil}
+	out := p.theme.navLines(p.tab, w, p.versionLabel())
+	out = append(out, p.subtitle(w), nil)
 	var body []line
 	var hint line
 	switch {
@@ -689,6 +701,9 @@ func (p *Panel) Lines() []line {
 			body, hint = p.configLines(w)
 		}
 	}
+	if p.pal != nil {
+		body, hint = p.palLines(w), line{sg(t.Key, "↑↓"), sg(t.Dim, " pick  "), sg(t.Key, "↵"), sg(t.Dim, " run  "), sg(t.Key, "esc"), sg(t.Dim, " close  ")}
+	}
 	if a := p.ask; a != nil && a.tab == p.tab && p.loaded(p.tab) && p.data.err[p.tab] == "" {
 		// The input sits above the rows, so it never scrolls out of view.
 		in := []line{{sg(t.Key, " "+a.label+" "), sg(t.Plain, a.text), sg(t.Accent, "▏")}}
@@ -701,11 +716,25 @@ func (p *Panel) Lines() []line {
 	if f := p.filter[p.tab]; f != "" && p.loaded(p.tab) && p.rows() == 0 && p.data.err[p.tab] == "" {
 		body = []line{{sg(t.Dim, " Nothing matches “"+f+"”. "), sg(t.Key, "esc"), sg(t.Dim, " clears the filter.")}}
 	}
+	// The tab's own keys on the left, the panel's at the right; the
+	// tab's on a second row when both don't fit.
+	filter := filterable(p.tab) && !(p.tab == TabMCP && p.tools != nil)
+	typingValue := p.tab == TabConfig && p.cfgKey != "" || p.ask != nil && p.ask.tab == p.tab || p.pal != nil
+	hints := hintPairs(hint)
+	var right [][2]string
+	if !typingValue {
+		if filter {
+			hints = append(hints, [2]string{"/", "filter"})
+		}
+		hints = append(hints, [2]string{"r", "refresh"})
+		right = [][2]string{{"ctrl+p", "commands"}, {"esc", p.escLabel()}, {"q", "quit"}}
+	}
+	footer := p.theme.keyBars(hints, right, w)
 	fl := p.filterLine()
 	if p.height > 0 {
 		// The tab bar and its gap, the notice and the hints keep their
 		// rows; the body scrolls to keep the selected row in view.
-		room := p.height - len(out) - 1
+		room := p.height - len(out) - len(footer)
 		if fl != nil {
 			room--
 		}
@@ -726,7 +755,7 @@ func (p *Panel) Lines() []line {
 	}
 	// The hints sit on the last row when the height is known, with the
 	// filter just above them.
-	end := p.height - 1
+	end := p.height - len(footer)
 	if fl != nil {
 		end--
 	}
@@ -740,43 +769,36 @@ func (p *Panel) Lines() []line {
 	if fl != nil {
 		out = append(out, fitLine(fl, w))
 	}
-	// The panel's own keys follow the tab's; on a narrow screen r and /
-	// give way first so the tabs and quit stay in sight.
-	filter := filterable(p.tab) && !(p.tab == TabMCP && p.tools != nil)
-	refresh := true
-	typingValue := p.tab == TabConfig && (p.cfgKey != "" || p.cfgAskKey != "") || p.ask != nil && p.ask.tab == p.tab
-	if typingValue {
-		filter, refresh = false, false // every key is text for now
+	return append(out, footer...)
+}
+
+// versionLabel is what sits at the right of the strip.
+func (p *Panel) versionLabel() string {
+	if p.version == "" {
+		return ""
 	}
-	var keys line
-	for {
-		keys = append(line{sg(t.Plain, " ")}, hint...)
-		if filter {
-			keys = append(keys, sg(t.Key, "/"), sg(t.Dim, " filter  "))
-		}
-		if typingValue {
-			break
-		}
-		keys = append(keys, sg(t.Key, "1-7"), sg(t.Dim, " tabs  "))
-		if refresh {
-			keys = append(keys, sg(t.Key, "r"), sg(t.Dim, " refresh  "))
-		}
-		keys = append(keys, sg(t.Key, "q"), sg(t.Dim, " quit"))
-		switch {
-		case keys.width() <= w:
-		case refresh:
-			refresh = false
-			continue
-		case filter:
-			filter = false
-			continue
-		case len(hint) > 2: // then the tab's own hints, from the last
-			hint = hint[:len(hint)-2]
-			continue
-		}
-		break
+	return "afk " + p.version
+}
+
+// escLabel is what esc does here.
+func (p *Panel) escLabel() string {
+	if p.filter[p.tab] != "" {
+		return "clear filter"
 	}
-	return append(out, fitLine(keys, w))
+	if p.standalone {
+		return "quit"
+	}
+	return "back"
+}
+
+// subtitle is the line under the strip: what this tab is for.
+func (p *Panel) subtitle(w int) line {
+	t := p.theme
+	l := line{sg(t.Bold, " "+tabNames[p.tab]), sg(t.Dim, "  "+tabBlurbs[p.tab])}
+	if p.loading[p.tab] {
+		l = append(l, sg(t.Accent, "  "+spinFrames[0]), sg(t.Dim, " loading"))
+	}
+	return fitLine(l, w)
 }
 
 // View is the panel full screen.
@@ -805,37 +827,6 @@ func scrollTo(body []line, n int) []line {
 	return body[start : start+n]
 }
 
-func (p *Panel) tabBar(w int) line {
-	t := p.theme
-	// Every label, when they fit; else numbers, with the open tab named.
-	full := 1
-	for _, n := range tabNames {
-		full += lenCells(n) + 3
-	}
-	l := line{sg(t.Plain, " ")}
-	for i, n := range tabNames {
-		if Tab(i) == p.tab {
-			if full > w {
-				n = fmt.Sprintf("%d %s", i+1, n)
-			}
-			l = append(l, sg(t.Accent.Bold(true).Background(t.selbg), " "+n+" "))
-		} else {
-			if full > w {
-				n = fmt.Sprint(i + 1)
-			}
-			l = append(l, sg(t.Dim, " "+n+" "))
-		}
-		l = append(l, sg(t.Plain, " "))
-	}
-	if v := p.version; v != "" {
-		right := "afk " + v
-		if gap := w - l.width() - lenCells(right) - 1; gap > 1 {
-			l = append(l, sg(t.Plain, strings.Repeat(" ", gap)), sg(t.Dim, right))
-		}
-	}
-	return l
-}
-
 // selRow highlights the selected row the way the route table does.
 func (p *Panel) selRow(l line, i, w int) line {
 	t := p.theme
@@ -854,7 +845,7 @@ func (p *Panel) harnessLines(w int) ([]line, line) {
 	if len(v.Rows) == 0 {
 		return []line{{sg(t.Dim, " No agent CLI found on this machine. Install claude, codex, grok, opencode, agy or pi.")}}, nil
 	}
-	out = append(out, line{sg(t.Dim, "   "+col("harness", 13)+col("version", 9)+col("sign-in", 15)+col("routes", 9)+"update")})
+	out = append(out, line{sg(t.Dim, "   "+col("harness", 13)+col("version", 9)+col("sign-in", 15)+col("routes", 9)+"updates via")})
 	for i, h := range v.Rows {
 		ver, sign, routes, upd := h.Version, h.SignIn, h.Routes, "·"
 		if ver == "" {
@@ -864,7 +855,10 @@ func (p *Panel) harnessLines(w int) ([]line, line) {
 			ver, sign, routes = "—", "not installed", "—"
 		}
 		if h.Update != "" && h.Installed {
-			upd = "u"
+			upd = h.Method
+			if upd == "" {
+				upd = "yes"
+			}
 		}
 		st := t.Plain
 		if !h.Installed {
@@ -904,7 +898,7 @@ func (p *Panel) harnessLines(w int) ([]line, line) {
 	if h.Update != "" {
 		out = append(out, line{sg(t.Dim, "   update  "), sg(t.Plain, h.Update)})
 	}
-	hint := line{sg(t.Key, "↑↓"), sg(t.Dim, " pick  "), sg(t.Key, "u"), sg(t.Dim, " update  "), sg(t.Key, "l"), sg(t.Dim, " login  "), sg(t.Key, "d"), sg(t.Dim, " doctor  ")}
+	hint := line{sg(t.Key, "↑↓"), sg(t.Dim, " pick  "), sg(t.Key, "u"), sg(t.Dim, " update  "), sg(t.Key, "U"), sg(t.Dim, " update all  "), sg(t.Key, "l"), sg(t.Dim, " login  "), sg(t.Key, "d"), sg(t.Dim, " doctor  ")}
 	return out, hint
 }
 
@@ -1144,24 +1138,34 @@ func (p *Panel) configLines(w int) ([]line, line) {
 	if !v.Exists {
 		head = append(head, sg(t.Dim, " (not created yet: defaults apply; "), sg(t.Key, "e"), sg(t.Dim, " creates it)"))
 	}
-	out := []line{head, nil, {sg(t.Dim, "   "+col("setting", 28)+"value")}}
-	// While a value is typed or a switch asks, only that row is shown, so
-	// what is said under it is never scrolled out of sight.
+	out := []line{head, nil}
+	list := p.configList(w)
 	focus := p.cfgKey != "" || p.cfgAskKey != ""
-	for i, kv := range v.Rows {
-		if focus && i != p.sel[TabConfig] {
-			continue
+	switch {
+	case focus:
+		out = append(out, list...)
+	case w >= 96:
+		// The list on the left, what the selected setting does on the right.
+		lw := 46
+		list = p.configList(lw)
+		detail := p.configDetail(w - lw - 4)
+		for i := 0; i < max(len(list), len(detail)); i++ {
+			var l line
+			if i < len(list) {
+				l = list[i]
+			}
+			if i < len(detail) {
+				l = append(l.pad(lw, t.Plain), sg(t.Border, " │  "))
+				l = append(l, detail[i]...)
+			}
+			out = append(out, l)
 		}
-		// A row this tab can't change yet is dim.
-		st := t.Dim
-		if _, ok := v.Edit[kv[0]]; ok {
-			st = t.Plain
+	default:
+		out = append(out, list...)
+		out = append(out, nil)
+		for _, l := range p.configDetail(w - 4) {
+			out = append(out, append(line{sg(t.Plain, "  ")}, l...))
 		}
-		row := line{sg(t.Plain, "  "+col(kv[0], 28)), sg(st, kv[1])}
-		if kv[0] == p.cfgKey {
-			row = line{sg(t.Plain, "  "+col(kv[0], 28)), sg(t.Plain, p.cfgText), sg(t.Accent, "▏")}
-		}
-		out = append(out, p.selRow(row, i, w))
 	}
 	for _, wn := range v.Warnings {
 		out = append(out, fitLine(line{sg(t.Warn, " ! "+wn)}, w))

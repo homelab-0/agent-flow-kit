@@ -12,7 +12,10 @@ import (
 	"github.com/homelab-0/agent-flow-kit/internal/engine"
 )
 
-type fakePanel struct{ ran [][]string }
+type fakePanel struct {
+	ran  [][]string
+	cmds [][]string // afk subcommands handed the terminal
+}
 
 func f(v float64) *float64 { return &v }
 
@@ -121,7 +124,10 @@ func (p *fakePanel) MCPTools(_ context.Context, server string) ([]MCPTool, error
 	return []MCPTool{{"create_issue", "Create an issue\nin a repository."}, {"list_pulls", "List pull requests."}, {"search_code", ""}}, nil
 }
 
-func (p *fakePanel) Command(args ...string) []string { return append([]string{"afk"}, args...) }
+func (p *fakePanel) Command(args ...string) []string {
+	p.cmds = append(p.cmds, args)
+	return append([]string{"afk"}, args...)
+}
 
 // panelAt opens a panel on a tab and loads it.
 func panelAt(t *testing.T, tab Tab) *Panel {
@@ -145,11 +151,11 @@ func panelText(p *Panel) string {
 
 func TestPanelTabs(t *testing.T) {
 	for tab, want := range map[Tab][]string{
-		TabHarnesses: {"Route   Harnesses   Benchmarks   Skills   MCP   Runs   Config", "afk 0.2.0", "CL claude    2.1.332  signed in      plan+gw  u",
+		TabHarnesses: {"1 Route  2 Harnesses  3 Benchmarks  4 Skills  5 MCP  6 Runs  7 Config", "Harnesses  the agent CLIs on this machine", "CL claude    2.1.332  signed in      plan+gw  native installer",
 			"OC opencode  1.4.0    signed out", "PI pi        —        not installed", "models  claude-fable-5-2, sonnet, +2 via gateway", "usage   5h 71% left · week 64% left", "u update"},
 		TabBench:  {"task   coding  quick", "source SWE-bench Verified", "claude-fable-5-2   CL", "78.1  measured  14✓ 2~", "CX OC", "qwen36-14b         OL", "Effective today", "CX 71.8 (52%)", "OL 51.0", "←→ task"},
 		TabRuns:   {"updated 03:31", "CL Claude plan", "71%", "GK Grok plan", "GK Grok plan          █████████░ 91%     unknown", "agentgateway      up", "└ VL vLLM", "OL ollama", "this PC · RTX 5090 · 1 model", "r-7f3c", "✓ solved", "! exit 1", "23m · 30m ago"},
-		TabConfig: {"file ~/.config/afk/config.toml", "route.prefer                balanced", "e edit config.toml"},
+		TabConfig: {"file ~/.config/afk/config.toml", "Routing", "Prefer                      balanced", "e edit config.toml"},
 		TabSkills: {"4 skills · source ~/.config/afk/skills · 1 drifted · 1 to sync · 1 to choose", "skill", "CL  CX  GK  AG", "gh-pr-triage", "↻", "╭─ gh-pr-triage changed in grok",
 			"Edited in ~/.grok/skills 2 hours ago. 4 lines differ from central.", "k keep grok's and update central", "space enable"},
 		TabMCP: {"4 servers · ~/.config/afk/mcp.toml · 360 tools · 1 drifted · 1 to sync", "server", "CL  CX  GK  PI  status", "openconnector",
@@ -164,7 +170,7 @@ func TestPanelTabs(t *testing.T) {
 		if lines := strings.Count(s, "\n") + 1; lines != 24 {
 			t.Errorf("tab %s is %d lines, want the full 24", tabNames[tab], lines)
 		}
-		if !strings.Contains(strings.Split(s, "\n")[23], "1-7 tabs") {
+		if !strings.Contains(strings.Split(s, "\n")[23], "ctrl+p commands") {
 			t.Errorf("tab %s: the hints aren't on the last row", tabNames[tab])
 		}
 	}
@@ -320,7 +326,7 @@ func TestPanelScrollsAndNarrowTabs(t *testing.T) {
 		p.Update(key("down"))
 	}
 	s := panelText(p)
-	if n := strings.Count(s, "\n") + 1; n != 12 || !strings.Contains(s, "▌") || !strings.Contains(s, "1-7 tabs") {
+	if n := strings.Count(s, "\n") + 1; n != 12 || !strings.Contains(s, "▌") || !strings.Contains(s, "ctrl+p commands") {
 		t.Errorf("a short terminal should scroll to the selected run (%d lines):\n%s", n, s)
 	}
 	p.Update(tea.WindowSizeMsg{Width: 50, Height: 24})

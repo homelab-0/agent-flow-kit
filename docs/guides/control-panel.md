@@ -1,6 +1,6 @@
 # The control panel
 
-The control panel is AFK's full-screen management view. Tabs run across the top: Route, Harnesses, Benchmarks, Skills, MCP, Runs and Config.
+The control panel is AFK's full-screen management view. The tabs run across the top with their number keys (`1 Route  2 Harnesses  3 Benchmarks  4 Skills  5 MCP  6 Runs  7 Config`), the open one underlined; under them a line says what the tab is for, and the bottom row shows the tab's keys and the panel's own.
 
 Open it from the composer (plain `afk`): on an empty input press `2` to `7`, or type `/harnesses`, `/bench`, `/skills`, `/mcp`, `/runs` or `/config`. `1` or `esc` takes you back to the composer. `afk status` opens it on its own, on the Runs tab (`afk status --tab bench` picks another), and there `1`, `esc` or `q` quits.
 
@@ -9,6 +9,7 @@ Open it from the composer (plain `afk`): on an empty input press `2` to `7`, or 
 | `1`–`7`, `tab` / `shift+tab` | switch tabs (`1` is Route) |
 | `↑` `↓` or `j` `k` | pick a row |
 | `/` | filter the tab's rows by name: type, then `↵` to keep the filter or `esc` to clear it. Each tab keeps its own filter, and `esc` clears it before it leaves the panel. |
+| `ctrl+p` or `:` | the command palette: go to a tab, update every CLI or one, sign in to one, update AFK, sync benchmarks, edit `config.toml`. Type to narrow it, `↑` `↓` to pick, `↵` to run, `esc` to close |
 | `r` | load the tab again |
 | `q` | quit |
 
@@ -21,11 +22,11 @@ Every agent CLI AFK supports, installed ones first, with:
 - its version
 - its sign-in: `signed in` or `signed out` from the CLI's own status command where it has one, else `login on disk` (a login file exists; AFK never reads what's in it and can't confirm it still works)
 - what it can be routed to: `plan`, `gw` (the model gateway), `local` (a [local engine](local-models.md))
-- the command that updates it
+- how it updates (`npm`, `self-managed`, …)
 
 The selected CLI shows its path, how it was installed, the models it runs and how much of its plan is left.
 
-`u` updates it (`afk harness update`), `l` signs in (`afk harness login`), `d` runs `afk harness doctor`.
+`u` updates it (`afk harness update`), `U` updates every installed CLI that has something newer (`afk harness update --all`), `l` signs in (`afk harness login`), `d` runs `afk harness doctor`.
 
 ## Benchmarks
 
@@ -48,7 +49,7 @@ The models you can reach for one kind of task, best first. Each row shows:
 
 ## Config
 
-The settings in effect and the path of `config.toml`. Change a setting right here: select its row and press `↵`.
+The settings in effect and the path of `config.toml`, in groups (Routing, Permissions, Gateways, Local models, Agent CLIs, Benchmarks) with plain names. Switches show as `● on` or `○ off`, and the selected setting's key, what it does and its values are shown beside the list (under it on a terminal narrower than 96 columns). Change a setting right here: select its row and press `↵`.
 
 | Setting | `↵` does |
 |---|---|
