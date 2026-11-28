@@ -33,6 +33,7 @@ type Manifest struct {
 	Models    []string  `toml:"models"` // hints, not a list AFK routes from
 	Auth      Auth      `toml:"auth"`
 	ModelList ModelList `toml:"model_list"`
+	Session   Session   `toml:"session"`
 	Modes     Modes     `toml:"modes"`
 	Skills    Skills    `toml:"skills"`
 	MCP       MCP       `toml:"mcp"`
@@ -78,6 +79,15 @@ type Skills struct {
 	Verified string `toml:"verified"`
 }
 
+// Session is how a harness reopens one of its own sessions.
+type Session struct {
+	// Resume opens a past session in the CLI's own screen; the word
+	// "{id}" stands for the session id.
+	Resume []string `toml:"resume"`
+	// Verified is the CLI version the command was checked against.
+	Verified string `toml:"verified"`
+}
+
 // ModelList is how a harness says which models this account can use. AFK
 // runs the command and reads the model names from its output; a harness
 // with none is routed from the catalog alone.
@@ -89,6 +99,19 @@ type ModelList struct {
 	Format string `toml:"format"`
 	// Verified is the CLI version the command was checked against.
 	Verified string `toml:"verified"`
+}
+
+// ResumeArgv is the command that reopens session id, without the program
+// name; nil when the harness has none.
+func (m Manifest) ResumeArgv(id string) []string {
+	if len(m.Session.Resume) < 2 || id == "" {
+		return nil
+	}
+	out := make([]string, 0, len(m.Session.Resume)-1)
+	for _, a := range m.Session.Resume[1:] {
+		out = append(out, strings.ReplaceAll(a, "{id}", id))
+	}
+	return out
 }
 
 // ModelListFormats are the model list outputs AFK can read.
@@ -405,6 +428,11 @@ func (m Manifest) validate(path string) error {
 			return fmt.Errorf("%s: an auth command needs a program", path)
 		}
 	}
+	if r := m.Session.Resume; len(r) > 0 {
+		if strings.TrimSpace(r[0]) == "" || !strings.Contains(strings.Join(r[1:], " "), "{id}") {
+			return fmt.Errorf("%s: session.resume needs a program and {id}", path)
+		}
+	}
 	if len(m.ModelList.Command) > 0 {
 		if strings.TrimSpace(m.ModelList.Command[0]) == "" {
 			return fmt.Errorf("%s: model_list.command needs a program", path)
@@ -504,6 +532,8 @@ func merge(base, over Manifest) Manifest {
 	list(&base.Auth.Status, over.Auth.Status)
 	list(&base.Auth.Expiry, over.Auth.Expiry)
 	list(&base.Auth.Errors, over.Auth.Errors)
+	list(&base.Session.Resume, over.Session.Resume)
+	set(&base.Session.Verified, over.Session.Verified)
 	list(&base.ModelList.Command, over.ModelList.Command)
 	set(&base.ModelList.Format, over.ModelList.Format)
 	set(&base.ModelList.Verified, over.ModelList.Verified)

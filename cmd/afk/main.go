@@ -128,6 +128,7 @@ func interactive(eng tui.Backend, args cli.Args, width int) int {
 		}
 		return "rated " + ran.rec.ID + ": " + outcome
 	}
+	opt.CanOpen = func() string { return ran.canOpen() }
 	for {
 		model := tui.New(eng, opt)
 		p := tea.NewProgram(tui.WithKittyLogos(tui.WithOverlay(model, overlay), logos), tea.WithFPS(opt.FPS))
@@ -152,6 +153,12 @@ func interactive(eng tui.Backend, args cli.Args, width int) int {
 			sessions++
 			// The transcript carries on under the header already printed.
 			opt.Header = nil
+		}
+		if dec.Open && ran != nil {
+			code := openSession(eng, c.Harness, ran, tui.NewTheme(dark).WithLogos(logos))
+			sessions++
+			opt.Header = hdr
+			next = resumeNote(ran.route, code)
 		}
 		if dec.Launch {
 			opt.Header = hdr
@@ -185,7 +192,7 @@ func afterCard(dec tui.Decision, composer bool, sessions, last int) (notice stri
 	switch {
 	case dec.Err != nil:
 		return "", true, 4
-	case dec.Launch, dec.RunHere:
+	case dec.Launch, dec.RunHere, dec.Open:
 		return "", false, 0
 	case !dec.Cancelled:
 		return "", true, 1
@@ -219,6 +226,9 @@ func resumeNote(r engine.Route, code int) string {
 type ranHere struct {
 	dir string
 	rec runrec.Record
+	// route is the route that answered, as it ran (the record keeps a
+	// redacted copy).
+	route engine.Route
 }
 
 func (r *ranHere) save(outcome string) error {
@@ -309,8 +319,8 @@ func runHere(c *core.Core, dec tui.Decision, pass []string, theme tui.Theme, dar
 	ch := snap.Since()
 	rc.Files, rc.Commits = ch.Files, ch.Commits
 	lipgloss.Println(theme.ReceiptText(rc))
-	out := &ranHere{dir: dir, rec: runrec.Record{
-		ID: id, Where: "here", Route: res.Route.Redacted(), Exit: exit,
+	out := &ranHere{dir: dir, route: res.Route, rec: runrec.Record{
+		ID: id, Where: "here", Route: res.Route.Redacted(), Exit: exit, Session: res.Session,
 		StartedAt: runrec.Stamp(started), EndedAt: runrec.Stamp(ended),
 		DurationS:  int64(ended.Sub(started).Round(time.Second) / time.Second),
 		PoolBefore: tui.PctInt(pre), PoolAfter: tui.PctInt(rc.PoolAfter), FilesChanged: ch.Files, Commits: ch.Commits,

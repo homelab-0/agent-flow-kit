@@ -10,6 +10,9 @@ self_update = "update"
 [auth]
 login = ["agy", "login"]
 
+[session]
+resume = ["agy", "--resume", "{id}"]
+
 # One "id<TAB>name" line per model the signed-in plan includes.
 [model_list]
 command = ["agy", "models"]

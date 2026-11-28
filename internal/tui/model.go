@@ -63,6 +63,9 @@ type Options struct {
 	RunHere bool
 	// Rate, when set, rates the last run for /rate and returns a notice.
 	Rate func(outcome string) string
+	// CanOpen says whether the last run here left a session its CLI can
+	// reopen: "" when it can, else why not. Nil: nothing ran yet.
+	CanOpen func() string
 	// Panel is the control panel's data; nil leaves the tabs out.
 	Panel PanelSource
 	// Version is shown at the right of the tab bar.
@@ -80,6 +83,9 @@ type Decision struct {
 	Cancelled bool
 	// RunHere: run Prompt inside AFK, with Flags, and come back.
 	RunHere bool
+	// Open: reopen the last run's session in its CLI's own screen, and
+	// come back.
+	Open bool
 	// Exit is set with Cancelled when the person asked to leave AFK (from
 	// the composer or a tab), not just to drop one prompt's card.
 	Exit bool
@@ -129,11 +135,13 @@ type (
 
 // Model is the route card program.
 type Model struct {
-	opt    Options
-	be     Backend
-	theme  Theme
-	width  int
-	height int
+	// openLast is set by /open: the composer ends with Decision.Open.
+	openLast bool
+	opt      Options
+	be       Backend
+	theme    Theme
+	width    int
+	height   int
 	// panel is the open control panel (nil: the card or composer).
 	panel *Panel
 	st    state

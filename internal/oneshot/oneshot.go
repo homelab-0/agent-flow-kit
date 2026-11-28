@@ -254,6 +254,10 @@ type Result struct {
 	Route    engine.Route // the route that answered
 	Attempts int
 	Output   string
+	// Session is the CLI's own id for the session that answered, when
+	// its output named one ("" otherwise). The CLI can reopen it by this
+	// id.
+	Session string
 	// Tried lists harness/model for every attempt, in order.
 	Tried []string
 	// Exit is the last attempt's exit status (1 when it exited 0 but its
@@ -310,7 +314,7 @@ func Do(ctx context.Context, req Request, d Deps) Result {
 		} else {
 			text, ok = Answer(out.Stdout, out.Answer)
 			if rc == 0 && ok {
-				return Result{OK: true, Route: route, Attempts: attempt, Output: strings.TrimRight(text, "\n"), Tried: tried}
+				return Result{OK: true, Route: route, Attempts: attempt, Output: strings.TrimRight(text, "\n"), Tried: tried, Session: SessionID(out.Stdout)}
 			}
 		}
 		if rc == 0 {
@@ -493,3 +497,34 @@ func plural(n int, one, many string) string {
 	}
 	return many
 }
+
+// sessionKeys are the names the CLIs give their session id in JSON output:
+// Codex's thread.started event (thread_id), Claude Code's result
+// (session_id), and the spellings Grok and Antigravity use.
+var sessionKeys = []string{"thread_id", "session_id", "sessionId", "conversation_id", "conversationId"}
+
+// SessionID finds the CLI's session id in its JSON output: the first
+// top-level value under one of sessionKeys. "" when the output isn't JSON
+// or names none.
+func SessionID(stdout []byte) string {
+	vals, ok := decodeAll(stdout)
+	if !ok {
+		return ""
+	}
+	for _, v := range vals {
+		m, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, k := range sessionKeys {
+			if id, ok := m[k].(string); ok && sessionIDRE.MatchString(id) {
+				return id
+			}
+		}
+	}
+	return ""
+}
+
+// sessionIDRE is what a session id may look like: it is passed to the CLI
+// as an argument later, so nothing that could read as an option or a path.
+var sessionIDRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{3,127}$`)

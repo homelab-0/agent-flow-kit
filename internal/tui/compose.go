@@ -184,6 +184,11 @@ func (m *Model) submit(here bool) tea.Cmd {
 	if strings.HasPrefix(text, "/") {
 		m.notice = m.command(text)
 		m.cin.SetValue("")
+		if m.openLast {
+			m.openLast = false
+			m.cin.Blur()
+			return m.finish(Decision{Open: true})
+		}
 		return nil
 	}
 	if k := taskKinds[m.taskIdx]; k != "auto" {
@@ -243,11 +248,20 @@ func (m *Model) command(text string) string {
 			return "rate the last run: /rate 1 (solved), 2 (partly) or 3 (wrong pick)"
 		}
 		return m.opt.Rate(o)
+	case "open":
+		if m.opt.CanOpen == nil {
+			return "nothing to open yet: run a task first"
+		}
+		if why := m.opt.CanOpen(); why != "" {
+			return why
+		}
+		m.openLast = true
+		return ""
 	case "clear":
 		f.Harness, f.Model, f.Effort, f.Prefer = "", "", "", ""
 		return ""
 	default:
-		s := "unknown command /" + name + ": try /harness, /model, /effort, /prefer, /mode, /rate, /clear"
+		s := "unknown command /" + name + ": try /harness, /model, /effort, /prefer, /mode, /rate, /open, /clear"
 		if m.opt.Panel != nil {
 			s += ", or a tab: /harnesses /bench /skills /mcp /runs /config"
 		}
@@ -261,7 +275,7 @@ func (m *Model) command(text string) string {
 func (m *Model) enterHelp() line {
 	t := m.theme
 	if m.opt.RunHere {
-		return line{sg(t.Key, "  ↵"), sg(t.Dim, " route the task and run it here  "), sg(t.Key, "ctrl+o"), sg(t.Dim, " route card: pick the route, open the CLI  "), sg(t.Key, "/rate"), sg(t.Dim, " the last run")}
+		return line{sg(t.Key, "  ↵"), sg(t.Dim, " route the task and run it here  "), sg(t.Key, "ctrl+o"), sg(t.Dim, " route card: pick the route, open the CLI  "), sg(t.Key, "/rate"), sg(t.Dim, " the last run  "), sg(t.Key, "/open"), sg(t.Dim, " its session in the CLI")}
 	}
 	return line{sg(t.Key, "  ↵"), sg(t.Dim, " route the task (empty: open the CLI without one)")}
 }

@@ -14,6 +14,10 @@ device_login = ["codex", "login", "--device-auth"]
 status = ["codex", "login", "status"]
 errors = ["refresh token", "not logged in", "401 unauthorized"]
 
+# Reopens a session, including one `codex exec` started.
+[session]
+resume = ["codex", "resume", "{id}"]
+
 # The models this account can use, refreshed by Codex itself.
 [model_list]
 command = ["codex", "debug", "models"]

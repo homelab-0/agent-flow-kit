@@ -20,6 +20,7 @@ Schema `afk-run/1`:
 | `pool_before`, `pool_after` | the pool's headroom (%) when the card opened and after the session |
 | `files_changed`, `commits` | in a git repository: files changed and commits made during the session |
 | `outcome` | your answer: `solved`, `partly`, `wrong-pick`, or `null` when skipped. Ratings feed back into routing: see [your ratings](routing.md#your-ratings) |
+| `session` | the CLI's own id for the session, when it reported one (absent otherwise). `/open` in AFK reopens it, and so does the CLI itself, for example `codex resume <id>` |
 
 Values AFK couldn't know are `null`, never zero.
 

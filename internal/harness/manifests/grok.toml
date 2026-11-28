@@ -10,6 +10,9 @@ self_update = "update"
 [auth]
 login = ["grok", "login"]
 
+[session]
+resume = ["grok", "--resume", "{id}"]
+
 # Lists the account's models even when plan usage isn't available.
 [model_list]
 command = ["grok", "models"]

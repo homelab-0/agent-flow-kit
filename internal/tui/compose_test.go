@@ -385,3 +385,27 @@ func TestRateCommand(t *testing.T) {
 		t.Error("a bad rating is explained, not saved")
 	}
 }
+
+// /open reopens the last run's session in its CLI: it ends the composer
+// with Decision.Open only when there is a session to open, and says why
+// when there isn't.
+func TestComposerOpensTheLastSession(t *testing.T) {
+	m, _ := composeModel(t, 80, false)
+	typeText(m, "/open")
+	m.Update(key("enter"))
+	if m.st != sCompose || m.Decision().Open || !strings.Contains(ansi.Strip(m.Render()), "nothing to open yet") {
+		t.Errorf("no run yet: stays in the composer and says so, got %+v", m.Decision())
+	}
+	m.opt.CanOpen = func() string { return "grok didn't report a session id for the last run" }
+	typeText(m, "/open")
+	m.Update(key("enter"))
+	if m.Decision().Open || !strings.Contains(ansi.Strip(m.Render()), "didn't report a session id") {
+		t.Error("a run with no session id says why it can't be opened")
+	}
+	m.opt.CanOpen = func() string { return "" }
+	typeText(m, "/open")
+	m.Update(key("enter"))
+	if d := m.Decision(); !d.Open || d.RunHere || d.Launch || d.Cancelled {
+		t.Errorf("decision = %+v, want Open only", d)
+	}
+}
