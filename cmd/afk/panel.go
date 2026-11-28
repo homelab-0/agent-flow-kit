@@ -1022,6 +1022,11 @@ func (s panelSource) MCP(ctx context.Context) (*tui.MCPView, error) {
 		return nil, err
 	}
 	v := mcpView(d, st, s.c.Home, time.Now())
+	if found, err := d.env.Found(d.targets); err == nil {
+		for _, f := range found {
+			v.Found = append(v.Found, tui.MCPFound{Name: f.Name, In: f.In, Where: f.Where(), Why: f.Why, Left: f.Left, Differs: f.Differs})
+		}
+	}
 	if p := d.project(); p != nil {
 		if err := addProjectMCP(v, p, s.c.Home, time.Now()); err != nil {
 			v.Problems = append(v.Problems, "project servers: "+err.Error())
@@ -1094,14 +1099,25 @@ func mcpView(d mcpDeps, st *mcp.Status, home string, now time.Time) *tui.MCPView
 	for _, t := range st.Targets {
 		v.Cols = append(v.Cols, t.Harness)
 	}
-	via := map[string]string{}
+	byName := map[string]mcp.Server{}
 	for _, sv := range st.Servers {
-		via[sv.Name] = sv.Via
+		byName[sv.Name] = sv
+	}
+	files := map[string]string{}
+	for _, t := range st.Targets {
+		files[t.Harness] = tilde(t.File)
 	}
 	for _, r := range st.Rows {
-		row := tui.MCPRow{Name: r.Name, Via: via[r.Name], Listed: r.Listed, Tools: -1, Status: "untested", Cells: map[string]string{}, Notes: r.Notes}
+		sv := byName[r.Name]
+		row := tui.MCPRow{Name: r.Name, Via: sv.Via, Listed: r.Listed, Tools: -1, Status: "untested", Cells: map[string]string{}, Notes: r.Notes,
+			Token: sv.BearerEnv, Env: sv.Env, Files: files}
+		if sv.Kind == "http" {
+			row.Where = sv.URL
+		} else if sv.Command != "" {
+			row.Where = strings.TrimSpace(sv.Command + " " + strings.Join(sv.Args, " "))
+		}
 		if tr, ok := st.Tested[r.Name]; ok && !tr.At.IsZero() {
-			row.Status, row.Tested = "down", ago(now.Sub(tr.At))
+			row.Status, row.Tested, row.TestError = "down", ago(now.Sub(tr.At)), tr.Error
 			if tr.OK {
 				row.Status, row.Tools = "up", tr.Tools
 			}
@@ -1176,6 +1192,19 @@ func (s panelSource) MCPDo(ctx context.Context, op string, args ...string) (stri
 		op = rest
 	}
 	switch op {
+	case "import":
+		done, err := d.env.Import(d.targets, args)
+		if len(done) > 0 {
+			msg := fmt.Sprintf("Added %s to mcp.toml. s gives them to your other CLIs.", strings.Join(done, ", "))
+			if err != nil {
+				msg += " " + err.Error()
+			}
+			return msg, nil
+		}
+		if err != nil {
+			return "", err
+		}
+		return "Nothing to import.", nil
 	case "sync":
 		res, err := d.env.Sync(d.targets)
 		if err != nil {

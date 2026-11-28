@@ -54,6 +54,34 @@ func canon(v any) string {
 	return hex.EncodeToString(h[:])
 }
 
+// sameEntry says a CLI's entry is the one AFK would write, counting the
+// keys a CLI fills in by default as written: Claude Code reads a command
+// entry without "type" as stdio, and no args or env as none.
+func sameEntry(cur any, desired map[string]any) bool {
+	if canon(cur) == canon(desired) {
+		return true
+	}
+	m, ok := cur.(map[string]any)
+	if !ok {
+		return false
+	}
+	filled := map[string]any{}
+	for k, v := range m {
+		filled[k] = v
+	}
+	if _, has := filled["type"]; !has && desired["type"] == "stdio" {
+		if _, cmd := filled["command"]; cmd {
+			filled["type"] = "stdio"
+		}
+	}
+	if a, ok := desired["args"].([]any); ok && len(a) == 0 {
+		if _, has := filled["args"]; !has {
+			filled["args"] = []any{}
+		}
+	}
+	return canon(filled) == canon(desired)
+}
+
 // normalize turns decoded JSON or TOML into plain maps, slices and
 // strings, so the two hash alike.
 func normalize(v any) any {

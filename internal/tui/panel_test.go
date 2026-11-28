@@ -157,8 +157,8 @@ func TestPanelTabs(t *testing.T) {
 		TabRuns:   {"Usage  what is left on each plan", "Plans", "Engines", "Run history", "updated 03:31", "CL Claude plan", "71%", "GK Grok plan", "week   unknown", "SET ASIDE  none", "←→ plan"},
 		TabConfig: {"file ~/.config/afk/config.toml", "Routing", "Prefer                      balanced", "e edit config.toml"},
 		TabSkills: {"4 skills · central ~/.config/afk/skills · 1 edited · 1 to sync · 1 to choose", "scope", "everywhere", "◆", "skill", "CL  CX  GK  AG", "gh-pr-triage", "↻", "space on/off"},
-		TabMCP: {"4 servers · ~/.config/afk/mcp.toml · 360 tools · 1 drifted · 1 to sync", "server", "CL  CX  GK  PI  status", "openconnector",
-			"312", "up · 2h ago", "untested", "╭─ github changed in codex", "k keep codex's as its own", "t test"},
+		TabMCP: {"4 servers · ~/.config/afk/mcp.toml · 360 tools · 1 edited · 1 to sync", "server         how               tools health       CL  CX  GK  PI", "openconnector  gateway homelab   312   ● up 2h ago",
+			"○ untested", "╭─ openconnector", "tested    ● up 2h ago · 312 tools", "CL claude  ✓ written by AFK, in sync", "t test"},
 	} {
 		s := panelText(panelAt(t, tab))
 		for _, w := range want {
@@ -515,7 +515,7 @@ func TestMCPProjectScope(t *testing.T) {
 	p.Update(tea.WindowSizeMsg{Width: 100, Height: 34})
 	p.Update(p.Init()())
 	s := panelText(p)
-	for _, w := range []string{"1 to choose", "repo-db", "project", "project: ~/repos/prox-ops/.mcp.json"} {
+	for _, w := range []string{"1 to choose", "repo-db", "project", "project servers from ~/repos/prox-ops/.mcp.json"} {
 		if !strings.Contains(s, w) {
 			t.Errorf("missing %q in\n%s", w, s)
 		}
@@ -1002,5 +1002,41 @@ func TestSkillsDriftBox(t *testing.T) {
 		if !strings.Contains(s, want) {
 			t.Errorf("missing %q in\n%s", want, s)
 		}
+	}
+}
+
+func TestMCPDriftBoxAndImport(t *testing.T) {
+	src := &fakePanel{}
+	p := NewPanel(context.Background(), src, NewTheme(true), TabMCP, "", nil)
+	p.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	p.Update(p.Init()())
+	p.Update(key("down")) // github, edited in codex
+	s := panelText(p)
+	for _, want := range []string{"╭─ github changed in codex", "k keep codex's as its own"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("missing %q in\n%s", want, s)
+		}
+	}
+	if cmd := p.Update(key("i")); cmd != nil || !strings.Contains(p.notice, "Nothing to import") {
+		t.Errorf("i with nothing found: notice %q", p.notice)
+	}
+	p.data.mcp.Found = []MCPFound{
+		{Name: "linear", In: []string{"codex"}, Where: "https://mcp.linear.app/mcp"},
+		{Name: "sentry", In: []string{"claude", "codex"}, Where: "npx sentry-mcp", Left: []string{"env SENTRY_TOKEN (its value is written in the file)"}},
+		{Name: "old", In: []string{"claude"}, Why: "an sse server; AFK copies stdio and http servers"},
+	}
+	s = panelText(p)
+	for _, want := range []string{"Found in your CLIs' own configs: 3 servers", "linear", "https://mcp.linear.app/mcp", "not copied: env SENTRY_TOKEN", "can't import: an sse server", "i adds all 2 to mcp.toml", "i import"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("missing %q in\n%s", want, s)
+		}
+	}
+	cmd := p.Update(key("i"))
+	if cmd == nil {
+		t.Fatal("i didn't import")
+	}
+	cmd()
+	if got := strings.Join(src.ran[len(src.ran)-1], " "); got != "mcp import" {
+		t.Errorf("ran %q", got)
 	}
 }

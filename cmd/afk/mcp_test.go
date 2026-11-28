@@ -140,3 +140,24 @@ func TestAddMCPServerFromALine(t *testing.T) {
 		t.Errorf("scratch files left behind: %v", left)
 	}
 }
+
+func TestMCPImportCommand(t *testing.T) {
+	d, home := testMCP(t, "")
+	if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte(`{"mcpServers": {"linear": {"type": "http", "url": "https://mcp.linear.app/mcp"}, "old": {"type": "sse", "url": "https://o.example/sse"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, code := mcpRun(d, "import")
+	if code != 0 || !strings.Contains(out, "linear") || !strings.Contains(out, "can't import: an sse server") || !strings.Contains(out, "afk mcp import --all") {
+		t.Fatalf("list %d:\n%s", code, out)
+	}
+	if out, code = mcpRun(d, "import", "--all"); code != 0 || !strings.Contains(out, "Added linear to") {
+		t.Fatalf("import %d:\n%s", code, out)
+	}
+	b, _ := os.ReadFile(d.env.Config)
+	if !strings.Contains(string(b), `name = "linear"`) {
+		t.Errorf("mcp.toml:\n%s", b)
+	}
+	if out, code = mcpRun(d, "import", "old"); code == 0 {
+		t.Errorf("importing an sse server by name should fail:\n%s", out)
+	}
+}

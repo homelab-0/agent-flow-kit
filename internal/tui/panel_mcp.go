@@ -20,6 +20,18 @@ type MCPView struct {
 	// servers are the rows with Project set.
 	Project   string
 	Undecided int // project servers waiting for a scope
+	// Found are servers in the CLIs' own configs that mcp.toml doesn't
+	// list: ones added to a CLI by hand, which i imports.
+	Found []MCPFound
+}
+
+// MCPFound is a server found in a CLI's own MCP config.
+type MCPFound struct {
+	Name, Where string
+	In          []string
+	Why         string   // why it can't be imported ("" when it can)
+	Left        []string // what importing doesn't copy (values in the file)
+	Differs     bool     // the CLIs' entries aren't the same
 }
 
 // MCPRow is one server. Cells holds the mcp package's cell names by CLI:
@@ -38,6 +50,12 @@ type MCPRow struct {
 	// "project", "global" or "" (not chosen yet).
 	Project bool
 	Scope   string
+	// Where is its URL or command; Token the variable holding its bearer
+	// token and Env the variables it is passed (names only); TestError
+	// the last test's error; Files each CLI's MCP config file.
+	Where, Token, TestError string
+	Env                     []string
+	Files                   map[string]string
 }
 
 // MCPDrift is an entry edited in a CLI since AFK wrote it.
@@ -100,9 +118,6 @@ func (p *Panel) mcpDrift() (MCPDrift, bool) {
 	if first != nil {
 		return *first, true
 	}
-	if len(p.data.mcp.Drift) > 0 {
-		return p.data.mcp.Drift[0], true
-	}
 	return MCPDrift{}, false
 }
 
@@ -146,6 +161,12 @@ func (p *Panel) mcpKey(k string) tea.Cmd {
 		return nil
 	case "e":
 		return p.run("mcp", "edit")
+	case "i":
+		if v == nil || importable(v) == 0 {
+			p.notice = "Nothing to import: every server in your CLIs' own configs is in mcp.toml, or can't be copied."
+			return nil
+		}
+		return p.mcpDo("import")
 	case "s":
 		if v != nil && v.Pending == 0 {
 			p.notice = "Everything is in sync."
@@ -216,7 +237,11 @@ func (p *Panel) mcpKey(k string) tea.Cmd {
 func (p *Panel) mcpLines(w int) ([]line, line) {
 	t := p.theme
 	v := p.data.mcp
-	hint := line{sg(t.Key, "space"), sg(t.Dim, " enable  "), sg(t.Key, "s"), sg(t.Dim, " sync  "), sg(t.Key, "t"), sg(t.Dim, " test  "), sg(t.Key, "↵"), sg(t.Dim, " tools  "), sg(t.Key, "a"), sg(t.Dim, " add  "), sg(t.Key, "e"), sg(t.Dim, " edit mcp.toml  ")}
+	hint := line{sg(t.Key, "space"), sg(t.Dim, " on/off  "), sg(t.Key, "s"), sg(t.Dim, " sync  "), sg(t.Key, "t"), sg(t.Dim, " test  "), sg(t.Key, "↵"), sg(t.Dim, " tools  "), sg(t.Key, "a"), sg(t.Dim, " add  ")}
+	if importable(v) > 0 {
+		hint = append(hint, sg(t.Key, "i"), sg(t.Dim, " import  "))
+	}
+	hint = append(hint, sg(t.Key, "e"), sg(t.Dim, " edit mcp.toml  "))
 	tools := 0
 	for _, r := range v.Rows {
 		tools += max(r.Tools, 0)
@@ -226,7 +251,7 @@ func (p *Panel) mcpLines(w int) ([]line, line) {
 		head = append(head, sg(t.Dim, " · "+plural(tools, "tool", "tools")))
 	}
 	if n := len(v.Drift); n > 0 {
-		head = append(head, sg(t.Dim, " · "), sg(t.Warn, fmt.Sprintf("%d drifted", n)))
+		head = append(head, sg(t.Dim, " · "), sg(t.Warn, fmt.Sprintf("%d edited", n)))
 	}
 	if v.Pending > 0 {
 		head = append(head, sg(t.Dim, " · "), sg(t.Accent, fmt.Sprintf("%d to sync", v.Pending)))
@@ -234,56 +259,59 @@ func (p *Panel) mcpLines(w int) ([]line, line) {
 	if v.Undecided > 0 {
 		head = append(head, sg(t.Dim, " · "), sg(t.Accent, fmt.Sprintf("%d to choose", v.Undecided)))
 	}
-	out := []line{head, nil}
+	out := []line{head}
 	if len(v.Cols) == 0 {
-		return append(out, line{sg(t.Dim, " None of your installed CLIs has an MCP config AFK knows.")}), hint
+		return append(out, nil, line{sg(t.Dim, " None of your installed CLIs has an MCP config AFK knows.")}), hint
 	}
+	asking := p.askScope != ""
+	if !asking {
+		out = append(out, p.mcpFoundBox(w)...)
+	}
+	out = append(out, nil)
 	if len(v.Rows) == 0 {
-		return append(out, line{sg(t.Dim, " No servers yet. Press "), sg(t.Key, "a"), sg(t.Dim, " to add one to "+v.Source+".")}), hint
+		empty := line{sg(t.Dim, " No servers in "+v.Source+" yet. "), sg(t.Key, "a"), sg(t.Dim, " adds one")}
+		if importable(v) > 0 {
+			empty = append(empty, sg(t.Dim, ", "), sg(t.Key, "i"), sg(t.Dim, " imports the ones above"))
+		}
+		return append(out, empty), hint
 	}
 	nw := 14
 	for _, r := range v.Rows {
 		nw = max(nw, min(lenCells(r.Name)+2, 24))
 	}
-	hdr := line{sg(t.Dim, "   "+col("server", nw)+col("via", 14)+col("tools", 6))}
-	for _, c := range v.Cols {
+	hdr := line{sg(t.Dim, "   "+col("server", nw)+col("how", 18)+col("tools", 6)+col("health", 13))}
+	codes := line{sg(t.Plain, strings.Repeat(" ", 3+nw+18+6+13))}
+	captions := false
+	for _, c := range append(append([]string{}, v.Cols...), v.Unsupported...) {
 		hdr = append(hdr, harnessLogo(t, c), sg(t.Plain, "  "))
+		code := logoCaption(t, c)
+		captions = captions || code != ""
+		codes = append(codes, sg(t.Dim, col(code, 4)))
 	}
-	for _, c := range v.Unsupported {
-		hdr = append(hdr, harnessLogo(t, c), sg(t.Plain, "  "))
-	}
-	hdr = append(hdr, sg(t.Dim, "status"))
 	out = append(out, hdr)
+	if captions {
+		out = append(out, codes)
+	}
 	sel := min(p.sel[TabMCP], len(v.Rows)-1)
-	asking := p.askScope != ""
 	for i, r := range v.Rows {
 		if asking && i != sel {
 			continue // the question box stays on screen: only its row shows
-		}
-		via := r.Via
-		switch {
-		case !r.Listed:
-			via = "(removed)"
-		case r.Project && r.Scope == "global":
-			via = "project → all"
-		case r.Project:
-			via = "project"
 		}
 		tl := "–"
 		if r.Tools >= 0 {
 			tl = fmt.Sprint(r.Tools)
 		}
-		row := line{sg(t.Plain, "  "+col(r.Name, nw)), sg(t.Dim, col(via, 14)), sg(t.Plain, col(tl, 6))}
+		nst := t.Plain
+		if i == sel {
+			nst = t.Bold
+		}
+		hstate, htext := mcpHealth(r)
+		row := line{sg(nst, "  "+col(r.Name, nw)), sg(t.Dim, col(mcpHow(r), 18)), sg(t.Plain, col(tl, 6)), t.dot(hstate), sg(t.Dim, " "+col(htext, 11))}
 		for j, c := range v.Cols {
 			cell := r.Cells[c]
-			st := t.Dim
-			switch cell {
-			case "synced", "native":
-				st = t.OK
-			case "drifted", "conflict", "error":
+			st := skillStyle(t, cell)
+			if cell == "error" {
 				st = t.Warn
-			case "pending", "removing", "orphan", "ask":
-				st = t.Accent
 			}
 			if i == sel && j == p.mcpCol {
 				row = append(row, sg(t.Accent.Bold(true), "["), sg(st.Bold(true), mcpMark(cell)), sg(t.Accent.Bold(true), "] "))
@@ -294,44 +322,172 @@ func (p *Panel) mcpLines(w int) ([]line, line) {
 		for range v.Unsupported {
 			row = append(row, sg(t.Dim, " –  "))
 		}
-		stt := t.Dim
-		switch r.Status {
-		case "up":
-			stt = t.OK
-		case "down":
-			stt = t.Warn
-		}
-		status := r.Status
-		if r.Tested != "" {
-			status += " · " + r.Tested
-		}
-		row = append(row, sg(stt, status))
 		out = append(out, p.selRow(row, i, w))
 	}
 	if !asking {
-		out = append(out, nil, line{sg(t.Dim, " ✓ in sync  ↻ changed in that CLI  · not enabled  – not supported")})
+		legend := line{sg(t.Plain, " "), sg(t.OK, "✓"), sg(t.Dim, " written  "), sg(t.Warn, "↻"), sg(t.Dim, " edited there  "), sg(t.Dim, "○ off  – can't take it")}
+		if mcpHas(v, "ask") {
+			legend = append(line{sg(t.Plain, " "), sg(t.Accent, "◆"), sg(t.Dim, " needs a choice ")}, legend...)
+		}
+		out = append(out, nil, legend)
 		if v.Pending > 0 || mcpHas(v, "conflict") || mcpHas(v, "error") {
-			out = append(out, line{sg(t.Dim, " + next sync adds it  - next sync removes it  ! yours  ✗ unreadable")})
+			out = append(out, line{sg(t.Plain, " "), sg(t.Accent, "+"), sg(t.Dim, " next sync adds it  "), sg(t.Accent, "-"), sg(t.Dim, " next sync removes it  "), sg(t.Warn, "!"), sg(t.Dim, " yours, left alone  "), sg(t.Warn, "✗"), sg(t.Dim, " unreadable")})
 		}
 		if v.Project != "" {
-			out = append(out, line{sg(t.Dim, " project: "+v.Project+"   ? choose where it goes  g every project")})
+			out = append(out, line{sg(t.Dim, " project servers from "+v.Project)})
 		}
 	}
-	if name := p.askScope; name != "" {
-		bw := boxW(w)
-		out = append(out, nil,
-			t.top("Add "+name, bw, t.Accent),
-			t.boxLine(bw, t.Accent, line{sg(t.Plain, "From this project's .mcp.json. Where should it go?")}),
-			t.boxLine(bw, t.Accent, line{sg(t.Key, "p"), sg(t.Dim, " this project only   "), sg(t.Key, "g"), sg(t.Dim, " every project (added to mcp.toml)   "), sg(t.Key, "esc"), sg(t.Dim, " later")}),
-			t.bottom(bw, t.Accent))
-	} else if d, ok := p.mcpDrift(); ok {
-		bw := boxW(w)
-		out = append(out, nil,
-			t.top(d.Server+" changed in "+d.Harness, bw, t.Warn),
-			t.boxLine(bw, t.Warn, line{sg(t.Plain, "Edited in "+d.File+" since AFK wrote it.")}),
-			t.boxLine(bw, t.Warn, line{sg(t.Key, "k"), sg(t.Dim, " keep "+d.Harness+"'s as its own   "), sg(t.Key, "c"), sg(t.Dim, " restore AFK's entry")}),
-			t.bottom(bw, t.Warn))
-	} else if r, h, ok := p.mcpAt(); ok {
+	out = append(out, p.mcpBox(w)...)
+	for _, pr := range v.Problems {
+		out = append(out, line{sg(t.Warn, " ! "+pr)})
+	}
+	return out, append(line{sg(t.Key, "←→"), sg(t.Dim, " CLI  ")}, hint...)
+}
+
+// importable is how many found servers i can import.
+func importable(v *MCPView) int {
+	n := 0
+	for _, f := range v.Found {
+		if f.Why == "" {
+			n++
+		}
+	}
+	return n
+}
+
+// mcpFoundBox offers the servers found in the CLIs' own configs.
+func (p *Panel) mcpFoundBox(w int) []line {
+	t := p.theme
+	v := p.data.mcp
+	if len(v.Found) == 0 {
+		return nil
+	}
+	bw := boxW(w)
+	n := importable(v)
+	title := fmt.Sprintf("Found in your CLIs' own configs: %s", plural(len(v.Found), "server", "servers"))
+	lw := 0
+	for _, f := range v.Found {
+		lw = max(lw, 3*len(f.In))
+	}
+	var body []line
+	for i, f := range v.Found {
+		if i == 4 {
+			body = append(body, line{sg(t.Dim, fmt.Sprintf("…%d more (afk mcp import lists them all)", len(v.Found)-4))})
+			break
+		}
+		l := line{sg(t.Bold, col(f.Name, 16))}
+		for _, h := range f.In {
+			l = append(l, harnessLogo(t, h), sg(t.Plain, " "))
+		}
+		l = l.pad(16+lw, t.Plain)
+		if f.Why != "" {
+			l = append(l, sg(t.Warn, "can't import: "+f.Why))
+		} else {
+			l = append(l, sg(t.Dim, f.Where))
+		}
+		body = append(body, l)
+		if f.Why == "" && len(f.Left) > 0 {
+			body = append(body, line{sg(t.Plain, strings.Repeat(" ", 16+lw)), sg(t.Warn, "not copied: "+strings.Join(f.Left, ", "))})
+		}
+	}
+	if n > 0 {
+		what := "all " + fmt.Sprint(n)
+		if n == 1 {
+			what = "it"
+		}
+		body = append(body, nil)
+		for i, l := range wrap("adds "+what+" to mcp.toml. Your CLIs' files don't change, and values written in them (tokens, env) are never copied.", bw-6) {
+			if i == 0 {
+				body = append(body, line{sg(t.Key, "i"), sg(t.Dim, " "+l)})
+			} else {
+				body = append(body, line{sg(t.Dim, l)})
+			}
+		}
+	}
+	out := []line{nil, t.top(title, bw, t.Accent)}
+	for _, l := range body {
+		out = append(out, t.boxLine(bw, t.Accent, l))
+	}
+	return append(out, t.bottom(bw, t.Accent))
+}
+
+// mcpHow is how a server is reached, short: http, stdio and its program,
+// or the gateway it goes through.
+func mcpHow(r MCPRow) string {
+	switch {
+	case !r.Listed:
+		return "removed"
+	case r.Project && r.Scope == "global":
+		return "project → all"
+	case r.Via == "http":
+		if r.Token != "" {
+			return "http · $" + r.Token
+		}
+		return "http"
+	case r.Via == "stdio" || r.Via == "":
+		prog := strings.Fields(r.Where)
+		if len(prog) > 0 {
+			return "stdio · " + prog[0]
+		}
+		return "stdio"
+	}
+	return "gateway " + r.Via
+}
+
+// mcpHealth is a server's last test as a dot state and text.
+func mcpHealth(r MCPRow) (string, string) {
+	switch r.Status {
+	case "up":
+		return "ok", "up " + r.Tested
+	case "down":
+		return "bad", "failed " + r.Tested
+	}
+	return "", "untested"
+}
+
+// mcpBox is the selected server in full, or the question or edit it
+// waits on.
+func (p *Panel) mcpBox(w int) []line {
+	t := p.theme
+	r, h, ok := p.mcpAt()
+	if !ok {
+		return nil
+	}
+	bw := boxW(w)
+	border, title := t.Border, r.Name
+	var body []line
+	switch d, drifted := p.mcpDrift(); {
+	case p.askScope == r.Name:
+		border, title = t.Accent, "Add "+r.Name
+		body = append(body, line{sg(t.Plain, "From this project's .mcp.json. Where should it go?")},
+			line{sg(t.Key, "p"), sg(t.Dim, " this project only   "), sg(t.Key, "g"), sg(t.Dim, " every project (added to mcp.toml)   "), sg(t.Key, "esc"), sg(t.Dim, " later")})
+	case drifted:
+		border, title = t.Warn, d.Server+" changed in "+d.Harness
+		body = append(body, line{sg(t.Plain, "Edited in "+d.File+" since AFK wrote it.")},
+			line{sg(t.Key, "k"), sg(t.Dim, " keep "+d.Harness+"'s as its own   "), sg(t.Key, "c"), sg(t.Dim, " restore AFK's entry")})
+	default:
+		if r.Where != "" {
+			body = append(body, t.field(map[bool]string{true: "url", false: "command"}[r.Via == "http"], sg(t.Plain, r.Where)))
+		}
+		if r.Token != "" {
+			body = append(body, t.field("token", sg(t.Plain, "$"+r.Token), sg(t.Dim, " (a variable name; AFK never reads it)")))
+		}
+		if len(r.Env) > 0 {
+			body = append(body, t.field("env", sg(t.Plain, strings.Join(r.Env, ", ")), sg(t.Dim, " (names only)")))
+		}
+		st, txt := mcpHealth(r)
+		tested := line{t.dot(st), sg(t.Plain, " "+txt)}
+		switch {
+		case r.Status == "up":
+			tested = append(tested, sg(t.Dim, " · "+plural(r.Tools, "tool", "tools")))
+		case r.Status == "down":
+			if r.TestError != "" {
+				tested = append(tested, sg(t.Warn, " · "+r.TestError))
+			}
+		default:
+			tested = append(tested, sg(t.Dim, " · "), sg(t.Key, "t"), sg(t.Dim, " tests it"))
+		}
+		body = append(body, t.field("tested", tested...), nil)
 		text := skillCellText(r.Cells[h])
 		switch r.Cells[h] {
 		case "unsupported", "error":
@@ -344,13 +500,20 @@ func (p *Panel) mcpLines(w int) ([]line, line) {
 			text = "a project server: space chooses this project or every project"
 		case "global":
 			text = "added for every project from mcp.toml"
+		case "synced":
+			text = "written by AFK, in sync"
 		}
-		out = append(out, nil, line{sg(t.Plain, " "), harnessLogo(t, h), sg(t.Bold, " "+r.Name), sg(t.Dim, " in "+h+": "+text)})
+		cli := line{harnessLogo(t, h), sg(t.Bold, " "+h+"  "), sg(skillStyle(t, r.Cells[h]), mcpMark(r.Cells[h])), sg(t.Dim, " "+text)}
+		body = append(body, cli)
+		if f := r.Files[h]; f != "" {
+			body = append(body, line{sg(t.Dim, "   "+f)})
+		}
 	}
-	for _, pr := range v.Problems {
-		out = append(out, line{sg(t.Warn, " ! "+pr)})
+	out := []line{nil, t.top(title, bw, border)}
+	for _, l := range body {
+		out = append(out, t.boxLine(bw, border, l))
 	}
-	return out, append(line{sg(t.Key, "←→"), sg(t.Dim, " CLI  ")}, hint...)
+	return append(out, t.bottom(bw, border))
 }
 
 func mcpHas(v *MCPView, c string) bool {
