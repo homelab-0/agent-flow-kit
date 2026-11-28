@@ -201,10 +201,7 @@ const placeholderCells = placeholder + diac0 + diac0 + placeholder + diac0 + dia
 // logoName is the embedded logo for a route, or "" for none.
 func (t Theme) logoName(r engine.Route) string {
 	if r.IsGateway() {
-		if r.GatewayKind == "agentgateway" {
-			return "agentgateway"
-		}
-		return "" // gateways without a logo keep the GW tag
+		return t.brandLogo(r.GatewayKind) // "" keeps the GW tag
 	}
 	switch r.Harness {
 	case "claude", "codex", "vllm", "copilot", "agy", "devin", "kiro", "qwen", "gemini":
@@ -250,11 +247,7 @@ func (t Theme) drawLogo(name string) (seg, bool) {
 
 // engineLogo is the logo of the engine serving a model.
 func (t Theme) engineLogo(engine string) seg {
-	name := engine
-	if engine == "ollama" {
-		name = map[bool]string{true: "ollama-light", false: "ollama-dark"}[t.Dark]
-	}
-	if s, ok := t.drawLogo(name); ok {
+	if s, ok := t.drawLogo(t.brandLogo(engine)); ok {
 		return s
 	}
 	code := engineCodes[engine]
@@ -262,6 +255,50 @@ func (t Theme) engineLogo(engine string) seg {
 		code = "LO"
 	}
 	return sg(t.Badge(code), code)
+}
+
+// brandLogos are the embedded logos of gateway kinds and local engines.
+// A single-colour mark (mono) has a -light copy for dark terminals and a
+// -dark copy for light ones. A kind left out is drawn as its text tag.
+var brandLogos = map[string]struct {
+	name string
+	mono bool
+}{
+	// Gateways.
+	"litellm":      {"litellm", false},
+	"openrouter":   {"openrouter", true},
+	"portkey":      {"portkey", false},
+	"agentgateway": {"agentgateway", false},
+	"envoy":        {"envoy", false},
+	"kong":         {"kong", true},
+	"cloudflare":   {"cloudflare", false},
+	"vercel":       {"vercel", true},
+	"openai":       {"openai", true},
+	"anthropic":    {"anthropic", true},
+	// Engines, which can also be a gateway's kind.
+	"vllm":     {"vllm", false},
+	"ollama":   {"ollama", true},
+	"llamacpp": {"llamacpp", true},
+	"lmstudio": {"lmstudio", true},
+	"sglang":   {"sglang", false},
+	"tgi":      {"tgi", false},
+	"localai":  {"localai", false},
+	"mlx":      {"mlx", true},
+}
+
+// brandLogo is the embedded logo of a gateway kind or engine for this
+// terminal's background, or "" for none.
+func (t Theme) brandLogo(kind string) string {
+	b, ok := brandLogos[kind]
+	switch {
+	case !ok:
+		return ""
+	case !b.mono:
+		return b.name
+	case t.Dark:
+		return b.name + "-light"
+	}
+	return b.name + "-dark"
 }
 
 var engineCodes = map[string]string{"vllm": "VL", "ollama": "OL", "llamacpp": "LC", "lmstudio": "LM", "sglang": "SG", "tgi": "TG", "localai": "LA", "mlx": "MX"}
