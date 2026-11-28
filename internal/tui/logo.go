@@ -285,13 +285,14 @@ var brandLogos = map[string]struct {
 	"localai":  {"localai", false},
 	"mlx":      {"mlx", true},
 	// Engines found only by name: koboldcpp, xinference, lmdeploy, docker
-	// (Model Runner) and lemonade have marks; tabbyapi and strata publish
-	// none, so they keep their text tags.
+	// (Model Runner), lemonade and strata have marks; tabbyapi publishes
+	// none, so it keeps its text tag.
 	"koboldcpp":  {"koboldcpp", false},
 	"xinference": {"xinference", false},
 	"lmdeploy":   {"lmdeploy", false},
 	"docker":     {"docker", false},
 	"lemonade":   {"lemonade", false},
+	"strata":     {"strata", false},
 }
 
 // brandLogo is the embedded logo of a gateway kind or engine for this

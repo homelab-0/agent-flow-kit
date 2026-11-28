@@ -10,7 +10,7 @@ import (
 
 // noBrandLogo are the kinds that publish no mark AFK can ship; they keep
 // their text tag.
-var noBrandLogo = []string{"tabbyapi", "strata"}
+var noBrandLogo = []string{"tabbyapi"}
 
 // Every gateway kind and engine AFK knows has a logo on both terminal
 // backgrounds, so adding one in Config shows its mark. (Terminals without
