@@ -40,9 +40,14 @@ func (fakePanel) Benchmarks(_ context.Context, task string) (*BenchView, error) 
 		{Model: "qwen36-27b", Via: []engine.Route{gw}, Score: f(58.2), Basis: "measured"},
 		{Model: "qwen36-14b", Via: []engine.Route{ol}, Score: f(51), Basis: "estimate"},
 	}, Routes: []engine.Route{
-		{Harness: "claude", EffectiveScore: f(78.1), PoolHeadroomPct: f(78)},
-		{Harness: "codex", EffectiveScore: f(71.8), PoolHeadroomPct: f(52)},
-		{LaunchClass: "claude-local", Engine: "ollama", EffectiveScore: f(51)},
+		{Harness: "codex", Model: "gpt-6.1-sol", Effort: "medium", BenchmarkScore: f(76.4), BenchmarkName: "LMArena Agent #2", BenchmarkBasis: "measured", EffectiveScore: f(71.8), PoolHeadroomPct: f(52),
+			ScoreParts: []engine.ScorePart{{Label: "plan headroom 52%", Points: 1.69}, {Label: "your ratings of 10 runs", Points: -6.29}}},
+		{Harness: "claude", Model: "claude-fable-5-2", Effort: "high", BenchmarkScore: f(78.1), BenchmarkName: "LMArena Agent #1", BenchmarkBasis: "measured", EffectiveScore: f(80.6), PoolHeadroomPct: f(78),
+			ScoreParts: []engine.ScorePart{{Label: "plan headroom 78%", Points: 2.54}}},
+		{LaunchClass: "claude-local", Engine: "ollama", Model: "qwen36-14b", BenchmarkScore: f(51), EffectiveScore: f(51)},
+	}, Sources: []BenchSource{
+		{Key: "bench.sources.lmarena.enabled", Name: "LMArena", Measures: "rank on human-vote boards", UsedFor: "complex, review, webdev", On: true, Read: true, Status: "agent live, webdev live", About: "LMArena's leaderboards."},
+		{Name: "SWE-bench Verified", Measures: "% of real issues solved", UsedFor: "—", Read: false, About: "Real GitHub issues."},
 	}}, nil
 }
 
@@ -153,7 +158,7 @@ func TestPanelTabs(t *testing.T) {
 	for tab, want := range map[Tab][]string{
 		TabHarnesses: {"1 Route  2 Harnesses  3 Benchmarks  4 Skills  5 MCP  6 Usage  7 Config", "Harnesses  the agent CLIs on this machine", "INSTALLED  4", "▌CL claude        2.1.332   ● signed in",
 			"OC opencode      1.4.0     ● signed out", "NOT INSTALLED  1", "PI pi", "Installed native installer · /usr/local/bin/claude", "Usage     5h 71% left · week 64% left", "D discover now", "u update"},
-		TabBench:  {"task   coding  quick", "source SWE-bench Verified", "claude-fable-5-2   CL", "78.1  measured  14✓ 2~", "CX OC", "qwen36-14b         OL", "Effective today", "CX 71.8 (52%)", "OL 51.0", "←→ task"},
+		TabBench:  {"Leaderboard   Sources   Why AFK picks", "‹coding›", "scored by  SWE-bench Verified", "1  claude-fable-5-2    CL", "78.1  measured  14✓ 2~", "CX OC", "qwen36-14b          OL", "AFK would pick for coding right now", "claude-fable-5-2 · high   effective 80.6 = benchmark 78.1 + 2.5", "runner-up CX gpt-6.1-sol 71.8 · 8.8 behind", "←→ task"},
 		TabRuns:   {"Usage  what is left on each plan", "Plans", "Engines", "Run history", "updated 03:31", "CL Claude plan", "71%", "GK Grok plan", "week   unknown", "SET ASIDE  none", "←→ plan"},
 		TabConfig: {"file ~/.config/afk/config.toml", "Routing", "Prefer                      balanced", "e edit config.toml"},
 		TabSkills: {"4 skills · central ~/.config/afk/skills · 1 edited · 1 to sync · 1 to choose", "scope", "everywhere", "◆", "skill", "CL  CX  GK  AG", "gh-pr-triage", "↻", "space on/off"},
@@ -1038,5 +1043,41 @@ func TestMCPDriftBoxAndImport(t *testing.T) {
 	cmd()
 	if got := strings.Join(src.ran[len(src.ran)-1], " "); got != "mcp import" {
 		t.Errorf("ran %q", got)
+	}
+}
+
+func TestBenchViews(t *testing.T) {
+	src := &fakePanel{}
+	p := NewPanel(context.Background(), src, NewTheme(true), TabBench, "", nil)
+	p.Update(tea.WindowSizeMsg{Width: 110, Height: 40})
+	p.Update(p.Init()())
+	for _, l := range p.Lines() {
+		if l.width() > 110 {
+			t.Errorf("line over 110 cells: %q", l.plain())
+		}
+	}
+	p.Update(key("]"))
+	s := panelText(p)
+	for _, want := range []string{"LMArena", "rank on human-vote boards", "SWE-bench Verified", "setting  bench.sources.lmarena.enabled = on", "space turns it off"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("sources: missing %q in\n%s", want, s)
+		}
+	}
+	cmd := p.Update(key(" "))
+	if cmd == nil {
+		t.Fatal("space didn't toggle the source")
+	}
+	cmd()
+	p.Update(key("down"))
+	if p.Update(key(" ")) != nil || !strings.Contains(p.notice, "doesn't read it yet") {
+		t.Errorf("space on a source AFK doesn't read: notice %q", p.notice)
+	}
+	p.Update(key("]"))
+	p.Update(key("down"))
+	s = panelText(p)
+	for _, want := range []string{"1  CL claude-fable-5-2 · high", "80.6  ← AFK's pick", "2  CX gpt-6.1-sol · medium", "-4.6", "Why gpt-6.1-sol scores 71.8 for coding", "benchmark   76.4  LMArena Agent #2 (measured)", "-6.3  your ratings of 10 runs", "effective   71.8  #2 of 3"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("why: missing %q in\n%s", want, s)
+		}
 	}
 }

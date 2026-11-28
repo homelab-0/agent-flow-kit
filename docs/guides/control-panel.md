@@ -32,16 +32,13 @@ On a screen 96 columns or wider the selected CLI's details sit beside the list, 
 
 ## Benchmarks
 
-The models you can reach for one kind of task, best first. Each row shows:
+Which models score best for each kind of task, where the scores come from, and why AFK picks what it picks. It has three views; `[` and `]` switch between them, and `←` `→` switch the kind of task.
 
-- the routes that serve it, by logo
-- the score as a bar
-- the basis: `measured`, `capped`, `estimate` or `stale`
-- your own ratings of past runs: `✓` solved, `~` partly, `✗` wrong pick
+- **Leaderboard**: the models you can reach, best first. Each row shows the routes that serve the model (up to three logos), its score as a bar, the basis (`measured`, `capped`, `estimate` or `stale`) and your own ratings of past runs (`✓` solved, `~` partly, `✗` wrong pick). The line above names the benchmark behind the scores. The bars start a little under the lowest score shown, and the header says where, so close scores look different. A box under the list shows what AFK would pick right now, its effective score with the points added to the benchmark, and the runner-up.
+- **Sources**: where the scores come from: LMArena's boards, models.dev (context windows), your ratings and AFK's built-in estimates, with what each measures and which tasks use it. The box shows the last sync and the setting behind each one, and `space` turns LMArena, models.dev or your ratings on or off. Sources AFK doesn't read yet (SWE-bench Verified, Artificial Analysis) are listed dim so you can see what isn't in the scores.
+- **Why AFK picks**: the best route on each CLI for the task, ranked by effective score, with the benchmark score and the adjustment. The box breaks the selected route's score down part by part: plan headroom, pacing, your ratings, and the other rules the router applies.
 
-"Effective today" is the score each CLI's best route actually gets now, after plan headroom and cost. It is the number the route card ranks by.
-
-`←` `→` switch the task kind. `s` refreshes the catalog (`afk bench sync`).
+`s` refreshes the catalog (`afk bench sync`).
 
 ## Usage
 

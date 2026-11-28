@@ -147,6 +147,9 @@ type Route struct {
 	// moved the score (0 with route.pacing off).
 	Pacing           *Pacing  `json:"pacing,omitempty"`
 	PacingAdjustment *float64 `json:"pacing_adjustment,omitempty"`
+	// ScoreParts are the points added to the benchmark score to make the
+	// effective score, each with what it's for, in the order applied.
+	ScoreParts []ScorePart `json:"score_parts,omitempty"`
 
 	// Set on the fallback route only.
 	NoEligibleCandidate  bool              `json:"no_eligible_candidate,omitempty"`
@@ -607,51 +610,58 @@ func (r *Router) Select(in Input) Route {
 		}
 
 		var adj float64
+		var parts []ScorePart
+		add := func(label string, pts float64) {
+			adj += pts
+			parts = append(parts, ScorePart{Label: label, Points: math.Round(pts*100) / 100})
+		}
 		if pool.State == "warning" && (in.Risk == "low" || in.Risk == "medium") {
-			adj -= 15
+			add("plan near its limit, kept for bigger work", -15)
 		}
 		// Headroom counts only when the plan's CLI reported it. Unknown is
 		// neutral (the middle), never "full".
 		headroom := 50.0
+		hlabel := "plan headroom not reported, counted as half"
 		if pool.HeadroomPct != nil {
 			headroom = *pool.HeadroomPct
+			hlabel = fmt.Sprintf("plan headroom %.0f%%", headroom)
 		}
-		adj += headroom * headroomWeight
+		add(hlabel, headroom*headroomWeight)
 		if c.BridgedOAuth {
-			adj -= 0.5
+			add("bridged sign-in", -0.5)
 		}
 		if c.FrontierOnly && tc != "frontier_synthesis" && in.Risk != "critical" {
-			adj -= 6
+			add("frontier model saved for the hardest work", -6)
 		}
 		if c.SpecialistDomain == "security" {
 			if tc == "security" {
-				adj += 4
+				add("security specialist on a security task", 4)
 			} else {
-				adj -= 15
+				add("security specialist off its field", -15)
 			}
 		}
 		cross := reviewish && in.BuilderFamily != "" && c.ModelFamily != in.BuilderFamily
 		if cross {
-			adj += 6
+			add("reviews another model family's work", 6)
 		}
 		if (c.RequiresGateway || c.LaunchClass == LocalLaunch) && in.Risk == "low" && (tc == "research" || tc == "coding_standard") {
-			adj += 6.5
+			add("gateway or local model on low-risk work", 6.5)
 		}
 		if isFree && in.Risk == "low" && (tc == "research" || tc == "coding_standard") && (in.PreferFree || subsUnderPressure) {
-			adj += 14
+			add("free model on low-risk work", 14)
 		}
 		var outRuns *int
 		var outAdj *float64
 		if st, ok := r.Outcomes[OutcomeKeyFor(c.Harness, c.CanonicalModel, c.Model, tc)]; ok && st.Runs() >= MinRatedRuns {
 			n, a := st.Runs(), st.Adjustment()
 			outRuns, outAdj = &n, &a
-			adj += a
+			add(fmt.Sprintf("your ratings of %d runs", n), a)
 		}
 		var paceAdj *float64
 		if r.Pacing && pool.Pacing != nil && pool.Pacing.Adjustment != 0 {
 			a := pool.Pacing.Adjustment
 			paceAdj = &a
-			adj += a
+			add("plan pacing", a)
 		}
 		eff := math.Round((baseScore+adj)*100) / 100
 
@@ -707,7 +717,7 @@ func (r *Router) Select(in Input) Route {
 			BenchmarkSyncedAt: bm.SyncedAt, EffectiveScore: eff, CrossFamilyReview: &cross,
 			RouterSource: source, LitellmBaseURL: gwURL, AuthAlerts: alerts,
 			OutcomeRuns: outRuns, OutcomeAdjustment: outAdj,
-			Pacing: pool.Pacing, PacingAdjustment: paceAdj,
+			Pacing: pool.Pacing, PacingAdjustment: paceAdj, ScoreParts: parts,
 		}
 		if engURL != nil {
 			le, _ := probe.localEngineAt(*engURL)

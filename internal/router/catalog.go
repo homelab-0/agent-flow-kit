@@ -100,6 +100,9 @@ type Catalog struct {
 	UpdatedAt  string              `json:"updated_at"`
 	Candidates []Candidate         `json:"candidates"`
 	Pools      map[string]PoolMeta `json:"entitlement_pools"`
+	// SyncReceipt is what the last benchmark sync said about each feed
+	// ("live_synced", "offline", ...), when one has run.
+	SyncReceipt map[string]any `json:"sync_receipt,omitempty"`
 	// Path is where it was read from ("" for the built-in catalog).
 	Path string `json:"-"`
 }

@@ -18,6 +18,9 @@ import (
 // reads the same document the router writes.
 type Pacing = engine.Pacing
 
+// ScorePart is one adjustment to a route's score.
+type ScorePart = engine.ScorePart
+
 // Window lengths AFK knows.
 var windowLength = map[string]time.Duration{
 	"5h":     5 * time.Hour,

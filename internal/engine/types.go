@@ -64,6 +64,9 @@ type Route struct {
 	// moved the score, nil when route.pacing is off or it moved nothing.
 	Pacing           *Pacing  `json:"pacing"`
 	PacingAdjustment *float64 `json:"pacing_adjustment"`
+	// ScoreParts are the points added to the benchmark score to make the
+	// effective score, each with what it's for.
+	ScoreParts []ScorePart `json:"score_parts,omitempty"`
 }
 
 // UnmarshalJSON keeps the whole object and reads the typed fields from it.
@@ -397,4 +400,10 @@ func (p *Pools) Headroom(id string) *float64 {
 		return pl.HeadroomPct
 	}
 	return nil
+}
+
+// ScorePart is one adjustment the router made to a route's score.
+type ScorePart struct {
+	Label  string  `json:"label"`
+	Points float64 `json:"points"`
 }

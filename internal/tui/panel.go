@@ -116,6 +116,7 @@ type BenchView struct {
 	Rows     []BenchRow
 	Routes   []engine.Route // the best route on each CLI, for "Effective today"
 	Problems string
+	Sources  []BenchSource
 }
 
 // BenchRow is one model.
@@ -587,6 +588,16 @@ func (p *Panel) key(k string) tea.Cmd {
 			return p.load(TabBench)
 		case "s":
 			return p.run("bench", "sync")
+		case "space", " ":
+			if p.viewOf(TabBench) != benchSources || len(p.data.bench.Sources) == 0 {
+				return nil
+			}
+			s := p.data.bench.Sources[min(p.sel[TabBench], len(p.data.bench.Sources)-1)]
+			if !s.Read || s.Key == "" {
+				p.notice = s.Name + ": AFK doesn't read it yet, so there is nothing to turn on"
+				return nil
+			}
+			return p.configSave(s.Key, map[bool]string{true: "off", false: "on"}[s.On])
 		}
 	case TabConfig:
 		switch k {
@@ -687,8 +698,14 @@ func (p *Panel) rowsOf(t Tab) int {
 			return len(p.data.harn.Rows)
 		}
 	case TabBench:
-		if p.data.bench != nil {
-			return len(p.data.bench.Rows)
+		if v := p.data.bench; v != nil {
+			switch p.viewOf(TabBench) {
+			case benchSources:
+				return len(v.Sources)
+			case benchWhy:
+				return len(v.Routes)
+			}
+			return len(v.Rows)
 		}
 	case TabRuns:
 		if v := p.data.status; v != nil {
@@ -1072,93 +1089,6 @@ func scoreBar(score float64) string {
 		s += string([]rune("▏▎▍▌▋▊▉")[part-1])
 	}
 	return s
-}
-
-func (p *Panel) benchLines(w int) ([]line, line) {
-	t := p.theme
-	v := p.data.bench
-	cur := benchTasks[p.taskIdx%len(benchTasks)]
-	tasks := line{sg(t.Dim, " task   ")}
-	for _, k := range benchTasks {
-		if k == cur {
-			tasks = append(tasks, sg(t.Accent.Bold(true), k), sg(t.Plain, "  "))
-		} else {
-			tasks = append(tasks, sg(t.Dim, k+"  "))
-		}
-	}
-	out := []line{tasks}
-	if v.Source != "" {
-		out = append(out, line{sg(t.Dim, " source "), sg(t.Plain, v.Source), sg(t.Dim, " · "), sg(t.Key, "s"), sg(t.Dim, " sync now")})
-	}
-	out = append(out, nil, line{sg(t.Dim, "   "+col("model", 19)+col("via", 12)+col("score", 19)+col("basis", 10)+"your runs")})
-	for i, r := range v.Rows {
-		via := line{}
-		for j, x := range r.Via {
-			if j > 0 {
-				via = append(via, sg(t.Plain, " "))
-			}
-			via = append(via, t.logo(x))
-		}
-		pad := 12 - via.width()
-		if pad < 1 {
-			pad = 1
-		}
-		score := unknownText
-		bar := ""
-		if r.Score != nil {
-			score = fmt.Sprintf("%.1f", *r.Score)
-			bar = scoreBar(*r.Score)
-		}
-		basisSt := t.Plain
-		if r.Basis == "estimate" || r.Basis == "stale" {
-			basisSt = t.Dim
-		}
-		runs := "—"
-		if r.Solved+r.Partly+r.Wrong > 0 {
-			var parts []string
-			if r.Solved > 0 {
-				parts = append(parts, fmt.Sprintf("%d✓", r.Solved))
-			}
-			if r.Partly > 0 {
-				parts = append(parts, fmt.Sprintf("%d~", r.Partly))
-			}
-			if r.Wrong > 0 {
-				parts = append(parts, fmt.Sprintf("%d✗", r.Wrong))
-			}
-			runs = strings.Join(parts, " ")
-		}
-		row := line{sg(t.Plain, "  "+col(r.Model, 19))}
-		row = append(row, via...)
-		row = append(row, sg(t.Plain, strings.Repeat(" ", pad)), sg(t.Accent, col(bar, 12)), sg(t.Plain, fmt.Sprintf("%5s", score)+"  "), sg(basisSt, col(r.Basis, 10)), sg(t.Plain, runs))
-		out = append(out, p.selRow(row, i, w))
-	}
-	if len(v.Rows) == 0 {
-		out = append(out, line{sg(t.Dim, "   no model in the catalog is scored on "+cur)})
-	}
-	if len(v.Routes) > 0 {
-		out = append(out, nil, line{sg(t.Plain, " Effective today"), sg(t.Dim, "  score × plan headroom × cost")})
-		eff := line{sg(t.Plain, " ")}
-		for _, r := range v.Routes {
-			s := unknownText
-			if r.EffectiveScore != nil {
-				s = fmt.Sprintf("%.1f", *r.EffectiveScore)
-			}
-			eff = append(eff, t.logo(r), sg(t.Plain, " "+s))
-			if r.PoolHeadroomPct != nil && *r.PoolHeadroomPct < 100 && !r.IsLocal() && !r.IsGateway() {
-				eff = append(eff, sg(t.Dim, " ("+pctText(r.PoolHeadroomPct)+")"))
-			}
-			eff = append(eff, sg(t.Plain, "   "))
-		}
-		out = append(out, eff)
-	}
-	if v.Problems != "" {
-		out = append(out, nil, line{sg(t.Warn, " "+v.Problems)})
-	}
-	out = append(out, nil,
-		line{sg(t.Dim, " estimate = catalog figure, not measured · capped = board doesn't list it")},
-		line{sg(t.Dim, " your runs = your 1/2/3 ratings: ✓ solved  ~ partly  ✗ wrong pick")})
-	hint := line{sg(t.Key, "←→"), sg(t.Dim, " task  "), sg(t.Key, "s"), sg(t.Dim, " sync  ")}
-	return out, hint
 }
 
 // marksClearedMsg is what clearing the failed-run marks said.
