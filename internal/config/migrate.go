@@ -237,7 +237,7 @@ func SetKeys(paths Paths, kv [][2]string, dryRun bool) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if strings.HasSuffix(key, ".key") {
+		if strings.HasSuffix(key, ".key") && KeyType(key) == "string" {
 			if _, err := ParseSecretRef(raw); err != nil {
 				return "", fmt.Errorf("%s %v", key, err)
 			}

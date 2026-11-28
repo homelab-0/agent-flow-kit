@@ -9,6 +9,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"net"
 	"net/url"
 	"path/filepath"
@@ -207,6 +208,23 @@ var (
 	benchIDRE    = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
 )
 
+// benchURLOK is an https:// URL, or http:// on this machine, without
+// user info.
+func benchURLOK(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.User != nil || u.Host == "" {
+		return false
+	}
+	switch u.Scheme {
+	case "https":
+		return true
+	case "http":
+		h := u.Hostname()
+		return h == "localhost" || h == "127.0.0.1" || h == "::1"
+	}
+	return false
+}
+
 // ModeRank orders the permission modes from strictest to loosest.
 func ModeRank(m string) int {
 	for i, x := range Modes {
@@ -353,8 +371,8 @@ func (c *Config) validate(file string, lines map[string]int) []Problem {
 			bad(k, "needs a url or a file")
 		case b.URL != "" && b.File != "":
 			bad(k, "takes a url or a file, not both")
-		case b.URL != "" && !strings.HasPrefix(b.URL, "https://") && !strings.HasPrefix(b.URL, "http://localhost") && !strings.HasPrefix(b.URL, "http://127.0.0.1"):
-			bad(k+".url", "must be https:// (or http:// on this machine)")
+		case b.URL != "" && !benchURLOK(b.URL):
+			bad(k+".url", "must be https:// (or http:// on this machine), with no user name or password")
 		case b.File != "" && !strings.HasPrefix(b.File, "/") && !strings.HasPrefix(b.File, "~/"):
 			bad(k+".file", "must be an absolute path or a path under ~")
 		}
@@ -366,8 +384,8 @@ func (c *Config) validate(file string, lines map[string]int) []Problem {
 				bad(k+".tasks", "unknown task kind %q; known: %s", t, strings.Join(BenchTasks, ", "))
 			}
 		}
-		if b.Weight != nil && *b.Weight < 0 {
-			bad(k+".weight", "a weight can't be negative")
+		if b.Weight != nil && (*b.Weight < 0 || math.IsNaN(*b.Weight) || math.IsInf(*b.Weight, 0)) {
+			bad(k+".weight", "a weight is a number of 0 or more")
 		}
 		if b.Key != "" {
 			if r, err := ParseSecretRef(b.Key); err != nil {
@@ -384,8 +402,8 @@ func (c *Config) validate(file string, lines map[string]int) []Problem {
 			bad("bench.weights."+kind, "unknown task kind; known: %s", strings.Join(BenchTasks, ", "))
 		}
 		for _, src := range sortedKeys(c.Bench.Weights[kind]) {
-			if w := c.Bench.Weights[kind][src]; w < 0 {
-				bad("bench.weights."+kind+"."+src, "a weight can't be negative")
+			if w := c.Bench.Weights[kind][src]; w < 0 || math.IsNaN(w) || math.IsInf(w, 0) {
+				bad("bench.weights."+kind+"."+src, "a weight is a number of 0 or more")
 			}
 		}
 	}

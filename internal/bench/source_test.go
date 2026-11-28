@@ -2,10 +2,13 @@ package bench
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/homelab-0/agent-flow-kit/internal/router"
 )
@@ -193,4 +196,121 @@ func TestSyncBlendsSources(t *testing.T) {
 	p0 := cs["parts"].([]any)[0].(map[string]any)
 	want(t, "carried", p0["carried"], true)
 	want(t, "carried score", cs["score"], RankScore(97.5, 2))
+}
+
+func TestReadBoardEdgeCases(t *testing.T) {
+	// NaN and Inf are not scores, so a real result still wins.
+	js := `[{"model":"A","score":"NaN"},{"model":"A","score":90},{"model":"B","score":"Inf"},{"model":"C","score":80}]`
+	bd, err := ReadBoard(Source{}, []byte(js))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bd.Rows) != 2 || bd.Rows[0].Value != 90.0 {
+		t.Errorf("non-finite: %+v", bd.Rows)
+	}
+	// The score field is found even when the first record lacks it.
+	js = `[{"model":"A","cost":1},{"model":"B","score":90,"cost":10},{"model":"C","score":80,"cost":20}]`
+	bd, err = ReadBoard(Source{}, []byte(js))
+	if err != nil || bd.Score != "score" || len(bd.Rows) != 2 || bd.Rows[0].Name != "B" {
+		t.Errorf("detect across records: %v %+v", err, bd)
+	}
+	// Block scalars and quoted escapes.
+	yml := "- model: \"GPT\\u002d6 Astra\"\n  notes: |\n    line one: with a colon\n    - not a list\n  score: 70\n- model: 'Grok ''4.7'''\n  score: 60\n"
+	bd, err = ReadBoard(Source{Format: "yaml"}, []byte(yml))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want(t, "unescaped", bd.Rows[0].Name, "GPT-6 Astra")
+	want(t, "single quotes", bd.Rows[1].Name, "Grok '4.7'")
+}
+
+func TestFetchSourceGuards(t *testing.T) {
+	var hits int
+	other := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		if r.Header.Get("x-key") != "" {
+			t.Error("the key reached another host")
+		}
+	}))
+	defer other.Close()
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/away":
+			http.Redirect(w, r, other.URL+"/board.json", http.StatusFound)
+		case "/big":
+			w.Write(make([]byte, maxFeed+10))
+		default:
+			w.Write([]byte(`[{"model":"A","score":1}]`))
+		}
+	}))
+	defer srv.Close()
+	h := HTTPFetcher{Client: srv.Client()}
+	keyed := Source{URL: srv.URL + "/away", Key: "k", KeyHeader: "x-key", KeyEnv: "K"}
+	if _, err := h.FetchSource(context.Background(), keyed); err == nil || !strings.Contains(err.Error(), "another host") && !strings.Contains(err.Error(), "reach") {
+		t.Errorf("keyed redirect: %v", err)
+	}
+	if hits != 0 {
+		t.Error("followed the redirect with a key")
+	}
+	if _, err := h.FetchSource(context.Background(), Source{URL: srv.URL + "/big"}); err == nil {
+		t.Error("an oversized feed was read")
+	}
+	if _, err := h.FetchSource(context.Background(), Source{URL: "https://user:pw@example.invalid/b.json"}); err == nil || strings.Contains(err.Error(), "pw") {
+		t.Errorf("user info: %v", err)
+	}
+	if hostOf("https://user:pw@example.invalid:8443/x") != "example.invalid:8443" {
+		t.Error("hostOf kept user info")
+	}
+}
+
+func TestBlendFallsBackWhenPartsGo(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "benchmarks.json")
+	board := []byte(`[{"model":"Claude Opus 5.5","pct":75},{"model":"GPT-6 Astra","pct":80}]`)
+	src := Source{ID: "evals", Name: "Evals", Tasks: []string{"coding_complex", "coding_standard"}, Weight: 1}
+	opts := Options{Base: router.DefaultCatalogJSON(), Out: out, Now: t0, Carry: DefaultCarry, Sources: []Source{src},
+		Feeds: srcFeeds{fixtures(t, allFeeds...), map[string][]byte{"evals": board}}}
+	Sync(context.Background(), opts)
+
+	// The agent board down and the source turned off: no composite is kept.
+	opts.Now = t0.Add(24 * time.Hour)
+	opts.Sources = nil
+	opts.Feeds = srcFeeds{fixtures(t, FeedWebdev, FeedModelsDev), nil}
+	Sync(context.Background(), opts)
+	c := read(t, out)
+	cs := c.entry(t, "claude-opus-native", "coding_standard")
+	if cs["feed"] == "blend" || cs["live"] == true {
+		t.Errorf("a turned-off source still scores: %v", cs)
+	}
+	// The LMArena part of the old blend stays as LMArena alone.
+	cc := c.entry(t, "claude-opus-native", "coding_complex")
+	if cc["feed"] == "blend" || cc["live"] != true {
+		t.Errorf("complex should be LMArena alone: %v", cc)
+	}
+
+	// Weighted out while LMArena is down: the estimate, not the old score.
+	opts.Sources = []Source{src}
+	opts.Feeds = srcFeeds{fixtures(t, allFeeds...), map[string][]byte{"evals": board}}
+	opts.Now = t0.Add(48 * time.Hour)
+	Sync(context.Background(), opts)
+	opts.Weights = map[string]map[string]float64{"coding_standard": {"evals": 0}}
+	opts.Feeds = srcFeeds{fixtures(t, FeedWebdev, FeedModelsDev), nil}
+	opts.Now = t0.Add(72 * time.Hour)
+	Sync(context.Background(), opts)
+	c = read(t, out)
+	cs = c.entry(t, "claude-opus-native", "coding_standard")
+	want(t, "weighted out", cs["score"], baseScore(t, "claude-opus-native", "coding_standard"))
+
+	// A carried LMArena part past its own window drops out of the blend.
+	opts.Weights = nil
+	opts.Feeds = srcFeeds{fixtures(t, FeedWebdev, FeedModelsDev), map[string][]byte{"evals": board}}
+	opts.Now = t0.Add(20 * 24 * time.Hour)
+	Sync(context.Background(), opts)
+	c = read(t, out)
+	cc = c.entry(t, "claude-opus-native", "coding_complex")
+	for _, p := range anyList(cc["parts"]) {
+		if p.(map[string]any)["source"] == "lmarena" {
+			t.Errorf("stale LMArena part kept: %v", cc)
+		}
+	}
+	want(t, "source alone", cc["score"], RankScore(97.5, 2))
 }

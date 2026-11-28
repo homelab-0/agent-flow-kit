@@ -277,7 +277,7 @@ func (s *syncer) candidate(c map[string]any) map[string]any {
 		board("webdev", "lmarena_webdev", s.wdLive, wdHit, s.wd, "LMArena WebDev", "LMArena WebDev")
 		board("research", "lmarena_text", s.txLive, txHit, s.tx, "LMArena Reasoning", "LMArena Reasoning")
 	}
-	s.blend(c, bm, pcb)
+	s.blend(c, bm, pcb, func(k string) map[string]any { return estimate(entry(base, k)) })
 	for k, v := range bm {
 		if v == nil {
 			delete(bm, k)

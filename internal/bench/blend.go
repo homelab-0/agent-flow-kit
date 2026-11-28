@@ -12,15 +12,19 @@ type sourceBoard struct {
 }
 
 // weight is a source's weight for a task kind: config's
-// bench.weights.<kind>.<source>, else the source's own weight, else 1.
+// bench.weights.<kind>.<source>, else the source's own weight (0 leaves
+// it out).
 func (s *syncer) weight(kind, src string, def float64) float64 {
 	if w, ok := s.weights[kind][src]; ok {
 		return w
 	}
-	if def > 0 {
-		return def
-	}
-	return 1
+	return def
+}
+
+// fresh is whether a part synced at epoch ep is still inside the carry
+// window (and not from the future).
+func (s *syncer) fresh(ep int64) bool {
+	return s.carry > 0 && s.now-ep <= s.carry && ep <= s.now+60
 }
 
 // blend mixes each extra source's score into the candidate's benchmarks.
@@ -33,13 +37,15 @@ func (s *syncer) weight(kind, src string, def float64) float64 {
 // nothing; most boards lag new models, so leaving a model out says nothing
 // about it. Each part is kept on the entry, so a route can show how its
 // score was made.
-func (s *syncer) blend(c map[string]any, bm, pcb map[string]any) {
-	if len(s.sources) == 0 {
-		return
-	}
+//
+// est is the catalog's estimate for a kind, the fallback when nothing
+// measured with a weight above 0 is left.
+func (s *syncer) blend(c map[string]any, bm, pcb map[string]any, est func(string) map[string]any) {
 	names := candidateNames(c)
+	match := str(c["arena_match"])
 	for _, kind := range TaskKinds {
 		cur, _ := bm[kind].(map[string]any)
+		wasBlend := cur != nil && str(cur["feed"]) == "blend"
 		var parts []any
 		var sum, wsum float64
 		add := func(p map[string]any, score, w float64) {
@@ -50,30 +56,10 @@ func (s *syncer) blend(c map[string]any, bm, pcb map[string]any) {
 				wsum += w
 			}
 		}
-		// The LMArena part, when the entry rests on a measurement.
-		var arena map[string]any
-		if cur != nil && cur["live"] == true && str(cur["basis"]) == "measured" {
-			base := cur
-			// A blend from an earlier sync keeps its LMArena part only.
-			if str(cur["feed"]) == "blend" {
-				base = nil
-				for _, p := range anyList(cur["parts"]) {
-					if pm, ok := p.(map[string]any); ok && str(pm["source"]) == "lmarena" {
-						base = pm
-					}
-				}
-			}
-			if base != nil {
-				label := str(base["benchmark"])
-				if label == "" {
-					label = str(base["label"])
-				}
-				arena = map[string]any{"source": "lmarena", "name": "LMArena", "label": label,
-					"feed": base["feed"], "rank": base["rank"], "value": base["value"],
-					"synced_at": base["synced_at"], "synced_epoch": base["synced_epoch"]}
-				sc, _ := number(base["score"])
-				add(arena, sc, s.weight(kind, "lmarena", 1))
-			}
+		arena := s.arenaPart(cur, kind, match)
+		if arena != nil {
+			sc, _ := number(arena["score"])
+			add(arena, sc, s.weight(kind, "lmarena", 1))
 		}
 		extra := 0
 		for _, sb := range s.sources {
@@ -92,7 +78,7 @@ func (s *syncer) blend(c map[string]any, bm, pcb map[string]any) {
 					"label": sb.src.Name + " #" + numText(hit.Rank) + " (" + numText(hit.Value) + ")",
 				}
 				add(part, RankScore(97.5, hit.Rank), w)
-			} else if p := s.carriedPart(pcb, kind, sb.src.ID); p != nil {
+			} else if p := s.carriedPart(pcb, kind, sb.src.ID, names); p != nil {
 				sc, _ := number(p["score"])
 				add(p, sc, w)
 			} else {
@@ -100,52 +86,95 @@ func (s *syncer) blend(c map[string]any, bm, pcb map[string]any) {
 			}
 			extra++
 		}
-		if extra == 0 {
-			if arena != nil && str(cur["feed"]) == "blend" {
-				// Last sync's blend, with no source listing the model now:
-				// back to the LMArena part alone.
-				e := clone(arena)
-				delete(e, "weight")
-				delete(e, "name")
-				delete(e, "source")
-				e["benchmark"], e["live"], e["basis"] = arena["label"], true, "measured"
-				delete(e, "label")
+		switch {
+		case extra > 0 && wsum > 0:
+			var labels []string
+			for _, p := range parts {
+				pm := p.(map[string]any)
+				if w, _ := number(pm["weight"]); w > 0 {
+					labels = append(labels, str(pm["label"]))
+				}
+			}
+			e := map[string]any{
+				"score": r1(sum / wsum), "benchmark": strings.Join(labels, " + "), "live": true, "basis": "measured",
+				"feed": "blend", "parts": parts, "synced_at": s.ts, "synced_epoch": s.now, "match": match,
+			}
+			if arena != nil {
+				// The reasoning half of architecture keeps its own clock.
+				e["text_score"], e["text_synced_epoch"] = arena["text_score"], arena["text_synced_epoch"]
+			}
+			bm[kind] = e
+		case arena != nil && wsum > 0:
+			// No other source scores it now: LMArena alone, as it was.
+			if wasBlend {
+				bm[kind] = arenaEntry(arena)
+			}
+		case wasBlend || (arena != nil && wsum == 0):
+			// Nothing measured with a weight above 0 is left: the
+			// catalog's estimate, never last sync's composite.
+			if e := est(kind); e != nil {
 				bm[kind] = e
-			}
-			continue
-		}
-		if wsum == 0 {
-			// Every part weighted 0: the entry stays as it was, but says
-			// what was read.
-			if cur != nil {
-				cur = clone(cur)
-				cur["parts"] = parts
-				bm[kind] = cur
-			}
-			continue
-		}
-		var labels []string
-		for _, p := range parts {
-			pm := p.(map[string]any)
-			if w, _ := number(pm["weight"]); w > 0 {
-				labels = append(labels, str(pm["label"]))
+			} else {
+				delete(bm, kind)
 			}
 		}
-		e := map[string]any{
-			"score": r1(sum / wsum), "benchmark": strings.Join(labels, " + "), "live": true, "basis": "measured",
-			"feed": "blend", "parts": parts, "synced_at": s.ts, "synced_epoch": s.now,
-		}
-		if len(labels) == 1 {
-			e["benchmark"] = labels[0]
-		}
-		bm[kind] = e
 	}
 }
 
+// arenaPart is the LMArena measurement an entry rests on, as a part: the
+// entry itself when LMArena set it, or the LMArena part of last sync's
+// blend while that part is inside its own carry window and for the same
+// model. nil when there is none.
+func (s *syncer) arenaPart(cur map[string]any, kind, match string) map[string]any {
+	if cur == nil || cur["live"] != true || str(cur["basis"]) != "measured" {
+		return nil
+	}
+	base := cur
+	if str(cur["feed"]) == "blend" {
+		base = nil
+		for _, p := range anyList(cur["parts"]) {
+			if pm, ok := p.(map[string]any); ok && str(pm["source"]) == "lmarena" {
+				base = pm
+			}
+		}
+		if base == nil || !s.fresh(int64OrZero(base["synced_epoch"])) || orEmpty(base["match"]) != match {
+			return nil
+		}
+	}
+	label := str(base["benchmark"])
+	if label == "" {
+		label = str(base["label"])
+	}
+	p := map[string]any{"source": "lmarena", "name": "LMArena", "label": label,
+		"feed": base["feed"], "rank": base["rank"], "value": base["value"], "match": match,
+		"synced_at": base["synced_at"], "synced_epoch": base["synced_epoch"], "score": base["score"]}
+	if kind == "architecture" {
+		p["text_score"], p["text_synced_epoch"] = base["text_score"], base["text_synced_epoch"]
+		// The reasoning half has run out: the agent rank alone.
+		if base["text_score"] != nil && !s.fresh(int64OrZero(base["text_synced_epoch"])) && base["rank"] != nil {
+			rank, _ := number(base["rank"])
+			p["score"] = RankScore(98.0, rank)
+			p["text_score"], p["text_synced_epoch"] = nil, nil
+			p["label"] = "LMArena Agent #" + numText(base["rank"])
+		}
+	}
+	return p
+}
+
+// arenaEntry turns an LMArena part back into a benchmark entry.
+func arenaEntry(p map[string]any) map[string]any {
+	e := clone(p)
+	for _, k := range []string{"weight", "name", "source", "label"} {
+		delete(e, k)
+	}
+	e["benchmark"], e["live"], e["basis"] = p["label"], true, "measured"
+	return e
+}
+
 // carriedPart is the part an earlier sync read from a source that is
-// down now, while it is inside the carry window.
-func (s *syncer) carriedPart(pcb map[string]any, kind, src string) map[string]any {
-	if s.carry <= 0 || pcb == nil {
+// down now, while it is inside the carry window and still for this model.
+func (s *syncer) carriedPart(pcb map[string]any, kind, src string, names []string) map[string]any {
+	if pcb == nil {
 		return nil
 	}
 	e, _ := pcb[kind].(map[string]any)
@@ -154,8 +183,7 @@ func (s *syncer) carriedPart(pcb map[string]any, kind, src string) map[string]an
 		if !ok || str(pm["source"]) != src {
 			continue
 		}
-		ep := int64OrZero(pm["synced_epoch"])
-		if s.now-ep > s.carry || ep > s.now+60 {
+		if !s.fresh(int64OrZero(pm["synced_epoch"])) || MatchBoard([]Row{{Name: str(pm["model"])}}, names...) == nil {
 			return nil
 		}
 		out := clone(pm)

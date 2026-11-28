@@ -1145,3 +1145,10 @@ func TestBenchViews(t *testing.T) {
 		}
 	}
 }
+
+func TestSplitArgs(t *testing.T) {
+	got := splitArgs(`my-evals "/home/me/My Boards/r.csv" review`)
+	if len(got) != 3 || got[1] != "/home/me/My Boards/r.csv" {
+		t.Errorf("%q", got)
+	}
+}

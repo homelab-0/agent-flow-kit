@@ -2,6 +2,7 @@ package bench
 
 import (
 	"errors"
+	"strconv"
 	"strings"
 )
 
@@ -102,6 +103,20 @@ func (p *yparser) mapping(ind int) map[string]any {
 			return out
 		}
 		p.i++
+		if isBlockScalar(v) {
+			// A | or > block: its indented lines are its text.
+			var text []string
+			for p.i < len(p.lines) && p.lines[p.i].ind > ind {
+				text = append(text, p.lines[p.i].text)
+				p.i++
+			}
+			sep := "\n"
+			if strings.HasPrefix(v, ">") {
+				sep = " "
+			}
+			out[k] = strings.Join(text, sep)
+			continue
+		}
 		if v != "" {
 			out[k] = scalar(v)
 			continue
@@ -142,9 +157,24 @@ func splitKey(t string) (string, string, bool) {
 	return strings.TrimSpace(t[:i]), strings.TrimSpace(t[i+2:]), true
 }
 
+func isBlockScalar(v string) bool {
+	switch v {
+	case "|", "|-", "|+", ">", ">-", ">+":
+		return true
+	}
+	return false
+}
+
 func scalar(s string) any {
-	if len(s) >= 2 && (s[0] == '"' && s[len(s)-1] == '"' || s[0] == '\'' && s[len(s)-1] == '\'') {
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		// YAML's double-quoted escapes are close to Go's.
+		if u, err := strconv.Unquote(s); err == nil {
+			return u
+		}
 		return s[1 : len(s)-1]
+	}
+	if len(s) >= 2 && s[0] == '\'' && s[len(s)-1] == '\'' {
+		return strings.ReplaceAll(s[1:len(s)-1], "''", "'")
 	}
 	if s == "~" || s == "null" {
 		return nil

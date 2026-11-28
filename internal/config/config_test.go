@@ -571,3 +571,21 @@ func TestLocalEngines(t *testing.T) {
 		t.Errorf("bad [local]: %v", err)
 	}
 }
+
+func TestBenchCustomValidation(t *testing.T) {
+	for _, c := range []struct {
+		toml string
+		ok   bool
+	}{
+		{"[bench.custom.a]\nurl = \"http://[::1]:8000/b.json\"\n", true},
+		{"[bench.custom.a]\nurl = \"http://example.com/b.json\"\n", false},
+		{"[bench.custom.a]\nurl = \"https://u:p@example.com/b.json\"\n", false},
+		{"[bench.custom.a]\nurl = \"https://example.com/b.json\"\nweight = nan\n", false},
+		{"[bench.weights.coding_review]\na = inf\n", false},
+	} {
+		_, err := Parse("config.toml", []byte("version = 1\n"+c.toml))
+		if (err == nil) != c.ok {
+			t.Errorf("%q: err %v", c.toml, err)
+		}
+	}
+}

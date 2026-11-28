@@ -445,9 +445,6 @@ func tasksText(kinds []string) string {
 // weightText is a source's weight: one number when it is the same for
 // every task, else each task's.
 func weightText(w map[string]map[string]float64, id string, tasks []string, def float64) string {
-	if def <= 0 {
-		def = 1
-	}
 	var parts []string
 	same, first := true, -1.0
 	for _, k := range tasks {

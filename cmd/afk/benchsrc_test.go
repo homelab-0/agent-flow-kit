@@ -99,3 +99,32 @@ func TestParseTasks(t *testing.T) {
 		t.Error("unknown task accepted")
 	}
 }
+
+func TestBenchSourceAddOptions(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("AFK_CONFIG", "")
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.WriteFile(filepath.Join(dir, "b.csv"), []byte("model,score\nGrok 4.7,1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	// A relative path and --option=value; a source named key takes a weight.
+	if code := benchCmd([]string{"source", "add", "key", "b.csv", "review", "--weight=0", "--format=csv"}, &out, &errb); code != 0 {
+		t.Fatalf("add: %s", errb.String())
+	}
+	cfg, _ := os.ReadFile(filepath.Join(home, ".config", "afk", "config.toml"))
+	abs, _ := filepath.Abs("b.csv")
+	if !strings.Contains(string(cfg), `file = "`+abs+`"`) || !strings.Contains(string(cfg), "weight = 0") {
+		t.Errorf("config:\n%s", cfg)
+	}
+	if code := benchCmd([]string{"weight", "key", "2", "review"}, &out, &errb); code != 0 {
+		t.Errorf("weight for a source named key: %s", errb.String())
+	}
+	errb.Reset()
+	if code := benchCmd([]string{"source", "add", "x", "https://u:secret@example.com/b.json"}, &out, &errb); code == 0 || strings.Contains(errb.String(), "secret") {
+		t.Errorf("user info: %d %s", code, errb.String())
+	}
+}

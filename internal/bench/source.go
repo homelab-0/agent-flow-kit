@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -121,12 +123,32 @@ func (h HTTPFetcher) FetchSource(ctx context.Context, s Source) ([]byte, error) 
 	if !strings.HasPrefix(s.URL, "https://") && !isLoopbackHTTP(s.URL) {
 		return nil, errors.New("only https:// URLs (or http:// on this machine) are read")
 	}
+	orig, err := url.Parse(s.URL)
+	if err != nil || orig.User != nil {
+		return nil, errors.New("a source URL can't hold a user name or password")
+	}
 	if s.KeyEnv != "" && s.Key == "" {
 		return nil, fmt.Errorf("needs a key in %s", s.KeyEnv)
 	}
-	cl := h.Client
-	if cl == nil {
-		cl = &http.Client{Timeout: 20 * time.Second}
+	cl := &http.Client{Timeout: 20 * time.Second}
+	if h.Client != nil {
+		c := *h.Client
+		cl = &c
+	}
+	keyed := s.Key != "" && s.KeyHeader != ""
+	// A redirect may not drop to plain HTTP, and a request carrying your
+	// key may not leave the host you gave it.
+	cl.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return errors.New("too many redirects")
+		}
+		if req.URL.Scheme != "https" && !isLoopbackHTTP(req.URL.String()) {
+			return errors.New("redirected to a plain http:// address")
+		}
+		if keyed && !strings.EqualFold(req.URL.Host, orig.Host) {
+			return errors.New("redirected to another host; the key isn't sent there")
+		}
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
@@ -145,7 +167,7 @@ func (h HTTPFetcher) FetchSource(ctx context.Context, s Source) ([]byte, error) 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, hostOf(s.URL))
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, maxFeed))
+	return readCapped(resp.Body)
 }
 
 // FetchSource reads <dir>/source-<id>.json (or .yml, .csv) in tests, or
@@ -175,23 +197,44 @@ func readSourceFile(p string) ([]byte, error) {
 		return nil, errors.New("can't read " + p)
 	}
 	defer f.Close()
-	return io.ReadAll(io.LimitReader(f, maxFeed))
+	return readCapped(f)
 }
 
+// hostOf is a URL's host and port, never its user info, for messages.
 func hostOf(u string) string {
-	s := strings.TrimPrefix(strings.TrimPrefix(u, "https://"), "http://")
-	if i := strings.IndexAny(s, "/?#"); i >= 0 {
-		s = s[:i]
+	p, err := url.Parse(u)
+	if err != nil || p.Host == "" {
+		return "the source"
 	}
-	return s
+	return p.Host
 }
+
+// readCapped reads at most maxFeed bytes and fails on more, so a feed
+// cut short is never ranked as if it were whole.
+func readCapped(r io.Reader) ([]byte, error) {
+	b, err := io.ReadAll(io.LimitReader(r, maxFeed+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > maxFeed {
+		return nil, fmt.Errorf("larger than %d MB", maxFeed>>20)
+	}
+	return b, nil
+}
+
+// IsLoopbackHTTP is an http:// URL on this machine.
+func IsLoopbackHTTP(u string) bool { return isLoopbackHTTP(u) }
 
 func isLoopbackHTTP(u string) bool {
-	h := hostOf(u)
-	if i := strings.LastIndexByte(h, ':'); i >= 0 && !strings.HasSuffix(h, "]") {
-		h = h[:i]
+	p, err := url.Parse(u)
+	if err != nil || p.Scheme != "http" {
+		return false
 	}
-	return strings.HasPrefix(u, "http://") && (h == "localhost" || h == "127.0.0.1" || h == "[::1]")
+	switch p.Hostname() {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	return false
 }
 
 // FormatOf is the source's format: as set, else from the extension.
@@ -532,42 +575,45 @@ var (
 // field with a model-like name, and a number field with a score-like name,
 // else the first number field.
 func detectFields(recs []map[string]any) (model, score string) {
-	first := recs[0]
+	// Every field any record has, by its lower-case name.
 	lower := map[string]string{}
-	keys := make([]string, 0, len(first))
-	for k := range first {
-		keys = append(keys, k)
-		lower[strings.ToLower(k)] = k
+	var keys []string
+	for _, r := range recs {
+		for k := range r {
+			if _, seen := lower[strings.ToLower(k)]; !seen {
+				lower[strings.ToLower(k)] = k
+				keys = append(keys, k)
+			}
+		}
 	}
 	sort.Strings(keys)
-	for _, n := range modelNames {
-		if k, ok := lower[n]; ok && scalarText(first[k]) != "" {
-			if _, isNum := toNumber(first[k]); !isNum {
-				model = k
-				break
+	anyRec := func(k string, ok func(any) bool) bool {
+		for _, r := range recs {
+			if v, has := r[k]; has && ok(v) {
+				return true
 			}
+		}
+		return false
+	}
+	isNum := func(v any) bool { _, ok := toNumber(v); return ok }
+	isName := func(v any) bool { return scalarText(v) != "" && !isNum(v) }
+	for _, n := range modelNames {
+		if k, ok := lower[n]; ok && anyRec(k, isName) {
+			model = k
+			break
 		}
 	}
 	for _, n := range scoreNames {
-		if k, ok := lower[n]; ok {
-			if _, isNum := toNumber(first[k]); isNum {
-				score = k
-				break
-			}
+		if k, ok := lower[n]; ok && anyRec(k, isNum) {
+			return model, k
 		}
 	}
-	if score == "" {
-		for _, k := range keys {
-			if k == model {
-				continue
-			}
-			if _, isNum := toNumber(first[k]); isNum {
-				score = k
-				break
-			}
+	for _, k := range keys {
+		if k != model && anyRec(k, isNum) {
+			return model, k
 		}
 	}
-	return model, score
+	return model, ""
 }
 
 func scalarText(v any) string {
@@ -587,20 +633,22 @@ func scalarText(v any) string {
 func toNumber(v any) (float64, bool) {
 	switch n := v.(type) {
 	case float64:
-		return n, true
+		return n, finite(n)
 	case json.Number:
 		f, err := n.Float64()
-		return f, err == nil
+		return f, err == nil && finite(f)
 	case string:
 		s := strings.TrimSuffix(strings.TrimSpace(n), "%")
 		if s == "" {
 			return 0, false
 		}
 		f, err := strconv.ParseFloat(s, 64)
-		return f, err == nil
+		return f, err == nil && finite(f)
 	}
 	return 0, false
 }
+
+func finite(f float64) bool { return !math.IsNaN(f) && !math.IsInf(f, 0) }
 
 // Probe reads a source once and says what AFK makes of it: the fields it
 // uses, how many models the board lists, and which catalog models it

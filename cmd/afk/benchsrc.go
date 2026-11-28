@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -241,7 +242,17 @@ func addBenchSource(paths config.Paths, list []bench.Source, argv []string) (str
 	noCheck := false
 	for i := 0; i < len(argv); i++ {
 		a := argv[i]
+		// --option=value as well as --option value.
+		attached, hasAttached := "", false
+		if strings.HasPrefix(a, "--") {
+			if k, v, ok := strings.Cut(a, "="); ok {
+				a, attached, hasAttached = k, v, true
+			}
+		}
 		val := func() (string, error) {
+			if hasAttached {
+				return attached, nil
+			}
 			if i+1 >= len(argv) {
 				return "", fmt.Errorf("%s needs a value", a)
 			}
@@ -292,8 +303,20 @@ func addBenchSource(paths config.Paths, list []bench.Source, argv []string) (str
 	}
 	where := pos[1]
 	if strings.HasPrefix(where, "http://") || strings.HasPrefix(where, "https://") {
+		u, err := url.Parse(where)
+		if err != nil || u.User != nil {
+			return "", errors.New("a source URL can't hold a user name or password; use --key for a key")
+		}
 		src.URL = where
 	} else {
+		// A relative path is saved as the absolute path it names now.
+		if !strings.HasPrefix(where, "~/") && !filepath.IsAbs(where) {
+			abs, err := filepath.Abs(where)
+			if err != nil {
+				return "", err
+			}
+			where = abs
+		}
 		src.File = where
 	}
 	tasks := "complex"

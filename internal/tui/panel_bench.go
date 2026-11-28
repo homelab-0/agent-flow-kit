@@ -69,8 +69,8 @@ func (p *Panel) benchSourceKey(k, armed string) tea.Cmd {
 	v := p.data.bench
 	if k == "a" {
 		p.ask = &panelAsk{tab: TabBench, label: "new source",
-			hint: "An id, a URL or file, and the tasks it scores (complex, standard, review, architecture, security, webdev, research, frontier). For example: my-evals https://example.com/board.json complex,review",
-			done: func(text string) tea.Cmd { return p.benchDo("add", strings.Fields(text)...) }}
+			hint: "An id, a URL or file (in quotes if it has spaces), and the tasks it scores (complex, standard, review, architecture, security, webdev, research, frontier). For example: my-evals https://example.com/board.json complex,review",
+			done: func(text string) tea.Cmd { return p.benchDo("add", splitArgs(text)...) }}
 		return nil
 	}
 	if v == nil || len(v.Sources) == 0 {
@@ -484,3 +484,37 @@ func (p *Panel) benchWhyLines(w int) ([]line, line) {
 }
 
 func trimFloat(f float64) string { return strconv.FormatFloat(f, 'f', -1, 64) }
+
+// splitArgs splits a typed line into words, keeping a "quoted part" or
+// 'quoted part' whole.
+func splitArgs(s string) []string {
+	var out []string
+	var cur strings.Builder
+	var q rune
+	in := false
+	for _, r := range s {
+		switch {
+		case q != 0:
+			if r == q {
+				q = 0
+			} else {
+				cur.WriteRune(r)
+			}
+		case r == '"' || r == '\'':
+			q, in = r, true
+		case r == ' ' || r == '\t':
+			if in {
+				out = append(out, cur.String())
+				cur.Reset()
+				in = false
+			}
+		default:
+			cur.WriteRune(r)
+			in = true
+		}
+	}
+	if in {
+		out = append(out, cur.String())
+	}
+	return out
+}
