@@ -112,6 +112,9 @@ func (m *Model) composeKey(k tea.KeyPressMsg) tea.Cmd {
 	m.notice = ""
 	armed := m.exitArmed
 	m.exitArmed = false
+	if m.menuKey(key) {
+		return nil
+	}
 	switch key {
 	case "ctrl+c":
 		// Like a shell: first clear what is typed, then ask once more
@@ -161,14 +164,26 @@ func (m *Model) composeKey(k tea.KeyPressMsg) tea.Cmd {
 			m.help = !m.help
 			return nil
 		}
+	case "ctrl+p":
+		// The same list the tabs' palette has: every command.
+		if m.cin.Value() == "" {
+			m.cin.SetValue("/")
+			m.cin.CursorEnd()
+			m.menuSel, m.menuOff = 0, false
+			return nil
+		}
 	case "2", "3", "4", "5", "6", "7":
 		if m.cin.Value() == "" && m.opt.Panel != nil {
 			return m.openPanel(Tab(key[0] - '1'))
 		}
 	}
 	m.help = false
+	before := m.cin.Value()
 	var cmd tea.Cmd
 	m.cin, cmd = m.cin.Update(k)
+	if m.cin.Value() != before {
+		m.menuSel, m.menuOff = 0, false // the menu follows what is typed
+	}
 	return cmd
 }
 
@@ -180,6 +195,13 @@ func (m *Model) submit(here bool) tea.Cmd {
 	if tab, ok := TabFor(text); ok && tab != TabRoute && strings.HasPrefix(text, "/") && text != "/harness" && m.opt.Panel != nil {
 		m.cin.SetValue("")
 		return m.openPanel(tab)
+	}
+	if name, arg, _ := strings.Cut(text, " "); name == "/update" && m.opt.Panel != nil {
+		m.cin.SetValue("")
+		return m.runUpdate(strings.TrimSpace(arg))
+	}
+	if text == "/exit" || text == "/quit" {
+		return m.finish(Decision{Cancelled: true, Exit: true})
 	}
 	if strings.HasPrefix(text, "/") {
 		m.notice = m.command(text)
@@ -261,11 +283,7 @@ func (m *Model) command(text string) string {
 		f.Harness, f.Model, f.Effort, f.Prefer = "", "", "", ""
 		return ""
 	default:
-		s := "unknown command /" + name + ": try /harness, /model, /effort, /prefer, /mode, /rate, /open, /clear"
-		if m.opt.Panel != nil {
-			s += ", or a tab: /harnesses /bench /skills /mcp /runs /config"
-		}
-		return s
+		return "unknown command /" + name + ": type / to see them all"
 	}
 	*dst = arg // an empty argument unpins it
 	return ""
@@ -284,12 +302,25 @@ func (m *Model) enterHelp() line {
 // status line and the hint line (or the shortcuts).
 func (m *Model) composeLines() []line {
 	t, w := m.theme, boxW(m.width)
-	out := []line{nil, m.inputBar(w), m.statusLine(w)}
+	out := []line{nil}
+	if m.opt.Panel != nil && m.width >= compactBelow {
+		// Every place AFK has, in sight from the start.
+		out = append(t.navLines(TabRoute, w, ""), nil)
+	}
+	out = append(out, m.inputBar(w))
+	if menu := m.menuLines(w); menu != nil {
+		// The menu takes the place of the status and hint lines.
+		out = append(out, menu...)
+		return append(out, line{sg(t.Dim, "  "), sg(t.Key, "↑↓"), sg(t.Dim, " pick · "), sg(t.Key, "tab"), sg(t.Dim, " complete · "), sg(t.Key, "↵"), sg(t.Dim, " run · "), sg(t.Key, "esc"), sg(t.Dim, " close")})
+	}
+	out = append(out, m.statusLine(w))
 	if m.help {
 		for _, l := range []line{
 			m.enterHelp(),
 			{sg(t.Key, "  tab"), sg(t.Dim, " task kind: "+strings.Join(taskKinds, ", "))},
+			{sg(t.Key, "  /"), sg(t.Dim, " or "), sg(t.Key, "ctrl+p"), sg(t.Dim, " every command, with what it does  "), sg(t.Key, "/update"), sg(t.Dim, " the agent CLIs")},
 			{sg(t.Key, "  /harness /model /effort /prefer"), sg(t.Dim, " pin a choice  "), sg(t.Key, "/clear"), sg(t.Dim, " unpin")},
+			{sg(t.Key, "  2-7"), sg(t.Dim, " open a tab (on an empty input)")},
 			{sg(t.Key, "  esc"), sg(t.Dim, " clear the input  "), sg(t.Key, "ctrl+c"), sg(t.Dim, " twice, or "), sg(t.Key, "ctrl+d"), sg(t.Dim, ", exit")},
 		} {
 			out = append(out, fitLine(l, w))
@@ -300,7 +331,11 @@ func (m *Model) composeLines() []line {
 	if m.opt.RunHere {
 		hint = append(hint, sg(t.Key, "↵"), sg(t.Dim, " run · "), sg(t.Key, "ctrl+o"), sg(t.Dim, " route card · "))
 	}
-	hint = append(hint, sg(t.Key, "tab"), sg(t.Dim, " task · "), sg(t.Key, "/"), sg(t.Dim, " commands · "), sg(t.Key, "?"), sg(t.Dim, " for shortcuts"))
+	hint = append(hint, sg(t.Key, "tab"), sg(t.Dim, " task · "), sg(t.Key, "/"), sg(t.Dim, " commands · "))
+	if m.opt.Panel != nil {
+		hint = append(hint, sg(t.Key, "2-7"), sg(t.Dim, " tabs · "))
+	}
+	hint = append(hint, sg(t.Key, "?"), sg(t.Dim, " shortcuts"))
 	out = append(out, hint)
 	if m.notice != "" {
 		out = append(out, fitLine(line{sg(t.Warn, "  "+m.notice)}, w))
@@ -409,4 +444,25 @@ func (m *Model) composePose() (Pose, line) {
 		}
 	}
 	return p, line{sg(t.Dim, "Esc is chilling")}
+}
+
+type updateDoneMsg struct{ err error }
+
+// runUpdate hands the terminal to `afk harness update` (or `afk update`
+// for AFK itself), then comes back and checks the routes again.
+func (m *Model) runUpdate(what string) tea.Cmd {
+	var args []string
+	switch what {
+	case "", "all":
+		args = []string{"harness", "update", "--all"}
+	case "afk":
+		args = []string{"update"}
+	default:
+		args = []string{"harness", "update", what}
+	}
+	argv := m.opt.Panel.Command(args...)
+	if len(argv) == 0 {
+		return nil
+	}
+	return execPaused(argv, false, func(err error) tea.Msg { return updateDoneMsg{err} })
 }
