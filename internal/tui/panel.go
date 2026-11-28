@@ -187,6 +187,10 @@ type ConfigEdit struct {
 	// Remove, when set, is the section x takes out of the file (the
 	// gateway this row belongs to).
 	Remove string
+	// Confirm, when set, is asked before a switch is turned on: what it
+	// does and what it risks. Enter then turns it on; turning it off
+	// asks nothing.
+	Confirm string
 }
 
 type panelData struct {
@@ -240,15 +244,17 @@ type Panel struct {
 	// A setting's value being typed on the Config tab.
 	cfgKey, cfgText, cfgHint string
 	cfgRemove                string // the section x was pressed on once
-	ask                      *panelAsk
-	id                       int
-	gens                     map[Tab]int // the latest load of each tab
-	loading                  map[Tab]bool
-	notice                   string
-	ctx                      context.Context
-	stop                     context.CancelFunc
-	now                      func() time.Time
-	version                  string
+	// A switch waiting for its yes: the key, and what is asked.
+	cfgAskKey, cfgAsk string
+	ask               *panelAsk
+	id                int
+	gens              map[Tab]int // the latest load of each tab
+	loading           map[Tab]bool
+	notice            string
+	ctx               context.Context
+	stop              context.CancelFunc
+	now               func() time.Time
+	version           string
 	// standalone: Route quits rather than going back to a composer.
 	standalone bool
 	quit       bool
@@ -412,6 +418,15 @@ func (p *Panel) key(k string) tea.Cmd {
 	}
 	if p.cfgKey != "" {
 		return p.configTyping(k)
+	}
+	if p.cfgAskKey != "" {
+		key := p.cfgAskKey
+		p.cfgAskKey, p.cfgAsk = "", ""
+		if k == "enter" || k == "y" {
+			return p.configSave(key, "on")
+		}
+		p.notice = key + " left off"
+		return nil
 	}
 	if p.ask != nil {
 		return p.askKey(k)
@@ -729,7 +744,7 @@ func (p *Panel) Lines() []line {
 	// give way first so the tabs and quit stay in sight.
 	filter := filterable(p.tab) && !(p.tab == TabMCP && p.tools != nil)
 	refresh := true
-	typingValue := p.tab == TabConfig && p.cfgKey != "" || p.ask != nil && p.ask.tab == p.tab
+	typingValue := p.tab == TabConfig && (p.cfgKey != "" || p.cfgAskKey != "") || p.ask != nil && p.ask.tab == p.tab
 	if typingValue {
 		filter, refresh = false, false // every key is text for now
 	}
@@ -1145,6 +1160,13 @@ func (p *Panel) configLines(w int) ([]line, line) {
 	for _, wn := range v.Warnings {
 		out = append(out, fitLine(line{sg(t.Warn, " ! "+wn)}, w))
 	}
+	if p.cfgAskKey != "" {
+		out = append(out, nil)
+		for _, l := range wrap(p.cfgAsk, max(w-4, 20)) {
+			out = append(out, line{sg(t.Dim, "  "+l)})
+		}
+		return out, line{sg(t.Key, "↵"), sg(t.Dim, " turn on  "), sg(t.Key, "esc"), sg(t.Dim, " leave off  ")}
+	}
 	if p.cfgKey != "" {
 		// What to type goes under the table, wrapped: it can be long.
 		if p.cfgHint != "" {
@@ -1238,7 +1260,12 @@ func (p *Panel) configChange(step int) tea.Cmd {
 		}
 	}
 	n := len(e.Choices)
-	return p.configSave(key, e.Choices[((at+step)%n+n)%n])
+	next := e.Choices[((at+step)%n+n)%n]
+	if e.Confirm != "" && next == "on" {
+		p.cfgAskKey, p.cfgAsk = key, e.Confirm
+		return nil
+	}
+	return p.configSave(key, next)
 }
 
 func (p *Panel) configSave(key, value string) tea.Cmd {

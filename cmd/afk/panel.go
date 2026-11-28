@@ -571,9 +571,10 @@ func (s panelSource) Config(ctx context.Context) (*tui.ConfigView, error) {
 	v.Edit[gatewayNew] = tui.ConfigEdit{Hint: "a name and its address, for example: work https://gw.example:4000"}
 	local := "off"
 	if len(st.LocalURLs) > 0 {
-		local = fmt.Sprintf("%d addresses on this PC", len(st.LocalURLs))
+		local = fmt.Sprintf("auto · %d addresses on this PC", len(st.LocalURLs))
 	}
 	add("local.engines", local)
+	v.Edit["local.engines"] = tui.ConfigEdit{Choices: []string{"auto", "off"}}
 	if st.LocalGPU != "" {
 		add("local.gpu", st.LocalGPU)
 	}
@@ -588,11 +589,11 @@ func (s panelSource) Config(ctx context.Context) (*tui.ConfigView, error) {
 		add("harness (off)", strings.Join(off, ", "))
 	}
 	// One switch per CLI whose vendor can be asked for usage. Turning it
-	// on is typed, not stepped through, so the warning is read first.
+	// on shows the warning and takes one more enter; off asks nothing.
 	for _, l := range harness.VendorLookups() {
 		k := "harness." + l.Harness + ".vendor_usage"
 		add(k, yes[st.VendorUsage[l.Harness]])
-		v.Edit[k] = tui.ConfigEdit{Value: yes[st.VendorUsage[l.Harness]], Hint: vendorUsageWarning(l)}
+		v.Edit[k] = tui.ConfigEdit{Choices: []string{"on", "off"}, Confirm: vendorUsageWarning(l)}
 	}
 	add("trust.repos", fmt.Sprintf("%d trusted", len(st.TrustedDirs)))
 	add("bench.autosync", yes[st.BenchAutosync])
@@ -605,9 +606,9 @@ func (s panelSource) Config(ctx context.Context) (*tui.ConfigView, error) {
 // vendorUsageWarning is what the Config tab says before the vendor usage
 // lookup is switched on for a CLI.
 func vendorUsageWarning(l harness.VendorLookup) string {
-	return "type on or off. On lets AFK read the login " + l.Display + " saved on this PC and ask " + l.Vendor +
+	return "On lets AFK read the login " + l.Display + " saved on this PC and ask " + l.Vendor +
 		" for your plan usage, the way " + l.Display + "'s own usage screen does. " + l.Vendor +
-		"'s terms may not allow another tool to use that login, so this is off unless you turn it on. " +
+		"'s terms may not allow another tool to use that login, so AFK asks first. " +
 		"AFK only reads the login, sends it to " + l.Vendor + " alone, and never stores or renews it."
 }
 
@@ -683,7 +684,7 @@ func (s panelSource) ConfigSet(_ context.Context, key, value string) (string, er
 			return "", fmt.Errorf("AFK has no vendor usage lookup for %s", h)
 		}
 		if raw != "true" && raw != "false" {
-			return "", errors.New("type on or off")
+			return "", errors.New("on or off")
 		}
 	}
 	paths := config.PathsFor(s.c.Home, s.getenv)
@@ -702,6 +703,9 @@ func (s panelSource) ConfigSet(_ context.Context, key, value string) (string, er
 		if now, ok := eff[key]; ok && now != value {
 			msg += ", but " + now + " is still in effect here (an AFK_* variable or this project's .afk/config.json decides it)"
 		}
+	}
+	if key == "local.engines" && value != "off" && s.getenv("AFK_LOCAL_ENGINES") == "off" {
+		msg += ", but AFK_LOCAL_ENGINES=off still turns them off here"
 	}
 	return msg, nil
 }

@@ -224,8 +224,8 @@ func TestConfigSetFromTheTab(t *testing.T) {
 	}
 }
 
-// The vendor usage lookup is one switch per CLI, off until typed on, and
-// the warning is shown before it is.
+// The vendor usage lookup is one switch per CLI, off until it is turned
+// on, and the warning is asked before it is.
 func TestVendorUsageSwitchInTheConfigTab(t *testing.T) {
 	c := panelCore(t)
 	s := newPanelSource(c, "")
@@ -242,14 +242,21 @@ func TestVendorUsageSwitchInTheConfigTab(t *testing.T) {
 		}
 		for _, k := range []string{"harness.claude.vendor_usage", "harness.grok.vendor_usage"} {
 			e, ok := v.Edit[k]
-			if !ok || len(e.Choices) != 0 || !strings.Contains(e.Hint, "terms") || !strings.Contains(e.Hint, "login") {
-				t.Errorf("%s: the switch must be typed, with the warning beside it: %+v", k, e)
+			if !ok || len(e.Choices) != 2 || !strings.Contains(e.Confirm, "terms") || !strings.Contains(e.Confirm, "login") {
+				t.Errorf("%s: a switch that asks with the warning before it turns on: %+v", k, e)
 			}
 		}
 		return m
 	}
 	if r := rows(); r["harness.claude.vendor_usage"] != "off" || r["harness.grok.vendor_usage"] != "off" {
 		t.Fatalf("the lookup must start off: %v", r)
+	}
+	// Local engines are a switch as well.
+	if v, _ := s.Config(ctx); len(v.Edit["local.engines"].Choices) != 2 {
+		t.Errorf("local.engines has no switch: %+v", v.Edit["local.engines"])
+	}
+	if _, err := s.ConfigSet(ctx, "local.engines", "auto"); err != nil {
+		t.Errorf("local.engines = auto: %v", err)
 	}
 	if _, ok := rows()["harness.agy.vendor_usage"]; ok {
 		t.Error("agy has no vendor lookup and must not show a switch")
