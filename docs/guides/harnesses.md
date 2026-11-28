@@ -95,7 +95,7 @@ A CLI that lists nothing (its command failed, or it has none) is routed from the
 
 AFK keeps each answer for five minutes. `afk harness scan` asks every installed CLI again at once and prints what each said: its sign-in, how many models it listed, its plan and which limits the plan has. `discovery.auto = false` (the `discovery.auto` row on the Config tab) stops AFK asking by itself: the last answers are then used until you scan.
 
-A plan whose CLI lists its limits and has no 5-hour one is shown as `no 5-hour limit` (`no limit` on the Runs tab), which is different from `unknown`: AFK says it only when the CLI's own report lists the plan's windows and that one isn't there.
+A plan whose CLI lists its limits and has no 5-hour one is shown as `no 5-hour limit` (`no limit on this plan` on the Usage tab), which is different from `unknown`: AFK says it only when the CLI's own report lists the plan's windows and that one isn't there.
 
 None of this sends a prompt. A login file is opened only for a CLI whose vendor usage lookup you turned on. `afk pools --json` shows what each CLI reported under `harnesses`.
 

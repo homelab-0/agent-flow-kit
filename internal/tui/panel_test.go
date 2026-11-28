@@ -151,10 +151,10 @@ func panelText(p *Panel) string {
 
 func TestPanelTabs(t *testing.T) {
 	for tab, want := range map[Tab][]string{
-		TabHarnesses: {"1 Route  2 Harnesses  3 Benchmarks  4 Skills  5 MCP  6 Runs  7 Config", "Harnesses  the agent CLIs on this machine", "INSTALLED  4", "▌CL claude        2.1.332   ● signed in",
+		TabHarnesses: {"1 Route  2 Harnesses  3 Benchmarks  4 Skills  5 MCP  6 Usage  7 Config", "Harnesses  the agent CLIs on this machine", "INSTALLED  4", "▌CL claude        2.1.332   ● signed in",
 			"OC opencode      1.4.0     ● signed out", "NOT INSTALLED  1", "PI pi", "Installed native installer · /usr/local/bin/claude", "Usage     5h 71% left · week 64% left", "D discover now", "u update"},
 		TabBench:  {"task   coding  quick", "source SWE-bench Verified", "claude-fable-5-2   CL", "78.1  measured  14✓ 2~", "CX OC", "qwen36-14b         OL", "Effective today", "CX 71.8 (52%)", "OL 51.0", "←→ task"},
-		TabRuns:   {"updated 03:31", "CL Claude plan", "71%", "GK Grok plan", "GK Grok plan          █████████░ 91%     unknown", "agentgateway      up", "└ VL vLLM", "OL ollama", "this PC · RTX 5090 · 1 model", "r-7f3c", "✓ solved", "! exit 1", "23m · 30m ago"},
+		TabRuns:   {"Usage  what is left on each plan", "Plans", "Engines", "Run history", "updated 03:31", "CL Claude plan", "71%", "GK Grok plan", "week   unknown", "SET ASIDE  none", "←→ plan"},
 		TabConfig: {"file ~/.config/afk/config.toml", "Routing", "Prefer                      balanced", "e edit config.toml"},
 		TabSkills: {"4 skills · central ~/.config/afk/skills · 1 edited · 1 to sync · 1 to choose", "scope", "everywhere", "◆", "skill", "CL  CX  GK  AG", "gh-pr-triage", "↻", "space on/off"},
 		TabMCP: {"4 servers · ~/.config/afk/mcp.toml · 360 tools · 1 drifted · 1 to sync", "server", "CL  CX  GK  PI  status", "openconnector",
@@ -279,7 +279,7 @@ func TestComposerOpensTabs(t *testing.T) {
 	}
 	m.Update(key("6"))
 	if m.panel == nil || m.panel.tab != TabRuns {
-		t.Fatal("6 didn't open Runs")
+		t.Fatal("6 didn't open Usage")
 	}
 	m.Update(key("1"))
 	if m.panel != nil {
@@ -320,6 +320,7 @@ func TestPanelIgnoresStaleLoads(t *testing.T) {
 
 func TestPanelScrollsAndNarrowTabs(t *testing.T) {
 	p := panelAt(t, TabRuns)
+	p.Update(key("["))
 	p.Update(tea.WindowSizeMsg{Width: 80, Height: 12})
 	for range 10 {
 		p.Update(key("down"))
@@ -597,7 +598,7 @@ func TestMCPToolsEdges(t *testing.T) {
 	}
 }
 
-// A plan a failed run set aside says so on the Runs tab, and c clears the
+// A plan a failed run set aside says so on the Usage tab, and c clears the
 // mark in place. With nothing set aside there is no c.
 func TestRunsTabClearsFailedRunMarks(t *testing.T) {
 	src := &fakePanel{}
@@ -605,7 +606,7 @@ func TestRunsTabClearsFailedRunMarks(t *testing.T) {
 	p := NewPanel(context.Background(), src, NewTheme(true), TabRuns, "", now)
 	p.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	p.Update(p.Init()())
-	if strings.Contains(panelText(p), "clear failed-run marks") {
+	if strings.Contains(panelText(p), "clear set-aside") {
 		t.Fatalf("a clear key with nothing set aside:\n%s", panelText(p))
 	}
 	if cmd := p.Update(tea.KeyPressMsg{Code: 'c', Text: "c"}); cmd != nil || len(src.ran) != 0 {
@@ -614,7 +615,7 @@ func TestRunsTabClearsFailedRunMarks(t *testing.T) {
 	p.data.status.Plans[2].SetAside = true
 	p.data.status.Plans[2].Note = "set aside after a run failed with a rate-limit or quota error, for another 42m; this is not a usage reading"
 	s := panelText(p)
-	if !strings.Contains(s, "for another 42m") || !strings.Contains(s, "c clear failed-run marks") {
+	if !strings.Contains(s, "for another 42m") || !strings.Contains(s, "c clear set-aside") {
 		t.Fatalf("no set-aside note or key:\n%s", s)
 	}
 	cmd := p.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
@@ -900,33 +901,56 @@ func TestTabsAskForANewServerAndSkill(t *testing.T) {
 	}
 }
 
-// A long reported tier widens the plan column: the tier is shown in full
-// and the header stays over its columns.
-func TestRunsTabShowsLongPlanTier(t *testing.T) {
+// A long reported tier is shown in full on its card.
+func TestUsagePlanCardShowsLongTier(t *testing.T) {
 	p := NewPanel(context.Background(), &fakePanel{}, NewTheme(true), TabRuns, "", nil)
 	p.data.status = &StatusView{Plans: []PlanRow{
 		{Harness: "codex", Plan: "ChatGPT plan · enterprise", FiveHour: f(52), Week: f(80), SignIn: "signed in"},
-		{Harness: "grok", Plan: "Grok plan", SignIn: "unknown"},
+		{Harness: "claude", Plan: "Claude plan", Week: f(95), NoFiveHour: true, SignIn: "signed in", Pace: "~40% may go unused, so AFK leans to it", Leans: true, RunsToday: 3},
 	}}
-	lines, _ := p.statusLines(100)
-	var head, long, short string
+	p.width = 100
+	lines, _ := p.usageLines(100)
+	var s []string
 	for _, l := range lines {
-		s := l.plain()
-		switch {
-		case strings.Contains(s, "5h left"):
-			head = s
-		case strings.Contains(s, "enterprise"):
-			long = s
-		case strings.Contains(s, "Grok plan"):
-			short = s
+		if l.width() > 100 {
+			t.Errorf("line over 100 cells: %q", l.plain())
+		}
+		s = append(s, l.plain())
+	}
+	text := strings.Join(s, "\n")
+	for _, want := range []string{"ChatGPT plan · enterprise", "5-hour no limit on this plan", "may go unused", "3 runs today", "52%"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q in\n%s", want, text)
 		}
 	}
-	if !strings.Contains(long, "ChatGPT plan · enterprise ") {
-		t.Fatalf("tier cut: %q", long)
+}
+
+// [ and ] switch the Usage views; each has its own rows.
+func TestUsageViews(t *testing.T) {
+	p := panelAt(t, TabRuns)
+	p.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	p.Update(key("]"))
+	s := panelText(p)
+	for _, want := range []string{"GATEWAY", "agentgateway", "└ VL vLLM", "LOCAL ENGINES", "this PC · RTX 5090 · 1 model", "models    qwen36-14b"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("engines: missing %q in\n%s", want, s)
+		}
 	}
-	at := func(s, sub string) int { return line{seg{s: s[:strings.Index(s, sub)]}}.width() }
-	if at(head, "sign-in") != at(long, "signed in") || at(short, "unknown") != at(head, "5h left") {
-		t.Fatalf("columns do not line up:\n%s\n%s\n%s", head, long, short)
+	p.Update(key("]"))
+	p.Update(key("down"))
+	s = panelText(p)
+	for _, want := range []string{"started", "claude-fable-5-2", "solved", "! exit 1", "╭─ r-7f1a", "gpt-6.1-sol", "took 8m"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("runs: missing %q in\n%s", want, s)
+		}
+	}
+	p.Update(key("]"))
+	if p.viewOf(TabRuns) != usagePlans || p.sel[TabRuns] != 0 {
+		t.Errorf("] didn't wrap to Plans: view %d sel %d", p.viewOf(TabRuns), p.sel[TabRuns])
+	}
+	p.Update(key("right"))
+	if p.sel[TabRuns] != 1 {
+		t.Errorf("→ didn't pick the next plan: %d", p.sel[TabRuns])
 	}
 }
 

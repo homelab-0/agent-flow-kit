@@ -12,7 +12,7 @@ func TestComposerShowsTheTabs(t *testing.T) {
 	m, _ := composeModel(t, 80, false)
 	m.opt.Panel = &fakePanel{}
 	s := ansi.Strip(m.Render())
-	if !strings.Contains(s, "1 Route  2 Harnesses  3 Benchmarks  4 Skills  5 MCP  6 Runs  7 Config") {
+	if !strings.Contains(s, "1 Route  2 Harnesses  3 Benchmarks  4 Skills  5 MCP  6 Usage  7 Config") {
 		t.Fatalf("the tabs aren't in sight on the composer:\n%s", s)
 	}
 	// Without the panel (afk "task" mode) there is nothing to switch to.

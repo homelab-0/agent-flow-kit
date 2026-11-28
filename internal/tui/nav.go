@@ -8,7 +8,7 @@ import (
 // The navigation strip: the seven places AFK has, shown the same way on
 // the composer and on every tab, so they can always be seen and reached.
 //
-//	 1 Route  2 Harnesses  3 Benchmarks  4 Skills  5 MCP  6 Runs  7 Config       afk 0.4.0
+//	 1 Route  2 Harnesses  3 Benchmarks  4 Skills  5 MCP  6 Usage  7 Config       afk 0.4.0
 //	─━━━━━━━━━────────────────────────────────────────────────────────────────────────────
 //
 // The open place is bright on the selection background with an accent
@@ -22,7 +22,7 @@ var tabBlurbs = []string{
 	"how each model scores, per kind of task",
 	"skills, and which CLIs have them",
 	"MCP servers, and which CLIs have them",
-	"plan usage, gateways, local engines and recent runs",
+	"what is left on each plan, the engines, and what ran",
 	"every setting, changed in place",
 }
 

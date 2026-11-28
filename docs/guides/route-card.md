@@ -15,7 +15,7 @@ Run `afk` on its own and Esc shuffles in and climbs into its hammock (about two 
 | `/exit` | exit AFK |
 | `/open` | reopen the last run's session in its CLI's own screen; exit the CLI to come back |
 | `?` | shortcuts (on an empty input) |
-| `2`–`7`, `/harnesses`, `/bench`, `/skills`, `/mcp`, `/runs`, `/config` | open the [control panel](control-panel.md) on that tab (the digits on an empty input) |
+| `2`–`7`, `/harnesses`, `/bench`, `/skills`, `/mcp`, `/usage`, `/config` | open the [control panel](control-panel.md) on that tab (the digits on an empty input) |
 | `esc` | clear the input |
 | `ctrl+c` | clear the input; on an empty input press it twice to exit AFK |
 | `ctrl+d` | exit AFK (on an empty input) |

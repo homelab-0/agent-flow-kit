@@ -30,7 +30,9 @@ const (
 	TabConfig
 )
 
-var tabNames = []string{"Route", "Harnesses", "Benchmarks", "Skills", "MCP", "Runs", "Config"}
+// TabRuns is shown as Usage: what is left on each plan, the engines, and
+// what ran.
+var tabNames = []string{"Route", "Harnesses", "Benchmarks", "Skills", "MCP", "Usage", "Config"}
 
 // TabFor is the tab a slash command or `afk <command>` names.
 func TabFor(name string) (Tab, bool) {
@@ -45,7 +47,7 @@ func TabFor(name string) (Tab, bool) {
 		return TabSkills, true
 	case "mcp":
 		return TabMCP, true
-	case "runs", "status":
+	case "usage", "runs", "status":
 		return TabRuns, true
 	case "config":
 		return TabConfig, true
@@ -125,7 +127,7 @@ type BenchRow struct {
 	Solved, Partly, Wrong int
 }
 
-// StatusView is the Runs tab (and `afk status`).
+// StatusView is the Usage tab (and `afk status`).
 type StatusView struct {
 	Updated time.Time
 	Plans   []PlanRow
@@ -148,6 +150,16 @@ type PlanRow struct {
 	// SetAside says a failed run set this plan aside (Note says why and
 	// for how long); c on the tab clears it.
 	SetAside bool
+	// Resets is when the window the reading is for (ResetsWindow: "5h"
+	// or "weekly") resets, as the CLI reported it; zero when it didn't.
+	Resets       time.Time
+	ResetsWindow string
+	// Pace is where the window is heading at the rate so far ("" when
+	// AFK has no measured pace); Leans says route.pacing favours it.
+	Pace  string
+	Leans bool
+	// RunsToday is how many recorded runs used this plan today.
+	RunsToday int
 }
 
 // GatewayRow is the model gateway.
@@ -165,9 +177,14 @@ type EngineRow struct {
 // RunRow is one recorded session.
 type RunRow struct {
 	ID, Where, CLI, Model, Outcome string
+	Effort                         string
 	Exit                           int
 	Started                        time.Time
 	Duration                       time.Duration
+	// The plan's headroom % before and after, and what the run changed in
+	// the repository; nil when not recorded.
+	PoolBefore, PoolAfter *int
+	Files, Commits        *int
 }
 
 // ConfigView is the Config tab: the effective settings and where they
@@ -236,6 +253,7 @@ type Panel struct {
 	width   int
 	height  int
 	sel     map[Tab]int
+	view    map[Tab]int // the open view of a tab with views ([ and ])
 	taskIdx int
 	// skillCol is the selected CLI column on the Skills tab.
 	skillCol int
@@ -278,7 +296,7 @@ func NewPanel(ctx context.Context, src PanelSource, theme Theme, tab Tab, versio
 	}
 	ctx, stop := context.WithCancel(ctx)
 	panelIDs++
-	return &Panel{id: panelIDs, gens: map[Tab]int{}, src: src, theme: theme, tab: tab, sel: map[Tab]int{}, loading: map[Tab]bool{},
+	return &Panel{id: panelIDs, gens: map[Tab]int{}, src: src, theme: theme, tab: tab, sel: map[Tab]int{}, view: map[Tab]int{}, loading: map[Tab]bool{},
 		data: panelData{err: map[Tab]string{}}, filter: map[Tab]string{}, ctx: ctx, stop: stop, now: now, version: version}
 }
 
@@ -512,6 +530,20 @@ func (p *Panel) key(k string) tea.Cmd {
 		return nil
 	case "r":
 		return p.load(p.tab)
+	case "[", "]":
+		if p.stepView(map[string]int{"[": -1, "]": 1}[k]) {
+			return nil
+		}
+	case "left", "h", "right", "l":
+		// On the plan cards, left and right move between plans.
+		if p.tab == TabRuns && p.viewOf(TabRuns) == usagePlans {
+			if (k == "left" || k == "h") && p.sel[p.tab] > 0 {
+				p.sel[p.tab]--
+			} else if (k == "right" || k == "l") && p.sel[p.tab] < p.rows()-1 {
+				p.sel[p.tab]++
+			}
+			return nil
+		}
 	}
 	if p.tab == TabSkills {
 		return p.skillsKey(k)
@@ -659,8 +691,14 @@ func (p *Panel) rowsOf(t Tab) int {
 			return len(p.data.bench.Rows)
 		}
 	case TabRuns:
-		if p.data.status != nil {
-			return len(p.data.status.Runs)
+		if v := p.data.status; v != nil {
+			switch p.viewOf(TabRuns) {
+			case usagePlans:
+				return len(v.Plans)
+			case usageEngines:
+				return len(v.Engines)
+			}
+			return len(v.Runs)
 		}
 	case TabConfig:
 		if p.data.config != nil {
@@ -710,7 +748,7 @@ func (p *Panel) Lines() []line {
 				body, hint = p.mcpLines(w)
 			}
 		case TabRuns:
-			body, hint = p.statusLines(w)
+			body, hint = p.usageLines(w)
 		case TabConfig:
 			body, hint = p.configLines(w)
 		}
@@ -1140,106 +1178,6 @@ func (p *Panel) anySetAside() bool {
 		}
 	}
 	return false
-}
-
-func (p *Panel) statusLines(w int) ([]line, line) {
-	t := p.theme
-	v := p.data.status
-	out := []line{}
-	if !v.Updated.IsZero() {
-		out = append(out, line{sg(t.Dim, " updated "+v.Updated.Format("15:04")+" · "), sg(t.Key, "r"), sg(t.Dim, " refresh")}, nil)
-	}
-	// The plan column grows to fit the longest label, so a reported tier
-	// ("ChatGPT plan · enterprise") is never cut.
-	pw := 19
-	for _, pl := range v.Plans {
-		pw = max(pw, line{sg(t.Plain, pl.Plan)}.width()+2)
-	}
-	out = append(out, line{sg(t.Bold, " Plans"), sg(t.Dim, strings.Repeat(" ", pw-2)+col("5h left", 19)+col("week left", 19)+"sign-in")})
-	// A window with no reported figure says "unknown": no empty meter
-	// that could be read as a spent plan.
-	cell := func(pct *float64, none bool) line {
-		l := line{sg(t.Dim, "unknown")}
-		if none && pct == nil {
-			l = line{sg(t.Plain, "no limit")}
-		}
-		if pct != nil {
-			l = append(t.meter(pct, 1), sg(t.Plain, " "+pctText(pct)))
-		}
-		return append(l, sg(t.Plain, strings.Repeat(" ", max(1, 19-l.width()))))
-	}
-	for _, pl := range v.Plans {
-		row := line{sg(t.Plain, " "), harnessLogo(t, pl.Harness), sg(t.Plain, " "+col(pl.Plan, pw))}
-		row = append(row, cell(pl.FiveHour, pl.NoFiveHour)...)
-		row = append(row, cell(pl.Week, pl.NoWeek)...)
-		signSt := t.Warn
-		switch pl.SignIn {
-		case "signed in":
-			signSt = t.OK
-		case "login on disk", "unknown":
-			// Not confirmed by the CLI itself: neither good nor bad.
-			signSt = t.Dim
-		}
-		row = append(row, sg(signSt, pl.SignIn))
-		out = append(out, row)
-		if pl.Note != "" {
-			out = append(out, line{sg(t.Dim, "   "+pl.Note)})
-		}
-	}
-	if v.Gateway != nil || len(v.Engines) > 0 {
-		out = append(out, nil, line{sg(t.Bold, " Gateway and local engines")})
-	}
-	if g := v.Gateway; g != nil {
-		r := engine.Route{LaunchClass: "claude-gateway", GatewayKind: g.Kind}
-		st := t.OK
-		if g.State != "up" {
-			st = t.Warn
-		}
-		out = append(out, line{sg(t.Plain, " "), t.logo(r), sg(t.Plain, " "+col(g.Name, 18)), sg(st, col(g.State, 10)), sg(t.Dim, g.Detail)})
-		if g.Engine != "" {
-			out = append(out, line{sg(t.Dim, "   └ "), t.engineLogo(g.Engine), sg(t.Plain, " "+col(engineName(g.Engine), 14)), sg(t.Dim, g.EngineHost)})
-		}
-	}
-	for _, e := range v.Engines {
-		st := t.OK
-		if e.State == "" {
-			e.State = unknownText
-			st = t.Dim
-		}
-		detail := e.Where
-		if len(e.Models) > 0 {
-			detail += " · " + plural(len(e.Models), "model", "models")
-		}
-		out = append(out, line{sg(t.Plain, " "), t.engineLogo(e.Engine), sg(t.Plain, " "+col(e.Engine, 18)), sg(st, col(e.State, 10)), sg(t.Dim, detail)})
-	}
-	out = append(out, nil, line{sg(t.Bold, " Runs"), sg(t.Dim, strings.Repeat(" ", 27)+col("where", 10)+col("CLI", 10)+col("state", 13)+"time")})
-	if len(v.Runs) == 0 {
-		out = append(out, line{sg(t.Dim, "   no runs yet: they are recorded when a session started from the card ends")})
-	}
-	now := p.now()
-	for i, r := range v.Runs {
-		state, st := "● done", t.OK
-		switch {
-		case r.Exit != 0:
-			state, st = fmt.Sprintf("! exit %d", r.Exit), t.Warn
-		case r.Outcome == "wrong-pick":
-			state, st = "✗ wrong pick", t.Warn
-		case r.Outcome == "partly":
-			state, st = "~ partly", t.Plain
-		case r.Outcome == "solved":
-			state = "✓ solved"
-		}
-		when := ""
-		if !r.Started.IsZero() {
-			when = " · " + ago(now.Sub(r.Started)) + " ago"
-		}
-		row := line{sg(t.Dim, " "+col(r.ID, 8)), sg(t.Plain, col(r.Model, 22)), sg(t.Plain, col(r.Where, 10)), sg(t.Plain, col(r.CLI, 10)), sg(st, col(state, 13)), sg(t.Dim, ago(r.Duration)+when)}
-		out = append(out, p.selRow(row, i, w))
-	}
-	if p.anySetAside() {
-		return out, line{sg(t.Key, "c"), sg(t.Dim, " clear failed-run marks  ")}
-	}
-	return out, nil
 }
 
 // ago is a rough age: 5m, 3h, 2d.
