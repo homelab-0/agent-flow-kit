@@ -639,6 +639,9 @@ func (s panelSource) Status(ctx context.Context) (*tui.StatusView, error) {
 		}
 		v.Engines = append(v.Engines, tui.EngineRow{Engine: le.Engine, State: le.State, Where: where, Models: le.Models})
 	}
+	for _, le := range r.Probe.LocalNoAPI {
+		v.Engines = append(v.Engines, tui.EngineRow{Engine: le.Engine, Where: "this PC", Models: le.Models, NoAPI: true})
+	}
 	for _, rec := range recs {
 		row := tui.RunRow{ID: rec.ID, Where: rec.Where, CLI: rec.Route.Harness, Model: rec.Route.Model, Effort: rec.Route.Effort, Exit: rec.Exit,
 			Duration: time.Duration(rec.DurationS) * time.Second, PoolBefore: rec.PoolBefore, PoolAfter: rec.PoolAfter,

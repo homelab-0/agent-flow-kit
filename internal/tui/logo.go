@@ -284,6 +284,14 @@ var brandLogos = map[string]struct {
 	"tgi":      {"tgi", false},
 	"localai":  {"localai", false},
 	"mlx":      {"mlx", true},
+	// Engines found only by name: koboldcpp, xinference, lmdeploy, docker
+	// (Model Runner) and lemonade have marks; tabbyapi and strata publish
+	// none, so they keep their text tags.
+	"koboldcpp":  {"koboldcpp", false},
+	"xinference": {"xinference", false},
+	"lmdeploy":   {"lmdeploy", false},
+	"docker":     {"docker", false},
+	"lemonade":   {"lemonade", false},
 }
 
 // brandLogo is the embedded logo of a gateway kind or engine for this
@@ -301,12 +309,14 @@ func (t Theme) brandLogo(kind string) string {
 	return b.name + "-dark"
 }
 
-var engineCodes = map[string]string{"vllm": "VL", "ollama": "OL", "llamacpp": "LC", "lmstudio": "LM", "sglang": "SG", "tgi": "TG", "localai": "LA", "mlx": "MX"}
+var engineCodes = map[string]string{"vllm": "VL", "ollama": "OL", "llamacpp": "LC", "lmstudio": "LM", "sglang": "SG", "tgi": "TG", "localai": "LA", "mlx": "MX",
+	"koboldcpp": "KC", "xinference": "XI", "lmdeploy": "LD", "tabbyapi": "TA", "docker": "DM", "lemonade": "LE", "strata": "ST"}
 
 // engineName is how an engine is written.
 func engineName(e string) string {
 	if n, ok := map[string]string{"vllm": "vLLM", "ollama": "Ollama", "llamacpp": "llama.cpp", "lmstudio": "LM Studio",
-		"sglang": "SGLang", "tgi": "TGI", "localai": "LocalAI", "mlx": "MLX"}[e]; ok {
+		"sglang": "SGLang", "tgi": "TGI", "localai": "LocalAI", "mlx": "MLX", "koboldcpp": "KoboldCpp", "xinference": "Xinference",
+		"lmdeploy": "LMDeploy", "tabbyapi": "TabbyAPI", "docker": "Docker Model Runner", "lemonade": "Lemonade", "strata": "Strata"}[e]; ok {
 		return n
 	}
 	return e

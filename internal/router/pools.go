@@ -173,7 +173,11 @@ type Probe struct {
 	// its GPU ("" when it can't tell).
 	Local    []LocalEngine `json:"local,omitempty"`
 	LocalGPU string        `json:"local_gpu,omitempty"`
-	at       time.Time     // when the probe ran
+	// LocalNoAPI are engines found on this machine without the Anthropic
+	// Messages API: Claude Code can't run on them, so they get no routes
+	// and are only shown, with a gateway in front as the way to use them.
+	LocalNoAPI []LocalEngine `json:"local_no_api,omitempty"`
+	at         time.Time     // when the probe ran
 }
 
 // gateway is the probe's entry for the model gateway.

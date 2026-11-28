@@ -8,9 +8,9 @@ import (
 	"github.com/homelab-0/agent-flow-kit/internal/engine"
 )
 
-// noBrandLogo are the gateway kinds AFK ships no mark for; they keep
+// noBrandLogo are the kinds that publish no mark AFK can ship; they keep
 // their text tag.
-var noBrandLogo = []string{}
+var noBrandLogo = []string{"tabbyapi", "strata"}
 
 // Every gateway kind and engine AFK knows has a logo on both terminal
 // backgrounds, so adding one in Config shows its mark. (Terminals without
@@ -70,6 +70,9 @@ func TestBrandLogoCells(t *testing.T) {
 		t.Errorf("a gateway of no kind should keep the GW tag, got %q", s)
 	}
 	for _, e := range config.Engines {
+		if slices.Contains(noBrandLogo, e) {
+			continue
+		}
 		if s := (line{dark.engineLogo(e)}).plain(); s == engineCodes[e] {
 			t.Errorf("%s fell back to its text tag", e)
 		}

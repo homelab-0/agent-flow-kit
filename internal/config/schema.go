@@ -199,7 +199,7 @@ var (
 	Gateways   = []string{"litellm", "openrouter", "portkey", "agentgateway", "envoy", "kong", "cloudflare", "vercel", "openai", "anthropic", "ollama", "lmstudio", "vllm", "llamacpp", "localai"}
 	Costs      = []string{"metered", "free"}
 	LocalModes = []string{"auto", "off"}
-	Engines    = []string{"vllm", "ollama", "llamacpp", "lmstudio", "sglang", "tgi", "localai", "mlx"}
+	Engines    = []string{"vllm", "ollama", "llamacpp", "lmstudio", "sglang", "tgi", "localai", "mlx", "koboldcpp", "xinference", "lmdeploy", "tabbyapi", "docker", "lemonade", "strata"}
 	Formats    = []string{"openai-chat", "openai-responses", "anthropic-messages"}
 	BenchSrcs  = []string{"lmarena", "modelsdev", "swebench", "aider", "artificialanalysis", "own"}
 	// BenchTasks are the task kinds a benchmark source can score.

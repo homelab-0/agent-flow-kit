@@ -517,8 +517,9 @@ func hostOf(raw string) string {
 }
 
 // DefaultLocalPorts are where an inference engine usually listens:
-// Ollama, LM Studio, llama.cpp, vLLM and SGLang.
-var DefaultLocalPorts = []string{"11434", "1234", "8080", "8000", "30000"}
+// Ollama, LM Studio, llama.cpp (and Strata), vLLM, SGLang, TabbyAPI,
+// KoboldCpp, Xinference, Docker Model Runner, Lemonade and LMDeploy.
+var DefaultLocalPorts = []string{"11434", "1234", "8080", "8000", "30000", "5000", "5001", "9997", "12434", "13305", "23333"}
 
 // DefaultLocalURLs are the addresses AFK looks at for local engines.
 func DefaultLocalURLs() []string {

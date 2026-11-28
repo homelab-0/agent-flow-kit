@@ -129,7 +129,7 @@ Inference engines on this machine; see [local models](../guides/local-models.md)
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `engines` | string | `auto` | `auto` looks on the usual ports (11434, 1234, 8080, 8000, 30000); `off` looks only at `urls` |
+| `engines` | string | `auto` | `auto` looks on the usual ports (11434, 1234, 8080, 8000, 30000, 5000, 5001, 9997, 12434, 13305, 23333); `off` looks only at `urls` |
 | `urls` | list | | more engines to look at; each an `http(s)` address on this machine (`localhost`, `127.0.0.1`, `::1`) with no user info |
 | `gpu` | string | what `nvidia-smi` reports | this machine's GPU, a short label for the route card |
 

@@ -176,6 +176,9 @@ type GatewayRow struct {
 type EngineRow struct {
 	Engine, State, Where string
 	Models               []string
+	// NoAPI marks an engine without the Anthropic Messages API: Claude
+	// Code can't run on it, so AFK only shows it.
+	NoAPI bool
 }
 
 // RunRow is one recorded session.
