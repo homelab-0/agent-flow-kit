@@ -75,3 +75,6 @@ release:
     name: agent-flow-kit
   draft: false
   prerelease: auto
+  # release-please creates the release first, with the changelog as notes;
+  # keep those notes and only add the assets.
+  mode: keep-existing
