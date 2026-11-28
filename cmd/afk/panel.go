@@ -385,6 +385,16 @@ func (s panelSource) Status(ctx context.Context) (*tui.StatusView, error) {
 		return nil, err
 	}
 	v := &tui.StatusView{Updated: time.Now()}
+	recs := runrec.Load(runrec.DirFor(s.c.Home, s.getenv), time.Now().Add(-30*24*time.Hour))
+	runsToday := map[string]int{}
+	y, m, d := v.Updated.Date()
+	for _, rec := range recs {
+		if t, err := time.Parse(time.RFC3339, rec.StartedAt); err == nil && !rec.Route.IsLocal() {
+			if ty, tm, td := t.In(v.Updated.Location()).Date(); ty == y && tm == m && td == d {
+				runsToday[rec.Route.Harness]++
+			}
+		}
+	}
 	found := map[string]harness.Info{}
 	for _, h := range s.discover(ctx).Harnesses {
 		found[h.Name] = h
@@ -450,6 +460,13 @@ func (s panelSource) Status(ctx context.Context) (*tui.StatusView, error) {
 			}
 			row.Note += x
 		}
+		if p.ResetsAt != nil && (p.Window == "5h" || p.Window == "weekly") {
+			if t, err := time.Parse(time.RFC3339, *p.ResetsAt); err == nil {
+				row.Resets, row.ResetsWindow = t, p.Window
+			}
+		}
+		row.Pace, row.Leans = paceText(p.Pacing)
+		row.RunsToday = runsToday[h]
 		v.Plans = append(v.Plans, row)
 	}
 	if settings.GatewayURL != "" {
@@ -474,9 +491,10 @@ func (s panelSource) Status(ctx context.Context) (*tui.StatusView, error) {
 		}
 		v.Engines = append(v.Engines, tui.EngineRow{Engine: le.Engine, State: le.State, Where: where, Models: le.Models})
 	}
-	for _, rec := range runrec.Load(runrec.DirFor(s.c.Home, s.getenv), time.Now().Add(-30*24*time.Hour)) {
-		row := tui.RunRow{ID: rec.ID, Where: rec.Where, CLI: rec.Route.Harness, Model: rec.Route.Model, Exit: rec.Exit,
-			Duration: time.Duration(rec.DurationS) * time.Second}
+	for _, rec := range recs {
+		row := tui.RunRow{ID: rec.ID, Where: rec.Where, CLI: rec.Route.Harness, Model: rec.Route.Model, Effort: rec.Route.Effort, Exit: rec.Exit,
+			Duration: time.Duration(rec.DurationS) * time.Second, PoolBefore: rec.PoolBefore, PoolAfter: rec.PoolAfter,
+			Files: rec.FilesChanged, Commits: rec.Commits}
 		if rec.Route.IsLocal() && rec.Route.Engine != "" {
 			row.CLI = rec.Route.Engine
 		}
@@ -487,7 +505,7 @@ func (s panelSource) Status(ctx context.Context) (*tui.StatusView, error) {
 			row.Started = t
 		}
 		v.Runs = append(v.Runs, row)
-		if len(v.Runs) >= 15 {
+		if len(v.Runs) >= 50 {
 			break
 		}
 	}
@@ -727,9 +745,9 @@ func (s panelSource) Command(args ...string) []string {
 	return append([]string{exe}, args...)
 }
 
-const statusHelp = `Usage: afk status [--tab harnesses|bench|skills|mcp|runs|config]
+const statusHelp = `Usage: afk status [--tab harnesses|bench|skills|mcp|usage|config]
 
-Opens AFK's control panel full screen on the Runs tab (or the one --tab
+Opens AFK's control panel full screen on the Usage tab (or the one --tab
 names): plan usage, the gateway and local engines, and recent runs. 1-7
 switch tabs, q quits. Nothing is changed unless you press an action key.
 `
@@ -1269,4 +1287,26 @@ func balanceText(b string) string {
 		return strconv.FormatFloat(f, 'f', 2, 64)
 	}
 	return b
+}
+
+// paceText says where a plan's window is heading at the rate so far, and
+// whether route.pacing leans toward it. "" when AFK has no measured pace.
+func paceText(pc *router.Pacing) (string, bool) {
+	if pc == nil {
+		return "", false
+	}
+	switch {
+	case pc.RunsOutAt != nil:
+		if t, err := time.Parse(time.RFC3339, *pc.RunsOutAt); err == nil {
+			return "may run out " + t.Local().Format("Mon 15:04") + ", before the reset", false
+		}
+		return "may run out before the reset", false
+	case pc.UnusedAtResetPct != nil && *pc.UnusedAtResetPct >= 5:
+		txt := fmt.Sprintf("~%.0f%% may go unused", *pc.UnusedAtResetPct)
+		if pc.Adjustment > 0 {
+			return txt + ", so AFK leans to it", true
+		}
+		return txt, false
+	}
+	return "on track", false
 }

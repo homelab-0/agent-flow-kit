@@ -108,7 +108,7 @@ func TestStatusNeedsATerminal(t *testing.T) {
 	}
 }
 
-// The Runs tab's plan rows say what the CLI says about its sign-in (never
+// The Usage tab's plan rows say what the CLI says about its sign-in (never
 // "ok" by default), and show a failed run's mark as set aside, with no
 // figure, until it is cleared.
 func TestStatusSignInAndSetAside(t *testing.T) {
@@ -349,5 +349,26 @@ func TestGatewayFromTheConfigTab(t *testing.T) {
 	}
 	if r := rows(); r["gateway.work.url"] != "" || r["gateway"] != "none" {
 		t.Errorf("rows after removing: %v", r)
+	}
+}
+
+func TestPaceText(t *testing.T) {
+	f := func(v float64) *float64 { return &v }
+	out := "2026-11-30T14:00:00Z"
+	for _, c := range []struct {
+		pc    *router.Pacing
+		want  string
+		leans bool
+	}{
+		{nil, "", false},
+		{&router.Pacing{UnusedAtResetPct: f(40), Adjustment: 1.2}, "~40% may go unused, so AFK leans to it", true},
+		{&router.Pacing{UnusedAtResetPct: f(40)}, "~40% may go unused", false},
+		{&router.Pacing{UnusedAtResetPct: f(2)}, "on track", false},
+		{&router.Pacing{RunsOutAt: &out}, "may run out ", false},
+	} {
+		got, leans := paceText(c.pc)
+		if !strings.HasPrefix(got, c.want) || (c.want == "" && got != "") || leans != c.leans {
+			t.Errorf("paceText(%+v) = %q, %v; want %q, %v", c.pc, got, leans, c.want, c.leans)
+		}
 	}
 }

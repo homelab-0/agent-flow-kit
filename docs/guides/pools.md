@@ -11,9 +11,9 @@ A pool is one source of model usage: a plan login, a free tier, or a gateway. AF
 | `opencode-free` | `opencode` free models |
 | `litellm-local` | a model gateway, see [gateways](gateways.md) |
 
-AFK doesn't know which tier of a plan you pay for, and doesn't guess. The Runs tab names a plan in general ("Claude plan", "Grok plan") and adds the tier only when the CLI itself reported it, as Codex does ("ChatGPT plan · pro").
+AFK doesn't know which tier of a plan you pay for, and doesn't guess. The Usage tab names a plan in general ("Claude plan", "Grok plan") and adds the tier only when the CLI itself reported it, as Codex does ("ChatGPT plan · pro").
 
-A reported figure is as old as the last time the CLI reported it. When that is more than 15 minutes ago AFK says so beside it (`read 3h ago` on the route card, a line under the plan on the Runs tab, and in `afk pools`), so an old reading is not taken for the plan's state right now.
+A reported figure is as old as the last time the CLI reported it. When that is more than 15 minutes ago AFK says so beside it (`read 3h ago` on the route card, a line under the plan on the Usage tab, and in `afk pools`), so an old reading is not taken for the plan's state right now.
 
 ## How usage is measured
 
@@ -70,7 +70,7 @@ When a CLI fails in a way that says something about its pool, the failure is rec
 
 Only error text is read: the CLI's error document, its stderr, and stdout that isn't JSON. An answer the model gave is never read for failure words, so an answer about HTTP 429 doesn't set a pool aside. Status codes count only as status codes: on their own, after `HTTP`, `status`, `code`, `error` or `api`, or with their reason phrase (`429 Too Many Requests`). A line number such as `line 1401` or `main.go:429` doesn't count. An overloaded provider (529) moves the run to another route, and sets the pool aside only for the 15-minute transient time.
 
-A pool set aside this way has `set_aside` (and `set_aside_until`, when the mark ends by itself) in `afk pools --json`. The Runs tab shows it under the plan as "set aside after a run failed with …, for another 42m", not as a usage figure. If a mark is wrong, or you've just signed in again, press `c` on the Runs tab, or run `afk pools clear <pool>` (or `afk pools clear` for all).
+A pool set aside this way has `set_aside` (and `set_aside_until`, when the mark ends by itself) in `afk pools --json`. The Usage tab shows it under the plan as "set aside after a run failed with …, for another 42m", not as a usage figure. If a mark is wrong, or you've just signed in again, press `c` on the Usage tab, or run `afk pools clear <pool>` (or `afk pools clear` for all).
 
 A model that a provider refuses ("not found", "no access") is set aside on its own for an hour, without affecting the rest of its pool.
 
@@ -82,7 +82,7 @@ Signals are written by one-shot runs (`afk -p`) today, under a short lock so run
 
 `afk --explain` shows each route's pool, its state and its headroom when reported (`usage unknown` otherwise); `--explain --json` has every figure, with the source in `pool_quota_source`. The receipt shows the pool before and after a session only when both are reported readings.
 
-In the TUI, the status line under the input shows each route's logo with `NN% left` or `usage unknown`, and the Runs tab lists each plan's 5-hour and weekly figures the same way.
+In the TUI, the status line under the input shows each route's logo with `NN% left` or `usage unknown`, and the Usage tab lists each plan's 5-hour and weekly figures the same way.
 
 ## Privacy
 

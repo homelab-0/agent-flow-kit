@@ -1,8 +1,8 @@
 # The control panel
 
-The control panel is AFK's full-screen management view. The tabs run across the top with their number keys (`1 Route  2 Harnesses  3 Benchmarks  4 Skills  5 MCP  6 Runs  7 Config`), the open one underlined; under them a line says what the tab is for, and the bottom row shows the tab's keys and the panel's own.
+The control panel is AFK's full-screen management view. The tabs run across the top with their number keys (`1 Route  2 Harnesses  3 Benchmarks  4 Skills  5 MCP  6 Usage  7 Config`), the open one underlined; under them a line says what the tab is for, and the bottom row shows the tab's keys and the panel's own.
 
-Open it from the composer (plain `afk`): on an empty input press `2` to `7`, or type `/harnesses`, `/bench`, `/skills`, `/mcp`, `/runs` or `/config`. `1` or `esc` takes you back to the composer. `afk status` opens it on its own, on the Runs tab (`afk status --tab bench` picks another), and there `1`, `esc` or `q` quits.
+Open it from the composer (plain `afk`): on an empty input press `2` to `7`, or type `/harnesses`, `/bench`, `/skills`, `/mcp`, `/usage` or `/config`. `1` or `esc` takes you back to the composer. `afk status` opens it on its own, on the Usage tab (`afk status --tab bench` picks another), and there `1`, `esc` or `q` quits.
 
 | Key | Does |
 |---|---|
@@ -43,11 +43,15 @@ The models you can reach for one kind of task, best first. Each row shows:
 
 `←` `→` switch the task kind. `s` refreshes the catalog (`afk bench sync`).
 
-## Runs
+## Usage
 
-- **Plans**: each installed CLI's plan, with what is left of the 5-hour window and the week as the CLI reported it (`unknown` when it hasn't: AFK never estimates), and its sign-in as on the Harnesses tab. A plan a failed run set aside says so, why, and for how long; `c` clears those marks.
-- **Gateway and local engines**: the model gateway (up or down, its models, the engine behind it from config) and every local engine found, with its state and GPU.
-- **Runs**: the last 15 sessions from the [run records](runs.md), with where they ran, the CLI, the outcome and how long they took.
+What is left on each plan, the engines, and what ran. It has three views; `[` and `]` switch between them.
+
+- **Plans**: a card per installed CLI's plan, with the week and the 5-hour window as the CLI reported them, as bars with the % left and when the window resets. A window the CLI hasn't reported says `unknown`, since AFK never estimates. A plan whose CLI listed its limits without a 5-hour one says `no limit on this plan`. Under that is the pace (where the window is heading at the rate so far, and whether AFK leans toward the plan because quota would go unused), the sign-in, and how many runs used it today. `←` `→` pick a plan. Plans a failed run set aside are listed under the cards with why and for how long, and `c` clears those marks.
+- **Engines**: the model gateway (up or down, its models, the engine behind it from config) and every local engine found, with its state, GPU and models.
+- **Run history**: the last 50 sessions from the [run records](runs.md): when each started, the CLI, model and effort, where it ran, how long it took, how it ended and your rating. The selected run's box adds how much of the plan it used (before and after) and what it changed (files and commits).
+
+The tab was called Runs before; `/runs` and `afk status --tab runs` still open it.
 
 ## Config
 
