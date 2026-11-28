@@ -216,20 +216,33 @@ func errLegacyFirst(p Paths) error {
 // set calls never lose each other's change. It returns the diff; with
 // dryRun nothing is written.
 func SetKey(paths Paths, key, raw string, dryRun bool) (string, error) {
-	if strings.Contains(key, " ") || key == "" {
-		return "", fmt.Errorf("%q is not a key", key)
-	}
-	if key == "version" {
-		return "", fmt.Errorf("version is set by afk")
-	}
-	lit, err := EncodeValue(key, raw)
-	if err != nil {
-		return "", err
-	}
-	if strings.HasSuffix(key, ".key") {
-		if _, err := ParseSecretRef(raw); err != nil {
-			return "", fmt.Errorf("%s %v", key, err)
+	return SetKeys(paths, [][2]string{{key, raw}}, dryRun)
+}
+
+// SetKeys sets several keys in one write, as SetKey sets one: the
+// document is validated only once all of them are in, so a table that
+// needs two keys together (a source's url and its tasks) is written
+// whole or not at all.
+func SetKeys(paths Paths, kv [][2]string, dryRun bool) (string, error) {
+	lits := make([]string, len(kv))
+	for i, p := range kv {
+		key, raw := p[0], p[1]
+		if strings.Contains(key, " ") || key == "" {
+			return "", fmt.Errorf("%q is not a key", key)
 		}
+		if key == "version" {
+			return "", fmt.Errorf("version is set by afk")
+		}
+		lit, err := EncodeValue(key, raw)
+		if err != nil {
+			return "", err
+		}
+		if strings.HasSuffix(key, ".key") {
+			if _, err := ParseSecretRef(raw); err != nil {
+				return "", fmt.Errorf("%s %v", key, err)
+			}
+		}
+		lits[i] = lit
 	}
 	var diff string
 	edit := func(write bool) error {
@@ -244,9 +257,11 @@ func SetKey(paths Paths, key, raw string, dryRun bool) (string, error) {
 		} else if _, err := os.Stat(paths.Legacy); err == nil {
 			return errLegacyFirst(paths)
 		}
-		after, err := SetValue(doc, key, lit)
-		if err != nil {
-			return err
+		after := doc
+		for i, p := range kv {
+			if after, err = SetValue(after, p[0], lits[i]); err != nil {
+				return err
+			}
 		}
 		if _, err := Parse(paths.Config, after); err != nil {
 			return err
@@ -260,7 +275,7 @@ func SetKey(paths Paths, key, raw string, dryRun bool) (string, error) {
 	if dryRun {
 		return diff, edit(false)
 	}
-	err = withLock(paths.Config, func() error { return edit(true) })
+	err := withLock(paths.Config, func() error { return edit(true) })
 	return diff, err
 }
 

@@ -67,6 +67,9 @@ type Route struct {
 	// ScoreParts are the points added to the benchmark score to make the
 	// effective score, each with what it's for.
 	ScoreParts []ScorePart `json:"score_parts,omitempty"`
+	// BenchmarkParts are the leaderboards a blended benchmark score was
+	// averaged from, each with its own score and weight.
+	BenchmarkParts []BenchPart `json:"benchmark_parts,omitempty"`
 }
 
 // UnmarshalJSON keeps the whole object and reads the typed fields from it.
@@ -400,6 +403,16 @@ func (p *Pools) Headroom(id string) *float64 {
 		return pl.HeadroomPct
 	}
 	return nil
+}
+
+// BenchPart is one leaderboard's share of a blended benchmark score.
+type BenchPart struct {
+	Source  string  `json:"source"`
+	Name    string  `json:"name"`
+	Label   string  `json:"label"`
+	Score   float64 `json:"score"`
+	Weight  float64 `json:"weight"`
+	Carried bool    `json:"carried,omitempty"`
 }
 
 // ScorePart is one adjustment the router made to a route's score.

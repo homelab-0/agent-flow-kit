@@ -186,6 +186,9 @@ type Settings struct {
 	AutoDiscover bool
 	// BenchSources says which feeds a sync reads (a missing name is on).
 	BenchSources map[string]bool
+	// BenchWeights is bench.weights; BenchCustom the user's own sources.
+	BenchWeights map[string]map[string]float64
+	BenchCustom  map[string]BenchCustom
 	// Mode is the default permission mode: permissions.default, else ask,
 	// made stricter by the project's permissions.default.
 	Mode string
@@ -388,6 +391,7 @@ func Resolve(e Env) (Settings, error) {
 	if e.getenv("AFK_SKIP_BENCHMARK_AUTOSYNC") == "1" {
 		s.BenchAutosync = false
 	}
+	s.BenchWeights, s.BenchCustom = c.Bench.Weights, c.Bench.Custom
 	for _, n := range sortedKeys(c.Bench.Sources) {
 		if src := c.Bench.Sources[n]; src.Enabled != nil {
 			s.BenchSources[n] = *src.Enabled
@@ -419,6 +423,15 @@ func (s Settings) ModeFor(task string) string {
 func (s Settings) BenchSourceOn(name string) bool {
 	on, set := s.BenchSources[name]
 	return !set || on
+}
+
+// BenchSourceOr reports whether a built-in source is on, def when
+// config doesn't say.
+func (s Settings) BenchSourceOr(name string, def bool) bool {
+	if on, set := s.BenchSources[name]; set {
+		return on
+	}
+	return def
 }
 
 // GatewayFor finds the config.toml gateway whose url is u (ignoring a

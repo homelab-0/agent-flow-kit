@@ -323,7 +323,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Everything the panel's own commands send back, so an action's
 		// result (and the reload after it) arrives here as it does when
 		// the panel runs on its own.
-		case tea.KeyPressMsg, panelMsg, panelExecMsg, mcpToolsMsg, mcpDoneMsg, skillsDoneMsg, marksClearedMsg, configSavedMsg:
+		case tea.KeyPressMsg, panelMsg, panelExecMsg, mcpToolsMsg, mcpDoneMsg, skillsDoneMsg, benchDoneMsg, marksClearedMsg, configSavedMsg:
 			cmd := m.panel.Update(msg)
 			switch {
 			case m.panel.quit:

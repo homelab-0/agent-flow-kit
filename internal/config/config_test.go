@@ -245,7 +245,7 @@ autosync = false
 [bench.sources]
 lmarena = { enabled = true }
 modelsdev = { enabled = false }
-[bench.weights.coding]
+[bench.weights.coding_complex]
 swebench = 0.6
 lmarena = 0.4
 [serve]

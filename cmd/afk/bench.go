@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -18,10 +19,15 @@ import (
 const benchUsage = `afk bench — the benchmark catalog the router scores models with
 
   afk bench sync [--json]   refresh it now from the public leaderboards
+  afk bench source ...      list, add, test or turn off a leaderboard
+  afk bench weight ...      set a leaderboard's weight in the blend
 
-The sync reads the LMArena agent, webdev and text leaderboards and
-models.dev, and writes ~/.config/afk/benchmarks.json. A score no board
-measures keeps its fixed estimate. afk also refreshes the catalog in the
+The sync reads the LMArena agent, webdev and text leaderboards, models.dev
+and every other source that is on (SWE-bench Verified and Aider Polyglot
+by default; see afk bench source), and writes ~/.config/afk/benchmarks.json.
+Where several boards score the same model for the same kind of task, the
+score is their weighted average. A score no board measures keeps its fixed
+estimate. afk also refreshes the catalog in the
 background once a day; AFK_SKIP_BENCHMARK_AUTOSYNC=1 turns that off.
 
 Exit status: 0 synced, 3 no leaderboard was reachable (the previous
@@ -32,6 +38,12 @@ func benchCmd(argv []string, stdout, stderr io.Writer) int {
 	if len(argv) == 0 || argv[0] == "-h" || argv[0] == "--help" || argv[0] == "help" {
 		fmt.Fprint(stdout, benchUsage)
 		return 0
+	}
+	switch argv[0] {
+	case "source", "sources":
+		return benchSourceCmd(argv[1:], stdout, stderr)
+	case "weight":
+		return benchWeightCmd(argv[1:], stdout, stderr)
 	}
 	if argv[0] != "sync" {
 		fmt.Fprintf(stderr, "afk bench: unknown command %s (see afk bench --help)\n", argv[0])
@@ -96,8 +108,15 @@ func runSync(ctx context.Context, home string) (bench.Receipt, int) {
 	if v, err := strconv.ParseInt(os.Getenv("AFK_BENCHMARK_CARRY_SEC"), 10, 64); err == nil && v >= 0 {
 		carry = time.Duration(v) * time.Second
 	}
+	var srcs []bench.Source
+	for _, src := range benchSourceList(s, os.Getenv) {
+		if src.On {
+			srcs = append(srcs, src)
+		}
+	}
 	return bench.Sync(ctx, bench.Options{
 		Base: router.DefaultCatalogJSON(), Out: bench.CatalogPath(home), Now: time.Now(), Carry: carry, Feeds: feeds,
+		Sources: srcs, Weights: s.BenchWeights,
 	})
 }
 
@@ -119,6 +138,15 @@ func (o onlyEnabled) Fetch(ctx context.Context, name string) ([]byte, error) {
 	return o.next.Fetch(ctx, name)
 }
 
+// FetchSource reads a source; runSync passes only the ones that are on.
+func (o onlyEnabled) FetchSource(ctx context.Context, src bench.Source) ([]byte, error) {
+	sf, ok := o.next.(bench.SourceFetcher)
+	if !ok {
+		return nil, fmt.Errorf("%s can't be read here", src.ID)
+	}
+	return sf.FetchSource(ctx, src)
+}
+
 // receiptText is the sync receipt for people.
 func receiptText(r bench.Receipt) string {
 	var b strings.Builder
@@ -137,6 +165,14 @@ func receiptText(r bench.Receipt) string {
 		fmt.Fprintf(&b, "  LMArena webdev:  %s\n", f.Webdev)
 		fmt.Fprintf(&b, "  LMArena text:    %s\n", f.Text)
 		fmt.Fprintf(&b, "  models.dev:      %s\n", f.ModelsDev)
+		ids := make([]string, 0, len(f.Sources))
+		for id := range f.Sources {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			fmt.Fprintf(&b, "  %-16s %s\n", id+":", strings.ReplaceAll(f.Sources[id], "_", " "))
+		}
 	}
 	if r.Unmatched != nil && len(*r.Unmatched) > 0 {
 		fmt.Fprintf(&b, "  not on the agent board: %s\n", strings.Join(*r.Unmatched, ", "))

@@ -74,6 +74,14 @@ autosync = true
 [bench.sources]
 lmarena = { enabled = true }
 modelsdev = { enabled = true }
+swebench = { enabled = true }
+
+[bench.weights.coding_review]
+swebench = 2               # SWE-bench counts twice for reviews
+
+[bench.custom.my-evals]    # a leaderboard of your own
+url = "https://example.com/board.json"
+tasks = ["coding_complex", "coding_review"]
 ```
 
 `version = 1` is the schema version. A file without it is read as version 1, with a warning; a newer version is refused. A key AFK doesn't know is ignored with a warning naming its line. A value of the wrong type or outside its allowed values stops AFK with an error naming the file, the line and the key, for example `config.toml:4: route.prefer: "fast" is not one of balanced, cheap, best`.
@@ -143,8 +151,9 @@ Inference engines on this machine; see [local models](../guides/local-models.md)
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `autosync` | bool | `true` | the daily background refresh of the [benchmark catalog](benchmark-catalog.md#refreshing-it) |
-| `sources.<name>.enabled` | bool | `true` | `lmarena` (the three LMArena boards) and `modelsdev` turn feeds off for `afk bench sync`; `swebench`, `artificialanalysis` and `own` are accepted for later |
-| `weights.<task>.<source>` | number | | reserved: how much each source counts per kind of task; validated (not negative), not used yet |
+| `sources.<name>.enabled` | bool | see meaning | turns a built-in source on or off for `afk bench sync`: `lmarena` (the three LMArena boards), `modelsdev`, `swebench` and `aider` are on by default, `artificialanalysis` is off (it needs your own key). `own` is accepted for later |
+| `weights.<task>.<source>` | number | `1` | how much a source counts when its score is [blended](benchmark-catalog.md#blending-several-sources) with others for that kind of task (`coding_complex`, `coding_standard`, `coding_review`, `architecture`, `security`, `webdev`, `research`, `frontier_synthesis`); `0` leaves it out. Not negative |
+| `custom.<id>` | table | | a [leaderboard of your own](benchmark-catalog.md#your-own-sources); `afk bench source add` writes it |
 | `override.<model>.<task>` | number | | reserved |
 
 ### `[permissions]`
