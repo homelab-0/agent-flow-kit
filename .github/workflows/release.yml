@@ -5,10 +5,11 @@ name: release
 # GitHub release, and publishes @homelab0/afk to npm with provenance (when
 # the NPM_TOKEN secret is set).
 #
-# Normally release-please.yml starts this with workflow_dispatch on the tag
-# it just created, after it has made the GitHub release; GoReleaser then
-# adds the assets to that release and keeps its notes. A tag pushed by hand
-# still works too.
+# release-please.yml creates the tag and the GitHub release when its
+# release PR merges; GoReleaser adds the assets to that release and keeps
+# its notes. The tag is pushed by the Lb0Bot0 app, which fires `push: tags`.
+# If release-please fell back to GITHUB_TOKEN, it starts this run with
+# workflow_dispatch on the tag instead. A tag pushed by hand also works.
 on:
   push:
     tags: ["v*"]
