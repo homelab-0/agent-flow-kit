@@ -10,6 +10,12 @@ self_update = "update"
 [auth]
 login = ["agy", "login"]
 
+# One "id<TAB>name" line per model the signed-in plan includes.
+[model_list]
+command = ["agy", "models"]
+format = "tsv"
+verified = "1.5.19"
+
 [modes]
 verified = "1.5.18"
 read-only = ["--mode", "plan"]

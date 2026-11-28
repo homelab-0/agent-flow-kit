@@ -280,6 +280,8 @@ func basisText(r engine.Route, now time.Time) string {
 		return "measured"
 	case "estimate":
 		return "a catalog estimate"
+	case engine.BasisUnrated:
+		return "no benchmark for this model yet"
 	case "capped":
 		return "capped"
 	case "":
@@ -324,6 +326,8 @@ func reasonText(rows []engine.Route, i int, task string, now time.Time) string {
 	hasMost := most >= 0 && r.PoolHeadroomPct != nil && *r.PoolHeadroomPct == *rows[most].PoolHeadroomPct
 	var b strings.Builder
 	switch {
+	case r.BenchmarkBasis == engine.BasisUnrated:
+		b.WriteString("The CLI lists this model for your plan, but there is no benchmark for it yet, so it ranks below rated models")
 	case r.EffectiveScore == nil || best < 0:
 		fmt.Fprintf(&b, "The router has no %s score for this route", task)
 	case best == i || *r.EffectiveScore == *rows[best].EffectiveScore:
@@ -390,6 +394,16 @@ func poolLeft(r engine.Route) string {
 		return "not signed in"
 	}
 	return usageUnknown
+}
+
+// poolWhy is poolLeft with the CLI's own reason when there is no figure:
+// "usage unknown · Grok shows plan usage only inside grok (/usage)".
+func poolWhy(r engine.Route) string {
+	s := poolLeft(r)
+	if s == usageUnknown && r.PoolUsageNote != "" {
+		s += " · " + r.PoolUsageNote
+	}
+	return s
 }
 
 // effortCycle orders a route's supported efforts from low to high.

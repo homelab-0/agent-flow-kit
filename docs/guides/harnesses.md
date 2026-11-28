@@ -73,6 +73,31 @@ Three things keep an install from pulling in something you didn't mean to:
 
 AFK never handles a password or a token: signing in is always the CLI's own.
 
+## What AFK asks each CLI
+
+Finding a CLI is the first step. AFK then asks each installed CLI what this account has, and routes from the answer:
+
+| | Plan | Models | Usage |
+|---|---|---|---|
+| Codex | `codex app-server` (`account/rateLimits/read`) | `model/list` on the same connection, else `codex debug models` | windows, reset times and credit balance from the same call |
+| Claude Code | `claude auth status` | none (it has no list command; AFK uses the aliases in the catalog) | only with a run, see [pools](pools.md#how-usage-is-measured) |
+| Grok | not reported | `grok models` | not reported outside Grok's own screen |
+| Antigravity | not reported | `agy models` | not reported |
+| OpenCode | n/a | `opencode models` | n/a |
+
+Two rules follow from the model list:
+
+- **A CLI that listed its models is routed only to those.** If your Antigravity plan doesn't include a model, `agy models` leaves it out and AFK never offers it, whatever the benchmark catalog says.
+- **A listed model with no benchmark is still offered**, marked `no benchmark`. It ranks below rated models and no score is shown for it.
+
+A CLI that lists nothing (Claude Code, or one whose command failed) is routed from the catalog, as before.
+
+None of this sends a prompt or opens a login file. `afk pools --json` shows what each CLI reported under `harnesses`.
+
 ## Adding support for a CLI
 
-Each CLI is one [manifest](../reference/harness-manifests.md) in [`internal/harness/manifests/`](../../internal/harness/manifests/): its executable names, npm package, effort levels, sign-in commands and permission-mode flags. A sign-in check that needs code goes in `authChecks` in [`internal/harness/registry.go`](../../internal/harness/registry.go). Routing and launching need an adapter in the router and in [`internal/core/launch.go`](../../internal/core/launch.go) too.
+Each CLI is one [manifest](../reference/harness-manifests.md) in [`internal/harness/manifests/`](../../internal/harness/manifests/): its executable names, npm package, effort levels, sign-in commands, permission-mode flags and, when it has one, the command that lists its models (`[model_list]`, with `format` one of `codex-json`, `grok-text`, `tsv` or `lines`). If a release changes that command, an [override file](../reference/harness-manifests.md#overriding-a-manifest) fixes it without a new AFK.
+
+A CLI that reports more (a plan, usage windows, credits) gets a module of its own: one file in [`internal/harness/`](../../internal/harness/) (`account_codex.go`, `account_claude.go`, `account_grok.go`, `account_agy.go`) that implements `Reporter` and returns an `Account`. The comment at the top of each file says which CLI version it was checked against. When a CLI changes how it reports, that file is the only one to change; the router reads the `Account` and knows nothing about how it was obtained.
+
+A sign-in check that needs code goes in `authChecks` in [`internal/harness/registry.go`](../../internal/harness/registry.go). Launching needs an adapter in [`internal/core/launch.go`](../../internal/core/launch.go) too.

@@ -1,6 +1,11 @@
 package router
 
-import "time"
+import (
+	"math"
+	"time"
+
+	"github.com/homelab-0/agent-flow-kit/internal/harness"
+)
 
 // PoolsSchema is the version of the pool probe document.
 const PoolsSchema = "afk-router-pools/5"
@@ -26,6 +31,13 @@ type Pool struct {
 	// Window is the window the figure and reset are for ("5h", "weekly"),
 	// when the reading names it.
 	Window string `json:"window,omitempty"`
+	// Extra is usage the plan allows beyond its windows (credits,
+	// overage), as the plan's own CLI reported it; nil when it said
+	// nothing.
+	Extra *harness.Extra `json:"extra,omitempty"`
+	// UsageNote says why there is no usage figure, in the CLI's terms,
+	// when there is none.
+	UsageNote string `json:"usage_note,omitempty"`
 	// Pacing is where the window is heading at the rate so far, when the
 	// figures are measured.
 	Pacing *Pacing `json:"pacing,omitempty"`
@@ -46,9 +58,71 @@ type Pool struct {
 // HarnessState is whether a CLI is installed, as the probe saw it.
 type HarnessState struct {
 	Installed bool `json:"installed"`
-	// Gateway only.
-	Online bool     `json:"online,omitempty"`
-	Models []string `json:"models,omitempty"`
+	// Online is for the gateway only.
+	Online bool `json:"online,omitempty"`
+	// Models are the models the gateway serves or the CLI reported for
+	// this account. For a CLI, ModelsKnown says whether it reported a
+	// list at all; without one, AFK knows nothing about its models.
+	Models       []string `json:"models,omitempty"`
+	ModelsKnown  bool     `json:"models_known,omitempty"`
+	DefaultModel string   `json:"default_model,omitempty"`
+	// Plan, Windows, Extra and UsageNote are the CLI's own account
+	// report (see harness.Account).
+	Plan      string           `json:"plan,omitempty"`
+	Windows   []harness.Window `json:"usage_windows,omitempty"`
+	Extra     *harness.Extra   `json:"extra,omitempty"`
+	UsageNote string           `json:"usage_note,omitempty"`
+	// AskedAt is when the CLI reported it (unix seconds).
+	AskedAt int64 `json:"asked_at,omitempty"`
+}
+
+// account copies a CLI's account report into its state.
+func (st *HarnessState) account(a harness.Account) {
+	st.Models, st.ModelsKnown, st.DefaultModel = a.Models, a.ModelsKnown, a.DefaultModel
+	st.Plan, st.Windows, st.Extra, st.UsageNote, st.AskedAt = a.Plan, a.Windows, a.Extra, a.UsageNote, a.At
+}
+
+// accountQuota turns the usage windows a CLI reported into a reading:
+// the fullest unexpired window is the figure, and its reset and name go
+// with it.
+func accountQuota(st HarnessState, source string, now int64) (quota, bool) {
+	q := quota{Source: source, FetchedEpochRaw: st.AskedAt}
+	fullest := -1.0
+	for _, w := range st.Windows {
+		if w.ResetsAt != 0 && w.ResetsAt <= now {
+			continue
+		}
+		used := math.Max(0, math.Min(100, math.Round(w.UsedPct)))
+		if w.Minutes > 0 && w.Minutes < 1000 && q.FiveHourPct == nil {
+			q.FiveHourPct = f64(used)
+		}
+		if w.Minutes >= 1000 && q.SevenDayPct == nil {
+			q.SevenDayPct = f64(used)
+		}
+		if w.UsedPct <= fullest {
+			continue
+		}
+		fullest = w.UsedPct
+		q.OK, q.UsedPct, q.ResetsAtEpoch = true, used, nil
+		if w.ResetsAt != 0 {
+			q.ResetsAtEpoch = f64(float64(w.ResetsAt))
+		}
+		switch {
+		case w.Minutes == 300:
+			q.Window = "5h"
+		case w.Minutes == 10080:
+			q.Window = "weekly"
+		case w.Minutes > 0:
+			q.Window = "other"
+		default:
+			q.Window = ""
+		}
+	}
+	if q.OK && st.Plan != "" {
+		p := st.Plan
+		q.PlanType = &p
+	}
+	return q, q.OK
 }
 
 // Probe is the state of every pool and CLI at routing time.

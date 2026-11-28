@@ -417,9 +417,16 @@ func (s panelSource) Status(ctx context.Context) (*tui.StatusView, error) {
 			row.SignIn = "signed out"
 		case router.SourceUnknown:
 			row.Note = h + " hasn't reported its plan usage, so AFK shows none"
-			if h == "claude" {
-				row.Note = "claude reports its plan usage only in a one-shot run (afk -p), so AFK shows none yet"
+			if p.UsageNote != "" {
+				// The CLI's own module says why it has no figure.
+				row.Note = p.UsageNote + ", so AFK shows none"
 			}
+		}
+		if x := extraText(p.Extra); x != "" {
+			if row.Note != "" {
+				row.Note += " · "
+			}
+			row.Note += x
 		}
 		v.Plans = append(v.Plans, row)
 	}
@@ -1151,4 +1158,20 @@ func (s panelSource) MCPDo(ctx context.Context, op string, args ...string) (stri
 		return fmt.Sprintf("%s is in %s. Press s to add it to your CLIs, t to test it.", name, tildePath(d.env.Config)), nil
 	}
 	return "", fmt.Errorf("unknown mcp action %q", op)
+}
+
+// extraText is a plan's usage beyond its windows, as its CLI reported it:
+// "extra usage: credits 56656.97". "" when it reported none.
+func extraText(x *harness.Extra) string {
+	switch {
+	case x == nil:
+		return ""
+	case !x.Enabled:
+		return "extra usage: off"
+	case x.Unlimited:
+		return "extra usage: unlimited"
+	case x.Balance != "":
+		return "extra usage: credits " + x.Balance
+	}
+	return "extra usage: on"
 }
