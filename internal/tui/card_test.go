@@ -409,3 +409,34 @@ func TestLocalBox(t *testing.T) {
 		}
 	}
 }
+
+// A figure the CLI reported hours ago says so on the pool line.
+func TestOldReadingShowsItsAge(t *testing.T) {
+	c := fixtureCard(t, -1)
+	if c.Pools == nil {
+		t.Skip("fixture has no pools")
+	}
+	id := c.Rows[c.Sel].EntitlementPool
+	p := c.Pools.Pools[id]
+	if p.HeadroomPct == nil {
+		t.Fatalf("fixture pool %s has no figure", id)
+	}
+	poolLine := func() string {
+		for _, l := range plainLines(renderCard(c, 120)) {
+			if strings.Contains(l, "pool  ") {
+				return l
+			}
+		}
+		return ""
+	}
+	p.ObservedAt = c.now().Add(-3 * time.Hour).UTC().Format(time.RFC3339)
+	c.Pools.Pools[id] = p
+	if l := poolLine(); !strings.Contains(l, "read 3h ago") {
+		t.Errorf("an old reading: %q", l)
+	}
+	p.ObservedAt = c.now().Add(-time.Minute).UTC().Format(time.RFC3339)
+	c.Pools.Pools[id] = p
+	if l := poolLine(); strings.Contains(l, "read ") {
+		t.Errorf("a fresh reading: %q", l)
+	}
+}

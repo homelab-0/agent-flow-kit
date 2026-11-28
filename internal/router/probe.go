@@ -468,6 +468,8 @@ func (pc *poolCalc) calc(pid string, local bool, defaultH []string, live quota, 
 		}
 		if live.FetchedEpochRaw > 0 {
 			p.observed = time.Unix(live.FetchedEpochRaw, 0)
+			at := p.observed.UTC().Format(time.RFC3339)
+			p.ObservedAt = &at
 		}
 	}
 	if p.ResetsAt == nil && live.OK && live.ResetsAtEpoch != nil && src == live.Source {

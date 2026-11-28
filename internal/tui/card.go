@@ -209,6 +209,14 @@ func (t Theme) poolLine(c Card, r engine.Route) line {
 		return line{sg(t.Dim, "  runs on  "), t.logo(r), sg(t.Plain, " "+where), sg(t.Dim, " · state "+unknownText)}
 	}
 	head, win, resets := c.poolFigure(r)
+	// A figure the CLI reported a while ago says when, so it isn't taken
+	// for the plan's state right now.
+	age := ""
+	if c.Pools != nil && head != nil {
+		if a := c.Pools.Pools[r.EntitlementPool].ReadAgo(c.now()); a != "" {
+			age = " · read " + a
+		}
+	}
 	l := line{sg(t.Dim, "  pool  ")}
 	l = append(l, t.meter(head, c.Prog)...)
 	if head == nil {
@@ -220,7 +228,7 @@ func (t Theme) poolLine(c Card, r engine.Route) line {
 	if win == "" {
 		return l
 	}
-	return append(l, sg(t.Dim, " · "+win+" "+resets))
+	return append(l, sg(t.Dim, " · "+win+" "+resets+age))
 }
 
 // poolFigure is a route's headroom with the window and reset time it is

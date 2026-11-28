@@ -113,6 +113,10 @@ func TestProbePoolsMatchesBashProbe(t *testing.T) {
 		if wantPlan := map[string]string{"openai-plus": "pro"}[id]; g.Plan != wantPlan {
 			t.Errorf("%s: plan %q, want %q", id, g.Plan, wantPlan)
 		}
+		// Only a reported figure has a time it was reported at.
+		if (g.ObservedAt != nil) != (id == "openai-plus") {
+			t.Errorf("%s: observed_at %v", id, g.ObservedAt)
+		}
 		if (g.UsedPct == nil) != (g.HeadroomPct == nil) {
 			t.Errorf("%s: used %v but headroom %v", id, g.UsedPct, g.HeadroomPct)
 		}

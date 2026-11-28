@@ -93,7 +93,15 @@ func TestPoolsTextShowsPacing(t *testing.T) {
 		"opencode-free": {State: "offline"},
 	}}
 	got := poolsText(p, now, time.UTC, true)
-	for _, want := range []string{"openai-plus", "60% left, measured", "weekly window resets in 9h with ~58% unused at this rate (routing +3.8)", "opencode-free     offline"} {
+	// A reading taken a while ago says when.
+	old := now.Add(-3 * time.Hour).UTC().Format(time.RFC3339)
+	op := p.Pools["openai-plus"]
+	op.ObservedAt = &old
+	p.Pools["openai-plus"] = op
+	if aged := poolsText(p, now, time.UTC, true); !strings.Contains(aged, "60% left, reported by codex 3h ago") {
+		t.Errorf("no reading age in\n%s", aged)
+	}
+	for _, want := range []string{"openai-plus", "60% left, reported by codex", "weekly window resets in 9h with ~58% unused at this rate (routing +3.8)", "opencode-free     offline"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in\n%s", want, got)
 		}
