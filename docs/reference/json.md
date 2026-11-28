@@ -7,7 +7,7 @@ Every machine-readable output carries a `schema` field with a name and a version
 | `afk-route-explain/2` | `afk --explain --json` |
 | `afk-launch-plan/1` | `afk --launch-plan` |
 | `afk-harnesses/3` | `afk harness --json` |
-| `afk-router-pools/4` | pool usage (used by the receipt) |
+| `afk-router-pools/5` | pool usage (used by the receipt) |
 | `afk-run/1` | run records |
 | `afk-benchmark-catalog/3` | the [benchmark catalog](benchmark-catalog.md) |
 | `afk-benchmark-sync/3` | `afk bench sync --json` |
@@ -97,7 +97,7 @@ A refused plan is `{"schema":"afk-launch-plan/1","ok":false,"error":"<reason>"}`
 
 Each entry: `name`, `display`, `vendor`, `installed`, `healthy`, `problem`, `binary`, `resolved_path`, `version`, `install_method`, `package`, `update_command` (a list of words, never a shell string), `auth` (`authenticated`, `signed_out`, `unknown`, `not_installed`), `auth_note`, `login`, `efforts` (always a list), `effort_flag`. Without `--all`, only installed CLIs are listed.
 
-## Pools (`afk-router-pools/4`)
+## Pools (`afk-router-pools/5`)
 
 `harnesses` (installed state per CLI, plus `litellm_gateway` with `online` and `models`), `auth_alerts`, `unavailable_models` (models set aside, with reason and time) and `pools`. Each pool: `pool_id`, `provider`, `cost_class`, `plan` (the plan name, only when the CLI reported one with its usage; AFK never guesses which plan you pay for), `state`, `used_pct` and `headroom_pct` (`null` unless the plan's CLI reported them), `quota_source` (`codex_rate_limits`, `claude_rate_limit_event`, `gateway_probe`, `local_probe`, `runtime_signal:<kind>`, `unauthenticated` or `unknown`), and when known `weekly_used_pct`, `five_hour_used_pct`, `resets_at` and `window` (`5h` or `weekly`, the window the figure and reset are for; `other` for a length AFK doesn't project), `degraded_kind`, `degraded_reason`, `set_aside` and `set_aside_until` (a failed run, not a reading, is why the pool isn't used), and for a measured pool `pacing`: `window`, `resets_at`, `elapsed_pct`, `unused_at_reset_pct` or `runs_out_at` (the projection at the rate so far, when there is one) and `adjustment` (the points it gives routes on the pool with pacing on).
 
