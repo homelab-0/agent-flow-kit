@@ -27,12 +27,20 @@ type Config struct {
 	Permissions Permissions          `toml:"permissions"`
 	Trust       Trust                `toml:"trust"`
 	Harness     map[string]Harness   `toml:"harness"`
+	Discovery   Discovery            `toml:"discovery"`
 	Gateway     map[string]Gateway   `toml:"gateway"`
 	Local       Local                `toml:"local"`
 	Bench       Bench                `toml:"bench"`
 	Serve       Serve                `toml:"serve"`
 	Telemetry   map[string]Telemetry `toml:"telemetry"`
 	Source      map[string]Source    `toml:"source"`
+}
+
+// Discovery is how AFK learns what each installed CLI has.
+type Discovery struct {
+	// Auto false stops AFK asking the CLIs again by itself: the last
+	// answers are used until afk harness scan (or a new CLI version).
+	Auto *bool `toml:"auto,omitempty"`
 }
 
 // Route is how a task is routed.

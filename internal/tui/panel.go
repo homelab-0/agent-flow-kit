@@ -137,8 +137,12 @@ type PlanRow struct {
 	Harness, Plan string
 	FiveHour      *float64 // headroom %
 	Week          *float64
-	SignIn        string
-	Note          string
+	// NoFiveHour and NoWeek say the plan's CLI listed its limits and this
+	// one isn't among them: the plan has no such limit, which is not the
+	// same as a figure AFK doesn't know.
+	NoFiveHour, NoWeek bool
+	SignIn             string
+	Note               string
 	// SetAside says a failed run set this plan aside (Note says why and
 	// for how long); c on the tab clears it.
 	SetAside bool
@@ -1043,8 +1047,11 @@ func (p *Panel) statusLines(w int) ([]line, line) {
 	out = append(out, line{sg(t.Bold, " Plans"), sg(t.Dim, strings.Repeat(" ", pw-2)+col("5h left", 19)+col("week left", 19)+"sign-in")})
 	// A window with no reported figure says "unknown": no empty meter
 	// that could be read as a spent plan.
-	cell := func(pct *float64) line {
+	cell := func(pct *float64, none bool) line {
 		l := line{sg(t.Dim, "unknown")}
+		if none && pct == nil {
+			l = line{sg(t.Plain, "no limit")}
+		}
 		if pct != nil {
 			l = append(t.meter(pct, 1), sg(t.Plain, " "+pctText(pct)))
 		}
@@ -1052,8 +1059,8 @@ func (p *Panel) statusLines(w int) ([]line, line) {
 	}
 	for _, pl := range v.Plans {
 		row := line{sg(t.Plain, " "), harnessLogo(t, pl.Harness), sg(t.Plain, " "+col(pl.Plan, pw))}
-		row = append(row, cell(pl.FiveHour)...)
-		row = append(row, cell(pl.Week)...)
+		row = append(row, cell(pl.FiveHour, pl.NoFiveHour)...)
+		row = append(row, cell(pl.Week, pl.NoWeek)...)
 		signSt := t.Warn
 		switch pl.SignIn {
 		case "signed in":

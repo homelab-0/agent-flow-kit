@@ -166,6 +166,7 @@ var Defaults = map[string]any{
 	"route.pacing":               true,
 	"permissions.default":        "ask",
 	"bench.autosync":             true,
+	"discovery.auto":             true,
 }
 
 // Get looks a key up in config.toml: its value, and whether config.toml

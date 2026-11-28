@@ -47,7 +47,9 @@ func (c *Core) accountsPath() string {
 // and dropped when the CLI's binary changes. vendor names the CLIs whose
 // saved login may be used to ask the vendor for usage
 // (harness.<name>.vendor_usage); for every other CLI no login is read.
-func (c *Core) account(vendor map[string]bool) func(ctx context.Context, h string) (harness.Account, bool) {
+// With auto off (discovery.auto), an answer isn't dropped for its age:
+// it is kept until ForgetAccounts, or until the binary changes.
+func (c *Core) account(vendor map[string]bool, auto bool) func(ctx context.Context, h string) (harness.Account, bool) {
 	if c.Accounts != nil {
 		return c.Accounts
 	}
@@ -73,19 +75,13 @@ func (c *Core) account(vendor map[string]bool) func(ctx context.Context, h strin
 			if !e.Account.ModelsKnown && len(e.Account.Windows) == 0 && e.Account.Plan == "" {
 				ttl = accountEmptyTTL
 			}
-			return e.Bin == bin && e.Mtime == mt && e.Vendor == vendor[h] && now-e.Account.At < int64(ttl/time.Second) && now >= e.Account.At
+			if e.Bin != bin || e.Mtime != mt || e.Vendor != vendor[h] || e.Account.At <= 0 || now < e.Account.At {
+				return false
+			}
+			return !auto || now-e.Account.At < int64(ttl/time.Second)
 		}
 		c.acctMu.Lock()
-		if c.acctMemo == nil {
-			c.acctMemo = map[string]accountEntry{}
-			if b, err := os.ReadFile(c.accountsPath()); err == nil {
-				_ = json.Unmarshal(b, &c.acctMemo)
-			}
-			if c.acctMemo == nil {
-				// A file holding null decodes to a nil map.
-				c.acctMemo = map[string]accountEntry{}
-			}
-		}
+		c.loadAccounts()
 		hit, found := c.acctMemo[h]
 		c.acctMu.Unlock()
 		if found && fresh(hit) {
@@ -110,4 +106,42 @@ func (c *Core) account(vendor map[string]bool) func(ctx context.Context, h strin
 		c.acctMu.Unlock()
 		return acct, true
 	}
+}
+
+// loadAccounts reads the kept reports once. The caller holds acctMu.
+func (c *Core) loadAccounts() {
+	if c.acctMemo != nil {
+		return
+	}
+	c.acctMemo = map[string]accountEntry{}
+	if b, err := os.ReadFile(c.accountsPath()); err == nil {
+		_ = json.Unmarshal(b, &c.acctMemo)
+	}
+	if c.acctMemo == nil {
+		// A file holding null decodes to a nil map.
+		c.acctMemo = map[string]accountEntry{}
+	}
+}
+
+// ForgetAccounts marks every kept report stale, so each CLI is asked
+// again the next time its account is needed (afk harness scan). The
+// reports themselves stay: one that says a CLI's usage command spent a
+// turn must keep that command off.
+func (c *Core) ForgetAccounts() error {
+	c.acctMu.Lock()
+	defer c.acctMu.Unlock()
+	c.loadAccounts()
+	for h, e := range c.acctMemo {
+		e.Account.At = 0
+		c.acctMemo[h] = e
+	}
+	b, err := json.Marshal(c.acctMemo)
+	if err != nil {
+		return err
+	}
+	p := c.accountsPath()
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		return err
+	}
+	return statefile.WriteJSON(p, b)
 }

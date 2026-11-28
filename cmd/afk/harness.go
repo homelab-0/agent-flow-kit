@@ -36,6 +36,8 @@ func harnessCmd(argv []string, stdout, stderr io.Writer) int {
 		switch argv[0] {
 		case "doctor", "login", "add", "update", "remove":
 			return harnessOp(hostOps(), argv[0], argv[1:], stdout, stderr)
+		case "scan":
+			return scanCmd(argv[1:], stdout, stderr)
 		}
 	}
 	asJSON, all := false, false

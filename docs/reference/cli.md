@@ -7,6 +7,7 @@ afk --explain [options] [prompt]   show the choice and the alternatives
 afk --launch-plan --route <json>   print the launch plan for a route
 afk harness [--all] [--json]       the agent CLIs found on this machine
 afk harness doctor|login|add|update|remove <name>   check, sign in, install
+afk harness scan [--json]          ask every installed CLI again for its plan, models and usage
 afk bench sync [--json]            refresh the benchmark catalog now
 afk skills status|sync|diff|keep|restore|enable|disable|new   your skills in every CLI
 afk mcp status|sync|test|keep|restore|enable|disable|edit|path   your MCP servers in every CLI

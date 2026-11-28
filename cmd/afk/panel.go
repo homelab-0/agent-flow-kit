@@ -241,6 +241,12 @@ func usageText(p router.Pool) string {
 	if p.WeeklyUsedPct != nil && p.Window != "weekly" {
 		parts = append(parts, fmt.Sprintf("week %.0f%% left", 100-*p.WeeklyUsedPct))
 	}
+	if noLimit(p.LimitWindows, "5h") {
+		parts = append(parts, "no 5-hour limit")
+	}
+	if noLimit(p.LimitWindows, "weekly") {
+		parts = append(parts, "no weekly limit")
+	}
 	return strings.Join(parts, " · ")
 }
 
@@ -412,6 +418,7 @@ func (s panelSource) Status(ctx context.Context) (*tui.StatusView, error) {
 				row.Week = &w
 			}
 		}
+		row.NoFiveHour, row.NoWeek = noLimit(p.LimitWindows, "5h"), noLimit(p.LimitWindows, "weekly")
 		if p.SetAside {
 			row.SetAside, row.Note = true, setAsideNote(p, v.Updated)
 		} else if p.ObservedAt != nil && p.HeadroomPct != nil {
@@ -515,7 +522,7 @@ func (s panelSource) Config(ctx context.Context) (*tui.ConfigView, error) {
 		"permissions.default": {Choices: []string{"read-only", "ask", "edits", "auto"}},
 		"trust.repos":         {Value: strings.Join(st.TrustedDirs, ", "), Hint: "folders where yolo is allowed, separated by commas"},
 	}
-	for _, k := range []string{"route.learn", "route.pacing", "route.prefer_free", "route.allow_metered", "route.allow_free_reviewers", "bench.autosync"} {
+	for _, k := range []string{"route.learn", "route.pacing", "route.prefer_free", "route.allow_metered", "route.allow_free_reviewers", "bench.autosync", "discovery.auto"} {
 		v.Edit[k] = tui.ConfigEdit{Choices: []string{"on", "off"}}
 	}
 	add("route.prefer", st.Prefer)
@@ -595,6 +602,7 @@ func (s panelSource) Config(ctx context.Context) (*tui.ConfigView, error) {
 		add(k, yes[st.VendorUsage[l.Harness]])
 		v.Edit[k] = tui.ConfigEdit{Choices: []string{"on", "off"}, Confirm: vendorUsageWarning(l)}
 	}
+	add("discovery.auto", yes[st.AutoDiscover])
 	add("trust.repos", fmt.Sprintf("%d trusted", len(st.TrustedDirs)))
 	add("bench.autosync", yes[st.BenchAutosync])
 	for _, w := range st.Warnings {

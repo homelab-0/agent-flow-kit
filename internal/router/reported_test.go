@@ -128,6 +128,22 @@ func TestCodexUsageComesFromItsOwnReport(t *testing.T) {
 	if !ok || q.UsedPct != 30 || q.Window != "weekly" || *q.FiveHourPct != 12 || *q.SevenDayPct != 30 {
 		t.Fatalf("quota = %+v", q)
 	}
+	// The report lists a weekly and a 5-hour limit, and the pool says so.
+	if got := strings.Join(p.Pools["openai-plus"].LimitWindows, ","); got != "weekly,5h" {
+		t.Errorf("limit windows = %q", got)
+	}
+	// A plan whose CLI lists only a weekly window has no 5-hour limit: the
+	// pool names what was listed, so nothing is guessed.
+	weekly := reportedProbe(t, map[string]harness.Account{
+		"codex": {Plan: "pro", At: now, Windows: []harness.Window{{Minutes: 10080, UsedPct: 30, ResetsAt: now + 3600}}},
+	})
+	if wp := weekly.Pools["openai-plus"]; len(wp.LimitWindows) != 1 || wp.LimitWindows[0] != "weekly" || wp.FiveHourUsedPct != nil {
+		t.Errorf("weekly-only plan: %+v", wp)
+	}
+	// A pool with no report says nothing about its limits.
+	if lw := weekly.Pools["anthropic-max"].LimitWindows; lw != nil {
+		t.Errorf("limits without a report: %v", lw)
+	}
 	// An expired window is not a reading.
 	st.Windows = []harness.Window{{Minutes: 300, UsedPct: 90, ResetsAt: now - 1}}
 	if _, ok := accountQuota(st, "codex_app_server", now); ok {

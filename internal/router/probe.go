@@ -265,15 +265,19 @@ func reauth(h string) string {
 
 // quota is a live usage reading from a provider.
 type quota struct {
-	OK              bool     `json:"ok"`
-	Source          string   `json:"source"`
-	UsedPct         float64  `json:"used_pct"`
-	FiveHourPct     *float64 `json:"five_hour_pct"`
-	SevenDayPct     *float64 `json:"seven_day_pct"`
-	FableWeeklyPct  *float64 `json:"fable_weekly_pct"`
-	ResetsAt        *string  `json:"resets_at"`
-	ResetsAtEpoch   *float64 `json:"resets_at_epoch,omitempty"`
-	Window          string   `json:"window,omitempty"`
+	OK             bool     `json:"ok"`
+	Source         string   `json:"source"`
+	UsedPct        float64  `json:"used_pct"`
+	FiveHourPct    *float64 `json:"five_hour_pct"`
+	SevenDayPct    *float64 `json:"seven_day_pct"`
+	FableWeeklyPct *float64 `json:"fable_weekly_pct"`
+	ResetsAt       *string  `json:"resets_at"`
+	ResetsAtEpoch  *float64 `json:"resets_at_epoch,omitempty"`
+	Window         string   `json:"window,omitempty"`
+	// Limits are the kinds of window the CLI's account report listed
+	// ("5h", "weekly", "other"), expired ones too; nil when the reading
+	// isn't a full report.
+	Limits          []string `json:"limits,omitempty"`
 	PlanType        *string  `json:"plan_type,omitempty"`
 	ExtraUsageOn    bool     `json:"extra_usage_enabled,omitempty"`
 	FetchedEpochRaw int64    `json:"-"` // when the reading was taken (unix seconds), 0 unknown
@@ -510,7 +514,7 @@ func (pc *poolCalc) calc(pid string, local bool, defaultH []string, live quota, 
 	if live.OK && src == live.Source {
 		p.WeeklyUsedPct, p.FiveHourUsedPct = live.SevenDayPct, live.FiveHourPct
 		p.FableWeeklyUsedPct, p.ResetsAt = live.FableWeeklyPct, live.ResetsAt
-		p.Window = live.Window
+		p.Window, p.LimitWindows = live.Window, live.Limits
 		if live.PlanType != nil {
 			p.Plan = strings.TrimSpace(*live.PlanType)
 		}

@@ -31,6 +31,12 @@ type Pool struct {
 	// Window is the window the figure and reset are for ("5h", "weekly"),
 	// when the reading names it.
 	Window string `json:"window,omitempty"`
+	// LimitWindows are the kinds of limit the plan's CLI listed in its
+	// account report: "5h", "weekly", "other". A kind that is missing is
+	// a limit the plan doesn't have, as far as the CLI says. Absent when
+	// the figure isn't from a full report (a run's rate-limit event names
+	// one window only), and then nothing is known about the others.
+	LimitWindows []string `json:"limit_windows,omitempty"`
 	// Extra is usage the plan allows beyond its windows (credits,
 	// overage), as the plan's own CLI reported it; nil when it said
 	// nothing.
@@ -93,6 +99,16 @@ func accountQuota(st HarnessState, source string, now int64) (quota, bool) {
 	q := quota{Source: source, FetchedEpochRaw: st.AskedAt}
 	fullest := -1.0
 	for _, w := range st.Windows {
+		kind := "other"
+		switch w.Minutes {
+		case 300:
+			kind = "5h"
+		case 10080:
+			kind = "weekly"
+		}
+		if !contains(q.Limits, kind) {
+			q.Limits = append(q.Limits, kind)
+		}
 		if w.ResetsAt != 0 && w.ResetsAt <= now {
 			continue
 		}
