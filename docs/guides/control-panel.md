@@ -42,10 +42,10 @@ Which models score best for each kind of task, where the scores come from, and w
 
 ## Usage
 
-What is left on each plan, the engines, and what ran. It has three views; `[` and `]` switch between them.
+What is left on each plan, gateways and local models, and what ran. It has three views; `[` and `]` switch between them.
 
 - **Plans**: a card per installed CLI's plan, with the week and the 5-hour window as the CLI reported them, as bars with the % left and when the window resets. A window the CLI hasn't reported says `unknown`, since AFK never estimates. A plan whose CLI listed its limits without a 5-hour one says `no limit on this plan`. Under that is the pace (where the window is heading at the rate so far, and whether AFK leans toward the plan because quota would go unused), the sign-in, and how many runs used it today. `←` `→` pick a plan. Plans a failed run set aside are listed under the cards with why and for how long, and `c` clears those marks.
-- **Engines**: the model gateway (up or down, its models, the engine behind it from config) and every local engine found, with its state, GPU and models.
+- **Gateways & local models**: the model gateway (up or down, its models, the engine behind it from config) and every local inference engine found (Ollama, llama.cpp, vLLM and the rest), with its state, GPU and models. An engine without the Anthropic Messages API is listed as `no API · needs a gateway`.
 - **Run history**: the last 50 sessions from the [run records](runs.md): when each started, the CLI, model and effort, where it ran, how long it took, how it ended and your rating. The selected run's box adds how much of the plan it used (before and after) and what it changed (files and commits).
 
 The tab was called Runs before; `/runs` and `afk status --tab runs` still open it.

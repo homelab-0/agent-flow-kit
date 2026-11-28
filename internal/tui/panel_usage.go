@@ -17,7 +17,7 @@ const (
 	usageRuns
 )
 
-var usageViews = []string{"Plans", "Engines", "Run history"}
+var usageViews = []string{"Plans", "Gateways & local models", "Run history"}
 
 // tabViews are the views a tab steps through with [ and ], or nil.
 func tabViews(t Tab) []string {
@@ -70,7 +70,11 @@ func (p *Panel) usageLines(w int) ([]line, line) {
 	view := p.viewOf(TabRuns)
 	head := t.subtabs(usageViews, view)
 	if !v.Updated.IsZero() {
-		head = append(head, sg(t.Dim, "   updated "+v.Updated.Format("15:04")))
+		upd := sg(t.Dim, "   updated "+v.Updated.Format("15:04"))
+		if head.width()+len(upd.s) > w-1 {
+			head = head[:len(head)-1] // narrow: "[ ]" without "switch view"
+		}
+		head = append(head, upd)
 	}
 	out := []line{head, nil}
 	var body []line

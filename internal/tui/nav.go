@@ -22,7 +22,7 @@ var tabBlurbs = []string{
 	"how each model scores, per kind of task",
 	"skills, and which CLIs have them",
 	"MCP servers, and which CLIs have them",
-	"what is left on each plan, the engines, and what ran",
+	"what is left on each plan, gateways and local models, and what ran",
 	"every setting, changed in place",
 }
 

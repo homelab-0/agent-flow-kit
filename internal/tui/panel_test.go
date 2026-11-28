@@ -166,7 +166,7 @@ func TestPanelTabs(t *testing.T) {
 		TabHarnesses: {"1 Route  2 Harnesses  3 Benchmarks  4 Skills  5 MCP  6 Usage  7 Config", "Harnesses  the agent CLIs on this machine", "INSTALLED  4", "▌CL claude        2.1.332   ● signed in",
 			"OC opencode      1.4.0     ● signed out", "NOT INSTALLED  1", "PI pi", "Installed native installer · /usr/local/bin/claude", "Usage     5h 71% left · week 64% left", "D discover now", "u update"},
 		TabBench:  {"Leaderboard   Sources   Why AFK picks", "‹coding›", "scored by  SWE-bench Verified", "1  claude-fable-5-2    CL", "78.1  measured  14✓ 2~", "CX OC", "qwen36-14b          OL", "AFK would pick for coding right now", "claude-fable-5-2 · high   effective 80.6 = benchmark 78.1 + 2.5", "runner-up CX gpt-6.1-sol 71.8 · 8.8 behind", "←→ task"},
-		TabRuns:   {"Usage  what is left on each plan", "Plans", "Engines", "Run history", "updated 03:31", "CL Claude plan", "71%", "GK Grok plan", "week   unknown", "SET ASIDE  none", "←→ plan"},
+		TabRuns:   {"Usage  what is left on each plan", "Plans", "Gateways & local models", "Run history", "updated 03:31", "CL Claude plan", "71%", "GK Grok plan", "week   unknown", "SET ASIDE  none", "←→ plan"},
 		TabConfig: {"file ~/.config/afk/config.toml", "Routing", "Prefer                      balanced", "e edit config.toml"},
 		TabSkills: {"4 skills · central ~/.config/afk/skills · 1 edited · 1 to sync · 1 to choose", "scope", "everywhere", "◆", "skill", "CL  CX  GK  AG", "gh-pr-triage", "↻", "space on/off"},
 		TabMCP: {"4 servers · ~/.config/afk/mcp.toml · 360 tools · 1 edited · 1 to sync", "server         how               tools health       CL  CX  GK  PI", "openconnector  gateway homelab   312   ● up 2h ago",

@@ -30,7 +30,7 @@ const (
 	TabConfig
 )
 
-// TabRuns is shown as Usage: what is left on each plan, the engines, and
+// TabRuns is shown as Usage: what is left on each plan, gateways and local models, and
 // what ran.
 var tabNames = []string{"Route", "Harnesses", "Benchmarks", "Skills", "MCP", "Usage", "Config"}
 
