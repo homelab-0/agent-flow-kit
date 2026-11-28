@@ -1,0 +1,46 @@
+name: release-please
+
+# Every push to master updates one open release PR ("chore: release x.y.z")
+# that bumps the version from the conventional-commit PR titles merged since
+# the last release and writes CHANGELOG.md. Merging that PR is the release:
+# release-please tags the merge commit, creates the GitHub release with the
+# changelog as its notes, and this workflow then starts release.yml on the
+# new tag, which builds, signs and publishes to npm.
+#
+# A tag created with GITHUB_TOKEN does not fire `push: tags` workflows, so
+# release.yml is started with workflow_dispatch on the tag ref instead
+# (GITHUB_TOKEN may dispatch). The run's ref is refs/tags/vX.Y.Z, so the
+# cosign certificate identity stays release.yml@refs/tags/..., exactly as for
+# a hand-pushed tag.
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # tag + GitHub release, release branch
+      pull-requests: write   # open and update the release PR
+      issues: write          # release PR labels
+      actions: write         # dispatch release.yml on the new tag
+    steps:
+      - id: rp
+        uses: googleapis/release-please-action@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+      - name: Publish the release
+        if: steps.rp.outputs.release_created == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.rp.outputs.tag_name }}
+        run: gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG"

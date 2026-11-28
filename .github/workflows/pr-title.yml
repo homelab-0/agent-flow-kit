@@ -1,0 +1,28 @@
+name: pr-title
+
+# PRs are squash-merged, so the PR title becomes the commit release-please
+# reads. It must be a conventional commit: feat: and fix: (optionally with a
+# scope, e.g. fix(router): ...) go in the changelog and bump the version;
+# a "!" after the type, or a BREAKING CHANGE footer, marks a breaking change.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions: {}
+
+jobs:
+  conventional-title:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the PR title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          types='feat|fix|perf|revert|docs|refactor|test|build|ci|chore'
+          if printf '%s' "$TITLE" | grep -Eq "^($types)(\([a-z0-9._/-]+\))?!?: [^ ]"; then
+            echo "ok: $TITLE"
+            exit 0
+          fi
+          echo "::error::PR title must be a conventional commit, e.g. 'fix(router): keep the pool when a CLI says 429' (types: ${types//|/, })"
+          echo "got: $TITLE"
+          exit 1
