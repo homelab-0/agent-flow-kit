@@ -110,6 +110,16 @@ A CLI that is running may rewrite its own config (Claude Code does). Sync while 
 
 Press `5` in the [control panel](control-panel.md) (or `/mcp` in the composer): one row per server with how it's reached, its tool count and status from the last test, and a column per CLI with the same marks as the [Skills tab](skills.md#the-skills-tab), plus `✗` for a file AFK can't read.
 
-`↑` `↓` pick a server and `←` `→` a CLI. `space` turns it on or off for that CLI, `s` syncs, `t` tests the server, `↵` connects and lists its tools with their descriptions (`↑` `↓` scroll, `esc` goes back; it counts as a test), and `a` opens `mcp.toml`. When an entry has drifted, a box names it: `k` keeps the CLI's entry and `c` restores AFK's.
+`a` adds a server without leaving the tab. Type one line, a name and where the server is:
+
+| You type | AFK writes |
+|---|---|
+| `github https://api.example/mcp env:GITHUB_MCP_TOKEN` | an HTTP server; the last part names the variable holding its token (leave it out when there is none) |
+| `playwright npx @playwright/mcp@latest` | a command AFK's CLIs run |
+| `tools via:work` | a server reached through your `[gateway.work]` |
+
+The line is checked against the whole of `mcp.toml` before anything is written. A token itself, a password in the address, a name already in use or a gateway you don't have is refused and the file is left alone. Then `s` adds the server to your CLIs and `t` tests it.
+
+`↑` `↓` pick a server and `←` `→` a CLI. `space` turns it on or off for that CLI, `s` syncs, `t` tests the server, `↵` connects and lists its tools with their descriptions (`↑` `↓` scroll, `esc` goes back; it counts as a test), and `e` opens `mcp.toml` in your editor. When an entry has drifted, a box names it: `k` keeps the CLI's entry and `c` restores AFK's.
 
 The repository's `.mcp.json` servers are listed below the others, marked `project`. A server waiting for an answer shows `?`, and `space` asks: `p` for this project, `g` for every project, `esc` for later.

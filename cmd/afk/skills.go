@@ -24,6 +24,7 @@ const skillsHelp = `Usage: afk skills [status] [--json]
        afk skills restore <skill> <cli>
        afk skills enable|disable <skill> <cli>
        afk skills new <name> [description] [--edit]
+       afk skills edit <name>
        afk skills scope <skill> project|global
        (any of the above with --project: this repository's .agents/skills)
 
@@ -369,6 +370,23 @@ func runSkills(d skillsDeps, argv []string, stdout, stderr io.Writer) int {
 			if err := c.Run(); err != nil {
 				return fail(err)
 			}
+		}
+		return 0
+	}
+	if sub == "edit" {
+		// Open a central skill's text in the editor.
+		if len(args) != 1 || !skills.ValidName(args[0]) {
+			fmt.Fprintln(stderr, "afk skills: usage: afk skills edit <name>")
+			return 2
+		}
+		p := filepath.Join(d.env.Central, args[0], "SKILL.md")
+		if _, err := os.Stat(p); err != nil {
+			return fail(fmt.Errorf("%s is not a central skill (a project skill is edited in its own folder)", args[0]))
+		}
+		c := editorCmd(p)
+		c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
+		if err := c.Run(); err != nil {
+			return fail(err)
 		}
 		return 0
 	}
