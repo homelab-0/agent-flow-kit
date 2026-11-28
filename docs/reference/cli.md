@@ -11,6 +11,7 @@ afk bench sync [--json]            refresh the benchmark catalog now
 afk skills status|sync|diff|keep|restore|enable|disable|new   your skills in every CLI
 afk mcp status|sync|test|keep|restore|enable|disable|edit|path   your MCP servers in every CLI
 afk status [--tab <tab>]           the control panel on its own
+afk update [--check] [-y] [--dry-run]   update afk itself, the way it was installed
 afk config get|set|edit|path|migrate   your settings (config.toml)
 afk trust add|list|remove [dir]    where yolo may run
 afk pools [--json]                 each pool's state, what's left, and its pacing

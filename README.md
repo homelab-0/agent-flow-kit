@@ -50,7 +50,7 @@ go install github.com/homelab-0/agent-flow-kit/cmd/afk@latest
 
 Or download an archive from [GitHub releases](https://github.com/homelab-0/agent-flow-kit/releases). Each release has SHA-256 checksums signed with cosign; see [install](docs/getting-started/install.md) for how to verify them and for building from source.
 
-`afk version` shows which build you have. AFK needs no `bash`, `jq` or `yq`: everything runs in the one binary.
+`afk version` shows which build you have, and `afk update` moves it to the newest release the way it was installed (npm, bun, pnpm or `go install`), after showing the command. `afk harness update <name>` does the same for an agent CLI. AFK needs no `bash`, `jq` or `yq`: everything runs in the one binary.
 
 ## Quick start
 

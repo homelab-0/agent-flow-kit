@@ -209,7 +209,7 @@ func (t Theme) logoName(r engine.Route) string {
 	switch r.Harness {
 	case "claude", "codex", "vllm", "copilot", "agy", "devin":
 		return r.Harness
-	case "grok", "ollama":
+	case "grok", "ollama", "opencode", "pi":
 		if t.Dark {
 			return r.Harness + "-light"
 		}

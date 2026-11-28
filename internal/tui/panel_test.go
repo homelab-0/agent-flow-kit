@@ -622,6 +622,65 @@ func TestRunsTabClearsFailedRunMarks(t *testing.T) {
 	}
 }
 
+// A switch with something to agree to asks before it turns on: enter
+// shows the warning, a second enter saves, anything else leaves it off.
+// Turning it off asks nothing.
+func TestConfigSwitchAsksBeforeTurningOn(t *testing.T) {
+	src := &fakePanel{}
+	p := NewPanel(context.Background(), src, NewTheme(true), TabConfig, "", time.Now)
+	p.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	p.Update(p.Init()())
+	set := func(v string) {
+		p.raw.config = &ConfigView{Path: "c", Exists: true,
+			Rows: [][2]string{{"harness.claude.vendor_usage", v}},
+			Edit: map[string]ConfigEdit{"harness.claude.vendor_usage": {Choices: []string{"on", "off"}, Confirm: "reads the saved login"}}}
+		p.data.config = p.raw.config
+	}
+	set("off")
+	enter := tea.KeyPressMsg{Code: tea.KeyEnter}
+	if cmd := p.Update(enter); cmd != nil || len(src.ran) != 0 {
+		t.Fatalf("the first enter saved: %v", src.ran)
+	}
+	if s := panelText(p); !strings.Contains(s, "reads the saved login") || !strings.Contains(s, "↵ turn on") || !strings.Contains(s, "esc leave off") {
+		t.Fatalf("the question:\n%s", s)
+	}
+	// On a short screen with many rows the question is still in sight.
+	long := *p.raw.config
+	long.Rows = nil
+	for i := 0; i < 30; i++ {
+		long.Rows = append(long.Rows, [2]string{fmt.Sprintf("route.row%d", i), "x"})
+	}
+	long.Rows = append(long.Rows, [2]string{"harness.claude.vendor_usage", "off"})
+	saved, savedSel := p.data.config, p.sel[TabConfig]
+	p.data.config, p.sel[TabConfig] = &long, 30
+	p.Update(tea.WindowSizeMsg{Width: 100, Height: 12})
+	if s := panelText(p); !strings.Contains(s, "reads the saved login") || !strings.Contains(s, "harness.claude.vendor_usage") {
+		t.Fatalf("the question is out of sight on a short screen:\n%s", s)
+	}
+	p.data.config, p.sel[TabConfig] = saved, savedSel
+	p.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	// q is an answer here (no), not quit.
+	if cmd := p.Update(tea.KeyPressMsg{Code: 'q', Text: "q"}); cmd != nil || p.quit || len(src.ran) != 0 || p.cfgAskKey != "" {
+		t.Fatalf("another key must leave it off: ran %v quit %v", src.ran, p.quit)
+	}
+	p.Update(enter)
+	cmd := p.Update(enter)
+	if cmd == nil {
+		t.Fatal("the second enter did nothing")
+	}
+	cmd()
+	if got := src.ran[len(src.ran)-1]; got[1] != "harness.claude.vendor_usage" || got[2] != "on" {
+		t.Fatalf("saved %v", got)
+	}
+	set("on")
+	n := len(src.ran)
+	if cmd := p.Update(enter); cmd == nil {
+		t.Fatal("turning it off asked")
+	} else if cmd(); len(src.ran) != n+1 || src.ran[n][2] != "off" {
+		t.Fatalf("saved %v", src.ran)
+	}
+}
+
 // The Config tab changes settings in place: enter steps a choice and
 // saves it, a typed value gets an input, and a row with no form says so.
 func TestConfigTabEdits(t *testing.T) {

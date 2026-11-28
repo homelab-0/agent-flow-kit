@@ -35,6 +35,7 @@ const usage = `afk — run the best agent CLI on this machine for the task
   afk mcp [status|sync|test ...]     one list of MCP servers, in every CLI
   afk status [--tab <tab>]           the control panel: plans, engines, runs
   afk version                        the version of this build
+  afk update [--check] [-y]          update afk itself, the way it was installed
 
 Options:
   -p, --print            one-shot: run headless and print the answer

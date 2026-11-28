@@ -36,7 +36,7 @@ Claude Code and Grok have no way to print plan usage outside a run. Their vendor
 vendor_usage = true
 ```
 
-or on the Config tab (`harness.claude.vendor_usage`, `harness.grok.vendor_usage`), where you type `on` after reading the warning. It is off by default, because a vendor's terms may not allow another tool to use its CLI's login. That is yours to weigh.
+or on the Config tab (`harness.claude.vendor_usage`, `harness.grok.vendor_usage`), where enter flips the switch. Turning one on shows the warning first and takes one more enter. It is off by default, because a vendor's terms may not allow another tool to use its CLI's login. That is yours to weigh.
 
 With it on, AFK reads the access token from the CLI's login file, sends one request to the vendor's own host (`api.anthropic.com` for Claude, `cli-chat-proxy.grok.com` for Grok), and drops the token. It never stores, prints, refreshes or rewrites a login, and follows no redirect. An expired login is left for the CLI to renew: the pool says to open the CLI once. The figure shows as `reported by the vendor's usage service`, with extra usage when the vendor reports it. The CLI's own sources are still tried first, and a newer reading from a run wins.
 

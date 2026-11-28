@@ -69,7 +69,9 @@ Each `[gateway.<name>]` in `config.toml` has its rows here, and the `gateway (ad
 
 `x` on any of a gateway's rows removes that gateway from the file (press it twice). The `gateway` row above them is the one in effect, which can also come from `AFK_LITELLM_BASE_URL`.
 
-Rows shown dim (the gateway in effect, local engines) have no form here yet. `e` opens `config.toml` in your editor for those (`afk config edit`). Warnings from the file show at the bottom.
+`local.engines` switches between `auto` (AFK looks at the usual ports on this machine) and `off`. The two `harness.<name>.vendor_usage` rows are switches too: turning one on shows what it does and what it risks, and takes one more `↵` (see [the vendor usage lookup](pools.md#the-vendor-usage-lookup)).
+
+Rows shown dim (the gateway in effect) have no form here yet. `e` opens `config.toml` in your editor for those (`afk config edit`). Warnings from the file show at the bottom.
 
 ## Skills
 
