@@ -81,6 +81,17 @@ func TestGoldenMatchesBashRouter(t *testing.T) {
 				GatewayURL: s.GatewayURL, AllowMetered: s.AllowMetered, PreferFree: s.PreferFree,
 				AllowFreeReviewers: s.AllowFreeReviewers, SecurityModels: s.SecModels, Now: time.Now(),
 			})
+			// The parts explain the whole gap between the benchmark and
+			// the effective score.
+			if got.Model != "" {
+				sum := got.BenchmarkScore
+				for _, p := range got.ScoreParts {
+					sum += p.Points
+				}
+				if d := sum - got.EffectiveScore; d > 0.05 || d < -0.05 {
+					t.Errorf("score parts add to %.2f, effective is %.2f: %+v", sum, got.EffectiveScore, got.ScoreParts)
+				}
+			}
 			b, _ := json.Marshal(got)
 			var gotMap map[string]any
 			_ = json.Unmarshal(b, &gotMap)
@@ -99,7 +110,7 @@ func TestGoldenMatchesBashRouter(t *testing.T) {
 			sort.Strings(names)
 			for _, k := range names {
 				w, g := want[k], gotMap[k]
-				if k == "pool_quota_source" {
+				if k == "pool_quota_source" || k == "score_parts" {
 					// Added after the bash router; not in the frozen fixture.
 					continue
 				}

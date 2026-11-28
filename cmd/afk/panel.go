@@ -360,7 +360,53 @@ func (s panelSource) Benchmarks(ctx context.Context, task string) (*tui.BenchVie
 	} else {
 		v.Routes = ex.ByHarness
 	}
+	v.Sources = benchSources(r.Catalog, settings)
 	return v, nil
+}
+
+// benchSources are the places scores come from, with what each measures,
+// which tasks use it, whether it is on and what the last sync said.
+func benchSources(cat *router.Catalog, st core.Settings) []tui.BenchSource {
+	rec := map[string]any{}
+	if cat != nil && cat.SyncReceipt != nil {
+		rec = cat.SyncReceipt
+	}
+	feed := func(k string) string {
+		switch s, _ := rec[k].(string); s {
+		case "":
+			return "never synced"
+		case "live_synced":
+			return "read"
+		default:
+			return strings.ReplaceAll(s, "_", " ")
+		}
+	}
+	when := ""
+	if s, _ := rec["synced_at"].(string); s != "" {
+		when = " · " + s
+		if t, err := time.Parse(time.RFC3339, s); err == nil {
+			when = " · " + t.Local().Format("Jan 2 15:04")
+		}
+	}
+	on := func(src string) bool { return st.BenchSourceOn(src) }
+	return []tui.BenchSource{
+		{Key: "bench.sources.lmarena.enabled", Name: "LMArena", Measures: "rank on human-vote leaderboards", UsedFor: "complex, review, webdev, research",
+			On: on("lmarena"), Read: true, Status: "agent " + feed("lmarena_agent") + ", webdev " + feed("lmarena_webdev") + ", text " + feed("lmarena_text") + when,
+			About: "Three LMArena boards: Agent for complex builds, reviews and architecture; WebDev for web work; Text (reasoning) for research and half of architecture. A model's rank on the board becomes a 0-98 score, so the top model scores highest."},
+		{Key: "bench.sources.modelsdev.enabled", Name: "models.dev", Measures: "context window sizes", UsedFor: "fitting tasks to windows",
+			On: on("modelsdev"), Read: true, Status: feed("models_dev") + when,
+			About: "Each model's context window, so AFK doesn't route a large task to a model that can't hold it. It gives no score."},
+		{Key: "route.learn", Name: "Your ratings", Measures: "your 1/2/3 after runs", UsedFor: "every task, after a few rated runs",
+			On: st.Learn, Read: true,
+			About: "When you rate a run solved, partly or wrong pick, that model's routes for that kind of task move up or down. It counts once a model has at least two rated runs."},
+		{Name: "Built-in estimates", Measures: "AFK's own catalog figures", UsedFor: "tasks nothing else scores",
+			On: true, Read: true,
+			About: "A figure shipped with AFK for a model and kind of task that no leaderboard covers. It is always marked estimate, never measured."},
+		{Name: "SWE-bench Verified", Measures: "% of real GitHub issues solved", UsedFor: "—",
+			About: "The share of 500 real GitHub issues a model resolves with its own patch."},
+		{Name: "Artificial Analysis", Measures: "intelligence index", UsedFor: "—",
+			About: "Artificial Analysis's index. Its API needs a key, and AFK never handles one."},
+	}
 }
 
 func localEngineOf(r *router.Router, u string) string {

@@ -15,6 +15,7 @@ import (
 	"github.com/homelab-0/agent-flow-kit/internal/harness"
 	"github.com/homelab-0/agent-flow-kit/internal/router"
 	"github.com/homelab-0/agent-flow-kit/internal/runrec"
+	"github.com/homelab-0/agent-flow-kit/internal/tui"
 )
 
 func panelCore(t *testing.T) *core.Core {
@@ -370,5 +371,21 @@ func TestPaceText(t *testing.T) {
 		if !strings.HasPrefix(got, c.want) || (c.want == "" && got != "") || leans != c.leans {
 			t.Errorf("paceText(%+v) = %q, %v; want %q, %v", c.pc, got, leans, c.want, c.leans)
 		}
+	}
+}
+
+func TestBenchSources(t *testing.T) {
+	cat := &router.Catalog{SyncReceipt: map[string]any{"lmarena_agent": "live_synced", "lmarena_webdev": "offline", "synced_at": "2026-11-28T10:00:00Z"}}
+	st := core.Settings{Learn: true, BenchSources: map[string]bool{"modelsdev": false}}
+	src := benchSources(cat, st)
+	by := map[string]tui.BenchSource{}
+	for _, s := range src {
+		by[s.Name] = s
+	}
+	if s := by["LMArena"]; !s.On || !strings.Contains(s.Status, "agent read, webdev offline, text never synced") {
+		t.Errorf("lmarena %+v", s)
+	}
+	if by["models.dev"].On || !by["Your ratings"].On || by["SWE-bench Verified"].Read {
+		t.Errorf("sources %+v", src)
 	}
 }

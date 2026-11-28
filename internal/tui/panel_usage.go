@@ -21,8 +21,11 @@ var usageViews = []string{"Plans", "Engines", "Run history"}
 
 // tabViews are the views a tab steps through with [ and ], or nil.
 func tabViews(t Tab) []string {
-	if t == TabRuns {
+	switch t {
+	case TabRuns:
 		return usageViews
+	case TabBench:
+		return benchViews
 	}
 	return nil
 }
