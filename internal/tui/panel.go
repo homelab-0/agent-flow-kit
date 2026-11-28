@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/homelab-0/agent-flow-kit/internal/engine"
@@ -61,6 +62,9 @@ type PanelSource interface {
 	Benchmarks(ctx context.Context, task string) (*BenchView, error)
 	Status(ctx context.Context) (*StatusView, error)
 	Config(ctx context.Context) (*ConfigView, error)
+	// ConfigSet writes one setting to the user's config file and returns
+	// what to tell the user.
+	ConfigSet(ctx context.Context, key, value string) (string, error)
 	Skills(ctx context.Context) (*SkillsView, error)
 	// SkillsDo runs a quick skills action in place (sync, keep, restore,
 	// enable, disable) and returns what to tell the user.
@@ -164,6 +168,19 @@ type ConfigView struct {
 	Exists   bool
 	Rows     [][2]string // key, value
 	Warnings []string
+	// Edit says how a row is changed from the tab, by its key. A row
+	// without an entry is shown only.
+	Edit map[string]ConfigEdit
+}
+
+// ConfigEdit is how the Config tab changes one setting.
+type ConfigEdit struct {
+	// Choices are the values enter steps through; nil means the value is
+	// typed.
+	Choices []string
+	// Value is what the input starts with when the value is typed, and
+	// Hint what is said beside it.
+	Value, Hint string
 }
 
 type panelData struct {
@@ -214,14 +231,16 @@ type Panel struct {
 	typing   bool       // the filter is being typed
 	tools    *toolsView // a server's tools, open over the MCP tab
 	toolsGen int        // the latest tools listing
-	id       int
-	gens     map[Tab]int // the latest load of each tab
-	loading  map[Tab]bool
-	notice   string
-	ctx      context.Context
-	stop     context.CancelFunc
-	now      func() time.Time
-	version  string
+	// A setting's value being typed on the Config tab.
+	cfgKey, cfgText, cfgHint string
+	id                       int
+	gens                     map[Tab]int // the latest load of each tab
+	loading                  map[Tab]bool
+	notice                   string
+	ctx                      context.Context
+	stop                     context.CancelFunc
+	now                      func() time.Time
+	version                  string
 	// standalone: Route quits rather than going back to a composer.
 	standalone bool
 	quit       bool
@@ -343,6 +362,12 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			p.notice = msg.err.Error()
 		}
 		return p.load(TabMCP)
+	case configSavedMsg:
+		p.notice = msg.text
+		if msg.err != nil {
+			p.notice = "not saved: " + msg.err.Error()
+		}
+		return p.load(TabConfig)
 	case marksClearedMsg:
 		p.notice = msg.text
 		if msg.err != nil {
@@ -376,6 +401,9 @@ func (p *Panel) key(k string) tea.Cmd {
 	}
 	if p.askScope != "" && p.tab == TabMCP {
 		return p.mcpKey(k)
+	}
+	if p.cfgKey != "" {
+		return p.configTyping(k)
 	}
 	if p.filterKey(k) {
 		return nil
@@ -476,8 +504,13 @@ func (p *Panel) key(k string) tea.Cmd {
 			return p.run("bench", "sync")
 		}
 	case TabConfig:
-		if k == "e" {
+		switch k {
+		case "e":
 			return p.run("config", "edit")
+		case "enter", "space", "right", "l":
+			return p.configChange(1)
+		case "left", "h":
+			return p.configChange(-1)
 		}
 	case TabRuns:
 		if k == "c" && p.anySetAside() {
@@ -1050,13 +1083,108 @@ func (p *Panel) configLines(w int) ([]line, line) {
 	}
 	out := []line{head, nil, {sg(t.Dim, "   "+col("setting", 28)+"value")}}
 	for i, kv := range v.Rows {
-		out = append(out, p.selRow(line{sg(t.Plain, "  "+col(kv[0], 28)), sg(t.Plain, kv[1])}, i, w))
+		// A row this tab can't change yet is dim.
+		st := t.Dim
+		if _, ok := v.Edit[kv[0]]; ok {
+			st = t.Plain
+		}
+		row := line{sg(t.Plain, "  "+col(kv[0], 28)), sg(st, kv[1])}
+		if kv[0] == p.cfgKey {
+			row = line{sg(t.Plain, "  "+col(kv[0], 28)), sg(t.Plain, p.cfgText), sg(t.Accent, "▏")}
+		}
+		out = append(out, p.selRow(row, i, w))
 	}
 	for _, wn := range v.Warnings {
 		out = append(out, fitLine(line{sg(t.Warn, " ! "+wn)}, w))
 	}
-	hint := line{sg(t.Key, "e"), sg(t.Dim, " edit config.toml  ")}
+	if p.cfgKey != "" {
+		hint := line{sg(t.Key, "↵"), sg(t.Dim, " save  "), sg(t.Key, "esc"), sg(t.Dim, " cancel  ")}
+		if p.cfgHint != "" {
+			hint = append(hint, sg(t.Dim, p.cfgHint+"  "))
+		}
+		return out, hint
+	}
+	hint := line{sg(t.Key, "↵"), sg(t.Dim, " change  "), sg(t.Key, "e"), sg(t.Dim, " edit config.toml  ")}
 	return out, hint
+}
+
+// configSavedMsg is what saving a setting said.
+type configSavedMsg struct {
+	text string
+	err  error
+}
+
+// configRow is the selected row's key, value and how it is edited.
+func (p *Panel) configRow() (key, value string, e ConfigEdit, ok bool) {
+	v := p.data.config
+	i := p.sel[TabConfig]
+	if v == nil || i < 0 || i >= len(v.Rows) {
+		return "", "", ConfigEdit{}, false
+	}
+	e, ok = v.Edit[v.Rows[i][0]]
+	return v.Rows[i][0], v.Rows[i][1], e, ok
+}
+
+// configChange changes the selected setting: the next (or previous)
+// choice is saved at once; a typed value opens the input.
+func (p *Panel) configChange(step int) tea.Cmd {
+	key, value, e, ok := p.configRow()
+	if key == "" {
+		return nil
+	}
+	if !ok {
+		p.notice = key + " can't be changed here yet; e opens config.toml"
+		return nil
+	}
+	if len(e.Choices) == 0 {
+		p.cfgKey, p.cfgText, p.cfgHint = key, e.Value, e.Hint
+		return nil
+	}
+	at := 0
+	for i, c := range e.Choices {
+		if c == value {
+			at = i
+		}
+	}
+	n := len(e.Choices)
+	return p.configSave(key, e.Choices[((at+step)%n+n)%n])
+}
+
+func (p *Panel) configSave(key, value string) tea.Cmd {
+	if p.src == nil {
+		return nil
+	}
+	src, ctx := p.src, p.ctx
+	return func() tea.Msg {
+		text, err := src.ConfigSet(ctx, key, value)
+		return configSavedMsg{text, err}
+	}
+}
+
+// configTyping takes a key while a setting's value is being typed.
+func (p *Panel) configTyping(k string) tea.Cmd {
+	switch k {
+	case "enter":
+		key, text := p.cfgKey, strings.TrimSpace(p.cfgText)
+		p.cfgKey, p.cfgText, p.cfgHint = "", "", ""
+		return p.configSave(key, text)
+	case "esc":
+		p.cfgKey, p.cfgText, p.cfgHint = "", "", ""
+	case "backspace":
+		if p.cfgText != "" {
+			_, n := utf8.DecodeLastRuneInString(p.cfgText)
+			p.cfgText = p.cfgText[:len(p.cfgText)-n]
+		}
+	case "space":
+		p.cfgText += " "
+	case "ctrl+u":
+		p.cfgText = ""
+	default:
+		if utf8.RuneCountInString(k) == 1 {
+			p.cfgText += k
+		}
+	}
+	return nil
 }
 
 // PanelModel runs a Panel as a program of its own (`afk status`).

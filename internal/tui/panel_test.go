@@ -76,6 +76,11 @@ func (fakePanel) Skills(context.Context) (*SkillsView, error) {
 		Drift: []SkillDrift{{Skill: "gh-pr-triage", Harness: "grok", Dir: "~/.grok/skills", Modified: now.Add(-2 * time.Hour), Lines: 4}}}, nil
 }
 
+func (p *fakePanel) ConfigSet(_ context.Context, key, value string) (string, error) {
+	p.ran = append(p.ran, []string{"config-set", key, value})
+	return key + " = " + value + " saved", nil
+}
+
 func (p *fakePanel) ClearMarks(context.Context) (string, error) {
 	p.ran = append(p.ran, []string{"clear-marks"})
 	return "Cleared xai-grok.", nil
@@ -609,6 +614,121 @@ func TestRunsTabClearsFailedRunMarks(t *testing.T) {
 	p.Update(cmd())
 	if len(src.ran) != 1 || src.ran[0][0] != "clear-marks" || p.notice != "Cleared xai-grok." {
 		t.Fatalf("ran %v, notice %q", src.ran, p.notice)
+	}
+}
+
+// The Config tab changes settings in place: enter steps a choice and
+// saves it, a typed value gets an input, and a row with no form says so.
+func TestConfigTabEdits(t *testing.T) {
+	src := &fakePanel{}
+	p := NewPanel(context.Background(), src, NewTheme(true), TabConfig, "", time.Now)
+	p.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	p.Update(p.Init()())
+	p.raw.config = &ConfigView{Path: "~/.config/afk/config.toml", Exists: true,
+		Rows: [][2]string{{"route.prefer", "balanced"}, {"route.pacing", "off"}, {"trust.repos", "1 trusted"}, {"gateway", "none"}},
+		Edit: map[string]ConfigEdit{
+			"route.prefer": {Choices: []string{"balanced", "cheap", "best"}},
+			"route.pacing": {Choices: []string{"on", "off"}},
+			"trust.repos":  {Value: "~/a", Hint: "folders, separated by commas"},
+		}}
+	p.data.config = p.raw.config
+	if !strings.Contains(panelText(p), "↵ change") {
+		t.Fatalf("no change key:\n%s", panelText(p))
+	}
+	press := func(k tea.KeyPressMsg) tea.Cmd { return p.Update(k) }
+	enter, down := tea.KeyPressMsg{Code: tea.KeyEnter}, tea.KeyPressMsg{Code: tea.KeyDown}
+
+	cmd := press(enter)
+	if cmd == nil {
+		t.Fatal("enter on a choice did nothing")
+	}
+	cmd() // the save; the reload that follows isn't run here
+	if got := src.ran[len(src.ran)-1]; got[0] != "config-set" || got[1] != "route.prefer" || got[2] != "cheap" {
+		t.Fatalf("saved %v", got)
+	}
+	if cmd := press(tea.KeyPressMsg{Code: tea.KeyLeft}); cmd == nil {
+		t.Fatal("left did nothing")
+	} else if cmd(); src.ran[len(src.ran)-1][2] != "best" {
+		t.Fatalf("left steps back around: %v", src.ran[len(src.ran)-1])
+	}
+	press(down)
+	if cmd := press(enter); cmd == nil {
+		t.Fatal("enter on a switch did nothing")
+	} else if cmd(); src.ran[len(src.ran)-1][2] != "on" {
+		t.Fatalf("off steps to on: %v", src.ran[len(src.ran)-1])
+	}
+
+	// A typed value: the input opens with the current one.
+	press(down)
+	n := len(src.ran)
+	if cmd := press(enter); cmd != nil || p.cfgKey != "trust.repos" || p.cfgText != "~/a" {
+		t.Fatalf("typing didn't start: key %q text %q", p.cfgKey, p.cfgText)
+	}
+	if s := panelText(p); !strings.Contains(s, "~/a▏") || !strings.Contains(s, "↵ save") || !strings.Contains(s, "folders, separated by commas") {
+		t.Fatalf("the input row:\n%s", s)
+	}
+	for _, r := range ", ~/b" {
+		k := tea.KeyPressMsg{Code: r, Text: string(r)}
+		if r == ' ' {
+			k = tea.KeyPressMsg{Code: tea.KeySpace, Text: " "}
+		}
+		press(k)
+	}
+	press(tea.KeyPressMsg{Code: 'q', Text: "q"}) // typed, not quit
+	press(tea.KeyPressMsg{Code: tea.KeyBackspace})
+	if p.quit || p.cfgText != "~/a, ~/b" {
+		t.Fatalf("text %q quit %v", p.cfgText, p.quit)
+	}
+	cmd = press(enter)
+	if cmd == nil || p.cfgKey != "" {
+		t.Fatal("enter didn't save the typed value")
+	}
+	cmd()
+	if got := src.ran[len(src.ran)-1]; len(src.ran) != n+1 || got[1] != "trust.repos" || got[2] != "~/a, ~/b" {
+		t.Fatalf("saved %v", got)
+	}
+	// esc drops what was typed.
+	press(enter)
+	press(tea.KeyPressMsg{Code: 'x', Text: "x"})
+	press(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if p.cfgKey != "" || len(src.ran) != n+1 || p.back || p.quit {
+		t.Fatal("esc while typing cancels only the typing")
+	}
+
+	// A row with no form yet.
+	press(down)
+	if cmd := press(enter); cmd != nil || !strings.Contains(p.notice, "can't be changed here yet") {
+		t.Fatalf("notice %q", p.notice)
+	}
+}
+
+// An action's result reaches the tabs when they were opened from the
+// composer, not only when the panel runs on its own.
+func TestComposerPanelGetsActionResults(t *testing.T) {
+	m, _ := composeModel(t, 100, false)
+	src := &fakePanel{}
+	m.opt.Panel = src
+	_, cmd := m.Update(key("7"))
+	if m.panel == nil || m.panel.tab != TabConfig {
+		t.Fatal("7 didn't open the Config tab")
+	}
+	m.Update(cmd())
+	m.panel.raw.config.Edit = map[string]ConfigEdit{"route.prefer": {Choices: []string{"balanced", "cheap"}}}
+	m.panel.data.config = m.panel.raw.config
+	_, cmd = m.Update(key("enter"))
+	if cmd == nil {
+		t.Fatal("enter did nothing")
+	}
+	_, reload := m.Update(cmd())
+	if m.panel.notice != "route.prefer = cheap saved" || reload == nil {
+		t.Fatalf("the save's result didn't reach the tab: notice %q", m.panel.notice)
+	}
+	for _, msg := range []tea.Msg{mcpDoneMsg{text: "mcp ok"}, skillsDoneMsg{text: "skills ok"}, marksClearedMsg{text: "marks ok"}} {
+		m.Update(msg)
+		want := map[string]bool{"mcp ok": true, "skills ok": true, "marks ok": true}
+		if !want[m.panel.notice] {
+			t.Fatalf("%T didn't reach the tab: notice %q", msg, m.panel.notice)
+		}
 	}
 }
 

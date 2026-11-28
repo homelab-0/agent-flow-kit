@@ -48,7 +48,17 @@ The models you can reach for one kind of task, best first. Each row shows:
 
 ## Config
 
-The settings in effect and the path of `config.toml`. `e` opens it in your editor (`afk config edit`). Warnings from the file show at the bottom.
+The settings in effect and the path of `config.toml`. Change a setting right here: select its row and press `↵`.
+
+| Setting | `↵` does |
+|---|---|
+| `route.prefer`, `route.failover`, `permissions.default` | steps to the next value (`←` steps back) and saves it |
+| `route.learn`, `route.pacing`, `route.prefer_free`, `route.allow_metered`, `route.allow_free_reviewers`, `bench.autosync` | switches it on or off and saves it |
+| `trust.repos` | opens an input with the current folders, separated by commas; `↵` saves, `esc` cancels |
+
+AFK writes `config.toml` itself (creating it the first time) and keeps the file's comments and order, exactly as `afk config set` does. A value the file can't take is refused and nothing is written. The row then shows the setting in effect; when an `AFK_*` variable or the project's `.afk/config.json` still decides it, the save says so.
+
+Rows shown dim (the gateway, local engines) have no form here yet. `e` opens `config.toml` in your editor for those (`afk config edit`). Warnings from the file show at the bottom.
 
 ## Skills
 
