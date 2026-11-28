@@ -10,8 +10,7 @@ Single-colour marks have a light copy (`-light`, for dark terminals) and a dark 
 - From [selfh.st/icons](https://github.com/selfhst/icons) (CC BY 4.0): `litellm` and `llamacpp-*`.
 - From [Dashboard Icons](https://github.com/homarr-labs/dashboard-icons) (Apache-2.0): `localai`.
 - From the projects' own repositories: `sglang` (sgl-project/sglang `assets/logo.png`) and `mlx-*` (ml-explore/mlx `docs/src/_static/mlx_logo*.png`), trimmed and given a transparent background.
+- `portkey` is the hexagon mark cut from Portkey's logo in Portkey-AI/docs-core (`images/portkey-PANW-company-logo-positive.png`).
 - `agentgateway` is cut from the agentgateway wordmark.
-
-Portkey has no logo here, so a Portkey gateway keeps its `GW` text tag.
 
 The marks belong to their owners. AFK shows them only to say where a task is going.

@@ -10,7 +10,7 @@ import (
 
 // noBrandLogo are the gateway kinds AFK ships no mark for; they keep
 // their text tag.
-var noBrandLogo = []string{"portkey"}
+var noBrandLogo = []string{}
 
 // Every gateway kind and engine AFK knows has a logo on both terminal
 // backgrounds, so adding one in Config shows its mark. (Terminals without
@@ -45,8 +45,8 @@ func TestBrandLogosCoverEveryGatewayAndEngine(t *testing.T) {
 	}
 }
 
-// A gateway row and an engine draw their own marks, a gateway kind with
-// none keeps the GW tag, and single-colour marks follow the background.
+// A gateway row and an engine draw their own marks, a gateway kind
+// without one keeps the GW tag, and single-colour marks follow the background.
 func TestBrandLogoCells(t *testing.T) {
 	ids := Logos{}
 	for i, n := range logoNames() {
@@ -63,8 +63,8 @@ func TestBrandLogoCells(t *testing.T) {
 	if dark.logoName(gw("vllm")) != "vllm" || light.logoName(gw("ollama")) != "ollama-dark" {
 		t.Error("a gateway whose kind is an engine should use the engine's logo")
 	}
-	if s := (line{dark.logo(gw("portkey"))}).plain(); s != "GW" {
-		t.Errorf("portkey should keep the GW tag, got %q", s)
+	if s := (line{dark.logo(gw("somegateway"))}).plain(); s != "GW" {
+		t.Errorf("an unknown gateway kind should keep the GW tag, got %q", s)
 	}
 	if s := (line{dark.logo(gw(""))}).plain(); s != "GW" {
 		t.Errorf("a gateway of no kind should keep the GW tag, got %q", s)

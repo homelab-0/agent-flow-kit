@@ -259,8 +259,7 @@ func (t Theme) engineLogo(engine string) seg {
 
 // brandLogos are the embedded logos of gateway kinds and local engines.
 // A single-colour mark (mono) has a -light copy for dark terminals and a
-// -dark copy for light ones. A kind left out (portkey: no mark AFK can
-// ship) is drawn as its text tag.
+// -dark copy for light ones. A kind left out is drawn as its text tag.
 var brandLogos = map[string]struct {
 	name string
 	mono bool
@@ -268,6 +267,7 @@ var brandLogos = map[string]struct {
 	// Gateways.
 	"litellm":      {"litellm", false},
 	"openrouter":   {"openrouter", true},
+	"portkey":      {"portkey", false},
 	"agentgateway": {"agentgateway", false},
 	"envoy":        {"envoy", false},
 	"kong":         {"kong", true},
