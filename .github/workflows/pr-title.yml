@@ -8,26 +8,21 @@ on:
   pull_request:
     types: [opened, edited, synchronize, reopened]
 
-permissions:
-  pull-requests: read
+permissions: {}
 
 jobs:
   conventional-title:
     runs-on: ubuntu-latest
     steps:
-      - uses: amannn/action-semantic-pull-request@v6
+      - name: Check the PR title
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          types: |
-            feat
-            fix
-            perf
-            revert
-            docs
-            refactor
-            test
-            build
-            ci
-            chore
-          requireScope: false
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          types='feat|fix|perf|revert|docs|refactor|test|build|ci|chore'
+          if printf '%s' "$TITLE" | grep -Eq "^($types)(\([a-z0-9._/-]+\))?!?: [^ ]"; then
+            echo "ok: $TITLE"
+            exit 0
+          fi
+          echo "::error::PR title must be a conventional commit, e.g. 'fix(router): keep the pool when a CLI says 429' (types: ${types//|/, })"
+          echo "got: $TITLE"
+          exit 1
