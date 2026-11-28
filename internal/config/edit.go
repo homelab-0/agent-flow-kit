@@ -171,3 +171,71 @@ func quote(s string) string {
 	b.WriteByte('"')
 	return b.String()
 }
+
+// RemoveTable takes one table out of a TOML document, with its keys and
+// any tables under it, and keeps the rest as it was. The table may be
+// written as a [header], as dotted keys under a parent ([gateway] then
+// work.url = ...), or both. removed is false when the document has no
+// such table.
+func RemoveTable(doc []byte, table string) (out []byte, removed bool, err error) {
+	entries, err := scan(doc)
+	if err != nil {
+		return nil, false, err
+	}
+	want := strings.Split(table, ".")
+	within := func(comps []string) bool { return sameComps(comps, want) || hasPrefixComps(comps, want) }
+	type span struct{ from, to int }
+	var cut []span
+	for i, e := range entries {
+		switch {
+		case e.table && within(e.comps):
+			if e.array {
+				return nil, false, fmt.Errorf("%s is an array of tables; use afk config edit", e.path)
+			}
+			// From the header to the next header that isn't inside it.
+			to := len(doc)
+			for _, n := range entries[i+1:] {
+				if n.table {
+					to = lineStart(doc, n.lineEnd-1)
+					break
+				}
+			}
+			// The comment lines right above the header are about it.
+			from := lineStart(doc, e.lineEnd-1)
+			for from > 0 {
+				prev := lineStart(doc, from-1)
+				if !bytes.HasPrefix(bytes.TrimLeft(doc[prev:from], " \t"), []byte("#")) {
+					break
+				}
+				from = prev
+			}
+			cut = append(cut, span{from, to})
+		case !e.table && hasPrefixComps(e.comps, want) && !within(e.scope):
+			if e.valStart < 0 {
+				return nil, false, fmt.Errorf("%s: can't find its line to remove", e.path)
+			}
+			cut = append(cut, span{lineStart(doc, e.valStart), e.lineEnd})
+		case !e.table && e.inline && hasPrefixComps(want, e.comps) && len(want) > len(e.comps):
+			return nil, false, fmt.Errorf("%s is inside the inline table %s; use afk config edit", table, e.path)
+		}
+	}
+	if len(cut) == 0 {
+		return doc, false, nil
+	}
+	var b bytes.Buffer
+	at := 0
+	for _, s := range cut { // spans are in document order and don't overlap
+		if s.from < at {
+			continue
+		}
+		b.Write(doc[at:s.from])
+		at = s.to
+	}
+	b.Write(doc[at:])
+	// A removed section can leave a run of blank lines; keep one.
+	res := b.Bytes()
+	for bytes.Contains(res, []byte("\n\n\n")) {
+		res = bytes.ReplaceAll(res, []byte("\n\n\n"), []byte("\n\n"))
+	}
+	return res, true, nil
+}

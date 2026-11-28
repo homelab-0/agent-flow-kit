@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -510,6 +513,41 @@ func (s panelSource) Config(ctx context.Context) (*tui.ConfigView, error) {
 		}
 	}
 	add("gateway", gw)
+	// Each gateway in config.toml, field by field, and a row to add one.
+	gwNames := make([]string, 0, len(st.Gateways))
+	for n := range st.Gateways {
+		gwNames = append(gwNames, n)
+	}
+	sort.Strings(gwNames)
+	for _, n := range gwNames {
+		g, sec := st.Gateways[n], "gateway."+n
+		orNone := func(s string) string {
+			if s == "" {
+				return "not set"
+			}
+			return s
+		}
+		// An address can carry a password; it is shown without one, and
+		// the input then starts empty.
+		shown, start := orNone(redactHost(g.URL)), g.URL
+		if u, err := url.Parse(g.URL); err == nil && u.User != nil {
+			start = ""
+		}
+		add(sec+".url", shown)
+		v.Edit[sec+".url"] = tui.ConfigEdit{Value: start, Hint: "the gateway's base address, such as https://gw.example:4000", Remove: sec}
+		add(sec+".key", orNone(g.Key))
+		v.Edit[sec+".key"] = tui.ConfigEdit{Value: g.Key, Hint: "where the key is, never the key: env:NAME, file:/path, op://vault/item, keychain:NAME or cmd:...", Remove: sec}
+		add(sec+".default", yes[g.Default])
+		v.Edit[sec+".default"] = tui.ConfigEdit{Choices: []string{"on", "off"}, Remove: sec}
+		add(sec+".kind", orNone(g.Kind))
+		v.Edit[sec+".kind"] = tui.ConfigEdit{Value: g.Kind, Hint: "what it is, for the route card: litellm, openrouter, agentgateway, ...", Remove: sec}
+		add(sec+".engine", orNone(g.Engine))
+		v.Edit[sec+".engine"] = tui.ConfigEdit{Value: g.Engine, Hint: "what serves its models, for the route card: vllm, ollama, ...", Remove: sec}
+		add(sec+".host", orNone(g.Host))
+		v.Edit[sec+".host"] = tui.ConfigEdit{Value: g.Host, Hint: "where that runs, for the route card", Remove: sec}
+	}
+	add(gatewayNew, "↵ to add one")
+	v.Edit[gatewayNew] = tui.ConfigEdit{Hint: "a name and its address, for example: work https://gw.example:4000"}
 	local := "off"
 	if len(st.LocalURLs) > 0 {
 		local = fmt.Sprintf("%d addresses on this PC", len(st.LocalURLs))
@@ -536,10 +574,63 @@ func (s panelSource) Config(ctx context.Context) (*tui.ConfigView, error) {
 	return v, nil
 }
 
+// gatewayNew is the Config tab's row that adds a gateway.
+const gatewayNew = "gateway (add)"
+
+var gatewayNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+
+// addGateway writes a new [gateway.<name>] with its address. The key
+// reference is the next row to fill in.
+func (s panelSource) addGateway(value string) (string, error) {
+	f := strings.Fields(value)
+	if len(f) != 2 {
+		return "", errors.New("type a name and an address, for example: work https://gw.example:4000")
+	}
+	name, addr := f[0], f[1]
+	if !gatewayNameRE.MatchString(name) {
+		return "", errors.New("a gateway name is lower-case letters, digits, - or _")
+	}
+	u, err := url.Parse(addr)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return "", errors.New("the address must start with http:// or https://")
+	}
+	if u.User != nil {
+		return "", errors.New("leave the password out of the address; the key goes in the key row as a reference")
+	}
+	paths := config.PathsFor(s.c.Home, s.getenv)
+	if f, err := config.Load(paths.Config); err == nil && f.Exists {
+		if _, taken := f.Config.Gateway[name]; taken {
+			return "", fmt.Errorf("there is already a gateway called %s; change its rows instead", name)
+		}
+	}
+	if _, err := config.SetKey(paths, "gateway."+name+".url", addr, false); err != nil {
+		return "", err
+	}
+	return "gateway " + name + " added · now set gateway." + name + ".key to where its key is (for example env:" + strings.ToUpper(strings.NewReplacer("-", "_").Replace(name)) + "_KEY)", nil
+}
+
+// ConfigRemove takes a gateway out of config.toml.
+func (s panelSource) ConfigRemove(_ context.Context, section string) (string, error) {
+	if !strings.HasPrefix(section, "gateway.") || strings.Count(section, ".") != 1 {
+		return "", fmt.Errorf("%s can't be removed here", section)
+	}
+	ok, err := config.RemoveSection(config.PathsFor(s.c.Home, s.getenv), section)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return section + " is not in config.toml", nil
+	}
+	return section + " removed from config.toml", nil
+}
+
 // ConfigSet writes one setting to the user's config.toml, as afk config
 // set does: the file's comments and order are kept, and the value is
 // checked before anything is written.
 func (s panelSource) ConfigSet(_ context.Context, key, value string) (string, error) {
+	if key == gatewayNew {
+		return s.addGateway(value)
+	}
 	raw := value
 	if config.KeyType(key) == "bool" {
 		switch value {

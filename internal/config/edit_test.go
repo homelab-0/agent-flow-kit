@@ -313,3 +313,59 @@ func TestMigrateWritesWhatIsInUse(t *testing.T) {
 		t.Fatalf("a path with a comma was split: %v", file.Trust.Repos)
 	}
 }
+
+func TestRemoveTable(t *testing.T) {
+	doc := `# my config
+version = 1
+
+[route]
+prefer = "cheap"
+
+# the work gateway
+[gateway.work]
+url = "https://gw.example:4000" # trailing
+key = "env:WORK_KEY"
+
+[gateway.work.extra]
+x = 1
+
+[gateway.home]
+url = "http://gw.lan:4000"
+
+[trust]
+repos = ["~/a"]
+`
+	out, ok, err := RemoveTable([]byte(doc), "gateway.work")
+	if err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	s := string(out)
+	for _, gone := range []string{"gateway.work", "WORK_KEY", "x = 1"} {
+		if strings.Contains(s, gone) {
+			t.Errorf("%q is still there:\n%s", gone, s)
+		}
+	}
+	for _, kept := range []string{"# my config", `prefer = "cheap"`, "[gateway.home]", `url = "http://gw.lan:4000"`, "[trust]", `repos = ["~/a"]`} {
+		if !strings.Contains(s, kept) {
+			t.Errorf("%q was lost:\n%s", kept, s)
+		}
+	}
+	var c map[string]any
+	if err := toml.Unmarshal(out, &c); err != nil {
+		t.Fatalf("the result isn't TOML: %v\n%s", err, s)
+	}
+
+	// Dotted keys under the parent table.
+	dotted := "[gateway]\nwork.url = \"https://a\"\nwork.key = \"env:K\"\nhome.url = \"http://b\"\n"
+	out, ok, err = RemoveTable([]byte(dotted), "gateway.work")
+	if err != nil || !ok || string(out) != "[gateway]\nhome.url = \"http://b\"\n" {
+		t.Errorf("dotted: %v %v %q", ok, err, out)
+	}
+	// A name that only starts the same is another table.
+	if out, ok, _ := RemoveTable([]byte("[gateway.workshop]\nurl = \"http://c\"\n"), "gateway.work"); ok || !strings.Contains(string(out), "workshop") {
+		t.Error("gateway.workshop was taken for gateway.work")
+	}
+	if _, ok, err := RemoveTable([]byte(doc), "gateway.none"); ok || err != nil {
+		t.Errorf("a missing table: %v %v", ok, err)
+	}
+}

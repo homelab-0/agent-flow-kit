@@ -65,6 +65,9 @@ type PanelSource interface {
 	// ConfigSet writes one setting to the user's config file and returns
 	// what to tell the user.
 	ConfigSet(ctx context.Context, key, value string) (string, error)
+	// ConfigRemove takes a section (such as gateway.work) out of the
+	// config file.
+	ConfigRemove(ctx context.Context, section string) (string, error)
 	Skills(ctx context.Context) (*SkillsView, error)
 	// SkillsDo runs a quick skills action in place (sync, keep, restore,
 	// enable, disable) and returns what to tell the user.
@@ -181,6 +184,9 @@ type ConfigEdit struct {
 	// Value is what the input starts with when the value is typed, and
 	// Hint what is said beside it.
 	Value, Hint string
+	// Remove, when set, is the section x takes out of the file (the
+	// gateway this row belongs to).
+	Remove string
 }
 
 type panelData struct {
@@ -233,6 +239,7 @@ type Panel struct {
 	toolsGen int        // the latest tools listing
 	// A setting's value being typed on the Config tab.
 	cfgKey, cfgText, cfgHint string
+	cfgRemove                string // the section x was pressed on once
 	id                       int
 	gens                     map[Tab]int // the latest load of each tab
 	loading                  map[Tab]bool
@@ -405,6 +412,8 @@ func (p *Panel) key(k string) tea.Cmd {
 	if p.cfgKey != "" {
 		return p.configTyping(k)
 	}
+	armed := p.cfgRemove
+	p.cfgRemove = ""
 	if p.filterKey(k) {
 		return nil
 	}
@@ -511,6 +520,21 @@ func (p *Panel) key(k string) tea.Cmd {
 			return p.configChange(1)
 		case "left", "h":
 			return p.configChange(-1)
+		case "x":
+			_, _, e, _ := p.configRow()
+			switch {
+			case e.Remove == "":
+			case armed == e.Remove:
+				src, ctx, section := p.src, p.ctx, e.Remove
+				return func() tea.Msg {
+					text, err := src.ConfigRemove(ctx, section)
+					return configSavedMsg{text, err}
+				}
+			default:
+				p.cfgRemove = e.Remove
+				p.notice = "press x again to remove " + e.Remove + " from config.toml"
+			}
+			return nil
 		}
 	case TabRuns:
 		if k == "c" && p.anySetAside() {
@@ -658,7 +682,7 @@ func (p *Panel) Lines() []line {
 			room--
 		}
 		if p.notice != "" {
-			room -= 2
+			room -= 1 + len(wrap(p.notice, max(w-2, 20)))
 		}
 		body = scrollTo(body, max(room, 1))
 	}
@@ -666,7 +690,11 @@ func (p *Panel) Lines() []line {
 		out = append(out, fitLine(l, w))
 	}
 	if p.notice != "" {
-		out = append(out, nil, fitLine(line{sg(t.Warn, " "+p.notice)}, w))
+		// Wrapped, not cut: a refusal's reason is the part that matters.
+		out = append(out, nil)
+		for _, l := range wrap(p.notice, max(w-2, 20)) {
+			out = append(out, line{sg(t.Warn, " "+l)})
+		}
 	}
 	// The hints sit on the last row when the height is known, with the
 	// filter just above them.
@@ -688,11 +716,18 @@ func (p *Panel) Lines() []line {
 	// give way first so the tabs and quit stay in sight.
 	filter := filterable(p.tab) && !(p.tab == TabMCP && p.tools != nil)
 	refresh := true
+	typingValue := p.tab == TabConfig && p.cfgKey != ""
+	if typingValue {
+		filter, refresh = false, false // every key is text for now
+	}
 	var keys line
 	for {
 		keys = append(line{sg(t.Plain, " ")}, hint...)
 		if filter {
 			keys = append(keys, sg(t.Key, "/"), sg(t.Dim, " filter  "))
+		}
+		if typingValue {
+			break
 		}
 		keys = append(keys, sg(t.Key, "1-7"), sg(t.Dim, " tabs  "))
 		if refresh {
@@ -1098,13 +1133,20 @@ func (p *Panel) configLines(w int) ([]line, line) {
 		out = append(out, fitLine(line{sg(t.Warn, " ! "+wn)}, w))
 	}
 	if p.cfgKey != "" {
-		hint := line{sg(t.Key, "↵"), sg(t.Dim, " save  "), sg(t.Key, "esc"), sg(t.Dim, " cancel  ")}
+		// What to type goes under the table, wrapped: it can be long.
 		if p.cfgHint != "" {
-			hint = append(hint, sg(t.Dim, p.cfgHint+"  "))
+			out = append(out, nil)
+			for _, l := range wrap(p.cfgHint, max(w-4, 20)) {
+				out = append(out, line{sg(t.Dim, "  "+l)})
+			}
 		}
-		return out, hint
+		return out, line{sg(t.Key, "↵"), sg(t.Dim, " save  "), sg(t.Key, "esc"), sg(t.Dim, " cancel  ")}
 	}
-	hint := line{sg(t.Key, "↵"), sg(t.Dim, " change  "), sg(t.Key, "e"), sg(t.Dim, " edit config.toml  ")}
+	hint := line{sg(t.Key, "↵"), sg(t.Dim, " change  ")}
+	if _, _, e, _ := p.configRow(); e.Remove != "" {
+		hint = append(hint, sg(t.Key, "x"), sg(t.Dim, " remove "+e.Remove+"  "))
+	}
+	hint = append(hint, sg(t.Key, "e"), sg(t.Dim, " edit config.toml  "))
 	return out, hint
 }
 

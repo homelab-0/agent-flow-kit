@@ -54,11 +54,22 @@ The settings in effect and the path of `config.toml`. Change a setting right her
 |---|---|
 | `route.prefer`, `route.failover`, `permissions.default` | steps to the next value (`←` steps back) and saves it |
 | `route.learn`, `route.pacing`, `route.prefer_free`, `route.allow_metered`, `route.allow_free_reviewers`, `bench.autosync` | switches it on or off and saves it |
+| `gateway.<name>.*`, `gateway (add)` | see [gateways](#gateways) below |
 | `trust.repos` | opens an input with the current folders, separated by commas; `↵` saves, `esc` cancels |
 
 AFK writes `config.toml` itself (creating it the first time) and keeps the file's comments and order, exactly as `afk config set` does. A value the file can't take is refused and nothing is written. The row then shows the setting in effect; when an `AFK_*` variable or the project's `.afk/config.json` still decides it, the save says so.
 
-Rows shown dim (the gateway, local engines) have no form here yet. `e` opens `config.toml` in your editor for those (`afk config edit`). Warnings from the file show at the bottom.
+### Gateways
+
+Each `[gateway.<name>]` in `config.toml` has its rows here, and the `gateway (add)` row makes a new one:
+
+1. On `gateway (add)` press `↵` and type a name and the address, for example `work https://gw.example:4000`.
+2. On `gateway.work.key` press `↵` and type where its key is: `env:NAME`, `file:/path`, `op://vault/item`, `keychain:NAME` or `cmd:...`. AFK stores the reference, never the key, and refuses anything that isn't a reference.
+3. `gateway.work.default` picks the gateway AFK routes to when there are several. `kind`, `engine` and `host` are labels for the route card.
+
+`x` on any of a gateway's rows removes that gateway from the file (press it twice). The `gateway` row above them is the one in effect, which can also come from `AFK_LITELLM_BASE_URL`.
+
+Rows shown dim (the gateway in effect, local engines) have no form here yet. `e` opens `config.toml` in your editor for those (`afk config edit`). Warnings from the file show at the bottom.
 
 ## Skills
 

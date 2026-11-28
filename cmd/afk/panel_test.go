@@ -223,3 +223,71 @@ func TestConfigSetFromTheTab(t *testing.T) {
 		t.Error("a refused value changed the file")
 	}
 }
+
+// A gateway is added, filled in and removed from the Config tab; the key
+// row takes a reference and refuses a key itself.
+func TestGatewayFromTheConfigTab(t *testing.T) {
+	c := panelCore(t)
+	s := newPanelSource(c, "")
+	ctx := context.Background()
+	rows := func() map[string]string {
+		t.Helper()
+		v, err := s.Config(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]string{}
+		for _, r := range v.Rows {
+			out[r[0]] = r[1]
+		}
+		return out
+	}
+	if _, ok := rows()[gatewayNew]; !ok {
+		t.Fatal("no row to add a gateway")
+	}
+	for _, bad := range []string{"", "work", "Work https://gw.example", "work gw.example:4000", "work https://user:pw@gw.example"} {
+		if _, err := s.ConfigSet(ctx, gatewayNew, bad); err == nil {
+			t.Errorf("%q was accepted", bad)
+		}
+	}
+	msg, err := s.ConfigSet(ctx, gatewayNew, "work https://gw.example:4000")
+	if err != nil || !strings.Contains(msg, "gateway.work.key") || !strings.Contains(msg, "env:WORK_KEY") {
+		t.Fatalf("%q %v", msg, err)
+	}
+	if _, err := s.ConfigSet(ctx, gatewayNew, "work https://other.example"); err == nil {
+		t.Error("a second gateway with the same name was accepted")
+	}
+	r := rows()
+	if r["gateway.work.url"] != "gw.example:4000" || r["gateway.work.key"] != "not set" || r["gateway"] != "work · gw.example:4000" {
+		t.Errorf("rows after adding: %v", r)
+	}
+	path := config.PathsFor(c.Home, c.Getenv).Config
+	before, _ := os.ReadFile(path)
+	if _, err := s.ConfigSet(ctx, "gateway.work.key", "sk-live-123456"); err == nil {
+		t.Error("a key itself was saved")
+	}
+	if after, _ := os.ReadFile(path); string(after) != string(before) {
+		t.Error("the refused key reached the file")
+	}
+	for k, val := range map[string]string{"gateway.work.key": "env:WORK_KEY", "gateway.work.engine": "vllm", "gateway.work.default": "on"} {
+		if _, err := s.ConfigSet(ctx, k, val); err != nil {
+			t.Fatalf("%s: %v", k, err)
+		}
+	}
+	if r := rows(); r["gateway.work.key"] != "env:WORK_KEY" || r["gateway.work.engine"] != "vllm" || r["gateway.work.default"] != "on" {
+		t.Errorf("rows after editing: %v", r)
+	}
+	v, _ := s.Config(ctx)
+	if v.Edit["gateway.work.url"].Remove != "gateway.work" {
+		t.Error("a gateway row doesn't say what x removes")
+	}
+	if _, err := s.ConfigRemove(ctx, "route"); err == nil {
+		t.Error("a section that isn't a gateway was removed")
+	}
+	if msg, err := s.ConfigRemove(ctx, "gateway.work"); err != nil || !strings.Contains(msg, "removed") {
+		t.Fatalf("%q %v", msg, err)
+	}
+	if r := rows(); r["gateway.work.url"] != "" || r["gateway"] != "none" {
+		t.Errorf("rows after removing: %v", r)
+	}
+}
