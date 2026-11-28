@@ -611,3 +611,33 @@ func TestRunsTabClearsFailedRunMarks(t *testing.T) {
 		t.Fatalf("ran %v, notice %q", src.ran, p.notice)
 	}
 }
+
+// A long reported tier widens the plan column: the tier is shown in full
+// and the header stays over its columns.
+func TestRunsTabShowsLongPlanTier(t *testing.T) {
+	p := NewPanel(context.Background(), &fakePanel{}, NewTheme(true), TabRuns, "", nil)
+	p.data.status = &StatusView{Plans: []PlanRow{
+		{Harness: "codex", Plan: "ChatGPT plan · enterprise", FiveHour: f(52), Week: f(80), SignIn: "signed in"},
+		{Harness: "grok", Plan: "Grok plan", SignIn: "unknown"},
+	}}
+	lines, _ := p.statusLines(100)
+	var head, long, short string
+	for _, l := range lines {
+		s := l.plain()
+		switch {
+		case strings.Contains(s, "5h left"):
+			head = s
+		case strings.Contains(s, "enterprise"):
+			long = s
+		case strings.Contains(s, "Grok plan"):
+			short = s
+		}
+	}
+	if !strings.Contains(long, "ChatGPT plan · enterprise ") {
+		t.Fatalf("tier cut: %q", long)
+	}
+	at := func(s, sub string) int { return line{seg{s: s[:strings.Index(s, sub)]}}.width() }
+	if at(head, "sign-in") != at(long, "signed in") || at(short, "unknown") != at(head, "5h left") {
+		t.Fatalf("columns do not line up:\n%s\n%s\n%s", head, long, short)
+	}
+}

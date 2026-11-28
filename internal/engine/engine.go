@@ -13,7 +13,7 @@ import (
 const (
 	SchemaExplain    = "afk-route-explain/2"
 	SchemaLaunchPlan = "afk-launch-plan/1"
-	SchemaPools      = "afk-router-pools/4"
+	SchemaPools      = "afk-router-pools/5"
 )
 
 // RouteFlags are the routing options the user gave.
