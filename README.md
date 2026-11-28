@@ -27,7 +27,7 @@ If you pay for more than one AI coding plan, or use a mix of plans, free models 
 
 - **Routes on evidence.** It weighs each model's benchmark score for the kind of work, how much is left in each subscription pool, and cost. Free and local models win quick tasks; reviews never go to them.
 - **Shows its work.** A route card shows the pick, the reason, the pool headroom, and the best option from every other installed CLI before anything starts. You can take it, pick another, or change the effort.
-- **Gets out of the way.** The session is the chosen CLI's own interface, with nothing wrapped around it. When it exits, AFK prints a receipt (time, exit status, pool before and after, files changed and commits) and you are back in AFK for the next prompt.
+- **A place to work from.** Type a task and AFK routes it, runs it and shows the answer, then takes the next one. `ctrl+o` opens the chosen CLI's own interface instead, with nothing wrapped around it. When it exits, AFK prints a receipt (time, exit status, pool before and after, files changed and commits) and you are back in AFK for the next prompt.
 - **Your CLIs, your logins.** AFK routes to whatever you have installed and signed in, and never hands a plan login to a gateway: gateway routes run with a separate config and the gateway's own key.
 - **One binary.** AFK is a single static Go binary with no runtime dependencies.
 

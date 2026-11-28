@@ -26,6 +26,7 @@ import (
 	"github.com/homelab-0/agent-flow-kit/internal/gitstat"
 	"github.com/homelab-0/agent-flow-kit/internal/harness"
 	"github.com/homelab-0/agent-flow-kit/internal/launch"
+	"github.com/homelab-0/agent-flow-kit/internal/oneshot"
 	"github.com/homelab-0/agent-flow-kit/internal/runrec"
 	"github.com/homelab-0/agent-flow-kit/internal/tui"
 )
@@ -112,6 +113,21 @@ func interactive(eng tui.Backend, args cli.Args, width int) int {
 	// (ctrl+c twice or ctrl+d in the composer). --yes is the exception: it
 	// runs the one prompt and reports the CLI's exit code, for scripts.
 	sessions, last := 0, 0
+	hdr := opt.Header
+	c, isCore := eng.(*core.Core)
+	// Enter runs the task inside AFK; ctrl+o is the route card and the
+	// CLI's own screen.
+	opt.RunHere = isCore
+	var ran *ranHere
+	opt.Rate = func(outcome string) string {
+		if ran == nil {
+			return "nothing to rate yet"
+		}
+		if err := ran.save(outcome); err != nil {
+			return "rating not saved: " + err.Error()
+		}
+		return "rated " + ran.rec.ID + ": " + outcome
+	}
 	for {
 		model := tui.New(eng, opt)
 		p := tea.NewProgram(tui.WithKittyLogos(tui.WithOverlay(model, overlay), logos), tea.WithFPS(opt.FPS))
@@ -129,7 +145,16 @@ func interactive(eng tui.Backend, args cli.Args, width int) int {
 			}
 			return code
 		}
+		if dec.RunHere && isCore {
+			if r := runHere(c, dec, args.Pass, tui.NewTheme(dark).WithLogos(logos), dark, motion, width); r != nil {
+				ran = r
+			}
+			sessions++
+			// The transcript carries on under the header already printed.
+			opt.Header = nil
+		}
 		if dec.Launch {
+			opt.Header = hdr
 			last = openCLI(eng, dec, opt, dark, motion, width, logos)
 			sessions++
 			if args.Yes {
@@ -145,7 +170,7 @@ func interactive(eng tui.Backend, args cli.Args, width int) int {
 		opt.Flags.Task = task
 		opt.Compose, opt.Resumed, opt.Prompt = true, true, ""
 		opt.Draft, opt.Notice = "", next
-		if !dec.Launch {
+		if dec.Cancelled {
 			opt.Draft = dec.Prompt
 		}
 	}
@@ -160,7 +185,7 @@ func afterCard(dec tui.Decision, composer bool, sessions, last int) (notice stri
 	switch {
 	case dec.Err != nil:
 		return "", true, 4
-	case dec.Launch:
+	case dec.Launch, dec.RunHere:
 		return "", false, 0
 	case !dec.Cancelled:
 		return "", true, 1
@@ -187,6 +212,113 @@ func resumeNote(r engine.Route, code int) string {
 		return "back in AFK · " + name + " did not start (see above)"
 	}
 	return fmt.Sprintf("back in AFK · %s session ended (exit %d)", name, code)
+}
+
+// ranHere is the record of the last turn run inside AFK, kept so /rate can
+// rate it.
+type ranHere struct {
+	dir string
+	rec runrec.Record
+}
+
+func (r *ranHere) save(outcome string) error {
+	if r.dir == "" {
+		return errors.New("no place for run records")
+	}
+	r.rec.Outcome = nil
+	if outcome != "" {
+		r.rec.Outcome = &outcome
+	}
+	_, err := runrec.Write(r.dir, r.rec)
+	return err
+}
+
+// runHere runs one prompt inside AFK: the router picks, the CLI runs
+// headless (as afk -p runs it, with failover), and the answer and a
+// receipt are printed under the prompt. It returns the run's record, or
+// nil when nothing ran.
+func runHere(c *core.Core, dec tui.Decision, pass []string, theme tui.Theme, dark, motion bool, width int) *ranHere {
+	dir, err := runrec.Dir()
+	id := ""
+	if err == nil {
+		id, err = runrec.Reserve(dir)
+	}
+	if err != nil {
+		dir, id = "", runrec.Fallback()
+	}
+	unreserve := func() {
+		if dir != "" {
+			_ = os.Remove(filepath.Join(dir, id+".json"))
+		}
+	}
+	cwd, _ := os.Getwd()
+	snap := gitstat.Take(cwd)
+	started := time.Now()
+
+	var res oneshot.Result
+	var runErr error
+	rm := tui.NewRun(dark, motion, func(ctx context.Context, ev func(tui.RunEvent)) {
+		res, runErr = c.Print(ctx, core.PrintRequest{Flags: dec.Flags, Prompt: dec.Prompt, Pass: pass,
+			Started: func(r engine.Route) { ev(tui.RunEvent{Label: tui.RouteLabel(r)}) }},
+			func(line string) { ev(tui.RunEvent{Note: strings.TrimPrefix(line, "afk: ")}) })
+	})
+	if _, err := tea.NewProgram(rm).Run(); err != nil {
+		fmt.Fprintln(os.Stderr, "afk:", err)
+	}
+	ended := time.Now()
+	defer fmt.Println() // a line between this turn and the next prompt
+	for _, n := range rm.Notes() {
+		lipgloss.Println(theme.NoteText(n))
+	}
+	if runErr != nil {
+		// Nothing ran: a usage problem, or no route for this task.
+		unreserve()
+		lipgloss.Println(theme.WarnText(strings.TrimSpace(runErr.Error())))
+		return nil
+	}
+	stopped := res.Interrupted || (rm.Stopped && !res.OK)
+	switch {
+	case stopped:
+		lipgloss.Println(theme.WarnText("stopped; " + strings.Join(res.Tried, ", ") + " was interrupted"))
+	case res.OK:
+		lipgloss.Println(theme.LaunchText(res.Route, "ran here", id, false, width))
+		fmt.Println()
+		fmt.Println(strings.TrimRight(tui.CleanOutput(res.Output), "\n"))
+		fmt.Println()
+	default:
+		lipgloss.Println(theme.WarnText("no answer: tried " + strings.Join(res.Tried, ", ")))
+		if e := strings.TrimSpace(tui.CleanOutput(res.Error)); e != "" {
+			lipgloss.Println(theme.NoteText(e))
+		}
+	}
+	if res.Route.Harness == "" {
+		unreserve()
+		return nil
+	}
+	exit := res.Exit
+	if stopped {
+		exit = 130
+	}
+	pre := dec.Pools.Headroom(res.Route.EntitlementPool)
+	rc := tui.Receipt{Route: res.Route, ExitCode: exit, Duration: ended.Sub(started), PoolBefore: pre, InRepo: snap.OK()}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if pools, err := c.Pools(ctx); err == nil {
+		rc.PoolAfter = pools.Headroom(res.Route.EntitlementPool)
+	}
+	cancel()
+	ch := snap.Since()
+	rc.Files, rc.Commits = ch.Files, ch.Commits
+	lipgloss.Println(theme.ReceiptText(rc))
+	out := &ranHere{dir: dir, rec: runrec.Record{
+		ID: id, Where: "here", Route: res.Route.Redacted(), Exit: exit,
+		StartedAt: runrec.Stamp(started), EndedAt: runrec.Stamp(ended),
+		DurationS:  int64(ended.Sub(started).Round(time.Second) / time.Second),
+		PoolBefore: tui.PctInt(pre), PoolAfter: tui.PctInt(rc.PoolAfter), FilesChanged: ch.Files, Commits: ch.Commits,
+	}}
+	if err := out.save(""); err != nil && dir != "" {
+		lipgloss.Println(theme.NoteText("run not saved: " + err.Error()))
+	}
+	return out
 }
 
 // openCLI gives the terminal to the chosen CLI, then prints the receipt

@@ -4,16 +4,40 @@ Run `afk` on its own and Esc shuffles in and climbs into its hammock (about two 
 
 | Key | Does |
 |---|---|
-| `↵` | route the task (an empty one opens the CLI without a prompt) |
+| `↵` | route the task and run it here, inside AFK (an empty one opens the route card for a CLI without a prompt) |
+| `ctrl+o` | the route card for this task: pick the CLI, model and effort, then open the CLI's own screen |
 | `tab` / `shift+tab` | step the task kind: auto, coding, quick, complex, review, architecture, webdev, research, security |
-| `/harness <cli>`, `/model <id>`, `/effort <level>`, `/prefer balanced\|cheap\|best` | pin a choice for this task (no argument unpins it); `/clear` unpins all |
+| `/harness <cli>`, `/model <id>`, `/effort <level>`, `/prefer balanced\|cheap\|best` | pin a choice (no argument unpins it); `/clear` unpins all |
+| `/mode read-only\|ask\|edits\|auto` | the [permission mode](permissions.md) for the rest of this AFK session (no argument: your configured default) |
+| `/rate 1\|2\|3` | rate the last run: solved, partly, wrong pick |
 | `?` | shortcuts (on an empty input) |
 | `2`–`7`, `/harnesses`, `/bench`, `/skills`, `/mcp`, `/runs`, `/config` | open the [control panel](control-panel.md) on that tab (the digits on an empty input) |
 | `esc` | clear the input |
 | `ctrl+c` | clear the input; on an empty input press it twice to exit AFK |
 | `ctrl+d` | exit AFK (on an empty input) |
 
-AFK stays open. When the CLI you launched ends, however it ends, AFK prints the receipt, asks for a rating and brings the composer back for the next prompt, which is routed again. Inside the CLI, `ctrl+c` belongs to the CLI: it never closes AFK. Pins set with the slash commands are kept between prompts.
+## Running a task here
+
+`↵` is the everyday way to work: AFK routes the task, runs the chosen CLI without its own screen, and prints the answer under your prompt, then the input is ready for the next task, which is routed again.
+
+```text
+› what does internal/router/select.go do?
+▸ codex · gpt-6.1-sol · medium · ran here                run r-401d
+
+It scores every candidate route for a task and …
+
+  ✓ codex exited 0 · 41s · pool 62% → 60% · 0 files changed
+```
+
+- While it runs, a line says which route is working and for how long. `esc` or `ctrl+c` stops the turn. AFK stays open.
+- It runs as [`afk -p`](print-mode.md) does: if the CLI can't start or hits a sign-in, quota or rate limit, the next best route answers, and a line says so. `route.failover` limits where a failed turn may go.
+- Every turn is saved as a [run](runs.md). `/rate` rates the last one.
+- A CLI running this way can't stop to ask you to approve an edit. It runs in your permission mode, and a CLI that can't honour that mode without asking runs in a stricter one and says so (Codex in `ask` runs read-only). Use `/mode edits` to let turns edit files, or `ctrl+o` to work in the CLI's own screen when you want to approve steps one by one.
+- Each turn is on its own for now: a follow-up doesn't yet carry the earlier turns along.
+
+## Opening the CLI
+
+`ctrl+o` shows the route card (below) and `↵` there hands the terminal to the CLI. AFK stays open behind it. When the CLI ends, however it ends, AFK prints the receipt, asks for a rating and brings the composer back. Inside the CLI, `ctrl+c` belongs to the CLI: it never closes AFK. Pins set with the slash commands are kept between prompts.
 
 While AFK routes (when it takes more than a moment), Esc gets up and the routing screen lists every candidate CLI: each one ticks off with its model and benchmark score once it is scored, or says it has no usable route for the task.
 

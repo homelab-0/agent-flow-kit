@@ -58,6 +58,11 @@ type Options struct {
 	// cancelled), and Notice under it.
 	Draft  string
 	Notice string
+	// RunHere makes enter in the composer run the task inside AFK (the
+	// decision says RunHere); ctrl+o opens the route card instead.
+	RunHere bool
+	// Rate, when set, rates the last run for /rate and returns a notice.
+	Rate func(outcome string) string
 	// Panel is the control panel's data; nil leaves the tabs out.
 	Panel PanelSource
 	// Version is shown at the right of the tab bar.
@@ -73,6 +78,8 @@ type Decision struct {
 	Prompt    string
 	Pools     *engine.Pools // pool usage when the card opened (nil if unknown)
 	Cancelled bool
+	// RunHere: run Prompt inside AFK, with Flags, and come back.
+	RunHere bool
 	// Exit is set with Cancelled when the person asked to leave AFK (from
 	// the composer or a tab), not just to drop one prompt's card.
 	Exit bool
@@ -668,6 +675,11 @@ func (m *Model) render() string {
 	case sError:
 		return join(t.ErrorLines(m.card, w, m.errText, m.nextBest))
 	case sDone:
+		if m.dec.RunHere {
+			// The prompt stays as the first line of the turn.
+			// (The line after it is where the next program draws.)
+			return join([]line{t.promptLine(m.card.Prompt, w), nil})
+		}
 		if !m.dec.Launch && !m.dec.Cancelled || m.opt.Yes || len(m.card.Rows) == 0 {
 			return ""
 		}

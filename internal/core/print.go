@@ -24,6 +24,8 @@ type PrintRequest struct {
 	Flags  engine.RouteFlags // Flags.Perm is --mode or --yolo
 	Prompt string
 	Pass   []string
+	// Started, when set, is told the route of each attempt as it starts.
+	Started func(engine.Route)
 }
 
 // Headless runs a command with no terminal and returns what it printed.
@@ -48,6 +50,9 @@ func (c *Core) Print(ctx context.Context, req PrintRequest, note func(string)) (
 	signals := router.ProbeEnv{Home: c.Home, Getenv: c.getenv}.SignalsPath()
 	deps := oneshot.Deps{
 		Run: func(ctx context.Context, r engine.Route, mode string) oneshot.Output {
+			if req.Started != nil {
+				req.Started(r)
+			}
 			out := c.runHeadless(ctx, r, mode, req)
 			c.notePlanUsage(r, out.Stdout)
 			return out
