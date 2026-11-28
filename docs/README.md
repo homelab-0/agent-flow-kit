@@ -22,6 +22,7 @@ Anything not built yet is marked **Planned** and listed in the [roadmap](../READ
 - [Model gateways](guides/gateways.md): routing to a LiteLLM-style gateway without exposing a plan login
 - [Permission modes](guides/permissions.md): read-only, ask, edits, auto and yolo, per CLI, and `afk trust`
 - [One-shot answers (`-p`)](guides/print-mode.md): headless runs with failover
+- [AFK as an API](guides/serve.md): `afk serve` and API keys, so a gateway can route through AFK or use one CLI's subscription
 - [Run records and receipts](guides/runs.md): what is saved after each session
 - [Scripting AFK](guides/scripting.md): `--explain --json` and `--launch-plan` for scripts and front ends
 

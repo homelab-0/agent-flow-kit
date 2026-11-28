@@ -17,6 +17,12 @@ errors = ["authentication_failed", "invalid api key", "please run /login"]
 resume = ["claude", "--resume", "{id}"]
 verified = "2.1.332"
 
+# With this flag a stream-json run also prints each piece of the answer as
+# it is written (stream_event lines).
+[stream]
+flags = ["--include-partial-messages"]
+format = "claude-events"
+
 [modes]
 verified = "2.1.332"
 read-only = ["--permission-mode", "plan"]

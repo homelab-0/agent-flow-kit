@@ -14,6 +14,8 @@ internal/config/    config.toml (schema, precedence, comment-keeping edits), afk
 internal/statefile/ the lock and atomic write for the small state files
 internal/tui/       the route card, Why panel, receipt and rating (Bubble Tea)
 internal/launch/    starting a plan as a foreground child
+internal/apikey/    AFK's own API keys (hashes only) and their rate limits
+internal/serve/     afk serve: chat requests to a headless CLI run and back, in both API formats
 internal/runrec/    run records
 internal/gitstat/   files changed and commits for the receipt
 internal/engine/    route, explain, launch-plan and pool types (the JSON contract)

@@ -34,6 +34,8 @@ const usage = `afk — run the best agent CLI on this machine for the task
   afk skills [status|sync|diff ...]  one copy of every skill, in every CLI
   afk mcp [status|sync|test ...]     one list of MCP servers, in every CLI
   afk status [--tab <tab>]           the control panel: plans, engines, runs
+  afk keys [add|set|rotate|revoke]   AFK's own API keys, for afk serve
+  afk serve [--listen host:port]     AFK as a model API for gateways
   afk version                        the version of this build
   afk update [--check] [-y]          update afk itself, the way it was installed
 

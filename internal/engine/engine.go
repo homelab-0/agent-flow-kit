@@ -22,6 +22,10 @@ type RouteFlags struct {
 	// Perm is the permission mode from --mode or --yolo ("" when not
 	// given).
 	Perm string
+	// NoPlan keeps the route off every CLI's own sign-in: only a gateway,
+	// a local engine or a free pool may answer. afk serve sets it while
+	// serve.plan_runs is off.
+	NoPlan bool
 }
 
 // PlanError is a route AFK will not start, with its reason.

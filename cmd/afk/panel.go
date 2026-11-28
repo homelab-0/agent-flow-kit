@@ -25,6 +25,7 @@ import (
 	"github.com/homelab-0/agent-flow-kit/internal/mcp"
 	"github.com/homelab-0/agent-flow-kit/internal/router"
 	"github.com/homelab-0/agent-flow-kit/internal/runrec"
+	"github.com/homelab-0/agent-flow-kit/internal/serve"
 	"github.com/homelab-0/agent-flow-kit/internal/skills"
 	"github.com/homelab-0/agent-flow-kit/internal/tui"
 )
@@ -772,6 +773,12 @@ func (s panelSource) Config(ctx context.Context) (*tui.ConfigView, error) {
 		add(k, yes[st.VendorUsage[l.Harness]])
 		v.Edit[k] = tui.ConfigEdit{Choices: []string{"on", "off"}, Confirm: vendorUsageWarning(l)}
 	}
+	// afk serve: where it listens, and whether a call through an AFK key
+	// may run a CLI on its own sign-in (on shows the warning first).
+	add("serve.listen", st.ServeListen)
+	v.Edit["serve.listen"] = tui.ConfigEdit{Value: st.ServeListen, Hint: "where afk serve listens: 127.0.0.1:8484 is this PC only, 0.0.0.0:8484 every network"}
+	add("serve.plan_runs", yes[st.ServePlanRuns])
+	v.Edit["serve.plan_runs"] = tui.ConfigEdit{Choices: []string{"on", "off"}, Confirm: strings.Join(serve.PlanRunsWarning(), " ")}
 	add("discovery.auto", yes[st.AutoDiscover])
 	add("trust.repos", fmt.Sprintf("%d trusted", len(st.TrustedDirs)))
 	add("bench.autosync", yes[st.BenchAutosync])

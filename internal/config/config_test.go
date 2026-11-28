@@ -249,7 +249,7 @@ modelsdev = { enabled = false }
 swebench = 0.6
 lmarena = 0.4
 [serve]
-listen = "tailnet"
+listen = "127.0.0.1:8484"
 [telemetry.lf]
 kind = "langfuse"
 endpoint = "https://langfuse.example.com"

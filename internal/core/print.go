@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/homelab-0/agent-flow-kit/internal/engine"
 	"github.com/homelab-0/agent-flow-kit/internal/gitstat"
+	"github.com/homelab-0/agent-flow-kit/internal/harness"
 	"github.com/homelab-0/agent-flow-kit/internal/launch"
 	"github.com/homelab-0/agent-flow-kit/internal/oneshot"
 	"github.com/homelab-0/agent-flow-kit/internal/router"
@@ -26,6 +28,14 @@ type PrintRequest struct {
 	Pass   []string
 	// Started, when set, is told the route of each attempt as it starts.
 	Started func(engine.Route)
+	// Line, when set, is given each line the CLI prints as it prints it
+	// (afk serve reads a streamed answer from them). The run also asks
+	// the CLI for its partial output, where its manifest has flags for
+	// that.
+	Line func(r engine.Route, line []byte)
+	// Stop, when it returns true after a failed attempt, keeps the run
+	// from trying another route (see oneshot.Deps.Stop).
+	Stop func() bool
 }
 
 // Headless runs a command with no terminal and returns what it printed.
@@ -63,7 +73,7 @@ func (c *Core) Print(ctx context.Context, req PrintRequest, note func(string)) (
 			if err != nil {
 				return engine.Route{}, false
 			}
-			r, ok, err := st.route(d.task, d.prefer, only, pool)
+			r, ok, err := st.routeIn(d.task, d.prefer, router.Input{OnlyHarnesses: only, OnlyPool: pool, ExcludePools: d.exclude})
 			if err != nil || !ok {
 				return engine.Route{}, false
 			}
@@ -79,6 +89,7 @@ func (c *Core) Print(ctx context.Context, req PrintRequest, note func(string)) (
 			}
 		},
 		Note: note,
+		Stop: req.Stop,
 	}
 	// What the working copy looked like before the first attempt, so a
 	// failover can say when a failed route left edits behind.
@@ -109,7 +120,13 @@ func toEngineRoute(v any) (engine.Route, error) {
 
 // runHeadless plans one print-mode launch and runs it with stdin closed.
 func (c *Core) runHeadless(ctx context.Context, r engine.Route, mode string, req PrintRequest) oneshot.Output {
-	plan, err := c.LaunchPlan(ctx, r, "print", mode, req.Pass, req.Prompt)
+	pass := req.Pass
+	if req.Line != nil {
+		if man, ok := harness.ManifestFor(r.Harness); ok && len(man.Stream.Flags) > 0 {
+			pass = append(append([]string{}, pass...), man.Stream.Flags...)
+		}
+	}
+	plan, err := c.LaunchPlan(ctx, r, "print", mode, pass, req.Prompt)
 	if err != nil {
 		reason := err.Error()
 		var pe *engine.PlanError
@@ -137,11 +154,25 @@ func (c *Core) runHeadless(ctx context.Context, r engine.Route, mode string, req
 		return oneshot.Output{Exit: 126, Stderr: []byte("the gateway key variable is empty or not allowed: " + err.Error())}
 	}
 	launch.PrepareDirs(plan.EnvSet)
-	run := c.Headless
-	if run == nil {
-		run = execHeadless
+	var line func([]byte)
+	if req.Line != nil {
+		line = func(b []byte) { req.Line(r, b) }
 	}
-	stdout, stderr, exit := run(ctx, plan.Argv, env, plan.Cwd)
+	var stdout, stderr []byte
+	var exit int
+	if c.Headless != nil {
+		// A stand-in runner (tests) prints everything at once.
+		stdout, stderr, exit = c.Headless(ctx, plan.Argv, env, plan.Cwd)
+		if line != nil {
+			for _, l := range bytes.Split(stdout, []byte("\n")) {
+				if len(l) > 0 {
+					line(l)
+				}
+			}
+		}
+	} else {
+		stdout, stderr, exit = execHeadless(ctx, plan.Argv, env, plan.Cwd, line)
+	}
 	out := oneshot.Output{Stdout: stdout, Stderr: stderr, Exit: exit, Mode: plan.Mode, ModeNote: plan.ModeNote, ConfigNote: plan.ConfigNote}
 	if answerFile != "" {
 		if b, err := os.ReadFile(answerFile); err == nil {
@@ -167,13 +198,20 @@ const (
 
 // execHeadless runs argv with stdin on /dev/null and its output captured.
 // Cancelling ctx (Ctrl-C) interrupts the CLI and waits a little for it.
-func execHeadless(ctx context.Context, argv, env []string, dir string) ([]byte, []byte, int) {
+// line, when set, is given each line of its output as it is printed.
+func execHeadless(ctx context.Context, argv, env []string, dir string, line func([]byte)) ([]byte, []byte, int) {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Env, cmd.Dir = env, dir
 	var stdout, stderr capped
 	stdout.max, stderr.max = maxStdout, maxStderr
 	stdout.keepLines = true
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	var tee *lineTee
+	if line != nil {
+		tee = &lineTee{w: &stdout, fn: line}
+		cmd.Stdout = tee
+		defer tee.flush()
+	}
 	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
 	cmd.WaitDelay = 5 * time.Second
 	err := cmd.Run()
@@ -194,6 +232,50 @@ func execHeadless(ctx context.Context, argv, env []string, dir string) ([]byte, 
 	// It never started.
 	stderr.Write([]byte(err.Error()))
 	return stdout.Output(), stderr.Bytes(), 127
+}
+
+// lineTee passes what is written on to w and hands each whole line to fn.
+// A line longer than keptLineMax is passed on but not handed over.
+type lineTee struct {
+	w    io.Writer
+	fn   func([]byte)
+	buf  []byte
+	skip bool
+}
+
+func (t *lineTee) Write(p []byte) (int, error) {
+	n, err := t.w.Write(p)
+	for len(p) > 0 {
+		i := bytes.IndexByte(p, '\n')
+		chunk := p
+		if i >= 0 {
+			chunk = p[:i]
+		}
+		if !t.skip {
+			if len(t.buf)+len(chunk) > keptLineMax {
+				t.buf, t.skip = nil, true
+			} else {
+				t.buf = append(t.buf, chunk...)
+			}
+		}
+		if i < 0 {
+			break
+		}
+		if !t.skip && len(t.buf) > 0 {
+			t.fn(t.buf)
+		}
+		t.buf, t.skip = t.buf[:0], false
+		p = p[i+1:]
+	}
+	return n, err
+}
+
+// flush hands over a last line that had no newline.
+func (t *lineTee) flush() {
+	if !t.skip && len(t.buf) > 0 {
+		t.fn(t.buf)
+	}
+	t.buf = nil
 }
 
 // capped keeps the first max bytes written to it and drops the rest.

@@ -33,6 +33,7 @@ type Manifest struct {
 	Models    []string  `toml:"models"` // hints, not a list AFK routes from
 	Auth      Auth      `toml:"auth"`
 	ModelList ModelList `toml:"model_list"`
+	Stream    Stream    `toml:"stream"`
 	Session   Session   `toml:"session"`
 	Modes     Modes     `toml:"modes"`
 	Skills    Skills    `toml:"skills"`
@@ -100,6 +101,23 @@ type ModelList struct {
 	// Verified is the CLI version the command was checked against.
 	Verified string `toml:"verified"`
 }
+
+// Stream is how a one-shot run reports its answer while it is still being
+// written, for afk serve's streamed answers. A harness with no format is
+// answered in one piece when the run ends.
+type Stream struct {
+	// Flags are added to a one-shot run that someone is listening to.
+	Flags []string `toml:"flags"`
+	// Format is how its output lines carry the text: claude-events (text
+	// deltas in stream_event lines) or codex-items (one line per finished
+	// message).
+	Format string `toml:"format"`
+	// Verified is the CLI version this was checked against.
+	Verified string `toml:"verified"`
+}
+
+// StreamFormats are the streamed outputs AFK can read.
+var StreamFormats = []string{"claude-events", "codex-items"}
 
 // ResumeArgv is the command that reopens session id, without the program
 // name; nil when the harness has none.
@@ -457,6 +475,20 @@ func (m Manifest) validate(path string) error {
 			return fmt.Errorf("%s: model_list.format must be one of %s", path, strings.Join(ModelListFormats, ", "))
 		}
 	}
+	if f := m.Stream.Format; f != "" {
+		ok := false
+		for _, x := range StreamFormats {
+			ok = ok || x == f
+		}
+		if !ok {
+			return fmt.Errorf("%s: stream.format must be one of %s", path, strings.Join(StreamFormats, ", "))
+		}
+	}
+	for _, a := range m.Stream.Flags {
+		if !strings.HasPrefix(a, "-") || strings.ContainsAny(a, "\n\x00") {
+			return fmt.Errorf("%s: stream.flags takes the CLI's own flags", path)
+		}
+	}
 	switch m.Skills.Format {
 	case "", "skill-md":
 	default:
@@ -537,6 +569,9 @@ func merge(base, over Manifest) Manifest {
 	list(&base.ModelList.Command, over.ModelList.Command)
 	set(&base.ModelList.Format, over.ModelList.Format)
 	set(&base.ModelList.Verified, over.ModelList.Verified)
+	list(&base.Stream.Flags, over.Stream.Flags)
+	set(&base.Stream.Format, over.Stream.Format)
+	set(&base.Stream.Verified, over.Stream.Verified)
 	set(&base.Skills.Dir, over.Skills.Dir)
 	set(&base.Skills.ProjectDir, over.Skills.ProjectDir)
 	set(&base.Skills.Format, over.Skills.Format)

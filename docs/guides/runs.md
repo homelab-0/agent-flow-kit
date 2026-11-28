@@ -14,7 +14,8 @@ Schema `afk-run/1`:
 |---|---|
 | `id` | the run id |
 | `started_at`, `ended_at`, `duration_s` | when it ran |
-| `where` | where it ran (`here` for now) |
+| `where` | where it ran: `here`, or `serve` for a call answered by [`afk serve`](serve.md) |
+| `key` | for a served call, the name of the API key it came in with |
 | `route` | the full route that was launched; a gateway address keeps its host but loses any user info |
 | `exit` | the CLI's exit code |
 | `pool_before`, `pool_after` | the pool's headroom (%) when the card opened and after the session |

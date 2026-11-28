@@ -47,6 +47,18 @@ With it on for a CLI, AFK:
 
 A repository's `.afk/config.json` can't turn it on. These addresses are the ones each CLI's own usage screen calls; they are not a published API, so a vendor can change them, and a vendor's terms may not allow another tool to use its CLI's login. AFK says this before you turn the lookup on and leaves the choice to you.
 
+## `afk serve` and API keys
+
+[`afk serve`](guides/serve.md) is off until you run it, and listens on this machine only until you set `serve.listen`.
+
+- Every call needs an AFK key. AFK stores a SHA-256 hash of each key (in `~/.local/state/afk/keys.json`, mode 600) and shows the key once; a key is 256 random bits and is compared in constant time.
+- By default a call can only answer: its run is read-only, in an empty folder that is deleted afterwards, and loads no project settings. A key reaches a folder of yours only if you give it one with `--dir`.
+- A CLI's own sign-in answers calls only while `serve.plan_runs` is on. AFK still never reads or forwards that sign-in: it starts the CLI, and the CLI uses its own login as it always does.
+- Every key has rate limits from the start. They are a guard against accidents, yours to change.
+- The API is plain HTTP. Beyond this machine, use a private network or a TLS proxy; `afk serve` warns when it starts on such an address.
+- Calls are logged by key name, model, route and status. Prompts and answers are never logged or stored.
+- A model name from a caller is checked before it becomes a command argument, and a prompt can never be read as an option.
+
 ## What AFK reads
 
 | What | Why | How much |
