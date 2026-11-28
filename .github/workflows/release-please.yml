@@ -9,8 +9,8 @@ name: release-please
 #
 # It runs as the Lb0Bot0 GitHub App, so the release PR, tag and release show
 # as Lb0Bot0, CI runs on the release PR, and the tag fires release.yml's
-# `push: tags` like a hand-pushed tag. It needs the LB0BOT0_CLIENT_ID
-# variable and the LB0BOT0_PRIVATE_KEY secret (repo or org level), and the
+# `push: tags` like a hand-pushed tag. It needs LB0BOT0_CLIENT_ID (a secret or a
+# variable) and the LB0BOT0_PRIVATE_KEY secret, at repo or org level, and the
 # app installed on this repo with Contents, Pull requests and Issues
 # read/write.
 #
@@ -41,7 +41,7 @@ jobs:
       - name: Check for the Lb0Bot0 app
         id: bot
         env:
-          CLIENT_ID: ${{ vars.LB0BOT0_CLIENT_ID }}
+          CLIENT_ID: ${{ secrets.LB0BOT0_CLIENT_ID || vars.LB0BOT0_CLIENT_ID }}
           PRIVATE_KEY: ${{ secrets.LB0BOT0_PRIVATE_KEY }}
         run: |
           if [ -n "$CLIENT_ID" ] && [ -n "$PRIVATE_KEY" ]; then
@@ -54,7 +54,7 @@ jobs:
         if: steps.bot.outputs.use == 'true'
         uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
-          client-id: ${{ vars.LB0BOT0_CLIENT_ID }}
+          client-id: ${{ secrets.LB0BOT0_CLIENT_ID || vars.LB0BOT0_CLIENT_ID }}
           private-key: ${{ secrets.LB0BOT0_PRIVATE_KEY }}
       - id: rp
         uses: googleapis/release-please-action@v5
