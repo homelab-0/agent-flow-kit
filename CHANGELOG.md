@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.4.0](https://github.com/homelab-0/agent-flow-kit/compare/v0.3.0...v0.4.0) (2026-11-28)
+
+
+### Features
+
+* **harness:** ask each CLI for its plan, models and usage ([#200](https://github.com/homelab-0/agent-flow-kit/issues/200)) ([3a3593f](https://github.com/homelab-0/agent-flow-kit/commit/3a3593fd4e64f0b419a1f8d85d223bc70c02d39b))
+* **harness:** read usage for Antigravity, and for Claude and Grok on opt-in ([#203](https://github.com/homelab-0/agent-flow-kit/issues/203)) ([632200d](https://github.com/homelab-0/agent-flow-kit/commit/632200d8ad9a38c83d7612c20aa881904ee142c2))
+* **tui:** reopen the last run's session in its CLI with /open ([#201](https://github.com/homelab-0/agent-flow-kit/issues/201)) ([d78faa9](https://github.com/homelab-0/agent-flow-kit/commit/d78faa9184cb8ee815e0142727ba219b208c9f61))
+
 ## [0.3.0](https://github.com/homelab-0/agent-flow-kit/compare/v0.2.0...v0.3.0) (2026-11-28)
 
 
