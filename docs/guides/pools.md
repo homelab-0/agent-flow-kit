@@ -21,11 +21,26 @@ A pool has a usage figure only from the provider's own report:
 
 - **Codex**: Codex's own app server (`codex app-server`, asked for `account/rateLimits/read`), which gives the plan, each usage window with its reset time, and the credit balance. It starts no session and spends nothing. Codex also writes its limits into its session files (`rollout-*.jsonl` under `$CODEX_HOME/sessions`); AFK reads those too and uses whichever reading is newer.
 - **Claude**: `claude auth status` gives the plan name. Usage comes from the `rate_limit_event` that Claude Code prints in its stream-json output, which `afk -p` asks for (`--output-format stream-json --verbose`). It has the plan's utilization per window (five-hour and weekly; overage windows don't count) and when each resets. AFK keeps the last reading in `~/.config/afk/state/plan-usage.json` and uses it until its window resets, for at most 12 hours. Claude Code has no command that prints usage, so the figure is as of the last `afk -p` run on Claude; the route card says `measured (last -p)` and names the fuller window (5h or weekly). If Claude refused the call, the limit it named counts as full until the reset time Claude gave.
-- **Grok**: `grok usage` answers only inside Grok's own screen, so there is no figure. The pool says so: `usage unknown (Grok shows plan usage only inside grok, with /usage)`.
-- **Antigravity**: it keeps its quota in memory and has no command that prints it. `usage unknown (Antigravity doesn't report plan usage)`.
+- **Grok**: `grok usage` answers only while Grok's background service runs, so there is no figure from the CLI. The pool says so: `usage unknown (Grok shows plan usage only inside grok, with /usage)`.
+- **Antigravity**: its own `/usage` command, run in print mode (`agy -p /usage --output-format json`). agy answers a slash command itself, so no prompt reaches a model: the answer has a turn count of 0, no conversation and no tokens. It lists each group of models (Gemini, and Claude and GPT) with what is left of its weekly and 5-hour windows. The pool shows the fullest window of any group. If an answer ever shows that a turn ran, AFK stops running the command on that install and says so. agy before 1.1.11 is not asked.
 - **Anything else**: `usage unknown`.
 
-AFK never sends a prompt to find out usage, never opens a login file for it, and never guesses. An unknown plan still routes; its usage just doesn't count for or against it. When a CLI reports usage beyond the plan's windows (Codex's credit balance), the pool shows it as `extra usage`.
+AFK never sends a prompt to find out usage and never guesses. It opens a login file for usage only for a CLI you turned the vendor usage lookup on for (below); otherwise never.
+
+### The vendor usage lookup
+
+Claude Code and Grok have no way to print plan usage outside a run. Their vendors do answer it to the login the CLI saved, which is how each CLI's own usage screen gets it. You can let AFK ask the same way, one CLI at a time:
+
+```toml
+[harness.claude]
+vendor_usage = true
+```
+
+or on the Config tab (`harness.claude.vendor_usage`, `harness.grok.vendor_usage`), where you type `on` after reading the warning. It is off by default, because a vendor's terms may not allow another tool to use its CLI's login. That is yours to weigh.
+
+With it on, AFK reads the access token from the CLI's login file, sends one request to the vendor's own host (`api.anthropic.com` for Claude, `cli-chat-proxy.grok.com` for Grok), and drops the token. It never stores, prints, refreshes or rewrites a login, and follows no redirect. An expired login is left for the CLI to renew: the pool says to open the CLI once. The figure shows as `reported by the vendor's usage service`, with extra usage when the vendor reports it. The CLI's own sources are still tried first, and a newer reading from a run wins.
+
+On macOS Claude Code keeps its login in the keychain, which AFK doesn't open, so the Claude lookup gives no figure there yet. An unknown plan still routes; its usage just doesn't count for or against it. When a CLI reports usage beyond the plan's windows (Codex's credit balance), the pool shows it as `extra usage`.
 
 Each CLI is asked through [its own module](harnesses.md#what-afk-asks-each-cli), and the answer is reused for five minutes (`~/.config/afk/state/accounts.json`).
 
@@ -71,4 +86,4 @@ In the TUI, the status line under the input shows each route's logo with `NN% le
 
 ## Privacy
 
-AFK never opens a credential file: sign-in checks look only at whether login files exist, their size and when they changed. See [security and privacy](../security.md).
+Sign-in checks never open a credential file: they look only at whether login files exist, their size and when they changed. The only thing that reads a login is the vendor usage lookup, for a CLI you turned it on for. See [security and privacy](../security.md).

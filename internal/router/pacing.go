@@ -34,6 +34,8 @@ const PaceMaxAdjustment = 4.0
 var measuredSources = map[string]bool{
 	"codex_rate_limits":       true,
 	"codex_app_server":        true,
+	"agy_usage_command":       true,
+	SourceVendor:              true,
 	"claude_rate_limit_event": true,
 }
 

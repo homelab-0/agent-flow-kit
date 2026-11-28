@@ -157,7 +157,7 @@ The full reference is in the [command line reference](docs/reference/cli.md); ev
 For each installed CLI, AFK considers every model that CLI can run and scores it on:
 
 1. **Fit for the task.** Public benchmark results for that kind of work (coding, review, architecture, and so on).
-2. **Pool headroom.** How much is left in that subscription's window, as each plan's own CLI reported it: the rate limits Codex records in its session files, and the usage Claude Code prints in a one-shot run. A plan nothing has reported shows `usage unknown` and counts neither for nor against a route; AFK never estimates usage and never opens a login file to ask the provider. A pool that just hit a quota or sign-in error is marked down for a while.
+2. **Pool headroom.** How much is left in that subscription's window, as each plan's own CLI reported it: the rate limits Codex records in its session files, and the usage Claude Code prints in a one-shot run. A plan nothing has reported shows `usage unknown` and counts neither for nor against a route; AFK never estimates usage and never sends a prompt to read it. It asks a provider with a CLI's saved login only if you turn that on for that CLI (off by default). A pool that just hit a quota or sign-in error is marked down for a while.
 3. **Cost.** Subscription, free, local or metered. `--prefer cheap` favours free and local models; `--prefer best` ignores cost.
 
 Effort starts from the task kind and goes up for harder work, within what the CLI supports. Two rules are fixed: a review never goes to a free or local model, and a plan login is never sent through a gateway.
@@ -186,7 +186,7 @@ Press `?` on the route card to see the working:
 | Pi | `pi` | ✓ | ✓ |
 | Devin CLI | `devin` | ✓ | planned |
 
-Discovery reports each CLI's version, how it was installed (mise, npm, bun, pnpm, Homebrew, uv, pipx, cargo or self-managed), the command that updates it, its effort levels, and whether it looks signed in. The sign-in check looks only at whether the CLI's login file exists and is larger than 4 bytes (an empty `{}` counts as signed out); AFK never opens a credential file. Where AFK can't tell, it says `unknown`.
+Discovery reports each CLI's version, how it was installed (mise, npm, bun, pnpm, Homebrew, uv, pipx, cargo or self-managed), the command that updates it, its effort levels, and whether it looks signed in. The sign-in check looks only at whether the CLI's login file exists and is larger than 4 bytes (an empty `{}` counts as signed out); the check never opens a credential file. Where AFK can't tell, it says `unknown`.
 
 Adding a CLI means adding one entry to [`internal/harness/registry.go`](internal/harness/registry.go).
 

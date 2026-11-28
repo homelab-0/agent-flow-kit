@@ -224,6 +224,59 @@ func TestConfigSetFromTheTab(t *testing.T) {
 	}
 }
 
+// The vendor usage lookup is one switch per CLI, off until typed on, and
+// the warning is shown before it is.
+func TestVendorUsageSwitchInTheConfigTab(t *testing.T) {
+	c := panelCore(t)
+	s := newPanelSource(c, "")
+	ctx := context.Background()
+	rows := func() map[string]string {
+		t.Helper()
+		v, err := s.Config(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := map[string]string{}
+		for _, r := range v.Rows {
+			m[r[0]] = r[1]
+		}
+		for _, k := range []string{"harness.claude.vendor_usage", "harness.grok.vendor_usage"} {
+			e, ok := v.Edit[k]
+			if !ok || len(e.Choices) != 0 || !strings.Contains(e.Hint, "terms") || !strings.Contains(e.Hint, "login") {
+				t.Errorf("%s: the switch must be typed, with the warning beside it: %+v", k, e)
+			}
+		}
+		return m
+	}
+	if r := rows(); r["harness.claude.vendor_usage"] != "off" || r["harness.grok.vendor_usage"] != "off" {
+		t.Fatalf("the lookup must start off: %v", r)
+	}
+	if _, ok := rows()["harness.agy.vendor_usage"]; ok {
+		t.Error("agy has no vendor lookup and must not show a switch")
+	}
+	if _, err := s.ConfigSet(ctx, "harness.claude.vendor_usage", "on"); err != nil {
+		t.Fatal(err)
+	}
+	if r := rows(); r["harness.claude.vendor_usage"] != "on" || r["harness.grok.vendor_usage"] != "off" {
+		t.Errorf("after turning Claude's on: %v", r)
+	}
+	st, err := c.LoadSettings("")
+	if err != nil || !st.VendorUsage["claude"] || st.VendorUsage["grok"] {
+		t.Errorf("settings = %v %v", st.VendorUsage, err)
+	}
+	for _, bad := range [][2]string{{"harness.claude.vendor_usage", "yes please"}, {"harness.agy.vendor_usage", "on"}} {
+		if _, err := s.ConfigSet(ctx, bad[0], bad[1]); err == nil {
+			t.Errorf("%s = %s was saved", bad[0], bad[1])
+		}
+	}
+	if _, err := s.ConfigSet(ctx, "harness.claude.vendor_usage", "off"); err != nil {
+		t.Fatal(err)
+	}
+	if r := rows(); r["harness.claude.vendor_usage"] != "off" {
+		t.Errorf("after turning it off: %v", r)
+	}
+}
+
 // A gateway is added, filled in and removed from the Config tab; the key
 // row takes a reference and refuses a key itself.
 func TestGatewayFromTheConfigTab(t *testing.T) {

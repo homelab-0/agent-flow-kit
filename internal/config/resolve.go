@@ -175,6 +175,9 @@ type Settings struct {
 	SecurityModels     []string
 	// Disabled are CLIs config keeps out of routing.
 	Disabled map[string]bool
+	// VendorUsage are the CLIs whose saved login AFK may use to ask the
+	// vendor for plan usage (harness.<name>.vendor_usage).
+	VendorUsage map[string]bool
 	// BenchAutosync is whether the daily catalog refresh runs.
 	BenchAutosync bool
 	// BenchSources says which feeds a sync reads (a missing name is on).
@@ -361,8 +364,15 @@ func Resolve(e Env) (Settings, error) {
 	}
 
 	for _, n := range sortedKeys(c.Harness) {
-		if h := c.Harness[n]; h.Enabled != nil && !*h.Enabled {
+		h := c.Harness[n]
+		if h.Enabled != nil && !*h.Enabled {
 			s.Disabled[n] = true
+		}
+		if h.VendorUsage != nil && *h.VendorUsage {
+			if s.VendorUsage == nil {
+				s.VendorUsage = map[string]bool{}
+			}
+			s.VendorUsage[n] = true
 		}
 	}
 	if c.Bench.Autosync != nil {

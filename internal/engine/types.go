@@ -174,8 +174,10 @@ func (r *Route) dropUnratedScore() {
 // "not signed in", or "" when nothing reported the pool's usage.
 func (r Route) PoolBasis() string {
 	switch {
-	case r.PoolQuotaSource == "codex_rate_limits", r.PoolQuotaSource == "codex_app_server":
+	case r.PoolQuotaSource == "codex_rate_limits", r.PoolQuotaSource == "codex_app_server", r.PoolQuotaSource == "agy_usage_command":
 		return "measured"
+	case r.PoolQuotaSource == "vendor_usage":
+		return "measured by the vendor"
 	case r.PoolQuotaSource == "claude_rate_limit_event":
 		return "measured at the last afk -p run"
 	case r.PoolQuotaSource == "unauthenticated":

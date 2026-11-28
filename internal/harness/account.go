@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -35,6 +36,13 @@ type Account struct {
 	// UsageNote says, in a few words for the person, why Windows is
 	// empty.
 	UsageNote string `json:"usage_note,omitempty"`
+	// UsageSource is where Windows and Extra came from: "" for the CLI
+	// itself, SourceVendor for the vendor's usage service.
+	UsageSource string `json:"usage_source,omitempty"`
+	// UsageCommandSpent is set when the CLI answered its usage command
+	// as a prompt (a turn ran). AFK then never runs that command on this
+	// install again.
+	UsageCommandSpent bool `json:"usage_command_spent,omitempty"`
 	// At is when the CLI was asked (unix seconds).
 	At int64 `json:"at"`
 }
@@ -47,6 +55,9 @@ type Window struct {
 	UsedPct float64 `json:"used_pct"`
 	// ResetsAt is when the window resets (unix seconds), 0 unknown.
 	ResetsAt int64 `json:"resets_at,omitempty"`
+	// Scope names the models the window is for, when the CLI splits its
+	// plan into groups ("Gemini Models"); "" for the whole plan.
+	Scope string `json:"scope,omitempty"`
 }
 
 // Extra is usage a plan allows beyond its windows.
@@ -57,6 +68,11 @@ type Extra struct {
 	Unlimited bool `json:"unlimited,omitempty"`
 	// Balance is the credit balance as the CLI printed it ("" unknown).
 	Balance string `json:"balance,omitempty"`
+	// Spent and Limit are what was used of a spending cap, in Currency
+	// ("" unknown).
+	Spent    string `json:"spent,omitempty"`
+	Limit    string `json:"limit,omitempty"`
+	Currency string `json:"currency,omitempty"`
 }
 
 // Reporter is one harness's own way of saying what the account has. Each
@@ -64,7 +80,9 @@ type Extra struct {
 // asked changes with its releases, and stays in that file.
 type Reporter interface {
 	// Report asks the CLI at bin. It must spend no plan quota, read no
-	// credential file and return within the context's deadline.
+	// credential file and return within the context's deadline. (Only a
+	// VendorReporter's VendorUsage may read the CLI's login, and only
+	// when the person turned that on.)
 	Report(ctx context.Context, e Env, bin string) Account
 }
 
@@ -78,9 +96,14 @@ func registerReporter(name string, r Reporter) { reporters[name] = r }
 // ReportLimit is how long one harness may take to report.
 const ReportLimit = 8 * time.Second
 
-// Ask asks an installed harness what this account has. ok is false when
-// the harness isn't known or isn't installed.
+// Ask asks an installed harness what this account has, from the CLI
+// alone. ok is false when the harness isn't known or isn't installed.
 func Ask(ctx context.Context, e Env, name string) (Account, bool) {
+	return AskWith(ctx, e, name, AskOptions{})
+}
+
+// AskWith is Ask with what the person allowed beyond the CLI itself.
+func AskWith(ctx context.Context, e Env, name string, opt AskOptions) (Account, bool) {
 	a, ok := Lookup(name)
 	if !ok {
 		return Account{}, false
@@ -89,13 +112,24 @@ func Ask(ctx context.Context, e Env, name string) (Account, bool) {
 	if bin == "" {
 		return Account{}, false
 	}
-	ctx, cancel := context.WithTimeout(ctx, ReportLimit)
-	defer cancel()
 	r, own := reporters[a.Name]
 	if !own {
 		r = manifestReporter{a.Manifest}
 	}
-	rep := r.Report(ctx, e, bin)
+	rctx, cancel := context.WithTimeout(ctx, ReportLimit)
+	if opt.NoUsageCommand {
+		rctx = context.WithValue(rctx, noUsageCommandKey{}, true)
+	}
+	rep := r.Report(rctx, e, bin)
+	cancel()
+	if opt.NoUsageCommand {
+		rep.UsageCommandSpent = true
+	}
+	// The CLI's own figures come first. The vendor is asked only for a
+	// harness the person switched on, and only when the CLI gave none.
+	if vr, can := r.(VendorReporter); can && opt.VendorUsage && len(rep.Windows) == 0 && ctx.Err() == nil {
+		vr.VendorUsage(ctx, e, &rep)
+	}
 	rep.Harness = a.Name
 	if rep.At == 0 {
 		rep.At = time.Now().Unix()
@@ -137,7 +171,15 @@ func run(ctx context.Context, bin string, args ...string) ([]byte, bool) {
 
 // runIn is run with stdin: the CLI reads in, then sees the end of input.
 func runIn(ctx context.Context, bin string, in []byte, args ...string) ([]byte, bool) {
+	return runEnv(ctx, bin, in, nil, args...)
+}
+
+// runEnv is runIn with more environment variables ("K=V") for the CLI.
+func runEnv(ctx context.Context, bin string, in []byte, env []string, args ...string) ([]byte, bool) {
 	cmd := exec.CommandContext(ctx, bin, args...)
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, nil
 	if in != nil {

@@ -225,8 +225,12 @@ func usageText(p router.Pool) string {
 	switch {
 	case p.HeadroomPct != nil:
 		w := "5h"
-		if p.Window == "weekly" {
+		switch p.Window {
+		case "weekly":
 			w = "week"
+		case "other":
+			// A window of another length (a month, say).
+			w = "this period"
 		}
 		parts = append(parts, fmt.Sprintf("%s %.0f%% left", w, *p.HeadroomPct))
 	case p.QuotaSource == router.SourceSignedOut:
@@ -400,7 +404,9 @@ func (s panelSource) Status(ctx context.Context) (*tui.StatusView, error) {
 				row.FiveHour = &f
 			}
 		} else {
-			row.FiveHour = p.HeadroomPct
+			if p.Window != "other" {
+				row.FiveHour = p.HeadroomPct
+			}
 			if p.WeeklyUsedPct != nil {
 				w := 100 - *p.WeeklyUsedPct
 				row.Week = &w
@@ -412,6 +418,13 @@ func (s panelSource) Status(ctx context.Context) (*tui.StatusView, error) {
 			if a := engine.ReadAgo(*p.ObservedAt, v.Updated); a != "" {
 				row.Note = "as " + h + " reported it " + a
 			}
+		}
+		if p.QuotaSource == router.SourceVendor && !p.SetAside {
+			row.Note = "from " + vendorOf(h) + "'s usage service, with " + h + "'s saved login (you turned this on)"
+		}
+		if p.Window == "other" && p.HeadroomPct != nil && !p.SetAside {
+			row.Note = strings.TrimPrefix(fmt.Sprintf("%.0f%% left this period · %s", *p.HeadroomPct, row.Note), " · ")
+			row.Note = strings.TrimSuffix(row.Note, " · ")
 		}
 		switch p.QuotaSource {
 		case router.SourceSignedOut:
@@ -574,12 +587,28 @@ func (s panelSource) Config(ctx context.Context) (*tui.ConfigView, error) {
 	if len(off) > 0 {
 		add("harness (off)", strings.Join(off, ", "))
 	}
+	// One switch per CLI whose vendor can be asked for usage. Turning it
+	// on is typed, not stepped through, so the warning is read first.
+	for _, l := range harness.VendorLookups() {
+		k := "harness." + l.Harness + ".vendor_usage"
+		add(k, yes[st.VendorUsage[l.Harness]])
+		v.Edit[k] = tui.ConfigEdit{Value: yes[st.VendorUsage[l.Harness]], Hint: vendorUsageWarning(l)}
+	}
 	add("trust.repos", fmt.Sprintf("%d trusted", len(st.TrustedDirs)))
 	add("bench.autosync", yes[st.BenchAutosync])
 	for _, w := range st.Warnings {
 		v.Warnings = append(v.Warnings, w.String())
 	}
 	return v, nil
+}
+
+// vendorUsageWarning is what the Config tab says before the vendor usage
+// lookup is switched on for a CLI.
+func vendorUsageWarning(l harness.VendorLookup) string {
+	return "type on or off. On lets AFK read the login " + l.Display + " saved on this PC and ask " + l.Vendor +
+		" for your plan usage, the way " + l.Display + "'s own usage screen does. " + l.Vendor +
+		"'s terms may not allow another tool to use that login, so this is off unless you turn it on. " +
+		"AFK only reads the login, sends it to " + l.Vendor + " alone, and never stores or renews it."
 }
 
 // gatewayNew is the Config tab's row that adds a gateway.
@@ -646,6 +675,15 @@ func (s panelSource) ConfigSet(_ context.Context, key, value string) (string, er
 			raw = "true"
 		case "off":
 			raw = "false"
+		}
+	}
+	if strings.HasPrefix(key, "harness.") && strings.HasSuffix(key, ".vendor_usage") {
+		h := strings.TrimSuffix(strings.TrimPrefix(key, "harness."), ".vendor_usage")
+		if !harness.HasVendorLookup(h) {
+			return "", fmt.Errorf("AFK has no vendor usage lookup for %s", h)
+		}
+		if raw != "true" && raw != "false" {
+			return "", errors.New("type on or off")
 		}
 	}
 	paths := config.PathsFor(s.c.Home, s.getenv)
@@ -1171,10 +1209,34 @@ func extraText(x *harness.Extra) string {
 		return "extra usage: off"
 	case x.Unlimited:
 		return "extra usage: unlimited"
+	case x.Limit != "":
+		spent := x.Spent
+		if spent == "" {
+			spent = "an unknown amount"
+		}
+		t := "extra usage: " + spent + " of " + x.Limit
+		if x.Currency != "" {
+			t += " " + x.Currency
+		}
+		t += " used"
+		if x.Balance != "" {
+			t += ", credits " + balanceText(x.Balance)
+		}
+		return t
 	case x.Balance != "":
 		return "extra usage: credits " + balanceText(x.Balance)
 	}
 	return "extra usage: on"
+}
+
+// vendorOf names who a CLI's vendor usage lookup asks ("Anthropic").
+func vendorOf(h string) string {
+	for _, l := range harness.VendorLookups() {
+		if l.Harness == h {
+			return l.Vendor
+		}
+	}
+	return "the vendor"
 }
 
 // balanceText is a credit balance for people: a plain number is shown to

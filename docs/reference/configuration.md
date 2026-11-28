@@ -127,6 +127,7 @@ Inference engines on this machine; see [local models](../guides/local-models.md)
 | Key | Type | Meaning |
 |---|---|---|
 | `enabled` | bool | `false` keeps that CLI (`claude`, `codex`, `opencode`, `grok`, `agy`, `pi`) out of routing |
+| `vendor_usage` | bool | `true` lets AFK read the login that CLI saved and ask its vendor for your plan usage, when the CLI reports none itself. Default `false`. Works for `claude` (Anthropic) and `grok` (xAI). A vendor's terms may not allow another tool to use its CLI's login, so read [the security page](../security.md#the-vendor-usage-lookup) before turning it on. Only `config.toml` can set it, never a repository |
 
 ### `[bench]`
 
