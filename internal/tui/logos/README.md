@@ -12,7 +12,8 @@ Single-colour marks have a light copy (`-light`, for dark terminals) and a dark 
 - From [Dashboard Icons](https://github.com/homarr-labs/dashboard-icons) (Apache-2.0): `localai`.
 - From the projects' own repositories: `sglang` (sgl-project/sglang `assets/logo.png`) and `mlx-*` (ml-explore/mlx `docs/src/_static/mlx_logo*.png`), trimmed and given a transparent background.
 - `koboldcpp` is KoboldCpp's own icon (LostRuins/koboldcpp `niko.ico`), `lemonade` is Lemonade's (lemonade-sdk/lemonade `src/app/assets/logo.svg`) and `lmdeploy` is the mark cut from LMDeploy's logo (InternLM/lmdeploy `docs/en/_static/image/lmdeploy-logo.svg`).
-- TabbyAPI and Strata publish no logo, so they keep their `TA` and `ST` text tags.
+- `strata` is Strata's app icon (Niko1221/Strata `app/desktop/src-tauri/icons/Square310x310Logo.png`, MIT).
+- TabbyAPI publishes no logo, so it keeps its `TA` text tag.
 - `portkey` is the hexagon mark cut from Portkey's logo in Portkey-AI/docs-core (`images/portkey-PANW-company-logo-positive.png`).
 - `agentgateway` is cut from the agentgateway wordmark.
 

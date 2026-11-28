@@ -74,7 +74,7 @@ func TestProbeLocalFindsEngines(t *testing.T) {
 	defer lc.Close()
 	old := fakeOpenAI(t, "vllm", false, "some-model")
 	defer old.Close()
-	st := fakeOpenAI(t, "strata", false, "glm52")
+	st := fakeOpenAI(t, "tabbyAPI", false, "Qwen3.6-27B-exl3")
 	defer st.Close()
 	got, noAPI := probeLocal(context.Background(), ProbeEnv{
 		Live: true, HTTP: http.DefaultClient,
@@ -82,7 +82,7 @@ func TestProbeLocalFindsEngines(t *testing.T) {
 	})
 	// Engines without the Anthropic Messages API are kept apart: shown,
 	// never routed to.
-	if len(noAPI) != 2 || noAPI[0].Engine != "vllm" || noAPI[1].Engine != "strata" || noAPI[1].URL != st.URL {
+	if len(noAPI) != 2 || noAPI[0].Engine != "vllm" || noAPI[1].Engine != "tabbyapi" || noAPI[1].URL != st.URL {
 		t.Errorf("engines without the Messages API: %+v", noAPI)
 	}
 	if len(got) != 3 {
