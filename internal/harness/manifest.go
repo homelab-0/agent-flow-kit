@@ -32,6 +32,7 @@ type Manifest struct {
 	PolicyURL string   `toml:"policy_url"`
 	Models    []string `toml:"models"` // hints, not a list AFK routes from
 	Auth      Auth     `toml:"auth"`
+	Session   Session  `toml:"session"`
 	Modes     Modes    `toml:"modes"`
 	Skills    Skills   `toml:"skills"`
 	MCP       MCP      `toml:"mcp"`
@@ -75,6 +76,28 @@ type Skills struct {
 	// Verified is the CLI version the directory was checked against
 	// ("" for one taken from the CLI's documentation).
 	Verified string `toml:"verified"`
+}
+
+// Session is how a harness reopens one of its own sessions.
+type Session struct {
+	// Resume opens a past session in the CLI's own screen; the word
+	// "{id}" stands for the session id.
+	Resume []string `toml:"resume"`
+	// Verified is the CLI version the command was checked against.
+	Verified string `toml:"verified"`
+}
+
+// ResumeArgv is the command that reopens session id, without the program
+// name; nil when the harness has none.
+func (m Manifest) ResumeArgv(id string) []string {
+	if len(m.Session.Resume) < 2 || id == "" {
+		return nil
+	}
+	out := make([]string, 0, len(m.Session.Resume)-1)
+	for _, a := range m.Session.Resume[1:] {
+		out = append(out, strings.ReplaceAll(a, "{id}", id))
+	}
+	return out
 }
 
 // Auth is how a harness signs in. AFK only runs these commands and reads
@@ -388,6 +411,11 @@ func (m Manifest) validate(path string) error {
 			return fmt.Errorf("%s: an auth command needs a program", path)
 		}
 	}
+	if r := m.Session.Resume; len(r) > 0 {
+		if strings.TrimSpace(r[0]) == "" || !strings.Contains(strings.Join(r[1:], " "), "{id}") {
+			return fmt.Errorf("%s: session.resume needs a program and {id}", path)
+		}
+	}
 	switch m.Skills.Format {
 	case "", "skill-md":
 	default:
@@ -463,6 +491,8 @@ func merge(base, over Manifest) Manifest {
 	list(&base.Auth.Status, over.Auth.Status)
 	list(&base.Auth.Expiry, over.Auth.Expiry)
 	list(&base.Auth.Errors, over.Auth.Errors)
+	list(&base.Session.Resume, over.Session.Resume)
+	set(&base.Session.Verified, over.Session.Verified)
 	set(&base.Skills.Dir, over.Skills.Dir)
 	set(&base.Skills.ProjectDir, over.Skills.ProjectDir)
 	set(&base.Skills.Format, over.Skills.Format)

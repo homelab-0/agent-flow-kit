@@ -10,6 +10,10 @@ self_update = "update"
 [auth]
 login = ["agy", "login"]
 
+[session]
+resume = ["agy", "--resume", "{id}"]
+verified = "1.5.19"
+
 [modes]
 verified = "1.5.18"
 read-only = ["--mode", "plan"]

@@ -42,6 +42,9 @@ type Record struct {
 	FilesChanged *int         `json:"files_changed"`
 	Commits      *int         `json:"commits"`
 	Outcome      *string      `json:"outcome"`
+	// Session is the CLI's own id for the session, when it reported one:
+	// what `afk` hands back to the CLI to reopen it.
+	Session string `json:"session,omitempty"`
 }
 
 // Dir is where run records live: $XDG_CONFIG_HOME/afk/state/runs, or

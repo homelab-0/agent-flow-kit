@@ -10,6 +10,7 @@ Run `afk` on its own and Esc shuffles in and climbs into its hammock (about two 
 | `/harness <cli>`, `/model <id>`, `/effort <level>`, `/prefer balanced\|cheap\|best` | pin a choice (no argument unpins it); `/clear` unpins all |
 | `/mode read-only\|ask\|edits\|auto` | the [permission mode](permissions.md) for the rest of this AFK session (no argument: your configured default) |
 | `/rate 1\|2\|3` | rate the last run: solved, partly, wrong pick |
+| `/open` | reopen the last run's session in its CLI's own screen; exit the CLI to come back |
 | `?` | shortcuts (on an empty input) |
 | `2`–`7`, `/harnesses`, `/bench`, `/skills`, `/mcp`, `/runs`, `/config` | open the [control panel](control-panel.md) on that tab (the digits on an empty input) |
 | `esc` | clear the input |
@@ -32,6 +33,7 @@ It scores every candidate route for a task and …
 - While it runs, a line says which route is working and for how long. `esc` or `ctrl+c` stops the turn. AFK stays open.
 - It runs as [`afk -p`](print-mode.md) does: if the CLI can't start or hits a sign-in, quota or rate limit, the next best route answers, and a line says so. `route.failover` limits where a failed turn may go.
 - Every turn is saved as a [run](runs.md). `/rate` rates the last one.
+- A turn runs the CLI headless: it answers and exits, and nothing is left running or watched in the background. To see what it did, or to carry on in the CLI itself, type `/open`. AFK kept the session id the CLI reported (Codex's `thread_id`, Claude Code's `session_id`) and hands the terminal to `codex resume <id>`, `claude --resume <id>`, `grok --resume <id>` or `agy --resume <id>`. The CLI opens with its own defaults for permissions. When you exit it you are back in AFK. If the CLI reported no session id, `/open` says so; a gateway or local run can't be reopened yet.
 - A CLI running this way can't stop to ask you to approve an edit. It runs in your permission mode, and a CLI that can't honour that mode without asking runs in a stricter one and says so (Codex in `ask` runs read-only). Use `/mode edits` to let turns edit files, or `ctrl+o` to work in the CLI's own screen when you want to approve steps one by one.
 - Each turn is on its own for now: a follow-up doesn't yet carry the earlier turns along.
 

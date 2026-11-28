@@ -10,6 +10,10 @@ self_update = "update"
 [auth]
 login = ["grok", "login"]
 
+[session]
+resume = ["grok", "--resume", "{id}"]
+verified = "1.0.92"
+
 [modes]
 verified = "1.0.92"
 read-only = ["--permission-mode", "plan"]
