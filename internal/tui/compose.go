@@ -172,7 +172,7 @@ func (m *Model) composeKey(k tea.KeyPressMsg) tea.Cmd {
 			m.menuSel, m.menuOff = 0, false
 			return nil
 		}
-	case "2", "3", "4", "5", "6", "7":
+	case "2", "3", "4", "5", "6", "7", "8":
 		if m.cin.Value() == "" && m.opt.Panel != nil {
 			return m.openPanel(Tab(key[0] - '1'))
 		}
@@ -320,7 +320,7 @@ func (m *Model) composeLines() []line {
 			{sg(t.Key, "  tab"), sg(t.Dim, " task kind: "+strings.Join(taskKinds, ", "))},
 			{sg(t.Key, "  /"), sg(t.Dim, " or "), sg(t.Key, "ctrl+p"), sg(t.Dim, " every command, with what it does  "), sg(t.Key, "/update"), sg(t.Dim, " the agent CLIs")},
 			{sg(t.Key, "  /harness /model /effort /prefer"), sg(t.Dim, " pin a choice  "), sg(t.Key, "/clear"), sg(t.Dim, " unpin")},
-			{sg(t.Key, "  2-7"), sg(t.Dim, " open a tab (on an empty input)")},
+			{sg(t.Key, "  2-8"), sg(t.Dim, " open a tab (on an empty input)")},
 			{sg(t.Key, "  esc"), sg(t.Dim, " clear the input  "), sg(t.Key, "ctrl+c"), sg(t.Dim, " twice, or "), sg(t.Key, "ctrl+d"), sg(t.Dim, ", exit")},
 		} {
 			out = append(out, fitLine(l, w))
@@ -333,7 +333,7 @@ func (m *Model) composeLines() []line {
 	}
 	hint = append(hint, sg(t.Key, "tab"), sg(t.Dim, " task · "), sg(t.Key, "/"), sg(t.Dim, " commands · "))
 	if m.opt.Panel != nil {
-		hint = append(hint, sg(t.Key, "2-7"), sg(t.Dim, " tabs · "))
+		hint = append(hint, sg(t.Key, "2-8"), sg(t.Dim, " tabs · "))
 	}
 	hint = append(hint, sg(t.Key, "?"), sg(t.Dim, " shortcuts"))
 	out = append(out, hint)

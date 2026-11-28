@@ -22,7 +22,7 @@ afk pools [--json]                 each pool's state, what's left, and its pacin
 afk pools clear [pool...]          forget recorded pool failures
 afk keys [add|set|rotate|revoke|rm ...]   AFK's own API keys
 afk serve [--listen host:port]     AFK as a model API for gateways
-afk serve status|stop              the running afk serve
+afk serve start|status|stop        run it in the background, or ask about the running one
 afk --help
 ```
 
@@ -87,6 +87,8 @@ Options of `add` and `set`: `--per-minute N`, `--per-day N`, `--concurrent N` (0
 ## `afk serve`
 
 `afk serve` runs [AFK's model API](../guides/serve.md) in the foreground until ctrl+c or `afk serve stop`: `POST /v1/chat/completions` (OpenAI format), `POST /v1/messages` (Anthropic format), `GET /v1/models` and `GET /healthz`. It listens on `serve.listen` (default `127.0.0.1:8484`) unless `--listen host:port` says otherwise. One `afk serve` runs at a time per user.
+
+`afk serve start` runs it in the background instead and returns once it is listening; its output goes to `~/.local/state/afk/serve.log`.
 
 `afk serve status` exits 0 and prints the address when one is running, 1 when none is (`--json`: `afk-serve-status/1`). `afk serve stop` asks it to finish.
 

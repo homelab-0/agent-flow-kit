@@ -9,6 +9,17 @@ There are two kinds of key:
 
 So a gateway can treat AFK as one smart provider, or take each of your subscriptions as its own provider with its own key and limits.
 
+## What this is for, and what it can't do
+
+An agent CLI does one thing: it takes a prompt and writes back text. So a subscription reached through AFK can answer chat-style calls and nothing else. That covers a gateway's chat models, summarising, classifying, extraction, review, and agents that send a conversation and read the reply.
+
+It does not cover:
+
+- **Embeddings.** No agent CLI produces them, so no subscription can serve an embeddings call through AFK. `afk serve` has no `/v1/embeddings` endpoint. If something you run needs embeddings (a memory store, a vector search), point that part at a local engine such as Ollama or vLLM, or at a gateway model. Only its chat calls can go through AFK.
+- **Images, audio and speech**, in either direction.
+- **Strict JSON output.** `response_format` is ignored and named in the `X-AFK-Ignored` header. You can ask for JSON in the prompt, but nothing forces the shape of the answer, so check it.
+- **Fast, high-volume traffic.** Each call starts a CLI, which takes seconds, and the limits below are set for what one person would send. This is for automation at a person's pace, not for serving an app's users.
+
 ## Quick start
 
 ```sh
@@ -17,6 +28,8 @@ afk keys add my-grok --harness grok  # a key for the Grok CLI only
 afk config set serve.plan_runs true  # let your CLIs' own sign-ins answer (see below)
 afk serve                            # http://127.0.0.1:8484 until ctrl+c
 ```
+
+All of this can be done from the control panel's [API tab](control-panel.md#api) instead: press `8`.
 
 Try it:
 
@@ -121,7 +134,7 @@ A CLI signed in to a subscription answers API calls only when you say so:
 afk config set serve.plan_runs true
 ```
 
-The same switch is on the control panel's Config tab (`serve.plan_runs`), next to `serve.listen`.
+The same switch is on the control panel's API tab (`p`), and on the Config tab as `serve.plan_runs`, next to `serve.listen`.
 
 While it is off (the default), a call can be answered only by a [gateway](gateways.md), a [local engine](local-models.md) or a free pool, and a harness key's call is refused with 403 and a message that names this setting. The switch takes effect at once, without restarting `afk serve`.
 
@@ -172,9 +185,12 @@ A key looks like `afk_3401a228_…`: the eight characters after `afk_` are its p
 
 ```sh
 afk serve [--listen host:port]   # in the foreground
+afk serve start                  # in the background; it outlives the terminal
 afk serve status                 # is it running, and where
 afk serve stop
 ```
+
+`afk serve start` runs the same server detached from the terminal and returns once it is listening. Its output goes to `~/.local/state/afk/serve.log`, which is replaced at each start. The API tab's `s` key does the same. Neither one starts it again after a reboot; for that, run `afk serve` from your init system (a systemd user unit, launchd).
 
 `afk serve` logs one line per call to stderr: the key's name, the model asked for, the route that answered, the status and the time. It never logs a prompt or an answer. Each call that ran is also a [run record](runs.md) with `where: "serve"` and the key's name.
 
@@ -196,7 +212,9 @@ A run is stopped when its caller hangs up, when `afk serve` stops, or after 30 m
 
 ## Not there yet
 
-- The OpenAI Responses API (`/v1/responses`) and embeddings.
+- The OpenAI Responses API (`/v1/responses`).
+- Passing an embeddings call on to a local engine or a gateway. A subscription can never answer one (see the top of this page).
+- Strict JSON output.
 - Passing the caller's tools through to the model.
 - Prompts above 120 KiB.
 - TLS in `afk serve` itself (`serve.tls` is reserved).

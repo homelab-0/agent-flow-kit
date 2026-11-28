@@ -12,7 +12,7 @@ Anything not built yet is marked **Planned** and listed in the [roadmap](../READ
 ## Guides
 
 - [The route card](guides/route-card.md): the interactive session, the keys, the Why panel, the receipt
-- [The control panel](guides/control-panel.md): the Harnesses, Benchmarks, Skills, MCP, Runs and Config tabs, and `afk status`
+- [The control panel](guides/control-panel.md): the Harnesses, Benchmarks, Skills, MCP, Usage, Config and API tabs, and `afk status`
 - [Skills](guides/skills.md): one copy of every skill, synced into each CLI, with drift you decide on
 - [MCP servers](guides/mcp.md): one list of MCP servers, written into each CLI in its own format, with a tools/list test
 - [How routing works](guides/routing.md): task kinds, scoring, the rules no route can break, effort
