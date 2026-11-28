@@ -82,6 +82,6 @@ Releases are automated with [release-please](https://github.com/googleapis/relea
 2. Merging the release PR is the release. release-please tags the merge commit `vX.Y.Z` and creates the GitHub release with the changelog as its notes.
 3. The tag starts `release.yml`. It tests, builds the archives with GoReleaser, signs the checksums with cosign, adds them to the release, and publishes `@homelab0/afk` to npm.
 
-release-please runs as the Lb0Bot0 GitHub App, so the release PR, tag and release show as Lb0Bot0 and CI runs on the release PR. It needs the `LB0BOT0_CLIENT_ID` Actions variable and the `LB0BOT0_PRIVATE_KEY` secret; without them it falls back to `github-actions[bot]` and starts `release.yml` itself.
+release-please runs as the Lb0Bot0 GitHub App, so the release PR, tag and release show as Lb0Bot0 and CI runs on the release PR. It needs `LB0BOT0_CLIENT_ID` (an Actions secret or variable) and the `LB0BOT0_PRIVATE_KEY` secret; without them it falls back to `github-actions[bot]` and starts `release.yml` itself.
 
 To force a version, put `Release-As: x.y.z` in the body of a commit on `master`. A tag pushed by hand still runs `release.yml` as before.
