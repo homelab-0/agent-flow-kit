@@ -3,9 +3,12 @@ package tui
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/homelab-0/agent-flow-kit/internal/engine"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 // The Benchmarks tab's views, switched with [ and ].
@@ -32,6 +35,85 @@ type BenchSource struct {
 	// Status is the last sync's word on it ("live", "offline", ...),
 	// and About a longer description.
 	Status, About string
+	// ID is the source's id for afk bench source (empty for LMArena,
+	// models.dev, ratings and estimates, which aren't blended sources).
+	ID string
+	// Own is a source the user added; Where is its URL or file.
+	Own   bool
+	Where string
+	// Weight is its weight in a blend ("1", or per task "complex 2,
+	// review 1"); empty for a source that isn't blended.
+	Weight string
+}
+
+// benchDoneMsg is what an in-place source change said.
+type benchDoneMsg struct {
+	text string
+	err  error
+}
+
+func (p *Panel) benchDo(op string, args ...string) tea.Cmd {
+	src, ctx := p.src, p.ctx
+	if src == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		text, err := src.BenchDo(ctx, op, args...)
+		return benchDoneMsg{text, err}
+	}
+}
+
+// benchSourceKey is a key on the Sources view: space on/off, a add a
+// source, w its weight, t read it now, x remove one of yours.
+func (p *Panel) benchSourceKey(k, armed string) tea.Cmd {
+	v := p.data.bench
+	if k == "a" {
+		p.ask = &panelAsk{tab: TabBench, label: "new source",
+			hint: "An id, a URL or file (in quotes if it has spaces), and the tasks it scores (complex, standard, review, architecture, security, webdev, research, frontier). For example: my-evals https://example.com/board.json complex,review",
+			done: func(text string) tea.Cmd { return p.benchDo("add", splitArgs(text)...) }}
+		return nil
+	}
+	if v == nil || len(v.Sources) == 0 {
+		return nil
+	}
+	s := v.Sources[min(p.sel[TabBench], len(v.Sources)-1)]
+	switch k {
+	case "space", " ":
+		if !s.Read || s.Key == "" {
+			p.notice = s.Name + " can't be turned off"
+			return nil
+		}
+		return p.configSave(s.Key, map[bool]string{true: "off", false: "on"}[s.On])
+	case "w":
+		if s.Weight == "" {
+			p.notice = s.Name + " isn't averaged with other sources, so it has no weight"
+			return nil
+		}
+		id := s.ID
+		p.ask = &panelAsk{tab: TabBench, label: "weight of " + s.Name, text: "",
+			hint: "A number (1 is the usual, 2 counts twice, 0 leaves it out), then optionally the tasks it is for. For example: 2  or  0.5 review",
+			done: func(text string) tea.Cmd {
+				return p.benchDo("weight", append([]string{id}, strings.Fields(text)...)...)
+			}}
+		return nil
+	case "t":
+		if s.ID == "" || s.ID == "lmarena" {
+			p.notice = s.Name + " is read by afk bench sync (s)"
+			return nil
+		}
+		return p.run("bench", "source", "test", s.ID)
+	case "x":
+		switch {
+		case !s.Own:
+			p.notice = s.Name + " is built in; space turns it off"
+		case armed == "bench:"+s.ID:
+			return p.benchDo("rm", s.ID)
+		default:
+			p.cfgRemove = "bench:" + s.ID
+			p.notice = "press x again to remove " + s.Name
+		}
+	}
+	return nil
 }
 
 func (p *Panel) benchTaskLine() line {
@@ -256,17 +338,34 @@ func runnerUp(routes []engine.Route, best engine.Route) (engine.Route, bool) {
 func (p *Panel) benchSourceLines(w int) ([]line, line) {
 	t := p.theme
 	v := p.data.bench
-	out := []line{{sg(t.Dim, "   on  "+col("source", 24)+col("measures", 34)+"used for")}}
+	nw, mw := 22, 32
+	if w < 100 {
+		mw = 24
+	}
+	out := []line{{sg(t.Dim, "   on  "+col("source", nw)+col("measures", mw)+col("weight", 9)+"used for")}}
+	own := false
 	for i, s := range v.Sources {
 		dot := t.dot("")
 		nst := t.Dim
-		switch {
-		case !s.Read:
-		case s.On:
+		if s.On {
 			dot, nst = t.dot("ok"), t.Plain
 		}
-		row := line{sg(t.Plain, "   "), dot, sg(t.Plain, "   "), sg(nst, col(s.Name, 24)), sg(t.Dim, col(s.Measures, 34)), sg(t.Dim, s.UsedFor)}
+		name := s.Name
+		if s.Own {
+			name += " ·yours"
+			own = true
+		}
+		wt := s.Weight
+		if wt == "" {
+			wt = "–"
+		} else if strings.Contains(wt, " ") {
+			wt = "per task"
+		}
+		row := line{sg(t.Plain, "   "), dot, sg(t.Plain, "   "), sg(nst, col(name, nw-1)+" "), sg(t.Dim, col(s.Measures, mw-1)+" "), sg(t.Plain, col(wt, 9)), sg(t.Dim, s.UsedFor)}
 		out = append(out, p.selRow(row, i, w))
+	}
+	if !own {
+		out = append(out, line{sg(t.Dim, "   "), sg(t.Key, "a"), sg(t.Dim, " adds a leaderboard of your own: a JSON, YAML or CSV file or URL")})
 	}
 	if len(v.Sources) > 0 {
 		s := v.Sources[min(p.sel[TabBench], len(v.Sources)-1)]
@@ -279,14 +378,31 @@ func (p *Panel) benchSourceLines(w int) ([]line, line) {
 		if !s.On {
 			state = "off"
 		}
-		switch {
-		case !s.Read:
-			body = append(body, nil, line{sg(t.Warn, "AFK doesn't read this source yet, so none of the scores come from it.")})
-		case s.Key != "":
-			body = append(body, nil, line{sg(t.Dim, "setting  "), sg(t.Plain, s.Key+" = "+state), sg(t.Dim, "   "), sg(t.Key, "space"), sg(t.Dim, " turns it "+map[bool]string{true: "off", false: "on"}[s.On])})
+		body = append(body, nil)
+		if s.Where != "" {
+			body = append(body, t.field("from", sg(t.Plain, truncate(s.Where, bx-16))))
+		}
+		if s.Key != "" {
+			body = append(body, t.field("setting", sg(t.Plain, s.Key+" = "+state), sg(t.Dim, "   "), sg(t.Key, "space"), sg(t.Dim, " turns it "+map[bool]string{true: "off", false: "on"}[s.On])))
+		}
+		if s.Weight != "" {
+			body = append(body, t.field("weight", sg(t.Plain, s.Weight), sg(t.Dim, "   "), sg(t.Key, "w"), sg(t.Dim, " changes it")))
 		}
 		if s.Status != "" {
-			body = append(body, line{sg(t.Dim, "last sync "), sg(t.Plain, s.Status)})
+			for i, l := range wrap(s.Status, bx-16) {
+				lab := "last sync"
+				if i > 0 {
+					lab = ""
+				}
+				body = append(body, t.field(lab, sg(t.Plain, l)))
+			}
+		}
+		if s.ID != "" && s.ID != "lmarena" {
+			hint := line{sg(t.Key, "t"), sg(t.Dim, " reads it now and shows which models it matched")}
+			if s.Own {
+				hint = append(hint, sg(t.Dim, "   "), sg(t.Key, "x"), sg(t.Dim, " removes it"))
+			}
+			body = append(body, nil, hint)
 		}
 		out = append(out, nil, t.top(s.Name, bx, t.Border))
 		for _, l := range body {
@@ -295,10 +411,10 @@ func (p *Panel) benchSourceLines(w int) ([]line, line) {
 		out = append(out, t.bottom(bx, t.Border))
 	}
 	out = append(out, nil)
-	for _, l := range wrap("Each kind of task is scored by one source today: the leaderboard that measures that kind of work, else AFK's built-in estimate, marked as one. Your ratings then move a model up or down once it has a few rated runs.", max(w-2, 20)) {
+	for _, l := range wrap("When several sources score the same kind of task, AFK averages their scores by weight; Why AFK picks shows each part. A source that doesn't list a model adds nothing for it, since most boards are slow to add new models. An estimate is never averaged with a measurement. Changes apply at the next sync (s).", max(w-2, 20)) {
 		out = append(out, line{sg(t.Dim, " "+l)})
 	}
-	return out, line{sg(t.Key, "space"), sg(t.Dim, " on/off  "), sg(t.Key, "s"), sg(t.Dim, " sync now  ")}
+	return out, line{sg(t.Key, "space"), sg(t.Dim, " on/off  "), sg(t.Key, "a"), sg(t.Dim, " add  "), sg(t.Key, "w"), sg(t.Dim, " weight  "), sg(t.Key, "t"), sg(t.Dim, " test  "), sg(t.Key, "s"), sg(t.Dim, " sync now  ")}
 }
 
 func (p *Panel) benchWhyLines(w int) ([]line, line) {
@@ -329,7 +445,23 @@ func (p *Panel) benchWhyLines(w int) ([]line, line) {
 	}
 	r := rs[min(p.sel[TabBench], len(rs)-1)]
 	bx := boxW(w)
-	body := []line{t.field("benchmark", sg(t.Plain, fmt.Sprintf("%6s", scoreText(r.BenchmarkScore))), sg(t.Dim, "  "+r.BenchmarkName+" ("+r.BenchmarkBasis+")"))}
+	var body []line
+	if len(r.BenchmarkParts) > 0 {
+		body = append(body, t.field("benchmark", sg(t.Plain, fmt.Sprintf("%6s", scoreText(r.BenchmarkScore))), sg(t.Dim, "  weighted average of "+itoaN(len(r.BenchmarkParts))+" sources ("+r.BenchmarkBasis+")")))
+		for _, bp := range r.BenchmarkParts {
+			st := t.Plain
+			note := "  × " + trimFloat(bp.Weight)
+			if bp.Weight == 0 {
+				st, note = t.Dim, "  × 0, left out"
+			}
+			if bp.Carried {
+				note += " · last sync"
+			}
+			body = append(body, t.field("", sg(t.Dim, " "), sg(st, fmt.Sprintf("%5.1f", bp.Score)+"  "+bp.Label), sg(t.Dim, note)))
+		}
+	} else {
+		body = append(body, t.field("benchmark", sg(t.Plain, fmt.Sprintf("%6s", scoreText(r.BenchmarkScore))), sg(t.Dim, "  "+r.BenchmarkName+" ("+r.BenchmarkBasis+")")))
+	}
 	for _, pt := range r.ScoreParts {
 		st := t.OK
 		if pt.Points < 0 {
@@ -349,4 +481,40 @@ func (p *Panel) benchWhyLines(w int) ([]line, line) {
 		out = append(out, line{sg(t.Dim, " "+l)})
 	}
 	return out, line{sg(t.Key, "←→"), sg(t.Dim, " task  ")}
+}
+
+func trimFloat(f float64) string { return strconv.FormatFloat(f, 'f', -1, 64) }
+
+// splitArgs splits a typed line into words, keeping a "quoted part" or
+// 'quoted part' whole.
+func splitArgs(s string) []string {
+	var out []string
+	var cur strings.Builder
+	var q rune
+	in := false
+	for _, r := range s {
+		switch {
+		case q != 0:
+			if r == q {
+				q = 0
+			} else {
+				cur.WriteRune(r)
+			}
+		case r == '"' || r == '\'':
+			q, in = r, true
+		case r == ' ' || r == '\t':
+			if in {
+				out = append(out, cur.String())
+				cur.Reset()
+				in = false
+			}
+		default:
+			cur.WriteRune(r)
+			in = true
+		}
+	}
+	if in {
+		out = append(out, cur.String())
+	}
+	return out
 }

@@ -120,6 +120,10 @@ type Options struct {
 	// 0 keeps none (callers pass DefaultCarry for the usual 14 days).
 	Carry time.Duration
 	Feeds Fetcher
+	// Sources are the extra leaderboards that are turned on, and Weights
+	// their weight per task kind (bench.weights.<kind>.<source>).
+	Sources []Source
+	Weights map[string]map[string]float64
 }
 
 // Feeds is the state of each feed in a receipt.
@@ -130,6 +134,8 @@ type Feeds struct {
 	SWEBench           string `json:"swe_bench_official"`
 	ModelsDev          string `json:"models_dev"`
 	ArtificialAnalysis string `json:"artificial_analysis"`
+	// Sources is each extra leaderboard's state, by source id.
+	Sources map[string]string `json:"sources,omitempty"`
 }
 
 // Receipt is what a sync reports (afk-benchmark-sync/3).
@@ -364,6 +370,29 @@ func Sync(ctx context.Context, o Options) (Receipt, int) {
 		}
 	}
 
+	var srcs []sourceBoard
+	srcErr := map[string]error{}
+	for _, src := range o.Sources {
+		sb := sourceBoard{src: src}
+		var err error
+		sf, ok := o.Feeds.(SourceFetcher)
+		if !ok {
+			err = errors.New("no way to read it")
+		}
+		var b []byte
+		if err == nil {
+			b, err = sf.FetchSource(ctx, src)
+		}
+		if err == nil {
+			var bd Board
+			if bd, err = ReadBoard(src, b); err == nil {
+				sb.rows, sb.live = bd.Rows, true
+			}
+		}
+		srcErr[src.ID] = err
+		srcs = append(srcs, sb)
+	}
+
 	var prev map[string]any
 	if b, err := os.ReadFile(o.Out); err == nil {
 		if p, err := decodeObject(b); err == nil && p["schema"] == SchemaCatalog && isArray(p["candidates"]) {
@@ -371,6 +400,24 @@ func Sync(ctx context.Context, o Options) (Receipt, int) {
 		}
 	}
 	anyBoard := len(boards) > 0
+	// A source counts as a reachable board only when it scores one of the
+	// catalog's models; otherwise a sync with LMArena down would rewrite
+	// the catalog, look fresh for a day and not retry LMArena.
+	for _, sb := range srcs {
+		anyBoard = anyBoard || matchedCount(base, sb) > 0
+	}
+	if len(srcs) > 0 {
+		feeds.Sources = map[string]string{}
+		for _, sb := range srcs {
+			feeds.Sources[sb.src.ID] = sourceStatus(sb, srcErr[sb.src.ID], matchedCount(base, sb))
+		}
+		if st, ok := feeds.Sources["swebench"]; ok {
+			feeds.SWEBench = st
+		}
+		if st, ok := feeds.Sources["artificialanalysis"]; ok {
+			feeds.ArtificialAnalysis = st
+		}
+	}
 	result, rc := "synced", ExitSynced
 	if !anyBoard {
 		result, rc = "feeds_unavailable", ExitUnavailable
@@ -381,6 +428,7 @@ func Sync(ctx context.Context, o Options) (Receipt, int) {
 			ag: boards[FeedAgent], wd: boards[FeedWebdev], tx: boards[FeedText],
 			agLive: boards[FeedAgent] != nil, wdLive: boards[FeedWebdev] != nil, txLive: boards[FeedText] != nil,
 			md: mdev, mdLive: mdLive, prev: prevByID(prev),
+			sources: srcs, weights: o.Weights,
 		}
 		doc := s.catalog(base, feeds)
 		b, err := json.MarshalIndent(doc, "", "  ")

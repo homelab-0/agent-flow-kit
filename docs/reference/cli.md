@@ -10,6 +10,8 @@ afk harness doctor|login|add|update|remove <name>   check, sign in, install
 afk harness scan [--json]          ask every installed CLI again for its plan, models and usage
 afk harness update --all            update every installed CLI with something newer
 afk bench sync [--json]            refresh the benchmark catalog now
+afk bench source list|add|test|on|off|rm   the leaderboards AFK blends
+afk bench weight <source> <weight> [tasks]  a leaderboard's weight in the blend
 afk skills status|sync|diff|keep|restore|enable|disable|new   your skills in every CLI
 afk mcp status|sync|test|keep|restore|enable|disable|edit|path   your MCP servers in every CLI
 afk status [--tab <tab>]           the control panel on its own
@@ -81,6 +83,21 @@ Refreshes `~/.config/afk/benchmarks.json` from the public leaderboards; see [ref
 | `--json` | print the receipt, schema `afk-benchmark-sync/3` |
 
 It exits 0 when at least one leaderboard was read, 3 when none was reachable (the previous catalog is kept), and 1 when the catalog could not be written.
+
+## `afk bench source`
+
+```text
+afk bench source [list]                       every source, on or off, and the tasks it scores
+afk bench source add <id> <url|file> [tasks]  add a leaderboard of your own
+      [--name N] [--rows PATH] [--model FIELD] [--score FIELD] [--lower]
+      [--format json|yaml|csv] [--weight W] [--key env:NAME --key-header H] [--no-check]
+afk bench source test <id>                    read it now: the fields used, the top rows, the models it matched
+afk bench source on|off <id>                  turn a source on or off
+afk bench source rm <id>                      remove a source you added
+afk bench weight <id> <weight> [tasks]        set bench.weights.<task>.<id> for each task
+```
+
+`tasks` is comma-separated: `complex`, `standard`, `review`, `architecture`, `security`, `webdev`, `research`, `frontier`, or the full names; `add` defaults to `complex`. `add` reads the source once and saves it only when AFK could read a score for at least one model (`--no-check` saves it anyway); the fields it found are saved with it. See [your own sources](benchmark-catalog.md#your-own-sources).
 
 ## `afk skills`
 

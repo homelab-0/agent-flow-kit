@@ -245,7 +245,7 @@ autosync = false
 [bench.sources]
 lmarena = { enabled = true }
 modelsdev = { enabled = false }
-[bench.weights.coding]
+[bench.weights.coding_complex]
 swebench = 0.6
 lmarena = 0.4
 [serve]
@@ -569,5 +569,23 @@ func TestLocalEngines(t *testing.T) {
 	_, err := Resolve(f.env())
 	if err == nil || !strings.Contains(err.Error(), "local.engines") || !strings.Contains(err.Error(), "local.urls") || strings.Contains(err.Error(), "secret") {
 		t.Errorf("bad [local]: %v", err)
+	}
+}
+
+func TestBenchCustomValidation(t *testing.T) {
+	for _, c := range []struct {
+		toml string
+		ok   bool
+	}{
+		{"[bench.custom.a]\nurl = \"http://[::1]:8000/b.json\"\n", true},
+		{"[bench.custom.a]\nurl = \"http://example.com/b.json\"\n", false},
+		{"[bench.custom.a]\nurl = \"https://u:p@example.com/b.json\"\n", false},
+		{"[bench.custom.a]\nurl = \"https://example.com/b.json\"\nweight = nan\n", false},
+		{"[bench.weights.coding_review]\na = inf\n", false},
+	} {
+		_, err := Parse("config.toml", []byte("version = 1\n"+c.toml))
+		if (err == nil) != c.ok {
+			t.Errorf("%q: err %v", c.toml, err)
+		}
 	}
 }

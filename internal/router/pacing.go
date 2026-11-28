@@ -21,6 +21,9 @@ type Pacing = engine.Pacing
 // ScorePart is one adjustment to a route's score.
 type ScorePart = engine.ScorePart
 
+// BenchPart is one leaderboard's share of a blended score.
+type BenchPart = engine.BenchPart
+
 // Window lengths AFK knows.
 var windowLength = map[string]time.Duration{
 	"5h":     5 * time.Hour,

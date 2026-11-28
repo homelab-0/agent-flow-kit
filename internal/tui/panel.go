@@ -80,6 +80,9 @@ type PanelSource interface {
 	// MCPTools connects to a server, lists its tools and records the
 	// result as a test.
 	MCPTools(ctx context.Context, server string) ([]MCPTool, error)
+	// BenchDo changes a benchmark source in place (add, rm, weight) and
+	// returns what to tell the user.
+	BenchDo(ctx context.Context, op string, args ...string) (string, error)
 	// ClearMarks removes every failed-run mark that set a plan aside and
 	// returns what to tell the user.
 	ClearMarks(ctx context.Context) (string, error)
@@ -418,6 +421,12 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			p.notice = msg.err.Error()
 		}
 		return p.load(TabRuns)
+	case benchDoneMsg:
+		p.notice = msg.text
+		if msg.err != nil {
+			p.notice = msg.err.Error()
+		}
+		return p.load(TabBench)
 	case skillsDoneMsg:
 		p.notice = msg.text
 		if msg.err != nil {
@@ -588,16 +597,10 @@ func (p *Panel) key(k string) tea.Cmd {
 			return p.load(TabBench)
 		case "s":
 			return p.run("bench", "sync")
-		case "space", " ":
-			if p.viewOf(TabBench) != benchSources || len(p.data.bench.Sources) == 0 {
-				return nil
+		case "space", " ", "a", "w", "t", "x":
+			if p.viewOf(TabBench) == benchSources {
+				return p.benchSourceKey(k, armed)
 			}
-			s := p.data.bench.Sources[min(p.sel[TabBench], len(p.data.bench.Sources)-1)]
-			if !s.Read || s.Key == "" {
-				p.notice = s.Name + ": AFK doesn't read it yet, so there is nothing to turn on"
-				return nil
-			}
-			return p.configSave(s.Key, map[bool]string{true: "off", false: "on"}[s.On])
 		}
 	case TabConfig:
 		switch k {

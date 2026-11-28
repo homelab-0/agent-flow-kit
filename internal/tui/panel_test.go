@@ -43,11 +43,13 @@ func (fakePanel) Benchmarks(_ context.Context, task string) (*BenchView, error) 
 		{Harness: "codex", Model: "gpt-6.1-sol", Effort: "medium", BenchmarkScore: f(76.4), BenchmarkName: "LMArena Agent #2", BenchmarkBasis: "measured", EffectiveScore: f(71.8), PoolHeadroomPct: f(52),
 			ScoreParts: []engine.ScorePart{{Label: "plan headroom 52%", Points: 1.69}, {Label: "your ratings of 10 runs", Points: -6.29}}},
 		{Harness: "claude", Model: "claude-fable-5-2", Effort: "high", BenchmarkScore: f(78.1), BenchmarkName: "LMArena Agent #1", BenchmarkBasis: "measured", EffectiveScore: f(80.6), PoolHeadroomPct: f(78),
-			ScoreParts: []engine.ScorePart{{Label: "plan headroom 78%", Points: 2.54}}},
+			ScoreParts:     []engine.ScorePart{{Label: "plan headroom 78%", Points: 2.54}},
+			BenchmarkParts: []engine.BenchPart{{Source: "lmarena", Label: "LMArena Agent #1", Score: 98, Weight: 1}, {Source: "swebench", Label: "SWE-bench Verified #3 (74.2)", Score: 95.7, Weight: 1, Carried: true}, {Source: "aider", Label: "Aider Polyglot #9 (61)", Score: 90.3, Weight: 0}}},
 		{LaunchClass: "claude-local", Engine: "ollama", Model: "qwen36-14b", BenchmarkScore: f(51), EffectiveScore: f(51)},
 	}, Sources: []BenchSource{
 		{Key: "bench.sources.lmarena.enabled", Name: "LMArena", Measures: "rank on human-vote boards", UsedFor: "complex, review, webdev", On: true, Read: true, Status: "agent live, webdev live", About: "LMArena's leaderboards."},
-		{Name: "SWE-bench Verified", Measures: "% of real issues solved", UsedFor: "—", Read: false, About: "Real GitHub issues."},
+		{ID: "swebench", Key: "bench.sources.swebench.enabled", Name: "SWE-bench Verified", Measures: "% of real issues solved", UsedFor: "complex, standard", On: true, Read: true, Weight: "1", Status: "80 models, 0 matched", About: "Real GitHub issues."},
+		{ID: "my-evals", Key: "bench.custom.my-evals.enabled", Name: "my-evals", Own: true, Where: "https://example.com/board.json", Measures: "", UsedFor: "review", On: true, Read: true, Weight: "review 2", About: "Your own source."},
 	}}, nil
 }
 
@@ -114,6 +116,11 @@ func (fakePanel) MCP(context.Context) (*MCPView, error) {
 		},
 		Project: "~/repos/prox-ops/.mcp.json", Undecided: 1,
 		Drift: []MCPDrift{{Server: "github", Harness: "codex", File: "~/.codex/config.toml"}}}, nil
+}
+
+func (p *fakePanel) BenchDo(_ context.Context, op string, args ...string) (string, error) {
+	p.ran = append(p.ran, append([]string{"bench", op}, args...))
+	return "did " + op, nil
 }
 
 func (p *fakePanel) MCPDo(_ context.Context, op string, args ...string) (string, error) {
@@ -1058,7 +1065,7 @@ func TestBenchViews(t *testing.T) {
 	}
 	p.Update(key("]"))
 	s := panelText(p)
-	for _, want := range []string{"LMArena", "rank on human-vote boards", "SWE-bench Verified", "setting  bench.sources.lmarena.enabled = on", "space turns it off"} {
+	for _, want := range []string{"LMArena", "rank on human-vote boards", "SWE-bench Verified", "my-evals ·yours", "per task", "setting   bench.sources.lmarena.enabled = on", "space turns it off", "averages their scores by weight"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("sources: missing %q in\n%s", want, s)
 		}
@@ -1068,10 +1075,60 @@ func TestBenchViews(t *testing.T) {
 		t.Fatal("space didn't toggle the source")
 	}
 	cmd()
-	p.Update(key("down"))
-	if p.Update(key(" ")) != nil || !strings.Contains(p.notice, "doesn't read it yet") {
-		t.Errorf("space on a source AFK doesn't read: notice %q", p.notice)
+	// LMArena isn't blended by weight here, so w says so.
+	if p.Update(key("w")) != nil || !strings.Contains(p.notice, "has no weight") {
+		t.Errorf("w on LMArena: %q", p.notice)
 	}
+	p.Update(key("down"))
+	s = panelText(p)
+	for _, want := range []string{"weight    1", "w changes it", "t reads it now", "80 models, 0 matched"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("swebench box: missing %q in\n%s", want, s)
+		}
+	}
+	p.Update(key("w"))
+	for _, k := range []string{"2", "space", "r", "e", "v", "i", "e", "w"} {
+		p.Update(key(k))
+	}
+	cmd = p.Update(key("enter"))
+	cmd()
+	if got := strings.Join(src.ran[len(src.ran)-1], " "); got != "bench weight swebench 2 review" {
+		t.Errorf("weight ran %q", got)
+	}
+	if p.Update(key("x")) != nil || !strings.Contains(p.notice, "built in") {
+		t.Errorf("x on a built-in: %q", p.notice)
+	}
+	p.Update(key("down"))
+	s = panelText(p)
+	if !strings.Contains(s, "x removes it") || !strings.Contains(s, "from      https://example.com/board.json") {
+		t.Errorf("own box:\n%s", s)
+	}
+	if p.Update(key("x")) != nil || !strings.Contains(p.notice, "press x again") {
+		t.Errorf("first x: %q", p.notice)
+	}
+	cmd = p.Update(key("x"))
+	if cmd == nil {
+		t.Fatal("second x didn't remove")
+	}
+	cmd()
+	if got := strings.Join(src.ran[len(src.ran)-1], " "); got != "bench rm my-evals" {
+		t.Errorf("rm ran %q", got)
+	}
+	p.Update(key("a"))
+	for _, r := range "x https://e.com/b.csv complex" {
+		k := string(r)
+		if k == " " {
+			k = "space"
+		}
+		p.Update(key(k))
+	}
+	cmd = p.Update(key("enter"))
+	cmd()
+	if got := strings.Join(src.ran[len(src.ran)-1], " "); got != "bench add x https://e.com/b.csv complex" {
+		t.Errorf("add ran %q", got)
+	}
+	p.Update(key("up"))
+	p.Update(key("up"))
 	p.Update(key("]"))
 	p.Update(key("down"))
 	s = panelText(p)
@@ -1079,5 +1136,19 @@ func TestBenchViews(t *testing.T) {
 		if !strings.Contains(s, want) {
 			t.Errorf("why: missing %q in\n%s", want, s)
 		}
+	}
+	p.Update(key("up"))
+	s = panelText(p)
+	for _, want := range []string{"weighted average of 3 sources (measured)", "98.0  LMArena Agent #1  × 1", "95.7  SWE-bench Verified #3 (74.2)  × 1 · last sync", "90.3  Aider Polyglot #9 (61)  × 0, left out"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("why parts: missing %q in\n%s", want, s)
+		}
+	}
+}
+
+func TestSplitArgs(t *testing.T) {
+	got := splitArgs(`my-evals "/home/me/My Boards/r.csv" review`)
+	if len(got) != 3 || got[1] != "/home/me/My Boards/r.csv" {
+		t.Errorf("%q", got)
 	}
 }

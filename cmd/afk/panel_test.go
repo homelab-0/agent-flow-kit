@@ -385,7 +385,26 @@ func TestBenchSources(t *testing.T) {
 	if s := by["LMArena"]; !s.On || !strings.Contains(s.Status, "agent read, webdev offline, text never synced") {
 		t.Errorf("lmarena %+v", s)
 	}
-	if by["models.dev"].On || !by["Your ratings"].On || by["SWE-bench Verified"].Read {
+	if by["models.dev"].On || !by["Your ratings"].On {
 		t.Errorf("sources %+v", src)
+	}
+	if s := by["SWE-bench Verified"]; !s.On || s.Key != "bench.sources.swebench.enabled" || s.Weight != "1" || s.UsedFor != "complex, standard, review" {
+		t.Errorf("swebench %+v", s)
+	}
+	if s := by["Artificial Analysis"]; s.On || s.Status != "off" {
+		t.Errorf("artificial analysis is off until you turn it on: %+v", s)
+	}
+	// A weight set for one task shows per task.
+	st.BenchWeights = map[string]map[string]float64{"coding_review": {"swebench": 2}}
+	st.BenchCustom = map[string]config.BenchCustom{"my-evals": {URL: "https://example.com/b.json", Tasks: []string{"research"}}}
+	by = map[string]tui.BenchSource{}
+	for _, s := range benchSources(cat, st) {
+		by[s.Name] = s
+	}
+	if s := by["SWE-bench Verified"]; s.Weight != "complex 1, standard 1, review 2" {
+		t.Errorf("per-task weight %q", s.Weight)
+	}
+	if s := by["my-evals"]; !s.Own || s.Where != "https://example.com/b.json" || s.Key != "bench.custom.my-evals.enabled" || !s.On {
+		t.Errorf("own source %+v", s)
 	}
 }

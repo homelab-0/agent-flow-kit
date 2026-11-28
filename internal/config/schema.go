@@ -9,10 +9,12 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"net"
 	"net/url"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -127,10 +129,36 @@ type Local struct {
 // Bench is the benchmark catalog's sources.
 type Bench struct {
 	// Autosync false stops the daily background refresh.
-	Autosync *bool                         `toml:"autosync,omitempty"`
-	Sources  map[string]BenchSource        `toml:"sources,omitempty"`
-	Weights  map[string]map[string]float64 `toml:"weights,omitempty"`  // reserved
+	Autosync *bool                  `toml:"autosync,omitempty"`
+	Sources  map[string]BenchSource `toml:"sources,omitempty"`
+	// Weights is each source's weight per task kind:
+	// [bench.weights.coding_complex] swebench = 2.
+	Weights  map[string]map[string]float64 `toml:"weights,omitempty"`
 	Override map[string]map[string]float64 `toml:"override,omitempty"` // reserved
+	// Custom are leaderboards of the user's own: [bench.custom.<id>].
+	Custom map[string]BenchCustom `toml:"custom,omitempty"`
+}
+
+// BenchCustom is a leaderboard the user added. AFK fetches url (or reads
+// file), takes the rows at rows, and reads each row's model and score
+// fields; an empty field is detected. tasks are the task kinds its score
+// counts for. key, when set, is a reference to an API key (env:NAME only)
+// sent in key_header.
+type BenchCustom struct {
+	Name      string   `toml:"name,omitempty"`
+	URL       string   `toml:"url,omitempty"`
+	File      string   `toml:"file,omitempty"`
+	Format    string   `toml:"format,omitempty"`
+	Rows      string   `toml:"rows,omitempty"`
+	Model     string   `toml:"model,omitempty"`
+	Score     string   `toml:"score,omitempty"`
+	Lower     *bool    `toml:"lower,omitempty"`
+	Tasks     []string `toml:"tasks,omitempty"`
+	Weight    *float64 `toml:"weight,omitempty"`
+	Key       string   `toml:"key,omitempty"`
+	KeyHeader string   `toml:"key_header,omitempty"`
+	Measures  string   `toml:"measures,omitempty"`
+	Enabled   *bool    `toml:"enabled,omitempty"`
 }
 
 // BenchSource turns one benchmark feed on or off.
@@ -173,8 +201,29 @@ var (
 	LocalModes = []string{"auto", "off"}
 	Engines    = []string{"vllm", "ollama", "llamacpp", "lmstudio", "sglang", "tgi", "localai", "mlx"}
 	Formats    = []string{"openai-chat", "openai-responses", "anthropic-messages"}
-	BenchSrcs  = []string{"lmarena", "modelsdev", "swebench", "artificialanalysis", "own"}
+	BenchSrcs  = []string{"lmarena", "modelsdev", "swebench", "aider", "artificialanalysis", "own"}
+	// BenchTasks are the task kinds a benchmark source can score.
+	BenchTasks   = []string{"coding_complex", "coding_standard", "coding_review", "architecture", "security", "webdev", "research", "frontier_synthesis"}
+	BenchFormats = []string{"json", "yaml", "csv"}
+	benchIDRE    = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
 )
+
+// benchURLOK is an https:// URL, or http:// on this machine, without
+// user info.
+func benchURLOK(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.User != nil || u.Host == "" {
+		return false
+	}
+	switch u.Scheme {
+	case "https":
+		return true
+	case "http":
+		h := u.Hostname()
+		return h == "localhost" || h == "127.0.0.1" || h == "::1"
+	}
+	return false
+}
 
 // ModeRank orders the permission modes from strictest to loosest.
 func ModeRank(m string) int {
@@ -309,10 +358,52 @@ func (c *Config) validate(file string, lines map[string]int) []Problem {
 			bad("bench.sources."+n, "unknown source; known: %s", strings.Join(BenchSrcs, ", "))
 		}
 	}
+	for _, id := range sortedKeys(c.Bench.Custom) {
+		b, k := c.Bench.Custom[id], "bench.custom."+id
+		switch {
+		case !benchIDRE.MatchString(id):
+			bad(k, "a source id is lower-case letters, digits and dashes")
+		case contains(BenchSrcs, id):
+			bad(k, "%s is a built-in source's id; pick another", id)
+		}
+		switch {
+		case b.URL == "" && b.File == "":
+			bad(k, "needs a url or a file")
+		case b.URL != "" && b.File != "":
+			bad(k, "takes a url or a file, not both")
+		case b.URL != "" && !benchURLOK(b.URL):
+			bad(k+".url", "must be https:// (or http:// on this machine), with no user name or password")
+		case b.File != "" && !strings.HasPrefix(b.File, "/") && !strings.HasPrefix(b.File, "~/"):
+			bad(k+".file", "must be an absolute path or a path under ~")
+		}
+		if b.Format != "" {
+			oneOf(k+".format", b.Format, BenchFormats)
+		}
+		for _, t := range b.Tasks {
+			if !contains(BenchTasks, t) {
+				bad(k+".tasks", "unknown task kind %q; known: %s", t, strings.Join(BenchTasks, ", "))
+			}
+		}
+		if b.Weight != nil && (*b.Weight < 0 || math.IsNaN(*b.Weight) || math.IsInf(*b.Weight, 0)) {
+			bad(k+".weight", "a weight is a number of 0 or more")
+		}
+		if b.Key != "" {
+			if r, err := ParseSecretRef(b.Key); err != nil {
+				bad(k+".key", "%s", err)
+			} else if r.Kind != "env" {
+				bad(k+".key", "a source's key must be env:NAME")
+			} else if b.KeyHeader == "" {
+				bad(k+".key_header", "a key needs the header to send it in")
+			}
+		}
+	}
 	for _, kind := range sortedKeys(c.Bench.Weights) {
+		if !contains(BenchTasks, kind) {
+			bad("bench.weights."+kind, "unknown task kind; known: %s", strings.Join(BenchTasks, ", "))
+		}
 		for _, src := range sortedKeys(c.Bench.Weights[kind]) {
-			if w := c.Bench.Weights[kind][src]; w < 0 {
-				bad("bench.weights."+kind+"."+src, "a weight can't be negative")
+			if w := c.Bench.Weights[kind][src]; w < 0 || math.IsNaN(w) || math.IsInf(w, 0) {
+				bad("bench.weights."+kind+"."+src, "a weight is a number of 0 or more")
 			}
 		}
 	}

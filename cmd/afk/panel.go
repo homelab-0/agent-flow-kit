@@ -389,8 +389,8 @@ func benchSources(cat *router.Catalog, st core.Settings) []tui.BenchSource {
 		}
 	}
 	on := func(src string) bool { return st.BenchSourceOn(src) }
-	return []tui.BenchSource{
-		{Key: "bench.sources.lmarena.enabled", Name: "LMArena", Measures: "rank on human-vote leaderboards", UsedFor: "complex, review, webdev, research",
+	out := []tui.BenchSource{
+		{Key: "bench.sources.lmarena.enabled", ID: "lmarena", Weight: weightText(st.BenchWeights, "lmarena", []string{"coding_complex", "coding_review", "architecture", "webdev", "research"}, 1), Name: "LMArena", Measures: "rank on human-vote leaderboards", UsedFor: "complex, review, webdev, research",
 			On: on("lmarena"), Read: true, Status: "agent " + feed("lmarena_agent") + ", webdev " + feed("lmarena_webdev") + ", text " + feed("lmarena_text") + when,
 			About: "Three LMArena boards: Agent for complex builds, reviews and architecture; WebDev for web work; Text (reasoning) for research and half of architecture. A model's rank on the board becomes a 0-98 score, so the top model scores highest."},
 		{Key: "bench.sources.modelsdev.enabled", Name: "models.dev", Measures: "context window sizes", UsedFor: "fitting tasks to windows",
@@ -402,11 +402,113 @@ func benchSources(cat *router.Catalog, st core.Settings) []tui.BenchSource {
 		{Name: "Built-in estimates", Measures: "AFK's own catalog figures", UsedFor: "tasks nothing else scores",
 			On: true, Read: true,
 			About: "A figure shipped with AFK for a model and kind of task that no leaderboard covers. It is always marked estimate, never measured."},
-		{Name: "SWE-bench Verified", Measures: "% of real GitHub issues solved", UsedFor: "—",
-			About: "The share of 500 real GitHub issues a model resolves with its own patch."},
-		{Name: "Artificial Analysis", Measures: "intelligence index", UsedFor: "—",
-			About: "Artificial Analysis's index. Its API needs a key, and AFK never handles one."},
 	}
+	srcState, _ := rec["sources"].(map[string]any)
+	for _, b := range benchSourceList(st, os.Getenv) {
+		key := "bench.sources." + b.ID + ".enabled"
+		if !b.Builtin {
+			key = "bench.custom." + b.ID + ".enabled"
+		}
+		status := "not synced yet"
+		if x, _ := srcState[b.ID].(string); x != "" {
+			status = strings.ReplaceAll(x, "_", " ") + when
+		} else if !b.On {
+			status = "off"
+		}
+		if b.On && b.KeyEnv != "" && b.Key == "" {
+			status = "needs your key in " + b.KeyEnv
+		}
+		about := b.About
+		if b.KeyEnv != "" && !b.Builtin {
+			about += " Its key is read from " + b.KeyEnv + "."
+		}
+		out = append(out, tui.BenchSource{Key: key, ID: b.ID, Name: b.Name, Measures: b.Measures, UsedFor: tasksText(b.Tasks),
+			On: b.On, Read: true, Status: status, About: about, Own: !b.Builtin, Where: map[bool]string{true: "", false: sourceWhere(b)}[b.Builtin],
+			Weight: weightText(st.BenchWeights, b.ID, b.Tasks, b.Weight)})
+	}
+	return out
+}
+
+// tasksText is a source's task kinds in their short names.
+func tasksText(kinds []string) string {
+	short := map[string]string{"coding_complex": "complex", "coding_standard": "standard", "coding_review": "review", "frontier_synthesis": "frontier"}
+	var out []string
+	for _, k := range kinds {
+		if s, ok := short[k]; ok {
+			k = s
+		}
+		out = append(out, k)
+	}
+	return strings.Join(out, ", ")
+}
+
+// weightText is a source's weight: one number when it is the same for
+// every task, else each task's.
+func weightText(w map[string]map[string]float64, id string, tasks []string, def float64) string {
+	var parts []string
+	same, first := true, -1.0
+	for _, k := range tasks {
+		v := def
+		if x, ok := w[k][id]; ok {
+			v = x
+		}
+		if first < 0 {
+			first = v
+		} else if v != first {
+			same = false
+		}
+		parts = append(parts, tasksText([]string{k})+" "+strconv.FormatFloat(v, 'f', -1, 64))
+	}
+	if same {
+		return strconv.FormatFloat(max(first, 0), 'f', -1, 64)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// BenchDo changes a benchmark source: add <id> <url|file> [tasks], rm
+// <id>, weight <id> <weight> [tasks].
+func (s panelSource) BenchDo(_ context.Context, op string, args ...string) (string, error) {
+	paths := config.PathsFor(s.c.Home, s.getenv)
+	st, err := config.Resolve(config.Env{Home: s.c.Home, Getenv: s.getenv})
+	if err != nil {
+		return "", err
+	}
+	list := benchSourceList(st, s.getenv)
+	switch op {
+	case "add":
+		msg, err := addBenchSource(paths, list, args)
+		if err != nil {
+			return "", err
+		}
+		// The probe's lines are for the terminal; the tab shows the gist.
+		lines := strings.Split(strings.TrimSpace(msg), "\n")
+		gist := lines[len(lines)-1]
+		for _, l := range lines {
+			if strings.Contains(l, "matched") {
+				gist = strings.TrimSpace(strings.TrimSuffix(l, ":")) + ". " + gist
+				break
+			}
+		}
+		return gist, nil
+	case "rm":
+		if len(args) != 1 {
+			return "", errors.New("name one source")
+		}
+		ok, err := config.RemoveSection(paths, "bench.custom."+args[0])
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			return "", fmt.Errorf("no source of yours called %s", args[0])
+		}
+		return "Removed " + args[0] + ".", nil
+	case "weight":
+		if len(args) < 2 || len(args) > 3 {
+			return "", errors.New("a weight is a number, then optionally the tasks it is for")
+		}
+		return setBenchWeight(paths, list, args)
+	}
+	return "", fmt.Errorf("unknown source action %s", op)
 }
 
 func localEngineOf(r *router.Router, u string) string {

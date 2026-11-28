@@ -149,7 +149,8 @@ type Route struct {
 	PacingAdjustment *float64 `json:"pacing_adjustment,omitempty"`
 	// ScoreParts are the points added to the benchmark score to make the
 	// effective score, each with what it's for, in the order applied.
-	ScoreParts []ScorePart `json:"score_parts,omitempty"`
+	ScoreParts     []ScorePart `json:"score_parts,omitempty"`
+	BenchmarkParts []BenchPart `json:"benchmark_parts,omitempty"`
 
 	// Set on the fallback route only.
 	NoEligibleCandidate  bool              `json:"no_eligible_candidate,omitempty"`
@@ -524,12 +525,14 @@ func (r *Router) Select(in Input) Route {
 		bm, hasBM := c.Benchmarks[tc]
 		var baseScore float64
 		scoreText := "75.0"
+		// The parts of the benchmark the score comes from.
+		bparts := bm.Parts
 		switch {
 		case hasBM && bm.Score != nil:
 			baseScore, scoreText = *bm.Score, bm.ScoreText()
 		case c.Benchmarks["coding_complex"].Score != nil:
 			cc := c.Benchmarks["coding_complex"]
-			baseScore, scoreText = *cc.Score, cc.ScoreText()
+			baseScore, scoreText, bparts = *cc.Score, cc.ScoreText(), cc.Parts
 		default:
 			baseScore = 75.0
 		}
@@ -717,7 +720,7 @@ func (r *Router) Select(in Input) Route {
 			BenchmarkSyncedAt: bm.SyncedAt, EffectiveScore: eff, CrossFamilyReview: &cross,
 			RouterSource: source, LitellmBaseURL: gwURL, AuthAlerts: alerts,
 			OutcomeRuns: outRuns, OutcomeAdjustment: outAdj,
-			Pacing: pool.Pacing, PacingAdjustment: paceAdj, ScoreParts: parts,
+			Pacing: pool.Pacing, PacingAdjustment: paceAdj, ScoreParts: parts, BenchmarkParts: bparts,
 		}
 		if engURL != nil {
 			le, _ := probe.localEngineAt(*engURL)

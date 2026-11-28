@@ -24,6 +24,8 @@ type Benchmark struct {
 	SyncedAt    *string  `json:"synced_at,omitempty"`
 	SyncedEpoch int64    `json:"synced_epoch,omitempty"`
 	Live        bool     `json:"live,omitempty"`
+	// Parts are the leaderboards a blended score was averaged from.
+	Parts []BenchPart `json:"parts,omitempty"`
 
 	scoreText string
 }

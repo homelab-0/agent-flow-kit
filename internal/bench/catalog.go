@@ -14,6 +14,8 @@ type syncer struct {
 	md                     map[string]map[string]any
 	mdLive                 bool
 	prev                   map[string]map[string]any
+	sources                []sourceBoard
+	weights                map[string]map[string]float64
 }
 
 // catalog is the base catalog with every candidate rescored and a
@@ -49,7 +51,7 @@ func (s *syncer) catalog(base map[string]any, feeds Feeds) map[string]any {
 		"lmarena_agent":       feeds.Agent,
 		"lmarena_webdev":      feeds.Webdev,
 		"lmarena_text":        feeds.Text,
-		"swe_bench_official":  "not_scored",
+		"swe_bench_official":  feeds.SWEBench,
 		"swe_bench_entries":   0,
 		"models_dev":          feeds.ModelsDev,
 		"artificial_analysis": feeds.ArtificialAnalysis,
@@ -59,6 +61,13 @@ func (s *syncer) catalog(base map[string]any, feeds Feeds) map[string]any {
 		// A general candidate a reachable agent board does not list by
 		// that name: either it is not ranked or its arena_match is wrong.
 		"unmatched": unmatched,
+	}
+	if len(feeds.Sources) > 0 {
+		src := map[string]any{}
+		for k, v := range feeds.Sources {
+			src[k] = v
+		}
+		doc["sync_receipt"].(map[string]any)["sources"] = src
 	}
 	return doc
 }
@@ -268,6 +277,7 @@ func (s *syncer) candidate(c map[string]any) map[string]any {
 		board("webdev", "lmarena_webdev", s.wdLive, wdHit, s.wd, "LMArena WebDev", "LMArena WebDev")
 		board("research", "lmarena_text", s.txLive, txHit, s.tx, "LMArena Reasoning", "LMArena Reasoning")
 	}
+	s.blend(c, bm, pcb, func(k string) map[string]any { return estimate(entry(base, k)) })
 	for k, v := range bm {
 		if v == nil {
 			delete(bm, k)
