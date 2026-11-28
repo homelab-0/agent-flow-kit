@@ -31,6 +31,9 @@ const (
 // taskKinds are what tab steps through in the composer.
 var taskKinds = []string{"auto", "coding", "quick", "complex", "review", "architecture", "webdev", "research", "security"}
 
+// exitHint is shown after one ctrl+c on an empty input.
+const exitHint = "press ctrl+c again to exit"
+
 const composePlaceholder = "Describe a task. AFK routes it to the right CLI."
 
 type (
@@ -50,8 +53,13 @@ func (m *Model) composeInit() tea.Cmd {
 	m.cin.CharLimit = 4000
 	m.introStart = m.opt.Now()
 	m.st = sCompose
+	if m.opt.Draft != "" {
+		m.cin.SetValue(m.opt.Draft)
+		m.cin.CursorEnd()
+	}
+	m.notice = m.opt.Notice
 	cmds := []tea.Cmd{m.previewCmd(), m.poolsCmd(), tea.RequestBackgroundColor, m.cin.Focus()}
-	if m.opt.Motion && m.opt.Header != nil && m.opt.Header.Art && !m.compact() {
+	if m.opt.Motion && !m.opt.Resumed && m.opt.Header != nil && m.opt.Header.Art && !m.compact() {
 		m.st = sIntro
 		cmds = append(cmds, m.escTick(time.Second/time.Duration(m.opt.FPS)))
 	} else if m.opt.Motion {
@@ -102,7 +110,26 @@ func (m *Model) composeKey(k tea.KeyPressMsg) tea.Cmd {
 	}
 	key := k.String()
 	m.notice = ""
+	armed := m.exitArmed
+	m.exitArmed = false
 	switch key {
+	case "ctrl+c":
+		// Like a shell: first clear what is typed, then ask once more
+		// before leaving, so a stray ctrl+c never drops out of AFK.
+		if m.cin.Value() != "" {
+			m.cin.SetValue("")
+			return nil
+		}
+		if armed {
+			return m.finish(Decision{Cancelled: true, Exit: true})
+		}
+		m.exitArmed = true
+		m.notice = exitHint
+		return nil
+	case "ctrl+d":
+		if m.cin.Value() == "" {
+			return m.finish(Decision{Cancelled: true, Exit: true})
+		}
 	case "enter":
 		return m.submit()
 	case "tab":
@@ -120,7 +147,9 @@ func (m *Model) composeKey(k tea.KeyPressMsg) tea.Cmd {
 			m.cin.SetValue("")
 			return nil
 		}
-		return m.finish(Decision{Cancelled: true})
+		// esc cancels things; it doesn't close AFK.
+		m.notice = "ctrl+c twice, or ctrl+d, to exit"
+		return nil
 	case "?":
 		if m.cin.Value() == "" {
 			m.help = !m.help
@@ -200,7 +229,7 @@ func (m *Model) composeLines() []line {
 			{sg(t.Key, "  ↵"), sg(t.Dim, " route the task (empty: open the CLI without one)")},
 			{sg(t.Key, "  tab"), sg(t.Dim, " task kind: "+strings.Join(taskKinds, ", "))},
 			{sg(t.Key, "  /harness /model /effort /prefer"), sg(t.Dim, " pin a choice  "), sg(t.Key, "/clear"), sg(t.Dim, " unpin")},
-			{sg(t.Key, "  esc"), sg(t.Dim, " clear the input, or quit")},
+			{sg(t.Key, "  esc"), sg(t.Dim, " clear the input  "), sg(t.Key, "ctrl+c"), sg(t.Dim, " twice, or "), sg(t.Key, "ctrl+d"), sg(t.Dim, ", exit")},
 		} {
 			out = append(out, fitLine(l, w))
 		}

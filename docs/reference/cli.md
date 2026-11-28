@@ -98,6 +98,6 @@ See [MCP servers](../guides/mcp.md#commands). `status`, `sync` and `test` take `
 | 4 | nothing usable for this task, or the route can't be launched |
 | 5 | `-p`: every attempt failed |
 | 127 | the CLI couldn't be started |
-| 130 | cancelled on the route card, or `-p` interrupted |
+| 130 | cancelled on the route card of `afk "prompt"`, left the composer before running anything, or `-p` interrupted |
 
-After an interactive session, `afk` exits with the CLI's own exit code.
+After an interactive session AFK goes back to its composer instead of exiting; leaving it after at least one session exits 0. With `--yes`, `afk` exits with the CLI's own exit code as soon as the CLI ends.
