@@ -27,7 +27,7 @@ const noTab Tab = -1
 // slashCmds are the composer's commands, in the order the menu lists them.
 func slashCmds() []slashCmd {
 	cmds := []slashCmd{}
-	for i := TabHarnesses; i <= TabConfig; i++ {
+	for i := TabHarnesses; i <= TabAPI; i++ {
 		name := strings.ToLower(tabNames[i])
 		if i == TabBench {
 			name = "bench"

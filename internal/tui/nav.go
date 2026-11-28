@@ -5,10 +5,10 @@ import (
 	"strings"
 )
 
-// The navigation strip: the seven places AFK has, shown the same way on
+// The navigation strip: the eight places AFK has, shown the same way on
 // the composer and on every tab, so they can always be seen and reached.
 //
-//	 1 Route  2 Harnesses  3 Benchmarks  4 Skills  5 MCP  6 Usage  7 Config       afk 0.4.0
+//	 1 Route  2 Harnesses  3 Benchmarks  4 Skills  5 MCP  6 Usage  7 Config  8 API
 //	─━━━━━━━━━────────────────────────────────────────────────────────────────────────────
 //
 // The open place is bright on the selection background with an accent
@@ -24,6 +24,7 @@ var tabBlurbs = []string{
 	"MCP servers, and which CLIs have them",
 	"what is left on each plan, gateways and local models, and what ran",
 	"every setting, changed in place",
+	"keys for a gateway or an app to call AFK with, and its server",
 }
 
 // navLines is the strip and the rule under it, w cells wide.
@@ -34,7 +35,10 @@ func (t Theme) navLines(active Tab, w int, right string) []line {
 	for i, n := range tabNames {
 		full += lenCells(fmt.Sprintf(" %d %s ", i+1, n))
 	}
-	short := full > w
+	// Between the two, the labels stay and the gap between places closes
+	// to one space.
+	tight := full > w
+	short := full-len(tabNames)+1 > w
 	l := line{sg(t.Plain, " ")}
 	rule := line{sg(t.Border, "─")}
 	for i, n := range tabNames {
@@ -44,6 +48,8 @@ func (t Theme) navLines(active Tab, w int, right string) []line {
 			cell = line{sg(t.Dim.Background(t.selbg), " "+num+" "), sg(t.Accent.Bold(true).Background(t.selbg), n+" ")}
 		} else if short {
 			cell = line{sg(t.Dim, " "+num+" ")}
+		} else if tight {
+			cell = line{sg(t.Dim, " "+num+" "), sg(t.Plain, n)}
 		} else {
 			cell = line{sg(t.Dim, " "+num+" "), sg(t.Plain, n+" ")}
 		}

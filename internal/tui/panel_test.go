@@ -96,6 +96,29 @@ func (p *fakePanel) ConfigRemove(_ context.Context, section string) (string, err
 	return section + " removed", nil
 }
 
+func (fakePanel) API(context.Context) (*APIView, error) {
+	now := time.Date(2026, 11, 27, 3, 31, 0, 0, time.UTC)
+	return &APIView{KeysPath: "~/.local/state/afk/keys.json",
+		Server:      ServerState{Listen: "127.0.0.1:8484"},
+		PlanWarning: "With this on, a call through an AFK key may run a CLI on its own sign-in.",
+		Keys: []KeyRow{
+			{Name: "litellm", Hint: "afk_1a2b3c4d_…", Kind: "router", PerMinute: 10, PerDay: 500, Concurrent: 2, Created: now, Runs: 12, LastRun: now.Add(-5 * time.Minute), Asks: "afk/auto, or afk/<task>"},
+			{Name: "grok-gw", Hint: "afk_9f8e7d6c_…", Kind: "harness", Harness: "grok", Display: "Grok", PerMinute: 6, PerDay: 200, Concurrent: 1, Dir: "/srv/work", Mode: "edits", Created: now, Asks: "grok/<model>"},
+		},
+		Kinds: []KeyKind{
+			{ID: "router", Label: "Any (AFK picks)", Desc: "a router key"},
+			{ID: "grok", Label: "Grok only", Desc: "a harness key", Warning: []string{"This key lets other programs use your Grok sign-in through AFK."}},
+		}}, nil
+}
+
+func (p *fakePanel) APIDo(_ context.Context, op string, args ...string) (*APIResult, error) {
+	p.ran = append(p.ran, append([]string{"api", op}, args...))
+	if op == "add" || op == "rotate" {
+		return &APIResult{Text: "Key " + args[0] + " made.", Name: args[0], Secret: "afk_" + args[0] + "_once", Lines: []string{"Model to ask for: afk/auto"}}, nil
+	}
+	return &APIResult{Text: "did " + op}, nil
+}
+
 func (p *fakePanel) ClearMarks(context.Context) (string, error) {
 	p.ran = append(p.ran, []string{"clear-marks"})
 	return "Cleared xai-grok.", nil
@@ -272,7 +295,7 @@ func TestTabFor(t *testing.T) {
 	}
 }
 
-// From the composer, /harnesses and 2-7 open the tabs; esc or 1 goes back.
+// From the composer, /harnesses and 2-8 open the tabs; esc or 1 goes back.
 func TestComposerOpensTabs(t *testing.T) {
 	m, _ := composeModel(t, 80, false)
 	m.opt.Panel = &fakePanel{}

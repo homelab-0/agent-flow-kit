@@ -29,6 +29,9 @@ const serveUsage = `afk serve — AFK as a model API for gateways and other clie
       run the API until ctrl+c. It listens on serve.listen
       (default 127.0.0.1:8484: this machine only).
 
+  afk serve start [--listen …]  run it in the background instead; it keeps
+                                running after the terminal closes, and logs
+                                to ~/.local/state/afk/serve.log
   afk serve status [--json]     is it running, and where
   afk serve stop                stop the one that is running
 
@@ -118,24 +121,25 @@ func serveCmd(argv []string, stdout, stderr io.Writer) int {
 			}
 			fmt.Fprintf(stdout, "afk serve is running on http://%s (pid %d, since %s).\n", st.Listen, st.PID, st.Started)
 			return 0
-		case "stop":
-			st, ok := readServeState(paths)
-			if !ok {
-				fmt.Fprintln(stdout, "afk serve is not running.")
-				return 0
+		case "start":
+			var extra []string
+			if listen != "" {
+				extra = []string{"--listen", listen}
 			}
-			if err := stopProcess(st.PID); err != nil {
+			st, err := startServe(paths, extra...)
+			if err != nil {
 				fmt.Fprintln(stderr, "afk serve:", err)
 				return 1
 			}
-			for i := 0; i < 100 && processAlive(st.PID); i++ {
-				time.Sleep(100 * time.Millisecond)
-			}
-			if processAlive(st.PID) {
-				fmt.Fprintf(stderr, "afk serve: pid %d is still finishing its runs\n", st.PID)
+			fmt.Fprintf(stdout, "afk serve is running in the background on http://%s (pid %d). Log: %s\nStop it with: afk serve stop\n", st.Listen, st.PID, serveLogPath(paths))
+			return 0
+		case "stop":
+			msg, err := stopServe(paths)
+			if err != nil {
+				fmt.Fprintln(stderr, "afk serve:", err)
 				return 1
 			}
-			fmt.Fprintln(stdout, "Stopped afk serve.")
+			fmt.Fprintln(stdout, msg)
 			return 0
 		}
 		fmt.Fprintf(stderr, "afk serve: unknown command %q\n\n%s", args[0], serveUsage)

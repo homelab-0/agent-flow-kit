@@ -1,12 +1,12 @@
 # The control panel
 
-The control panel is AFK's full-screen management view. The tabs run across the top with their number keys (`1 Route  2 Harnesses  3 Benchmarks  4 Skills  5 MCP  6 Usage  7 Config`), the open one underlined; under them a line says what the tab is for, and the bottom row shows the tab's keys and the panel's own.
+The control panel is AFK's full-screen management view. The tabs run across the top with their number keys (`1 Route  2 Harnesses  3 Benchmarks  4 Skills  5 MCP  6 Usage  7 Config  8 API`), the open one underlined; under them a line says what the tab is for, and the bottom row shows the tab's keys and the panel's own.
 
-Open it from the composer (plain `afk`): on an empty input press `2` to `7`, or type `/harnesses`, `/bench`, `/skills`, `/mcp`, `/usage` or `/config`. `1` or `esc` takes you back to the composer. `afk status` opens it on its own, on the Usage tab (`afk status --tab bench` picks another), and there `1`, `esc` or `q` quits.
+Open it from the composer (plain `afk`): on an empty input press `2` to `8`, or type `/harnesses`, `/bench`, `/skills`, `/mcp`, `/usage`, `/config` or `/api`. `1` or `esc` takes you back to the composer. `afk status` opens it on its own, on the Usage tab (`afk status --tab bench` picks another), and there `1`, `esc` or `q` quits.
 
 | Key | Does |
 |---|---|
-| `1`–`7`, `tab` / `shift+tab` | switch tabs (`1` is Route) |
+| `1`–`8`, `tab` / `shift+tab` | switch tabs (`1` is Route) |
 | `↑` `↓` or `j` `k` | pick a row |
 | `/` | filter the tab's rows by name: type, then `↵` to keep the filter or `esc` to clear it. Each tab keeps its own filter, and `esc` clears it before it leaves the panel. |
 | `ctrl+p` or `:` | the command palette: go to a tab, update every CLI or one, sign in to one, update AFK, sync benchmarks, edit `config.toml`. Type to narrow it, `↑` `↓` to pick, `↵` to run, `esc` to close |
@@ -84,3 +84,24 @@ Every central skill in every CLI, with drift shown per CLI. See [Skills](skills.
 ## MCP
 
 Every server in `mcp.toml` in every CLI, with its tools and health from the last test, and the servers you added to a CLI yourself, ready to import with `i`. See [MCP servers](mcp.md#the-mcp-tab).
+
+## API
+
+AFK's own API keys and the server that answers them, for a gateway or an app that calls AFK ([AFK as an API](serve.md)). Everything `afk keys` and `afk serve` do can be done here.
+
+The top two lines are the server (running and where, or stopped and where it will listen) and whether your CLIs' own sign-ins may answer calls. Under them is one row per key: what it reaches, its three limits, how many of its calls ran in the last 24 hours (from the run records), and what a call may do. The selected key's address and the model name to ask for are shown below the list.
+
+| Key | Does |
+|---|---|
+| `n` | a new key: type its name, then pick what it reaches. "Any" is a router key; a CLI's name is a key for that CLI only, which shows the vendor-terms note and asks before it is made |
+| `↵` | the key's settings: requests a minute, requests a day, runs at once, the models a harness key may name, the folder its calls may work in, and what they may do there |
+| `R` | rotate: a new secret, and the old one stops at once |
+| `v` | revoke: the key stops working and its record stays |
+| `x` | delete the key |
+| `s` | start the server in the background, or stop it |
+| `p` | let your CLIs' own sign-ins answer calls, or stop them (`serve.plan_runs`). Turning it on shows the warning first |
+| `a` | the address the server listens on (`serve.listen`) |
+
+A new or rotated key is shown once, on a screen of its own that stays until you press `↵`. `c` copies it where the terminal allows that. AFK keeps a hash of the key, so it can't be shown again.
+
+Rotate, revoke, delete, stopping the server and the `yolo` mode each ask before they act. A limit takes a count, or `0` for no limit. A folder of `none` puts the key back to answering only.

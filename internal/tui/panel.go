@@ -13,7 +13,7 @@ import (
 )
 
 // The control panel: full-screen management tabs across the top (Route,
-// Harnesses, Benchmarks, Skills, MCP, Runs, Config). 1–7 switch tabs; Route
+// Harnesses, Benchmarks, Skills, MCP, Runs, Config, API). 1–8 switch tabs; Route
 // goes back to the composer.
 
 // Tab is one of the panel's tabs.
@@ -28,11 +28,12 @@ const (
 	TabMCP
 	TabRuns
 	TabConfig
+	TabAPI
 )
 
 // TabRuns is shown as Usage: what is left on each plan, gateways and local models, and
 // what ran.
-var tabNames = []string{"Route", "Harnesses", "Benchmarks", "Skills", "MCP", "Usage", "Config"}
+var tabNames = []string{"Route", "Harnesses", "Benchmarks", "Skills", "MCP", "Usage", "Config", "API"}
 
 // TabFor is the tab a slash command or `afk <command>` names.
 func TabFor(name string) (Tab, bool) {
@@ -51,6 +52,8 @@ func TabFor(name string) (Tab, bool) {
 		return TabRuns, true
 	case "config":
 		return TabConfig, true
+	case "api", "keys", "serve":
+		return TabAPI, true
 	}
 	return 0, false
 }
@@ -86,6 +89,11 @@ type PanelSource interface {
 	// ClearMarks removes every failed-run mark that set a plan aside and
 	// returns what to tell the user.
 	ClearMarks(ctx context.Context) (string, error)
+	// API is AFK's own keys and the server that answers them.
+	API(ctx context.Context) (*APIView, error)
+	// APIDo runs a key or server action in place (add, rotate, revoke,
+	// rm, set, serve-start, serve-stop) and returns what it said.
+	APIDo(ctx context.Context, op string, args ...string) (*APIResult, error)
 	// Command is the argv that runs an afk subcommand (an update, a
 	// login, a sync) in the terminal, for the tabs' action keys.
 	Command(args ...string) []string
@@ -230,6 +238,7 @@ type panelData struct {
 	config *ConfigView
 	skills *SkillsView
 	mcp    *MCPView
+	api    *APIView
 	err    map[Tab]string
 }
 
@@ -279,6 +288,7 @@ type Panel struct {
 	cfgAskKey, cfgAsk string
 	ask               *panelAsk
 	pal               *palette // the command palette, when open
+	api               apiState // what is open over the API tab
 	id                int
 	gens              map[Tab]int // the latest load of each tab
 	loading           map[Tab]bool
@@ -345,6 +355,8 @@ func (p *Panel) load(tab Tab) tea.Cmd {
 			v, err = src.Skills(ctx)
 		case TabMCP:
 			v, err = src.MCP(ctx)
+		case TabAPI:
+			v, err = src.API(ctx)
 		default:
 			return panelMsg{panel: id, tab: tab, gen: gen}
 		}
@@ -390,6 +402,11 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			if len(v.Cols) > 0 {
 				p.mcpCol = min(p.mcpCol, len(v.Cols)-1)
 			}
+		case *APIView:
+			p.raw.api, p.data.api = v, v
+			if p.sel[TabAPI] >= len(v.Keys) {
+				p.sel[TabAPI] = max(len(v.Keys)-1, 0)
+			}
 		}
 		p.refilter(msg.tab)
 	case mcpToolsMsg:
@@ -418,6 +435,19 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			return tea.Batch(p.load(TabConfig), p.load(p.tab))
 		}
 		return p.load(TabConfig)
+	case apiDoneMsg:
+		if msg.panel != p.id {
+			return nil
+		}
+		switch {
+		case msg.err != nil:
+			p.notice = msg.err.Error()
+		case msg.res != nil && msg.res.Secret != "":
+			p.api.secret = msg.res // shown once, until it is dismissed
+		case msg.res != nil:
+			p.notice = msg.res.Text
+		}
+		return p.load(TabAPI)
 	case marksClearedMsg:
 		p.notice = msg.text
 		if msg.err != nil {
@@ -476,6 +506,9 @@ func (p *Panel) key(k string) tea.Cmd {
 	if p.ask != nil {
 		return p.askKey(k)
 	}
+	if p.tab == TabAPI && p.apiModal() {
+		return p.apiModalKey(k)
+	}
 	armed := p.cfgRemove
 	p.cfgRemove = ""
 	if p.filterKey(k) {
@@ -488,10 +521,18 @@ func (p *Panel) key(k string) tea.Cmd {
 	}
 	if p.tools != nil && p.tab == TabMCP {
 		switch k {
-		case "1", "2", "3", "4", "5", "6", "7", "tab", "shift+tab":
+		case "1", "2", "3", "4", "5", "6", "7", "8", "tab", "shift+tab":
 			p.tools = nil // the tab keys still change tabs
 		default:
 			return p.toolsKey(k)
+		}
+	}
+	if p.api.edit != "" && p.tab == TabAPI {
+		switch k {
+		case "1", "2", "3", "4", "5", "6", "7", "8", "tab", "shift+tab":
+			p.api.edit = ""
+		default:
+			return p.apiEditKey(k)
 		}
 	}
 	switch k {
@@ -517,7 +558,7 @@ func (p *Panel) key(k string) tea.Cmd {
 			p.back = true
 		}
 		return nil
-	case "1", "2", "3", "4", "5", "6", "7":
+	case "1", "2", "3", "4", "5", "6", "7", "8":
 		return p.switchTo(Tab(k[0] - '1'))
 	case "tab":
 		return p.switchTo(Tab((int(p.tab) + 1) % len(tabNames)))
@@ -629,6 +670,8 @@ func (p *Panel) key(k string) tea.Cmd {
 			}
 			return nil
 		}
+	case TabAPI:
+		return p.apiKey(k)
 	case TabRuns:
 		if k == "c" && p.anySetAside() {
 			src, ctx := p.src, p.ctx
@@ -690,6 +733,8 @@ func (p *Panel) loaded(t Tab) bool {
 		return p.data.skills != nil
 	case TabMCP:
 		return p.data.mcp != nil
+	case TabAPI:
+		return p.data.api != nil
 	}
 	return true
 }
@@ -735,6 +780,10 @@ func (p *Panel) rowsOf(t Tab) int {
 		if p.data.mcp != nil {
 			return len(p.data.mcp.Rows)
 		}
+	case TabAPI:
+		if p.data.api != nil {
+			return len(p.data.api.Keys)
+		}
 	}
 	return 0
 }
@@ -774,6 +823,8 @@ func (p *Panel) Lines() []line {
 			body, hint = p.usageLines(w)
 		case TabConfig:
 			body, hint = p.configLines(w)
+		case TabAPI:
+			body, hint = p.apiLines(w)
 		}
 	}
 	if p.pal != nil {
@@ -794,7 +845,7 @@ func (p *Panel) Lines() []line {
 	// The tab's own keys on the left, the panel's at the right; the
 	// tab's on a second row when both don't fit.
 	filter := filterable(p.tab) && !(p.tab == TabMCP && p.tools != nil)
-	typingValue := p.tab == TabConfig && p.cfgKey != "" || p.ask != nil && p.ask.tab == p.tab || p.pal != nil
+	typingValue := p.tab == TabConfig && p.cfgKey != "" || p.ask != nil && p.ask.tab == p.tab || p.pal != nil || p.tab == TabAPI && p.apiModal()
 	hints := hintPairs(hint)
 	var right [][2]string
 	if !typingValue {
@@ -859,6 +910,9 @@ func (p *Panel) versionLabel() string {
 func (p *Panel) escLabel() string {
 	if p.filter[p.tab] != "" {
 		return "clear filter"
+	}
+	if p.tab == TabAPI && p.api.edit != "" {
+		return "back to keys"
 	}
 	if p.standalone {
 		return "quit"

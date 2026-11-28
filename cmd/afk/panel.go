@@ -903,10 +903,10 @@ func (s panelSource) Command(args ...string) []string {
 	return append([]string{exe}, args...)
 }
 
-const statusHelp = `Usage: afk status [--tab harnesses|bench|skills|mcp|usage|config]
+const statusHelp = `Usage: afk status [--tab harnesses|bench|skills|mcp|usage|config|api]
 
 Opens AFK's control panel full screen on the Usage tab (or the one --tab
-names): plan usage, the gateway and local engines, and recent runs. 1-7
+names): plan usage, the gateway and local engines, and recent runs. 1-8
 switch tabs, q quits. Nothing is changed unless you press an action key.
 `
 
