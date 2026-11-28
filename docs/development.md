@@ -67,6 +67,19 @@ The parity fixtures don't cover these cases; each has its own test.
 ## Commit and PR conventions
 
 - One concern per pull request, with tests.
-- Conventional commit subjects (`feat(router): ...`, `fix(harness): ...`, `docs: ...`).
+- Conventional commit PR titles (`feat(router): ...`, `fix(harness): ...`, `docs: ...`). PRs are squash-merged, so the title is the commit that releases are built from; the `pr-title` check enforces it.
 - Never commit secrets, and never let a test depend on a real login or a network call.
 - Update the docs in `docs/` in the same pull request as the behaviour they describe.
+
+## Releases
+
+Releases are automated with [release-please](https://github.com/googleapis/release-please); nobody pushes tags by hand.
+
+1. Every merge to `master` updates one open release PR, `chore: release x.y.z`. It bumps the version from the PR titles merged since the last release and writes `CHANGELOG.md`.
+   - `fix:` and `perf:` bump the patch version, `feat:` bumps the minor version.
+   - While AFK is below 1.0, a breaking change (`feat!:` or a `BREAKING CHANGE:` footer) bumps the minor version too.
+   - `docs:`, `chore:`, `ci:`, `test:`, `refactor:` and `build:` don't open a release on their own and stay out of the changelog.
+2. Merging the release PR is the release. release-please tags the merge commit `vX.Y.Z` and creates the GitHub release with the changelog as its notes.
+3. The same workflow then starts `release.yml` on that tag. It tests, builds the archives with GoReleaser, signs the checksums with cosign, adds them to the release, and publishes `@homelab0/afk` to npm.
+
+To force a version, put `Release-As: x.y.z` in the body of a commit on `master`. A tag pushed by hand still runs `release.yml` as before.

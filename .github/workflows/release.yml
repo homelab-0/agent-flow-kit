@@ -1,12 +1,18 @@
 name: release
 
-# A pushed tag like v0.1.0 builds the six platform archives, writes the
-# SHA-256 checksums, signs them with keyless cosign, publishes a GitHub
-# release, and publishes @homelab0/afk to npm with provenance (when the
-# NPM_TOKEN secret is set).
+# A release tag like v0.1.0 builds the six platform archives, writes the
+# SHA-256 checksums, signs them with keyless cosign, attaches them to the
+# GitHub release, and publishes @homelab0/afk to npm with provenance (when
+# the NPM_TOKEN secret is set).
+#
+# Normally release-please.yml starts this with workflow_dispatch on the tag
+# it just created, after it has made the GitHub release; GoReleaser then
+# adds the assets to that release and keeps its notes. A tag pushed by hand
+# still works too.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -20,6 +26,12 @@ jobs:
     env:
       NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
+      - name: Check the run is on a release tag
+        run: |
+          case "$GITHUB_REF" in
+            refs/tags/v*) ;;
+            *) echo "::error::run this on a v* tag, not $GITHUB_REF"; exit 1 ;;
+          esac
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
