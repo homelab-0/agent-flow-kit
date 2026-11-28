@@ -938,7 +938,13 @@ func (p *Panel) statusLines(w int) ([]line, line) {
 	if !v.Updated.IsZero() {
 		out = append(out, line{sg(t.Dim, " updated "+v.Updated.Format("15:04")+" · "), sg(t.Key, "r"), sg(t.Dim, " refresh")}, nil)
 	}
-	out = append(out, line{sg(t.Bold, " Plans"), sg(t.Dim, strings.Repeat(" ", 17)+col("5h left", 19)+col("week left", 19)+"sign-in")})
+	// The plan column grows to fit the longest label, so a reported tier
+	// ("ChatGPT plan · enterprise") is never cut.
+	pw := 19
+	for _, pl := range v.Plans {
+		pw = max(pw, line{sg(t.Plain, pl.Plan)}.width()+2)
+	}
+	out = append(out, line{sg(t.Bold, " Plans"), sg(t.Dim, strings.Repeat(" ", pw-2)+col("5h left", 19)+col("week left", 19)+"sign-in")})
 	// A window with no reported figure says "unknown": no empty meter
 	// that could be read as a spent plan.
 	cell := func(pct *float64) line {
@@ -949,7 +955,7 @@ func (p *Panel) statusLines(w int) ([]line, line) {
 		return append(l, sg(t.Plain, strings.Repeat(" ", max(1, 19-l.width()))))
 	}
 	for _, pl := range v.Plans {
-		row := line{sg(t.Plain, " "), harnessLogo(t, pl.Harness), sg(t.Plain, " "+col(pl.Plan, 19))}
+		row := line{sg(t.Plain, " "), harnessLogo(t, pl.Harness), sg(t.Plain, " "+col(pl.Plan, pw))}
 		row = append(row, cell(pl.FiveHour)...)
 		row = append(row, cell(pl.Week)...)
 		signSt := t.Warn

@@ -3,7 +3,7 @@ package router
 import "time"
 
 // PoolsSchema is the version of the pool probe document.
-const PoolsSchema = "afk-router-pools/4"
+const PoolsSchema = "afk-router-pools/5"
 
 // Pool is how much is left in one subscription pool.
 type Pool struct {
