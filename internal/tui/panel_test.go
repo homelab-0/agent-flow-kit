@@ -151,8 +151,8 @@ func panelText(p *Panel) string {
 
 func TestPanelTabs(t *testing.T) {
 	for tab, want := range map[Tab][]string{
-		TabHarnesses: {"1 Route  2 Harnesses  3 Benchmarks  4 Skills  5 MCP  6 Runs  7 Config", "Harnesses  the agent CLIs on this machine", "CL claude    2.1.332  signed in      plan+gw  native installer",
-			"OC opencode  1.4.0    signed out", "PI pi        —        not installed", "models  claude-fable-5-2, sonnet, +2 via gateway", "usage   5h 71% left · week 64% left", "u update"},
+		TabHarnesses: {"1 Route  2 Harnesses  3 Benchmarks  4 Skills  5 MCP  6 Runs  7 Config", "Harnesses  the agent CLIs on this machine", "INSTALLED  4", "▌CL claude        2.1.332   ● signed in",
+			"OC opencode      1.4.0     ● signed out", "NOT INSTALLED  1", "PI pi", "Installed native installer · /usr/local/bin/claude", "Usage     5h 71% left · week 64% left", "D discover now", "u update"},
 		TabBench:  {"task   coding  quick", "source SWE-bench Verified", "claude-fable-5-2   CL", "78.1  measured  14✓ 2~", "CX OC", "qwen36-14b         OL", "Effective today", "CX 71.8 (52%)", "OL 51.0", "←→ task"},
 		TabRuns:   {"updated 03:31", "CL Claude plan", "71%", "GK Grok plan", "GK Grok plan          █████████░ 91%     unknown", "agentgateway      up", "└ VL vLLM", "OL ollama", "this PC · RTX 5090 · 1 model", "r-7f3c", "✓ solved", "! exit 1", "23m · 30m ago"},
 		TabConfig: {"file ~/.config/afk/config.toml", "Routing", "Prefer                      balanced", "e edit config.toml"},
@@ -928,5 +928,45 @@ func TestRunsTabShowsLongPlanTier(t *testing.T) {
 	at := func(s, sub string) int { return line{seg{s: s[:strings.Index(s, sub)]}}.width() }
 	if at(head, "sign-in") != at(long, "signed in") || at(short, "unknown") != at(head, "5h left") {
 		t.Fatalf("columns do not line up:\n%s\n%s\n%s", head, long, short)
+	}
+}
+
+func TestSignInState(t *testing.T) {
+	for in, want := range map[string][2]string{
+		"":              {"", "not reported"},
+		"unknown":       {"", "not reported"},
+		"signed out":    {"bad", "signed out"},
+		"token expired": {"bad", "token expired"},
+		"login on disk": {"partly", "login on disk"},
+		"signed in":     {"ok", "signed in"},
+	} {
+		st, txt := signInState(HarnessRow{SignIn: in})
+		if st != want[0] || txt != want[1] {
+			t.Errorf("signInState(%q) = %q, %q; want %q, %q", in, st, txt, want[0], want[1])
+		}
+	}
+}
+
+func TestHarnessesWide(t *testing.T) {
+	p := panelAt(t, TabHarnesses)
+	p.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	var row string
+	for _, l := range strings.Split(panelText(p), "\n") {
+		if strings.Contains(l, "▌CL claude") {
+			row = l
+		}
+	}
+	if !strings.Contains(row, " │ ") || !strings.Contains(row, "claude") {
+		t.Fatalf("want the detail beside the list at 120 columns, got %q\n%s", row, panelText(p))
+	}
+	for _, want := range []string{"auto discovery  ○ off  A turn on", "Models    claude-fable-5-2, sonnet, +2 via gateway", "Updates"} {
+		if !strings.Contains(panelText(p), want) {
+			t.Errorf("missing %q in\n%s", want, panelText(p))
+		}
+	}
+	for _, l := range p.Lines() {
+		if n := l.width(); n > 120 {
+			t.Errorf("line is %d cells wide, over 120: %q", n, l.plain())
+		}
 	}
 }

@@ -141,7 +141,7 @@ func (s panelSource) Harnesses(ctx context.Context) (*tui.HarnessesView, error) 
 	if err != nil {
 		return nil, err
 	}
-	v := &tui.HarnessesView{}
+	v := &tui.HarnessesView{AutoDiscover: settings.AutoDiscover}
 	for _, h := range rep.Harnesses {
 		row := tui.HarnessRow{
 			Name: h.Name, Display: h.Display, Version: h.Version, Installed: h.Installed,

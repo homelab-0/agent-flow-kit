@@ -17,16 +17,18 @@ Nothing changes until you press an action key. Each action runs the matching `af
 
 ## Harnesses
 
-Every agent CLI AFK supports, installed ones first, with:
+Every agent CLI AFK supports, in two groups: installed and not installed. Each installed one shows its logo, version and sign-in, with a dot for the sign-in state:
 
-- its version
-- its sign-in: `signed in` or `signed out` from the CLI's own status command where it has one, else `login on disk` (a login file exists; AFK never reads what's in it and can't confirm it still works)
-- what it can be routed to: `plan`, `gw` (the model gateway), `local` (a [local engine](local-models.md))
-- how it updates (`npm`, `self-managed`, …)
+- green `signed in` (or the plan name): the CLI's own status command said so
+- half `login on disk`: a login file exists, but the CLI has no status command, so AFK can't confirm it still works (AFK never reads what's in it)
+- red `signed out` or `expired`
+- hollow `not reported`
 
-The selected CLI shows its path, how it was installed, the models it runs and how much of its plan is left.
+On a screen 96 columns or wider the selected CLI's details sit beside the list, otherwise under it: its version, how it was installed and where, its sign-in, what it can be routed to (`plan`, `gw` for the model gateway, `local` for a [local engine](local-models.md)), how much of its plan is left as the CLI reports it (`not reported` when it doesn't), the models it runs and the command that updates it.
 
-`u` updates it (`afk harness update`), `U` updates every installed CLI that has something newer (`afk harness update --all`), `l` signs in (`afk harness login`), `d` runs `afk harness doctor`.
+`D` runs a discovery now (`afk harness scan`): AFK looks for every CLI again and asks each for its sign-in, plan, models and usage. The line above the list says whether auto discovery is on, and `A` turns it on or off (the `discovery.auto` setting, also on the Config tab). With it on, AFK asks a CLI again when its last answer is five minutes old; with it off, the last answer stays until the next `D`.
+
+`u` updates the selected CLI (`afk harness update`), `U` updates every installed CLI that has something newer (`afk harness update --all`), `l` signs in (`afk harness login`), `d` runs `afk harness doctor`.
 
 ## Benchmarks
 
