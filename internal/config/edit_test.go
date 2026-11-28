@@ -120,7 +120,7 @@ func TestSetRoundTripProperty(t *testing.T) {
 		{"route.prefer", "best"}, {"route.prefer_free", "true"}, {"route.security_models", "mythos, daybreak-blue"},
 		{"trust.repos", "/a,/b"}, {"gateway.work.url", "https://new.example"}, {"gateway.new.key", "env:NEW"},
 		{"harness.grok.enabled", "true"}, {"harness.codex.enabled", "false"}, {"bench.autosync", "false"},
-		{"bench.weights.coding.swebench", "0.6"}, {"permissions.task.review", "ask"}, {"serve.listen", "tailnet"},
+		{"bench.weights.coding.swebench", "0.6"}, {"permissions.task.review", "ask"}, {"serve.listen", "0.0.0.0:8484"},
 	}
 	for di, doc := range docs {
 		before := decode(t, doc)
@@ -223,7 +223,7 @@ func TestConcurrentSetsKeepBothChanges(t *testing.T) {
 	f := newEnv(t)
 	f.config(t, "version = 1\n")
 	p := f.paths()
-	keys := []struct{ k, v string }{{"route.prefer", "cheap"}, {"route.prefer_free", "true"}, {"bench.autosync", "false"}, {"serve.listen", "tailnet"}, {"route.allow_metered", "true"}, {"harness.grok.enabled", "false"}}
+	keys := []struct{ k, v string }{{"route.prefer", "cheap"}, {"route.prefer_free", "true"}, {"bench.autosync", "false"}, {"serve.listen", "0.0.0.0:8484"}, {"route.allow_metered", "true"}, {"harness.grok.enabled", "false"}}
 	var wg sync.WaitGroup
 	errs := make([]error, len(keys))
 	for i, kv := range keys {

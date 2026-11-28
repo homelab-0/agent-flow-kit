@@ -69,6 +69,10 @@ func run(argv []string) int {
 			return skillsCmd(argv[1:], os.Stdout, os.Stderr)
 		case "status":
 			return statusCmd(argv[1:], os.Stdout, os.Stderr)
+		case "keys":
+			return keysCmd(argv[1:], os.Stdout, os.Stderr)
+		case "serve":
+			return serveCmd(argv[1:], os.Stdout, os.Stderr)
 		case "version", "--version":
 			return versionCmd(argv[1:], os.Stdout, os.Stderr)
 		}

@@ -347,6 +347,51 @@ type NoRouteError struct{ Msg string }
 
 func (e *NoRouteError) Error() string { return e.Msg }
 
+// PlanRunsError is a request that only a CLI's own sign-in could answer,
+// made with RouteFlags.NoPlan. Harness is the CLI, when one was named.
+type PlanRunsError struct{ Harness string }
+
+func (e *PlanRunsError) Error() string {
+	if e.Harness != "" {
+		return e.Harness + " would run on its own sign-in, and serve.plan_runs is off"
+	}
+	return "only a CLI on its own sign-in could answer this, and serve.plan_runs is off"
+}
+
+// planPools are the pools a CLI's own sign-in serves: every pool the
+// catalog doesn't mark free.
+func planPools(cat *router.Catalog) []string {
+	if cat == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	for id, meta := range cat.Pools {
+		if meta.CostClass != "free" || planPoolRE.MatchString(id) {
+			seen[id] = true
+		}
+	}
+	for _, c := range cat.Candidates {
+		if _, known := cat.Pools[c.EntitlementPool]; !known && c.EntitlementPool != "" && c.EntitlementPool != router.LocalPool && c.EntitlementPool != gatewayPool {
+			seen[c.EntitlementPool] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for id := range seen {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// In is the same engine working in another directory.
+func (c *Core) In(dir string) *Core {
+	return &Core{
+		Home: c.Home, Getenv: c.Getenv, Harness: c.Harness, Cwd: dir, Live: c.Live, Now: c.Now,
+		Installed: c.Installed, Environ: c.Environ, CodexLogin: c.CodexLogin, SignIn: c.SignIn,
+		Accounts: c.Accounts, NoTerminal: c.NoTerminal, Headless: c.Headless,
+	}
+}
+
 // decision is a routed request: the route chosen and what it was chosen
 // from, so the alternatives (Explain) or the next route (Print) can be
 // asked for the same way.
@@ -366,6 +411,8 @@ type decision struct {
 	mode, modeSource string
 	// choice is the route: a router.Route, or the pinned route's map.
 	choice any
+	// exclude are the pools the route must stay off (RouteFlags.NoPlan).
+	exclude []string
 }
 
 // decide routes a prompt: checks the flags, finds the installed CLIs and
@@ -449,16 +496,27 @@ func (c *Core) decide(ctx context.Context, f engine.RouteFlags, prompt string) (
 	if pinH != "" {
 		d.list = []string{pinH}
 	}
+	if f.NoPlan {
+		d.exclude = planPools(st.r.Catalog)
+	}
 	if pinH != "" && pinM != "" {
+		// A pinned route runs the CLI on its own sign-in, unless the
+		// catalog says that model there is free.
+		if pool := st.r.PoolFor(pinH, pinM); f.NoPlan && (pool == "" || contains(d.exclude, pool)) {
+			return nil, &PlanRunsError{Harness: pinH}
+		}
 		d.choice = map[string]any{
 			"harness": pinH, "model": pinM, "effort": nilIfEmpty(f.Effort), "entitlement_pool": nil,
 			"reason": "pinned by --harness and --model", "pinned": true,
 		}
 		return d, nil
 	}
-	r, ok, err := st.route(task, prefer, d.list, "")
+	r, ok, err := st.routeIn(task, prefer, router.Input{OnlyHarnesses: d.list, ExcludePools: d.exclude})
 	if err != nil {
 		return nil, err
+	}
+	if !ok && f.NoPlan {
+		return nil, &PlanRunsError{}
 	}
 	if !ok {
 		return nil, &NoRouteError{"the router found no usable model for this task on " + strings.Join(d.list, ",") + signInHint(st.r.Probe, d.list) + poolHint(st.r, d.list, st.settings.GatewayURL != "")}

@@ -200,6 +200,10 @@ type Settings struct {
 	TrustedDirs []string
 	// DefaultMode is permissions.default as written ("" when unset).
 	DefaultMode string
+	// ServeListen is where afk serve listens; ServePlanRuns is whether a
+	// call through an AFK key may run a CLI on its own sign-in.
+	ServeListen   string
+	ServePlanRuns bool
 	// Warnings from config.toml and the project's file.
 	Warnings []Problem
 	// FromTOML says whether config.toml was found (else router.json, if
@@ -385,6 +389,11 @@ func Resolve(e Env) (Settings, error) {
 	if c.Bench.Autosync != nil {
 		s.BenchAutosync = *c.Bench.Autosync
 	}
+	s.ServeListen = c.Serve.Listen
+	if s.ServeListen == "" {
+		s.ServeListen = DefaultServeListen
+	}
+	s.ServePlanRuns = c.Serve.PlanRuns != nil && *c.Serve.PlanRuns
 	if c.Discovery.Auto != nil {
 		s.AutoDiscover = *c.Discovery.Auto
 	}

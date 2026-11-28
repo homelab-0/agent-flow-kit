@@ -16,6 +16,7 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -166,11 +167,32 @@ type BenchSource struct {
 	Enabled *bool `toml:"enabled,omitempty"`
 }
 
-// Serve is afk serve. Reserved.
+// Serve is afk serve: AFK's own model API for gateways and other clients.
 type Serve struct {
-	Listen   string `toml:"listen,omitempty"`
-	TLS      *bool  `toml:"tls,omitempty"`
-	PlanRuns *bool  `toml:"plan_runs,omitempty"`
+	// Listen is the address it listens on, host:port (default
+	// 127.0.0.1:8484, this machine only).
+	Listen string `toml:"listen,omitempty"`
+	TLS    *bool  `toml:"tls,omitempty"` // reserved
+	// PlanRuns lets a call through an AFK key run a CLI on its own
+	// sign-in (your subscriptions). Default off: then only a gateway, a
+	// local engine or a free pool answers. Only config.toml can turn it
+	// on, never a repository.
+	PlanRuns *bool `toml:"plan_runs,omitempty"`
+}
+
+// DefaultServeListen is where afk serve listens when serve.listen is unset.
+const DefaultServeListen = "127.0.0.1:8484"
+
+// ServeListenOK reports whether s is a host:port afk serve can listen on.
+func ServeListenOK(s string) bool {
+	host, port, err := net.SplitHostPort(s)
+	if err != nil || port == "" || plain(s) != s {
+		return false
+	}
+	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+		return false
+	}
+	return host == "" || host == "localhost" || net.ParseIP(host) != nil
 }
 
 // Telemetry is one telemetry sink. Reserved.
@@ -341,6 +363,9 @@ func (c *Config) validate(file string, lines map[string]int) []Problem {
 	}
 	if defaults > 1 {
 		bad("gateway", "more than one gateway has default = true")
+	}
+	if c.Serve.Listen != "" && !ServeListenOK(c.Serve.Listen) {
+		bad("serve.listen", "an address and port to listen on, such as 127.0.0.1:8484 (this machine only) or 0.0.0.0:8484 (every network interface)")
 	}
 	for _, n := range sortedKeys(c.Telemetry) {
 		t := c.Telemetry[n]

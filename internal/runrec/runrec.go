@@ -45,6 +45,9 @@ type Record struct {
 	// Session is the CLI's own id for the session, when it reported one:
 	// what `afk` hands back to the CLI to reopen it.
 	Session string `json:"session,omitempty"`
+	// Key is the name of the AFK API key a served run was made with
+	// (Where is "serve").
+	Key string `json:"key,omitempty"`
 }
 
 // Dir is where run records live: $XDG_CONFIG_HOME/afk/state/runs, or

@@ -246,6 +246,10 @@ type Deps struct {
 	// began (nil when that isn't known, as outside a git repository). A
 	// route that fails after editing files leaves them for the next one.
 	Changed func() *int
+	// Stop, when it returns true after a failed attempt, ends the run
+	// there: part of that attempt's answer already reached the caller (a
+	// streamed answer), so another route can't take over.
+	Stop func() bool
 }
 
 // Result is how the run ended.
@@ -352,6 +356,9 @@ func Do(ctx context.Context, req Request, d Deps) Result {
 		}
 		fail := Result{Tried: tried, Attempts: attempt, Exit: rc, Error: why}
 		if req.Pinned || route.Pinned || attempt >= MaxAttempts || req.Failover == "none" {
+			return fail
+		}
+		if d.Stop != nil && d.Stop() {
 			return fail
 		}
 		if kind == KindOther {

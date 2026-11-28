@@ -20,10 +20,13 @@ afk config get|set|edit|path|migrate   your settings (config.toml)
 afk trust add|list|remove [dir]    where yolo may run
 afk pools [--json]                 each pool's state, what's left, and its pacing
 afk pools clear [pool...]          forget recorded pool failures
+afk keys [add|set|rotate|revoke|rm ...]   AFK's own API keys
+afk serve [--listen host:port]     AFK as a model API for gateways
+afk serve status|stop              the running afk serve
 afk --help
 ```
 
-A prompt that starts with the word `harness`, `bench`, `config`, `trust`, `pools`, `skills`, `mcp` or `status` needs `--` before it.
+A prompt that starts with the word `harness`, `bench`, `config`, `trust`, `pools`, `skills`, `mcp`, `status`, `keys` or `serve` needs `--` before it.
 
 ## Options
 
@@ -65,6 +68,27 @@ Options that take a value also accept `--option=value`.
 ## `afk pools`
 
 `afk pools` lists each plan and gateway pool: its state and, when its CLI reported one, how much is left and where that figure came from (`usage unknown` otherwise; AFK never estimates). Under a measured pool whose window is 5 hours or a week, a second line says where its window is heading (or that it is too early in the window to say) at the rate so far, and how much [plan pacing](../guides/routing.md#plan-pacing) moves routing because of it. `--json` prints the [pools document](json.md#pools-afk-router-pools5), with every figure and each pool's `pacing`.
+
+## `afk keys`
+
+`afk keys` manages the API keys that callers of [`afk serve`](../guides/serve.md) sign in with. With no argument it lists them; `--json` prints `afk-keys-list/1`.
+
+| Command | What it does |
+|---|---|
+| `afk keys add <name>` | makes a router key (the caller asks for `afk/auto` or `afk/<task>`) and prints it once |
+| `afk keys add <name> --harness <cli>` | makes a key for that one CLI (the caller asks for `<cli>/<model>`), after a note about the vendor's terms |
+| `afk keys set <name> ...` | changes limits, models or folder |
+| `afk keys rotate <name>` | gives it a new secret; the old one stops at once, and a revoked key works again |
+| `afk keys revoke <name>` | stops it working and keeps its record |
+| `afk keys rm <name>` | deletes it |
+
+Options of `add` and `set`: `--per-minute N`, `--per-day N`, `--concurrent N` (0 turns a limit off), `--no-limits`, `--models a,b` (a harness key only), `--dir <folder>` with `--mode read-only|edits|auto|yolo` to let the key's calls work in one folder, and `--no-dir` (`set` only) to go back to answers only. `add --json` prints the key's record with the key itself in `key`; otherwise the key alone goes to stdout and everything else to stderr, so `AFK_KEY=$(afk keys add ci)` works.
+
+## `afk serve`
+
+`afk serve` runs [AFK's model API](../guides/serve.md) in the foreground until ctrl+c or `afk serve stop`: `POST /v1/chat/completions` (OpenAI format), `POST /v1/messages` (Anthropic format), `GET /v1/models` and `GET /healthz`. It listens on `serve.listen` (default `127.0.0.1:8484`) unless `--listen host:port` says otherwise. One `afk serve` runs at a time per user.
+
+`afk serve status` exits 0 and prints the address when one is running, 1 when none is (`--json`: `afk-serve-status/1`). `afk serve stop` asks it to finish.
 
 ## `afk pools clear`
 

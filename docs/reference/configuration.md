@@ -165,13 +165,20 @@ Inference engines on this machine; see [local models](../guides/local-models.md)
 
 `--mode` and `--yolo` win over both. A project's `permissions.default` applies only when it is stricter.
 
+### `[serve]`
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `listen` | string | `127.0.0.1:8484` | where [`afk serve`](../guides/serve.md) listens, as `host:port`. The default is this machine only; `0.0.0.0:8484` is every network interface. The API is plain HTTP |
+| `plan_runs` | bool | `false` | `true` lets a call through an AFK key run a CLI on its own sign-in (your subscriptions). Off, a call is answered only by a gateway, a local engine or a free pool. Read [using your subscriptions](../guides/serve.md#using-your-subscriptions) first. Only `config.toml` can set it, never a repository |
+| `tls` | bool | | reserved |
+
 ### Reserved sections
 
 These are validated so a file written now keeps working, but AFK doesn't act on them yet:
 
 | Section | Keys |
 |---|---|
-| `[serve]` | `listen`, `tls`, `plan_runs` |
 | `[telemetry.<name>]` | `kind`, `endpoint`, `key` (a secret reference), `content` |
 | `[source.<name>]` | `kind`, `repo`, `labels`, `task`, `mode` (a permission mode), `approve_plan` |
 
@@ -333,5 +340,7 @@ installed_at = 2026-11-26T12:00:00Z
 | `~/.config/afk/discovered-models.json` | models the CLIs reported, written by older AFK versions; read while it is less than 7 days old and ignored (with a note) after that, since nothing updates it now. `AFK_DISCOVERED_MODELS_FILE` names a file that is always read |
 | `~/.config/afk/state/skills.json`, `~/.config/afk/state/mcp.json` | which skill copies and MCP entries AFK wrote, so it never touches yours; backups of what a sync replaced are under `state/backups/` (the last 20 of each) |
 | `~/.local/state/agent-flow-kit/gateway-claude/` | the separate Claude config for gateway routes |
+| `~/.local/state/afk/keys.json` | your [API keys](../guides/serve.md#keys): names, limits and a hash of each key, never a key itself (mode 600); `AFK_KEYS_FILE` names another file. Deleting it deletes every key |
+| `~/.local/state/afk/serve.json` | the running `afk serve`: its process id and address, removed when it stops |
 
 All of them can be deleted; AFK recreates what it needs. Without `state/skills.json` or `state/mcp.json`, AFK no longer knows which copies it wrote, so it treats them as yours and leaves them alone.

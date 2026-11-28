@@ -226,7 +226,7 @@ AFK is becoming a standalone tool. Work is tracked in pull requests against `mas
 - [x] Packaging: GoReleaser builds with signed checksums, npm with native binaries
 - [ ] Homebrew tap, install script, `afk update`
 - [ ] Routing for every discovered CLI
-- [ ] API keys and `afk serve`: router keys that let any LLM gateway route through AFK, and keys scoped to one harness or provider
+- [x] API keys and `afk serve`: router keys that let any LLM gateway route through AFK, and keys scoped to one harness (keys scoped to a provider across CLIs are still to come)
 - [ ] Work sources: issue trackers and webhooks (GitHub Issues, Linear, Jira and others) that hand tasks to AFK through one runs API
 - [ ] Telemetry: OpenTelemetry traces of routing and runs for Langfuse, LangSmith or any OTLP collector
 - [ ] Workflows (`afk flow`): multi-stage runs with gates and reviews, defined in config

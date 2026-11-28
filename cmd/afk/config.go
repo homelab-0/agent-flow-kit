@@ -14,6 +14,7 @@ import (
 	toml "github.com/pelletier/go-toml/v2"
 
 	"github.com/homelab-0/agent-flow-kit/internal/config"
+	"github.com/homelab-0/agent-flow-kit/internal/serve"
 )
 
 const configUsage = `afk config — your settings, in config.toml
@@ -102,6 +103,11 @@ func configCmd(argv []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stdout, diff)
 		if f.dryRun {
 			fmt.Fprintln(stdout, "(dry run: nothing written)")
+		}
+		if f.args[0] == "serve.plan_runs" && (f.args[1] == "true" || f.args[1] == "1") {
+			for _, l := range serve.PlanRunsWarning() {
+				fmt.Fprintln(stderr, l)
+			}
 		}
 		return 0
 	case "edit":

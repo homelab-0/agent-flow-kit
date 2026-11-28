@@ -3,6 +3,7 @@ package core
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -167,5 +168,45 @@ func TestCappedStreamKeepsTheResult(t *testing.T) {
 	_, _ = w.Write([]byte("hello world, this is long"))
 	if string(w.Output()) != "hello worl" {
 		t.Errorf("text: %q", w.Output())
+	}
+}
+
+func TestExecHeadlessHandsOverLinesAsTheyArePrinted(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell")
+	}
+	var lines []string
+	stdout, _, exit := execHeadless(context.Background(), []string{"/bin/sh", "-c", `printf 'one\ntwo\n\nlast'`}, nil, "", func(b []byte) {
+		lines = append(lines, string(b))
+	})
+	if exit != 0 || string(stdout) != "one\ntwo\n\nlast" || strings.Join(lines, "|") != "one|two|last" {
+		t.Errorf("exit %d stdout %q lines %v", exit, stdout, lines)
+	}
+}
+
+func TestNoPlanKeepsARunOffEverySignIn(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell stubs")
+	}
+	c, ran, _ := printCore(t, func([]string) ([]byte, []byte, int) {
+		return []byte(`{"type":"result","is_error":false,"result":"done"}`), nil, 0
+	})
+	var pe *PlanRunsError
+	// Routed: every route here is a CLI on its own plan.
+	if _, err := c.Print(context.Background(), PrintRequest{Prompt: "hi", Flags: engine.RouteFlags{NoPlan: true}}, nil); !errors.As(err, &pe) {
+		t.Errorf("routed: %v", err)
+	}
+	// Pinned: a named CLI and model run on that CLI's sign-in.
+	_, err := c.Print(context.Background(), PrintRequest{Prompt: "hi", Flags: engine.RouteFlags{NoPlan: true, Harness: "grok", Model: "anything"}}, nil)
+	if !errors.As(err, &pe) || pe.Harness != "grok" {
+		t.Errorf("pinned: %v", err)
+	}
+	if len(*ran) != 0 {
+		t.Errorf("ran %v", *ran)
+	}
+	// In keeps the engine's stand-ins and moves it to another folder.
+	dir := t.TempDir()
+	if in := c.In(dir); in.Cwd != dir || in.Headless == nil || in.Home != c.Home {
+		t.Errorf("In: %+v", in)
 	}
 }
