@@ -31,6 +31,7 @@ type rig struct {
 	mu     sync.Mutex
 	ran    [][]string
 	dirs   []string
+	envs   [][]string
 	answer func(argv []string) ([]byte, []byte, int)
 }
 
@@ -75,9 +76,9 @@ func newRig(t *testing.T, planRuns bool) *rig {
 			}
 			return harness.Account{}, false
 		},
-		Headless: func(_ context.Context, argv, _ []string, dir string) ([]byte, []byte, int) {
+		Headless: func(_ context.Context, argv, env []string, dir string) ([]byte, []byte, int) {
 			r.mu.Lock()
-			r.ran, r.dirs = append(r.ran, argv), append(r.dirs, dir)
+			r.ran, r.dirs, r.envs = append(r.ran, argv), append(r.dirs, dir), append(r.envs, env)
 			answer := r.answer
 			r.mu.Unlock()
 			return answer(argv)
@@ -429,6 +430,13 @@ func TestStreamsOpenAI(t *testing.T) {
 	argv, _ := r.lastRun()
 	if !strings.Contains(strings.Join(argv, " "), "--include-partial-messages") {
 		t.Errorf("argv %v", argv)
+	}
+	// And to give up on a refused request soon: a caller is waiting.
+	r.mu.Lock()
+	env := strings.Join(r.envs[len(r.envs)-1], "\n")
+	r.mu.Unlock()
+	if !strings.Contains(env, "CLAUDE_CODE_MAX_RETRIES=2") {
+		t.Error("a served Claude Code run keeps its ten retries")
 	}
 }
 
