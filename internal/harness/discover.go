@@ -31,10 +31,20 @@ type Info struct {
 	UpdateCommand []string  `json:"update_command,omitempty"`
 	Auth          AuthState `json:"auth"`
 	AuthNote      string    `json:"auth_note,omitempty"`
-	Login         string    `json:"login,omitempty"`
-	Efforts       []string  `json:"efforts"`
-	EffortFlag    string    `json:"effort_flag,omitempty"`
+	// AuthChecked is how Auth was found: "status_command" (the CLI's own
+	// status command said so) or "login_file" (a login is, or isn't, on
+	// disk, which says nothing about whether it still works).
+	AuthChecked string   `json:"auth_checked,omitempty"`
+	Login       string   `json:"login,omitempty"`
+	Efforts     []string `json:"efforts"`
+	EffortFlag  string   `json:"effort_flag,omitempty"`
 }
+
+// How a sign-in state was found (Info.AuthChecked).
+const (
+	AuthByStatus = "status_command"
+	AuthByFile   = "login_file"
+)
 
 // Report is the result of discovering every known CLI.
 type Report struct {
@@ -59,8 +69,11 @@ func (r Report) Installed() []Info {
 type Options struct {
 	// VersionTimeout bounds each "<cli> --version" call (default 5s).
 	VersionTimeout time.Duration
-	// SkipVersion leaves versions out and runs nothing.
+	// SkipVersion leaves versions out and runs nothing, the sign-in
+	// status command included.
 	SkipVersion bool
+	// StatusTimeout bounds each sign-in status command (default 5s).
+	StatusTimeout time.Duration
 	// Now is the clock (tests).
 	Now func() time.Time
 }
@@ -106,8 +119,20 @@ func Inspect(ctx context.Context, e Env, a Adapter, o Options) Info {
 
 	if a.auth != nil {
 		in.Auth, in.AuthNote = a.auth(e)
+		in.AuthChecked = AuthByFile
 	} else {
 		in.Auth = AuthUnknown
+	}
+	// The CLI's own word wins over what is on disk: it knows about logins
+	// AFK can't see (a keychain) and about a login file that is no longer
+	// one.
+	if !o.SkipVersion {
+		if st, known := StatusSignIn(ctx, e, a, o.StatusTimeout); known {
+			in.Auth, in.AuthChecked, in.AuthNote = st, AuthByStatus, ""
+			if st == AuthSignedOut {
+				in.AuthNote = strings.Join(a.Manifest.Auth.Status, " ") + " says it isn't signed in"
+			}
+		}
 	}
 
 	if !o.SkipVersion {

@@ -40,6 +40,10 @@ type ProbeEnv struct {
 	// "" when it can't tell. AFK never opens Codex's auth.json to find
 	// out. Nil means unknown.
 	CodexLoginMode func(ctx context.Context) string
+	// SignedIn asks a CLI's own status command whether it is signed in.
+	// known is false when the CLI has no such command or didn't answer;
+	// what is on disk decides then. Nil asks nothing.
+	SignedIn func(ctx context.Context, harness string) (signedIn, known bool)
 }
 
 func (e ProbeEnv) getenv(k string) string {
@@ -104,6 +108,22 @@ func ProbePools(ctx context.Context, cat *Catalog, e ProbeEnv) *Probe {
 			codexMode = e.CodexLoginMode(ctx)
 		}
 	}()
+	// The CLIs with a status command of their own say whether they are
+	// signed in. Only a clear "no" is kept.
+	signedOut := map[string]bool{}
+	if e.SignedIn != nil {
+		for _, h := range planHome {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if in, known := e.SignedIn(ctx, h); known && !in {
+					mu.Lock()
+					signedOut[h] = true
+					mu.Unlock()
+				}
+			}()
+		}
+	}
 	wg.Wait()
 	harnesses["litellm_gateway"] = gw
 	gpu := ""
@@ -111,7 +131,7 @@ func ProbePools(ctx context.Context, cat *Catalog, e ProbeEnv) *Probe {
 		gpu = e.GPU(ctx)
 	}
 
-	binds := accountBindings(e, harnesses, codexMode)
+	binds := accountBindings(e, harnesses, codexMode, signedOut)
 
 	sig := readSignals(e.SignalsPath())
 	// Claude's plan usage as its last one-shot run through AFK reported it.
@@ -121,7 +141,7 @@ func ProbePools(ctx context.Context, cat *Catalog, e ProbeEnv) *Probe {
 	claudeMt := mtime(claudeCredsPath(e))
 	grokMt := mtime(e.path("AFK_GROK_AUTH_FILE", ".grok/auth.json"))
 
-	pc := poolCalc{cat: cat, sig: sig, now: e.Now.Unix(), gatewayOn: gw.Online, harnesses: harnesses, binds: binds}
+	pc := poolCalc{cat: cat, sig: sig, now: e.Now.Unix(), gatewayOn: gw.Online, harnesses: harnesses, binds: binds, signedOut: signedOut}
 	pools := map[string]Pool{
 		"anthropic-max":    pc.calc("anthropic-max", false, []string{"claude"}, claudeQ, claudeMt),
 		"openai-plus":      pc.calc("openai-plus", false, []string{"codex"}, codexQ, openaiMt),
@@ -162,7 +182,7 @@ func ProbePools(ctx context.Context, cat *Catalog, e ProbeEnv) *Probe {
 		})
 	}
 	for _, id := range ids {
-		h := signInPools[id]
+		h := planHome[id]
 		if h == "" || !harnesses[h].Installed || pools[id].QuotaSource != SourceSignedOut {
 			continue
 		}
@@ -224,6 +244,9 @@ type poolSignal struct {
 	UpdatedAt      *string  `json:"updated_at"`
 	UpdatedEpoch   *int64   `json:"updated_epoch"`
 	TTL            *int64   `json:"ttl_sec"`
+	// until is when the signal stops applying (unix seconds), 0 when it
+	// holds until cleared.
+	until int64
 }
 
 type modelSignal struct {
@@ -323,6 +346,7 @@ func activeSignal(s signals, pid string, authMtime, now int64) (*poolSignal, str
 	if now-*up >= ttl {
 		return nil, "", false
 	}
+	sg.until = *up + ttl
 	return &sg, kind, true
 }
 
@@ -335,6 +359,7 @@ type poolCalc struct {
 	gatewayOn bool
 	harnesses map[string]HarnessState
 	binds     map[string][]string
+	signedOut map[string]bool // CLIs whose own status command says signed out
 	feeding   map[string][]string
 }
 
@@ -361,14 +386,18 @@ func (pc *poolCalc) calc(pid string, local bool, defaultH []string, live quota, 
 	}
 	sg, kind, active := activeSignal(pc.sig, pid, authMtime, pc.now)
 	bound := pc.binds[pid]
+	// Not signed in: the plan's own CLI says so, or (for a CLI with no
+	// status command) it has no login on disk.
 	_, signIn := signInPools[pid]
-	unauth := signIn && !active && len(bound) == 0
+	unauth := !active && len(bound) == 0 && (signIn || pc.signedOut[planHome[pid]]) && pc.harnesses[planHome[pid]].Installed
 
 	var used *float64
 	var src string
+	setAside := false
 	state := "available"
 	switch {
 	case active && (kind == "auth" || sg.UsedPct != nil):
+		setAside = true
 		// A failed run set this pool aside. That is a state, not a usage
 		// figure: how much of the plan is used is still whatever was
 		// last reported, which a failure doesn't tell.
@@ -453,6 +482,13 @@ func (pc *poolCalc) calc(pid string, local bool, defaultH []string, live quota, 
 		}
 		p.DegradedReason = sg.DegradedReason
 	}
+	if setAside && state != "available" {
+		p.SetAside = true
+		if sg.until > 0 {
+			u := time.Unix(sg.until, 0).UTC().Format(time.RFC3339)
+			p.SetAsideUntil = &u
+		}
+	}
 	return p
 }
 
@@ -482,17 +518,17 @@ func maxInt64(a, b int64) int64 {
 // that plan's pool, but which plan is written only inside its credential
 // file, so AFK no longer binds them to vendor pools: opencode draws on its
 // own free pool, and pi on none.
-func accountBindings(e ProbeEnv, h map[string]HarnessState, codexMode string) map[string][]string {
+func accountBindings(e ProbeEnv, h map[string]HarnessState, codexMode string, signedOut map[string]bool) map[string][]string {
 	out := map[string][]string{}
 	add := func(pool, harness string) {
 		if !contains(out[pool], harness) {
 			out[pool] = append(out[pool], harness)
 		}
 	}
-	if exists(claudeCredsPath(e)) || isDir(claudeDir(e)) {
+	if !signedOut["claude"] && (exists(claudeCredsPath(e)) || isDir(claudeDir(e))) {
 		add("anthropic-max", "claude")
 	}
-	if nonEmpty(codexAuthPath(e)) {
+	if !signedOut["codex"] && nonEmpty(codexAuthPath(e)) {
 		// Three answers: the plan, an API key, or Codex couldn't say (slow,
 		// missing or unfamiliar output). The last binds Codex to neither:
 		// its sessions are counted against no pool and its plan pool shows

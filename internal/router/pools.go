@@ -28,7 +28,12 @@ type Pool struct {
 	// figures are measured.
 	Pacing *Pacing `json:"pacing,omitempty"`
 	// observed is when the measured reading was taken.
-	observed       time.Time
+	observed time.Time
+	// SetAside says a failed run, not a usage reading, is why this pool
+	// isn't used; SetAsideUntil is when that ends by itself (absent: it
+	// holds until cleared with afk pools clear).
+	SetAside       bool    `json:"set_aside,omitempty"`
+	SetAsideUntil  *string `json:"set_aside_until,omitempty"`
 	DegradedKind   *string `json:"degraded_kind,omitempty"`
 	DegradedReason *string `json:"degraded_reason,omitempty"`
 }

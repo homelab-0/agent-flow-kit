@@ -203,13 +203,13 @@ func TestCredentialFilesAreNeverOpened(t *testing.T) {
 			t.Errorf("%s changed when the credential files became unreadable: %+v -> %+v", id, b, a)
 		}
 	}
-	got := accountBindings(ProbeEnv{Home: home, Getenv: func(k string) string { return env[k] }}, map[string]HarnessState{}, "chatgpt")
+	got := accountBindings(ProbeEnv{Home: home, Getenv: func(k string) string { return env[k] }}, map[string]HarnessState{}, "chatgpt", nil)
 	for pool, h := range map[string]string{"anthropic-max": "claude", "openai-plus": "codex", "xai-grok": "grok", "opencode-free": "opencode"} {
 		if !contains(got[pool], h) {
 			t.Errorf("%s not bound to %s with an unreadable login file: %v", h, pool, got)
 		}
 	}
-	if b := accountBindings(ProbeEnv{Home: home}, map[string]HarnessState{}, "apikey"); !contains(b["api-metered"], "codex") || contains(b["openai-plus"], "codex") {
+	if b := accountBindings(ProbeEnv{Home: home}, map[string]HarnessState{}, "apikey", nil); !contains(b["api-metered"], "codex") || contains(b["openai-plus"], "codex") {
 		t.Errorf("an API-key Codex is metered: %v", b)
 	}
 }
@@ -257,5 +257,45 @@ func TestInstalledAgyIsNotSignedIn(t *testing.T) {
 	p = ProbePools(context.Background(), DefaultCatalog(), ProbeEnv{Home: home, Installed: func(h string) bool { return h == "agy" }})
 	if g := p.Pools["antigravity-pool"]; g.State != "available" || g.QuotaSource != SourceUnknown || g.HeadroomPct != nil {
 		t.Fatalf("signed-in agy: %+v", g)
+	}
+}
+
+// A plan CLI whose own status command says it is signed out is not a
+// signed-in plan, whatever login file is on disk: its pool is offline,
+// with a sign-in alert. No answer leaves the file check to decide.
+func TestStatusCommandSignsAPoolOut(t *testing.T) {
+	home := t.TempDir()
+	put(t, home, ".claude/.credentials.json", `{"claudeAiOauth":{"accessToken":"x"}}`, 0)
+	put(t, home, ".codex/auth.json", `{"tokens":{"access_token":"x"}}`, 0)
+	probe := func(answer map[string]bool) *Probe {
+		return ProbePools(context.Background(), DefaultCatalog(), ProbeEnv{
+			Home: home, Installed: func(h string) bool { return h == "claude" || h == "codex" },
+			CodexLoginMode: func(context.Context) string { return "chatgpt" },
+			SignedIn: func(_ context.Context, h string) (bool, bool) {
+				in, known := answer[h]
+				return in, known
+			},
+		})
+	}
+	p := probe(map[string]bool{"claude": false, "codex": true})
+	if g := p.Pools["anthropic-max"]; g.State != "offline" || g.QuotaSource != SourceSignedOut || len(p.Bindings["anthropic-max"]) != 0 {
+		t.Fatalf("claude signed out by its status command: %+v, bound %v", g, p.Bindings)
+	}
+	if g := p.Pools["openai-plus"]; g.State != "available" || !contains(p.Bindings["openai-plus"], "codex") {
+		t.Fatalf("codex signed in: %+v, bound %v", g, p.Bindings)
+	}
+	alert := false
+	for _, a := range p.AuthAlerts {
+		if m, _ := a.(map[string]any); m["pool"] == "anthropic-max" && m["reauth_command"] == "claude auth login" {
+			alert = true
+		}
+	}
+	if !alert {
+		t.Fatalf("no sign-in alert for claude: %v", p.AuthAlerts)
+	}
+	// No answer from either: the login files decide.
+	p = probe(nil)
+	if g := p.Pools["anthropic-max"]; g.State != "available" || !contains(p.Bindings["anthropic-max"], "claude") {
+		t.Fatalf("claude with no status answer: %+v", g)
 	}
 }

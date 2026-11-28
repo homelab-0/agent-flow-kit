@@ -21,7 +21,7 @@ A pool has a usage figure only from the provider's own report:
 
 A [failure signal](#failure-signals) from a real run sets a pool aside for a while. That is a state, not a figure: the pool shows as set aside, with no percentage made up for it.
 
-Which plan Codex uses (ChatGPT or an API key) comes from `codex login status`; when it can't answer, Codex is bound to neither rather than guessed. Claude's and Codex's folders follow `CLAUDE_CONFIG_DIR` and `CODEX_HOME` when they are set. Which vendor plans OpenCode or Pi are signed in to is written only inside their credential files, so AFK doesn't count them against those plans: OpenCode draws on its own free pool. If Grok or Antigravity is installed but has no login on disk, its pool is offline, shows `not signed in`, and AFK says to run `grok login` or `agy login`. Being installed is not being signed in.
+Which plan Codex uses (ChatGPT or an API key) comes from `codex login status`; when it can't answer, Codex is bound to neither rather than guessed. Claude's and Codex's folders follow `CLAUDE_CONFIG_DIR` and `CODEX_HOME` when they are set. Which vendor plans OpenCode or Pi are signed in to is written only inside their credential files, so AFK doesn't count them against those plans: OpenCode draws on its own free pool. If Claude's or Codex's own status command says it is signed out, or Grok or Antigravity (which have no status command) is installed with no login on disk, that plan's pool is offline, shows `not signed in`, and AFK says which sign-in command to run. Being installed is not being signed in.
 
 ## Pool states
 
@@ -45,7 +45,7 @@ When a CLI fails in a way that says something about its pool, the failure is rec
 
 Only error text is read: the CLI's error document, its stderr, and stdout that isn't JSON. An answer the model gave is never read for failure words, so an answer about HTTP 429 doesn't set a pool aside. Status codes count only as status codes: on their own, after `HTTP`, `status`, `code`, `error` or `api`, or with their reason phrase (`429 Too Many Requests`). A line number such as `line 1401` or `main.go:429` doesn't count. An overloaded provider (529) moves the run to another route, and sets the pool aside only for the 15-minute transient time.
 
-If a mark is wrong, or you've just signed in again, `afk pools clear <pool>` (or `afk pools clear` for all) removes it.
+A pool set aside this way has `set_aside` (and `set_aside_until`, when the mark ends by itself) in `afk pools --json`. The Runs tab shows it under the plan as "set aside after a run failed with …, for another 42m", not as a usage figure. If a mark is wrong, or you've just signed in again, press `c` on the Runs tab, or run `afk pools clear <pool>` (or `afk pools clear` for all).
 
 A model that a provider refuses ("not found", "no access") is set aside on its own for an hour, without affecting the rest of its pool.
 

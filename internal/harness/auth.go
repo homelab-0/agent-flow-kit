@@ -114,6 +114,43 @@ func fileOrEnv(file []string, vars ...string) func(Env) (AuthState, string) {
 	}
 }
 
+// StatusSignIn asks a CLI's own sign-in status command (auth.status in
+// its manifest) whether it is signed in. Only the exit code counts: 0 is
+// signed in, anything else signed out. The output is dropped unread, so
+// no account detail is kept. known is false when the CLI has no status
+// command, isn't installed, or didn't answer in time: the caller then
+// falls back to what it can tell from the login on disk.
+func StatusSignIn(ctx context.Context, e Env, a Adapter, limit time.Duration) (state AuthState, known bool) {
+	argv := a.Manifest.Auth.Status
+	if len(argv) < 2 {
+		return AuthUnknown, false
+	}
+	bin := Locate(e, a)
+	if bin == "" {
+		return AuthNotInstalled, false
+	}
+	if limit <= 0 {
+		limit = 5 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, limit)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, argv[1:]...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
+	// Node CLIs can leave children holding the pipe; don't wait on them.
+	cmd.WaitDelay = time.Second
+	err := cmd.Run()
+	var exit *exec.ExitError
+	switch {
+	case ctx.Err() != nil:
+		return AuthUnknown, false
+	case err == nil:
+		return AuthOK, true
+	case errors.As(err, &exit) && exit.ExitCode() > 0:
+		return AuthSignedOut, true
+	}
+	return AuthUnknown, false
+}
+
 // CodexLoginMode asks Codex how it is signed in (`codex login status`):
 // "chatgpt" for the ChatGPT plan, "apikey" for an API key, "" when it can't
 // tell. Only those words are looked for; the rest of the answer is dropped
