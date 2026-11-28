@@ -80,9 +80,9 @@ Finding a CLI is the first step. AFK then asks each installed CLI what this acco
 | | Plan | Models | Usage |
 |---|---|---|---|
 | Codex | `codex app-server` (`account/rateLimits/read`) | `model/list` on the same connection, else `codex debug models` | windows, reset times and credit balance from the same call |
-| Claude Code | `claude auth status` | a `list_models` control request to `claude -p --input-format stream-json`: no message is sent, so no turn runs. It does start Claude Code, so your SessionStart hooks run | only with a run, see [pools](pools.md#how-usage-is-measured) |
-| Grok | not reported | `grok models` | not reported outside Grok's own screen |
-| Antigravity | not reported | `agy models` | not reported |
+| Claude Code | `claude auth status` | a `list_models` control request to `claude -p --input-format stream-json`: no message is sent, so no turn runs. It does start Claude Code, so your SessionStart hooks run | only with a run, see [pools](pools.md#how-usage-is-measured); from Anthropic with the [vendor usage lookup](pools.md#the-vendor-usage-lookup) on |
+| Grok | from xAI, with the lookup on | `grok models` | not reported by the CLI; from xAI with the [vendor usage lookup](pools.md#the-vendor-usage-lookup) on |
+| Antigravity | not reported | `agy models` | `agy -p /usage --output-format json`, a local command that runs no turn |
 | OpenCode | n/a | `opencode models` | n/a |
 
 Two rules follow from the model list:
@@ -92,7 +92,7 @@ Two rules follow from the model list:
 
 A CLI that lists nothing (its command failed, or it has none) is routed from the catalog, as before.
 
-None of this sends a prompt or opens a login file. `afk pools --json` shows what each CLI reported under `harnesses`.
+None of this sends a prompt. A login file is opened only for a CLI whose vendor usage lookup you turned on. `afk pools --json` shows what each CLI reported under `harnesses`.
 
 ## Adding support for a CLI
 

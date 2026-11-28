@@ -76,6 +76,12 @@ type Trust struct {
 type Harness struct {
 	// Enabled false keeps the CLI out of routing.
 	Enabled *bool `toml:"enabled,omitempty"`
+	// VendorUsage true lets AFK read the login this CLI saved and ask
+	// its vendor for plan usage, when the CLI itself reports none.
+	// Default off: a vendor's terms may not allow another tool to use
+	// its CLI's login. Only config.toml can turn it on, never a
+	// repository.
+	VendorUsage *bool `toml:"vendor_usage,omitempty"`
 }
 
 // Gateway is one model gateway.

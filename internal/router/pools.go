@@ -72,6 +72,9 @@ type HarnessState struct {
 	Windows   []harness.Window `json:"usage_windows,omitempty"`
 	Extra     *harness.Extra   `json:"extra,omitempty"`
 	UsageNote string           `json:"usage_note,omitempty"`
+	// UsageSource is harness.SourceVendor when the figures came from
+	// the vendor's usage service (an opt-in), "" from the CLI.
+	UsageSource string `json:"usage_source,omitempty"`
 	// AskedAt is when the CLI reported it (unix seconds).
 	AskedAt int64 `json:"asked_at,omitempty"`
 }
@@ -80,6 +83,7 @@ type HarnessState struct {
 func (st *HarnessState) account(a harness.Account) {
 	st.Models, st.ModelsKnown, st.DefaultModel = a.Models, a.ModelsKnown, a.DefaultModel
 	st.Plan, st.Windows, st.Extra, st.UsageNote, st.AskedAt = a.Plan, a.Windows, a.Extra, a.UsageNote, a.At
+	st.UsageSource = a.UsageSource
 }
 
 // accountQuota turns the usage windows a CLI reported into a reading:
@@ -95,10 +99,12 @@ func accountQuota(st HarnessState, source string, now int64) (quota, bool) {
 		used := math.Max(0, math.Min(100, math.Round(w.UsedPct)))
 		// Only a window of that exact length is the 5-hour or the weekly
 		// figure; another length still counts for the pool's main figure.
-		if w.Minutes == 300 && q.FiveHourPct == nil {
+		// A plan split into groups (Antigravity) has one of each per group:
+		// the fullest is the figure.
+		if w.Minutes == 300 && (q.FiveHourPct == nil || used > *q.FiveHourPct) {
 			q.FiveHourPct = f64(used)
 		}
-		if w.Minutes == 10080 && q.SevenDayPct == nil {
+		if w.Minutes == 10080 && (q.SevenDayPct == nil || used > *q.SevenDayPct) {
 			q.SevenDayPct = f64(used)
 		}
 		if w.UsedPct <= fullest {
@@ -125,6 +131,15 @@ func accountQuota(st HarnessState, source string, now int64) (quota, bool) {
 		q.PlanType = &p
 	}
 	return q, q.OK
+}
+
+// vendorQuota is accountQuota for figures that came from the vendor's
+// usage service; a CLI's own figures are not taken here.
+func vendorQuota(st HarnessState, now int64) (quota, bool) {
+	if st.UsageSource != harness.SourceVendor {
+		return quota{}, false
+	}
+	return accountQuota(st, SourceVendor, now)
 }
 
 // Probe is the state of every pool and CLI at routing time.

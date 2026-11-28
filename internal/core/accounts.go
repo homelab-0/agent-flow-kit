@@ -25,11 +25,15 @@ type accountEntry struct {
 	Account harness.Account `json:"account"`
 	Bin     string          `json:"bin"`
 	Mtime   string          `json:"mtime"`
+	// Vendor is whether the vendor usage lookup was on for this report.
+	// Switching it makes the report stale.
+	Vendor bool `json:"vendor,omitempty"`
 }
 
 // accountsPath is where account reports are kept between runs:
 // AFK_ACCOUNTS_FILE, else ~/.config/afk/state/accounts.json. It holds
-// plan names, model names and usage figures; never a login.
+// plan names, model names and usage figures; never a login, also when
+// the figures came from a vendor usage lookup.
 func (c *Core) accountsPath() string {
 	if p := c.getenv("AFK_ACCOUNTS_FILE"); p != "" {
 		return p
@@ -40,8 +44,10 @@ func (c *Core) accountsPath() string {
 // account is how the pool probe asks an installed CLI what this account
 // has. Each CLI is asked through its own module in internal/harness; the
 // answer is reused for a few minutes, in this process and across runs,
-// and dropped when the CLI's binary changes.
-func (c *Core) account() func(ctx context.Context, h string) (harness.Account, bool) {
+// and dropped when the CLI's binary changes. vendor names the CLIs whose
+// saved login may be used to ask the vendor for usage
+// (harness.<name>.vendor_usage); for every other CLI no login is read.
+func (c *Core) account(vendor map[string]bool) func(ctx context.Context, h string) (harness.Account, bool) {
 	if c.Accounts != nil {
 		return c.Accounts
 	}
@@ -67,7 +73,7 @@ func (c *Core) account() func(ctx context.Context, h string) (harness.Account, b
 			if !e.Account.ModelsKnown && len(e.Account.Windows) == 0 && e.Account.Plan == "" {
 				ttl = accountEmptyTTL
 			}
-			return e.Bin == bin && e.Mtime == mt && now-e.Account.At < int64(ttl/time.Second) && now >= e.Account.At
+			return e.Bin == bin && e.Mtime == mt && e.Vendor == vendor[h] && now-e.Account.At < int64(ttl/time.Second) && now >= e.Account.At
 		}
 		c.acctMu.Lock()
 		if c.acctMemo == nil {
@@ -85,13 +91,16 @@ func (c *Core) account() func(ctx context.Context, h string) (harness.Account, b
 		if found && fresh(hit) {
 			return hit.Account, true
 		}
-		acct, ok := harness.Ask(ctx, c.Harness, h)
+		// A CLI that once answered its usage command as a prompt is never
+		// given that command again on the same install.
+		off := found && hit.Bin == bin && hit.Mtime == mt && hit.Account.UsageCommandSpent
+		acct, ok := harness.AskWith(ctx, c.Harness, h, harness.AskOptions{VendorUsage: vendor[h], NoUsageCommand: off})
 		if !ok || ctx.Err() != nil {
 			return acct, ok
 		}
 		acct.At = now
 		c.acctMu.Lock()
-		c.acctMemo[h] = accountEntry{Account: acct, Bin: bin, Mtime: mt}
+		c.acctMemo[h] = accountEntry{Account: acct, Bin: bin, Mtime: mt, Vendor: vendor[h]}
 		if b, err := json.Marshal(c.acctMemo); err == nil {
 			p := c.accountsPath()
 			if os.MkdirAll(filepath.Dir(p), 0o700) == nil {

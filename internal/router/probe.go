@@ -157,6 +157,18 @@ func ProbePools(ctx context.Context, cat *Catalog, e ProbeEnv) *Probe {
 	sig := readSignals(e.SignalsPath())
 	// Claude's plan usage as its last one-shot run through AFK reported it.
 	claudeQ, _ := readPlanUsage(e.UsagePath(), "anthropic-max", e.Now)
+	// What the vendor's usage service said, for a CLI the person turned
+	// that on for. The newer reading wins over a run's.
+	if q, ok := vendorQuota(harnesses["claude"], e.Now.Unix()); ok && (!claudeQ.OK || q.FetchedEpochRaw >= claudeQ.FetchedEpochRaw) {
+		claudeQ = q
+	}
+	grokQ, _ := vendorQuota(harnesses["grok"], e.Now.Unix())
+	// Antigravity's own /usage figures. Its plan is split into groups of
+	// models; the pool shows the fullest window of any group.
+	agyQ := quota{}
+	if harnesses["agy"].UsageSource == "" {
+		agyQ, _ = accountQuota(harnesses["agy"], "agy_usage_command", e.Now.Unix())
+	}
 	// A newer login file clears a sign-in failure signal for its pool.
 	openaiMt := mtime(codexAuthPath(e))
 	claudeMt := mtime(claudeCredsPath(e))
@@ -166,8 +178,8 @@ func ProbePools(ctx context.Context, cat *Catalog, e ProbeEnv) *Probe {
 	pools := map[string]Pool{
 		"anthropic-max":    pc.calc("anthropic-max", false, []string{"claude"}, claudeQ, claudeMt),
 		"openai-plus":      pc.calc("openai-plus", false, []string{"codex"}, codexQ, openaiMt),
-		"antigravity-pool": pc.calc("antigravity-pool", false, []string{"agy"}, quota{}, 0),
-		"xai-grok":         pc.calc("xai-grok", false, []string{"grok", "opencode"}, quota{}, grokMt),
+		"antigravity-pool": pc.calc("antigravity-pool", false, []string{"agy"}, agyQ, 0),
+		"xai-grok":         pc.calc("xai-grok", false, []string{"grok", "opencode"}, grokQ, grokMt),
 		"opencode-free":    pc.calc("opencode-free", false, []string{"opencode"}, quota{}, 0),
 		"litellm-local":    pc.calc("litellm-local", true, []string{"claude", "opencode"}, quota{}, 0),
 		LocalPool:          localPool(local),
@@ -400,6 +412,10 @@ const (
 	// SourceUnknown: nothing reported this plan's usage, so there is no
 	// figure. AFK never estimates one.
 	SourceUnknown = "unknown"
+	// SourceVendor: the vendor's usage service reported the figure, asked
+	// with the CLI's saved login because the person turned that on
+	// (harness.<name>.vendor_usage).
+	SourceVendor = "vendor_usage"
 	// SourceSignedOut: the plan's own CLI is installed but not signed in.
 	SourceSignedOut = "unauthenticated"
 )

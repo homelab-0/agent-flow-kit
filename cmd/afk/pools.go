@@ -136,6 +136,10 @@ func poolsText(p *router.Probe, now time.Time, loc *time.Location, pacing bool) 
 		switch {
 		case pl.QuotaSource == "codex_rate_limits", pl.QuotaSource == "codex_app_server":
 			basis = ", reported by codex"
+		case pl.QuotaSource == "agy_usage_command":
+			basis = ", reported by agy"
+		case pl.QuotaSource == router.SourceVendor:
+			basis = ", reported by the vendor's usage service"
 		case pl.QuotaSource == router.SourceUnknown && pl.UsageNote != "":
 			basis = " (" + pl.UsageNote + ")"
 		case pl.QuotaSource == "claude_rate_limit_event":

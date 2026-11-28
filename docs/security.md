@@ -30,15 +30,31 @@ So for a one-shot run, or one without a terminal, outside a [trusted repository]
 
 AFK prints one line on stderr for Claude Code and for the CLIs without such a flag, and the launch plan carries it as `config_note`. Codex gets no line. `afk trust add <repo>` lets Claude Code and those other CLIs load a repository's own settings in these runs, as well as allowing yolo there. It doesn't change Codex, which goes by the projects you trusted in Codex itself. Instruction files such as `CLAUDE.md` and `AGENTS.md` are still read: they are text for the model, not settings.
 
-## AFK never opens a credential file
+## AFK never opens a credential file, with one exception you turn on
 
 AFK checks that each CLI's login file **exists and is larger than 4 bytes** (bigger than the empty `{}` a CLI can leave behind when you sign out), and when it last changed. A smaller file counts as signed out. It never opens one, so no token is ever read, sent, stored or printed. That includes Claude's `~/.claude/.credentials.json`, Codex's `auth.json`, and the login files of Grok, OpenCode, Pi, Devin, Gemini and Qwen. Where a CLI has a sign-in status command of its own (`claude auth status`, `codex login status`), AFK runs it and takes its exit code as the answer, ahead of the file check; the output is dropped unread. To tell whether Codex uses the ChatGPT plan or an API key, AFK runs Codex's own `codex login status` and looks only for those words.
+
+### The vendor usage lookup
+
+The one exception is the vendor usage lookup, which is off unless you turn it on for a CLI (`harness.<name>.vendor_usage = true` in `config.toml`, or the Config tab). It exists for Claude Code and Grok, which can't print plan usage outside a run.
+
+With it on for a CLI, AFK:
+
+- reads that CLI's login file (`~/.claude/.credentials.json`, `~/.grok/auth.json`) and takes the access token, the expiry and, for Grok, the user id. The refresh token is never read into a request;
+- sends one `GET` with the token to the vendor's own usage address (`https://api.anthropic.com/api/oauth/usage`, `https://cli-chat-proxy.grok.com/v1/billing`), follows no redirect, and reads at most 1 MB back;
+- keeps only the usage figures, the plan name and extra usage. The token is never written, cached, logged or put in an error message;
+- never refreshes or rewrites the login. An expired or refused one is left for the CLI to renew.
+
+A repository's `.afk/config.json` can't turn it on. These addresses are the ones each CLI's own usage screen calls; they are not a published API, so a vendor can change them, and a vendor's terms may not allow another tool to use its CLI's login. AFK says this before you turn the lookup on and leaves the choice to you.
 
 ## What AFK reads
 
 | What | Why | How much |
 |---|---|---|
 | Each CLI's login file | to show whether it looks signed in, and to clear a sign-in signal after a new login | whether it exists, its size and its modification time; never its contents |
+| A CLI's login file, only with its vendor usage lookup on | to ask the vendor for plan usage | the access token, its expiry and (Grok) the user id, for one request; nothing is kept |
+| `agy -p /usage --output-format json` | Antigravity's plan usage | the groups and windows; a local command that runs no turn |
+| `claude -p --input-format stream-json` with a `list_models` control request | the models your Claude plan has | the model names; no message is sent, so no turn runs |
 | `codex login status` | whether Codex uses the ChatGPT plan or an API key | only the words "ChatGPT" or "API key"; the rest of the answer is dropped |
 | Codex's session files | its rate-limit figures | the last line that mentions `rate_limits` in recent rollout files |
 | Claude's output in `afk -p` runs | its plan usage | the `rate_limit_event`'s utilization, status and reset times; the answer is read as before |
