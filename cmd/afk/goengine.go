@@ -185,7 +185,7 @@ func explainText(ex *engine.Explain) string {
 	}
 	fmt.Fprintf(&b, "  pool: %s %s\n", pool, head)
 	score := "-"
-	if r.EffectiveScore != nil {
+	if r.EffectiveScore != nil && r.BenchmarkBasis != engine.BasisUnrated {
 		score = num(r.EffectiveScore)
 	}
 	basis := ""
@@ -221,8 +221,12 @@ func explainText(ex *engine.Explain) string {
 			if a.PoolHeadroomPct != nil {
 				left = num(a.PoolHeadroomPct) + "% left"
 			}
-			fmt.Fprintf(&b, "  %s %s — score %s, pool %s %s (%s), %s%s%s\n",
-				h, a.Model, num(a.EffectiveScore), a.EntitlementPool, left, state, a.CostClass, where, mode)
+			score := "score " + num(a.EffectiveScore)
+			if a.BenchmarkBasis == engine.BasisUnrated || a.EffectiveScore == nil {
+				score = "no benchmark"
+			}
+			fmt.Fprintf(&b, "  %s %s — %s, pool %s %s (%s), %s%s%s\n",
+				h, a.Model, score, a.EntitlementPool, left, state, a.CostClass, where, mode)
 		}
 	}
 	return b.String()

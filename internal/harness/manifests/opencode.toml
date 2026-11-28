@@ -11,6 +11,12 @@ self_update = "upgrade"
 [auth]
 login = ["opencode", "auth", "login"]
 
+# One "provider/model" line per model.
+[model_list]
+command = ["opencode", "models"]
+format = "lines"
+verified = "2.4.2"
+
 [modes]
 verified = "2.4.2"
 ask = []

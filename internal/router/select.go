@@ -1,6 +1,7 @@
 package router
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"regexp"
@@ -60,6 +61,29 @@ type DiscoveredModel struct {
 	Benchmarks map[string]Benchmark `json:"benchmarks"`
 }
 
+// BasisUnrated is the benchmark basis of a model its CLI reported that
+// the catalog has no score for. It ranks at UnratedScore, which is a
+// place in the order, not a measurement, and is never shown as a score.
+const BasisUnrated = "unrated"
+
+// UnratedScore is where an unrated model ranks.
+const UnratedScore = 75.0
+
+// MarshalJSON writes an unrated route's scores as null: the default it
+// ranks at is a place in the order, and a reader of the JSON must not
+// take it for a measurement.
+func (r Route) MarshalJSON() ([]byte, error) {
+	type plain Route
+	if r.BenchmarkBasis != BasisUnrated {
+		return json.Marshal(plain(r))
+	}
+	return json.Marshal(struct {
+		plain
+		BenchmarkScore *float64 `json:"benchmark_score"`
+		EffectiveScore *float64 `json:"effective_score"`
+	}{plain: plain(r)})
+}
+
 // Route is the router's decision.
 type Route struct {
 	Stage            string   `json:"stage"`
@@ -90,6 +114,7 @@ type Route struct {
 	// signal (runtime_signal:<kind>), the gateway probe, unauthenticated,
 	// or unknown. Only a reading carries figures.
 	PoolQuotaSource   string  `json:"pool_quota_source,omitempty"`
+	PoolUsageNote     string  `json:"pool_usage_note,omitempty"`
 	BenchmarkName     string  `json:"benchmark_name"`
 	BenchmarkScore    float64 `json:"benchmark_score"`
 	BenchmarkBasis    string  `json:"benchmark_basis"`
@@ -136,7 +161,7 @@ type Route struct {
 // them.
 func (r *Router) ServedBy(model string, installed []string, allowMetered bool) map[string]string {
 	out := map[string]string{}
-	for _, c := range r.candidates(allowMetered) {
+	for _, c := range withReported(r.candidates(allowMetered), r.Probe) {
 		if !r.launchable(c) {
 			continue
 		}
@@ -453,6 +478,11 @@ func (r *Router) Select(in Input) Route {
 				return true
 			}
 		}
+		for _, m := range probe.Harnesses[harness].Models {
+			if strings.Contains(strings.ToLower(m), sub) {
+				return true
+			}
+		}
 		return false
 	}
 	mythos := func(h string) bool {
@@ -470,7 +500,7 @@ func (r *Router) Select(in Input) Route {
 	subsUnderPressure := poolState("anthropic-max") != "available" &&
 		poolState("antigravity-pool") != "available" && poolState("xai-grok") != "available"
 
-	cands := append(r.candidates(in.AllowMetered), r.localCandidates(probe)...)
+	cands := withReported(append(r.candidates(in.AllowMetered), r.localCandidates(probe)...), probe)
 	var routes []Route
 	for _, c := range cands {
 		if !probe.Harnesses[c.Harness].Installed {
@@ -631,7 +661,11 @@ func (r *Router) Select(in Input) Route {
 		if basis == "" {
 			basis = "estimate"
 		}
-		if bm.Score == nil {
+		if c.unrated {
+			// Reported by the CLI, not in the catalog: there is no score
+			// for it, and the default it ranks at is not shown as one.
+			basis, bname, scoreText = BasisUnrated, "no benchmark", "none"
+		} else if bm.Score == nil {
 			basis = "estimate"
 		} else if (basis == "measured" || basis == "capped") && in.Now.Unix()-bm.SyncedEpoch > in.CarrySec {
 			basis = "stale"
@@ -667,7 +701,7 @@ func (r *Router) Select(in Input) Route {
 			Effort: ef.effort, BaseEffort: ef.base, EffortEscalated: ef.escalated, EffortReason: ef.reason,
 			SupportedEfforts: sup, WindowTokens: c.WindowTokens, EntitlementPool: c.EntitlementPool,
 			PoolState:   pool.State,
-			PoolUsedPct: pool.UsedPct, PoolHeadroomPct: pool.HeadroomPct, PoolQuotaSource: pool.QuotaSource,
+			PoolUsedPct: pool.UsedPct, PoolHeadroomPct: pool.HeadroomPct, PoolQuotaSource: pool.QuotaSource, PoolUsageNote: pool.UsageNote,
 			BenchmarkName: bname, BenchmarkScore: baseScore, BenchmarkBasis: basis,
 			BenchmarkLive:     basis == "measured" && bm.Live,
 			BenchmarkSyncedAt: bm.SyncedAt, EffectiveScore: eff, CrossFamilyReview: &cross,
@@ -689,7 +723,7 @@ func (r *Router) Select(in Input) Route {
 		}
 		routes = append(routes, route)
 	}
-	sort.SliceStable(routes, func(i, j int) bool { return routes[i].EffectiveScore > routes[j].EffectiveScore })
+	sortRoutes(routes)
 	if len(routes) > 0 {
 		return routes[0]
 	}
@@ -781,4 +815,17 @@ func contains(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// sortRoutes orders routes best first. A model with no benchmark ranks
+// below every rated one: its default places it among the unrated, never
+// above a measurement.
+func sortRoutes(routes []Route) {
+	sort.SliceStable(routes, func(i, j int) bool {
+		ui, uj := routes[i].BenchmarkBasis == BasisUnrated, routes[j].BenchmarkBasis == BasisUnrated
+		if ui != uj {
+			return uj
+		}
+		return routes[i].EffectiveScore > routes[j].EffectiveScore
+	})
 }

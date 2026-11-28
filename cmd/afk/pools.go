@@ -134,8 +134,10 @@ func poolsText(p *router.Probe, now time.Time, loc *time.Location, pacing bool) 
 		}
 		basis := ""
 		switch {
-		case pl.QuotaSource == "codex_rate_limits":
+		case pl.QuotaSource == "codex_rate_limits", pl.QuotaSource == "codex_app_server":
 			basis = ", reported by codex"
+		case pl.QuotaSource == router.SourceUnknown && pl.UsageNote != "":
+			basis = " (" + pl.UsageNote + ")"
 		case pl.QuotaSource == "claude_rate_limit_event":
 			basis = ", reported by claude at the last afk -p run"
 		case strings.HasPrefix(pl.QuotaSource, "runtime_signal:"):
@@ -145,6 +147,12 @@ func poolsText(p *router.Probe, now time.Time, loc *time.Location, pacing bool) 
 			if a := engine.ReadAgo(*pl.ObservedAt, now); a != "" {
 				basis += " " + a
 			}
+		}
+		if pl.Plan != "" {
+			basis += " · plan " + pl.Plan
+		}
+		if x := extraText(pl.Extra); x != "" {
+			basis += " · " + x
 		}
 		fmt.Fprintf(&b, "%-17s %-13s %s%s\n", id, pl.State, left, basis)
 		if t := router.PaceText(pl.Pacing, now, loc); t != "" {

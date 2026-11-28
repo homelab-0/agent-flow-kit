@@ -83,6 +83,9 @@ type Candidate struct {
 
 	// engineURL is the local engine a local model runs on.
 	engineURL string
+	// unrated marks a model its CLI reported that the catalog has no
+	// benchmark for.
+	unrated bool
 }
 
 // PoolMeta is what the catalog says about a subscription pool.
