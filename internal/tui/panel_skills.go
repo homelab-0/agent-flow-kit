@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 // SkillsView is the Skills tab: every central skill in every CLI.
@@ -34,6 +35,12 @@ type SkillRow struct {
 	// "project", "global" or "" (not chosen yet).
 	Project bool
 	Scope   string
+	// Desc is the description in its SKILL.md; Dir is its folder (central
+	// or the project's), with how many files it holds and when one last
+	// changed. All empty when the skill is no longer central.
+	Desc, Dir string
+	Files     int
+	Modified  time.Time
 }
 
 // SkillDrift is a CLI's copy edited since AFK synced it.
@@ -65,11 +72,13 @@ func skillMark(c string) string {
 	case "native":
 		return "✓"
 	case "ask":
-		return "?"
+		return "◆"
 	case "global":
-		return "g"
+		return "✓"
 	case "unsupported":
 		return "–"
+	case "off":
+		return "○"
 	}
 	return "·"
 }
@@ -106,7 +115,7 @@ func (p *Panel) skillAt() (SkillRow, string, bool) {
 }
 
 // skillDrift is the drift the box (and d, k, c) is about: the selected
-// cell's, else the selected skill's first, else the first.
+// skill's copy in the selected CLI, else its first edited copy.
 func (p *Panel) skillDrift() (SkillDrift, bool) {
 	r, h, ok := p.skillAt()
 	if !ok {
@@ -126,10 +135,6 @@ func (p *Panel) skillDrift() (SkillDrift, bool) {
 	}
 	if first != nil {
 		return *first, true
-	}
-	// Else the first drift anywhere, so an edit is never out of sight.
-	if len(p.data.skills.Drift) > 0 {
-		return p.data.skills.Drift[0], true
 	}
 	return SkillDrift{}, false
 }
@@ -224,10 +229,10 @@ func (p *Panel) skillsKey(k string) tea.Cmd {
 func (p *Panel) skillsLines(w int) ([]line, line) {
 	t := p.theme
 	v := p.data.skills
-	hint := line{sg(t.Key, "space"), sg(t.Dim, " enable  "), sg(t.Key, "s"), sg(t.Dim, " sync all  "), sg(t.Key, "n"), sg(t.Dim, " new skill  "), sg(t.Key, "e"), sg(t.Dim, " edit its text  ")}
-	head := line{sg(t.Plain, " "+plural(len(v.Rows), "skill", "skills")), sg(t.Dim, " · source "+v.Source)}
+	hint := line{sg(t.Key, "space"), sg(t.Dim, " on/off  "), sg(t.Key, "s"), sg(t.Dim, " sync all  "), sg(t.Key, "n"), sg(t.Dim, " new skill  "), sg(t.Key, "e"), sg(t.Dim, " edit its text  ")}
+	head := line{sg(t.Plain, " "+plural(len(v.Rows), "skill", "skills")), sg(t.Dim, " · central "+v.Source)}
 	if n := len(v.Drift); n > 0 {
-		head = append(head, sg(t.Dim, " · "), sg(t.Warn, fmt.Sprintf("%d drifted", n)))
+		head = append(head, sg(t.Dim, " · "), sg(t.Warn, fmt.Sprintf("%d edited", n)))
 	}
 	if v.Pending > 0 {
 		head = append(head, sg(t.Dim, " · "), sg(t.Accent, fmt.Sprintf("%d to sync", v.Pending)))
@@ -246,19 +251,26 @@ func (p *Panel) skillsLines(w int) ([]line, line) {
 	for _, r := range v.Rows {
 		nw = max(nw, min(lenCells(r.Name)+2, 32))
 	}
-	hdr := line{sg(t.Dim, "   "+col("skill", nw)+col("source", 10))}
-	for _, c := range v.Cols {
+	// Each CLI is a 4-cell column under its logo; the mark sits under
+	// the logo's second cell.
+	hdr := line{sg(t.Dim, "   "+col("skill", nw)+col("scope", 11))}
+	codes := line{sg(t.Plain, strings.Repeat(" ", 3+nw+11))}
+	captions := false
+	for _, c := range append(append([]string{}, v.Cols...), v.Unsupported...) {
 		hdr = append(hdr, harnessLogo(t, c), sg(t.Plain, "  "))
-	}
-	for _, c := range v.Unsupported {
-		hdr = append(hdr, harnessLogo(t, c), sg(t.Plain, "  "))
+		code := logoCaption(t, c)
+		captions = captions || code != ""
+		codes = append(codes, sg(t.Dim, col(code, 4)))
 	}
 	out = append(out, hdr)
-	// Room for the rows: the box and legend take 9 lines, the bar and
-	// hints 4.
+	if captions {
+		out = append(out, codes)
+	}
+	box := p.skillBox(w)
+	// Room for the rows: the legend, the box and the bar with its hints.
 	room := len(v.Rows)
 	if p.height > 0 {
-		room = max(3, p.height-len(out)-13)
+		room = max(3, p.height-len(out)-len(box)-len(v.Problems)-8)
 	}
 	sel := min(p.sel[TabSkills], len(v.Rows)-1)
 	start := 0
@@ -268,37 +280,25 @@ func (p *Panel) skillsLines(w int) ([]line, line) {
 	end := min(len(v.Rows), start+room)
 	for i := start; i < end; i++ {
 		r := v.Rows[i]
-		src := "central"
-		switch {
-		case !r.Central:
-			src = "gone"
-		case r.Project && r.Scope == "global":
-			src = "global"
-		case r.Project:
-			src = "project"
+		scope, sst := skillScope(r)
+		nst := t.Plain
+		if i == sel {
+			nst = t.Bold
 		}
-		row := line{sg(t.Plain, "  "+col(r.Name, nw)), sg(t.Dim, col(src, 10))}
+		row := line{sg(nst, "  "+col(r.Name, nw)), sg(map[string]lipgloss.Style{"accent": t.Accent, "warn": t.Warn}[sst], col(scope, 11))}
+		if sst == "" {
+			row[1] = sg(t.Dim, col(scope, 11))
+		}
 		for j, c := range v.Cols {
 			cell := r.Cells[c]
-			st := t.Plain
-			switch cell {
-			case "synced", "native":
-				st = t.OK
-			case "drifted", "conflict":
-				st = t.Warn
-			case "pending", "removing", "orphan", "ask":
-				st = t.Accent
-			default:
-				st = t.Dim
-			}
-			mark := " " + skillMark(cell) + "  "
+			st := skillStyle(t, cell)
 			if i == sel && j == p.skillCol {
 				// Brackets, not a colour: the row already has the
 				// selection background.
 				row = append(row, sg(t.Accent.Bold(true), "["), sg(st.Bold(true), skillMark(cell)), sg(t.Accent.Bold(true), "] "))
 				continue
 			}
-			row = append(row, sg(st, mark))
+			row = append(row, sg(st, " "+skillMark(cell)+"  "))
 		}
 		for range v.Unsupported {
 			row = append(row, sg(t.Dim, " –  "))
@@ -308,22 +308,95 @@ func (p *Panel) skillsLines(w int) ([]line, line) {
 	if more := len(v.Rows) - end; more > 0 {
 		out = append(out, line{sg(t.Dim, fmt.Sprintf("   …%d more", more))})
 	}
-	out = append(out, nil, line{sg(t.Dim, " ✓ in sync  ↻ changed in that CLI  · not enabled  – not supported")})
+	legend := line{sg(t.Plain, " "), sg(t.OK, "✓"), sg(t.Dim, " installed  "), sg(t.Warn, "↻"), sg(t.Dim, " edited there  "), sg(t.Dim, "○ off  – no skills folder")}
+	if hasCell(v, "ask") {
+		legend = append(line{sg(t.Plain, " "), sg(t.Accent, "◆"), sg(t.Dim, " needs a choice ")}, legend...)
+	}
+	out = append(out, nil, legend)
 	if v.Pending > 0 || hasCell(v, "conflict") {
-		out = append(out, line{sg(t.Dim, " + next sync adds it  - next sync removes it  ! your own skill, left alone")})
+		out = append(out, line{sg(t.Plain, " "), sg(t.Accent, "+"), sg(t.Dim, " next sync adds it  "), sg(t.Accent, "-"), sg(t.Dim, " next sync removes it  "), sg(t.Warn, "!"), sg(t.Dim, " your own skill, left alone")})
 	}
 	if v.Project != "" {
-		out = append(out, line{sg(t.Dim, " project: "+v.Project+"   ? choose where it goes  g every project")})
+		out = append(out, line{sg(t.Dim, " project skills from "+v.Project)})
 	}
-	if name := p.askScope; name != "" {
-		bw := boxW(w)
-		out = append(out, nil,
-			t.top("Install "+name, bw, t.Accent),
-			t.boxLine(bw, t.Accent, line{sg(t.Plain, "From this project's .agents/skills. Where should it go?")}),
-			t.boxLine(bw, t.Accent, line{sg(t.Key, "p"), sg(t.Dim, " this project only   "), sg(t.Key, "g"), sg(t.Dim, " every project (copied into central)   "), sg(t.Key, "esc"), sg(t.Dim, " later")}),
-			t.bottom(bw, t.Accent))
-	} else if d, ok := p.skillDrift(); ok {
-		bw := boxW(w)
+	out = append(out, box...)
+	for _, pr := range v.Problems {
+		out = append(out, line{sg(t.Warn, " ! "+pr)})
+	}
+	return out, append(line{sg(t.Key, "←→"), sg(t.Dim, " CLI  ")}, hint...)
+}
+
+// skillScope is where a skill applies, as the scope column shows it, and
+// how to colour it ("accent", "warn" or "" for dim).
+func skillScope(r SkillRow) (string, string) {
+	switch {
+	case !r.Central:
+		return "removed", "warn"
+	case r.Project && r.Scope == "global":
+		return "everywhere", ""
+	case r.Project && r.Scope == "project":
+		return "project", "accent"
+	case r.Project:
+		return "choose", "accent"
+	}
+	return "everywhere", ""
+}
+
+func skillStyle(t Theme, cell string) lipgloss.Style {
+	switch cell {
+	case "synced", "native", "global":
+		return t.OK
+	case "drifted", "conflict":
+		return t.Warn
+	case "pending", "removing", "orphan", "ask":
+		return t.Accent
+	}
+	return t.Dim
+}
+
+// skillBox is the selected skill in full: what it is, where it lives,
+// and the selected CLI's copy with what can be done about it.
+func (p *Panel) skillBox(w int) []line {
+	t := p.theme
+	r, h, ok := p.skillAt()
+	if !ok {
+		return nil
+	}
+	bw := boxW(w)
+	border := t.Border
+	var body []line
+	if r.Desc != "" {
+		for _, l := range wrap(r.Desc, bw-4) {
+			body = append(body, line{sg(t.Plain, l)})
+		}
+	}
+	if r.Dir != "" {
+		from := line{sg(t.Dim, "from  "), sg(t.Plain, r.Dir)}
+		if r.Files > 0 {
+			from = append(from, sg(t.Dim, " · "+plural(r.Files, "file", "files")))
+		}
+		if !r.Modified.IsZero() {
+			from = append(from, sg(t.Dim, " · edited "+agoText(p.now().Sub(r.Modified))))
+		}
+		body = append(body, from)
+	} else if !r.Central {
+		body = append(body, line{sg(t.Warn, "No longer in central; the next sync removes AFK's copies.")})
+	}
+	if len(body) > 0 {
+		body = append(body, nil)
+	}
+	title := r.Name
+	cli := line{harnessLogo(t, h), sg(t.Bold, " "+h+"  "), sg(skillStyle(t, r.Cells[h]), skillMark(r.Cells[h])), sg(t.Dim, " "+skillCellText(r.Cells[h]))}
+	d, drifted := p.skillDrift()
+	switch {
+	case p.askScope == r.Name:
+		border, title = t.Accent, "Install "+r.Name
+		body = append(body,
+			line{harnessLogo(t, h), sg(t.Plain, " Where should "+r.Name+" go?")},
+			line{sg(t.Plain, "   "), sg(t.Key, "p"), sg(t.Dim, " this project only   "), sg(t.Key, "g"), sg(t.Dim, " every project (copied into central)   "), sg(t.Key, "esc"), sg(t.Dim, " later")})
+	case drifted:
+		border, title = t.Warn, r.Name+" changed in "+d.Harness
+		cli = line{harnessLogo(t, d.Harness), sg(t.Bold, " "+d.Harness+"  "), sg(t.Warn, "↻"), sg(t.Dim, " "+skillCellText("drifted"))}
 		ago := "at an unknown time"
 		if !d.Modified.IsZero() {
 			ago = agoText(p.now().Sub(d.Modified))
@@ -332,18 +405,20 @@ func (p *Panel) skillsLines(w int) ([]line, line) {
 		if d.Project {
 			src = "the project's"
 		}
-		out = append(out, nil,
-			t.top(d.Skill+" changed in "+d.Harness, bw, t.Warn),
-			t.boxLine(bw, t.Warn, line{sg(t.Plain, fmt.Sprintf("Edited in %s %s. %s differ from %s.", d.Dir, ago, plural(d.Lines, "line", "lines"), src))}),
-			t.boxLine(bw, t.Warn, line{sg(t.Key, "d"), sg(t.Dim, " diff   "), sg(t.Key, "k"), sg(t.Dim, " keep "+d.Harness+"'s and update "+src+"   "), sg(t.Key, "c"), sg(t.Dim, " restore "+src)}),
-			t.bottom(bw, t.Warn))
-	} else if r, h, ok := p.skillAt(); ok {
-		out = append(out, nil, line{sg(t.Plain, " "), harnessLogo(t, h), sg(t.Bold, " "+r.Name), sg(t.Dim, " in "+h+": "+skillCellText(r.Cells[h]))})
+		body = append(body, cli,
+			line{sg(t.Plain, fmt.Sprintf("Edited in %s %s. %s differ from %s.", d.Dir, ago, plural(d.Lines, "line", "lines"), src))},
+			line{sg(t.Key, "d"), sg(t.Dim, " diff   "), sg(t.Key, "k"), sg(t.Dim, " keep "+d.Harness+"'s and update "+src+"   "), sg(t.Key, "c"), sg(t.Dim, " restore "+src)})
+	default:
+		body = append(body, cli)
+		if r.Cells[h] == "ask" {
+			body = append(body, line{sg(t.Dim, "   "), sg(t.Key, "space"), sg(t.Dim, " choose this project or every project")})
+		}
 	}
-	for _, pr := range v.Problems {
-		out = append(out, line{sg(t.Warn, " ! "+pr)})
+	out := []line{nil, t.top(title, bw, border)}
+	for _, l := range body {
+		out = append(out, t.boxLine(bw, border, l))
 	}
-	return out, append(line{sg(t.Key, "←→"), sg(t.Dim, " CLI  ")}, hint...)
+	return append(out, t.bottom(bw, border))
 }
 
 func hasCell(v *SkillsView, c string) bool {

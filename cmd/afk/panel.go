@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -825,6 +826,11 @@ func addProjectSkills(v *tui.SkillsView, p *projectSkills, home string) error {
 	}
 	for _, sk := range st.Skills {
 		r := tui.SkillRow{Name: sk.Name, Central: sk.Central, Project: true, Scope: sk.Scope, Cells: map[string]string{}}
+		if sk.Central {
+			dir := filepath.Join(st.Central, sk.Name)
+			r.Dir = tilde(dir)
+			r.Desc, r.Files, r.Modified = skillInfo(dir)
+		}
 		for _, c := range v.Cols {
 			switch {
 			case native[c] && sk.Central:
@@ -868,6 +874,11 @@ func skillsView(d skillsDeps, st *skills.Status, home string) *tui.SkillsView {
 		Pending: len(st.Actions), Problems: st.Problems}
 	for _, sk := range st.Skills {
 		r := tui.SkillRow{Name: sk.Name, Central: sk.Central, Cells: map[string]string{}}
+		if sk.Central {
+			dir := filepath.Join(st.Central, sk.Name)
+			r.Dir = tilde(dir)
+			r.Desc, r.Files, r.Modified = skillInfo(dir)
+		}
 		for h, c := range sk.Cells {
 			r.Cells[h] = string(c)
 		}

@@ -156,8 +156,7 @@ func TestPanelTabs(t *testing.T) {
 		TabBench:  {"task   coding  quick", "source SWE-bench Verified", "claude-fable-5-2   CL", "78.1  measured  14✓ 2~", "CX OC", "qwen36-14b         OL", "Effective today", "CX 71.8 (52%)", "OL 51.0", "←→ task"},
 		TabRuns:   {"updated 03:31", "CL Claude plan", "71%", "GK Grok plan", "GK Grok plan          █████████░ 91%     unknown", "agentgateway      up", "└ VL vLLM", "OL ollama", "this PC · RTX 5090 · 1 model", "r-7f3c", "✓ solved", "! exit 1", "23m · 30m ago"},
 		TabConfig: {"file ~/.config/afk/config.toml", "Routing", "Prefer                      balanced", "e edit config.toml"},
-		TabSkills: {"4 skills · source ~/.config/afk/skills · 1 drifted · 1 to sync · 1 to choose", "skill", "CL  CX  GK  AG", "gh-pr-triage", "↻", "╭─ gh-pr-triage changed in grok",
-			"Edited in ~/.grok/skills 2 hours ago. 4 lines differ from central.", "k keep grok's and update central", "space enable"},
+		TabSkills: {"4 skills · central ~/.config/afk/skills · 1 edited · 1 to sync · 1 to choose", "scope", "everywhere", "◆", "skill", "CL  CX  GK  AG", "gh-pr-triage", "↻", "space on/off"},
 		TabMCP: {"4 servers · ~/.config/afk/mcp.toml · 360 tools · 1 drifted · 1 to sync", "server", "CL  CX  GK  PI  status", "openconnector",
 			"312", "up · 2h ago", "untested", "╭─ github changed in codex", "k keep codex's as its own", "t test"},
 	} {
@@ -243,10 +242,10 @@ func TestSkillsTabKeys(t *testing.T) {
 	if !strings.Contains(panelText(p), "did sync") {
 		t.Errorf("the action's notice isn't shown:\n%s", panelText(p))
 	}
-	// The box stays on the drift when another skill is picked.
+	// The box follows the selection; the heading still counts the edit.
 	do(tea.KeyPressMsg{Code: tea.KeyUp})
-	if !strings.Contains(panelText(p), "╭─ gh-pr-triage changed in grok") {
-		t.Error("the drift box went away")
+	if s := panelText(p); strings.Contains(s, "changed in grok") || !strings.Contains(s, "╭─ humanizer") || !strings.Contains(s, "1 edited") {
+		t.Errorf("the box should be humanizer's:\n%s", s)
 	}
 }
 
@@ -387,7 +386,7 @@ func TestSkillsProjectScope(t *testing.T) {
 	p.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	p.Update(p.Init()())
 	s := panelText(p)
-	for _, w := range []string{"1 to choose", "prox-ops-deploy", "project", "project: ~/repos/prox-ops/.agents/skills"} {
+	for _, w := range []string{"1 to choose", "prox-ops-deploy", "project", "project skills from ~/repos/prox-ops/.agents/skills"} {
 		if !strings.Contains(s, w) {
 			t.Errorf("missing %q in\n%s", w, s)
 		}
@@ -967,6 +966,17 @@ func TestHarnessesWide(t *testing.T) {
 	for _, l := range p.Lines() {
 		if n := l.width(); n > 120 {
 			t.Errorf("line is %d cells wide, over 120: %q", n, l.plain())
+		}
+	}
+}
+
+func TestSkillsDriftBox(t *testing.T) {
+	p := panelAt(t, TabSkills)
+	p.Update(key("down")) // gh-pr-triage, edited in grok
+	s := panelText(p)
+	for _, want := range []string{"╭─ gh-pr-triage changed in grok", "Edited in ~/.grok/skills 2 hours ago. 4 lines differ from central.", "k keep grok's and update central"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("missing %q in\n%s", want, s)
 		}
 	}
 }
