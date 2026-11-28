@@ -1145,7 +1145,13 @@ func (p *Panel) configLines(w int) ([]line, line) {
 		head = append(head, sg(t.Dim, " (not created yet: defaults apply; "), sg(t.Key, "e"), sg(t.Dim, " creates it)"))
 	}
 	out := []line{head, nil, {sg(t.Dim, "   "+col("setting", 28)+"value")}}
+	// While a value is typed or a switch asks, only that row is shown, so
+	// what is said under it is never scrolled out of sight.
+	focus := p.cfgKey != "" || p.cfgAskKey != ""
 	for i, kv := range v.Rows {
+		if focus && i != p.sel[TabConfig] {
+			continue
+		}
 		// A row this tab can't change yet is dim.
 		st := t.Dim
 		if _, ok := v.Edit[kv[0]]; ok {

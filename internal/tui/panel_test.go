@@ -644,6 +644,21 @@ func TestConfigSwitchAsksBeforeTurningOn(t *testing.T) {
 	if s := panelText(p); !strings.Contains(s, "reads the saved login") || !strings.Contains(s, "↵ turn on") || !strings.Contains(s, "esc leave off") {
 		t.Fatalf("the question:\n%s", s)
 	}
+	// On a short screen with many rows the question is still in sight.
+	long := *p.raw.config
+	long.Rows = nil
+	for i := 0; i < 30; i++ {
+		long.Rows = append(long.Rows, [2]string{fmt.Sprintf("route.row%d", i), "x"})
+	}
+	long.Rows = append(long.Rows, [2]string{"harness.claude.vendor_usage", "off"})
+	saved, savedSel := p.data.config, p.sel[TabConfig]
+	p.data.config, p.sel[TabConfig] = &long, 30
+	p.Update(tea.WindowSizeMsg{Width: 100, Height: 12})
+	if s := panelText(p); !strings.Contains(s, "reads the saved login") || !strings.Contains(s, "harness.claude.vendor_usage") {
+		t.Fatalf("the question is out of sight on a short screen:\n%s", s)
+	}
+	p.data.config, p.sel[TabConfig] = saved, savedSel
+	p.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	// q is an answer here (no), not quit.
 	if cmd := p.Update(tea.KeyPressMsg{Code: 'q', Text: "q"}); cmd != nil || p.quit || len(src.ran) != 0 || p.cfgAskKey != "" {
 		t.Fatalf("another key must leave it off: ran %v quit %v", src.ran, p.quit)
