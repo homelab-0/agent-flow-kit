@@ -57,6 +57,7 @@ JSON files keep every other key, in order; only the servers object changes. Code
 afk mcp [status] [--json]             each server in each CLI; changes nothing
 afk mcp sync [--dry-run] [--json]     write new and changed servers into the CLIs
 afk mcp test <server> [--json]        connect and list its tools (tools/list)
+afk mcp import [--all|<server>...]    list servers you added to a CLI yourself, or add them to mcp.toml
 afk mcp keep <server> <cli>           leave a CLI's edited entry as its own
 afk mcp restore <server> <cli>        write AFK's entry back over a CLI's edit
 afk mcp enable|disable <server> <cli> turn a server on or off for one CLI
@@ -66,6 +67,14 @@ afk mcp path                          print where mcp.toml is
 ```
 
 `test` reads the token from its variable and sends it only to that server. Its result (up or down, how many tools) is kept for the MCP tab.
+
+## Importing servers you already have
+
+`afk mcp import` lists the servers in your CLIs' own MCP configs that `mcp.toml` doesn't have yet: ones you added to Claude Code, Codex, OpenCode or another CLI by hand. `--all` adds every one it can to `mcp.toml`, and naming servers adds just those. Only `mcp.toml` changes, and your CLIs' files stay as they are.
+
+AFK copies names, never values. A token passed as a variable (`Bearer ${GH_TOKEN}`, `bearer_token_env_var = "GH_TOKEN"`, `{env:GH_TOKEN}`) becomes `bearer = "env:GH_TOKEN"`. An env variable written into the file with its value is imported by name only, and the listing says so; export it in your shell for the CLIs AFK writes it to. AFK doesn't import an SSE server, a URL with a query string (it may hold a key) or a header other than a bearer token, and the listing says why.
+
+After an import, `afk mcp sync` gives the server to your other CLIs. A CLI whose entry is the one AFK would write is taken on as AFK's. One that differs (a value in it, other arguments) stays yours and is left alone.
 
 ## A project's own servers: `.mcp.json`
 
@@ -108,7 +117,11 @@ A CLI that is running may rewrite its own config (Claude Code does). Sync while 
 
 ## The MCP tab
 
-Press `5` in the [control panel](control-panel.md) (or `/mcp` in the composer): one row per server with how it's reached, its tool count and status from the last test, and a column per CLI with the same marks as the [Skills tab](skills.md#the-skills-tab), plus `✗` for a file AFK can't read.
+Press `5` in the [control panel](control-panel.md) (or `/mcp` in the composer): one row per server with how it's reached, its tool count and health from the last test, and a column per CLI under its logo with the same marks as the [Skills tab](skills.md#the-skills-tab), plus `✗` for a file AFK can't read.
+
+Servers found in your CLIs' own configs that `mcp.toml` doesn't have are listed in a box at the top, with the CLIs that have each and what an import would leave out. `i` imports all the ones it can, the same as `afk mcp import --all`.
+
+A box under the list shows the selected server: its URL or command, the variable holding its token and the env names it gets, its last test (with the error when it failed), and what the selected CLI has of it and in which file. When the server was edited in a CLI, the box shows that edit instead.
 
 `a` adds a server without leaving the tab. Type one line, a name and where the server is:
 
@@ -122,4 +135,4 @@ The line is checked against the whole of `mcp.toml` before anything is written. 
 
 `↑` `↓` pick a server and `←` `→` a CLI. `space` turns it on or off for that CLI, `s` syncs, `t` tests the server, `↵` connects and lists its tools with their descriptions (`↑` `↓` scroll, `esc` goes back; it counts as a test), and `e` opens `mcp.toml` in your editor. When an entry has drifted, a box names it: `k` keeps the CLI's entry and `c` restores AFK's.
 
-The repository's `.mcp.json` servers are listed below the others, marked `project`. A server waiting for an answer shows `?`, and `space` asks: `p` for this project, `g` for every project, `esc` for later.
+The repository's `.mcp.json` servers are listed below the others, marked `project`. A server waiting for an answer shows `◆`, and `space` asks: `p` for this project, `g` for every project, `esc` for later.

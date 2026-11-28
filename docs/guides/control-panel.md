@@ -86,4 +86,4 @@ Every central skill in every CLI, with drift shown per CLI. See [Skills](skills.
 
 ## MCP
 
-Every server in `mcp.toml` in every CLI, with its tools and health from the last test. See [MCP servers](mcp.md#the-mcp-tab).
+Every server in `mcp.toml` in every CLI, with its tools and health from the last test, and the servers you added to a CLI yourself, ready to import with `i`. See [MCP servers](mcp.md#the-mcp-tab).

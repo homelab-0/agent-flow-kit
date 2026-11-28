@@ -327,7 +327,7 @@ func (e Env) cell(st state, s *Status, t Target, f fileState, sv Server, listed 
 		return Pending, ""
 	}
 	if !isManaged {
-		if wanted && f.managed == nil && canon(cur) == canon(desired) {
+		if wanted && f.managed == nil && sameEntry(cur, desired) {
 			plan("adopt") // the same entry, added by hand: AFK takes it on
 			return Pending, ""
 		}

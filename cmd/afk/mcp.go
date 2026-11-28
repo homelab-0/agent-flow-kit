@@ -24,6 +24,7 @@ import (
 const mcpHelp = `Usage: afk mcp [status] [--json]
        afk mcp sync [--dry-run] [--json]
        afk mcp test <server> [--json]
+       afk mcp import [--all | <server>...] [--json]
        afk mcp keep|restore <server> <cli> [--project]
        afk mcp enable|disable <server> <cli> [--project]
        afk mcp scope <server> project|global
@@ -35,6 +36,8 @@ into every installed CLI's own MCP config, in that CLI's format.
   status    each server in each CLI; nothing is changed
   sync      write new and changed servers into the CLIs (--dry-run shows the plan)
   test      connect to a server and list its tools (tools/list)
+  import    list the servers you added to a CLI yourself; with --all or
+            names, add them to mcp.toml (the CLIs' files don't change)
   keep      leave a CLI's edited entry as its own; AFK stops managing it
   restore   write AFK's entry back over a CLI's edited one
   enable    turn a server on or off for one CLI here (the next sync applies it)
@@ -148,7 +151,7 @@ func runMCP(d mcpDeps, argv []string, stdout, stderr io.Writer) int {
 	if len(argv) > 0 && !strings.HasPrefix(argv[0], "-") {
 		sub, argv = argv[0], argv[1:]
 	}
-	asJSON, dry, inProject := false, false, false
+	asJSON, dry, inProject, all := false, false, false, false
 	var args []string
 	for _, a := range argv {
 		switch a {
@@ -158,6 +161,8 @@ func runMCP(d mcpDeps, argv []string, stdout, stderr io.Writer) int {
 			inProject = true
 		case "--dry-run", "-n":
 			dry = true
+		case "--all", "-a":
+			all = true
 		case "-h", "--help":
 			fmt.Fprint(stdout, mcpHelp)
 			return 0
@@ -224,6 +229,8 @@ func runMCP(d mcpDeps, argv []string, stdout, stderr io.Writer) int {
 	case "path":
 		fmt.Fprintln(stdout, d.env.Config)
 		return 0
+	case "import":
+		return mcpImport(d, args, all, asJSON, stdout, stderr)
 	case "edit":
 		if _, err := os.Stat(d.env.Config); os.IsNotExist(err) {
 			if err := os.MkdirAll(filepath.Dir(d.env.Config), 0o755); err != nil {
@@ -673,4 +680,62 @@ func findMCPServer(d mcpDeps, name string) (mcp.Server, mcp.Env, bool, error) {
 		}
 	}
 	return mcp.Server{}, d.env, false, nil
+}
+
+// mcpImport lists the servers in the CLIs' own configs that mcp.toml
+// doesn't have, or adds them to mcp.toml (all, or the ones named).
+func mcpImport(d mcpDeps, names []string, all, asJSON bool, stdout, stderr io.Writer) int {
+	found, err := d.env.Found(d.targets)
+	if err != nil {
+		fmt.Fprintln(stderr, "afk mcp:", err)
+		return 1
+	}
+	if found == nil {
+		found = []mcp.Found{}
+	}
+	if !all && len(names) == 0 {
+		if asJSON {
+			return writeJSON(stdout, stderr, map[string]any{"schema": "afk-mcp-found/1", "found": found})
+		}
+		if len(found) == 0 {
+			fmt.Fprintln(stdout, "Every server in your CLIs' own MCP configs is already in mcp.toml.")
+			return 0
+		}
+		for _, f := range found {
+			fmt.Fprintf(stdout, "%-16s %-28s in %s\n", f.Name, f.Where(), strings.Join(f.In, ", "))
+			if f.Why != "" {
+				fmt.Fprintf(stdout, "%16s can't import: %s\n", "", f.Why)
+			}
+			for _, l := range f.Left {
+				fmt.Fprintf(stdout, "%16s not copied: %s\n", "", l)
+			}
+			if f.Differs {
+				fmt.Fprintf(stdout, "%16s the CLIs' entries differ; %s's is imported\n", "", f.In[0])
+			}
+		}
+		fmt.Fprintln(stdout, "\nafk mcp import --all adds them to mcp.toml; afk mcp import <server> adds one.")
+		return 0
+	}
+	if all {
+		names = nil
+	}
+	done, err := d.env.Import(d.targets, names)
+	if asJSON {
+		if err != nil {
+			fmt.Fprintln(stderr, "afk mcp:", err)
+			return 1
+		}
+		return writeJSON(stdout, stderr, map[string]any{"schema": "afk-mcp-import/1", "imported": nonNil(done)})
+	}
+	if len(done) > 0 {
+		fmt.Fprintf(stdout, "Added %s to %s. afk mcp sync gives them to your other CLIs.\n", strings.Join(done, ", "), tildePath(d.env.Config))
+	}
+	if err != nil {
+		fmt.Fprintln(stderr, "afk mcp:", err)
+		return 1
+	}
+	if len(done) == 0 {
+		fmt.Fprintln(stdout, "Nothing to import.")
+	}
+	return 0
 }
