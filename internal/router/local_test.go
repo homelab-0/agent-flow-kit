@@ -74,10 +74,17 @@ func TestProbeLocalFindsEngines(t *testing.T) {
 	defer lc.Close()
 	old := fakeOpenAI(t, "vllm", false, "some-model")
 	defer old.Close()
-	got := probeLocal(context.Background(), ProbeEnv{
+	st := fakeOpenAI(t, "strata", false, "glm52")
+	defer st.Close()
+	got, noAPI := probeLocal(context.Background(), ProbeEnv{
 		Live: true, HTTP: http.DefaultClient,
-		LocalURLs: []string{ol.URL, vl.URL + "/", lc.URL, old.URL, "http://127.0.0.1:1", "http://10.0.0.5:11434", ol.URL},
+		LocalURLs: []string{ol.URL, vl.URL + "/", lc.URL, old.URL, st.URL, "http://127.0.0.1:1", "http://10.0.0.5:11434", ol.URL},
 	})
+	// Engines without the Anthropic Messages API are kept apart: shown,
+	// never routed to.
+	if len(noAPI) != 2 || noAPI[0].Engine != "vllm" || noAPI[1].Engine != "strata" || noAPI[1].URL != st.URL {
+		t.Errorf("engines without the Messages API: %+v", noAPI)
+	}
 	if len(got) != 3 {
 		t.Fatalf("found %d engines, want 3: %+v", len(got), got)
 	}
@@ -94,7 +101,7 @@ func TestProbeLocalFindsEngines(t *testing.T) {
 	if got[1].URL != vl.URL {
 		t.Errorf("url %q kept its slash", got[1].URL)
 	}
-	if probeLocal(context.Background(), ProbeEnv{Live: false, HTTP: http.DefaultClient, LocalURLs: []string{ol.URL}}) != nil {
+	if u, n := probeLocal(context.Background(), ProbeEnv{Live: false, HTTP: http.DefaultClient, LocalURLs: []string{ol.URL}}); u != nil || n != nil {
 		t.Error("probed while not live")
 	}
 }
@@ -152,6 +159,19 @@ func TestIsLoopbackURL(t *testing.T) {
 	} {
 		if IsLoopbackURL(u) != want {
 			t.Errorf("IsLoopbackURL(%q) != %v", u, want)
+		}
+	}
+}
+
+// The owned_by each engine's own server code sends.
+func TestEngineFromOwner(t *testing.T) {
+	for owner, want := range map[string]string{
+		"vllm": "vllm", "koboldcpp": "koboldcpp", "xinference": "xinference", "lmdeploy": "lmdeploy",
+		"tabbyAPI": "tabbyapi", "docker": "docker", "lemonade": "lemonade", "strata": "strata",
+		"local": "", "openai": "",
+	} {
+		if got := engineFromOwner(owner); got != want {
+			t.Errorf("engineFromOwner(%q) = %q, want %q", owner, got, want)
 		}
 	}
 }

@@ -553,7 +553,7 @@ func TestKeyType(t *testing.T) {
 func TestLocalEngines(t *testing.T) {
 	f := newEnv(t)
 	s := resolve(t, f)
-	if strings.Join(s.LocalURLs, ",") != strings.Join(DefaultLocalURLs(), ",") || len(s.LocalURLs) != 5 {
+	if strings.Join(s.LocalURLs, ",") != strings.Join(DefaultLocalURLs(), ",") || len(s.LocalURLs) != 11 {
 		t.Errorf("default local urls %v", s.LocalURLs)
 	}
 	f.config(t, "version = 1\n[local]\nengines = \"off\"\nurls = [\"http://localhost:9000\"]\ngpu = \"RTX 5090\"\n")

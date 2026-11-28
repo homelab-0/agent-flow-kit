@@ -243,7 +243,7 @@ func (p *Panel) engineLines(w int) ([]line, line) {
 	v := p.data.status
 	var out []line
 	if v.Gateway == nil && len(v.Engines) == 0 {
-		return []line{{sg(t.Dim, " No gateway set and no local engine found. Add a gateway on the Config tab; AFK finds Ollama, vLLM, llama.cpp and LM Studio by itself.")}}, nil
+		return []line{{sg(t.Dim, " No gateway set and no local engine found. Add a gateway on the Config tab; AFK finds Ollama, LM Studio, llama.cpp, vLLM and other engines on their usual ports by itself.")}}, nil
 	}
 	if g := v.Gateway; g != nil {
 		out = append(out, t.groupHead("Gateway", 1))
@@ -252,7 +252,7 @@ func (p *Panel) engineLines(w int) ([]line, line) {
 		if g.State != "up" {
 			st = "bad"
 		}
-		out = append(out, line{sg(t.Plain, " "), t.logo(r), sg(t.Plain, " "+col(g.Name, 18)), t.dot(st), sg(t.Plain, " "+col(g.State, 8)), sg(t.Dim, g.Detail)})
+		out = append(out, line{sg(t.Plain, " "), t.logo(r), sg(t.Plain, " "+col(g.Name, 20)+" "), t.dot(st), sg(t.Plain, " "+col(g.State, 8)), sg(t.Dim, g.Detail)})
 		if g.Engine != "" {
 			out = append(out, line{sg(t.Dim, "   └ "), t.engineLogo(g.Engine), sg(t.Plain, " "+col(engineName(g.Engine), 14)), sg(t.Dim, g.EngineHost)})
 		}
@@ -270,10 +270,18 @@ func (p *Panel) engineLines(w int) ([]line, line) {
 		if len(e.Models) > 0 {
 			detail += " · " + plural(len(e.Models), "model", "models")
 		}
-		out = append(out, p.selRow(line{sg(t.Plain, " "), t.engineLogo(e.Engine), sg(t.Plain, " "+col(engineName(e.Engine), 18)), t.dot(st), sg(t.Plain, " "+col(state, 8)), sg(t.Dim, detail)}, i, w))
+		if e.NoAPI {
+			st, state = "partly", "no API"
+			detail += " · needs a gateway"
+		}
+		out = append(out, p.selRow(line{sg(t.Plain, " "), t.engineLogo(e.Engine), sg(t.Plain, " "+col(engineName(e.Engine), 20)+" "), t.dot(st), sg(t.Plain, " "+col(state, 8)), sg(t.Dim, detail)}, i, w))
 	}
 	if len(v.Engines) > 0 {
 		e := v.Engines[min(p.sel[TabRuns], len(v.Engines)-1)]
+		if e.NoAPI {
+			out = append(out, nil)
+			out = append(out, t.wrapField("note", engineName(e.Engine)+" has no Anthropic Messages API, so Claude Code can't run on it and AFK sends it nothing. Put a gateway in front of it (LiteLLM, agentgateway, ...) and add that gateway on the Config tab.", w-2)...)
+		}
 		if len(e.Models) > 0 {
 			out = append(out, nil)
 			out = append(out, t.wrapField("models", strings.Join(e.Models, ", "), w-2)...)

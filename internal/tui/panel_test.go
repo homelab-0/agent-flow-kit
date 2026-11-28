@@ -1152,3 +1152,19 @@ func TestSplitArgs(t *testing.T) {
 		t.Errorf("%q", got)
 	}
 }
+
+// An engine without the Anthropic Messages API is shown, never as usable,
+// with the way to use it.
+func TestUsageEngineWithoutAPI(t *testing.T) {
+	p := panelAt(t, TabRuns)
+	p.data.status.Engines = append(p.data.status.Engines, EngineRow{Engine: "strata", Where: "this PC", Models: []string{"glm52"}, NoAPI: true})
+	p.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	p.Update(key("]"))
+	p.Update(key("down"))
+	s := panelText(p)
+	for _, want := range []string{"ST Strata", "no API", "this PC · 1 model · needs a gateway", "has no Anthropic Messages API", "Put a gateway in front of it"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("missing %q in\n%s", want, s)
+		}
+	}
+}

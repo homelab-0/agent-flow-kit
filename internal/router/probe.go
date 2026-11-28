@@ -108,12 +108,12 @@ func ProbePools(ctx context.Context, cat *Catalog, e ProbeEnv) *Probe {
 		}()
 	}
 	var gw HarnessState
-	var local []LocalEngine
+	var local, localNoAPI []LocalEngine
 	var codexQ quota
 	codexMode := ""
 	wg.Add(4)
 	go func() { defer wg.Done(); gw = probeGateway(ctx, e) }()
-	go func() { defer wg.Done(); local = probeLocal(ctx, e) }()
+	go func() { defer wg.Done(); local, localNoAPI = probeLocal(ctx, e) }()
 	go func() { defer wg.Done(); codexQ = probeCodexQuota(e) }()
 	go func() {
 		defer wg.Done()
@@ -246,7 +246,7 @@ func ProbePools(ctx context.Context, cat *Catalog, e ProbeEnv) *Probe {
 			unavailable[m] = v
 		}
 	}
-	return &Probe{Schema: PoolsSchema, Harnesses: harnesses, AuthAlerts: alerts, UnavailableModels: unavailable, Pools: pools, Bindings: binds, Local: local, LocalGPU: gpu, at: e.Now}
+	return &Probe{Schema: PoolsSchema, Harnesses: harnesses, AuthAlerts: alerts, UnavailableModels: unavailable, Pools: pools, Bindings: binds, Local: local, LocalNoAPI: localNoAPI, LocalGPU: gpu, at: e.Now}
 }
 
 func reauth(h string) string {

@@ -34,12 +34,15 @@ const (
 // LocalEngine is one engine found on this machine.
 type LocalEngine struct {
 	// Engine is what serves it: ollama, lmstudio, llamacpp, vllm, sglang,
-	// localai, mlx, tgi, or "" when it can't tell.
+	// localai, mlx, tgi, koboldcpp, xinference, lmdeploy, tabbyapi,
+	// docker, lemonade, strata, or "" when it can't tell.
 	Engine string   `json:"engine"`
 	URL    string   `json:"url"`
 	Models []string `json:"models"`
 	// State is "idle" or "loaded" when the engine says; "" unknown.
 	State string `json:"state,omitempty"`
+	// noMessages marks an engine found without the Anthropic Messages API.
+	noMessages bool
 }
 
 // IsLoopbackURL reports whether u is an http URL on this machine
@@ -59,10 +62,12 @@ func IsLoopbackURL(u string) bool {
 
 // probeLocal looks for an engine at each address, all at once. Only
 // loopback addresses are probed; two addresses that reach the same engine
-// are kept once.
-func probeLocal(ctx context.Context, e ProbeEnv) []LocalEngine {
+// are kept once. It returns the engines Claude Code can run on, and apart
+// from them the ones without the Anthropic Messages API, which need a
+// gateway in front.
+func probeLocal(ctx context.Context, e ProbeEnv) (usable, noAPI []LocalEngine) {
 	if !e.Live || len(e.LocalURLs) == 0 {
-		return nil
+		return nil, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
@@ -82,17 +87,21 @@ func probeLocal(ctx context.Context, e ProbeEnv) []LocalEngine {
 		}()
 	}
 	wg.Wait()
-	var out []LocalEngine
 	for _, f := range found {
-		if f != nil && len(f.Models) > 0 {
-			out = append(out, *f)
+		switch {
+		case f == nil:
+		case f.noMessages:
+			noAPI = append(noAPI, *f)
+		case len(f.Models) > 0:
+			usable = append(usable, *f)
 		}
 	}
-	return out
+	return usable, noAPI
 }
 
 // probeEngine finds which engine answers at base and the chat models it
-// has. Nil when nothing answers there or it has no Anthropic Messages API.
+// has. Nil when nothing answers there; an engine without the Anthropic
+// Messages API comes back marked noMessages.
 func probeEngine(ctx context.Context, c *http.Client, base string) *LocalEngine {
 	// Ollama has its own API, which says which models can call tools
 	// (Claude Code needs them) and which are loaded.
@@ -100,10 +109,11 @@ func probeEngine(ctx context.Context, c *http.Client, base string) *LocalEngine 
 		Version string `json:"version"`
 	}
 	if getJSON(ctx, c, base+"/api/version", nil, &ver) && ver.Version != "" {
-		if !hasMessages(ctx, c, base) {
-			return nil
+		le := probeOllama(ctx, c, base)
+		if le != nil && !hasMessages(ctx, c, base) {
+			le.noMessages = true
 		}
-		return probeOllama(ctx, c, base)
+		return le
 	}
 	var list struct {
 		Data []struct {
@@ -111,10 +121,10 @@ func probeEngine(ctx context.Context, c *http.Client, base string) *LocalEngine 
 			OwnedBy string `json:"owned_by"`
 		} `json:"data"`
 	}
-	if !getJSON(ctx, c, base+"/v1/models", nil, &list) || list.Data == nil || !hasMessages(ctx, c, base) {
+	if !getJSON(ctx, c, base+"/v1/models", nil, &list) || list.Data == nil {
 		return nil
 	}
-	le := &LocalEngine{URL: base, Models: []string{}}
+	le := &LocalEngine{URL: base, Models: []string{}, noMessages: !hasMessages(ctx, c, base)}
 	for _, m := range list.Data {
 		if le.Engine == "" {
 			le.Engine = engineFromOwner(m.OwnedBy)
@@ -244,6 +254,20 @@ func engineFromOwner(o string) string {
 		return "mlx"
 	case "tgi", "text-generation-inference":
 		return "tgi"
+	case "koboldcpp":
+		return "koboldcpp"
+	case "xinference":
+		return "xinference"
+	case "lmdeploy":
+		return "lmdeploy"
+	case "tabbyapi":
+		return "tabbyapi"
+	case "docker":
+		return "docker"
+	case "lemonade":
+		return "lemonade"
+	case "strata":
+		return "strata"
 	}
 	return ""
 }
