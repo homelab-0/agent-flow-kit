@@ -1,4 +1,4 @@
-{"schema":"afk-router-pools/4","pools":{
+{"schema":"afk-router-pools/5","pools":{
  "anthropic-max":{"pool_id":"anthropic-max","state":"available","headroom_pct":78,"resets_at":"2026-11-26T04:10:00.5+00:00"},
  "openai-plus":{"pool_id":"openai-plus","state":"available","headroom_pct":52,"resets_at":"2026-11-26T04:10:00Z"},
  "xai-grok":{"pool_id":"xai-grok","state":"available","headroom_pct":91,"resets_at":"2026-11-26T04:10:00Z"}}}

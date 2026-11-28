@@ -304,7 +304,7 @@ func (p Pool) Resets() (time.Time, bool) {
 	return t, err == nil
 }
 
-// Pools is the afk-router-pools/4 payload (the parts read here).
+// Pools is the afk-router-pools/5 payload (the parts read here).
 type Pools struct {
 	Schema string          `json:"schema"`
 	Pools  map[string]Pool `json:"pools"`

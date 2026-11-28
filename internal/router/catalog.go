@@ -89,7 +89,6 @@ type Candidate struct {
 type PoolMeta struct {
 	Provider  string `json:"provider"`
 	CostClass string `json:"cost_class"`
-	PoolTier  string `json:"pool_tier"`
 }
 
 // Catalog is the benchmark catalog: candidates and their pools.

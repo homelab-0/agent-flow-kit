@@ -296,7 +296,7 @@ func getJSON(ctx context.Context, c *http.Client, u string, body []byte, v any) 
 // localPool is the pool of the local engines: available while one
 // answers. There is no quota, so it carries no usage figures.
 func localPool(found []LocalEngine) Pool {
-	p := Pool{PoolID: LocalPool, Provider: "this machine", PoolTier: "local", CostClass: "local", State: "offline", QuotaSource: "local_probe"}
+	p := Pool{PoolID: LocalPool, Provider: "this machine", CostClass: "local", State: "offline", QuotaSource: "local_probe"}
 	if len(found) > 0 {
 		p.State = "available"
 	}

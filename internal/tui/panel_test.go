@@ -49,7 +49,7 @@ func (fakePanel) Status(context.Context) (*StatusView, error) {
 		Plans: []PlanRow{
 			{Harness: "claude", Plan: "Claude plan", FiveHour: f(71), Week: f(64), SignIn: "signed in"},
 			{Harness: "codex", Plan: "ChatGPT plan", FiveHour: f(52), Week: f(80), SignIn: "signed in"},
-			{Harness: "grok", Plan: "SuperGrok", FiveHour: f(91), SignIn: "login on disk"},
+			{Harness: "grok", Plan: "Grok plan", FiveHour: f(91), SignIn: "login on disk"},
 		},
 		Gateway: &GatewayRow{Name: "agentgateway", Kind: "agentgateway", State: "up", Detail: "gw.lan · 3 models", Engine: "vllm", EngineHost: "factory"},
 		Engines: []EngineRow{{Engine: "ollama", State: "idle", Where: "this PC · RTX 5090", Models: []string{"qwen36-14b"}}},
@@ -138,7 +138,7 @@ func TestPanelTabs(t *testing.T) {
 		TabHarnesses: {"Route   Harnesses   Benchmarks   Skills   MCP   Runs   Config", "afk 0.2.0", "CL claude    2.1.332  signed in      plan+gw  u",
 			"OC opencode  1.4.0    signed out", "PI pi        —        not installed", "models  claude-fable-5-2, sonnet, +2 via gateway", "usage   5h 71% left · week 64% left", "u update"},
 		TabBench:  {"task   coding  quick", "source SWE-bench Verified", "claude-fable-5-2   CL", "78.1  measured  14✓ 2~", "CX OC", "qwen36-14b         OL", "Effective today", "CX 71.8 (52%)", "OL 51.0", "←→ task"},
-		TabRuns:   {"updated 03:31", "CL Claude plan", "71%", "GK SuperGrok", "GK SuperGrok          █████████░ 91%     unknown", "agentgateway      up", "└ VL vLLM", "OL ollama", "this PC · RTX 5090 · 1 model", "r-7f3c", "✓ solved", "! exit 1", "23m · 30m ago"},
+		TabRuns:   {"updated 03:31", "CL Claude plan", "71%", "GK Grok plan", "GK Grok plan          █████████░ 91%     unknown", "agentgateway      up", "└ VL vLLM", "OL ollama", "this PC · RTX 5090 · 1 model", "r-7f3c", "✓ solved", "! exit 1", "23m · 30m ago"},
 		TabConfig: {"file ~/.config/afk/config.toml", "route.prefer                balanced", "e edit config.toml"},
 		TabSkills: {"4 skills · source ~/.config/afk/skills · 1 drifted · 1 to sync · 1 to choose", "skill", "CL  CX  GK  AG", "gh-pr-triage", "↻", "╭─ gh-pr-triage changed in grok",
 			"Edited in ~/.grok/skills 2 hours ago. 4 lines differ from central.", "k keep grok's and update central", "space enable"},
@@ -609,5 +609,35 @@ func TestRunsTabClearsFailedRunMarks(t *testing.T) {
 	p.Update(cmd())
 	if len(src.ran) != 1 || src.ran[0][0] != "clear-marks" || p.notice != "Cleared xai-grok." {
 		t.Fatalf("ran %v, notice %q", src.ran, p.notice)
+	}
+}
+
+// A long reported tier widens the plan column: the tier is shown in full
+// and the header stays over its columns.
+func TestRunsTabShowsLongPlanTier(t *testing.T) {
+	p := NewPanel(context.Background(), &fakePanel{}, NewTheme(true), TabRuns, "", nil)
+	p.data.status = &StatusView{Plans: []PlanRow{
+		{Harness: "codex", Plan: "ChatGPT plan · enterprise", FiveHour: f(52), Week: f(80), SignIn: "signed in"},
+		{Harness: "grok", Plan: "Grok plan", SignIn: "unknown"},
+	}}
+	lines, _ := p.statusLines(100)
+	var head, long, short string
+	for _, l := range lines {
+		s := l.plain()
+		switch {
+		case strings.Contains(s, "5h left"):
+			head = s
+		case strings.Contains(s, "enterprise"):
+			long = s
+		case strings.Contains(s, "Grok plan"):
+			short = s
+		}
+	}
+	if !strings.Contains(long, "ChatGPT plan · enterprise ") {
+		t.Fatalf("tier cut: %q", long)
+	}
+	at := func(s, sub string) int { return line{seg{s: s[:strings.Index(s, sub)]}}.width() }
+	if at(head, "sign-in") != at(long, "signed in") || at(short, "unknown") != at(head, "5h left") {
+		t.Fatalf("columns do not line up:\n%s\n%s\n%s", head, long, short)
 	}
 }

@@ -3,13 +3,15 @@ package router
 import "time"
 
 // PoolsSchema is the version of the pool probe document.
-const PoolsSchema = "afk-router-pools/4"
+const PoolsSchema = "afk-router-pools/5"
 
 // Pool is how much is left in one subscription pool.
 type Pool struct {
-	PoolID    string `json:"pool_id,omitempty"`
-	Provider  string `json:"provider,omitempty"`
-	PoolTier  string `json:"pool_tier,omitempty"`
+	PoolID   string `json:"pool_id,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	// Plan is the plan name the CLI itself reported with its usage
+	// reading (Codex does); empty when it reported none. Never guessed.
+	Plan      string `json:"plan,omitempty"`
 	CostClass string `json:"cost_class,omitempty"`
 	State     string `json:"state"`
 	// UsedPct and HeadroomPct are set only from a reading the plan's own

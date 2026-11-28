@@ -37,38 +37,32 @@
     "anthropic-max": {
       "provider": "Anthropic",
       "cost_class": "subscription",
-      "pool_tier": "max-20x",
-      "description": "Claude Code Max flat-rate OAuth subscription pool"
+      "description": "The plan the claude CLI is signed in to"
     },
     "openai-plus": {
       "provider": "OpenAI",
       "cost_class": "subscription",
-      "pool_tier": "pro",
-      "description": "OpenAI Codex flat-rate OAuth subscription pool"
+      "description": "The plan the codex CLI is signed in to"
     },
     "antigravity-pool": {
-      "provider": "Google DeepMind",
+      "provider": "Google",
       "cost_class": "subscription",
-      "pool_tier": "pro",
-      "description": "Google Antigravity (agy) subscription allowance pool"
+      "description": "The plan the agy CLI is signed in to"
     },
     "xai-grok": {
-      "provider": "xAI (Grok CLI / OpenCode)",
+      "provider": "xAI",
       "cost_class": "subscription",
-      "pool_tier": "standard",
-      "description": "xAI Grok CLI (grok.com) & OpenCode subscription pool"
+      "description": "The plan the grok CLI is signed in to"
     },
     "opencode-free": {
-      "provider": "OpenCode Free Tier",
+      "provider": "OpenCode",
       "cost_class": "free",
-      "pool_tier": "free",
-      "description": "Zero-cost OpenCode community & open-weights inference models"
+      "description": "OpenCode's free models"
     },
     "litellm-local": {
-      "provider": "Homelab Local AI Cluster (via LiteLLM)",
+      "provider": "Model gateway",
       "cost_class": "free",
-      "pool_tier": "unlimited-local",
-      "description": "Self-hosted homelab GPU cluster fronted by LiteLLM smart router"
+      "description": "Models served by a gateway you configured"
     }
   },
   "candidates": [

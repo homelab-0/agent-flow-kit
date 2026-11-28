@@ -154,7 +154,7 @@ func loginText(r engine.Route) string {
 	case "codex":
 		return "ChatGPT plan login · codex’s own auth"
 	case "grok":
-		return "SuperGrok sign-in · grok’s own auth"
+		return "Grok sign-in · grok’s own auth"
 	case "agy":
 		return "Google sign-in · agy’s own auth"
 	case "opencode":

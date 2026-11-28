@@ -7,9 +7,11 @@ A pool is one source of model usage: a plan login, a free tier, or a gateway. AF
 | `anthropic-max` | `claude` (Claude Pro/Max) |
 | `openai-plus` | `codex` (ChatGPT plans) |
 | `antigravity-pool` | `agy` |
-| `xai-grok` | `grok` (SuperGrok) |
+| `xai-grok` | `grok` |
 | `opencode-free` | `opencode` free models |
 | `litellm-local` | a model gateway, see [gateways](gateways.md) |
+
+AFK doesn't know which tier of a plan you pay for, and doesn't guess. The Runs tab names a plan in general ("Claude plan", "Grok plan") and adds the tier only when the CLI itself reported it, as Codex does ("ChatGPT plan · pro").
 
 ## How usage is measured
 
@@ -53,7 +55,7 @@ Signals are written by one-shot runs (`afk -p`) today, under a short lock so run
 
 ## Seeing it
 
-`afk pools` lists every pool with its state and, when its CLI reported one, how much is left and how that was found; otherwise `usage unknown`, `not signed in` or `set aside by a failed run`. Under a measured pool with a 5-hour or weekly window it shows where the window is heading at the rate so far, projected from when the reading was taken (in the first 10% of a window it says it is too early), for example `weekly window resets in 9h with ~58% unused at this rate` or `5h window runs out 16:40 at this rate, before it resets in 3h`, and, with [plan pacing](routing.md#plan-pacing) on, how much that moves routing. `afk pools --json` prints the [pools document](../reference/json.md#pools-afk-router-pools4), with `pacing` per pool.
+`afk pools` lists every pool with its state and, when its CLI reported one, how much is left and how that was found; otherwise `usage unknown`, `not signed in` or `set aside by a failed run`. Under a measured pool with a 5-hour or weekly window it shows where the window is heading at the rate so far, projected from when the reading was taken (in the first 10% of a window it says it is too early), for example `weekly window resets in 9h with ~58% unused at this rate` or `5h window runs out 16:40 at this rate, before it resets in 3h`, and, with [plan pacing](routing.md#plan-pacing) on, how much that moves routing. `afk pools --json` prints the [pools document](../reference/json.md#pools-afk-router-pools5), with `pacing` per pool.
 
 `afk --explain` shows each route's pool, its state and its headroom when reported (`usage unknown` otherwise); `--explain --json` has every figure, with the source in `pool_quota_source`. The receipt shows the pool before and after a session only when both are reported readings.
 

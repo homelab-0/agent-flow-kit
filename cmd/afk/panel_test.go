@@ -150,3 +150,16 @@ func TestStatusSignInAndSetAside(t *testing.T) {
 		t.Fatalf("second clear: %q", msg)
 	}
 }
+
+func TestPlanLabelAddsOnlyAReportedTier(t *testing.T) {
+	for _, c := range []struct{ pid, reported, want string }{
+		{"xai-grok", "", "Grok plan"},
+		{"anthropic-max", "", "Claude plan"},
+		{"openai-plus", "pro", "ChatGPT plan · pro"},
+		{"other", "team", "team"},
+	} {
+		if got := planLabel(c.pid, c.reported); got != c.want {
+			t.Errorf("planLabel(%q, %q) = %q, want %q", c.pid, c.reported, got, c.want)
+		}
+	}
+}
