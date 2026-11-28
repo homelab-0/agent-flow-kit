@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	toml "github.com/pelletier/go-toml/v2"
@@ -112,9 +113,15 @@ type Stream struct {
 	// deltas in stream_event lines) or codex-items (one line per finished
 	// message).
 	Format string `toml:"format"`
+	// Env is set for a run someone is listening to: the CLI's own
+	// settings that suit a caller waiting on the other end, such as fewer
+	// retries so a failure is reported while the caller can still act.
+	Env map[string]string `toml:"env"`
 	// Verified is the CLI version this was checked against.
 	Verified string `toml:"verified"`
 }
+
+var envNameRE = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 
 // StreamFormats are the streamed outputs AFK can read.
 var StreamFormats = []string{"claude-events", "codex-items"}
@@ -489,6 +496,11 @@ func (m Manifest) validate(path string) error {
 			return fmt.Errorf("%s: stream.flags takes the CLI's own flags", path)
 		}
 	}
+	for k, v := range m.Stream.Env {
+		if !envNameRE.MatchString(k) || strings.ContainsAny(v, "\n\x00") {
+			return fmt.Errorf("%s: stream.env takes variable names such as MAX_RETRIES", path)
+		}
+	}
 	switch m.Skills.Format {
 	case "", "skill-md":
 	default:
@@ -571,6 +583,12 @@ func merge(base, over Manifest) Manifest {
 	set(&base.ModelList.Verified, over.ModelList.Verified)
 	list(&base.Stream.Flags, over.Stream.Flags)
 	set(&base.Stream.Format, over.Stream.Format)
+	for k, v := range over.Stream.Env {
+		if base.Stream.Env == nil {
+			base.Stream.Env = map[string]string{}
+		}
+		base.Stream.Env[k] = v
+	}
 	set(&base.Stream.Verified, over.Stream.Verified)
 	set(&base.Skills.Dir, over.Skills.Dir)
 	set(&base.Skills.ProjectDir, over.Skills.ProjectDir)

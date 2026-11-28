@@ -22,6 +22,9 @@ verified = "2.1.332"
 [stream]
 flags = ["--include-partial-messages"]
 format = "claude-events"
+# Claude Code retries a refused request ten times, minutes in all. A caller
+# waiting on afk serve needs the refusal sooner, to try somewhere else.
+env = { CLAUDE_CODE_MAX_RETRIES = "2" }
 
 [modes]
 verified = "2.1.332"

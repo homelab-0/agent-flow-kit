@@ -116,10 +116,11 @@ func runGo(args cli.Args) int {
 	switch {
 	case args.LaunchPlan:
 		return launchPlanCmd(c, args, os.Stdin, os.Stdout, os.Stderr)
+	case args.Explain:
+		// Before -p: --dry-run with -p shows the choice and runs nothing.
+		return explainCmd(c, args, os.Stdout, os.Stderr)
 	case args.Print:
 		return printCmd(c, args, os.Stdin, os.Stdout, os.Stderr)
-	case args.Explain:
-		return explainCmd(c, args, os.Stdout, os.Stderr)
 	case args.JSON:
 		fmt.Fprintln(os.Stderr, "afk: --json goes with --explain or -p")
 		return 2

@@ -370,7 +370,7 @@ func printError(err error) Outcome {
 		if plan.Harness != "" {
 			who = plan.Harness
 		}
-		return failure(403, KindPermission, "this call would run %s on its own sign-in, and that is switched off on this AFK. Its owner can turn it on in AFK's Keys screen, or with: afk config set serve.plan_runs true", who)
+		return failure(403, KindPermission, "this call would run %s on its own sign-in, and that is switched off on this AFK. Its owner can turn it on in AFK's API tab, or with: afk config set serve.plan_runs true", who)
 	case errors.As(err, &usage):
 		return failure(400, KindInvalid, "%s", usage.Msg)
 	case errors.As(err, &missing):

@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -157,6 +158,16 @@ func (c *Core) runHeadless(ctx context.Context, r engine.Route, mode string, req
 	var line func([]byte)
 	if req.Line != nil {
 		line = func(b []byte) { req.Line(r, b) }
+		if man, ok := harness.ManifestFor(r.Harness); ok {
+			keys := make([]string, 0, len(man.Stream.Env))
+			for k := range man.Stream.Env {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				env = append(env, k+"="+man.Stream.Env[k]) // the last value of a name wins
+			}
+		}
 	}
 	var stdout, stderr []byte
 	var exit int
