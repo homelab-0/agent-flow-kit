@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -64,18 +65,38 @@ func (t Theme) subtabs(names []string, active int) line {
 	return append(l, sg(t.Dim, "  "), sg(t.Key, "["), sg(t.Dim, " "), sg(t.Key, "]"), sg(t.Dim, " switch view"))
 }
 
+// usageShortViews are the view names on a narrow terminal.
+var usageShortViews = []string{"Plans", "Gateways", "Runs"}
+
+// usageHead is the subtab row with the update time, the widest that fits
+// in w: full names with "[ ] switch view", then the keys alone, then
+// short names, and last the short names without the keys.
+func (t Theme) usageHead(view int, upd line, w int) line {
+	var head line
+	for _, names := range [][]string{usageViews, usageShortViews} {
+		full := t.subtabs(names, view)
+		// The last segment is " switch view"; the five before it with it
+		// are the "[ ]" hint.
+		for _, h := range []line{full, full[:len(full)-1]} {
+			head = append(slices.Clone(h), upd...)
+			if head.width() <= w-1 {
+				return head
+			}
+		}
+	}
+	full := t.subtabs(usageShortViews, view)
+	return append(slices.Clone(full[:len(full)-5]), upd...)
+}
+
 func (p *Panel) usageLines(w int) ([]line, line) {
 	t := p.theme
 	v := p.data.status
 	view := p.viewOf(TabRuns)
-	head := t.subtabs(usageViews, view)
+	var upd line
 	if !v.Updated.IsZero() {
-		upd := sg(t.Dim, "   updated "+v.Updated.Format("15:04"))
-		if head.width()+len(upd.s) > w-1 {
-			head = head[:len(head)-1] // narrow: "[ ]" without "switch view"
-		}
-		head = append(head, upd)
+		upd = line{sg(t.Dim, "   updated "+v.Updated.Format("15:04"))}
 	}
+	head := t.usageHead(view, upd, w)
 	out := []line{head, nil}
 	var body []line
 	var hint line

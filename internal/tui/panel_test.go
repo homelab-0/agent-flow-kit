@@ -1168,3 +1168,27 @@ func TestUsageEngineWithoutAPI(t *testing.T) {
 		}
 	}
 }
+
+// The Usage subtab row keeps the update time and, where it can, the
+// [ ] keys at every width.
+func TestUsageHeadFits(t *testing.T) {
+	th := NewTheme(true)
+	upd := line{sg(th.Dim, "   updated 03:31")}
+	for w := 46; w <= 120; w++ {
+		for _, u := range []line{upd, nil} {
+			s := th.usageHead(usageEngines, u, w).plain()
+			if lenCells(s) > w-1 {
+				t.Errorf("width %d: %d cells: %q", w, lenCells(s), s)
+			}
+			if u != nil && !strings.Contains(s, "updated 03:31") {
+				t.Errorf("width %d: no update time: %q", w, s)
+			}
+			if w >= 56 && !strings.Contains(s, "[ ]") {
+				t.Errorf("width %d: no [ ] keys: %q", w, s)
+			}
+			if w >= 100 && !strings.Contains(s, "Gateways & local models   Run history    [ ] switch view") {
+				t.Errorf("width %d: full row expected: %q", w, s)
+			}
+		}
+	}
+}
