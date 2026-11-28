@@ -180,6 +180,10 @@ type Settings struct {
 	VendorUsage map[string]bool
 	// BenchAutosync is whether the daily catalog refresh runs.
 	BenchAutosync bool
+	// AutoDiscover is discovery.auto: whether AFK asks each CLI again for
+	// its plan, models and usage when its last answer is a few minutes
+	// old. Off, the last answer is kept until afk harness scan.
+	AutoDiscover bool
 	// BenchSources says which feeds a sync reads (a missing name is on).
 	BenchSources map[string]bool
 	// Mode is the default permission mode: permissions.default, else ask,
@@ -228,7 +232,7 @@ func Resolve(e Env) (Settings, error) {
 	if err != nil {
 		return Settings{}, err
 	}
-	s := Settings{Prefer: "balanced", BenchAutosync: true, FromTOML: f.Exists, Disabled: map[string]bool{}, BenchSources: map[string]bool{}}
+	s := Settings{Prefer: "balanced", BenchAutosync: true, AutoDiscover: true, FromTOML: f.Exists, Disabled: map[string]bool{}, BenchSources: map[string]bool{}}
 	s.Warnings = append(s.Warnings, f.Warnings...)
 	c := f.Config
 
@@ -377,6 +381,9 @@ func Resolve(e Env) (Settings, error) {
 	}
 	if c.Bench.Autosync != nil {
 		s.BenchAutosync = *c.Bench.Autosync
+	}
+	if c.Discovery.Auto != nil {
+		s.AutoDiscover = *c.Discovery.Auto
 	}
 	if e.getenv("AFK_SKIP_BENCHMARK_AUTOSYNC") == "1" {
 		s.BenchAutosync = false

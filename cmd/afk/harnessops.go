@@ -24,6 +24,8 @@ import (
 )
 
 const harnessOpsHelp = `
+  afk harness scan [--json]                 ask every installed CLI again for
+                                            its plan, models and usage now
   afk harness doctor [name] [--json]        check each installed CLI: version,
                                             sign-in (its own status command,
                                             exit code only) and its mode flags

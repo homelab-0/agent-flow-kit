@@ -155,6 +155,12 @@ func poolsText(p *router.Probe, now time.Time, loc *time.Location, pacing bool) 
 		if pl.Plan != "" {
 			basis += " · plan " + pl.Plan
 		}
+		if noLimit(pl.LimitWindows, "5h") {
+			basis += " · no 5-hour limit"
+		}
+		if noLimit(pl.LimitWindows, "weekly") {
+			basis += " · no weekly limit"
+		}
 		if x := extraText(pl.Extra); x != "" {
 			basis += " · " + x
 		}

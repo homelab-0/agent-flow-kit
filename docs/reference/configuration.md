@@ -65,6 +65,9 @@ default = true
 [harness.grok]
 enabled = false            # keep this CLI out of routing
 
+[discovery]
+auto = true                # ask each CLI again by itself every few minutes
+
 [bench]
 autosync = true
 
@@ -128,6 +131,12 @@ Inference engines on this machine; see [local models](../guides/local-models.md)
 |---|---|---|
 | `enabled` | bool | `false` keeps that CLI (`claude`, `codex`, `opencode`, `grok`, `agy`, `pi`) out of routing |
 | `vendor_usage` | bool | `true` lets AFK read the login that CLI saved and ask its vendor for your plan usage, when the CLI reports none itself. Default `false`. Works for `claude` (Anthropic) and `grok` (xAI). A vendor's terms may not allow another tool to use its CLI's login, so read [the security page](../security.md#the-vendor-usage-lookup) before turning it on. Only `config.toml` can set it, never a repository |
+
+### `[discovery]`
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `auto` | bool | `true` | AFK asks each installed CLI for its plan, models and usage, and asks again once the answer is five minutes old. `false` keeps the last answer until you run `afk harness scan` (or press refresh on the Harnesses tab), or until the CLI's binary changes |
 
 ### `[bench]`
 

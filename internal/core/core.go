@@ -199,7 +199,7 @@ func (c *Core) probeEnv(s config.Settings, installed func(string) bool) router.P
 	return router.ProbeEnv{
 		Home: c.Home, Getenv: c.getenv, Now: c.now(), GatewayURL: s.GatewayURL,
 		LocalURLs: s.LocalURLs, GPU: gpuName(s.LocalGPU),
-		Installed: installed, Live: c.Live, CodexLoginMode: c.codexLoginMode(), SignedIn: c.signedIn(), Account: c.account(s.VendorUsage),
+		Installed: installed, Live: c.Live, CodexLoginMode: c.codexLoginMode(), SignedIn: c.signedIn(), Account: c.account(s.VendorUsage, s.AutoDiscover),
 	}
 }
 
