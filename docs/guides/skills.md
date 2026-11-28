@@ -60,17 +60,21 @@ Copying into central never overwrites a different skill with the same name; AFK 
 
 ## The Skills tab
 
-Press `4` in the [control panel](control-panel.md) (or `/skills` in the composer) for the grid: one row per skill, one column per CLI.
+Press `4` in the [control panel](control-panel.md) (or `/skills` in the composer) for the grid: one row per skill, one column per CLI under its logo. The scope column says where a skill applies: `everywhere` for central skills, `project` or `everywhere` for a project skill once you've chosen, `choose` while it waits for your choice, and `removed` when it has left central and the next sync clears AFK's copies.
 
 | Mark | Meaning |
 |---|---|
-| `✓` | in sync |
+| `✓` | installed and in sync |
+| `◆` | a project skill waiting for you to choose this project or every project |
 | `↻` | changed in that CLI since AFK synced it |
-| `·` | not enabled |
+| `○` | turned off for that CLI |
+| `·` | not there |
 | `–` | that CLI has no skills folder AFK knows |
 | `+` | the next sync adds or updates it |
 | `-` | the next sync removes AFK's copy |
 | `!` | a skill of your own with that name; AFK leaves it alone |
 
-`↑` `↓` pick a skill and `←` `→` pick a CLI. `space` turns the skill on or off for that CLI, `s` syncs everything, and `n` asks, in the tab, for a name and when to use the skill (`pr-triage Use when sorting pull requests.`) and makes it. `e` opens the selected skill's `SKILL.md` in your editor to write its steps. When a copy has drifted, a box says where and how many lines differ: `d` shows the diff, `k` keeps that CLI's copy and `c` restores central.
+Under the grid, a box shows the selected skill: the description from its `SKILL.md`, its folder, how many files it has and when one last changed, and what the selected CLI has of it. When the skill was edited in a CLI, the box turns to that edit.
+
+`↑` `↓` pick a skill and `←` `→` pick a CLI. `space` turns the skill on or off for that CLI, `s` syncs everything, and `n` asks, in the tab, for a name and when to use the skill (`pr-triage Use when sorting pull requests.`) and makes it. `e` opens the selected skill's `SKILL.md` in your editor to write its steps. When the selected skill's copy has drifted, the box says where and how many lines differ: `d` shows the diff, `k` keeps that CLI's copy and `c` restores central.
 

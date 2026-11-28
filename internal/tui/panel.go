@@ -852,6 +852,17 @@ func (p *Panel) selRow(l line, i, w int) line {
 
 func harnessLogo(t Theme, name string) seg { return t.logo(engine.Route{Harness: name}) }
 
+// logoCaption is a CLI's 2-letter code to print under its logo, so a
+// column of small marks can still be read; "" when the logo is already
+// that code as text.
+func logoCaption(t Theme, name string) string {
+	r := engine.Route{Harness: name}
+	if _, ok := t.drawLogo(t.logoName(r)); !ok {
+		return ""
+	}
+	return badge(r)
+}
+
 func (p *Panel) harnessLines(w int) ([]line, line) {
 	t := p.theme
 	v := p.data.harn
